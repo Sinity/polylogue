@@ -27,9 +27,10 @@ from polylogue.schemas.validator import (
     ValidationResult,
     validate_provider_export,
 )
-from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
-from polylogue.storage.index import rebuild_index
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.index import rebuild_index
 from tests.infra.helpers import ConversationBuilder
 
 # =============================================================================
@@ -39,7 +40,7 @@ from tests.infra.helpers import ConversationBuilder
 PROVIDER_FILTER_CASES = [
     ("claude", 2, "Filter by single provider"),
     (("claude", "chatgpt"), 3, "Filter by multiple providers"),
-    ("chatgpt", 1, "Exclude specific provider (no_provider)"),
+    ("chatgpt", 1, "Exclude specific provider (exclude_provider)"),
 ]
 
 SORT_OPERATION_CASES = [
@@ -55,14 +56,11 @@ SORT_VARIANTS_CASES = [
     ("messages", "messages"),
 ]
 
-DATE_PARSING_CASES = [
-    ("yesterday", "Natural language: yesterday"),
-    ("2025-01-15", "ISO format date"),
-    ("last week", "Relative date format"),
-]
-
-DATE_UNTIL_CASES = [
-    ("today", "Natural language: today"),
+DATE_METHOD_CASES = [
+    ("since", "_since_date", "yesterday"),
+    ("since", "_since_date", "2025-01-15"),
+    ("since", "_since_date", "last week"),
+    ("until", "_until_date", "today"),
 ]
 
 BRANCH_PREDICATE_CASES = [
@@ -100,34 +98,34 @@ PICK_OPERATION_CASES = [
 ]
 
 REASONING_TRACES_CASES = [
-    (None, "claude", [], "Empty/None content"),
-    (["string", 123], "claude", [], "Non-dict block"),
-    ([{"type": "thinking", "thinking": "Let me think..."}], "claude", "thinking_block", "Thinking block"),
-    ([{"isThought": True, "text": "Gemini thinking"}], "gemini", "gemini_thought", "Gemini isThought format"),
-    ([{"type": "thinking", "text": "Fallback text"}], "claude", "thinking_fallback", "Thinking fallback to text"),
+    (None, "claude", 0, None, "empty_none_content"),
+    (["string", 123], "claude", 0, None, "non_dict_block"),
+    ([{"type": "thinking", "thinking": "Let me think..."}], "claude", 1, "Let me think...", "thinking_block"),
+    ([{"isThought": True, "text": "Gemini thinking"}], "gemini", 1, "Gemini thinking", "gemini_thought"),
+    ([{"type": "thinking", "text": "Fallback text"}], "claude", 1, "Fallback text", "thinking_fallback"),
 ]
 
 CONTENT_BLOCKS_CASES = [
-    (None, [], "Empty/None content"),
-    (["string", 123, None], [], "Non-dict items"),
-    ([{"type": "text", "text": "Hello"}], "text_block", "Text block"),
-    ([{"type": "thinking", "thinking": "Thought"}], "thinking_block", "Thinking block"),
-    ([{"type": "tool_use", "name": "bash", "id": "tool1", "input": {"command": "ls"}}], "tool_use_block", "Tool use block"),
-    ([{"type": "tool_result", "content": "result data"}], "tool_result_block", "Tool result block"),
-    ([{"type": "tool_result"}], "tool_result_no_content", "Tool result without content"),
-    ([{"type": "code", "text": "print('hello')", "language": "python"}], "code_block", "Code block with text"),
-    ([{"type": "code", "code": "def test(): pass"}], "code_block_code", "Code block with code field"),
-    ([{"type": "unknown", "data": "something"}], [], "Unknown block type"),
+    (None, 0, [], "empty_none"),
+    (["string", 123, None], 0, [], "non_dict_items"),
+    ([{"type": "text", "text": "Hello"}], 1, ["text"], "text_block"),
+    ([{"type": "thinking", "thinking": "Thought"}], 1, ["thinking"], "thinking_block"),
+    ([{"type": "tool_use", "name": "bash", "id": "tool1", "input": {"command": "ls"}}], 1, ["tool_use"], "tool_use_block"),
+    ([{"type": "tool_result", "content": "result data"}], 1, ["tool_result"], "tool_result_block"),
+    ([{"type": "tool_result"}], 1, ["tool_result"], "tool_result_no_content"),
+    ([{"type": "code", "text": "print('hello')", "language": "python"}], 1, ["code"], "code_block_text"),
+    ([{"type": "code", "code": "def test(): pass"}], 1, ["code"], "code_block_code"),
+    ([{"type": "unknown", "data": "something"}], 0, [], "unknown_block_type"),
 ]
 
 EXTRACT_TEXT_CASES = [
-    ("claude_code", None, "", "extract_claude_code_text: None"),
-    ("claude_code", ["string", 123], "", "extract_claude_code_text: non-dict"),
-    ("chatgpt", None, "", "extract_chatgpt_text: None"),
-    ("chatgpt", {}, "", "extract_chatgpt_text: no parts"),
-    ("chatgpt", {"parts": "string"}, "string", "extract_chatgpt_text: parts as string"),
-    ("chatgpt", {"parts": [123, "text", {"key": "val"}]}, "text", "extract_chatgpt_text: non-string parts"),
-    ("codex", {"data": "not a list"}, "", "extract_codex_text: non-list"),
+    (extract_claude_code_text, None, "", "claude_code_none"),
+    (extract_claude_code_text, ["string", 123], "", "claude_code_non_dict"),
+    (extract_chatgpt_text, None, "", "chatgpt_none"),
+    (extract_chatgpt_text, {}, "", "chatgpt_no_parts"),
+    (extract_chatgpt_text, {"parts": "string"}, "string", "chatgpt_parts_as_string"),
+    (extract_chatgpt_text, {"parts": [123, "text", {"key": "val"}]}, "text", "chatgpt_non_string_parts"),
+    (extract_codex_text, {"data": "not a list"}, "", "codex_non_list"),
 ]
 
 HARMONIZED_MESSAGE_PROVIDER_CASES = [
@@ -198,22 +196,36 @@ class TestConversationFilterChaining:
     """Tests for filter method chaining."""
 
     def test_filter_returns_self(self, filter_repo):
-        """Each filter method returns self for chaining."""
-        f = ConversationFilter(filter_repo)
-        assert f.provider("claude") is f
-        assert f.since("2024-01-01") is f
-        assert f.limit(10) is f
+        """Every fluent filter method must return self."""
+        CHAINABLE_METHODS = [
+            lambda f: f.provider("claude"),
+            lambda f: f.since("2024-01-01"),
+            lambda f: f.until("2025-01-01"),
+            lambda f: f.limit(10),
+            lambda f: f.sort("date"),
+            lambda f: f.reverse(),
+            lambda f: f.tag("test"),
+            lambda f: f.contains("hello"),
+            lambda f: f.title("test"),
+            lambda f: f.similar("query"),
+        ]
+        for method_fn in CHAINABLE_METHODS:
+            fresh = ConversationFilter(filter_repo)
+            assert method_fn(fresh) is fresh, f"Method not chainable: {method_fn}"
 
-    def test_filter_chain_multiple_methods(self, filter_repo):
-        """Multiple filter methods can be chained."""
-        result = (
+    @pytest.mark.asyncio
+    async def test_filter_chain_multiple_methods(self, filter_repo):
+        """Chain must apply ALL filters — provider, limit both take effect."""
+        result = await (
             ConversationFilter(filter_repo)
             .provider("claude")
-            .limit(5)
+            .limit(1)
             .sort("date")
             .list()
         )
         assert isinstance(result, list)
+        assert len(result) <= 1  # limit applied
+        assert all(c.provider == "claude" for c in result)  # provider applied
 
 
 class TestConversationFilterMethods:
@@ -222,11 +234,11 @@ class TestConversationFilterMethods:
     FILTER_METHOD_CASES = [
         ("provider_single", lambda f: f.provider("claude"), 2, "claude", "Filter by single provider"),
         ("provider_multi", lambda f: f.provider("claude", "chatgpt"), 3, "multi", "Filter by multiple providers"),
-        ("no_provider", lambda f: f.no_provider("claude"), 1, "not_claude", "Exclude specific provider"),
+        ("exclude_provider", lambda f: f.exclude_provider("claude"), 1, "not_claude", "Exclude specific provider"),
         ("tag_python", lambda f: f.tag("python"), None, None, "Filter by tag (or empty)"),
-        ("no_tag", lambda f: f.no_tag("nonexistent-tag"), 3, None, "Exclude nonexistent tag"),
+        ("exclude_tag", lambda f: f.exclude_tag("nonexistent-tag"), 3, None, "Exclude nonexistent tag"),
         ("contains", lambda f: f.contains("Python"), None, None, "Filter contains text"),
-        ("no_contains", lambda f: f.no_contains("database"), None, None, "Exclude text"),
+        ("exclude_text", lambda f: f.exclude_text("database"), None, None, "Exclude text"),
         ("limit_1", lambda f: f.limit(1), 1, None, "Limit to 1 result"),
         ("limit_0", lambda f: f.limit(0), 0, None, "Limit of zero"),
         ("title_Python", lambda f: f.title("Python"), 1, "title", "Filter by title"),
@@ -235,9 +247,10 @@ class TestConversationFilterMethods:
     ]
 
     @pytest.mark.parametrize("method_name,filter_fn,expected_count,check_type,description", FILTER_METHOD_CASES)
-    def test_filter_method(self, filter_repo, method_name, filter_fn, expected_count, check_type, description):
+    @pytest.mark.asyncio
+    async def test_filter_method(self, filter_repo, method_name, filter_fn, expected_count, check_type, description):
         """Test individual filter methods."""
-        result = filter_fn(ConversationFilter(filter_repo)).list()
+        result = await filter_fn(ConversationFilter(filter_repo)).list()
 
         if expected_count is not None:
             assert len(result) == expected_count, f"Failed {description}: expected {expected_count}, got {len(result)}"
@@ -260,36 +273,41 @@ class TestConversationFilterMethods:
 class TestConversationFilterTerminal:
     """Tests for terminal methods."""
 
-    def test_filter_first(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_first(self, filter_repo):
         """first() returns single conversation."""
-        result = ConversationFilter(filter_repo).first()
+        result = await ConversationFilter(filter_repo).first()
         assert result is not None
         assert hasattr(result, "id")
 
-    def test_filter_first_empty(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_first_empty(self, filter_repo):
         """first() returns None when no matches."""
-        result = ConversationFilter(filter_repo).provider("nonexistent").first()
+        result = await ConversationFilter(filter_repo).provider("nonexistent").first()
         assert result is None
 
-    def test_filter_count(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_count(self, filter_repo):
         """count() returns number of matches."""
-        count = ConversationFilter(filter_repo).count()
+        count = await ConversationFilter(filter_repo).count()
         assert count == 3
 
-    def test_filter_count_with_filter(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_count_with_filter(self, filter_repo):
         """count() respects filters."""
-        count = ConversationFilter(filter_repo).provider("claude").count()
+        count = await ConversationFilter(filter_repo).provider("claude").count()
         assert count == 2
 
-    def test_filter_delete_removes_conversations(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_delete_removes_conversations(self, filter_repo):
         """delete() removes matched conversations."""
-        initial_count = ConversationFilter(filter_repo).count()
+        initial_count = await ConversationFilter(filter_repo).count()
         assert initial_count > 0
 
-        deleted = ConversationFilter(filter_repo).limit(1).delete()
+        deleted = await ConversationFilter(filter_repo).limit(1).delete()
         assert deleted == 1
 
-        final_count = ConversationFilter(filter_repo).count()
+        final_count = await ConversationFilter(filter_repo).count()
         assert final_count == initial_count - 1
 
 
@@ -297,15 +315,17 @@ class TestConversationFilterSort:
     """Tests for sorting."""
 
     @pytest.mark.parametrize("sort_key,description", SORT_OPERATION_CASES)
-    def test_filter_sort(self, filter_repo, sort_key, description):
+    @pytest.mark.asyncio
+    async def test_filter_sort(self, filter_repo, sort_key, description):
         """Test sorting by various keys."""
-        result = ConversationFilter(filter_repo).sort(sort_key).list()
+        result = await ConversationFilter(filter_repo).sort(sort_key).list()
         assert len(result) > 0
 
-    def test_filter_sort_reverse(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_sort_reverse(self, filter_repo):
         """Reverse sort order."""
-        normal = ConversationFilter(filter_repo).sort("date").list()
-        reversed_list = ConversationFilter(filter_repo).sort("date").reverse().list()
+        normal = await ConversationFilter(filter_repo).sort("date").list()
+        reversed_list = await ConversationFilter(filter_repo).sort("date").reverse().list()
         if len(normal) > 1:
             assert normal[0].id == reversed_list[-1].id
             assert normal[-1].id == reversed_list[0].id
@@ -314,9 +334,10 @@ class TestConversationFilterSort:
 class TestConversationFilterCustom:
     """Tests for custom predicates."""
 
-    def test_filter_where_predicate(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_where_predicate(self, filter_repo):
         """Filter with custom predicate."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo)
             .where(lambda c: len(c.messages) >= 2)
             .list()
@@ -327,44 +348,30 @@ class TestConversationFilterCustom:
 class TestFilterDateParsing:
     """Tests for date parsing in ConversationFilter.since() and until()."""
 
-    def test_since_invalid_date_raises_value_error(self, filter_repo):
-        """Calling .since() with invalid date raises ValueError."""
+    @pytest.mark.parametrize("method_name,field_name", [("since", "_since_date"), ("until", "_until_date")])
+    def test_date_method_raises_on_invalid(self, filter_repo, method_name, field_name):
+        """Calling .since() or .until() with unparseable string raises ValueError."""
         f = ConversationFilter(filter_repo)
         with pytest.raises(ValueError, match="Cannot parse date"):
-            f.since("invalid-date")
+            getattr(f, method_name)("not-a-date")
 
-    def test_until_invalid_date_raises_value_error(self, filter_repo):
-        """Calling .until() with invalid date raises ValueError."""
+    @pytest.mark.parametrize("method_name,field_name,date_str", DATE_METHOD_CASES)
+    def test_date_method_accepts_string_formats(self, filter_repo, method_name, field_name, date_str):
+        """since() and until() both accept natural-language and ISO date strings."""
         f = ConversationFilter(filter_repo)
-        with pytest.raises(ValueError, match="Cannot parse date"):
-            f.until("invalid-date")
-
-    @pytest.mark.parametrize("date_str,description", DATE_PARSING_CASES)
-    def test_since_date_formats(self, filter_repo, date_str, description):
-        """Test since() with various date formats."""
-        f = ConversationFilter(filter_repo)
-        result = f.since(date_str)
-        assert result is f
-        assert f._since_date is not None
-        assert isinstance(f._since_date, datetime)
-
-    @pytest.mark.parametrize("date_str,description", DATE_UNTIL_CASES)
-    def test_until_date_formats(self, filter_repo, date_str, description):
-        """Test until() with various date formats."""
-        f = ConversationFilter(filter_repo)
-        result = f.until(date_str)
-        assert result is f
-        assert f._until_date is not None
-        assert isinstance(f._until_date, datetime)
+        getattr(f, method_name)(date_str)
+        assert getattr(f, field_name) is not None
+        assert isinstance(getattr(f, field_name), datetime)
 
 
 class TestFtsWithProviderFilter:
     """Tests for combined FTS search + provider filter."""
 
     @pytest.mark.parametrize("search_term,provider,should_find,description", FTS_PROVIDER_CASES)
-    def test_fts_with_provider(self, filter_repo, search_term, provider, should_find, description):
+    @pytest.mark.asyncio
+    async def test_fts_with_provider(self, filter_repo, search_term, provider, should_find, description):
         """Test FTS search combined with provider filter."""
-        result = ConversationFilter(filter_repo).contains(search_term).provider(provider).list()
+        result = await ConversationFilter(filter_repo).contains(search_term).provider(provider).list()
         if should_find:
             assert len(result) > 0, f"Should find '{search_term}' in {provider} conversations"
             assert all(c.provider == provider for c in result)
@@ -396,17 +403,14 @@ class TestFiltersDateTimeHandling:
         backend = SQLiteBackend(db_path)
         return ConversationRepository(backend)
 
-    def test_since_with_datetime_object(self, filter_repo):
-        """Test .since() with datetime object instead of string."""
-        dt = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        filter_obj = ConversationFilter(filter_repo).since(dt)
-        assert filter_obj._since_date == dt
-
-    def test_until_with_datetime_object(self, filter_repo):
-        """Test .until() with datetime object instead of string."""
-        dt = datetime(2024, 12, 31, tzinfo=timezone.utc)
-        filter_obj = ConversationFilter(filter_repo).until(dt)
-        assert filter_obj._until_date == dt
+    @pytest.mark.parametrize("method_name,field_name", [("since", "_since_date"), ("until", "_until_date")])
+    def test_date_method_accepts_datetime_object(self, filter_repo, method_name, field_name):
+        """since() and until() both accept a datetime object directly."""
+        dt = datetime(2024, 6, 15, tzinfo=timezone.utc)
+        f = ConversationFilter(filter_repo)
+        result = getattr(f, method_name)(dt)
+        assert result is f
+        assert getattr(f, field_name) == dt
 
     def test_since_and_until_together_datetime(self, filter_repo):
         """Test both since/until with datetime objects."""
@@ -497,17 +501,19 @@ class TestFiltersApplyFiltersLogic:
         backend = SQLiteBackend(db_path)
         return ConversationRepository(backend)
 
-    def test_excluded_providers_filter(self, filter_repo_populated):
+    @pytest.mark.asyncio
+    async def test_excluded_providers_filter(self, filter_repo_populated):
         """Test filtering out specific providers."""
-        results = (ConversationFilter(filter_repo_populated)
-                   .no_provider("chatgpt")
+        results = await (ConversationFilter(filter_repo_populated)
+                   .exclude_provider("chatgpt")
                    .list())
         assert all(c.provider != "chatgpt" for c in results)
 
     @pytest.mark.parametrize("sort_key,description", SORT_VARIANTS_CASES)
-    def test_sort_by_variant(self, filter_repo_populated, sort_key, description):
+    @pytest.mark.asyncio
+    async def test_sort_by_variant(self, filter_repo_populated, sort_key, description):
         """Test sorting by various metrics."""
-        results = (ConversationFilter(filter_repo_populated)
+        results = await (ConversationFilter(filter_repo_populated)
                    .sort(sort_key)
                    .list())
         assert len(results) >= 0
@@ -529,19 +535,21 @@ class TestFiltersIDPrefixResolution:
         backend = SQLiteBackend(db_path)
         return ConversationRepository(backend)
 
-    def test_id_prefix_exact_match_fast_path(self, filter_repo_with_id):
+    @pytest.mark.asyncio
+    async def test_id_prefix_exact_match_fast_path(self, filter_repo_with_id):
         """Test ID prefix fast path when prefix resolves to single conversation."""
-        results = (ConversationFilter(filter_repo_with_id)
+        results = await (ConversationFilter(filter_repo_with_id)
                    .id("abc123")
                    .list())
         assert isinstance(results, list)
 
-    def test_fts_search_exception_handling(self, filter_repo_with_id):
+    @pytest.mark.asyncio
+    async def test_fts_search_exception_handling(self, filter_repo_with_id):
         """Test FTS search fallback on exception."""
         filter_obj = ConversationFilter(filter_repo_with_id)
         filter_obj.contains("test")
         with patch.object(filter_repo_with_id, 'search', side_effect=Exception("FTS error")):
-            results = filter_obj.list()
+            results = await filter_obj.list()
             assert isinstance(results, list)
 
 
@@ -568,31 +576,35 @@ class TestFiltersListSummariesPaths:
         backend = SQLiteBackend(db_path)
         return ConversationRepository(backend)
 
-    def test_list_summaries_with_provider_filter(self, filter_repo_summaries):
+    @pytest.mark.asyncio
+    async def test_list_summaries_with_provider_filter(self, filter_repo_summaries):
         """Test list_summaries with provider filter."""
-        results = (ConversationFilter(filter_repo_summaries)
+        results = await (ConversationFilter(filter_repo_summaries)
                    .provider("claude")
                    .list_summaries())
         assert all(isinstance(s, ConversationSummary) for s in results)
 
-    def test_list_summaries_with_tag_filter(self, filter_repo_summaries):
+    @pytest.mark.asyncio
+    async def test_list_summaries_with_tag_filter(self, filter_repo_summaries):
         """Test list_summaries with tag filter."""
-        results = (ConversationFilter(filter_repo_summaries)
+        results = await (ConversationFilter(filter_repo_summaries)
                    .tag("mytag")
                    .list_summaries())
         assert isinstance(results, list)
 
-    def test_list_summaries_with_summary_has_type(self, filter_repo_summaries):
+    @pytest.mark.asyncio
+    async def test_list_summaries_with_summary_has_type(self, filter_repo_summaries):
         """Test list_summaries with has('summary') filter."""
-        results = (ConversationFilter(filter_repo_summaries)
+        results = await (ConversationFilter(filter_repo_summaries)
                    .has("summary")
                    .list_summaries())
         assert all(s.summary for s in results)
 
-    def test_list_summaries_cannot_use_content_filters(self, filter_repo_summaries):
+    @pytest.mark.asyncio
+    async def test_list_summaries_cannot_use_content_filters(self, filter_repo_summaries):
         """Test that list_summaries rejects content-dependent filters."""
         with pytest.raises(ValueError, match="content-dependent filters"):
-            (ConversationFilter(filter_repo_summaries)
+            await (ConversationFilter(filter_repo_summaries)
              .has("thinking")
              .list_summaries())
 
@@ -623,9 +635,10 @@ class TestFiltersPick:
         backend = SQLiteBackend(db_path)
         return ConversationRepository(backend)
 
-    def test_pick_no_results(self, filter_repo_pick):
+    @pytest.mark.asyncio
+    async def test_pick_no_results(self, filter_repo_pick):
         """Test pick() with no matching conversations."""
-        result = (ConversationFilter(filter_repo_pick)
+        result = await (ConversationFilter(filter_repo_pick)
                   .provider("nonexistent")
                   .pick())
         assert result is None
@@ -639,10 +652,11 @@ class TestFiltersPick:
         (True, True, "builtins.input", "EOF", "EOFError handling"),
         (True, True, "builtins.input", "INTERRUPT", "KeyboardInterrupt handling"),
     ])
-    def test_pick_outcomes(self, filter_repo_pick, has_results, is_tty, patch_target, input_value, description):
+    @pytest.mark.asyncio
+    async def test_pick_outcomes(self, filter_repo_pick, has_results, is_tty, patch_target, input_value, description):
         """Test pick() with various input scenarios."""
         if not has_results:
-            result = (ConversationFilter(filter_repo_pick)
+            result = await (ConversationFilter(filter_repo_pick)
                       .provider("nonexistent")
                       .pick())
             assert result is None
@@ -651,23 +665,41 @@ class TestFiltersPick:
                 if patch_target:
                     if input_value == "EOF":
                         with patch(patch_target, side_effect=EOFError):
-                            result = ConversationFilter(filter_repo_pick).pick()
+                            result = await ConversationFilter(filter_repo_pick).pick()
                             assert result is None
                     elif input_value == "INTERRUPT":
                         with patch(patch_target, side_effect=KeyboardInterrupt):
-                            result = ConversationFilter(filter_repo_pick).pick()
+                            result = await ConversationFilter(filter_repo_pick).pick()
                             assert result is None
                     else:
                         with patch(patch_target, return_value=input_value):
-                            result = ConversationFilter(filter_repo_pick).pick()
+                            result = await ConversationFilter(filter_repo_pick).pick()
                             if input_value == "" or input_value == "1":
                                 assert result is not None
                             elif input_value == "999" or input_value == "not a number":
                                 assert result is None
                 else:
-                    result = ConversationFilter(filter_repo_pick).pick()
+                    result = await ConversationFilter(filter_repo_pick).pick()
                     assert result is not None
 
+
+
+    @pytest.mark.asyncio
+    async def test_pick_with_filter_respects_filter(self, filter_repo_pick):
+        """pick() on filtered results returns from the filtered set."""
+        filtered_convs = await ConversationFilter(filter_repo_pick).provider("claude").list()
+        if filtered_convs:
+            picked = await ConversationFilter(filter_repo_pick).provider("claude").pick()
+            assert picked is not None
+            assert picked.provider == "claude"
+
+    @pytest.mark.asyncio
+    async def test_pick_with_limit(self, filter_repo_pick):
+        """pick() respects limit()."""
+        picked = await ConversationFilter(filter_repo_pick).limit(1).pick()
+        if picked:
+            all_first = await ConversationFilter(filter_repo_pick).limit(1).list()
+            assert picked.id == all_first[0].id
 
 class TestFiltersNegativeFTSLogic:
     """Test negative FTS terms and has_post_filters."""
@@ -691,10 +723,11 @@ class TestFiltersNegativeFTSLogic:
         backend = SQLiteBackend(db_path)
         return ConversationRepository(backend)
 
-    def test_negative_fts_excludes_conversations(self, filter_repo_fts):
-        """Test no_contains() excludes conversations with term."""
-        results = (ConversationFilter(filter_repo_fts)
-                   .no_contains("error")
+    @pytest.mark.asyncio
+    async def test_negative_fts_excludes_conversations(self, filter_repo_fts):
+        """Test exclude_text() excludes conversations with term."""
+        results = await (ConversationFilter(filter_repo_fts)
+                   .exclude_text("error")
                    .list())
         assert not any("error" in c.display_title or any("error" in (m.text or "").lower() for m in c.messages) for c in results)
 
@@ -717,45 +750,27 @@ class TestUnifiedMissingRole:
 class TestUnifiedExtractReasoningTraces:
     """Test extract_reasoning_traces with all branches."""
 
-    @pytest.mark.parametrize("content,provider,expected_type,description", REASONING_TRACES_CASES)
-    def test_extract_reasoning_traces(self, content, provider, expected_type, description):
+    @pytest.mark.parametrize("content,provider,expected_len,expected_text,description", REASONING_TRACES_CASES)
+    def test_extract_reasoning_traces(self, content, provider, expected_len, expected_text, description):
         """Test reasoning trace extraction with various content types."""
         result = extract_reasoning_traces(content, provider)
-
-        if expected_type == []:
-            assert result == []
-        elif expected_type == "thinking_block":
-            assert len(result) == 1
-            assert result[0].text == "Let me think..."
-        elif expected_type == "gemini_thought":
-            assert len(result) == 1
-            assert result[0].text == "Gemini thinking"
-        elif expected_type == "thinking_fallback":
-            assert len(result) == 1
-            assert result[0].text == "Fallback text"
+        assert len(result) == expected_len
+        if expected_text is not None:
+            assert result[0].text == expected_text
 
 
 class TestUnifiedExtractContentBlocks:
     """Test extract_content_blocks with all block types."""
 
-    @pytest.mark.parametrize("content,expected_type,description", CONTENT_BLOCKS_CASES)
-    def test_extract_content_blocks(self, content, expected_type, description):
+    @pytest.mark.parametrize("content,expected_len,expected_types,description", CONTENT_BLOCKS_CASES)
+    def test_extract_content_blocks(self, content, expected_len, expected_types, description):
         """Test content block extraction with various block types."""
+        from polylogue.lib.viewports import ContentType
         result = extract_content_blocks(content)
-
-        if expected_type == []:
-            assert result == []
-        elif expected_type == "text_block":
-            assert len(result) == 1
-            from polylogue.lib.viewports import ContentType
-            assert result[0].type == ContentType.TEXT
-        elif expected_type == "thinking_block" or expected_type == "tool_use_block" or expected_type == "tool_result_block":
-            assert len(result) == 1
-        elif expected_type == "tool_result_no_content":
-            assert len(result) == 1
-            assert result[0].text == ""
-        elif expected_type == "code_block" or expected_type == "code_block_code":
-            assert len(result) == 1
+        assert len(result) == expected_len
+        if expected_types:
+            for block, expected_type in zip(result, expected_types):
+                assert block.type.value == expected_type
 
 
 class TestUnifiedExtractTokenUsage:
@@ -775,18 +790,11 @@ class TestUnifiedExtractTokenUsage:
 class TestUnifiedExtractTextHelpers:
     """Test text extraction helpers."""
 
-    @pytest.mark.parametrize("provider,content,expected,description", EXTRACT_TEXT_CASES)
-    def test_extract_text(self, provider, content, expected, description):
+    @pytest.mark.parametrize("extract_fn,content,expected,description", EXTRACT_TEXT_CASES)
+    def test_extract_text(self, extract_fn, content, expected, description):
         """Test text extraction from various content structures."""
-        if provider == "claude_code":
-            result = extract_claude_code_text(content)
-        elif provider == "chatgpt":
-            result = extract_chatgpt_text(content)
-        elif provider == "codex":
-            result = extract_codex_text(content)
-
-        if isinstance(expected, str):
-            assert result == expected or expected in result
+        result = extract_fn(content)
+        assert result == expected or expected in result
 
 
 class TestUnifiedExtractHarmonizedMessage:
@@ -964,7 +972,6 @@ class TestValidatorDetectDrift:
         }
         validator = SchemaValidator(schema, strict=True)
         validator.validate({"name": "test", "extra": "value"})
-        assert True
 
     def test_validate_nested_object_drift(self):
         """Test nested object drift detection."""

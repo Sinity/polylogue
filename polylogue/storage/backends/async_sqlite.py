@@ -22,13 +22,7 @@ import aiosqlite
 import polylogue.paths as _paths
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.log import get_logger
-from polylogue.storage.backends.sqlite import (
-    _build_conversation_filters,
-    _parse_json,
-    _row_to_conversation,
-    _row_to_message,
-    _row_to_raw_conversation,
-)
+from polylogue.storage.backends.connection import DB_TIMEOUT, _build_conversation_filters
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
@@ -37,10 +31,14 @@ from polylogue.storage.store import (
     RunRecord,
     _json_or_none,
     _make_ref_id,
+    _parse_json,
+    _row_to_conversation,
+    _row_to_message,
+    _row_to_raw_conversation,
 )
 from polylogue.types import ConversationId
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 
 
 def default_db_path() -> Path:
@@ -51,7 +49,7 @@ def default_db_path() -> Path:
     return _paths.data_home() / "polylogue.db"
 
 
-class AsyncSQLiteBackend:
+class SQLiteBackend:
     """Async SQLite storage backend implementation.
 
     This backend provides async/await API for database operations, enabling
@@ -68,7 +66,7 @@ class AsyncSQLiteBackend:
         - Nested transactions use SAVEPOINTs
 
     Example:
-        backend = AsyncSQLiteBackend()
+        backend = SQLiteBackend()
 
         # Concurrent reads
         conv1, conv2 = await asyncio.gather(
@@ -110,10 +108,10 @@ class AsyncSQLiteBackend:
         async with self._schema_lock:
             if self._schema_ensured:
                 return
-            async with aiosqlite.connect(self._db_path, timeout=30) as init_conn:
+            async with aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT) as init_conn:
                 init_conn.row_factory = aiosqlite.Row
                 await init_conn.execute("PRAGMA journal_mode=WAL")
-                await init_conn.execute("PRAGMA busy_timeout = 30000")
+                await init_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
                 await self._ensure_schema(init_conn)
             self._schema_ensured = True
 
@@ -132,30 +130,30 @@ class AsyncSQLiteBackend:
             yield self._txn_conn
             return
 
-        async with aiosqlite.connect(self._db_path, timeout=30) as conn:
+        async with aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT) as conn:
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA foreign_keys = ON")
             await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA busy_timeout = 30000")
+            await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
             yield conn
 
     async def _ensure_schema(self, conn: aiosqlite.Connection) -> None:
         """Ensure database schema exists and is at current version.
 
         For fresh databases (version 0), creates the schema directly.
-        For existing databases, runs migrations via the sync backend's
-        migration logic (wrapped in asyncio.to_thread since migrations
-        are synchronous and run once).
+        For existing databases, runs migrations via the schema module's
+        synchronous DDL functions (wrapped in asyncio.to_thread since
+        DDL changes run once and cannot use async connections).
         """
         import sqlite3
 
-        from polylogue.storage.backends.sqlite import (
+        from polylogue.storage.backends.schema import (
             _VEC0_DDL,
             SCHEMA_DDL,
             SCHEMA_VERSION,
-            _load_sqlite_vec,
         )
-        from polylogue.storage.backends.sqlite import (
+        from polylogue.storage.backends.connection import _load_sqlite_vec
+        from polylogue.storage.backends.schema import (
             _ensure_schema as _sync_ensure_schema,
         )
 
@@ -183,12 +181,12 @@ class AsyncSQLiteBackend:
             # Migrations are synchronous, run once, and involve DDL changes
             # that are best handled by the battle-tested sync path
             def _run_sync_migration() -> None:
-                sync_conn = sqlite3.connect(self._db_path, timeout=30)
+                sync_conn = sqlite3.connect(self._db_path, timeout=DB_TIMEOUT)
                 sync_conn.row_factory = sqlite3.Row
                 try:
                     sync_conn.execute("PRAGMA foreign_keys = ON")
                     sync_conn.execute("PRAGMA journal_mode=WAL")
-                    sync_conn.execute("PRAGMA busy_timeout = 30000")
+                    sync_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
                     _load_sqlite_vec(sync_conn)
                     _sync_ensure_schema(sync_conn)
                 finally:
@@ -196,7 +194,7 @@ class AsyncSQLiteBackend:
 
             await asyncio.to_thread(_run_sync_migration)
         elif current_version > SCHEMA_VERSION:
-            from polylogue.storage.backends.sqlite import DatabaseError
+            from polylogue.errors import DatabaseError
 
             raise DatabaseError(
                 f"Unsupported DB schema version {current_version} (expected {SCHEMA_VERSION})"
@@ -212,11 +210,11 @@ class AsyncSQLiteBackend:
         async with self._write_lock:
             # Create persistent connection for explicit transaction if needed
             if self._txn_conn is None:
-                self._txn_conn = await aiosqlite.connect(self._db_path, timeout=30)
+                self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
                 self._txn_conn.row_factory = aiosqlite.Row
                 await self._txn_conn.execute("PRAGMA foreign_keys = ON")
                 await self._txn_conn.execute("PRAGMA journal_mode=WAL")
-                await self._txn_conn.execute("PRAGMA busy_timeout = 30000")
+                await self._txn_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
 
             await self.begin()
             try:
@@ -230,11 +228,11 @@ class AsyncSQLiteBackend:
         """Begin a transaction or nested savepoint."""
         await self._ensure_schema_once()
         if self._txn_conn is None:
-            self._txn_conn = await aiosqlite.connect(self._db_path, timeout=30)
+            self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
             self._txn_conn.row_factory = aiosqlite.Row
             await self._txn_conn.execute("PRAGMA foreign_keys = ON")
             await self._txn_conn.execute("PRAGMA journal_mode=WAL")
-            await self._txn_conn.execute("PRAGMA busy_timeout = 30000")
+            await self._txn_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
 
         if self._transaction_depth == 0:
             await self._txn_conn.execute("BEGIN IMMEDIATE")
@@ -245,12 +243,12 @@ class AsyncSQLiteBackend:
     async def commit(self) -> None:
         """Commit the current transaction or release savepoint."""
         if self._transaction_depth <= 0:
-            from polylogue.storage.backends.sqlite import DatabaseError
+            from polylogue.errors import DatabaseError
 
             raise DatabaseError("No active transaction to commit")
 
         if self._txn_conn is None:
-            from polylogue.storage.backends.sqlite import DatabaseError
+            from polylogue.errors import DatabaseError
 
             raise DatabaseError("No transaction connection")
 
@@ -266,12 +264,12 @@ class AsyncSQLiteBackend:
     async def rollback(self) -> None:
         """Rollback to the last begin() or savepoint."""
         if self._transaction_depth <= 0:
-            from polylogue.storage.backends.sqlite import DatabaseError
+            from polylogue.errors import DatabaseError
 
             raise DatabaseError("No active transaction to rollback")
 
         if self._txn_conn is None:
-            from polylogue.storage.backends.sqlite import DatabaseError
+            from polylogue.errors import DatabaseError
 
             raise DatabaseError("No transaction connection")
 
@@ -339,7 +337,7 @@ class AsyncSQLiteBackend:
 
         Args:
             source: Filter by source name
-            provider: Filter by single provider name (for backwards compat)
+            provider: Filter by single provider name
             providers: Filter by multiple provider names (OR match, also matches source_name)
             parent_id: Filter by parent conversation ID
             since: Filter to conversations updated on/after this ISO date string
@@ -495,7 +493,8 @@ class AsyncSQLiteBackend:
                     record.raw_id,
                 ),
             )
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     async def save_conversation(
         self,
@@ -559,6 +558,31 @@ class AsyncSQLiteBackend:
             rows = await cursor.fetchall()
             return [_row_to_message(row) for row in rows]
 
+    async def get_messages_batch(self, conversation_ids: list[str]) -> dict[str, list[MessageRecord]]:
+        """Get messages for multiple conversations in a single query.
+
+        Returns a dict mapping conversation_id → list of MessageRecords.
+        Missing conversations produce empty lists.
+        """
+        if not conversation_ids:
+            return {}
+
+        result: dict[str, list[MessageRecord]] = {cid: [] for cid in conversation_ids}
+        async with self._get_connection() as conn:
+            placeholders = ",".join("?" for _ in conversation_ids)
+            cursor = await conn.execute(
+                f"SELECT * FROM messages WHERE conversation_id IN ({placeholders}) ORDER BY timestamp",
+                conversation_ids,
+            )
+            rows = await cursor.fetchall()
+
+        for row in rows:
+            cid = row["conversation_id"]
+            if cid in result:
+                result[cid].append(_row_to_message(row))
+
+        return result
+
     async def save_messages(self, records: list[MessageRecord]) -> None:
         """Persist multiple message records using bulk insert.
 
@@ -616,7 +640,8 @@ class AsyncSQLiteBackend:
                 for r in records
             ]
             await conn.executemany(query, data)
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     async def get_attachments(self, conversation_id: str) -> list[AttachmentRecord]:
         """Get all attachments for a conversation.
@@ -650,6 +675,52 @@ class AsyncSQLiteBackend:
             )
             for row in rows
         ]
+
+    async def get_attachments_batch(
+        self, conversation_ids: list[str]
+    ) -> dict[str, list[AttachmentRecord]]:
+        """Get attachments for multiple conversations in a single query.
+
+        Returns a dict mapping conversation_id → list of AttachmentRecords.
+        Missing conversations produce empty lists.
+        """
+        if not conversation_ids:
+            return {}
+
+        result: dict[str, list[AttachmentRecord]] = {cid: [] for cid in conversation_ids}
+        async with self._get_connection() as conn:
+            placeholders = ",".join("?" for _ in conversation_ids)
+            cursor = await conn.execute(
+                f"""
+                SELECT a.*, r.message_id, r.conversation_id
+                FROM attachments a
+                JOIN attachment_refs r ON a.attachment_id = r.attachment_id
+                WHERE r.conversation_id IN ({placeholders})
+                """,
+                conversation_ids,
+            )
+            rows = await cursor.fetchall()
+
+        for row in rows:
+            cid = row["conversation_id"]
+            if cid in result:
+                result[cid].append(
+                    AttachmentRecord(
+                        attachment_id=row["attachment_id"],
+                        conversation_id=ConversationId(cid),
+                        message_id=row["message_id"],
+                        mime_type=row["mime_type"],
+                        size_bytes=row["size_bytes"],
+                        path=row["path"],
+                        provider_meta=_parse_json(
+                            row["provider_meta"],
+                            field="provider_meta",
+                            record_id=row["attachment_id"],
+                        ),
+                    )
+                )
+
+        return result
 
     async def save_attachments(self, records: list[AttachmentRecord]) -> None:
         """Persist attachment records with reference counting using bulk operations.
@@ -702,6 +773,8 @@ class AsyncSQLiteBackend:
                     """,
                     (aid, aid),
                 )
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     async def prune_attachments(
         self, conversation_id: str, keep_attachment_ids: set[str]
@@ -751,10 +824,7 @@ class AsyncSQLiteBackend:
                     (conversation_id,),
                 )
 
-            # Clean up orphaned attachments (ref_count <= 0)
-            await conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
-
-            # Update ref counts using the same async connection
+            # Update ref counts first, then clean up orphans
             for aid in attachment_ids_to_check:
                 await conn.execute(
                     """
@@ -765,7 +835,11 @@ class AsyncSQLiteBackend:
                     (aid, aid),
                 )
 
-            await conn.commit()
+            # Clean up orphaned attachments (ref_count <= 0)
+            await conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
+
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     async def list_conversations_by_parent(self, parent_id: str) -> list[ConversationRecord]:
         """List all conversations that have the given conversation as parent.
@@ -850,7 +924,7 @@ class AsyncSQLiteBackend:
             exists = await cursor.fetchone()
 
             if not exists:
-                from polylogue.storage.backends.sqlite import DatabaseError
+                from polylogue.errors import DatabaseError
 
                 raise DatabaseError("Search index not built. Run indexing first or use a different backend.")
 
@@ -913,11 +987,11 @@ class AsyncSQLiteBackend:
         """
         async with self._write_lock:
             if self._txn_conn is None:
-                self._txn_conn = await aiosqlite.connect(self._db_path, timeout=30)
+                self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
                 self._txn_conn.row_factory = aiosqlite.Row
                 await self._txn_conn.execute("PRAGMA foreign_keys = ON")
                 await self._txn_conn.execute("PRAGMA journal_mode=WAL")
-                await self._txn_conn.execute("PRAGMA busy_timeout = 30000")
+                await self._txn_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
 
             try:
                 await self._txn_conn.execute("BEGIN IMMEDIATE")
@@ -1047,7 +1121,8 @@ class AsyncSQLiteBackend:
                 "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
                 (json_dumps(metadata), conversation_id),
             )
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         """Delete conversation and all related records.
@@ -1102,7 +1177,8 @@ class AsyncSQLiteBackend:
                     affected_attachments,
                 )
 
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
             return True
 
     async def iter_messages(
@@ -1236,8 +1312,8 @@ class AsyncSQLiteBackend:
     async def close(self) -> None:
         """Close database connections.
 
-        Note: Connections are managed per-context, so this is mostly a no-op.
-        Kept for API compatibility with sync backend.
+        Note: Connections are managed per-context, so this only closes
+        active transaction connections.
         """
         if self._txn_conn is not None:
             await self._txn_conn.close()
@@ -1273,7 +1349,8 @@ class AsyncSQLiteBackend:
                     record.duration_ms,
                 ),
             )
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     # --- Raw Conversation Storage ---
 
@@ -1313,7 +1390,8 @@ class AsyncSQLiteBackend:
                     record.file_mtime,
                 ),
             )
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
             return bool(cursor.rowcount > 0)
 
     async def get_raw_conversation(self, raw_id: str) -> RawConversationRecord | None:
@@ -1352,6 +1430,7 @@ class AsyncSQLiteBackend:
             RawConversationRecord objects
         """
         offset = 0
+        yielded = 0
 
         while True:
             async with self._get_connection() as conn:
@@ -1377,7 +1456,8 @@ class AsyncSQLiteBackend:
 
             for row in rows:
                 yield _row_to_raw_conversation(row)
-                if limit is not None and offset >= limit:
+                yielded += 1
+                if limit is not None and yielded >= limit:
                     return
 
             offset += len(rows)
@@ -1407,6 +1487,6 @@ class AsyncSQLiteBackend:
 
 
 __all__ = [
-    "AsyncSQLiteBackend",
+    "SQLiteBackend",
     "default_db_path",
 ]

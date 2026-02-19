@@ -48,12 +48,88 @@ CHATGPT_THINKING_META = [
     ({"raw": {"content": "not a dict"}}, False, "content_not_dict"),
     ({"raw": {}}, False, "tool_no_metadata"), ({"raw": {"metadata": "not a dict"}}, False, "tool_metadata_not_dict"),
 ]
-EXTRACT_THINKING_BLOCKS = [
-    ([{"type": "thinking", "text": "thinking content"}, {"type": "text", "text": "response text"}], "thinking content", "single_block"),
-    ([{"type": "thinking", "text": "first thought"}, {"type": "thinking", "text": "second thought"}], "first thought\n\nsecond thought", "multiple_blocks"),
-    (["not a dict", {"type": "thinking", "text": "thinking"}], "thinking", "mixed_blocks"),
-    ([{"type": "thinking", "text": 123}], None, "text_not_string"),
-    ([{"type": "thinking", "text": "   \n\n   "}], None, "empty_after_strip"),
+# Unified table for extract_thinking: (provider_meta, role, text, expected_result, test_id)
+EXTRACT_THINKING_CASES = [
+    # Structured blocks — thinking content extracted
+    (
+        {"content_blocks": [{"type": "thinking", "text": "thinking content"}, {"type": "text", "text": "response text"}]},
+        "assistant", "response",
+        "thinking content",
+        "single_block",
+    ),
+    (
+        {"content_blocks": [{"type": "thinking", "text": "first thought"}, {"type": "thinking", "text": "second thought"}]},
+        "assistant", "response",
+        "first thought\n\nsecond thought",
+        "multiple_blocks",
+    ),
+    (
+        {"content_blocks": ["not a dict", {"type": "thinking", "text": "thinking"}]},
+        "assistant", "response",
+        "thinking",
+        "mixed_blocks",
+    ),
+    (
+        {"content_blocks": [{"type": "thinking", "text": 123}]},
+        "assistant", "response",
+        None,
+        "text_not_string",
+    ),
+    (
+        {"content_blocks": [{"type": "thinking", "text": "   \n\n   "}]},
+        "assistant", "response",
+        None,
+        "empty_after_strip",
+    ),
+    # content_blocks not a list — falls through to XML
+    (
+        {"content_blocks": "not a list"},
+        "assistant", "response",
+        None,
+        "blocks_not_list",
+    ),
+    # XML <thinking> tags in text
+    (
+        None,
+        "assistant", "<thinking>xml thinking content</thinking>",
+        "xml thinking content",
+        "xml_tags",
+    ),
+    # antml:thinking tags (same regex as <thinking>)
+    (
+        None,
+        "assistant", "<thinking>antml thinking content</thinking>",
+        "antml thinking content",
+        "antml_tags",
+    ),
+    # Multiline XML — preserved
+    (
+        None,
+        "assistant", "<thinking>\nmultiline\nthinking\n</thinking>",
+        "multiline\nthinking",
+        "xml_multiline",
+    ),
+    # ChatGPT thinking role (role=tool with finished_text metadata)
+    (
+        {"raw": {"metadata": {"finished_text": "data"}}},
+        "tool", "thinking text content",
+        "thinking text content",
+        "chatgpt_thinking_role",
+    ),
+    # Gemini isThought
+    (
+        {"isThought": True},
+        "model", "gemini thinking text",
+        "gemini thinking text",
+        "gemini_isthought",
+    ),
+    # No thinking content
+    (
+        None,
+        "assistant", "just response",
+        None,
+        "no_content",
+    ),
 ]
 CONTEXT_DUMP_CASES = [
     (None, [], False, "no_text"), ("short", [Attachment(id="att1")], True, "attachments_short_text"),
@@ -183,103 +259,16 @@ class TestMessageClassification:
 class TestMessageExtractThinking:
     """Test Message.extract_thinking() method (lines 424-440)."""
 
-    @pytest.mark.parametrize("blocks,expected,test_id", EXTRACT_THINKING_BLOCKS)
-    def test_extract_thinking_structured(self, blocks, expected, test_id):
-        """Lines 423-431: Test extract_thinking with structured blocks."""
+    @pytest.mark.parametrize("provider_meta,role,text,expected,test_id", EXTRACT_THINKING_CASES)
+    def test_extract_thinking(self, provider_meta, role, text, expected, test_id):
+        """Lines 423-440: Test extract_thinking across all cases."""
         msg = Message(
             id="m1",
-            role="assistant",
-            text="response",
-            provider_meta={"content_blocks": blocks},
+            role=role,
+            text=text,
+            provider_meta=provider_meta,
         )
         assert msg.extract_thinking() == expected
-
-    def test_extract_thinking_structured_blocks_non_list(self):
-        """Lines 424: content_blocks is not a list."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="response",
-            provider_meta={
-                "content_blocks": "not a list"
-            },
-        )
-        # Should try XML tags next
-        result = msg.extract_thinking()
-        # Result depends on text content, not structured blocks
-        assert result is None
-
-    def test_extract_thinking_xml_tags(self):
-        """Lines 434-437: Extract from XML thinking tags."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="<thinking>xml thinking content</thinking>",
-        )
-        assert msg.extract_thinking() == "xml thinking content"
-
-    def test_extract_thinking_antml_tags(self):
-        """Lines 434-437: Extract from antml:thinking tags."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="<thinking>antml thinking content</thinking>",
-        )
-        assert msg.extract_thinking() == "antml thinking content"
-
-    def test_extract_thinking_xml_multiline(self):
-        """Lines 434-437: XML tags with multiline content."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="<thinking>\nmultiline\nthinking\n</thinking>",
-        )
-        assert msg.extract_thinking() == "multiline\nthinking"
-
-    def test_extract_thinking_chatgpt_thinking_role(self):
-        """Lines 440: ChatGPT thinking message (role=tool with thinking metadata)."""
-        msg = Message(
-            id="m1",
-            role="tool",
-            text="thinking text content",
-            provider_meta={
-                "raw": {"metadata": {"finished_text": "data"}}
-            },
-        )
-        assert msg.extract_thinking() == "thinking text content"
-
-    def test_extract_thinking_gemini_isthought(self):
-        """Lines 440: Gemini isThought marker."""
-        msg = Message(
-            id="m1",
-            role="model",
-            text="gemini thinking text",
-            provider_meta={"isThought": True},
-        )
-        assert msg.extract_thinking() == "gemini thinking text"
-
-    def test_extract_thinking_no_content(self):
-        """Lines 443: No thinking content found."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="just response",
-        )
-        assert msg.extract_thinking() is None
-
-    def test_extract_thinking_empty_text_with_blocks(self):
-        """Line 431: Thinking block text is empty after strip."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="response",
-            provider_meta={
-                "content_blocks": [
-                    {"type": "thinking", "text": "   \n\n   "},
-                ]
-            },
-        )
-        assert msg.extract_thinking() is None
 
 
 # =============================================================================
@@ -510,8 +499,10 @@ class TestConversationIterBranches:
 # =============================================================================
 
 
-class TestMessageCollectionInitErrors:
-    """Test MessageCollection.__init__ validation (lines 124, 136)."""
+class TestMessageCollectionConstruction:
+    """Test MessageCollection construction, lazy loading, and pydantic schema."""
+
+    # --- init errors ---
 
     def test_init_both_messages_and_source(self):
         """Line 124: Cannot specify both messages and conversation_id/source."""
@@ -533,9 +524,7 @@ class TestMessageCollectionInitErrors:
         with pytest.raises(ValueError, match="Must specify either"):
             MessageCollection(**kwargs)
 
-
-class TestMessageCollectionIsLazy:
-    """Test MessageCollection.is_lazy property (lines 147, 163)."""
+    # --- is_lazy ---
 
     def test_is_lazy_true(self):
         """Line 147: Lazy mode (not materialized)."""
@@ -560,9 +549,38 @@ class TestMessageCollectionIsLazy:
         coll.materialize()  # Ensure _messages is populated and _is_lazy is set False
         assert coll.is_lazy is False
 
+    # --- pydantic schema ---
 
-class TestMessageCollectionLen:
-    """Test MessageCollection.__len__ method (lines 173, 212)."""
+    def test_get_pydantic_core_schema(self):
+        """Lines 288, 292: Core schema validation and serialization."""
+        handler = Mock()
+        handler.generate_schema.return_value = {"type": "object"}
+        schema = MessageCollection.__get_pydantic_core_schema__(
+            MessageCollection,
+            handler,
+        )
+        # Check that it's a schema with validation/serialization
+        assert schema is not None
+        assert hasattr(schema, '__iter__') or isinstance(schema, dict)
+
+    def test_get_pydantic_json_schema(self):
+        """Lines 310-313: JSON schema generation."""
+        handler = Mock()
+        handler.generate.return_value = {"type": "object"}
+        handler.resolve_ref_schema.return_value = {"type": "object"}
+
+        json_schema = MessageCollection.__get_pydantic_json_schema__(
+            Mock(),
+            handler,
+        )
+        assert json_schema["type"] == "array"
+        assert "items" in json_schema
+
+
+class TestMessageCollectionProtocol:
+    """Test MessageCollection protocol dunder methods: len, bool, repr, equality, hash, to_list, empty."""
+
+    # --- __len__ ---
 
     @pytest.mark.parametrize("messages,expected_len", [
         ([Mock(spec=Message) for _ in range(3)], 3),
@@ -595,9 +613,7 @@ class TestMessageCollectionLen:
         coll = MessageCollection(messages=[])
         assert len(coll) == 0
 
-
-class TestMessageCollectionBool:
-    """Test MessageCollection.__bool__ method (line 212)."""
+    # --- __bool__ ---
 
     def test_bool_empty(self):
         """Line 212: Empty collection is falsy."""
@@ -610,9 +626,7 @@ class TestMessageCollectionBool:
         coll = MessageCollection(messages=[msg])
         assert bool(coll) is True
 
-
-class TestMessageCollectionRepr:
-    """Test MessageCollection.__repr__ method (lines 215-217)."""
+    # --- __repr__ ---
 
     def test_repr_lazy(self):
         """Lines 215-217: Representation includes 'lazy' mode."""
@@ -631,9 +645,7 @@ class TestMessageCollectionRepr:
         assert "eager" in repr_str
         assert "3" in repr_str
 
-
-class TestMessageCollectionEquality:
-    """Test MessageCollection.__eq__ method (lines 225, 227)."""
+    # --- __eq__ ---
 
     def test_eq_same_messages(self):
         """Line 227: Equal if same message content."""
@@ -656,9 +668,7 @@ class TestMessageCollectionEquality:
         coll = MessageCollection(messages=[])
         assert (coll == []) is False
 
-
-class TestMessageCollectionHash:
-    """Test MessageCollection.__hash__ method (line 231)."""
+    # --- __hash__ ---
 
     def test_hash_uses_id(self):
         """Line 231: Hash uses object id."""
@@ -672,9 +682,7 @@ class TestMessageCollectionHash:
         coll = MessageCollection(messages=[])
         assert hash(coll) == hash(coll)
 
-
-class TestMessageCollectionToList:
-    """Test MessageCollection.to_list() and materialize() methods."""
+    # --- to_list / materialize ---
 
     def test_to_list_eager(self):
         """Line 243: Eager mode returns copy of list."""
@@ -713,44 +721,13 @@ class TestMessageCollectionToList:
         coll.materialize()
         assert coll.is_lazy is False
 
-
-class TestMessageCollectionEmpty:
-    """Test MessageCollection.empty() class method (line 266)."""
+    # --- empty ---
 
     def test_empty_creates_collection(self):
         """Line 266: empty() creates empty MessageCollection."""
         coll = MessageCollection.empty()
         assert len(coll) == 0
         assert isinstance(coll, MessageCollection)
-
-
-class TestMessageCollectionPydanticSchema:
-    """Test Pydantic schema methods (lines 288, 292, 310-313)."""
-
-    def test_get_pydantic_core_schema(self):
-        """Lines 288, 292: Core schema validation and serialization."""
-        handler = Mock()
-        handler.generate_schema.return_value = {"type": "object"}
-        schema = MessageCollection.__get_pydantic_core_schema__(
-            MessageCollection,
-            handler,
-        )
-        # Check that it's a schema with validation/serialization
-        assert schema is not None
-        assert hasattr(schema, '__iter__') or isinstance(schema, dict)
-
-    def test_get_pydantic_json_schema(self):
-        """Lines 310-313: JSON schema generation."""
-        handler = Mock()
-        handler.generate.return_value = {"type": "object"}
-        handler.resolve_ref_schema.return_value = {"type": "object"}
-
-        json_schema = MessageCollection.__get_pydantic_json_schema__(
-            Mock(),
-            handler,
-        )
-        assert json_schema["type"] == "array"
-        assert "items" in json_schema
 
 
 # =============================================================================

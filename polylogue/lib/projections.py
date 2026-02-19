@@ -252,3 +252,6 @@ class ConversationProjection:
             else:
                 parts.append(msg.text or "")
         return separator.join(parts)
+
+
+__all__ = ["ConversationProjection"]

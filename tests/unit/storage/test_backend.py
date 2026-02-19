@@ -25,16 +25,11 @@ from polylogue.sources.parsers.base import normalize_role as old_normalize_role
 from polylogue.sources.parsers.claude import (
     extract_text_from_segments as old_extract_segments,
 )
-from polylogue.storage.backends.sqlite import (
-    SCHEMA_VERSION,
-    SQLiteBackend,
-    _ensure_schema,
-    _json_or_none,
-    _run_migrations,
-    connection_context,
-    open_connection,
-)
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.backends.connection import connection_context, open_connection
+from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema, _run_migrations
 from polylogue.storage.store import (
+    _json_or_none,
     ConversationRecord,
     MessageRecord,
 )
@@ -425,7 +420,7 @@ class TestMigrations:
 
         # Patch _MIGRATIONS[2] to fail (simulating v2->v3 failure)
         # We allow v1->v2 to succeed
-        from polylogue.storage.backends.sqlite import _MIGRATIONS
+        from polylogue.storage.backends.schema import _MIGRATIONS
 
         def failing_migration(conn):
             raise RuntimeError("Simulated migration v2->v3 failure")
@@ -487,7 +482,7 @@ class TestMigrations:
         conn.close()
 
         # Patch _MIGRATIONS[3] to fail (patching the function won't work as dict has reference)
-        from polylogue.storage.backends.sqlite import _MIGRATIONS
+        from polylogue.storage.backends.schema import _MIGRATIONS
 
         def failing_migration(conn):
             raise RuntimeError("Simulated migration failure")
@@ -1010,7 +1005,7 @@ CONVERSATION_STATS_CASES = [
 
 
 @pytest.mark.parametrize("messages_spec,expected,desc", CONVERSATION_STATS_CASES, ids=str)
-def test_get_conversation_stats(tmp_path, messages_spec, expected, desc):
+async def test_get_conversation_stats(tmp_path, messages_spec, expected, desc):
     """get_conversation_stats counts correctly: {desc}."""
     backend = SQLiteBackend(db_path=tmp_path / "test.db")
     record = ConversationRecord(
@@ -1023,7 +1018,7 @@ def test_get_conversation_stats(tmp_path, messages_spec, expected, desc):
         content_hash="hash",
         version=1,
     )
-    backend.save_conversation(record)
+    await backend.save_conversation_record(record)
 
     messages = [
         MessageRecord(
@@ -1039,9 +1034,9 @@ def test_get_conversation_stats(tmp_path, messages_spec, expected, desc):
     ]
 
     if messages:
-        backend.save_messages(messages)
+        await backend.save_messages(messages)
 
-    stats = backend.get_conversation_stats("conv-1")
+    stats = await backend.get_conversation_stats("conv-1")
     assert stats["total_messages"] == expected["total"]
     assert stats["dialogue_messages"] == expected["dialogue"]
     assert stats["tool_messages"] == expected["tool"]
@@ -1111,10 +1106,10 @@ def test_default_db_path(tmp_path, monkeypatch):
     # Reimport to pick up new env
     import importlib
 
-    import polylogue.storage.backends.sqlite as sqlite_module
-    importlib.reload(sqlite_module)
+    import polylogue.storage.backends.connection as connection_module
+    importlib.reload(connection_module)
 
-    path = sqlite_module.default_db_path()
+    path = connection_module.default_db_path()
     assert str(xdg_data) in str(path)
 
 
@@ -1246,19 +1241,19 @@ class TestSQLiteBackendInit:
         SQLiteBackend(db_path=nested_path)
         assert nested_path.parent.exists()
 
-    def test_init_thread_local_storage(self, tmp_path):
-        """Test that SQLiteBackend has thread-local storage."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        assert hasattr(backend, "_local")
-        import threading
+    def test_init_has_write_lock(self, tmp_path):
+        """Test that async SQLiteBackend has write lock for serialization."""
+        import asyncio
 
-        assert isinstance(backend._local, threading.local)
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        assert hasattr(backend, "_write_lock")
+        assert isinstance(backend._write_lock, asyncio.Lock)
 
 
 class TestBackendLifecycle:
     """Tests for backend lifecycle management."""
 
-    def test_close_backend(self, tmp_path):
+    async def test_close_backend(self, tmp_path):
         """Test that close() closes the connection."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         # Access connection
@@ -1272,16 +1267,15 @@ class TestBackendLifecycle:
             content_hash="hash",
             version=1,
         )
-        backend.save_conversation(record)
+        await backend.save_conversation_record(record)
 
-        backend.close()
+        await backend.close()
 
         # After close, operations should fail or create new connection
-        # depending on lazy connection semantics
-        # Just verify it doesn't raise
-        assert True
+        # depending on lazy connection semantics.
+        # Reaching here without raising verifies the contract.
 
-    def test_close_and_reopen(self, tmp_path):
+    async def test_close_and_reopen(self, tmp_path):
         """Test that connection can be re-established after close."""
         db_path = tmp_path / "test.db"
         backend = SQLiteBackend(db_path=db_path)
@@ -1296,16 +1290,16 @@ class TestBackendLifecycle:
             version=1,
         )
         # Use transaction to ensure data is persisted
-        with backend.transaction():
-            backend.save_conversation(record)
+        async with backend.transaction():
+            await backend.save_conversation_record(record)
 
         # Verify data exists before close
-        retrieved1 = backend.get_conversation("conv-1")
+        retrieved1 = await backend.get_conversation("conv-1")
         assert retrieved1 is not None
 
-        backend.close()
+        await backend.close()
 
-        # After close, the thread-local connection is cleared
-        # Verify a new connection can be established
-        conn = backend._get_connection()
-        assert conn is not None
+        # After close, the connection state is reset
+        # Verify a new connection can be established via an operation
+        async with backend._get_connection() as conn:
+            assert conn is not None
