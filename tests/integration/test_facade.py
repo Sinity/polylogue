@@ -323,13 +323,8 @@ class TestPolylogueQuery:
         assert conv.title == "Python Help"
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="SQLiteBackend does not support partial ID matching (exact match only)")
     async def test_get_conversation_by_partial_id(self, workspace_env, sample_chatgpt_file):
-        """Test getting a conversation by partial ID (prefix match).
-
-        Note: The async backend does exact matching only, not prefix matching.
-        This test is skipped as the feature is not supported.
-        """
+        """Test getting a conversation by partial ID (prefix match)."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
             db_path=workspace_env["data_root"] / "polylogue.db",
