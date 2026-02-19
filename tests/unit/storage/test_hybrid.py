@@ -8,24 +8,19 @@ Extracted from monolithic test_search_index.py.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.hybrid import (
     HybridSearchProvider,
     reciprocal_rank_fusion,
 )
 from polylogue.storage.store import ConversationRecord, MessageRecord
-
-
-def make_hash(s: str) -> str:
-    """Create a 16-char content hash."""
-    return hashlib.sha256(s.encode()).hexdigest()[:16]
+from tests.infra.helpers import make_hash
 
 
 class TestHybridSearchProvider:
@@ -45,7 +40,7 @@ class TestHybridSearchProvider:
         result = provider.search_conversations("test query", limit=20)
         assert result == []
 
-    def test_hybrid_search_conversations_limit_reached(self, tmp_path):
+    async def test_hybrid_search_conversations_limit_reached(self, tmp_path):
         """search_conversations stops when limit reached."""
         # Create backend with some conversations and messages
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
@@ -73,10 +68,10 @@ class TestHybridSearchProvider:
                 text=f"Message {i}",
                 timestamp=f"2024-01-0{i+1}T00:00:00Z",
             )
-            backend.save_conversation(conv)
-            backend.save_messages([msg])
+            await backend.save_conversation_record(conv)
+            await backend.save_messages([msg])
 
-        backend.close()
+        await backend.close()
 
         # Create hybrid provider with mocks
         fts_mock = MagicMock()
@@ -116,7 +111,7 @@ class TestHybridSearchProvider:
         result = provider.search_scored("test", limit=10)
         assert len(result) > 0
 
-    def test_hybrid_search_with_provider_filter(self, tmp_path):
+    async def test_hybrid_search_with_provider_filter(self, tmp_path):
         """Hybrid search respects provider filter."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
@@ -140,10 +135,10 @@ class TestHybridSearchProvider:
                     text="test message",
                     timestamp=f"2024-01-0{i+1}T00:00:00Z",
                 )
-                backend.save_conversation(conv)
-                backend.save_messages([msg])
+                await backend.save_conversation_record(conv)
+                await backend.save_messages([msg])
 
-        backend.close()
+        await backend.close()
 
         # Create hybrid provider with mocks
         fts_mock = MagicMock()
@@ -366,7 +361,7 @@ class TestHybridSearchProviderRRF:
         ]
 
         # Mock the database lookup
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
             mock_context.execute.return_value.fetchall.return_value = [
@@ -448,7 +443,7 @@ class TestProviderFilteringIntegration:
         ]
 
         # Mock database to return conversation IDs with provider info
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
 
@@ -509,7 +504,7 @@ class TestProviderFilteringIntegration:
         ]
         hybrid_provider.vector_provider.query.return_value = []
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
 
@@ -535,7 +530,7 @@ class TestProviderFilteringIntegration:
         ]
         hybrid_provider.vector_provider.query.return_value = []
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
 
@@ -632,7 +627,7 @@ class TestFTS5ProviderDirectFiltering:
 class TestSearchProviderSourceFiltering:
     """Tests for source_name filtering in addition to provider_name."""
 
-    def test_hybrid_search_filters_by_source_name(self):
+    async def test_hybrid_search_filters_by_source_name(self):
         """HybridSearchProvider should filter by source_name as well as provider_name."""
         mock_fts = MagicMock()
         mock_fts.db_path = None
@@ -646,7 +641,7 @@ class TestSearchProviderSourceFiltering:
             vector_provider=mock_vec,
         )
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
 
@@ -689,91 +684,51 @@ class TestSearchProviderSourceFiltering:
 class TestListConversationsByParent:
     """Tests for list_conversations_by_parent (query for child conversations)."""
 
-    @pytest.mark.parametrize("case_name,setup_fn,query_id,expected_count,verify_fn", [
-        (
-            "empty",
-            lambda backend: None,
-            "nonexistent-parent",
-            0,
-            lambda children: children == [],
-        ),
-        (
-            "single_child",
-            lambda backend: (
-                backend.save_conversation(
-                    ConversationRecord(
-                        conversation_id="parent-conv",
-                        provider_name="test",
-                        provider_conversation_id="p1",
-                        content_hash=make_hash("parent-conv"),
-                        title="Parent",
-                        created_at="2024-01-01T00:00:00Z",
-                        updated_at="2024-01-01T00:00:00Z",
-                    )
-                ),
-                backend.save_conversation(
-                    ConversationRecord(
-                        conversation_id="child-conv",
-                        provider_name="test",
-                        provider_conversation_id="p2",
-                        content_hash=make_hash("child-conv"),
-                        title="Child",
-                        created_at="2024-01-02T00:00:00Z",
-                        updated_at="2024-01-02T00:00:00Z",
-                        parent_conversation_id="parent-conv",
-                        branch_type="continuation",
-                    )
-                ),
-            ),
-            "parent-conv",
-            1,
-            lambda children: children[0].conversation_id == "child-conv" and children[0].parent_conversation_id == "parent-conv",
-        ),
-        (
-            "multiple_children",
-            lambda backend: (
-                backend.save_conversation(
-                    ConversationRecord(
-                        conversation_id="parent",
-                        provider_name="test",
-                        provider_conversation_id="p",
-                        content_hash=make_hash("parent"),
-                        title="Parent",
-                        created_at="2024-01-01T00:00:00Z",
-                        updated_at="2024-01-01T00:00:00Z",
-                    )
-                ),
-                [
-                    backend.save_conversation(
-                        ConversationRecord(
-                            conversation_id=f"child-{i}",
-                            provider_name="test",
-                            provider_conversation_id=f"p{i}",
-                            content_hash=make_hash(f"child-{i}"),
-                            title=f"Child {i}",
-                            created_at=ts,
-                            updated_at=ts,
-                            parent_conversation_id="parent",
-                            branch_type="fork",
-                        )
-                    )
-                    for i, ts in enumerate(["2024-01-03T00:00:00Z", "2024-01-02T00:00:00Z", "2024-01-04T00:00:00Z"])
-                ],
-            ),
-            "parent",
-            3,
-            lambda children: (
-                children[0].conversation_id == "child-1"
-                and children[1].conversation_id == "child-0"
-                and children[2].conversation_id == "child-2"
-            ),
-        ),
-    ])
-    def test_list_conversations_by_parent(self, tmp_path, case_name, setup_fn, query_id, expected_count, verify_fn):
-        """Parametrized test for list_conversations_by_parent with multiple scenarios."""
+    async def test_empty(self, tmp_path):
+        """No parent → empty list."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        setup_fn(backend)
-        children = backend.list_conversations_by_parent(query_id)
-        assert len(children) == expected_count
-        assert verify_fn(children)
-        backend.close()
+        children = await backend.list_conversations_by_parent("nonexistent-parent")
+        assert children == []
+        await backend.close()
+
+    async def test_single_child(self, tmp_path):
+        """Single child linked to parent."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        await backend.save_conversation_record(ConversationRecord(
+            conversation_id="parent-conv", provider_name="test",
+            provider_conversation_id="p1", content_hash=make_hash("parent-conv"),
+            title="Parent", created_at="2024-01-01T00:00:00Z", updated_at="2024-01-01T00:00:00Z",
+        ))
+        await backend.save_conversation_record(ConversationRecord(
+            conversation_id="child-conv", provider_name="test",
+            provider_conversation_id="p2", content_hash=make_hash("child-conv"),
+            title="Child", created_at="2024-01-02T00:00:00Z", updated_at="2024-01-02T00:00:00Z",
+            parent_conversation_id="parent-conv", branch_type="continuation",
+        ))
+        children = await backend.list_conversations_by_parent("parent-conv")
+        assert len(children) == 1
+        assert children[0].conversation_id == "child-conv"
+        assert children[0].parent_conversation_id == "parent-conv"
+        await backend.close()
+
+    async def test_multiple_children(self, tmp_path):
+        """Multiple children sorted by created_at."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        await backend.save_conversation_record(ConversationRecord(
+            conversation_id="parent", provider_name="test",
+            provider_conversation_id="p", content_hash=make_hash("parent"),
+            title="Parent", created_at="2024-01-01T00:00:00Z", updated_at="2024-01-01T00:00:00Z",
+        ))
+        for i, ts in enumerate(["2024-01-03T00:00:00Z", "2024-01-02T00:00:00Z", "2024-01-04T00:00:00Z"]):
+            await backend.save_conversation_record(ConversationRecord(
+                conversation_id=f"child-{i}", provider_name="test",
+                provider_conversation_id=f"p{i}", content_hash=make_hash(f"child-{i}"),
+                title=f"Child {i}", created_at=ts, updated_at=ts,
+                parent_conversation_id="parent", branch_type="fork",
+            ))
+        children = await backend.list_conversations_by_parent("parent")
+        assert len(children) == 3
+        assert children[0].conversation_id == "child-1"
+        assert children[1].conversation_id == "child-0"
+        assert children[2].conversation_id == "child-2"
+        await backend.close()

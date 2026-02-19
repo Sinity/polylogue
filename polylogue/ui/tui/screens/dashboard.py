@@ -111,19 +111,18 @@ class Dashboard(Container):
 
     def on_mount(self) -> None:
         """Load data when screen mounts."""
-        self.run_worker(self._fetch_stats(), thread=True)
+        self.run_worker(self._fetch_stats())
 
     async def _fetch_stats(self) -> None:
-        """Fetch stats in a thread, then update DOM on the main thread."""
+        """Fetch stats asynchronously, then update DOM."""
         try:
             repo = self._get_repo()
-            stats = repo.get_archive_stats()
+            stats = await repo.get_archive_stats()
         except Exception as e:
-            self.app.call_from_thread(self.notify, f"Failed to load stats: {e}", severity="error")
+            self.notify(f"Failed to load stats: {e}", severity="error")
             return
 
-        # Schedule all DOM updates on the main thread
-        self.app.call_from_thread(self._apply_stats, stats)
+        self._apply_stats(stats)
 
     def _apply_stats(self, stats) -> None:
         """Apply fetched stats to DOM widgets (runs on main thread)."""

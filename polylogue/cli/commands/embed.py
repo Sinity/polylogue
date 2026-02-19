@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING
 
 import click
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
     "--model",
     type=click.Choice(["voyage-4", "voyage-4-large", "voyage-4-lite"]),
     default="voyage-4",
-    help="Voyage AI model to use (default: voyage-4)",
+    help="Voyage AI model: voyage-4 (default), voyage-4-large, voyage-4-lite",
 )
 @click.option(
     "--rebuild", "-r",
@@ -70,7 +71,7 @@ def embed_command(
     """
     import os
 
-    from polylogue.storage.backends.sqlite import SQLiteBackend
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_providers import create_vector_provider
 
@@ -78,7 +79,7 @@ def embed_command(
     voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
     if not voyage_key and not stats:
         click.echo("Error: VOYAGE_API_KEY environment variable not set", err=True)
-        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key", err=True)
+        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key  (or POLYLOGUE_VOYAGE_API_KEY)", err=True)
         raise click.Abort()
 
     # Stats only mode
@@ -90,7 +91,7 @@ def embed_command(
     vec_provider = create_vector_provider(voyage_api_key=voyage_key)
     if vec_provider is None:
         click.echo("Error: sqlite-vec not available", err=True)
-        click.echo("Install with: pip install sqlite-vec", err=True)
+        click.echo("sqlite-vec is not available (ensure it is in your Nix flake or virtualenv)", err=True)
         raise click.Abort()
 
     # Set model if different from default
@@ -111,7 +112,7 @@ def embed_command(
 
 def _show_embedding_stats(env: AppEnv) -> None:
     """Display embedding statistics."""
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
 
     with open_connection(None) as conn:
         # Total conversations
@@ -124,7 +125,7 @@ def _show_embedding_stats(env: AppEnv) -> None:
             embedded_convs = conn.execute(
                 "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
             ).fetchone()[0]
-        except Exception as exc:
+        except sqlite3.OperationalError as exc:
             logger.debug("embedding_status query failed (table may not exist): %s", exc)
             embedded_convs = 0
 
@@ -133,7 +134,7 @@ def _show_embedding_stats(env: AppEnv) -> None:
             embedded_msgs = conn.execute(
                 "SELECT COUNT(*) FROM message_embeddings"
             ).fetchone()[0]
-        except Exception as exc:
+        except sqlite3.OperationalError as exc:
             logger.debug("message_embeddings query failed (table may not exist): %s", exc)
             embedded_msgs = 0
 
@@ -142,7 +143,7 @@ def _show_embedding_stats(env: AppEnv) -> None:
             pending = conn.execute(
                 "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1"
             ).fetchone()[0]
-        except Exception as exc:
+        except sqlite3.OperationalError as exc:
             logger.debug("pending embeddings query failed: %s", exc)
             pending = total_convs - embedded_convs
 
@@ -197,7 +198,7 @@ def _embed_batch(
     from rich.console import Console as RichConsole
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
 
     backend = repo.backend
 
@@ -234,12 +235,12 @@ def _embed_batch(
     embedded_count = 0
     error_count = 0
 
-    def _embed_one(conv_id: str, title: str | None) -> bool:
+    def _embed_one(conversation_id: str) -> bool:
         """Embed a single conversation. Returns True on success."""
-        messages = backend.get_messages(conv_id)
+        messages = backend.get_messages(conversation_id)
 
         if messages:
-            vec_provider.upsert(conv_id, messages)  # type: ignore
+            vec_provider.upsert(conversation_id, messages)  # type: ignore
             return True
         return False
 
@@ -259,7 +260,7 @@ def _embed_batch(
             for conv_id, title in conv_ids:
                 progress.update(task, description=f"Embedding {title or conv_id[:12]}...")
                 try:
-                    if _embed_one(conv_id, title):
+                    if _embed_one(conv_id):
                         embedded_count += 1
                 except Exception as exc:
                     error_count += 1
@@ -270,7 +271,7 @@ def _embed_batch(
             label = title or conv_id[:12]
             click.echo(f"  [{i}/{len(conv_ids)}] {label}...", nl=False)
             try:
-                if _embed_one(conv_id, title):
+                if _embed_one(conv_id):
                     embedded_count += 1
                     click.echo(" ok")
                 else:

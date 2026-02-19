@@ -9,43 +9,43 @@ Polylogue is designed library-first. The CLI wraps the Python API.
 ```python
 from polylogue.lib.filters import ConversationFilter
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 backend = SQLiteBackend()
 repo = ConversationRepository(backend=backend)
 
 # Search
-results = ConversationFilter(repo).contains("error").provider("claude").list()
+results = await ConversationFilter(repo).contains("error").provider("claude").list()
 for conv in results:
     print(f"{conv.id}: {conv.display_title}")
 
 # Single conversation
-conv = ConversationFilter(repo).id("abc123").first()
+conv = await ConversationFilter(repo).id("abc123").first()
 ```
 
 ## Filter Chain API
 
 ```python
-# Chainable, lazy evaluation
-results = (ConversationFilter(repo)
+# Chainable, lazy evaluation (terminals are async)
+results = await (ConversationFilter(repo)
     .contains("error")
     .contains("python")             # AND
     .provider("claude", "chatgpt")  # OR
     .since("2025-01-01")
     .has("thinking")
     .limit(10)
-    .list())                        # Terminal: list(), first(), count(), delete()
+    .list())                        # Terminal: await list(), first(), count(), delete()
 
 # Exclusion filters
-results = (ConversationFilter(repo)
+results = await (ConversationFilter(repo)
     .contains("error")
-    .no_contains("warning")
-    .no_provider("gemini")
-    .no_tag("archived")
+    .exclude_text("warning")
+    .exclude_provider("gemini")
+    .exclude_tag("archived")
     .list())
 
 # Lightweight summaries (no message loading)
-summaries = (ConversationFilter(repo)
+summaries = await (ConversationFilter(repo)
     .provider("claude")
     .since("2025-01-01")
     .list_summaries())              # Returns ConversationSummary (no messages)
@@ -58,20 +58,20 @@ else:
     results = f.list()              # Loads full conversations
 
 # Custom predicates
-results = (ConversationFilter(repo)
+results = await (ConversationFilter(repo)
     .where(lambda c: len(c.messages) > 50)
     .list())
 
 # Sorting and sampling
-results = (ConversationFilter(repo)
+results = await (ConversationFilter(repo)
     .sort("tokens")
     .reverse()
     .sample(10)
     .list())
 
 # Conversation structure filters
-roots = ConversationFilter(repo).is_root().list()
-continuations = ConversationFilter(repo).is_continuation().list()
+roots = await ConversationFilter(repo).is_root().list()
+continuations = await ConversationFilter(repo).is_continuation().list()
 ```
 
 ## Available Filter Methods
@@ -79,11 +79,11 @@ continuations = ConversationFilter(repo).is_continuation().list()
 | Method | Description |
 |--------|-------------|
 | `.contains(text)` | FTS term (chainable = AND) |
-| `.no_contains(text)` | Exclude FTS term |
+| `.exclude_text(text)` | Exclude FTS term |
 | `.provider(*names)` | Include providers |
-| `.no_provider(*names)` | Exclude providers |
+| `.exclude_provider(*names)` | Exclude providers |
 | `.tag(*tags)` | Include tags |
-| `.no_tag(*tags)` | Exclude tags |
+| `.exclude_tag(*tags)` | Exclude tags |
 | `.has(*types)` | Content types: `thinking`, `tools`, `summary`, `attachments` |
 | `.title(pattern)` | Title contains pattern |
 | `.id(prefix)` | ID prefix match |
@@ -117,11 +117,11 @@ continuations = ConversationFilter(repo).is_continuation().list()
 
 ```python
 import asyncio
-from polylogue.pipeline.async_runner import async_run_sources
+from polylogue.pipeline.runner import run_sources
 from polylogue.services import get_service_config
 
 config = get_service_config()
-result = asyncio.run(async_run_sources(config=config, stage="all"))
+result = asyncio.run(run_sources(config=config, stage="all"))
 ```
 
 ## Async API
@@ -130,10 +130,10 @@ Polylogue provides a full async/await facade with concurrent operations:
 
 ```python
 import asyncio
-from polylogue import AsyncPolylogue
+from polylogue import Polylogue
 
 async def main():
-    async with AsyncPolylogue() as archive:
+    async with Polylogue() as archive:
         # Concurrent queries
         stats, recent, claude = await asyncio.gather(
             archive.stats(),
@@ -155,8 +155,8 @@ async def main():
         # Parse files
         result = await archive.parse_file("chatgpt_export.json")
 
-        # Fluent filter (sync, works with async facade)
-        convs = archive.filter().provider("claude").contains("error").limit(10).list()
+        # Fluent filter (terminals are async)
+        convs = await archive.filter().provider("claude").contains("error").limit(10).list()
 
         # Rebuild search index
         await archive.rebuild_index()

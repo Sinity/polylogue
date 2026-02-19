@@ -40,11 +40,14 @@ Example:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+_PATH_PATTERN = re.compile(r'(?:^|[\s"\'])(/[^\s"\']+|[./][^\s"\']+)')
 
 # =============================================================================
 # Enums for harmonized classification
@@ -176,10 +179,7 @@ class ToolCall(BaseModel):
                     # For commands, try to extract paths
                     if field == "command":
                         # Simple heuristic: look for path-like strings
-                        import re
-                        path_pattern = r'(?:^|[\s"\'])(/[^\s"\']+|[./][^\s"\']+)'
-                        matches = re.findall(path_pattern, val)
-                        paths.extend(matches[:5])  # Limit to first 5
+                        paths.extend(_PATH_PATTERN.findall(val)[:5])
                     else:
                         paths.append(val)
 

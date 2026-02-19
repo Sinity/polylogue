@@ -11,6 +11,7 @@ Created during aggressive test consolidation to eliminate repeated patterns.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from polylogue.storage.backends.sqlite import connection_context, open_connection
+from polylogue.storage.backends.connection import connection_context, open_connection
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
@@ -487,18 +488,25 @@ class ConversationBuilder:
             )
         return self.conv
 
-    def build(self):
+    async def build(self):
         """Save to database and return a full Conversation domain object."""
-        from polylogue import Polylogue
+        from polylogue.storage.backends.async_sqlite import SQLiteBackend
+        from polylogue.storage.repository import ConversationRepository
 
         self.save()
-        p = Polylogue(db_path=self.db_path)
-        return p.repository.get(self.conv.conversation_id)
+        backend = SQLiteBackend(db_path=self.db_path)
+        repo = ConversationRepository(backend=backend)
+        return await repo.get(self.conv.conversation_id)
 
 
 # =============================================================================
 # QUICK BUILDERS (For simple cases)
 # =============================================================================
+
+
+def make_hash(s: str) -> str:
+    """Create a 16-char content hash for test data."""
+    return hashlib.sha256(s.encode()).hexdigest()[:16]
 
 
 def make_conversation(

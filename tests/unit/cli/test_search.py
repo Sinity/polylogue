@@ -128,7 +128,7 @@ class TestSearchEdgeCases:
     def test_stats_mode_no_filters(self, cli_workspace, monkeypatch):
         """Stats mode when no query terms or filters provided."""
         monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
-        monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_root"]))
+        monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
         runner = CliRunner()
         # No args = stats mode in query-first CLI
@@ -170,7 +170,7 @@ class TestSearchIndexRebuild:
     def test_search_handles_missing_index(self, cli_workspace, monkeypatch):
         """Search handles missing index gracefully."""
         monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
-        monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_root"]))
+        monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
         # Create conversation without building index

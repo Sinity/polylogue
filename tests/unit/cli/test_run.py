@@ -179,7 +179,7 @@ class TestRunCommandNonPreviewMode:
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations, 30 messages"):
@@ -203,7 +203,7 @@ class TestRunCommandNonPreviewMode:
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=["google-drive"]):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["google-drive"]):
                         mock_run.side_effect = DriveError(error_msg)
@@ -232,7 +232,7 @@ class TestRunCommandStageOption:
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
@@ -259,7 +259,7 @@ class TestRunCommandStageOption:
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_index_status") as mock_format_idx:
@@ -285,7 +285,7 @@ class TestRunCommandSourceOption:
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.services.get_service_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources") as mock_resolve:
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=resolved_sources):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3+ conversations"):
@@ -320,7 +320,7 @@ class TestRunCommandFormatOption:
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
@@ -346,7 +346,7 @@ class TestRunCommandProgressOutput:
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
@@ -379,7 +379,7 @@ class TestRunCommandIndexError:
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch(f"polylogue.cli.commands.run.{format_func}") as mock_format:
@@ -412,7 +412,7 @@ class TestRunCommandRenderOutput:
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
@@ -444,7 +444,7 @@ class TestRunCommandTitle:
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=[stage_or_source] if title_element == "source" else None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=[stage_or_source] if title_element == "source" else None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="5 conversations"):
@@ -479,7 +479,7 @@ class TestRunCommandCombinations:
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.plan_sources") as mock_plan:
-                with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+                with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                     with patch("polylogue.cli.commands.run.resolve_sources") as mock_resolve:
                         with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["test"] if "--source" in cli_args else None):
                             with patch("polylogue.cli.commands.run.format_counts", return_value="5 conversations"):
@@ -527,7 +527,7 @@ class TestRunCommandRenderFailures:
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value=f"{num_failures} conversation(s)"):
@@ -551,7 +551,7 @@ class TestRunCommandRenderFailures:
 class TestDeleteConversationPreview:
     """Tests for enhanced deletion preview in query mode."""
 
-    def test_delete_dry_run_shows_provider_breakdown(self, capsys):
+    async def test_delete_dry_run_shows_provider_breakdown(self, capsys):
         """Dry-run deletion shows provider breakdown."""
 
         from polylogue.cli.query import _delete_conversations
@@ -577,7 +577,7 @@ class TestDeleteConversationPreview:
         env = MagicMock()
         env.ui.console.print = MagicMock()
 
-        _delete_conversations(env, convs, {"dry_run": True})
+        await _delete_conversations(env, convs, {"dry_run": True})
 
         captured = capsys.readouterr()
         assert "DRY-RUN: Would delete 5 conversation(s)" in captured.out
@@ -585,7 +585,7 @@ class TestDeleteConversationPreview:
         assert "claude: 3" in captured.out
         assert "chatgpt: 2" in captured.out
 
-    def test_delete_dry_run_shows_date_range(self, capsys):
+    async def test_delete_dry_run_shows_date_range(self, capsys):
         """Dry-run deletion shows date range."""
         from polylogue.cli.query import _delete_conversations
 
@@ -608,12 +608,12 @@ class TestDeleteConversationPreview:
         env = MagicMock()
         env.ui.console.print = MagicMock()
 
-        _delete_conversations(env, convs, {"dry_run": True})
+        await _delete_conversations(env, convs, {"dry_run": True})
 
         captured = capsys.readouterr()
         assert "Date range: 2023-06-01 → 2024-02-15" in captured.out
 
-    def test_delete_bulk_shows_breakdown_and_prompts(self, capsys):
+    async def test_delete_bulk_shows_breakdown_and_prompts(self, capsys):
         """Bulk deletion (>10 items) without force shows breakdown and prompts."""
         from polylogue.cli.query import _delete_conversations
 
@@ -640,7 +640,7 @@ class TestDeleteConversationPreview:
         env.ui.confirm = MagicMock(return_value=False)
 
         # Should prompt for confirmation and abort when declined
-        _delete_conversations(env, convs, {"force": False})
+        await _delete_conversations(env, convs, {"force": False})
         env.ui.confirm.assert_called_once()
 
         captured = capsys.readouterr()
@@ -657,7 +657,7 @@ class TestTagsCommand:
         """Tags command displays all tags with counts."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -679,7 +679,7 @@ class TestTagsCommand:
         import json
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -697,7 +697,7 @@ class TestTagsCommand:
         """Tags -p passes provider to list_tags."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -715,7 +715,7 @@ class TestTagsCommand:
         """Tags -n truncates to top N."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -734,7 +734,7 @@ class TestTagsCommand:
         """Tags with no tags shows hint."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -752,7 +752,7 @@ class TestTagsCommand:
         """Tags with provider filter and no tags shows provider-specific hint."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -819,7 +819,7 @@ class TestRunEmbedCommand:
             mock_result_4,
         ]
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_open.return_value = mock_conn
             # Ensure API key is not set
             with patch.dict(
@@ -849,7 +849,7 @@ class TestRunEmbedCommand:
         ]
         mock_conn.execute.side_effect = results
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_open.return_value = mock_conn
             with patch.dict(
                 "os.environ",
@@ -889,7 +889,7 @@ class TestRunEmbedCommand:
         """--conversation with nonexistent ID should print error."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
                     mock_backend = MagicMock()
@@ -914,7 +914,7 @@ class TestRunEmbedCommand:
         """--rebuild flag is passed to _embed_batch."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
                     with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
@@ -941,7 +941,7 @@ class TestRunEmbedCommand:
         """--limit flag is passed to _embed_batch."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
                     with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
@@ -968,7 +968,7 @@ class TestRunEmbedCommand:
         """--model flag selects embedding model."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
                     with patch("polylogue.cli.commands.embed._embed_batch"):
@@ -993,7 +993,7 @@ class TestRunEmbedCommand:
         """POLYLOGUE_VOYAGE_API_KEY env var is accepted as fallback."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
                     with patch("polylogue.cli.commands.embed._embed_batch"):

@@ -18,9 +18,10 @@ import pytest
 
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import ConversationSummary
-from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
-from polylogue.storage.index import rebuild_index
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.index import rebuild_index
 from tests.infra.helpers import ConversationBuilder
 
 
@@ -168,9 +169,10 @@ class TestConversationFilterHasTypes:
         ("attachments", None),  # no expected substring for attachments test
         ("summary", None),  # no expected substring for summary test
     ])
-    def test_has_content_type_filters_correctly(self, filter_repo_advanced, content_type, expected_id_substr):
+    @pytest.mark.asyncio
+    async def test_has_content_type_filters_correctly(self, filter_repo_advanced, content_type, expected_id_substr):
         """Filter conversations by content type."""
-        result = ConversationFilter(filter_repo_advanced).has(content_type).list()
+        result = await ConversationFilter(filter_repo_advanced).has(content_type).list()
         assert isinstance(result, list)
         if content_type == "thinking":
             # Should return only conv-thinking
@@ -190,9 +192,10 @@ class TestConversationFilterHasTypes:
                 for conv in result:
                     assert conv.summary is not None
 
-    def test_has_multiple_types_combines_filters(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_has_multiple_types_combines_filters(self, filter_repo_advanced):
         """Multiple has() calls combine as AND (all must match)."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo_advanced)
             .has("attachments")
             .has("summary")  # If any conv has both
@@ -201,17 +204,19 @@ class TestConversationFilterHasTypes:
         # Result should be conversations matching all criteria
         assert isinstance(result, list)
 
-    def test_has_nonexistent_type_is_ignored(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_has_nonexistent_type_is_ignored(self, filter_repo_advanced):
         """Filtering for nonexistent type is silently ignored (no filtering)."""
         # When a nonexistent type is used, has() doesn't match any known types
         # so it just doesn't filter (returns all conversations)
-        result = ConversationFilter(filter_repo_advanced).has("nonexistent_type").list()
-        all_result = ConversationFilter(filter_repo_advanced).list()
+        result = await ConversationFilter(filter_repo_advanced).has("nonexistent_type").list()
+        all_result = await ConversationFilter(filter_repo_advanced).list()
         assert len(result) == len(all_result)
 
-    def test_has_works_with_other_filters(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_has_works_with_other_filters(self, filter_repo_advanced):
         """has() combines with other filters."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo_advanced)
             .provider("claude")
             .has("thinking")
@@ -237,32 +242,36 @@ class TestConversationFilterSample:
         (0, lambda result: len(result) == 0),
         (1, lambda result: len(result) == 1),
     ])
-    def test_sample_returns_correct_count(self, filter_repo_advanced, sample_size, condition_check):
+    @pytest.mark.asyncio
+    async def test_sample_returns_correct_count(self, filter_repo_advanced, sample_size, condition_check):
         """sample(n) returns exactly n conversations."""
-        result = ConversationFilter(filter_repo_advanced).sample(sample_size).list()
+        result = await ConversationFilter(filter_repo_advanced).sample(sample_size).list()
         assert condition_check(result)
 
-    def test_sample_smaller_than_total(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_sample_smaller_than_total(self, filter_repo_advanced):
         """sample(n) where n < total works."""
-        all_count = len(ConversationFilter(filter_repo_advanced).list())
+        all_count = len(await ConversationFilter(filter_repo_advanced).list())
         sample_size = min(3, all_count)
         if sample_size > 0:
-            result = ConversationFilter(filter_repo_advanced).sample(sample_size).list()
+            result = await ConversationFilter(filter_repo_advanced).sample(sample_size).list()
             assert len(result) == sample_size
 
-    def test_sample_larger_than_total_returns_all(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_sample_larger_than_total_returns_all(self, filter_repo_advanced):
         """sample(n) where n > total returns all conversations."""
-        all_count = len(ConversationFilter(filter_repo_advanced).list())
-        result = ConversationFilter(filter_repo_advanced).sample(all_count + 100).list()
+        all_count = len(await ConversationFilter(filter_repo_advanced).list())
+        result = await ConversationFilter(filter_repo_advanced).sample(all_count + 100).list()
         # Should return all (sampling more than available returns all)
         assert len(result) <= all_count
 
-    def test_sample_with_filter_respects_filters(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_sample_with_filter_respects_filters(self, filter_repo_advanced):
         """sample() respects preceding filters."""
         # Get all claude conversations
-        all_claude = ConversationFilter(filter_repo_advanced).provider("claude").list()
+        all_claude = await ConversationFilter(filter_repo_advanced).provider("claude").list()
         # Sample from claude conversations
-        result = (
+        result = await (
             ConversationFilter(filter_repo_advanced)
             .provider("claude")
             .sample(min(2, len(all_claude)))
@@ -271,10 +280,11 @@ class TestConversationFilterSample:
         # All results should be claude
         assert all(c.provider == "claude" for c in result)
 
-    def test_sample_with_limit_respects_both(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_sample_with_limit_respects_both(self, filter_repo_advanced):
         """sample() with limit applies both constraints."""
         # Sample 3, then limit to 2
-        result = (
+        result = await (
             ConversationFilter(filter_repo_advanced)
             .sample(3)
             .limit(2)
@@ -283,12 +293,13 @@ class TestConversationFilterSample:
         # Limit should win, giving us at most 2
         assert len(result) <= 2
 
-    def test_sample_randomness(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_sample_randomness(self, filter_repo_advanced):
         """Multiple samples produce different results (probabilistic test)."""
         # Take multiple samples and verify they vary
         samples = []
         for _ in range(3):
-            result = ConversationFilter(filter_repo_advanced).sample(2).list()
+            result = await ConversationFilter(filter_repo_advanced).sample(2).list()
             samples.append([c.id for c in result])
         # At least some samples should differ (very high confidence with 3 tries)
         # Note: This is probabilistic; very unlikely to fail unless sample() is broken
@@ -302,13 +313,14 @@ class TestConversationFilterSample:
 class TestConversationFilterCombinedNegative:
     """Tests for combining multiple negative filters."""
 
-    def test_no_provider_and_no_tag(self, filter_repo_advanced):
-        """Combine no_provider() and no_tag()."""
+    @pytest.mark.asyncio
+    async def test_exclude_provider_and_exclude_tag(self, filter_repo_advanced):
+        """Combine exclude_provider() and exclude_tag()."""
         # Exclude claude and exclude "quantum" tag
-        result = (
+        result = await (
             ConversationFilter(filter_repo_advanced)
-            .no_provider("claude")
-            .no_tag("quantum")
+            .exclude_provider("claude")
+            .exclude_tag("quantum")
             .list()
         )
         # Should return only non-claude, non-quantum conversations
@@ -316,12 +328,13 @@ class TestConversationFilterCombinedNegative:
         for conv in result:
             assert "quantum" not in conv.tags
 
-    def test_no_tag_and_no_contains(self, filter_repo_advanced):
-        """Combine no_tag() and no_contains()."""
-        result = (
+    @pytest.mark.asyncio
+    async def test_exclude_tag_and_exclude_text(self, filter_repo_advanced):
+        """Combine exclude_tag() and exclude_text()."""
+        result = await (
             ConversationFilter(filter_repo_advanced)
-            .no_tag("simple")
-            .no_contains("example")
+            .exclude_tag("simple")
+            .exclude_text("example")
             .list()
         )
         # Should exclude conversations with "simple" tag or containing "example"
@@ -332,11 +345,12 @@ class TestConversationFilterCombinedNegative:
                 if msg.text:
                     assert "example" not in msg.text.lower()
 
-    def test_no_provider_and_has_not_combined(self, filter_repo_advanced):
-        """Combine no_provider() with has() filter."""
-        result = (
+    @pytest.mark.asyncio
+    async def test_exclude_provider_and_has_not_combined(self, filter_repo_advanced):
+        """Combine exclude_provider() with has() filter."""
+        result = await (
             ConversationFilter(filter_repo_advanced)
-            .no_provider("claude")
+            .exclude_provider("claude")
             .has("attachments")
             .list()
         )
@@ -345,11 +359,12 @@ class TestConversationFilterCombinedNegative:
         for conv in result:
             assert any(m.attachments for m in conv.messages)
 
-    def test_multiple_no_providers(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_multiple_exclude_providers(self, filter_repo_advanced):
         """Exclude multiple providers."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo_advanced)
-            .no_provider("claude", "chatgpt")
+            .exclude_provider("claude", "chatgpt")
             .list()
         )
         # Should only return codex (if any)
@@ -365,12 +380,13 @@ class TestConversationFilterCombinedNegative:
 class TestConversationFilterCombinedPosNeg:
     """Tests for combining positive and negative filters."""
 
-    def test_provider_with_no_tag(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_provider_with_exclude_tag(self, filter_repo_advanced):
         """Include provider but exclude tag."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo_advanced)
             .provider("claude")
-            .no_tag("simple")
+            .exclude_tag("simple")
             .list()
         )
         # Should be claude but not simple
@@ -378,24 +394,26 @@ class TestConversationFilterCombinedPosNeg:
         for conv in result:
             assert "simple" not in conv.tags
 
-    def test_contains_with_no_contains(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_contains_with_exclude_text(self, filter_repo_advanced):
         """Include text match but exclude another text."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo_advanced)
             .contains("data")
-            .no_contains("error")
+            .exclude_text("error")
             .list()
         )
         # All should contain "data" but not "error"
         # (Implementation-dependent on FTS availability)
         assert isinstance(result, list)
 
-    def test_tag_with_no_provider(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_tag_with_exclude_provider(self, filter_repo_advanced):
         """Include tag but exclude provider."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo_advanced)
             .tag("analysis")
-            .no_provider("claude")
+            .exclude_provider("claude")
             .list()
         )
         # Should have analysis tag but not be from claude
@@ -403,12 +421,13 @@ class TestConversationFilterCombinedPosNeg:
             assert "analysis" in conv.tags
             assert conv.provider != "claude"
 
-    def test_has_thinking_with_no_provider_claude(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_has_thinking_with_exclude_provider_claude(self, filter_repo_advanced):
         """Include thinking but exclude claude (contradictory if thinking only in claude)."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo_advanced)
             .has("thinking")
-            .no_provider("claude")
+            .exclude_provider("claude")
             .list()
         )
         # May be empty if thinking only in claude, but should not crash
@@ -433,12 +452,13 @@ class TestConversationFilterSortEdgeCases:
         ("messages", True, lambda r, i: len(r[i].messages) <= len(r[i + 1].messages)),
         ("messages", False, lambda r, i: len(r[i].messages) >= len(r[i + 1].messages)),
     ])
-    def test_sort_field_with_reverse(self, filter_repo_advanced, sort_field, reverse, check_order):
+    @pytest.mark.asyncio
+    async def test_sort_field_with_reverse(self, filter_repo_advanced, sort_field, reverse, check_order):
         """Sort by field with reverse flag."""
         if reverse:
-            result = ConversationFilter(filter_repo_advanced).sort(sort_field).reverse().list()
+            result = await ConversationFilter(filter_repo_advanced).sort(sort_field).reverse().list()
         else:
-            result = ConversationFilter(filter_repo_advanced).sort(sort_field).list()
+            result = await ConversationFilter(filter_repo_advanced).sort(sort_field).list()
 
         assert len(result) > 0
         # Verify order for multi-item results
@@ -446,9 +466,10 @@ class TestConversationFilterSortEdgeCases:
             for i in range(len(result) - 1):
                 assert check_order(result, i)
 
-    def test_sort_and_limit_combined(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_sort_and_limit_combined(self, filter_repo_advanced):
         """Sort by field and limit results."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo_advanced)
             .sort("messages")
             .reverse()
@@ -461,10 +482,11 @@ class TestConversationFilterSortEdgeCases:
         if len(result) > 1:
             assert len(result[0].messages) <= len(result[1].messages)
 
-    def test_sort_random_with_reverse_ignored(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_sort_random_with_reverse_ignored(self, filter_repo_advanced):
         """Random sort ignores reverse flag."""
-        result1 = ConversationFilter(filter_repo_advanced).sort("random").list()
-        result2 = ConversationFilter(filter_repo_advanced).sort("random").reverse().list()
+        result1 = await ConversationFilter(filter_repo_advanced).sort("random").list()
+        result2 = await ConversationFilter(filter_repo_advanced).sort("random").reverse().list()
         # Both should be lists (order is random, not checked)
         assert len(result1) > 0
         assert len(result2) > 0
@@ -484,9 +506,10 @@ class TestConversationFilterLimitZeroWithSample:
         (lambda f: f.sort("messages").limit(0), "sort('messages') then limit(0)"),
         (lambda f: f.provider("claude").tag("quantum").sort("date").sample(10).limit(0), "all filters then limit(0)"),
     ])
-    def test_limit_zero_with_other_operations(self, filter_repo_advanced, setup_fn, description):
+    @pytest.mark.asyncio
+    async def test_limit_zero_with_other_operations(self, filter_repo_advanced, setup_fn, description):
         """limit(0) overrides all other operations."""
-        result = setup_fn(ConversationFilter(filter_repo_advanced)).list()
+        result = await setup_fn(ConversationFilter(filter_repo_advanced)).list()
         assert len(result) == 0, f"Failed for: {description}"
 
 
@@ -498,9 +521,10 @@ class TestConversationFilterLimitZeroWithSample:
 class TestConversationFilterListSummaries:
     """Tests for list_summaries() lightweight method."""
 
-    def test_list_summaries_returns_summary_objects(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_list_summaries_returns_summary_objects(self, filter_repo_advanced):
         """list_summaries() returns ConversationSummary objects."""
-        result = ConversationFilter(filter_repo_advanced).list_summaries()
+        result = await ConversationFilter(filter_repo_advanced).list_summaries()
         assert len(result) > 0
         for summary in result:
             assert isinstance(summary, ConversationSummary)
@@ -509,9 +533,10 @@ class TestConversationFilterListSummaries:
             assert hasattr(summary, "provider")
             assert hasattr(summary, "display_title")
 
-    def test_list_summaries_no_messages_loaded(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_list_summaries_no_messages_loaded(self, filter_repo_advanced):
         """list_summaries() returns objects without message content loaded."""
-        summaries = ConversationFilter(filter_repo_advanced).list_summaries()
+        summaries = await ConversationFilter(filter_repo_advanced).list_summaries()
         # ConversationSummary should not have messages attribute or it should be empty
         for summary in summaries:
             # Verify it's a summary (lightweight)
@@ -522,30 +547,33 @@ class TestConversationFilterListSummaries:
     @pytest.mark.parametrize("filter_fn,filter_name,expected_value", [
         (lambda f: f.provider("claude"), "provider", "claude"),
         (lambda f: f.tag("quantum"), "tag", "quantum"),
-        (lambda f: f.no_tag("simple"), "no_tag", "simple"),
+        (lambda f: f.exclude_tag("simple"), "exclude_tag", "simple"),
         (lambda f: f.title("Complex"), "title", "Complex"),
     ])
-    def test_list_summaries_respects_metadata_filters(self, filter_repo_advanced, filter_fn, filter_name, expected_value):
+    @pytest.mark.asyncio
+    async def test_list_summaries_respects_metadata_filters(self, filter_repo_advanced, filter_fn, filter_name, expected_value):
         """list_summaries() respects metadata-only filters."""
-        result = filter_fn(ConversationFilter(filter_repo_advanced)).list_summaries()
+        result = await filter_fn(ConversationFilter(filter_repo_advanced)).list_summaries()
 
         if filter_name == "provider":
             assert all(s.provider == expected_value for s in result)
         elif filter_name == "tag":
             assert all(expected_value in s.tags for s in result)
-        elif filter_name == "no_tag":
+        elif filter_name == "exclude_tag":
             assert all(expected_value not in s.tags for s in result)
         elif filter_name == "title":
             assert all(expected_value in s.display_title for s in result)
 
-    def test_list_summaries_with_limit(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_list_summaries_with_limit(self, filter_repo_advanced):
         """list_summaries() respects limit."""
-        result = ConversationFilter(filter_repo_advanced).limit(2).list_summaries()
+        result = await ConversationFilter(filter_repo_advanced).limit(2).list_summaries()
         assert len(result) <= 2
 
-    def test_list_summaries_with_sort_date(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_list_summaries_with_sort_date(self, filter_repo_advanced):
         """list_summaries() respects date sort."""
-        result = ConversationFilter(filter_repo_advanced).sort("date").list_summaries()
+        result = await ConversationFilter(filter_repo_advanced).sort("date").list_summaries()
         assert len(result) > 0
         # Verify descending date order (default)
         if len(result) > 1:
@@ -555,77 +583,32 @@ class TestConversationFilterListSummaries:
                 if dt_i and dt_next:
                     assert dt_i >= dt_next
 
-    def test_list_summaries_with_sample(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_list_summaries_with_sample(self, filter_repo_advanced):
         """list_summaries() respects sample."""
-        result = ConversationFilter(filter_repo_advanced).sample(2).list_summaries()
+        result = await ConversationFilter(filter_repo_advanced).sample(2).list_summaries()
         assert len(result) <= 2
 
     @pytest.mark.parametrize("invalid_filter_fn,error_match", [
         (lambda f: f.has("thinking"), "Cannot use list_summaries"),
-        (lambda f: f.no_contains("error"), "Cannot use list_summaries"),
+        (lambda f: f.exclude_text("error"), "Cannot use list_summaries"),
         (lambda f: f.where(lambda c: True), "Cannot use list_summaries"),
         (lambda f: f.sort("words"), "Cannot use list_summaries"),
         (lambda f: f.sort("tokens"), "Cannot use list_summaries"),
     ])
-    def test_list_summaries_rejects_content_filters(self, filter_repo_advanced, invalid_filter_fn, error_match):
+    @pytest.mark.asyncio
+    async def test_list_summaries_rejects_content_filters(self, filter_repo_advanced, invalid_filter_fn, error_match):
         """list_summaries() raises error for content-dependent filters."""
         with pytest.raises(ValueError, match=error_match):
-            invalid_filter_fn(ConversationFilter(filter_repo_advanced)).list_summaries()
+            await invalid_filter_fn(ConversationFilter(filter_repo_advanced)).list_summaries()
 
-    def test_list_summaries_allows_summary_has_filter(self, filter_repo_advanced):
+    @pytest.mark.asyncio
+    async def test_list_summaries_allows_summary_has_filter(self, filter_repo_advanced):
         """list_summaries() allows has('summary') filter."""
         # This should not raise because 'summary' doesn't need message content
-        result = ConversationFilter(filter_repo_advanced).has("summary").list_summaries()
+        result = await ConversationFilter(filter_repo_advanced).has("summary").list_summaries()
         # All results should have summary
         assert all(s.summary for s in result)
-
-
-# ============================================================================
-# Tests for pick() terminal method
-# ============================================================================
-
-
-class TestConversationFilterPick:
-    """Tests for pick() interactive selection method."""
-
-    def test_pick_returns_conversation_or_none(self, filter_repo_advanced):
-        """pick() returns Conversation or None."""
-        result = ConversationFilter(filter_repo_advanced).pick()
-        # Should return first conversation (since not in TTY)
-        assert result is not None
-        assert hasattr(result, "id")
-
-    def test_pick_returns_first_when_not_tty(self, filter_repo_advanced):
-        """pick() returns first match when not in TTY."""
-        all_convs = ConversationFilter(filter_repo_advanced).list()
-        if all_convs:
-            picked = ConversationFilter(filter_repo_advanced).pick()
-            assert picked is not None
-            assert picked.id == all_convs[0].id
-
-    def test_pick_with_filter_respects_filter(self, filter_repo_advanced):
-        """pick() on filtered results returns from filtered set."""
-        filtered_convs = ConversationFilter(filter_repo_advanced).provider("claude").list()
-        if filtered_convs:
-            picked = ConversationFilter(filter_repo_advanced).provider("claude").pick()
-            assert picked is not None
-            assert picked.provider == "claude"
-
-    def test_pick_returns_none_on_empty_results(self, filter_repo_advanced):
-        """pick() returns None when no matches."""
-        result = ConversationFilter(filter_repo_advanced).provider("nonexistent").pick()
-        assert result is None
-
-    def test_pick_with_limit(self, filter_repo_advanced):
-        """pick() respects limit."""
-        # With limit(1), we have at most 1 choice
-        picked = ConversationFilter(filter_repo_advanced).limit(1).pick()
-        if picked:
-            # Should be the first conversation
-            all_first = ConversationFilter(filter_repo_advanced).limit(1).list()
-            assert picked.id == all_first[0].id
-
-
 # ============================================================================
 # Tests for empty repository edge cases
 # ============================================================================
@@ -641,39 +624,43 @@ class TestConversationFilterEmptyRepository:
         ("delete", 0),
         ("pick", None),
     ])
-    def test_empty_repo_terminal_operations(self, filter_repo_empty, terminal_method, expected_result):
+    @pytest.mark.asyncio
+    async def test_empty_repo_terminal_operations(self, filter_repo_empty, terminal_method, expected_result):
         """Terminal operations on empty repo return expected values."""
         filter_obj = ConversationFilter(filter_repo_empty)
 
         if terminal_method == "list":
-            result = filter_obj.list()
+            result = await filter_obj.list()
         elif terminal_method == "first":
-            result = filter_obj.first()
+            result = await filter_obj.first()
         elif terminal_method == "count":
-            result = filter_obj.count()
+            result = await filter_obj.count()
         elif terminal_method == "delete":
-            result = filter_obj.delete()
+            result = await filter_obj.delete()
         elif terminal_method == "pick":
-            result = filter_obj.pick()
+            result = await filter_obj.pick()
 
         if isinstance(expected_result, list):
             assert result == expected_result
         else:
             assert result == expected_result
 
-    def test_empty_repo_sample_returns_empty(self, filter_repo_empty):
+    @pytest.mark.asyncio
+    async def test_empty_repo_sample_returns_empty(self, filter_repo_empty):
         """sample() on empty repo returns empty."""
-        result = ConversationFilter(filter_repo_empty).sample(10).list()
+        result = await ConversationFilter(filter_repo_empty).sample(10).list()
         assert len(result) == 0
 
-    def test_empty_repo_list_summaries_returns_empty(self, filter_repo_empty):
+    @pytest.mark.asyncio
+    async def test_empty_repo_list_summaries_returns_empty(self, filter_repo_empty):
         """list_summaries() on empty repo returns empty."""
-        result = ConversationFilter(filter_repo_empty).list_summaries()
+        result = await ConversationFilter(filter_repo_empty).list_summaries()
         assert len(result) == 0
 
-    def test_empty_repo_with_filters(self, filter_repo_empty):
+    @pytest.mark.asyncio
+    async def test_empty_repo_with_filters(self, filter_repo_empty):
         """Filters on empty repo safely return empty."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo_empty)
             .provider("claude")
             .tag("python")
@@ -735,40 +722,133 @@ class TestConversationFilterBranchingMethods:
         backend = SQLiteBackend(db_path=filter_db_with_branches)
         return ConversationRepository(backend=backend)
 
-    def test_is_root_filters_correctly(self, filter_repo_branches):
+    @pytest.mark.asyncio
+    async def test_is_root_filters_correctly(self, filter_repo_branches):
         """is_root() filters to root conversations only."""
-        result = ConversationFilter(filter_repo_branches).is_root().list()
+        result = await ConversationFilter(filter_repo_branches).is_root().list()
         assert len(result) >= 1
         # At least one should be the root
         assert any("root" in c.id for c in result)
 
-    def test_is_continuation_filters_correctly(self, filter_repo_branches):
+    @pytest.mark.asyncio
+    async def test_is_continuation_filters_correctly(self, filter_repo_branches):
         """is_continuation() filters to continuations."""
-        result = ConversationFilter(filter_repo_branches).is_continuation().list()
+        result = await ConversationFilter(filter_repo_branches).is_continuation().list()
         # May or may not have continuations depending on data
         assert isinstance(result, list)
 
-    def test_is_sidechain_filters_correctly(self, filter_repo_branches):
+    @pytest.mark.asyncio
+    async def test_is_sidechain_filters_correctly(self, filter_repo_branches):
         """is_sidechain() filters to sidechains."""
-        result = ConversationFilter(filter_repo_branches).is_sidechain().list()
+        result = await ConversationFilter(filter_repo_branches).is_sidechain().list()
         # May or may not have sidechains depending on data
         assert isinstance(result, list)
 
-    def test_parent_filters_by_parent_id(self, filter_repo_branches):
+    @pytest.mark.asyncio
+    async def test_parent_filters_by_parent_id(self, filter_repo_branches):
         """parent() filters by parent conversation ID."""
-        result = ConversationFilter(filter_repo_branches).parent("root-conv").list()
+        result = await ConversationFilter(filter_repo_branches).parent("root-conv").list()
         # Should find continuation and sidechain
         for conv in result:
             assert conv.parent_id == "root-conv"
 
-    def test_has_branches_filters_conversations_with_branching(self, filter_repo_branches):
+    @pytest.mark.asyncio
+    async def test_has_branches_filters_conversations_with_branching(self, filter_repo_branches):
         """has_branches() filters conversations containing branching messages."""
-        result = ConversationFilter(filter_repo_branches).has_branches().list()
+        result = await ConversationFilter(filter_repo_branches).has_branches().list()
         # May or may not have branching depending on message data
         assert isinstance(result, list)
 
-    def test_is_root_false_excludes_roots(self, filter_repo_branches):
+    @pytest.mark.asyncio
+    async def test_is_root_false_excludes_roots(self, filter_repo_branches):
         """is_root(False) excludes root conversations."""
-        result = ConversationFilter(filter_repo_branches).is_root(False).list()
+        result = await ConversationFilter(filter_repo_branches).is_root(False).list()
         # Should not include root conversations
         assert all(c.parent_id is not None for c in result if not c.is_root)
+
+
+# ============================================================================
+# Tests for delete() cascade behavior
+# ============================================================================
+
+
+class TestDeleteCascade:
+    """Test that ConversationFilter.delete() cascades correctly."""
+
+    @pytest.fixture
+    async def populated_db(self, tmp_path):
+        """Create database with a conversation, messages, attachments, FTS entries."""
+        db_path = tmp_path / "cascade.db"
+        backend = SQLiteBackend(db_path=db_path)
+        repo = ConversationRepository(backend=backend)
+
+        # Build a conversation with messages and attachments
+        conv = (
+            ConversationBuilder(db_path, "cascade-conv")
+            .provider("claude")
+            .title("Cascade Test")
+            .add_message("m1", role="user", text="Hello world")
+            .add_message("m2", role="assistant", text="Hi there")
+            .add_attachment("att1", message_id="m1", mime_type="image/png", size_bytes=1024)
+        )
+        conv.save()
+
+        # Build FTS index
+        with open_connection(db_path) as conn:
+            rebuild_index(conn)
+
+        return db_path, backend, repo
+
+    @pytest.mark.asyncio
+    async def test_delete_cascades_to_messages(self, populated_db):
+        """delete() removes associated messages."""
+        db_path, backend, repo = populated_db
+        f = ConversationFilter(repo).id("cascade-conv")
+        deleted = await f.delete()
+        assert deleted == 1
+
+        # Verify messages are gone
+        with open_connection(db_path) as conn:
+            msgs = conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = 'cascade-conv'").fetchone()[0]
+            assert msgs == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_cascades_to_attachment_refs(self, populated_db):
+        """delete() removes attachment_refs for the conversation."""
+        db_path, backend, repo = populated_db
+        f = ConversationFilter(repo).id("cascade-conv")
+        await f.delete()
+
+        with open_connection(db_path) as conn:
+            refs = conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = 'cascade-conv'").fetchone()[0]
+            assert refs == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_removes_fts_entries(self, populated_db):
+        """delete() removes FTS index entries for deleted conversations."""
+        db_path, backend, repo = populated_db
+
+        # Verify FTS entries exist first
+        with open_connection(db_path) as conn:
+            before = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = 'cascade-conv'").fetchone()[0]
+            assert before > 0
+
+        f = ConversationFilter(repo).id("cascade-conv")
+        await f.delete()
+
+        with open_connection(db_path) as conn:
+            after = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = 'cascade-conv'").fetchone()[0]
+            assert after == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_prunes_orphaned_attachments(self, populated_db):
+        """delete() prunes attachments with ref_count reaching 0."""
+        db_path, backend, repo = populated_db
+
+        f = ConversationFilter(repo).id("cascade-conv")
+        await f.delete()
+
+        with open_connection(db_path) as conn:
+            # Attachment should be pruned (ref_count was 1, now 0)
+            att = conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'att1'").fetchone()[0]
+            assert att == 0

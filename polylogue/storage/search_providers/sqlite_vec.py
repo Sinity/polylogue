@@ -8,6 +8,7 @@ No external server required - vectors stored directly in SQLite.
 
 from __future__ import annotations
 
+import sqlite3
 import struct
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,7 +22,8 @@ from tenacity import (
 )
 
 from polylogue.lib.log import get_logger
-from polylogue.storage.backends.sqlite import DatabaseError
+from polylogue.errors import DatabaseError
+from polylogue.storage.backends.connection import DB_TIMEOUT
 from polylogue.storage.store import MessageRecord
 
 if TYPE_CHECKING:
@@ -84,7 +86,7 @@ class SqliteVecProvider:
         Raises:
             SqliteVecError: If sqlite-vec extension cannot be loaded
         """
-        from polylogue.storage.backends.sqlite import default_db_path
+        from polylogue.storage.backends.connection import default_db_path
 
         self.db_path = db_path or default_db_path()
         self.voyage_key = voyage_key
@@ -97,7 +99,7 @@ class SqliteVecProvider:
         """Get connection with sqlite-vec extension loaded if available."""
         import sqlite3
 
-        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn = sqlite3.connect(self.db_path, timeout=DB_TIMEOUT)
         conn.row_factory = sqlite3.Row
 
         # Try to load sqlite-vec (requires enable_load_extension authorization)
@@ -113,7 +115,7 @@ class SqliteVecProvider:
             except ImportError:
                 logger.warning("sqlite-vec not installed")
                 self._vec_available = False
-            except Exception as exc:
+            except (OSError, sqlite3.OperationalError) as exc:
                 logger.warning("sqlite-vec load failed: %s", exc)
                 self._vec_available = False
         elif self._vec_available:
@@ -124,7 +126,7 @@ class SqliteVecProvider:
                     sqlite_vec.load(conn)
                 finally:
                     conn.enable_load_extension(False)
-            except Exception as exc:
+            except (ImportError, OSError, sqlite3.OperationalError) as exc:
                 conn.close()
                 raise SqliteVecError(
                     f"sqlite-vec extension failed to load on connection: {exc}"
@@ -326,7 +328,7 @@ class SqliteVecProvider:
 
         try:
             embeddings = self._get_embeddings(texts, input_type="document")
-        except Exception as exc:
+        except (SqliteVecError, httpx.HTTPError) as exc:
             logger.error("Failed to generate embeddings for %s: %s", conversation_id, exc)
             raise
 
@@ -496,14 +498,14 @@ class SqliteVecProvider:
                 msg_count = conn.execute(
                     "SELECT COUNT(*) FROM message_embeddings"
                 ).fetchone()[0]
-            except Exception as exc:
+            except sqlite3.OperationalError as exc:
                 logger.debug("message_embeddings count failed (table may not exist): %s", exc)
 
             try:
                 pending = conn.execute(
                     "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1"
                 ).fetchone()[0]
-            except Exception as exc:
+            except sqlite3.OperationalError as exc:
                 logger.debug("embedding_status count failed (table may not exist): %s", exc)
 
             return {

@@ -13,10 +13,10 @@ from typing import Any, cast
 from .config import Config
 from .lib.log import get_logger
 from .sources.drive_client import default_credentials_path, default_token_path
-from .storage.backends.sqlite import connection_context, open_connection
+from .storage.backends.connection import connection_context, open_connection
 from .storage.index import index_status
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 HEALTH_TTL_SECONDS = 600
 
 
@@ -84,7 +84,7 @@ def _load_cached(archive_root: Path) -> dict[str, Any] | None:
         if isinstance(payload, dict):
             return payload
     except Exception as exc:
-        LOGGER.warning("Failed to load health cache: %s", exc)
+        logger.warning("Failed to load health cache: %s", exc)
     return None
 
 
@@ -95,7 +95,7 @@ def _write_cache(archive_root: Path, report: HealthReport | dict[str, Any]) -> N
         data = report.to_dict() if isinstance(report, HealthReport) else report
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception as exc:
-        LOGGER.warning("Failed to write health cache: %s", exc)
+        logger.warning("Failed to write health cache: %s", exc)
 
 
 def run_health(config: Config, *, deep: bool = False) -> HealthReport:
@@ -711,7 +711,7 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
         if dry_run:
             # All PRAGMA wal_checkpoint modes actually perform a checkpoint.
             # For true dry-run, inspect the WAL file on disk instead.
-            from polylogue.storage.backends.sqlite import default_db_path
+            from polylogue.storage.backends.connection import default_db_path
 
             db_path = default_db_path()
             wal_path = Path(str(db_path) + "-wal")

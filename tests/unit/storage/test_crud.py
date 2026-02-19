@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from collections import Counter
@@ -22,7 +21,7 @@ from polylogue.sources.parsers.base import normalize_role as old_normalize_role
 from polylogue.sources.parsers.claude import (
     extract_text_from_segments as old_extract_segments,
 )
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import (
     ConversationRecord,
 )
@@ -30,113 +29,110 @@ from tests.infra.helpers import (
     make_attachment,
     make_conversation,
     make_message,
+    make_hash,
 )
 
 
 class TestConversationOperations:
     """Test conversation save/retrieve operations."""
 
-    def test_save_and_get_conversation(self, tmp_path: Path) -> None:
+    async def test_save_and_get_conversation(self, tmp_path: Path) -> None:
         """save_conversation persists data retrievable by get_conversation."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("conv-1", title="Test Conversation", provider_name="claude")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
-        retrieved = backend.get_conversation("conv-1")
+        retrieved = await backend.get_conversation("conv-1")
         assert retrieved is not None
         assert retrieved.conversation_id == "conv-1"
         assert retrieved.title == "Test Conversation"
         assert retrieved.provider_name == "claude"
-        backend.close()
+        await backend.close()
 
-    def test_get_nonexistent_conversation_returns_none(self, tmp_path: Path) -> None:
+    async def test_get_nonexistent_conversation_returns_none(self, tmp_path: Path) -> None:
         """get_conversation returns None for missing ID."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        result = backend.get_conversation("nonexistent")
+        result = await backend.get_conversation("nonexistent")
         assert result is None
-        backend.close()
+        await backend.close()
 
-    def test_save_conversation_upserts(self, tmp_path: Path) -> None:
+    async def test_save_conversation_upserts(self, tmp_path: Path) -> None:
         """save_conversation updates existing conversation."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv1 = make_conversation("conv-1", title="Original Title")
-        backend.save_conversation(conv1)
+        await backend.save_conversation_record(conv1)
 
         conv2 = make_conversation("conv-1", title="Updated Title")
-        backend.save_conversation(conv2)
+        await backend.save_conversation_record(conv2)
 
-        retrieved = backend.get_conversation("conv-1")
+        retrieved = await backend.get_conversation("conv-1")
         assert retrieved is not None
         assert retrieved.title == "Updated Title"
-        backend.close()
+        await backend.close()
 
-    def test_list_conversations_returns_all(self, tmp_path: Path) -> None:
+    async def test_list_conversations_returns_all(self, tmp_path: Path) -> None:
         """list_conversations returns all stored conversations."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         for i in range(3):
             conv = make_conversation(f"conv-{i}", title=f"Conversation {i}")
-            backend.save_conversation(conv)
+            await backend.save_conversation_record(conv)
 
-        all_convs = backend.list_conversations()
+        all_convs = await backend.list_conversations()
         assert len(all_convs) == 3
         assert {c.conversation_id for c in all_convs} == {"conv-0", "conv-1", "conv-2"}
-        backend.close()
+        await backend.close()
 
-    def test_list_conversations_filters_by_provider(self, tmp_path: Path) -> None:
+    async def test_list_conversations_filters_by_provider(self, tmp_path: Path) -> None:
         """list_conversations filters by provider_name."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        backend.save_conversation(make_conversation("c1", provider_name="claude"))
-        backend.save_conversation(make_conversation("c2", provider_name="chatgpt"))
-        backend.save_conversation(make_conversation("c3", provider_name="claude"))
+        await backend.save_conversation_record(make_conversation("c1", provider_name="claude"))
+        await backend.save_conversation_record(make_conversation("c2", provider_name="chatgpt"))
+        await backend.save_conversation_record(make_conversation("c3", provider_name="claude"))
 
-        claude_convs = backend.list_conversations(provider="claude")
+        claude_convs = await backend.list_conversations(provider="claude")
         assert len(claude_convs) == 2
         assert all(c.provider_name == "claude" for c in claude_convs)
-        backend.close()
+        await backend.close()
 
-    def test_list_conversations_with_limit_and_offset(self, tmp_path: Path) -> None:
+    async def test_list_conversations_with_limit_and_offset(self, tmp_path: Path) -> None:
         """list_conversations supports pagination."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         for i in range(10):
             conv = make_conversation(f"conv-{i:02d}")
-            backend.save_conversation(conv)
+            await backend.save_conversation_record(conv)
 
-        page1 = backend.list_conversations(limit=3, offset=0)
-        page2 = backend.list_conversations(limit=3, offset=3)
+        page1 = await backend.list_conversations(limit=3, offset=0)
+        page2 = await backend.list_conversations(limit=3, offset=3)
 
         assert len(page1) == 3
         assert len(page2) == 3
         page1_ids = {c.conversation_id for c in page1}
         page2_ids = {c.conversation_id for c in page2}
         assert page1_ids.isdisjoint(page2_ids)
-        backend.close()
+        await backend.close()
 
-    def test_backend_list_conversations_offset_without_limit(self, tmp_path: Path) -> None:
+    async def test_backend_list_conversations_offset_without_limit(self, tmp_path: Path) -> None:
         """Regression: OFFSET without LIMIT must not raise SQL syntax error."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         for i in range(5):
             conv = make_conversation(f"off-{i}", updated_at=f"2024-01-{i+1:02d}T00:00:00Z")
-            backend.save_conversation(conv)
+            await backend.save_conversation_record(conv)
 
         # This previously generated invalid SQL: ... ORDER BY ... OFFSET ? (no LIMIT)
-        result = backend.list_conversations(offset=2)
+        result = await backend.list_conversations(offset=2)
         assert len(result) == 3  # 5 total - 2 skipped = 3
-        backend.close()
+        await backend.close()
 
-    def test_title_contains_escapes_percent_wildcard(self, tmp_path: Path) -> None:
+    async def test_title_contains_escapes_percent_wildcard(self, tmp_path: Path) -> None:
         """LIKE % wildcard should be escaped in title search."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        def make_hash(s: str) -> str:
-            """Create a 16-char content hash."""
-            return hashlib.sha256(s.encode()).hexdigest()[:16]
 
         # Create conversations with titles containing % and x
         conv1 = ConversationRecord(
@@ -157,22 +153,18 @@ class TestConversationOperations:
             updated_at="2025-01-02",
             content_hash=make_hash("100x done"),
         )
-        backend.save_conversation(conv1)
-        backend.save_conversation(conv2)
+        await backend.save_conversation_record(conv1)
+        await backend.save_conversation_record(conv2)
 
         # Search for "100%"
-        results = backend.list_conversations(title_contains="100%")
+        results = await backend.list_conversations(title_contains="100%")
         assert len(results) == 1
         assert results[0].title == "100% done"
-        backend.close()
+        await backend.close()
 
-    def test_title_contains_escapes_underscore_wildcard(self, tmp_path: Path) -> None:
+    async def test_title_contains_escapes_underscore_wildcard(self, tmp_path: Path) -> None:
         """LIKE _ wildcard should be escaped in title search."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        def make_hash(s: str) -> str:
-            """Create a 16-char content hash."""
-            return hashlib.sha256(s.encode()).hexdigest()[:16]
 
         # Create conversations
         conv1 = ConversationRecord(
@@ -193,22 +185,18 @@ class TestConversationOperations:
             updated_at="2025-01-02",
             content_hash=make_hash("100x done"),
         )
-        backend.save_conversation(conv1)
-        backend.save_conversation(conv2)
+        await backend.save_conversation_record(conv1)
+        await backend.save_conversation_record(conv2)
 
         # Search for "100_"
-        results = backend.list_conversations(title_contains="100_")
+        results = await backend.list_conversations(title_contains="100_")
         assert len(results) == 1
         assert results[0].title == "100_ done"
-        backend.close()
+        await backend.close()
 
-    def test_title_contains_escapes_backslash(self, tmp_path: Path) -> None:
+    async def test_title_contains_escapes_backslash(self, tmp_path: Path) -> None:
         """Backslashes should be escaped in title search."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        def make_hash(s: str) -> str:
-            """Create a 16-char content hash."""
-            return hashlib.sha256(s.encode()).hexdigest()[:16]
 
         # Create a conversation with backslash
         conv = ConversationRecord(
@@ -220,16 +208,16 @@ class TestConversationOperations:
             updated_at="2025-01-01",
             content_hash=make_hash("C:\\Users\\test"),
         )
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
         # Search for "C:\Users\test" - should find it
-        results = backend.list_conversations(title_contains="C:\\Users\\test")
+        results = await backend.list_conversations(title_contains="C:\\Users\\test")
         assert len(results) == 1
         assert "C:" in results[0].title
-        backend.close()
+        await backend.close()
 
 
-def test_repository_message_mapping_uses_backend_path(tmp_path: Path) -> None:
+async def test_repository_message_mapping_uses_backend_path(tmp_path: Path) -> None:
     """Regression: _get_message_conversation_mapping must use backend's db_path."""
     from polylogue.storage.repository import ConversationRepository
 
@@ -239,191 +227,199 @@ def test_repository_message_mapping_uses_backend_path(tmp_path: Path) -> None:
     conv = make_conversation("map-conv-1", title="Mapping Test")
     msg = make_message("map-msg-1", "map-conv-1", text="Hello")
 
-    backend.begin()
-    backend.save_conversation(conv)
-    backend.save_messages([msg])
-    backend.commit()
+    await backend.begin()
+    await backend.save_conversation_record(conv)
+    await backend.save_messages([msg])
+    await backend.commit()
 
     repo = ConversationRepository(backend)
-    mapping = repo._get_message_conversation_mapping(["map-msg-1"])
+    mapping = await repo._get_message_conversation_mapping(["map-msg-1"])
     assert mapping == {"map-msg-1": "map-conv-1"}
 
     # Non-existent messages should return empty
-    mapping_empty = repo._get_message_conversation_mapping(["nonexistent"])
+    mapping_empty = await repo._get_message_conversation_mapping(["nonexistent"])
     assert mapping_empty == {}
-    backend.close()
+    await backend.close()
 
 
 class TestMessageOperations:
     """Test message save/retrieve operations."""
 
-    def test_save_and_get_messages(self, tmp_path: Path) -> None:
+    async def test_save_and_get_messages(self, tmp_path: Path) -> None:
         """save_messages persists data retrievable by get_messages."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("conv-1")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
         messages = [
             make_message("m1", "conv-1", role="user", text="Hello"),
             make_message("m2", "conv-1", role="assistant", text="Hi there"),
         ]
-        backend.save_messages(messages)
+        await backend.save_messages(messages)
 
-        retrieved = backend.get_messages("conv-1")
+        retrieved = await backend.get_messages("conv-1")
         assert len(retrieved) == 2
         assert {m.message_id for m in retrieved} == {"m1", "m2"}
         assert {m.role for m in retrieved} == {"user", "assistant"}
-        backend.close()
+        await backend.close()
 
-    def test_get_messages_for_empty_conversation(self, tmp_path: Path) -> None:
+    async def test_get_messages_for_empty_conversation(self, tmp_path: Path) -> None:
         """get_messages returns empty list for conversation with no messages."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("conv-1")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
-        retrieved = backend.get_messages("conv-1")
+        retrieved = await backend.get_messages("conv-1")
         assert retrieved == []
-        backend.close()
+        await backend.close()
 
 
 class TestAttachmentOperations:
     """Test attachment save/retrieve operations."""
 
-    def test_save_and_get_attachments(self, tmp_path: Path) -> None:
+    async def test_save_and_get_attachments(self, tmp_path: Path) -> None:
         """save_attachments persists data retrievable by get_attachments."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("conv-1")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
+
+        # Create messages for attachment references
+        msg = make_message("m1", "conv-1")
+        await backend.save_messages([msg])
 
         attachments = [
-            make_attachment("att1", "conv-1", mime_type="image/png", size_bytes=1024),
-            make_attachment("att2", "conv-1", mime_type="text/plain", size_bytes=256),
+            make_attachment("att1", "conv-1", "m1", mime_type="image/png", size_bytes=1024),
+            make_attachment("att2", "conv-1", "m1", mime_type="text/plain", size_bytes=256),
         ]
-        backend.save_attachments(attachments)
+        await backend.save_attachments(attachments)
 
-        retrieved = backend.get_attachments("conv-1")
+        retrieved = await backend.get_attachments("conv-1")
         assert len(retrieved) == 2
         assert {a.attachment_id for a in retrieved} == {"att1", "att2"}
-        backend.close()
+        await backend.close()
 
-    def test_prune_attachments_removes_unlisted(self, tmp_path: Path) -> None:
+    async def test_prune_attachments_removes_unlisted(self, tmp_path: Path) -> None:
         """prune_attachments removes attachments not in keep set."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("conv-1")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
+
+        # Create messages for attachment references
+        msg = make_message("m1", "conv-1")
+        await backend.save_messages([msg])
 
         attachments = [
-            make_attachment("att1", "conv-1"),
-            make_attachment("att2", "conv-1"),
-            make_attachment("att3", "conv-1"),
+            make_attachment("att1", "conv-1", "m1"),
+            make_attachment("att2", "conv-1", "m1"),
+            make_attachment("att3", "conv-1", "m1"),
         ]
-        backend.save_attachments(attachments)
+        await backend.save_attachments(attachments)
 
-        backend.prune_attachments("conv-1", {"att1", "att3"})
+        await backend.prune_attachments("conv-1", {"att1", "att3"})
 
-        retrieved = backend.get_attachments("conv-1")
+        retrieved = await backend.get_attachments("conv-1")
         assert {a.attachment_id for a in retrieved} == {"att1", "att3"}
-        backend.close()
+        await backend.close()
 
 
 class TestTransactionOperations:
     """Test transaction management."""
 
-    def test_begin_commit_persists_data(self, tmp_path: Path) -> None:
+    async def test_begin_commit_persists_data(self, tmp_path: Path) -> None:
         """Data saved within begin/commit is persisted."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        backend.begin()
+        await backend.begin()
         conv = make_conversation("tx-conv")
-        backend.save_conversation(conv)
-        backend.commit()
+        await backend.save_conversation_record(conv)
+        await backend.commit()
 
-        retrieved = backend.get_conversation("tx-conv")
+        retrieved = await backend.get_conversation("tx-conv")
         assert retrieved is not None
-        backend.close()
+        await backend.close()
 
-    def test_rollback_discards_changes(self, tmp_path: Path) -> None:
+    async def test_rollback_discards_changes(self, tmp_path: Path) -> None:
         """Data saved within begin/rollback is discarded."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        backend.begin()
-        backend.save_conversation(make_conversation("rollback-conv"))
-        backend.rollback()
+        await backend.begin()
+        await backend.save_conversation_record(make_conversation("rollback-conv"))
+        await backend.rollback()
 
-        assert backend.get_conversation("rollback-conv") is None
-        backend.close()
+        assert await backend.get_conversation("rollback-conv") is None
+        await backend.close()
 
 
 class TestMetadataOperations:
     """Test metadata CRUD operations."""
 
-    def test_update_and_get_metadata(self, tmp_path: Path) -> None:
+    async def test_update_and_get_metadata(self, tmp_path: Path) -> None:
         """update_metadata sets key, get_metadata retrieves it."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("conv-1")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
-        backend.update_metadata("conv-1", "rating", 5)
-        backend.update_metadata("conv-1", "reviewed", True)
+        await backend.update_metadata("conv-1", "rating", 5)
+        await backend.update_metadata("conv-1", "reviewed", True)
 
-        metadata = backend.get_metadata("conv-1")
+        metadata = await backend.get_metadata("conv-1")
         assert metadata.get("rating") == 5
         assert metadata.get("reviewed") is True
-        backend.close()
+        await backend.close()
 
-    def test_delete_metadata(self, tmp_path: Path) -> None:
+    async def test_delete_metadata(self, tmp_path: Path) -> None:
         """delete_metadata removes a key."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("conv-1")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
-        backend.update_metadata("conv-1", "temp", "value")
-        backend.delete_metadata("conv-1", "temp")
+        await backend.update_metadata("conv-1", "temp", "value")
+        await backend.delete_metadata("conv-1", "temp")
 
-        metadata = backend.get_metadata("conv-1")
+        metadata = await backend.get_metadata("conv-1")
         assert "temp" not in metadata
-        backend.close()
+        await backend.close()
 
-    def test_add_and_remove_tag(self, tmp_path: Path) -> None:
+    async def test_add_and_remove_tag(self, tmp_path: Path) -> None:
         """add_tag adds to tags list, remove_tag removes it."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("conv-1")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
-        backend.add_tag("conv-1", "important")
-        backend.add_tag("conv-1", "work")
+        await backend.add_tag("conv-1", "important")
+        await backend.add_tag("conv-1", "work")
 
-        metadata = backend.get_metadata("conv-1")
+        metadata = await backend.get_metadata("conv-1")
         tags = metadata.get("tags", [])
         assert "important" in tags
         assert "work" in tags
 
-        backend.remove_tag("conv-1", "work")
-        metadata = backend.get_metadata("conv-1")
+        await backend.remove_tag("conv-1", "work")
+        metadata = await backend.get_metadata("conv-1")
         tags = metadata.get("tags", [])
         assert "important" in tags
         assert "work" not in tags
-        backend.close()
+        await backend.close()
 
-    def test_list_tags_empty(self, tmp_path: Path) -> None:
+    async def test_list_tags_empty(self, tmp_path: Path) -> None:
         """list_tags returns empty dict when no tags exist."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("conv-1")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
-        tags = backend.list_tags()
+        tags = await backend.list_tags()
         assert tags == {}
-        backend.close()
+        await backend.close()
 
-    def test_list_tags_counts(self, tmp_path: Path) -> None:
+    async def test_list_tags_counts(self, tmp_path: Path) -> None:
         """list_tags returns correct tag counts across conversations."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
@@ -432,24 +428,24 @@ class TestMetadataOperations:
         conv2 = make_conversation("conv-2")
         conv3 = make_conversation("conv-3")
 
-        backend.save_conversation(conv1)
-        backend.save_conversation(conv2)
-        backend.save_conversation(conv3)
+        await backend.save_conversation_record(conv1)
+        await backend.save_conversation_record(conv2)
+        await backend.save_conversation_record(conv3)
 
         # Tag conv-1 with "important" and "work"
-        backend.add_tag("conv-1", "important")
-        backend.add_tag("conv-1", "work")
+        await backend.add_tag("conv-1", "important")
+        await backend.add_tag("conv-1", "work")
 
         # Tag conv-2 with "important"
-        backend.add_tag("conv-2", "important")
+        await backend.add_tag("conv-2", "important")
 
         # conv-3 has no tags
 
-        tags = backend.list_tags()
+        tags = await backend.list_tags()
         assert tags == {"important": 2, "work": 1}
-        backend.close()
+        await backend.close()
 
-    def test_list_tags_provider_filter(self, tmp_path: Path) -> None:
+    async def test_list_tags_provider_filter(self, tmp_path: Path) -> None:
         """list_tags with provider filter only counts tags from that provider."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
@@ -457,109 +453,199 @@ class TestMetadataOperations:
         conv_claude = make_conversation("conv-claude", provider_name="claude")
         conv_chatgpt = make_conversation("conv-chatgpt", provider_name="chatgpt")
 
-        backend.save_conversation(conv_claude)
-        backend.save_conversation(conv_chatgpt)
+        await backend.save_conversation_record(conv_claude)
+        await backend.save_conversation_record(conv_chatgpt)
 
         # Tag both
-        backend.add_tag("conv-claude", "important")
-        backend.add_tag("conv-chatgpt", "important")
-        backend.add_tag("conv-chatgpt", "review")
+        await backend.add_tag("conv-claude", "important")
+        await backend.add_tag("conv-chatgpt", "important")
+        await backend.add_tag("conv-chatgpt", "review")
 
         # Filter by claude provider
-        tags_claude = backend.list_tags(provider="claude")
+        tags_claude = await backend.list_tags(provider="claude")
         assert tags_claude == {"important": 1}
 
         # Filter by chatgpt provider
-        tags_chatgpt = backend.list_tags(provider="chatgpt")
+        tags_chatgpt = await backend.list_tags(provider="chatgpt")
         assert tags_chatgpt == {"important": 1, "review": 1}
 
         # All tags
-        tags_all = backend.list_tags()
+        tags_all = await backend.list_tags()
         assert tags_all == {"important": 2, "review": 1}
 
-        backend.close()
+        await backend.close()
 
-    def test_list_tags_dedup(self, tmp_path: Path) -> None:
+    async def test_list_tags_dedup(self, tmp_path: Path) -> None:
         """list_tags doesn't double-count duplicate tags on same conversation."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("conv-1")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
         # Add the same tag twice
-        backend.add_tag("conv-1", "important")
-        backend.add_tag("conv-1", "important")
+        await backend.add_tag("conv-1", "important")
+        await backend.add_tag("conv-1", "important")
 
-        tags = backend.list_tags()
+        tags = await backend.list_tags()
         # Should count as 1, not 2
         assert tags == {"important": 1}
-        backend.close()
+        await backend.close()
 
 
 class TestSearchOperations:
     """Test search and resolve operations."""
 
-    def test_resolve_id_exact_match(self, tmp_path: Path) -> None:
+    async def test_resolve_id_exact_match(self, tmp_path: Path) -> None:
         """resolve_id returns full ID for exact match."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("conversation-12345")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
-        resolved = backend.resolve_id("conversation-12345")
+        resolved = await backend.resolve_id("conversation-12345")
         assert resolved == "conversation-12345"
-        backend.close()
+        await backend.close()
 
-    def test_resolve_id_prefix_match(self, tmp_path: Path) -> None:
+    async def test_resolve_id_prefix_match(self, tmp_path: Path) -> None:
         """resolve_id returns full ID for unique prefix."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("unique-prefix-abc123")
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
-        resolved = backend.resolve_id("unique-prefix")
+        resolved = await backend.resolve_id("unique-prefix")
         assert resolved == "unique-prefix-abc123"
-        backend.close()
+        await backend.close()
 
-    def test_resolve_id_ambiguous_returns_none(self, tmp_path: Path) -> None:
+    async def test_resolve_id_ambiguous_returns_none(self, tmp_path: Path) -> None:
         """resolve_id returns None for ambiguous prefix."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        backend.save_conversation(make_conversation("prefix-abc"))
-        backend.save_conversation(make_conversation("prefix-def"))
+        await backend.save_conversation_record(make_conversation("prefix-abc"))
+        await backend.save_conversation_record(make_conversation("prefix-def"))
 
-        resolved = backend.resolve_id("prefix")
+        resolved = await backend.resolve_id("prefix")
         assert resolved is None
-        backend.close()
+        await backend.close()
 
 
 class TestDeleteOperations:
     """Test deletion operations."""
 
-    def test_delete_conversation(self, tmp_path: Path) -> None:
+    async def test_delete_conversation(self, tmp_path: Path) -> None:
         """delete_conversation removes conversation and related data."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         conv = make_conversation("to-delete")
-        backend.save_conversation(conv)
-        backend.save_messages([make_message("m1", "to-delete")])
-        backend.save_attachments([make_attachment("a1", "to-delete")])
+        await backend.save_conversation_record(conv)
+        await backend.save_messages([make_message("m1", "to-delete")])
+        await backend.save_attachments([make_attachment("a1", "to-delete")])
 
-        result = backend.delete_conversation("to-delete")
+        result = await backend.delete_conversation("to-delete")
         assert result is True
 
-        assert backend.get_conversation("to-delete") is None
-        assert backend.get_messages("to-delete") == []
-        assert backend.get_attachments("to-delete") == []
-        backend.close()
+        assert await backend.get_conversation("to-delete") is None
+        assert await backend.get_messages("to-delete") == []
+        assert await backend.get_attachments("to-delete") == []
+        await backend.close()
 
-    def test_delete_nonexistent_returns_false(self, tmp_path: Path) -> None:
+    async def test_delete_nonexistent_returns_false(self, tmp_path: Path) -> None:
         """delete_conversation returns False for missing ID."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        result = backend.delete_conversation("nonexistent")
+        result = await backend.delete_conversation("nonexistent")
         assert result is False
-        backend.close()
+        await backend.close()
+
+
+class TestPruneAttachments:
+    """Test attachment pruning edge cases."""
+
+    async def test_prune_does_not_remove_shared_attachments(self, tmp_path: Path) -> None:
+        """Attachments referenced by multiple conversations are NOT pruned."""
+        backend = SQLiteBackend(db_path=tmp_path / "prune.db")
+
+        # Two conversations sharing the same attachment ID
+        conv1 = make_conversation("conv-1", title="First")
+        msg1 = make_message("msg-1", "conv-1", text="Hello")
+        att = make_attachment("shared-att", "conv-1", "msg-1", mime_type="image/png", size_bytes=100)
+
+        await backend.save_conversation_record(conv1)
+        await backend.save_messages([msg1])
+        await backend.save_attachments([att])
+
+        conv2 = make_conversation("conv-2", title="Second")
+        msg2 = make_message("msg-2", "conv-2", text="World")
+        att2 = make_attachment("shared-att", "conv-2", "msg-2", mime_type="image/png", size_bytes=100)
+
+        await backend.save_conversation_record(conv2)
+        await backend.save_messages([msg2])
+        await backend.save_attachments([att2])
+
+        # Prune conv-1 without the attachment
+        await backend.prune_attachments("conv-1", set())
+
+        # Attachment should still exist in conv-2
+        conv2_atts = await backend.get_attachments("conv-2")
+        assert len(conv2_atts) == 1
+        assert conv2_atts[0].attachment_id == "shared-att"
+
+        # Check in database that attachment still exists
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'shared-att'")
+            row = await cursor.fetchone()
+            assert row[0] == 1
+        await backend.close()
+
+    async def test_prune_removes_sole_attachment(self, tmp_path: Path) -> None:
+        """Attachments with only one reference are pruned."""
+        backend = SQLiteBackend(db_path=tmp_path / "prune2.db")
+
+        conv = make_conversation("conv-sole", title="Sole")
+        msg = make_message("msg-1", "conv-sole", text="Hello")
+        att = make_attachment("sole-att", "conv-sole", "msg-1", mime_type="text/plain", size_bytes=50)
+
+        await backend.save_conversation_record(conv)
+        await backend.save_messages([msg])
+        await backend.save_attachments([att])
+
+        # Prune without keeping the attachment
+        await backend.prune_attachments("conv-sole", set())
+
+        # Attachment should be removed
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'sole-att'")
+            row = await cursor.fetchone()
+            assert row[0] == 0
+        await backend.close()
+
+    async def test_prune_empty_keep_set_removes_all(self, tmp_path: Path) -> None:
+        """Pruning with empty keep set removes all attachments for conversation."""
+        backend = SQLiteBackend(db_path=tmp_path / "prune3.db")
+
+        conv = make_conversation("conv-empty", title="Empty Keep")
+        msg = make_message("msg-1", "conv-empty", text="Hello")
+        attachments = [
+            make_attachment("att1", "conv-empty", "msg-1"),
+            make_attachment("att2", "conv-empty", "msg-1"),
+            make_attachment("att3", "conv-empty", "msg-1"),
+        ]
+
+        await backend.save_conversation_record(conv)
+        await backend.save_messages([msg])
+        await backend.save_attachments(attachments)
+
+        # Verify attachments were saved
+        before = await backend.get_attachments("conv-empty")
+        assert len(before) == 3
+
+        # Prune with empty keep set
+        await backend.prune_attachments("conv-empty", set())
+
+        # All attachments should be gone
+        after = await backend.get_attachments("conv-empty")
+        assert len(after) == 0
+        await backend.close()
 
 
 # =============================================================================
@@ -730,6 +816,127 @@ class TestBackendComparison:
         print(f"Reasoning traces extracted: {reasoning_found}")
 
         assert tool_calls_found > 0 or reasoning_found >= 0, "New extraction should find viewports"
+
+
+class TestTransactionAtomicity:
+    """Test that transaction management is atomic — partial failures roll back all changes."""
+
+    @pytest.mark.asyncio
+    async def test_message_failure_rolls_back_conversation(self, tmp_path: Path) -> None:
+        """If message saving fails within a transaction, conversation is rolled back."""
+        backend = SQLiteBackend(db_path=tmp_path / "atomic1.db")
+
+        conv = make_conversation("conv-atomic-1", title="Atomic Test 1")
+        msg = make_message("msg-1", "conv-atomic-1", text="Hello")
+
+        # Start explicit transaction
+        await backend.begin()
+        await backend.save_conversation_record(conv)
+
+        # Simulate failure by trying to save a message with bad data
+        # (this would normally fail in a real scenario; we manually raise)
+        try:
+            await backend.save_messages([msg])
+            # Now simulate a failure after messages but before commit
+            raise RuntimeError("Simulated failure after message save")
+        except RuntimeError:
+            await backend.rollback()
+
+        # Verify nothing persisted
+        retrieved = await backend.get_conversation("conv-atomic-1")
+        assert retrieved is None
+
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_attachment_failure_rolls_back_all(self, tmp_path: Path) -> None:
+        """If attachment saving fails, conversation and messages are NOT persisted."""
+        backend = SQLiteBackend(db_path=tmp_path / "atomic2.db")
+
+        conv = make_conversation("conv-atomic-2", title="Atomic Test 2")
+        msg = make_message("msg-1", "conv-atomic-2", text="Hello")
+        att = make_attachment("att-bad", "conv-atomic-2", "msg-1", mime_type="image/png", size_bytes=100)
+
+        await backend.begin()
+        await backend.save_conversation_record(conv)
+        await backend.save_messages([msg])
+
+        # Simulate attachment save failure
+        try:
+            await backend.save_attachments([att])
+            # Simulate a failure during transaction
+            raise RuntimeError("Simulated attachment failure")
+        except RuntimeError:
+            await backend.rollback()
+
+        # Verify nothing persisted
+        retrieved = await backend.get_conversation("conv-atomic-2")
+        assert retrieved is None
+
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_nothing_persisted_after_rollback(self, tmp_path: Path) -> None:
+        """After a rolled-back transaction, database state is completely clean."""
+        backend = SQLiteBackend(db_path=tmp_path / "atomic3.db")
+
+        conv = make_conversation("conv-clean", title="Clean Check")
+        msg = make_message("msg-1", "conv-clean", text="Hello")
+        att = make_attachment("att-1", "conv-clean", "msg-1", mime_type="text/plain", size_bytes=50)
+
+        await backend.begin()
+        try:
+            await backend.save_conversation_record(conv)
+            await backend.save_messages([msg])
+            await backend.save_attachments([att])
+            raise RuntimeError("Boom")
+        except RuntimeError:
+            await backend.rollback()
+
+        # Verify all tables are empty
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
+            row = await cursor.fetchone()
+            assert row[0] == 0
+
+            cursor = await conn.execute("SELECT COUNT(*) FROM messages")
+            row = await cursor.fetchone()
+            assert row[0] == 0
+
+            cursor = await conn.execute("SELECT COUNT(*) FROM attachments")
+            row = await cursor.fetchone()
+            assert row[0] == 0
+
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_successful_transaction_persists(self, tmp_path: Path) -> None:
+        """A successful transaction persists all data."""
+        backend = SQLiteBackend(db_path=tmp_path / "atomic4.db")
+
+        conv = make_conversation("conv-success", title="Success Test")
+        msg = make_message("msg-1", "conv-success", text="Hello")
+        att = make_attachment("att-1", "conv-success", "msg-1", mime_type="text/plain", size_bytes=50)
+
+        async with backend.transaction():
+            await backend.save_conversation_record(conv)
+            await backend.save_messages([msg])
+            await backend.save_attachments([att])
+
+        # Verify all data persisted
+        retrieved_conv = await backend.get_conversation("conv-success")
+        assert retrieved_conv is not None
+        assert retrieved_conv.title == "Success Test"
+
+        retrieved_msgs = await backend.get_messages("conv-success")
+        assert len(retrieved_msgs) == 1
+        assert retrieved_msgs[0].message_id == "msg-1"
+
+        retrieved_atts = await backend.get_attachments("conv-success")
+        assert len(retrieved_atts) == 1
+        assert retrieved_atts[0].attachment_id == "att-1"
+
+        await backend.close()
 
 
 class TestAPICompatibility:

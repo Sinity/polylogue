@@ -1,14 +1,16 @@
-"""Rendering service for pipeline operations."""
+"""Async rendering service for pipeline operations."""
 
 from __future__ import annotations
 
-import concurrent.futures
 from pathlib import Path
+from typing import Any
 
 from polylogue.lib.log import get_logger
 from polylogue.protocols import OutputRenderer
 
 logger = get_logger(__name__)
+
+__all__ = ["RenderService", "RenderResult"]
 
 
 class RenderResult:
@@ -38,14 +40,14 @@ class RenderResult:
 
 
 class RenderService:
-    """Service for rendering conversations to Markdown and HTML."""
+    """Service for rendering conversations to Markdown and HTML (async version)."""
 
     def __init__(
         self,
         renderer: OutputRenderer,
         render_root: Path,
     ):
-        """Initialize the rendering service.
+        """Initialize the async rendering service.
 
         Args:
             renderer: OutputRenderer implementation for rendering conversations
@@ -54,36 +56,44 @@ class RenderService:
         self.renderer = renderer
         self.render_root = render_root
 
-    def render_conversations(
+    async def render_conversations(
         self,
         conversation_ids: list[str],
         *,
         max_workers: int = 4,
+        progress_callback: Any | None = None,
     ) -> RenderResult:
-        """Render multiple conversations in parallel.
+        """Render multiple conversations concurrently.
 
         Args:
             conversation_ids: List of conversation IDs to render
-            max_workers: Maximum number of parallel workers
+            max_workers: Maximum number of concurrent tasks
+            progress_callback: Optional callback(amount, desc=...) for progress updates
 
         Returns:
             RenderResult with success count and failures
         """
+        import asyncio
+
         result = RenderResult()
+        semaphore = asyncio.Semaphore(max_workers)
+        total = len(conversation_ids)
 
-        def _render_one(convo_id: str) -> int:
-            self.renderer.render(convo_id, self.render_root)
-            return 1
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            render_futures = {executor.submit(_render_one, cid): cid for cid in conversation_ids}
-            for fut in concurrent.futures.as_completed(render_futures):
-                convo_id = render_futures[fut]
+        async def _render_one(convo_id: str) -> None:
+            async with semaphore:
                 try:
-                    fut.result()
+                    await self.renderer.render(convo_id, self.render_root)
                     result.record_success()
                 except Exception as exc:
                     logger.warning("Failed to render conversation %s: %s", convo_id, exc)
                     result.record_failure(convo_id, str(exc))
+                if progress_callback is not None:
+                    done = result.rendered_count + len(result.failures)
+                    progress_callback(1, desc=f"Rendering: {done}/{total}")
+
+        await asyncio.gather(
+            *(_render_one(cid) for cid in conversation_ids),
+            return_exceptions=False,
+        )
 
         return result
