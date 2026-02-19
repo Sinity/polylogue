@@ -230,6 +230,11 @@ class ClaudeCodeRecord(BaseModel):
             return "tool"
         return "unknown"
 
+    @property
+    def role_normalized(self) -> str:
+        """Normalize role to standard viewport values (delegates to role)."""
+        return self.role
+
     @staticmethod
     def _text_from_blocks(content: list[Any]) -> str:
         """Extract text from a list of content block dicts.

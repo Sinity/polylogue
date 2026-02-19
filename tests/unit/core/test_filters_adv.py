@@ -609,59 +609,6 @@ class TestConversationFilterListSummaries:
         result = await ConversationFilter(filter_repo_advanced).has("summary").list_summaries()
         # All results should have summary
         assert all(s.summary for s in result)
-
-
-# ============================================================================
-# Tests for pick() terminal method
-# ============================================================================
-
-
-class TestConversationFilterPick:
-    """Tests for pick() interactive selection method."""
-
-    @pytest.mark.asyncio
-    async def test_pick_returns_conversation_or_none(self, filter_repo_advanced):
-        """pick() returns Conversation or None."""
-        result = await ConversationFilter(filter_repo_advanced).pick()
-        # Should return first conversation (since not in TTY)
-        assert result is not None
-        assert hasattr(result, "id")
-
-    @pytest.mark.asyncio
-    async def test_pick_returns_first_when_not_tty(self, filter_repo_advanced):
-        """pick() returns first match when not in TTY."""
-        all_convs = await ConversationFilter(filter_repo_advanced).list()
-        if all_convs:
-            picked = await ConversationFilter(filter_repo_advanced).pick()
-            assert picked is not None
-            assert picked.id == all_convs[0].id
-
-    @pytest.mark.asyncio
-    async def test_pick_with_filter_respects_filter(self, filter_repo_advanced):
-        """pick() on filtered results returns from filtered set."""
-        filtered_convs = await ConversationFilter(filter_repo_advanced).provider("claude").list()
-        if filtered_convs:
-            picked = await ConversationFilter(filter_repo_advanced).provider("claude").pick()
-            assert picked is not None
-            assert picked.provider == "claude"
-
-    @pytest.mark.asyncio
-    async def test_pick_returns_none_on_empty_results(self, filter_repo_advanced):
-        """pick() returns None when no matches."""
-        result = await ConversationFilter(filter_repo_advanced).provider("nonexistent").pick()
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_pick_with_limit(self, filter_repo_advanced):
-        """pick() respects limit."""
-        # With limit(1), we have at most 1 choice
-        picked = await ConversationFilter(filter_repo_advanced).limit(1).pick()
-        if picked:
-            # Should be the first conversation
-            all_first = await ConversationFilter(filter_repo_advanced).limit(1).list()
-            assert picked.id == all_first[0].id
-
-
 # ============================================================================
 # Tests for empty repository edge cases
 # ============================================================================

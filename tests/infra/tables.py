@@ -147,3 +147,91 @@ NORMALIZE_ROLE_CANONICAL: list[tuple[str, str, str]] = [
     ("custom_role", "unknown", "unknown_passthrough"),
     ("gibberish", "unknown", "gibberish"),
 ]
+
+# =============================================================================
+# parse_timestamp: comprehensive format table
+#
+# Production code: polylogue.lib.timestamps.parse_timestamp
+# Tuples: (input_value, expected_year, expected_month, expected_day, expected_microsecond_or_None, description)
+# When expected_year is None → result must be None
+# =============================================================================
+
+PARSE_TIMESTAMP_FORMAT_TABLE: list[tuple] = [
+    # Epoch integers
+    (1704067200, 2024, 1, 1, None, "epoch_int"),
+    (1704067200.5, 2024, 1, 1, 500000, "epoch_float"),
+    # Epoch strings
+    ("1704067200", 2024, 1, 1, None, "epoch_string"),
+    ("1704067200.5", 2024, 1, 1, 500000, "epoch_string_decimal"),
+    # ISO 8601 variants
+    ("2024-01-01T00:00:00", 2024, 1, 1, None, "iso_basic"),
+    ("2024-01-01T00:00:00Z", 2024, 1, 1, None, "iso_z"),
+    ("2024-01-01T00:00:00+00:00", 2024, 1, 1, None, "iso_offset"),
+    ("2024-01-01T00:00:00.500000", 2024, 1, 1, 500000, "iso_microseconds"),
+    # Millisecond epoch (Claude Code uses these — treated as seconds by generic parser → None)
+    (1704067200000, None, None, None, None, "ms_epoch_int"),
+    ("1704067200000", None, None, None, None, "ms_epoch_string"),
+    # None and invalid
+    (None, None, None, None, None, "none_input"),
+    ("", None, None, None, None, "empty_string"),
+    ("not-a-date", None, None, None, None, "garbage"),
+    # Boundary: below minimum epoch threshold (treated as year, returns None)
+    ("2024", None, None, None, None, "year_string"),
+    ("86399", None, None, None, None, "below_threshold"),
+    # Boundary: epoch threshold
+    ("86400", 1970, 1, 2, None, "epoch_threshold"),
+]
+
+
+# =============================================================================
+# format_timestamp: round-trip and formatting table
+#
+# Production code: polylogue.lib.timestamps.format_timestamp
+# Tuples: (input, expected_prefix, description)
+# expected_prefix: the ISO 8601 date prefix that must appear in the output
+# =============================================================================
+
+from datetime import datetime as _datetime, timezone as _timezone
+
+FORMAT_TIMESTAMP_TABLE: list[tuple] = [
+    (1700000000, "2023-", "epoch_int_gives_2023"),
+    (_datetime(2024, 6, 15, 12, 0, 0, tzinfo=_timezone.utc), "2024-06-15", "utc_datetime"),
+    (_datetime(2024, 1, 1, 0, 0, 0), "2024-01-01", "naive_datetime_treated_as_utc"),
+]
+
+
+# =============================================================================
+# Unified role normalization: all providers in one table
+#
+# (provider_name, raw_role_input, expected_role_normalized, description)
+# =============================================================================
+
+UNIFIED_ROLE_NORMALIZATION: list[tuple[str, str, str, str]] = [
+    # Claude Code (type → role)
+    ("claude-code", "user", "user", "cc_user"),
+    ("claude-code", "assistant", "assistant", "cc_assistant"),
+    ("claude-code", "system", "system", "cc_system"),
+    ("claude-code", "summary", "system", "cc_summary"),
+    ("claude-code", "progress", "tool", "cc_progress"),
+    ("claude-code", "result", "tool", "cc_result"),
+    ("claude-code", "init", "unknown", "cc_init"),
+    # Claude AI
+    ("claude-ai", "human", "user", "cai_human"),
+    ("claude-ai", "assistant", "assistant", "cai_assistant"),
+    ("claude-ai", "system", "system", "cai_system"),
+    ("claude-ai", "", "unknown", "cai_empty"),
+    # ChatGPT
+    ("chatgpt", "user", "user", "cgpt_user"),
+    ("chatgpt", "assistant", "assistant", "cgpt_assistant"),
+    ("chatgpt", "tool", "tool", "cgpt_tool"),
+    ("chatgpt", "system", "system", "cgpt_system"),
+    ("chatgpt", "custom", "unknown", "cgpt_custom"),
+    # Gemini
+    ("gemini", "user", "user", "gem_user"),
+    ("gemini", "model", "assistant", "gem_model"),
+    ("gemini", "USER", "user", "gem_user_upper"),
+    ("gemini", "MODEL", "assistant", "gem_model_upper"),
+    # Codex
+    ("codex", "user", "user", "codex_user"),
+    ("codex", "assistant", "assistant", "codex_assistant"),
+]
