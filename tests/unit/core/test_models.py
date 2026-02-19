@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from polylogue.lib.messages import MessageCollection, MessageSource
+from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import (
     Attachment,
     Conversation,
@@ -500,54 +500,18 @@ class TestConversationIterBranches:
 
 
 class TestMessageCollectionConstruction:
-    """Test MessageCollection construction, lazy loading, and pydantic schema."""
+    """Test MessageCollection construction and pydantic schema."""
 
-    # --- init errors ---
-
-    def test_init_both_messages_and_source(self):
-        """Line 124: Cannot specify both messages and conversation_id/source."""
-        source = Mock(spec=MessageSource)
-        with pytest.raises(ValueError, match="Cannot specify both"):
-            MessageCollection(
-                messages=[],
-                conversation_id="c1",
-                source=source,
-            )
-
-    @pytest.mark.parametrize("kwargs", [
-        {},
-        {"conversation_id": "c1"},
-        {"source": Mock(spec=MessageSource)},
-    ], ids=["no_args", "only_conv_id", "only_source"])
-    def test_init_missing_arguments(self, kwargs):
-        """Line 136: Missing required arguments."""
-        with pytest.raises(ValueError, match="Must specify either"):
-            MessageCollection(**kwargs)
-
-    # --- is_lazy ---
-
-    def test_is_lazy_true(self):
-        """Line 147: Lazy mode (not materialized)."""
-        source = Mock(spec=MessageSource)
-        source.count_messages.return_value = 5
-        coll = MessageCollection(conversation_id="c1", source=source)
-        assert coll.is_lazy is True
-
-    def test_is_lazy_false_eager(self):
-        """Line 147: Eager mode (messages provided)."""
+    def test_is_lazy_always_false(self):
+        """MessageCollection is always eager — is_lazy is always False."""
         coll = MessageCollection(messages=[])
         assert coll.is_lazy is False
 
-    def test_is_lazy_false_materialized(self):
-        """Line 147: Lazy mode but materialized."""
+    def test_materialize_is_noop(self):
+        """materialize() returns self unchanged (already eager)."""
         msg = Message(id="m1", role="user", text="hello")
-        source = Mock(spec=MessageSource)
-        source.iter_messages.return_value = iter([msg])
-        coll = MessageCollection(conversation_id="c1", source=source)
-        # Use materialize() to ensure it's marked as materialized
-        assert coll.is_lazy is True  # Before materialize
-        coll.materialize()  # Ensure _messages is populated and _is_lazy is set False
-        assert coll.is_lazy is False
+        coll = MessageCollection(messages=[msg])
+        assert coll.materialize() is coll
 
     # --- pydantic schema ---
 
@@ -591,23 +555,6 @@ class TestMessageCollectionProtocol:
         coll = MessageCollection(messages=messages)
         assert len(coll) == expected_len
 
-    def test_len_lazy_uncached(self):
-        """Lines 179-181: Lazy mode queries source."""
-        source = Mock(spec=MessageSource)
-        source.count_messages.return_value = 5
-        coll = MessageCollection(conversation_id="c1", source=source)
-        assert len(coll) == 5
-
-    def test_len_lazy_cached(self):
-        """Lines 176-177: Use cached count."""
-        source = Mock(spec=MessageSource)
-        source.count_messages.return_value = 5
-        coll = MessageCollection(conversation_id="c1", source=source)
-        len(coll)  # First call
-        len(coll)  # Should use cache
-        # count_messages called only once
-        source.count_messages.assert_called_once()
-
     def test_len_empty_edge_case(self):
         """Line 183: Return 0 if no source or conversation_id."""
         coll = MessageCollection(messages=[])
@@ -627,15 +574,6 @@ class TestMessageCollectionProtocol:
         assert bool(coll) is True
 
     # --- __repr__ ---
-
-    def test_repr_lazy(self):
-        """Lines 215-217: Representation includes 'lazy' mode."""
-        source = Mock(spec=MessageSource)
-        source.count_messages.return_value = 5
-        coll = MessageCollection(conversation_id="c1", source=source)
-        repr_str = repr(coll)
-        assert "lazy" in repr_str
-        assert "5" in repr_str
 
     def test_repr_eager(self):
         """Lines 215-217: Representation includes 'eager' mode."""
@@ -694,32 +632,6 @@ class TestMessageCollectionProtocol:
         # Should be a copy
         lst.append(Message(id="m2", role="user", text="world"))
         assert len(coll.to_list()) == 1
-
-    def test_to_list_lazy(self):
-        """Line 244: Lazy mode materializes."""
-        msg1 = Message(id="m1", role="user", text="hello")
-        source = Mock(spec=MessageSource)
-        source.iter_messages.return_value = iter([msg1])
-        coll = MessageCollection(conversation_id="c1", source=source)
-        lst = coll.to_list()
-        assert len(lst) == 1
-
-    def test_materialize_returns_self(self):
-        """Lines 255-257: materialize() returns self."""
-        source = Mock(spec=MessageSource)
-        source.iter_messages.return_value = iter([])
-        coll = MessageCollection(conversation_id="c1", source=source)
-        result = coll.materialize()
-        assert result is coll
-
-    def test_materialize_sets_lazy_false(self):
-        """Lines 256-257: materialize() sets is_lazy to False."""
-        source = Mock(spec=MessageSource)
-        source.iter_messages.return_value = iter([])
-        coll = MessageCollection(conversation_id="c1", source=source)
-        assert coll.is_lazy is True
-        coll.materialize()
-        assert coll.is_lazy is False
 
     # --- empty ---
 
@@ -848,25 +760,6 @@ class TestConversationFromRecords:
         assert conv.id == "c1"
         assert len(conv.messages) == 1
         assert len(conv.messages[0].attachments) == 1
-
-
-class TestConversationFromLazy:
-    """Test Conversation.from_lazy() class method."""
-
-    def test_from_lazy_creates_lazy_collection(self):
-        """Create conversation with lazy message loading."""
-        conv_record = ConversationRecord(
-            conversation_id="c1",
-            provider_name="claude",
-            provider_conversation_id="prov-c1",
-            content_hash="hash-c1",
-            title="Test",
-        )
-        source = Mock(spec=MessageSource)
-        source.count_messages.return_value = 10
-        conv = Conversation.from_lazy(conv_record, source)
-        assert conv.id == "c1"
-        assert conv.messages.is_lazy is True
 
 
 # --- merged from test_message_classification.py ---

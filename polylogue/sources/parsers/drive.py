@@ -208,3 +208,8 @@ def parse_chunked_prompt(provider: str, payload: dict[str, object], fallback_id:
         messages=messages,
         attachments=attachments,
     )
+
+
+def looks_like(payload: object) -> bool:
+    """Return True if payload looks like a Drive / Gemini chunkedPrompt export."""
+    return isinstance(payload, dict) and "chunkedPrompt" in payload
