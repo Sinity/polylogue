@@ -654,24 +654,9 @@ class TestClaudeCodeTextContent:
         assert rec.text_content == ""
 
 
-class TestClaudeCodeRoleNormalization:
-    """Tests for ClaudeCodeRecord.role property."""
-
-    @pytest.mark.parametrize("type_val,expected", [
-        ("user", "user"),
-        ("assistant", "assistant"),
-        ("summary", "system"),
-        ("system", "system"),
-        ("file-history-snapshot", "system"),
-        ("queue-operation", "system"),
-        ("progress", "tool"),
-        ("result", "tool"),
-        ("unknown_type", "unknown"),
-    ])
-    def test_role_mapping(self, type_val, expected):
-        """Each type maps to the expected role."""
-        rec = ClaudeCodeRecord(type=type_val)
-        assert rec.role == expected
+# NOTE: TestClaudeCodeRoleNormalization was consolidated into
+# tests/unit/sources/test_models.py::TestClaudeCodeRecordRole using
+# canonical tables from tests/infra/tables.py.
 
 
 class TestClaudeCodeContentBlocksRaw:
@@ -714,84 +699,10 @@ class TestClaudeCodeContentBlocksRaw:
         assert rec.content_blocks_raw == []
 
 
-class TestClaudeCodeIsContextCompaction:
-    """Tests for ClaudeCodeRecord context compaction detection."""
-
-    @pytest.mark.parametrize("record_type,is_compaction", [
-        ("summary", True),
-        ("user", False),
-        ("assistant", False),
-        ("progress", False),
-        ("system", False),
-    ])
-    def test_context_compaction_detection(self, record_type, is_compaction):
-        """Test is_context_compaction for various record types."""
-        rec = ClaudeCodeRecord(type=record_type)
-        assert rec.is_context_compaction is is_compaction
-
-
-class TestClaudeCodeIsToolProgress:
-    """Tests for ClaudeCodeRecord tool progress detection."""
-
-    @pytest.mark.parametrize("record_type,is_tool_progress", [
-        ("progress", True),
-        ("user", False),
-        ("assistant", False),
-        ("summary", False),
-        ("system", False),
-    ])
-    def test_tool_progress_detection(self, record_type, is_tool_progress):
-        """Test is_tool_progress for various record types."""
-        rec = ClaudeCodeRecord(type=record_type)
-        assert rec.is_tool_progress is is_tool_progress
-
-
-class TestClaudeCodeIsActualMessage:
-    """Tests for ClaudeCodeRecord actual message detection."""
-
-    @pytest.mark.parametrize("record_type,is_actual_message", [
-        ("user", True),
-        ("assistant", True),
-        ("system", False),
-        ("progress", False),
-        ("summary", False),
-        ("file-history-snapshot", False),
-    ])
-    def test_actual_message_detection(self, record_type, is_actual_message):
-        """Test is_actual_message for various record types."""
-        rec = ClaudeCodeRecord(type=record_type)
-        assert rec.is_actual_message is is_actual_message
-
-
-class TestClaudeCodeParsedTimestamp:
-    """Tests for ClaudeCodeRecord.parsed_timestamp."""
-
-    @pytest.mark.parametrize("timestamp,expected_year", [
-        # iso_string_timestamp: ISO format timestamp string
-        ("2024-06-15T10:30:00Z", 2024),
-        # unix_seconds_timestamp: Unix timestamp in seconds
-        (1700000000.0, None),  # Just check not None
-        # unix_milliseconds_timestamp: Unix timestamp in milliseconds
-        (1700000000000, None),
-    ])
-    def test_valid_timestamp_formats(self, timestamp, expected_year):
-        """Test parsing of valid timestamp formats."""
-        rec = ClaudeCodeRecord(type="user", timestamp=timestamp)
-        ts = rec.parsed_timestamp
-        assert ts is not None
-        if expected_year:
-            assert ts.year == expected_year
-
-    @pytest.mark.parametrize("timestamp,description", [
-        # no_timestamp: No timestamp provided
-        (None, "missing"),
-        # malformed_timestamp: Malformed format
-        ("not a date", "malformed"),
-    ])
-    def test_invalid_timestamps(self, timestamp, description):
-        """Test that invalid timestamps return None."""
-        rec = ClaudeCodeRecord(type="user", timestamp=timestamp) if timestamp is not None else ClaudeCodeRecord(type="user")
-        assert rec.parsed_timestamp is None
+# NOTE: TestClaudeCodeIsContextCompaction, TestClaudeCodeIsToolProgress,
+# TestClaudeCodeIsActualMessage, and TestClaudeCodeParsedTimestamp were
+# consolidated into tests/unit/sources/test_models.py using canonical
+# tables from tests/infra/tables.py.
 
 
 class TestClaudeCodeToMeta:

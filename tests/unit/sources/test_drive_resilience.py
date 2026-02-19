@@ -439,11 +439,16 @@ class TestTokenRefreshErrorHandling:
 
         mock_request = MagicMock()
 
+        mock_creds_cls = MagicMock(
+            from_authorized_user_file=MagicMock(return_value=mock_creds),
+            from_authorized_user_info=MagicMock(return_value=mock_creds),
+        )
+
         def mock_import(name: str):
             if name == "google.auth.transport.requests":
                 return MagicMock(Request=MagicMock(return_value=mock_request))
             if name == "google.oauth2.credentials":
-                return MagicMock(Credentials=MagicMock(from_authorized_user_file=MagicMock(return_value=mock_creds)))
+                return MagicMock(Credentials=mock_creds_cls)
             return importlib.import_module(name)
 
         monkeypatch.setattr(drive_client, "_import_module", mock_import)
