@@ -14,6 +14,7 @@ import pytest
 
 from polylogue.lib.timestamps import format_timestamp, parse_timestamp
 from polylogue.schemas.schema_inference import _is_safe_enum_value
+from tests.infra.tables import FORMAT_TIMESTAMP_TABLE, PARSE_TIMESTAMP_FORMAT_TABLE
 
 
 # =============================================================================
@@ -126,10 +127,40 @@ class TestTimestampEdgeCases:
 
 
 # =============================================================================
+# parse_timestamp: comprehensive format coverage (canonical table)
+# =============================================================================
+
+class TestParseTimestampFormats:
+    """Comprehensive format coverage using canonical table."""
+
+    @pytest.mark.parametrize(
+        "input_val,exp_year,exp_month,exp_day,exp_micro,desc",
+        PARSE_TIMESTAMP_FORMAT_TABLE,
+    )
+    def test_parse_timestamp_table(self, input_val, exp_year, exp_month, exp_day, exp_micro, desc):
+        result = parse_timestamp(input_val)
+        if exp_year is None:
+            assert result is None, f"Expected None for {desc!r}, got {result}"
+        else:
+            assert result is not None, f"Failed to parse {desc!r}: {input_val!r}"
+            assert result.year == exp_year, f"Wrong year for {desc!r}"
+            assert result.month == exp_month, f"Wrong month for {desc!r}"
+            assert result.day == exp_day, f"Wrong day for {desc!r}"
+            if exp_micro is not None:
+                assert result.microsecond == exp_micro, f"Wrong microseconds for {desc!r}"
+
+
+# =============================================================================
 # format_timestamp: round-trip consistency
 # =============================================================================
 
 class TestFormatTimestamp:
+    @pytest.mark.parametrize("input_val,expected_prefix,desc", FORMAT_TIMESTAMP_TABLE)
+    def test_format_timestamp_table(self, input_val, expected_prefix, desc):
+        result = format_timestamp(input_val)
+        assert result is not None
+        assert expected_prefix in result, f"Expected {expected_prefix!r} in result for {desc!r}"
+
     def test_epoch_roundtrip(self):
         formatted = format_timestamp(1700000000)
         assert "+00:00" in formatted
@@ -151,68 +182,47 @@ class TestFormatTimestamp:
 # _is_safe_enum_value: PII prevention (d770e29)
 # =============================================================================
 
-class TestSafeEnumValue:
-    """Schema annotations must not leak personal data."""
+SAFE_ENUM_ALLOWED = [
+    ("user", "role"),
+    ("assistant", "role"),
+    ("system", "role"),
+    ("tool", "role"),
+    ("text", "content_type"),
+    ("code", "content_type"),
+    ("STOP", "stop_reason"),
+    ("MAX_TOKENS", "stop_reason"),
+    ("finished_successfully", "stop_reason"),
+    ("application/json", "mime_type"),
+]
 
-    @pytest.mark.parametrize("value", [
-        "user", "assistant", "system", "tool",
-        "text", "code", "STOP", "MAX_TOKENS",
-        "finished_successfully",
-        "application/json",
-    ])
-    def test_technical_identifiers_allowed(self, value):
-        assert _is_safe_enum_value(value) is True
+SAFE_ENUM_BLOCKED = [
+    ("john.doe@gmail.com", "email"),
+    ("user@company.org", "email"),
+    ("https://example.com/path", "url"),
+    ("http://internal.server:8080", "url"),
+    ("/home/user/documents/file.txt", "absolute_path"),
+    ("/etc/passwd", "absolute_path"),
+    ("photo.png", "file_extension"),
+    ("document.json", "file_extension"),
+    ("archive.zip", "file_extension"),
+    ("image.jpg", "file_extension"),
+    ("script.py", "file_extension"),
+    ("2024-01-15T10:30:00", "timestamp"),
+    ("2024-01-15T10:30:00Z", "timestamp"),
+    ("", "empty"),
+    ("café", "non_ascii"),
+    ("hello world", "spaces"),
+    ("example.com", "domain"),
+    ("+1234567890", "plus_prefix"),
+    ("+base64data", "plus_prefix"),
+]
 
-    @pytest.mark.parametrize("value", [
-        "john.doe@gmail.com",
-        "user@company.org",
-    ])
-    def test_emails_blocked(self, value):
-        assert _is_safe_enum_value(value) is False
 
-    @pytest.mark.parametrize("value", [
-        "https://example.com/path",
-        "http://internal.server:8080",
-    ])
-    def test_urls_blocked(self, value):
-        assert _is_safe_enum_value(value) is False
+@pytest.mark.parametrize("value,category", SAFE_ENUM_ALLOWED)
+def test_safe_enum_value_allowed(value, category):
+    assert _is_safe_enum_value(value) is True, f"Should allow {category}: {value!r}"
 
-    @pytest.mark.parametrize("value", [
-        "/home/user/documents/file.txt",
-        "/etc/passwd",
-    ])
-    def test_absolute_paths_blocked(self, value):
-        assert _is_safe_enum_value(value) is False
 
-    @pytest.mark.parametrize("value", [
-        "photo.png", "document.json", "archive.zip",
-        "image.jpg", "script.py",
-    ])
-    def test_file_extensions_blocked(self, value):
-        assert _is_safe_enum_value(value) is False
-
-    @pytest.mark.parametrize("value", [
-        "2024-01-15T10:30:00",
-        "2024-01-15T10:30:00Z",
-    ])
-    def test_timestamps_blocked(self, value):
-        assert _is_safe_enum_value(value) is False
-
-    def test_empty_string_blocked(self):
-        assert _is_safe_enum_value("") is False
-
-    def test_non_ascii_blocked(self):
-        assert _is_safe_enum_value("café") is False
-
-    def test_spaces_blocked(self):
-        assert _is_safe_enum_value("hello world") is False
-
-    def test_domains_blocked(self):
-        assert _is_safe_enum_value("example.com") is False
-
-    @pytest.mark.parametrize("value", [
-        "+1234567890",
-        "+base64data",
-    ])
-    def test_plus_prefix_blocked(self, value):
-        assert _is_safe_enum_value(value) is False
+@pytest.mark.parametrize("value,category", SAFE_ENUM_BLOCKED)
+def test_safe_enum_value_blocked(value, category):
+    assert _is_safe_enum_value(value) is False, f"Should block {category}: {value!r}"

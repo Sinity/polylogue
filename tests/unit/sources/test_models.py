@@ -27,6 +27,7 @@ from polylogue.sources.providers.claude_code import (
     ClaudeCodeUserMessage,
 )
 from polylogue.sources.providers.gemini import GeminiMessage, GeminiPart, GeminiThoughtSignature
+from polylogue.sources.providers.codex import CodexRecord
 
 # =============================================================================
 # Test Data Tables — all from shared infra (single source of truth)
@@ -41,6 +42,7 @@ from tests.infra.tables import (
     CLAUDE_CODE_TYPE_ROLE_MAPPING,
     GEMINI_ROLE_MAPPING,
     NORMALIZE_ROLE_CANONICAL,
+    UNIFIED_ROLE_NORMALIZATION,
 )
 
 CLAUDE_AI_ROLE_MAPPING = [
@@ -130,6 +132,11 @@ class TestGeminiMessageTextContent:
         assert traces[0].text == "Thinking..."
 
 
+    def test_role_none_defaults_to_unknown(self):
+        msg = GeminiMessage(text="hi", role="user")
+        msg.role = None
+        assert msg.role_normalized == "unknown"
+
 # =============================================================================
 # MERGED: Claude Code Record Tests (from test_claude_code_record.py)
 # =============================================================================
@@ -201,6 +208,11 @@ class TestClaudeCodeRecordTextContent2:
     def test_text_content(self, message, expected, test_id):
         record = ClaudeCodeRecord(type="user" if message is None else "assistant", message=message)
         assert record.text_content == expected
+
+    def test_top_level_content_field_for_summary_records(self):
+        """Summary/system records with top-level content field return it as text."""
+        record = ClaudeCodeRecord(type="summary", content="Compacted conversation context")
+        assert record.text_content == "Compacted conversation context"
 
 
 class TestClaudeCodeRecordContentBlocksRaw2:
@@ -450,24 +462,6 @@ class TestClaudeCodeRecordViewportMethods:
         blocks = record.extract_content_blocks()
         assert len(blocks) >= 1
 
-
-# =============================================================================
-# MERGED: Gemini Additional Tests (from test_provider_coverage_extra.py)
-# =============================================================================
-
-
-class TestGeminiRoleNormalizedExtra:
-    """Test GeminiMessage.role_normalized — full case matrix from shared tables."""
-
-    @pytest.mark.parametrize("role,expected", GEMINI_ROLE_MAPPING)
-    def test_role_normalized(self, role, expected):
-        msg = GeminiMessage(text="hi", role=role)
-        assert msg.role_normalized == expected
-
-    def test_role_none_defaults_to_unknown(self):
-        msg = GeminiMessage(text="hi", role="user")
-        msg.role = None
-        assert msg.role_normalized == "unknown"
 
 
 class TestGeminiTextContentExtra:
@@ -909,3 +903,38 @@ class TestNormalizeRole:
             text="Hello",
         )
         assert msg.role == "assistant"
+
+
+# =============================================================================
+# Unified role normalization test
+# =============================================================================
+
+def _make_provider_record_with_role(provider: str, raw_role: str):
+    """Construct the canonical record type for each provider with the given role."""
+    if provider == "claude-code":
+        # ClaudeCodeRecord.role_normalized delegates to .role which is derived from .type
+        return ClaudeCodeRecord(type=raw_role)
+    if provider == "claude-ai":
+        return ClaudeAIChatMessage(uuid="u1", text="t", sender=raw_role)
+    if provider == "chatgpt":
+        from polylogue.sources.providers.chatgpt import ChatGPTAuthor, ChatGPTMessage
+        return ChatGPTMessage(id="1", author=ChatGPTAuthor(role=raw_role))
+    if provider == "gemini":
+        return GeminiMessage(text="x", role=raw_role)
+    if provider == "codex":
+        return CodexRecord(role=raw_role)
+    raise ValueError(f"Unknown provider: {provider!r}")
+
+
+class TestUnifiedRoleNormalization:
+    """All providers map roles correctly — single mega-table drives all assertions."""
+
+    @pytest.mark.parametrize(
+        "provider,raw_role,expected,desc",
+        UNIFIED_ROLE_NORMALIZATION,
+        ids=[row[3] for row in UNIFIED_ROLE_NORMALIZATION],
+    )
+    def test_unified_role_normalization(self, provider, raw_role, expected, desc):
+        """All providers map roles correctly."""
+        record = _make_provider_record_with_role(provider, raw_role)
+        assert record.role_normalized == expected

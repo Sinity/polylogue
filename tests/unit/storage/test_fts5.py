@@ -318,17 +318,22 @@ async def test_batch_index_search_returns_correct_provider(workspace_env, storag
 # ============================================================================
 
 
+# ============================================================================
+# FTS5 ESCAPING - PARAMETRIZED
+# ============================================================================
+
+
 FTS5_ESCAPE_CASES = [
     # Empty/whitespace
     ('', '""', "empty query"),
     ('   ', '""', "whitespace only"),
 
-    # Quotes
-    ('find "quoted text" here', 'has_doubled_quotes', "internal quotes"),
+    # Quotes - internal quotes are doubled, whole string is wrapped in double quotes
+    ('find "quoted text" here', '"find \"\"quoted text\"\" here"', "internal quotes"),
 
     # Wildcards
     ('*', '""', "bare asterisk"),
-    ('test*', 'starts_and_ends_with_quotes', "asterisk with text"),
+    ('test*', '"test*"', "asterisk with text"),
     ('?', '?', "question mark"),  # Single char, no special FTS5 chars -> unquoted
 
     # FTS5 operators (should be quoted as literals)
@@ -339,26 +344,26 @@ FTS5_ESCAPE_CASES = [
     ('and', '"and"', "lowercase and"),
     ('And', '"And"', "mixed case And"),
 
-    # Special characters
-    ('test:value', 'starts_and_ends_with_quotes', "colon"),
-    ('test^2', 'starts_and_ends_with_quotes', "caret"),
-    ('function(arg)', 'starts_and_ends_with_quotes', "parentheses"),
-    ('test)', 'starts_and_ends_with_quotes', "close paren"),
-    ('(test', 'starts_and_ends_with_quotes', "open paren"),
+    # Special characters - all wrapped in double quotes
+    ('test:value', '"test:value"', "colon"),
+    ('test^2', '"test^2"', "caret"),
+    ('function(arg)', '"function(arg)"', "parentheses"),
+    ('test)', '"test)"', "close paren"),
+    ('(test', '"(test"', "open paren"),
 
-    # Minus/hyphen
-    ('-test', 'starts_and_ends_with_quotes', "leading minus"),
-    ('test-word', 'starts_and_ends_with_quotes', "embedded hyphen"),
+    # Minus/hyphen - wrapped in double quotes
+    ('-test', '"-test"', "leading minus"),
+    ('test-word', '"test-word"', "embedded hyphen"),
 
-    # Plus
-    ('+required', 'starts_and_ends_with_quotes', "plus operator"),
+    # Plus - wrapped in double quotes
+    ('+required', '"+required"', "plus operator"),
 
-    # Comma (NEAR separator in FTS5)
-    ('After reviewing, I', 'starts_and_ends_with_quotes', "comma in text"),
+    # Comma (NEAR separator in FTS5) - wrapped in double quotes
+    ('After reviewing, I', '"After reviewing, I"', "comma in text"),
 
     # Multiple operators
     ('test AND query', 'test AND query', "embedded AND - passes through unquoted"),
-    ('OR query', 'starts_and_ends_with_quotes', "leading OR - quoted for safety"),
+    ('OR query', '"OR query"', "leading OR - quoted for safety"),
 
     # Normal text (NOT quoted - implementation passes simple alphanumeric through as-is)
     ('simple query', 'simple query', "simple words"),
@@ -370,24 +375,11 @@ FTS5_ESCAPE_CASES = [
 def test_escape_fts5_comprehensive(input_query, expected, desc):
     """Comprehensive FTS5 escaping test.
 
-    Replaces 30+ individual escaping tests with single parametrized test.
-
-    Expected can be:
-    - Exact string match (e.g., '""')
-    - Property to check (e.g., 'starts_and_ends_with_quotes', 'has_doubled_quotes')
+    Each row specifies the exact expected output of escape_fts5_query(input_query).
     """
-    result = escape_fts5_query(input_query)
+    assert escape_fts5_query(input_query) == expected, f"Failed {desc}"
 
-    if expected == 'starts_and_ends_with_quotes':
-        assert result.startswith('"'), f"Failed {desc}: doesn't start with quote"
-        assert result.endswith('"'), f"Failed {desc}: doesn't end with quote"
-    elif expected == 'has_doubled_quotes':
-        assert result.startswith('"'), f"Failed {desc}: not quoted"
-        assert result.endswith('"'), f"Failed {desc}: not quoted"
-        assert '""' in result, f"Failed {desc}: quotes not doubled"
-    else:
-        # Exact match
-        assert result == expected, f"Failed {desc}: expected {expected}, got {result}"
+
 
 
 # ============================================================================

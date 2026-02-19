@@ -54,9 +54,6 @@ DUMPS_CASES = [
     ({}, "empty dict"),
     ([], "empty list"),
     ({"123": "value"}, "numeric keys as strings"),
-    # Custom default handler
-    ("custom_type", "custom default handler"),
-    ("custom_handler_fallback", "custom handler fallback to encoder"),
     # Numbers and special chars
     ({"zero": 0, "negative": -42, "float": 3.14, "large": 999999999999}, "special numbers"),
     ({"text": 'Line 1\nLine 2\tTabbed"Quoted"'}, "escaped characters"),
@@ -66,35 +63,6 @@ DUMPS_CASES = [
 @pytest.mark.parametrize("payload,desc", DUMPS_CASES)
 def test_dumps_comprehensive(payload, desc):
     """Comprehensive dumps test."""
-    if desc == "custom default handler":
-
-        class CustomType:
-            def __init__(self, value):
-                self.value = value
-
-        def custom_handler(obj: Any) -> Any:
-            if isinstance(obj, CustomType):
-                return {"custom": obj.value}
-            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
-        payload_obj = CustomType(42)
-        output = core_json.dumps(payload_obj, default=custom_handler)
-        data = core_json.loads(output)
-        assert data == {"custom": 42}
-        return
-
-    elif desc == "custom handler fallback to encoder":
-
-        def custom_handler(obj: Any) -> Any:
-            raise TypeError("Not handled")
-
-        payload = {"decimal": Decimal("1.5")}
-        output = core_json.dumps(payload, default=custom_handler)
-        data = core_json.loads(output)
-        assert data["decimal"] == 1.5
-        return
-
-    # Standard dumps → loads verification
     output = core_json.dumps(payload)
     data = core_json.loads(output)
 
@@ -124,6 +92,36 @@ def test_dumps_comprehensive(payload, desc):
             )
         else:
             assert data == payload
+
+
+def test_dumps_custom_type_default_handler():
+    """Custom default handler serializes custom types."""
+
+    class CustomType:
+        def __init__(self, value):
+            self.value = value
+
+    def custom_handler(obj: Any) -> Any:
+        if isinstance(obj, CustomType):
+            return {"custom": obj.value}
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+    payload_obj = CustomType(42)
+    output = core_json.dumps(payload_obj, default=custom_handler)
+    data = core_json.loads(output)
+    assert data == {"custom": 42}
+
+
+def test_dumps_custom_fallback_to_encoder():
+    """When custom handler raises, built-in encoder handles known types like Decimal."""
+
+    def custom_handler(obj: Any) -> Any:
+        raise TypeError("Not handled")
+
+    payload = {"decimal": Decimal("1.5")}
+    output = core_json.dumps(payload, default=custom_handler)
+    data = core_json.loads(output)
+    assert data["decimal"] == 1.5
 
 
 # =============================================================================
@@ -194,193 +192,210 @@ def test_roundtrip_comprehensive(original, desc):
         assert result == original
 
 
-
 # =============================================================================
-# JSON EDGE CASES - PARAMETRIZED
+# JSON EDGE CASES - STANDALONE FUNCTIONS
 # =============================================================================
 
 
-EDGE_CASES = [
-    ({"big": 999999999999999999999}, "very large number"),
-    ("deeply_nested", "deeply nested structure"),
-    ([1, "string", True, None, 3.14, {"nested": "dict"}], "mixed types list"),
-    ({"zero": Decimal("0")}, "Decimal zero"),
-    ({"negative": Decimal("-123.45")}, "Decimal negative"),
-    ({"items": [Decimal("1.5"), [Decimal("2.5"), Decimal("3.5")]]}, "Decimal in nested list"),
-    ({"key": "value"}, "with option parameter"),
-    ('{"unicode": "café"}', "bytes UTF-8"),
-    ('{"key": "value"}', "bytes UTF-8 with BOM"),
-    ({"path": "C:\\Users\\test"}, "string with backslash"),
-    ("many_keys", "dict with many keys"),
-    ("many_elements", "array with many elements"),
-    (
-        """
+def test_json_dumps_very_large_number():
+    """Very large integers are serialized (possibly as float)."""
+    payload = {"big": 999999999999999999999}
+    output = core_json.dumps(payload)
+    data = core_json.loads(output)
+    assert isinstance(data["big"], float)
+    assert data["big"] > 999999999999999999998
+
+
+def test_json_dumps_deeply_nested_structure():
+    """Deeply nested dicts round-trip correctly."""
+    nested = {"level": 0}
+    current = nested
+    for i in range(1, 10):
+        current["next"] = {"level": i}
+        current = current["next"]
+
+    output = core_json.dumps(nested)
+    data = core_json.loads(output)
+    assert data["level"] == 0
+
+
+def test_json_dumps_mixed_types_list():
+    """Lists with mixed types serialize and deserialize correctly."""
+    payload = [1, "string", True, None, 3.14, {"nested": "dict"}]
+    output = core_json.dumps(payload)
+    data = core_json.loads(output)
+    assert data[0] == 1
+    assert data[1] == "string"
+    assert data[2] is True
+    assert data[3] is None
+    assert data[4] == 3.14
+    assert data[5] == {"nested": "dict"}
+
+
+def test_json_dumps_decimal_zero():
+    """Decimal zero serializes to numeric zero."""
+    payload = {"zero": Decimal("0")}
+    output = core_json.dumps(payload)
+    data = core_json.loads(output)
+    assert data["zero"] == 0
+
+
+def test_json_dumps_decimal_negative():
+    """Negative Decimal serializes to negative float."""
+    payload = {"negative": Decimal("-123.45")}
+    output = core_json.dumps(payload)
+    data = core_json.loads(output)
+    assert data["negative"] == -123.45
+
+
+def test_json_dumps_decimal_in_nested_list():
+    """Decimals nested inside lists serialize to floats."""
+    payload = {"items": [Decimal("1.5"), [Decimal("2.5"), Decimal("3.5")]]}
+    output = core_json.dumps(payload)
+    data = core_json.loads(output)
+    assert data["items"][0] == 1.5
+    assert data["items"][1][0] == 2.5
+    assert data["items"][1][1] == 3.5
+
+
+def test_json_dumps_with_option_none():
+    """dumps with option=None behaves identically to without option."""
+    payload = {"key": "value"}
+    output = core_json.dumps(payload, option=None)
+    data = core_json.loads(output)
+    assert data == payload
+
+
+def test_json_loads_bytes_utf8():
+    """loads accepts UTF-8 encoded bytes."""
+    json_bytes = '{"unicode": "café"}'.encode()
+    result = core_json.loads(json_bytes)
+    assert result["unicode"] == "café"
+
+
+def test_json_loads_bytes_utf8_with_bom():
+    """loads handles or gracefully rejects UTF-8 BOM."""
+    json_bytes = '{"key": "value"}'.encode("utf-8-sig")
+    try:
+        result = core_json.loads(json_bytes)
+        assert result == {"key": "value"}
+    except ValueError:
+        pass  # orjson raises for BOM
+
+
+def test_json_dumps_string_with_backslash():
+    """Backslash characters in strings survive roundtrip."""
+    payload = {"path": "C:\\Users\\test"}
+    output = core_json.dumps(payload)
+    data = core_json.loads(output)
+    assert data == payload
+
+
+def test_json_dumps_dict_with_many_keys():
+    """Dicts with 100 keys serialize and deserialize correctly."""
+    payload = {f"key_{i}": f"value_{i}" for i in range(100)}
+    output = core_json.dumps(payload)
+    data = core_json.loads(output)
+    assert len(data) == 100
+    assert data["key_0"] == "value_0"
+    assert data["key_99"] == "value_99"
+
+
+def test_json_dumps_array_with_many_elements():
+    """Arrays with 1000 elements serialize and deserialize correctly."""
+    payload = list(range(1000))
+    output = core_json.dumps(payload)
+    data = core_json.loads(output)
+    assert len(data) == 1000
+    assert data[0] == 0
+    assert data[999] == 999
+
+
+def test_json_loads_whitespace():
+    """JSON with extra whitespace parses correctly."""
+    payload = """
     {
         "key"   :   "value"  ,
         "array" : [ 1 , 2 , 3 ]
     }
-    """,
-        "whitespace handling",
-    ),
-    ("custom_decimal_override", "custom handler for Decimal override"),
-    ({"empty_dict": {}, "empty_list": [], "nested": {"deep_empty": {}}}, "empty nested structures"),
-    ("true", "primitive true"),
-    ("false", "primitive false"),
-    ('"\\u0048\\u0065\\u006c\\u006c\\u006f"', "unicode escapes"),
-    ({"value": 3.141592653589793}, "float precision"),
-]
+    """
+    result = core_json.loads(payload)
+    assert result == {"key": "value", "array": [1, 2, 3]}
 
 
-@pytest.mark.parametrize("payload,desc", EDGE_CASES)
-def test_edge_cases_comprehensive(payload, desc):
-    """Comprehensive edge cases test."""
-    if desc == "very large number":
-        output = core_json.dumps(payload)
-        data = core_json.loads(output)
-        assert isinstance(data["big"], float)
-        assert data["big"] > 999999999999999999998
+def test_json_dumps_custom_decimal_override():
+    """Custom handler can override Decimal serialization to return a string."""
 
-    elif desc == "deeply nested structure":
-        nested = {"level": 0}
-        current = nested
-        for i in range(1, 10):
-            current["next"] = {"level": i}
-            current = current["next"]
+    def custom_handler(obj: Any) -> Any:
+        if isinstance(obj, Decimal):
+            return str(obj)
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
-        output = core_json.dumps(nested)
-        data = core_json.loads(output)
-        assert data["level"] == 0
-
-    elif desc == "mixed types list":
-        output = core_json.dumps(payload)
-        data = core_json.loads(output)
-        assert data[0] == 1
-        assert data[1] == "string"
-        assert data[2] is True
-        assert data[3] is None
-        assert data[4] == 3.14
-        assert data[5] == {"nested": "dict"}
-
-    elif desc == "Decimal in nested list":
-        output = core_json.dumps(payload)
-        data = core_json.loads(output)
-        assert data["items"][0] == 1.5
-        assert data["items"][1][0] == 2.5
-        assert data["items"][1][1] == 3.5
-
-    elif desc == "with option parameter":
-        output = core_json.dumps(payload, option=None)
-        data = core_json.loads(output)
-        assert data == payload
-
-    elif desc == "bytes UTF-8":
-        json_bytes = payload.encode()
-        result = core_json.loads(json_bytes)
-        assert result["unicode"] == "café"
-
-    elif desc == "bytes UTF-8 with BOM":
-        json_bytes = payload.encode("utf-8-sig")
-        try:
-            result = core_json.loads(json_bytes)
-            assert result == {"key": "value"}
-        except ValueError:
-            pass  # orjson raises for BOM
-
-    elif desc == "dict with many keys":
-        payload = {f"key_{i}": f"value_{i}" for i in range(100)}
-        output = core_json.dumps(payload)
-        data = core_json.loads(output)
-        assert len(data) == 100
-        assert data["key_0"] == "value_0"
-        assert data["key_99"] == "value_99"
-
-    elif desc == "array with many elements":
-        payload = list(range(1000))
-        output = core_json.dumps(payload)
-        data = core_json.loads(output)
-        assert len(data) == 1000
-        assert data[0] == 0
-        assert data[999] == 999
-
-    elif desc == "whitespace handling":
-        result = core_json.loads(payload)
-        assert result == {"key": "value", "array": [1, 2, 3]}
-
-    elif desc == "custom handler for Decimal override":
-
-        def custom_handler(obj: Any) -> Any:
-            if isinstance(obj, Decimal):
-                return str(obj)
-            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
-        payload = {"price": Decimal("19.99")}
-        output = core_json.dumps(payload, default=custom_handler)
-        data = core_json.loads(output)
-        assert data["price"] == "19.99"
-
-    elif desc == "primitive true":
-        result = core_json.loads(payload)
-        assert result is True
-        assert isinstance(result, bool)
-
-    elif desc == "primitive false":
-        result = core_json.loads(payload)
-        assert result is False
-        assert isinstance(result, bool)
-
-    elif desc == "unicode escapes":
-        result = core_json.loads(payload)
-        assert result == "Hello"
-
-    elif desc == "float precision":
-        output = core_json.dumps(payload)
-        result = core_json.loads(output)
-        assert result["value"] == payload["value"]
-
-    else:
-        output = core_json.dumps(payload)
-        data = core_json.loads(output)
-
-        if "Decimal" in desc:
-            for key, value in payload.items():
-                if isinstance(value, Decimal):
-                    assert data[key] == float(value)
-        else:
-            assert data == payload
+    payload = {"price": Decimal("19.99")}
+    output = core_json.dumps(payload, default=custom_handler)
+    data = core_json.loads(output)
+    assert data["price"] == "19.99"
 
 
-ENCODER_FALLBACK_CASES = [
-    ("unhandled_type", "unhandled type raises TypeError"),
-    ("decimal_when_custom_fails", "Decimal encoded when custom fails"),
-]
+def test_json_loads_primitive_true():
+    """loads handles bare JSON true primitive."""
+    result = core_json.loads("true")
+    assert result is True
+    assert isinstance(result, bool)
 
 
-@pytest.mark.parametrize("scenario,desc", ENCODER_FALLBACK_CASES)
-def test_encoder_fallback_comprehensive(scenario, desc):
-    """Comprehensive encoder fallback test."""
-    if scenario == "unhandled_type":
+def test_json_loads_primitive_false():
+    """loads handles bare JSON false primitive."""
+    result = core_json.loads("false")
+    assert result is False
+    assert isinstance(result, bool)
 
-        class UnhandledType:
-            pass
 
-        def custom_handler(obj: Any) -> Any:
-            raise TypeError("Not handled by custom handler")
+def test_json_loads_unicode_escapes():
+    """Unicode escape sequences in JSON strings are decoded correctly."""
+    result = core_json.loads('"\\u0048\\u0065\\u006c\\u006c\\u006f"')
+    assert result == "Hello"
 
-        obj = UnhandledType()
-        with pytest.raises(TypeError):
-            core_json.dumps(obj, default=custom_handler)
 
-    elif scenario == "decimal_when_custom_fails":
+def test_json_dumps_float_precision():
+    """Float values preserve their precision through a roundtrip."""
+    payload = {"value": 3.141592653589793}
+    output = core_json.dumps(payload)
+    result = core_json.loads(output)
+    assert result["value"] == payload["value"]
 
-        def custom_handler(obj: Any) -> Any:
-            if isinstance(obj, str):
-                return obj.upper()
-            raise TypeError("Not handled")
 
-        payload = {"value": Decimal("1.5")}
-        output = core_json.dumps(payload, default=custom_handler)
-        data = core_json.loads(output)
-        assert data["value"] == 1.5
+# =============================================================================
+# ENCODER FALLBACK - STANDALONE FUNCTIONS
+# =============================================================================
+
+
+def test_encoder_unhandled_type_raises_type_error():
+    """dumps raises TypeError when custom handler cannot handle the object."""
+
+    class UnhandledType:
+        pass
+
+    def custom_handler(obj: Any) -> Any:
+        raise TypeError("Not handled by custom handler")
+
+    obj = UnhandledType()
+    with pytest.raises(TypeError):
+        core_json.dumps(obj, default=custom_handler)
+
+
+def test_encoder_decimal_serialized_when_custom_fails():
+    """Built-in encoder handles Decimal even when custom handler raises for other types."""
+
+    def custom_handler(obj: Any) -> Any:
+        if isinstance(obj, str):
+            return obj.upper()
+        raise TypeError("Not handled")
+
+    payload = {"value": Decimal("1.5")}
+    output = core_json.dumps(payload, default=custom_handler)
+    data = core_json.loads(output)
+    assert data["value"] == 1.5
 
 
 # =============================================================================
@@ -437,51 +452,75 @@ def test_get_env_multi_comprehensive(scenario, var_names, env_vars, expected, de
 # =============================================================================
 
 
-PARSE_DATE_CASES = [
-    ("2024-01-15", 2024, 1, 15, "ISO format"),
-    ("2024-01-15T10:30:00", 10, 30, 0, "ISO format with time"),
-    ("yesterday", "past", None, None, "natural yesterday"),
-    ("2 days ago", "past", None, None, "relative dates"),
-    ("not a date at all xyz123", None, None, None, "invalid returns None"),
-    ("2024-06-15", None, None, None, "UTC-aware returned"),
+ISO_DATE_CASES = [
+    ("2024-01-15", 2024, 1, 15),
+]
+
+ISO_DATETIME_CASES = [
+    ("2024-01-15T10:30:00", 10, 30, 0),
+]
+
+RELATIVE_DATE_CASES = [
+    "yesterday",
+    "2 days ago",
+]
+
+INVALID_DATE_CASES = [
+    "not a date at all xyz123",
 ]
 
 
-@pytest.mark.parametrize("input_val,exp_year_or_hour,exp_month_or_minute,exp_day_or_second,desc", PARSE_DATE_CASES)
-def test_parse_date_comprehensive(input_val, exp_year_or_hour, exp_month_or_minute, exp_day_or_second, desc):
-    """Comprehensive parse_date() tests."""
+@pytest.mark.parametrize("input_val,exp_year,exp_month,exp_day", ISO_DATE_CASES)
+def test_parse_date_iso_date(input_val, exp_year, exp_month, exp_day):
+    """parse_date() parses ISO date strings to timezone-aware datetimes."""
     from polylogue.lib.dates import parse_date
 
     result = parse_date(input_val)
+    assert result is not None
+    assert result.year == exp_year
+    assert result.month == exp_month
+    assert result.day == exp_day
+    assert result.tzinfo is not None
 
-    if desc == "ISO format":
-        assert result is not None
-        assert result.year == exp_year_or_hour
-        assert result.month == exp_month_or_minute
-        assert result.day == exp_day_or_second
-        assert result.tzinfo is not None
 
-    elif desc == "ISO format with time":
-        assert result is not None
-        assert result.hour == exp_year_or_hour
-        assert result.minute == exp_month_or_minute
-        assert result.second == exp_day_or_second
+@pytest.mark.parametrize("input_val,exp_hour,exp_minute,exp_second", ISO_DATETIME_CASES)
+def test_parse_date_iso_datetime(input_val, exp_hour, exp_minute, exp_second):
+    """parse_date() parses ISO datetime strings and extracts the time component."""
+    from polylogue.lib.dates import parse_date
 
-    elif desc == "natural yesterday":
-        assert result is not None
-        assert result < datetime.now(timezone.utc)
+    result = parse_date(input_val)
+    assert result is not None
+    assert result.hour == exp_hour
+    assert result.minute == exp_minute
+    assert result.second == exp_second
 
-    elif desc == "relative dates":
-        assert result is not None
-        now = datetime.now(timezone.utc)
-        assert result < now
 
-    elif desc == "invalid returns None":
-        assert result is None
+@pytest.mark.parametrize("input_val", RELATIVE_DATE_CASES)
+def test_parse_date_relative(input_val):
+    """parse_date() parses relative expressions like 'yesterday' and '2 days ago'."""
+    from polylogue.lib.dates import parse_date
 
-    elif desc == "UTC-aware returned":
-        assert result is not None
-        assert result.tzinfo is not None
+    result = parse_date(input_val)
+    assert result is not None
+    assert result < datetime.now(timezone.utc)
+
+
+@pytest.mark.parametrize("input_val", INVALID_DATE_CASES)
+def test_parse_date_invalid_returns_none(input_val):
+    """parse_date() returns None for strings that cannot be parsed as dates."""
+    from polylogue.lib.dates import parse_date
+
+    result = parse_date(input_val)
+    assert result is None
+
+
+def test_parse_date_returns_utc_aware():
+    """parse_date() returns a timezone-aware datetime for a plain ISO date."""
+    from polylogue.lib.dates import parse_date
+
+    result = parse_date("2024-06-15")
+    assert result is not None
+    assert result.tzinfo is not None
 
 
 # =============================================================================
@@ -555,39 +594,70 @@ def test_polylogue_version_available():
 
 
 # =============================================================================
-# SEMANTIC MODELS TESTS
+# SEMANTIC MODELS TESTS - STANDALONE FUNCTIONS
 # =============================================================================
 
 
-def test_semantic_models():
-    """Test rich methods on Message and Conversation."""
+def _make_two_message_conv() -> tuple[Message, Message, Conversation]:
+    """Helper: build a user + assistant conversation."""
     msg_user = Message(id="1", role="user", text="hello, how are you today?")
     msg_bot = Message(id="2", role="assistant", text="I'm doing well, thanks for asking!")
     conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=[msg_user, msg_bot]))
+    return msg_user, msg_bot, conv
 
-    # Test filtering
+
+def test_user_only_returns_user_messages():
+    """user_only() filters to messages with role='user'."""
+    _, _, conv = _make_two_message_conv()
     user_only = conv.user_only()
     assert len(user_only.messages) == 1
     assert user_only.messages[0].id == "1"
 
-    # Test to_text
+
+def test_to_text_contains_role_prefixes():
+    """to_text() output contains 'user:' and 'assistant:' prefixes."""
+    _, _, conv = _make_two_message_conv()
     txt = conv.to_text()
     assert "user:" in txt
     assert "assistant:" in txt
     assert "hello" in txt
 
-    # Test classification properties
+
+def test_message_is_user_classification():
+    """Message with role='user' has is_user=True."""
+    msg_user, _, _ = _make_two_message_conv()
     assert msg_user.is_user
+
+
+def test_message_is_assistant_classification():
+    """Message with role='assistant' has is_assistant=True."""
+    _, msg_bot, _ = _make_two_message_conv()
     assert msg_bot.is_assistant
+
+
+def test_message_is_substantive():
+    """A non-empty user message is substantive."""
+    msg_user, _, _ = _make_two_message_conv()
     assert msg_user.is_substantive
+
+
+def test_message_not_tool_use_or_noise():
+    """A plain user message is neither tool use nor noise."""
+    msg_user, _, _ = _make_two_message_conv()
     assert not msg_user.is_tool_use
     assert not msg_user.is_noise
 
-    # Test projections
+
+def test_without_noise_preserves_all():
+    """without_noise() keeps all messages when none are noise."""
+    _, _, conv = _make_two_message_conv()
     clean = conv.without_noise()
     assert len(clean.messages) == 2
 
-    # Test statistics
+
+def test_message_count_statistics():
+    """message_count and user_message_count return correct values."""
+    _, _, conv = _make_two_message_conv()
     assert conv.message_count == 2
     assert conv.user_message_count == 1
 
@@ -739,30 +809,6 @@ async def test_repository_get_attachment_metadata_decoded(test_db):
 
 
 # =============================================================================
-# TIMESTAMP PARSING TESTS - PARAMETRIZED
-# =============================================================================
-
-
-TIMESTAMP_PARSE_CASES = [
-    (None, "None"),
-    (1704067200.0, "numeric timestamp"),
-]
-
-
-@pytest.mark.parametrize("ts_input,desc", TIMESTAMP_PARSE_CASES)
-def test_parse_timestamp_comprehensive(ts_input, desc):
-    """Comprehensive parse_timestamp() tests."""
-    from polylogue.lib.timestamps import parse_timestamp
-
-    result = parse_timestamp(ts_input)
-
-    if desc == "None":
-        assert result is None
-    elif desc == "numeric timestamp":
-        assert result is not None
-
-
-# =============================================================================
 # JSON UTILS TESTS
 # =============================================================================
 
@@ -823,78 +869,6 @@ def test_version_edge_cases_comprehensive(scenario, desc):
 
 
 # =============================================================================
-# DISPLAY DATE TESTS - PARAMETRIZED
-# =============================================================================
-
-
-DISPLAY_DATE_CASES = [
-    ("summary_prefers_updated", "prefers updated over created"),
-    ("summary_falls_back_to_created", "falls back to created when updated missing"),
-    ("summary_none_when_both_missing", "returns None when both missing"),
-    ("conversation_prefers_updated", "conversation prefers updated over created"),
-    ("conversation_falls_back_to_created", "conversation falls back to created when updated missing"),
-]
-
-
-@pytest.mark.parametrize("scenario,desc", DISPLAY_DATE_CASES)
-def test_display_date_comprehensive(scenario, desc):
-    """Comprehensive display_date tests."""
-    from datetime import datetime, timezone
-
-    if scenario == "summary_prefers_updated":
-        from polylogue.lib.models import ConversationSummary
-
-        created = datetime(2025, 1, 1, tzinfo=timezone.utc)
-        updated = datetime(2025, 6, 15, tzinfo=timezone.utc)
-        s = ConversationSummary(
-            id="test:1", provider="test", created_at=created, updated_at=updated
-        )
-        assert s.display_date == updated
-
-    elif scenario == "summary_falls_back_to_created":
-        from polylogue.lib.models import ConversationSummary
-
-        created = datetime(2025, 1, 1, tzinfo=timezone.utc)
-        s = ConversationSummary(
-            id="test:1", provider="test", created_at=created, updated_at=None
-        )
-        assert s.display_date == created
-
-    elif scenario == "summary_none_when_both_missing":
-        from polylogue.lib.models import ConversationSummary
-
-        s = ConversationSummary(id="test:1", provider="test")
-        assert s.display_date is None
-
-    elif scenario == "conversation_prefers_updated":
-        from polylogue.lib.models import Conversation, MessageCollection
-
-        created = datetime(2025, 1, 1, tzinfo=timezone.utc)
-        updated = datetime(2025, 6, 15, tzinfo=timezone.utc)
-        c = Conversation(
-            id="test:1",
-            provider="test",
-            messages=MessageCollection(messages=[]),
-            created_at=created,
-            updated_at=updated,
-        )
-        assert c.display_date == updated
-
-    elif scenario == "conversation_falls_back_to_created":
-        from polylogue.lib.models import Conversation, MessageCollection
-
-        created = datetime(2025, 1, 1, tzinfo=timezone.utc)
-        c = Conversation(
-            id="test:1",
-            provider="test",
-            messages=MessageCollection(messages=[]),
-            created_at=created,
-            updated_at=None,
-        )
-        assert c.display_date == created
-
-
-# =============================================================================
 # SERVICES TESTS
 # =============================================================================
 
@@ -946,115 +920,6 @@ class TestServices:
         reset()
         backend2 = get_backend()
         assert backend1 is not backend2
-
-
-# =============================================================================
-# TIMESTAMP FORMATTING TESTS - PARAMETRIZED
-# =============================================================================
-
-
-PARSE_TEST_CASES = [
-    # Epoch timestamps
-    (1704067200, 2024, 1, 1, None, "epoch int"),
-    (1704067200.5, 2024, 1, 1, 500000, "epoch float"),
-    ("1704067200", 2024, 1, 1, None, "epoch string"),
-    ("1704067200.5", 2024, 1, 1, 500000, "epoch string with decimal"),
-
-    # ISO 8601 variants
-    ("2024-01-01T00:00:00", 2024, 1, 1, None, "ISO basic"),
-    ("2024-01-01T00:00:00Z", 2024, 1, 1, None, "ISO with Z"),
-    ("2024-01-01T00:00:00+00:00", 2024, 1, 1, None, "ISO with offset"),
-    ("2024-01-01T00:00:00.500000", 2024, 1, 1, 500000, "ISO with microseconds"),
-
-    # Millisecond timestamps (common in JS exports) - not currently supported, return None
-    (1704067200000, None, None, None, None, "millisecond epoch"),
-    ("1704067200000", None, None, None, None, "millisecond epoch string"),
-]
-
-
-@pytest.mark.parametrize("input_val,exp_year,exp_month,exp_day,exp_micro,desc", PARSE_TEST_CASES)
-def test_parse_timestamp_formats(input_val, exp_year, exp_month, exp_day, exp_micro, desc):
-    """Parse all supported timestamp formats."""
-    result = parse_timestamp(input_val)
-
-    if exp_year is None:
-        assert result is None, f"Expected None for {desc}, got {result}"
-    else:
-        assert result is not None, f"Failed to parse {desc}: {input_val}"
-        assert result.year == exp_year, f"Wrong year for {desc}"
-        assert result.month == exp_month, f"Wrong month for {desc}"
-        assert result.day == exp_day, f"Wrong day for {desc}"
-
-        if exp_micro is not None:
-            assert result.microsecond == exp_micro, f"Wrong microseconds for {desc}"
-
-
-@pytest.mark.parametrize("invalid_input", [
-    None,
-    "",
-    "not-a-date",
-    "invalid-timestamp",
-    "2024-13-45",
-])
-def test_parse_timestamp_invalid_returns_none(invalid_input):
-    """Invalid timestamps return None."""
-    result = parse_timestamp(invalid_input)
-    assert result is None
-
-
-def test_parse_timestamp_overflow_handled():
-    """Handle very large epoch values gracefully."""
-    result = parse_timestamp(9999999999999)
-    if result is not None:
-        assert isinstance(result, datetime)
-
-
-# Test cases: (input_datetime, expected_format_output, description)
-FORMAT_TEST_CASES = [
-    (
-        datetime(2024, 1, 1, 12, 30, 45),
-        "2024-01-01T12:30:45",
-        "basic datetime"
-    ),
-    (
-        datetime(2024, 1, 1, 0, 0, 0),
-        "2024-01-01T00:00:00",
-        "midnight"
-    ),
-    (
-        datetime(2024, 12, 31, 23, 59, 59),
-        "2024-12-31T23:59:59",
-        "end of year"
-    ),
-    (
-        datetime(2024, 1, 1, 12, 30, 45, 500000),
-        "2024-01-01T12:30:45",
-        "with microseconds"
-    ),
-]
-
-
-@pytest.mark.parametrize("dt,expected_format,desc", FORMAT_TEST_CASES)
-def test_format_timestamp_variants(dt, expected_format, desc):
-    """Format datetime objects to ISO 8601."""
-    result = format_timestamp(dt)
-
-    assert result.startswith(expected_format[:19]), f"Wrong format for {desc}"
-    assert "T" in result, "Should use T separator"
-
-
-@pytest.mark.parametrize("invalid_input", [
-    None,
-    "",
-    "not-a-datetime",
-])
-def test_format_timestamp_invalid_returns_none_or_empty(invalid_input):
-    """Invalid input to format_timestamp handled gracefully."""
-    try:
-        result = format_timestamp(invalid_input)
-        assert result is None or result == ""
-    except (TypeError, AttributeError):
-        pass
 
 
 # =============================================================================
@@ -1242,23 +1107,6 @@ def test_projection_strip_all():
     assert len(result) == 2
     assert not any(m.is_tool_use for m in result)
     assert not any(m.is_thinking for m in result)
-
-
-EDGE_CASE_CONVERSATIONS = [
-    ([], 0, "empty conversation"),
-    ([Message(id="m1", role="user", text=None)], 0, "None text"),
-    ([Message(id="m1", role="user", text="", timestamp=None)], 0, "None timestamp"),
-    ([Message(id="m1", role="user", text="Valid")], 1, "single message"),
-]
-
-
-@pytest.mark.parametrize("messages,expected_count,desc", EDGE_CASE_CONVERSATIONS)
-def test_projection_edge_cases(messages, expected_count, desc):
-    """Edge case handling in projections."""
-    conv = Conversation(id="test", provider="test", messages=MessageCollection(messages=messages))
-    result = conv.project().to_list()
-
-    assert len(result) >= 0
 
 
 # =============================================================================
