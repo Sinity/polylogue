@@ -83,16 +83,26 @@ class TestVectorProviderConformance:
         provider = SqliteVecProvider(voyage_key="dummy", db_path=tmp_path / "vec.db")
         assert isinstance(provider, VectorProvider)
 
-    def test_query_returns_list_or_skips_without_extension(self, tmp_path: Path) -> None:
-        """query() must return list[tuple]; skip gracefully if sqlite-vec not installed."""
-        from polylogue.storage.search_providers.sqlite_vec import SqliteVecError, SqliteVecProvider
+    def test_extension_loadable(self, tmp_path: Path) -> None:
+        """sqlite-vec extension must load — skip only if package is absent, fail if it can't load."""
+        import sqlite3
 
-        provider = SqliteVecProvider(voyage_key="dummy", db_path=tmp_path / "vec.db")
         try:
-            result = provider.query("test", limit=5)
-            assert isinstance(result, list)
-        except SqliteVecError:
-            pytest.skip("sqlite-vec extension not available in this environment")
+            import sqlite_vec
+        except ImportError:
+            pytest.skip("sqlite-vec Python package not installed")
+
+        conn = sqlite3.connect(str(tmp_path / "probe.db"))
+        try:
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            v = conn.execute("SELECT vec_version()").fetchone()
+            assert v is not None
+        except (OSError, sqlite3.OperationalError) as exc:
+            pytest.fail(f"sqlite-vec extension failed to load: {exc}")
+        finally:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
