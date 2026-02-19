@@ -897,6 +897,13 @@ class SQLiteBackend:
 
         return None  # No match or ambiguous
 
+    async def get_last_sync_timestamp(self) -> str | None:
+        """Return the timestamp of the most recent ingestion run, or None."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT MAX(timestamp) as last FROM runs")
+            row = await cursor.fetchone()
+            return row["last"] if row and row["last"] else None
+
     async def search_conversations(
         self, query: str, limit: int = 100, providers: list[str] | None = None
     ) -> list[str]:

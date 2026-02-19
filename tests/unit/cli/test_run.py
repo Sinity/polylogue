@@ -896,7 +896,7 @@ class TestRunEmbedCommand:
                     mock_backend_class.return_value = mock_backend
                     mock_repo = MagicMock()
                     mock_repo_class.return_value = mock_repo
-                    mock_repo.get.return_value = None
+                    mock_repo.view = AsyncMock(return_value=None)
                     mock_provider = MagicMock()
                     mock_create.return_value = mock_provider
 

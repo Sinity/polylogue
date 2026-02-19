@@ -164,13 +164,21 @@ def _embed_single(
     conversation_id: str,
 ) -> None:
     """Embed a single conversation."""
-    # Get conversation
-    conv = repo.get(conversation_id)
-    if conv is None:
+    import asyncio
+
+    async def _fetch() -> tuple[object, list] | None:
+        conv = await repo.view(conversation_id)  # view() resolves partial IDs
+        if conv is None:
+            return None
+        messages = await repo.backend.get_messages(str(conv.id))
+        return conv, messages
+
+    result = asyncio.run(_fetch())
+    if result is None:
         click.echo(f"Error: Conversation {conversation_id} not found", err=True)
         raise click.Abort()
 
-    messages = repo.backend.get_messages(conversation_id)
+    conv, messages = result
 
     if not messages:
         click.echo(f"No messages to embed in {conversation_id}")
@@ -179,8 +187,8 @@ def _embed_single(
     click.echo(f"Embedding {len(messages)} messages from {conv.title or conversation_id[:12]}...")
 
     try:
-        vec_provider.upsert(conversation_id, messages)  # type: ignore
-        click.echo(f"✓ Embedded {conversation_id[:12]}")
+        vec_provider.upsert(str(conv.id), messages)  # type: ignore
+        click.echo(f"✓ Embedded {str(conv.id)[:12]}")
     except Exception as exc:
         click.echo(f"Error embedding {conversation_id}: {exc}", err=True)
         raise click.Abort() from exc

@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from polylogue.lib.messages import MessageCollection, MessageSource
+from polylogue.lib.messages import MessageCollection
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
@@ -479,16 +479,8 @@ class Conversation(BaseModel):
     """A conversation with messages and metadata.
 
     The `messages` field is a `MessageCollection` which supports both lazy
-    and eager loading:
-
-    - **Lazy mode**: Messages stream from the database on iteration, using
-      O(1) memory regardless of conversation size. Created by `Conversation.from_lazy()`.
-
-    - **Eager mode**: Messages are pre-loaded in memory. Created by
-      `Conversation.from_records()` or filter operations.
-
-    Both modes support the same API: iteration, len(), and indexing.
-    Indexing in lazy mode will materialize the full list on first access.
+    eager loading. Messages are pre-loaded in memory via `Conversation.from_records()`
+    or filter operations.
 
     You can also pass a list of Message objects directly — Pydantic coercion
     will auto-wrap them in an eager MessageCollection.
@@ -548,40 +540,6 @@ class Conversation(BaseModel):
             provider=conversation.provider_name,
             title=conversation.title,
             messages=MessageCollection(messages=rich_messages),
-            created_at=parse_timestamp(conversation.created_at),
-            updated_at=parse_timestamp(conversation.updated_at),
-            provider_meta=conversation.provider_meta,
-            metadata=conversation.metadata or {},
-            parent_id=conversation.parent_conversation_id,
-            branch_type=conversation.branch_type,
-        )
-
-    @classmethod
-    def from_lazy(
-        cls,
-        conversation: ConversationRecord,
-        source: MessageSource,
-    ) -> Conversation:
-        """Create a Conversation with lazy-loaded messages.
-
-        Messages will be streamed from the database on iteration, using O(1)
-        memory regardless of conversation size. len() uses a COUNT(*) query.
-
-        Args:
-            conversation: Conversation metadata record
-            source: MessageSource for streaming messages
-
-        Returns:
-            Conversation with messages in lazy mode
-        """
-        return cls(
-            id=conversation.conversation_id,
-            provider=conversation.provider_name,
-            title=conversation.title,
-            messages=MessageCollection(
-                conversation_id=conversation.conversation_id,
-                source=source,
-            ),
             created_at=parse_timestamp(conversation.created_at),
             updated_at=parse_timestamp(conversation.updated_at),
             provider_meta=conversation.provider_meta,

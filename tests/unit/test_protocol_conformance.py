@@ -104,15 +104,10 @@ class TestOutputRendererConformance:
 # ---------------------------------------------------------------------------
 
 class TestConsoleLikeConformance:
-    """PlainConsole must satisfy ConsoleLike (print-capable shim).
+    """PlainConsole must satisfy the ConsoleLike @runtime_checkable Protocol."""
 
-    ConsoleLike is not @runtime_checkable (it's used for static type-checking
-    only), so we verify structural conformance by checking the required method
-    exists and is callable rather than using isinstance().
-    """
-
-    def test_plain_console_has_print_method(self) -> None:
-        assert callable(getattr(PlainConsole, "print", None))
+    def test_plain_console_isinstance(self) -> None:
+        assert isinstance(PlainConsole(), ConsoleLike)
 
     def test_plain_console_print_does_not_raise(self) -> None:
         PlainConsole().print("hello", "world")
@@ -146,10 +141,13 @@ class TestParserModuleInterface:
         import polylogue.sources.parsers.claude as m
         assert callable(m.parse_code) and callable(m.parse_ai)
         assert callable(m.looks_like_code) and callable(m.looks_like_ai)
+        # Symmetric aliases for interface parity with chatgpt/codex
+        assert callable(m.parse) and callable(m.looks_like)
 
-    def test_drive_exports_parse_chunked_prompt(self) -> None:
+    def test_drive_exports_parse_chunked_prompt_and_looks_like(self) -> None:
         import polylogue.sources.parsers.drive as m
         assert callable(m.parse_chunked_prompt)
+        assert callable(m.looks_like)
 
     def test_all_parse_functions_annotate_return_type(self) -> None:
         """Enforce the return annotation convention across all parse functions."""

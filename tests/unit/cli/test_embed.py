@@ -103,9 +103,15 @@ def mock_plan_result():
 def mock_conversation():
     """Mock conversation object."""
     conv = MagicMock()
-    conv.conversation_id = "conv-123"
+    conv.id = "conv-123"
     conv.title = "Test Conversation"
     return conv
+
+
+_MOCK_MESSAGES = [
+    {"message_id": "m1", "text": "Hello"},
+    {"message_id": "m2", "text": "World"},
+]
 
 
 @pytest.fixture
@@ -113,10 +119,18 @@ def mock_repository():
     """Mock ConversationRepository."""
     repo = MagicMock()
     repo.backend = MagicMock()
-    repo.backend.get_messages = MagicMock(return_value=[
-        {"message_id": "m1", "text": "Hello"},
-        {"message_id": "m2", "text": "World"},
-    ])
+    repo.backend.get_messages = MagicMock(return_value=_MOCK_MESSAGES)
+    return repo
+
+
+@pytest.fixture
+def mock_repository_async(mock_conversation):
+    """Mock ConversationRepository with async view() and async backend.get_messages()
+    for use by _embed_single tests."""
+    repo = MagicMock()
+    repo.view = AsyncMock(return_value=mock_conversation)
+    repo.backend = MagicMock()
+    repo.backend.get_messages = AsyncMock(return_value=_MOCK_MESSAGES)
     return repo
 
 
@@ -189,47 +203,45 @@ class TestShowEmbeddingStats:
 class TestEmbedSingle:
     """Test _embed_single function."""
 
-    def test_embed_single_success(self, mock_env, mock_repository, mock_conversation, capsys):
+    def test_embed_single_success(self, mock_env, mock_repository_async, capsys):
         """_embed_single successfully embeds a conversation."""
-        mock_repository.get.return_value = mock_conversation
         mock_vec_provider = MagicMock()
-        mock_vec_provider.upsert = MagicMock()
 
-        _embed_single(mock_env, mock_repository, mock_vec_provider, "conv-123")
+        _embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
 
-        mock_vec_provider.upsert.assert_called_once_with("conv-123", mock_repository.backend.get_messages.return_value)
+        mock_vec_provider.upsert.assert_called_once_with(
+            "conv-123", mock_repository_async.backend.get_messages.return_value
+        )
         captured = capsys.readouterr()
         assert "Embedding 2 messages" in captured.out
         assert "✓ Embedded" in captured.out
 
-    def test_embed_single_conversation_not_found(self, mock_env, mock_repository):
+    def test_embed_single_conversation_not_found(self, mock_env, mock_repository_async):
         """_embed_single fails when conversation not found."""
-        mock_repository.get.return_value = None
+        mock_repository_async.view = AsyncMock(return_value=None)
         mock_vec_provider = MagicMock()
 
         with pytest.raises(click.Abort):
-            _embed_single(mock_env, mock_repository, mock_vec_provider, "nonexistent")
+            _embed_single(mock_env, mock_repository_async, mock_vec_provider, "nonexistent")
 
-    def test_embed_single_no_messages(self, mock_env, mock_repository, mock_conversation, capsys):
+    def test_embed_single_no_messages(self, mock_env, mock_repository_async, capsys):
         """_embed_single exits early when no messages."""
-        mock_repository.get.return_value = mock_conversation
-        mock_repository.backend.get_messages.return_value = []
+        mock_repository_async.backend.get_messages = AsyncMock(return_value=[])
         mock_vec_provider = MagicMock()
 
-        _embed_single(mock_env, mock_repository, mock_vec_provider, "conv-123")
+        _embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
 
         mock_vec_provider.upsert.assert_not_called()
         captured = capsys.readouterr()
         assert "No messages to embed" in captured.out
 
-    def test_embed_single_upsert_exception(self, mock_env, mock_repository, mock_conversation):
+    def test_embed_single_upsert_exception(self, mock_env, mock_repository_async):
         """_embed_single handles upsert exceptions."""
-        mock_repository.get.return_value = mock_conversation
         mock_vec_provider = MagicMock()
         mock_vec_provider.upsert.side_effect = ValueError("API error")
 
         with pytest.raises(click.Abort):
-            _embed_single(mock_env, mock_repository, mock_vec_provider, "conv-123")
+            _embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
 
 
 # =============================================================================
