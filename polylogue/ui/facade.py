@@ -14,7 +14,7 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import questionary
 from pygments import highlight
@@ -37,6 +37,7 @@ class UIError(PolylogueError):
     """UI-related errors (prompt stubs, user interaction)."""
 
 
+@runtime_checkable
 class ConsoleLike(Protocol):
     def print(self, *objects: object, **kwargs: object) -> None: ...
 

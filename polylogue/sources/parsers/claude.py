@@ -869,3 +869,10 @@ def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation
         messages=messages,
         attachments=attachments,
     )
+
+
+# Symmetric aliases — makes the claude module conform to the same interface
+# as chatgpt.py and codex.py (parse + looks_like at module level).
+# parse_code / looks_like_code remain for explicit dispatch in source.py.
+parse = parse_code
+looks_like = looks_like_code

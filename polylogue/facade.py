@@ -446,11 +446,7 @@ class Polylogue:
 
         last_sync = None
         try:
-            async with self._backend._get_connection() as conn:
-                cursor = await conn.execute("SELECT MAX(timestamp) as last FROM runs")
-                row = await cursor.fetchone()
-                if row and row["last"]:
-                    last_sync = row["last"]
+            last_sync = await self._backend.get_last_sync_timestamp()
         except Exception as exc:
             logger.debug("failed to query last sync timestamp", error=str(exc))
 
