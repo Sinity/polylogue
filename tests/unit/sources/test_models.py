@@ -29,58 +29,19 @@ from polylogue.sources.providers.claude_code import (
 from polylogue.sources.providers.gemini import GeminiMessage, GeminiPart, GeminiThoughtSignature
 
 # =============================================================================
-# Test Data Tables (module-level constants)
+# Test Data Tables — all from shared infra (single source of truth)
 # =============================================================================
 
-CHATGPT_ROLE_MAPPING = [
-    ("user", "user"),
-    ("assistant", "assistant"),
-    ("tool", "tool"),
-    ("custom", "unknown"),
-]
-
-GEMINI_ROLE_MAPPING = [
-    ("user", "user"),
-    ("model", "assistant"),
-    ("assistant", "assistant"),
-    ("custom", "unknown"),
-]
-
-GEMINI_ROLE_MAPPING_EXTRA = [
-    ("user", "user"),
-    ("USER", "user"),
-    ("model", "assistant"),
-    ("MODEL", "assistant"),
-    ("assistant", "assistant"),
-    ("system", "system"),
-    ("SYSTEM", "system"),
-    ("unknown_role", "unknown"),
-    ("", "unknown"),
-]
-
-CLAUDE_CODE_TYPE_ROLE_MAPPING = [
-    ("user", "user"),
-    ("assistant", "assistant"),
-    ("summary", "system"),
-    ("system", "system"),
-    ("file-history-snapshot", "system"),
-    ("queue-operation", "system"),
-    ("progress", "tool"),
-    ("result", "tool"),
-    ("init", "unknown"),
-    ("", "unknown"),
-]
-
-CLAUDE_CODE_TIMESTAMP_PARSING = [
-    (1700000000000, 2023, "unix_milliseconds"),
-    (1700000000, 2023, "unix_seconds"),
-    (1700000000000.5, 2023, "unix_float_milliseconds"),
-    ("2025-01-01T00:00:00Z", 2025, "iso_string_with_z"),
-    ("2025-06-15T12:30:00+05:00", 2025, "iso_string_with_timezone"),
-    (None, None, "none_timestamp"),
-    ("not-a-date", None, "invalid_string_returns_none"),
-    (0, 1970, "zero_timestamp"),
-]
+from tests.infra.tables import (
+    CHATGPT_ROLE_MAPPING,
+    CLAUDE_CODE_IS_ACTUAL_MESSAGE,
+    CLAUDE_CODE_IS_CONTEXT_COMPACTION,
+    CLAUDE_CODE_IS_TOOL_PROGRESS,
+    CLAUDE_CODE_TIMESTAMP_CASES as CLAUDE_CODE_TIMESTAMP_PARSING,
+    CLAUDE_CODE_TYPE_ROLE_MAPPING,
+    GEMINI_ROLE_MAPPING,
+    NORMALIZE_ROLE_CANONICAL,
+)
 
 CLAUDE_AI_ROLE_MAPPING = [
     ("human", "user"),
@@ -196,6 +157,29 @@ class TestClaudeCodeRecordTimestamp:
             assert ts is not None
             assert isinstance(ts, datetime)
             assert ts.year == expected_year
+
+
+class TestClaudeCodeRecordBooleanFlags:
+    """Test is_actual_message, is_context_compaction, is_tool_progress flags.
+
+    Consolidated from test_edge_cases.py and test_concurrency_guards.py.
+    Uses canonical tables from tests/infra/tables.py.
+    """
+
+    @pytest.mark.parametrize("record_type,expected", CLAUDE_CODE_IS_ACTUAL_MESSAGE)
+    def test_is_actual_message(self, record_type, expected):
+        record = ClaudeCodeRecord(type=record_type)
+        assert record.is_actual_message is expected
+
+    @pytest.mark.parametrize("record_type,expected", CLAUDE_CODE_IS_CONTEXT_COMPACTION)
+    def test_is_context_compaction(self, record_type, expected):
+        record = ClaudeCodeRecord(type=record_type)
+        assert record.is_context_compaction is expected
+
+    @pytest.mark.parametrize("record_type,expected", CLAUDE_CODE_IS_TOOL_PROGRESS)
+    def test_is_tool_progress(self, record_type, expected):
+        record = ClaudeCodeRecord(type=record_type)
+        assert record.is_tool_progress is expected
 
 
 class TestClaudeCodeRecordTextContent2:
@@ -473,13 +457,9 @@ class TestClaudeCodeRecordViewportMethods:
 
 
 class TestGeminiRoleNormalizedExtra:
-    """Test GeminiMessage.role_normalized edge cases."""
+    """Test GeminiMessage.role_normalized — full case matrix from shared tables."""
 
-    @pytest.mark.parametrize("role,expected", GEMINI_ROLE_MAPPING_EXTRA, ids=[
-        "user_lowercase", "user_uppercase", "model_lowercase", "model_uppercase",
-        "assistant_lowercase", "system_lowercase", "system_uppercase",
-        "unknown_role", "empty_string"
-    ])
+    @pytest.mark.parametrize("role,expected", GEMINI_ROLE_MAPPING)
     def test_role_normalized(self, role, expected):
         msg = GeminiMessage(text="hi", role=role)
         assert msg.role_normalized == expected
@@ -885,323 +865,47 @@ class TestClaudeAIConversationIntegration:
         assert conv.messages[0].parsed_timestamp is None
 
 
-# --- merged from test_role_mapping_validation.py ---
+# --- Role normalization: consolidated from 5 classes into canonical table ---
 
 
-class TestRoleNormalization:
-    """Tests for the core role normalization logic."""
+class TestNormalizeRole:
+    """Tests for polylogue.lib.roles.normalize_role — single parametrized class.
 
-    def test_normalize_user_variants(self):
-        """All user role variants should normalize to 'user'."""
+    Uses NORMALIZE_ROLE_CANONICAL from tests/infra/tables.py as the source of
+    truth. Replaces the former TestRoleNormalization, TestParserRoleMappings,
+    TestRoleMappingCoverage, TestDatabaseRoleStorage, and
+    TestRoleValidationInPipeline classes.
+    """
+
+    @pytest.mark.parametrize("input_role,expected,description", NORMALIZE_ROLE_CANONICAL)
+    def test_canonical_mapping(self, input_role, expected, description):
         from polylogue.lib.roles import normalize_role
+        assert normalize_role(input_role) == expected
 
-        variants = ["user", "USER", "User", "human", "HUMAN", "Human"]
-        for variant in variants:
-            assert normalize_role(variant) == "user"
-
-    def test_normalize_assistant_variants(self):
-        """All assistant role variants should normalize to 'assistant'."""
+    def test_empty_raises(self):
         from polylogue.lib.roles import normalize_role
-
-        variants = ["assistant", "ASSISTANT", "Assistant", "model", "MODEL", "ai", "AI"]
-        for variant in variants:
-            assert normalize_role(variant) == "assistant"
-
-    def test_normalize_system_role(self):
-        """System role should normalize to 'system'."""
-        from polylogue.lib.roles import normalize_role
-
-        assert normalize_role("system") == "system"
-        assert normalize_role("SYSTEM") == "system"
-
-    def test_normalize_tool_variants(self):
-        """Tool/function role variants should normalize to 'tool'."""
-        from polylogue.lib.roles import normalize_role
-
-        variants = [
-            "tool", "TOOL",
-            "function", "FUNCTION",
-            "tool_use", "tool_result",
-            "progress", "result"  # Claude Code specific
-        ]
-        for variant in variants:
-            assert normalize_role(variant) == "tool"
-
-    def test_normalize_empty_raises(self):
-        """Empty role string should raise ValueError."""
-        from polylogue.lib.roles import normalize_role
-
         with pytest.raises(ValueError, match="cannot be empty"):
             normalize_role("")
 
-    def test_normalize_whitespace_raises(self):
-        """Whitespace-only role should raise ValueError."""
+    def test_whitespace_raises(self):
         from polylogue.lib.roles import normalize_role
-
         with pytest.raises(ValueError, match="cannot be empty"):
             normalize_role("   ")
 
-    def test_normalize_unrecognized_returns_unknown(self):
-        """Unrecognized roles should return 'unknown'."""
-        from polylogue.lib.roles import normalize_role
-
-        assert normalize_role("custom_role") == "unknown"
-        assert normalize_role("CUSTOM") == "unknown"
-
     def test_role_enum_normalize_unknown(self):
-        """Role.normalize() should return UNKNOWN for unrecognized roles."""
         from polylogue.lib.roles import Role
-
         result = Role.normalize("unrecognized")
         assert result == Role.UNKNOWN
         assert result.value == "unknown"
-
-
-class TestParserRoleMappings:
-    """Tests that all parsers properly handle common role values.
-
-    These tests check that parsers don't leave role values unmapped,
-    which would cause them to be stored as 'unknown' in the database.
-    """
-
-    @pytest.fixture
-    def sample_chatgpt_node(self):
-        """Sample ChatGPT node structure with various roles."""
-        return {
-            "user_node": {
-                "message": {
-                    "id": "msg-1",
-                    "author": {"role": "user"},
-                    "content": {"parts": ["Hello"], "content_type": "text"},
-                    "create_time": 1700000000
-                }
-            },
-            "assistant_node": {
-                "message": {
-                    "id": "msg-2",
-                    "author": {"role": "assistant"},
-                    "content": {"parts": ["Hi"], "content_type": "text"},
-                    "create_time": 1700000001
-                }
-            },
-            "system_node": {
-                "message": {
-                    "id": "msg-3",
-                    "author": {"role": "system"},
-                    "content": {"parts": ["You are helpful"], "content_type": "text"},
-                    "create_time": 1700000002
-                }
-            },
-            "tool_node": {
-                "message": {
-                    "id": "msg-4",
-                    "author": {"role": "tool"},
-                    "content": {"parts": ["Result"], "content_type": "text"},
-                    "create_time": 1700000003
-                }
-            }
-        }
-
-    def test_claude_code_parser_normalizes_message_types(self):
-        """Claude Code parser should handle all message types."""
-        from polylogue.lib.roles import normalize_role
-        from polylogue.sources.providers.claude_code import ClaudeCodeRecord
-
-        test_records = [
-            {
-                "type": "user",
-                "message": {"role": "user", "content": "Hello"},
-                "uuid": "msg-1",
-                "timestamp": "2025-01-01T00:00:00Z"
-            },
-            {
-                "type": "assistant",
-                "message": {"role": "assistant", "content": [{"type": "text", "text": "Hi"}]},
-                "uuid": "msg-2",
-                "timestamp": "2025-01-01T00:00:01Z"
-            },
-            {
-                "type": "progress",
-                "message": {"type": "progress", "label": "Working..."},
-                "uuid": "msg-3",
-                "timestamp": "2025-01-01T00:00:02Z"
-            },
-            {
-                "type": "result",
-                "message": {"type": "result", "output": "Done"},
-                "uuid": "msg-4",
-                "timestamp": "2025-01-01T00:00:03Z"
-            }
-        ]
-
-        for record_data in test_records:
-            try:
-                record = ClaudeCodeRecord.model_validate(record_data)
-                # Role should be one of the standard types
-                role = record.message.role if hasattr(record.message, "role") else record.type
-                normalized = normalize_role(role)
-                assert normalized in {"user", "assistant", "tool", "system", "progress", "result"}
-            except Exception as e:
-                pytest.fail(f"Failed to parse {record_data['type']}: {e}")
-
-    def test_gemini_parser_normalizes_roles(self):
-        """Gemini parser should normalize model/user roles."""
-        from polylogue.lib.roles import normalize_role
-
-        # Gemini uses "user" and "model" as role values
-        test_roles = ["user", "model"]
-
-        for role in test_roles:
-            normalized = normalize_role(role)
-            assert normalized in {"user", "assistant"}
-            assert normalized != "unknown"
-
-    def test_unknown_role_detection(self):
-        """Messages with truly unknown roles should be detected as such."""
-        from polylogue.lib.roles import Role, normalize_role
-
-        weird_role = "custom_ai_role"
-        normalized = normalize_role(weird_role)
-
-        assert normalized == "unknown"
-
-        # When using Role enum, should be UNKNOWN
-        role_enum = Role.normalize(weird_role)
-        assert role_enum == Role.UNKNOWN
-
-
-class TestRoleMappingCoverage:
-    """Tests to ensure no common roles are missed in mappings."""
-
-    def test_all_openai_roles_mapped(self):
-        """OpenAI API uses these role values - ensure all are mapped."""
-        from polylogue.lib.roles import normalize_role
-
-        openai_roles = ["system", "user", "assistant", "function", "tool"]
-
-        for role in openai_roles:
-            normalized = normalize_role(role)
-            assert normalized in {"system", "user", "assistant", "tool"}
-
-    def test_all_anthropic_roles_mapped(self):
-        """Anthropic API role values should all be mapped."""
-        from polylogue.lib.roles import normalize_role
-
-        anthropic_roles = ["user", "assistant"]
-
-        for role in anthropic_roles:
-            normalized = normalize_role(role)
-            assert normalized in {"user", "assistant"}
-
-    def test_all_google_roles_mapped(self):
-        """Google Gemini role values should be mapped."""
-        from polylogue.lib.roles import normalize_role
-
-        google_roles = ["user", "model"]
-
-        for role in google_roles:
-            normalized = normalize_role(role)
-            assert normalized in {"user", "assistant"}
-
-    def test_legacy_chatgpt_export_roles(self):
-        """Legacy ChatGPT exports used these variations."""
-        from polylogue.lib.roles import normalize_role
-
-        legacy_roles = ["user", "assistant", "system"]
-
-        for role in legacy_roles:
-            normalized = normalize_role(role)
-            assert normalized == role  # Should preserve these
-
-
-class TestDatabaseRoleStorage:
-    """Tests that roles are stored correctly in the database.
-
-    This catches the scenario where role normalization happens but
-    the normalized value isn't actually used during storage.
-    """
-
-    def test_message_record_stores_normalized_role(self):
-        """MessageRecord should store normalized role, not raw."""
-        from polylogue.lib.roles import normalize_role
-        from polylogue.storage.store import MessageRecord
-
-        msg = MessageRecord(
-            message_id="msg-1",
-            conversation_id="conv-1",
-            role="HUMAN",  # Uppercase variant
-            text="Hello",
-            content_hash="hash123",
-            provider_meta={"provider_name": "test"},
-            version=1
-        )
-
-        # The role field should be normalized
-        # Note: MessageRecord doesn't auto-normalize in __init__,
-        # normalization happens at parse time. This tests the pattern.
-        assert msg.role == "HUMAN"  # Stored as-is
-
-        # Normalization should happen before storage
-        normalized_role = normalize_role(msg.role)
-        assert normalized_role == "user"
 
     def test_parsed_message_uses_normalized_role(self):
         """ParsedMessage from parsers should have normalized roles."""
         from polylogue.lib.roles import normalize_role
         from polylogue.sources.parsers.base import ParsedMessage
 
-        # Simulate parser creating a message
         msg = ParsedMessage(
             provider_message_id="msg-1",
-            role=normalize_role("ASSISTANT"),  # Parser should normalize
-            text="Hello"
+            role=normalize_role("ASSISTANT"),
+            text="Hello",
         )
-
         assert msg.role == "assistant"
-        assert msg.role != "ASSISTANT"
-
-
-class TestRoleValidationInPipeline:
-    """Tests that validate role handling through the entire pipeline."""
-
-    def test_unknown_roles_are_logged_not_crashed(self):
-        """Unknown roles should be logged as warnings but not crash ingestion.
-
-        This is defensive coding - if a new provider or API version introduces
-        a role we don't know about, we should handle it gracefully.
-        """
-        from polylogue.lib.roles import normalize_role
-
-        # This is tested by ensuring normalize_role doesn't raise on unknown input
-        weird_roles = ["ai_model", "bot", "agent", "custom"]
-
-        for role in weird_roles:
-            try:
-                result = normalize_role(role)
-                # Should return 'unknown', not crash
-                assert isinstance(result, str)
-                assert result.islower()
-            except ValueError:
-                # Only acceptable error is empty role
-                pytest.fail(f"normalize_role crashed on '{role}'")
-
-    def test_role_statistics_detect_unknown_roles(self):
-        """If many messages have unknown roles, it should be detectable.
-
-        The bug that motivated these tests: 325K messages with role='unknown'
-        should have been caught by monitoring role statistics.
-        """
-        from polylogue.lib.stats import ArchiveStats
-
-        # Simulate stats with high unknown role count
-        ArchiveStats(
-            total_conversations=1000,
-            total_messages=1_000_000,
-            providers={"chatgpt": 500, "claude": 500},
-        )
-
-        # If we had role statistics, we'd check:
-        # assert stats.unknown_role_count < stats.total_messages * 0.01  # <1% unknown
-
-        # For now, this test documents the need for role statistics
-        # in ArchiveStats or a dedicated RoleStats model
