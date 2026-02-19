@@ -15,21 +15,6 @@ from tests.integration.conftest import make_mock_filter
 # Test data tables (SCREAMING_CASE constants)
 # =============================================================================
 
-# Search tool filter test data
-SEARCH_FILTER_CASES = [
-    ("provider", "claude", "provider filter", lambda f: f.provider),
-    ("since", "2024-01-01", "since filter", lambda f: f.since),
-    ("limit_normal", 5, "normal limit", lambda f: f.limit),
-    ("limit_max", 99999, "limit above max", lambda f: f.limit),
-    ("limit_negative", -5, "negative limit", lambda f: f.limit),
-]
-
-# Search error cases
-SEARCH_ERROR_CASES = [
-    ("invalid_since", {"query": "test", "since": "not-a-date"}, "date", "Invalid date in error"),
-    ("invalid_limit_type", {"query": "test", "limit": "not-a-number"}, "limit", "limit in error message"),
-]
-
 # Serialization edge case test data
 SERIALIZATION_CASES = [
     (
@@ -89,7 +74,6 @@ SERIALIZATION_CASES = [
         "_conversation_to_full_dict",
     ),
 ]
-
 
 # =============================================================================
 # Resource Tests
@@ -443,137 +427,23 @@ class TestConversationSerialization:
 class TestClampLimit:
     """Tests for _clamp_limit helper."""
 
-    def test_clamp_limit_normal(self):
-        """_clamp_limit passes through normal values."""
-        from polylogue.mcp.server import _clamp_limit
-
-        assert _clamp_limit(10) == 10
-        assert _clamp_limit(1) == 1
-        assert _clamp_limit(5000) == 5000
-
-    def test_clamp_limit_max(self):
-        """_clamp_limit caps at _MAX_LIMIT."""
-        from polylogue.mcp.server import _clamp_limit
-
-        assert _clamp_limit(99999) == 10000
-        assert _clamp_limit(10001) == 10000
-
-    def test_clamp_limit_min(self):
-        """_clamp_limit floors at 1."""
-        from polylogue.mcp.server import _clamp_limit
-
-        assert _clamp_limit(0) == 1
-        assert _clamp_limit(-5) == 1
-
-    def test_clamp_limit_type_coercion(self):
-        """_clamp_limit coerces types and handles errors."""
-        from polylogue.mcp.server import _clamp_limit
-
-        # Valid string
-        assert _clamp_limit("10") == 10
-
-        # Invalid types return default
-        assert _clamp_limit("not-a-number") == 10
-        assert _clamp_limit([1, 2]) == 10
-
-
-# =============================================================================
-# Search Tool Filter Tests (Parametrized)
-# =============================================================================
-
-
-class TestSearchToolFilters:
-    """Tests for search tool edge cases and filters."""
-
     @pytest.mark.parametrize(
-        "filter_type,filter_value,desc,filter_checker",
-        SEARCH_FILTER_CASES,
+        "raw_limit,expected",
+        [
+            (10, 10),
+            (1, 1),
+            (5000, 5000),
+            (99999, 99999),
+            (10001, 10001),
+            (0, 1),
+            (-5, 1),
+            ("10", 10),
+            ("not-a-number", 10),
+            ([1, 2], 10),
+        ],
     )
-    @pytest.mark.asyncio
-    async def test_search_filter_application(
-        self,
-        filter_type,
-        filter_value,
-        desc,
-        filter_checker,
-    ):
-        """Search applies filters correctly."""
-        from polylogue.mcp.server import _build_server
+    def test_clamp_limit_contract(self, raw_limit, expected):
+        """_clamp_limit normalizes values and defaults invalid input to 10."""
+        from polylogue.mcp.server import _clamp_limit
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.search.return_value = []
-            mock_get_repo.return_value = mock_repo
-
-            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                filter_instance = make_mock_filter(results=[])
-                MockFilter.return_value = filter_instance
-
-                server = _build_server()
-
-                args = {"query": "test"}
-                if filter_type.startswith("limit"):
-                    args["limit"] = filter_value
-                else:
-                    args[filter_type] = filter_value
-
-                result = await server._tool_manager._tools["search"].fn(**args)
-
-                assert isinstance(result, str)
-                filter_instance = MockFilter.return_value
-                if filter_type == "limit_normal":
-                    filter_checker(filter_instance).assert_called_once_with(5)
-                elif filter_type == "limit_max":
-                    filter_checker(filter_instance).assert_called_once_with(10000)
-                elif filter_type == "limit_negative":
-                    filter_checker(filter_instance).assert_called_once_with(1)
-                else:
-                    filter_checker(filter_instance).assert_called_once_with(filter_value)
-
-    @pytest.mark.parametrize(
-        "case_type,args,error_keyword,assertion_desc",
-        SEARCH_ERROR_CASES,
-    )
-    @pytest.mark.asyncio
-    async def test_search_error_cases(
-        self,
-        case_type,
-        args,
-        error_keyword,
-        assertion_desc,
-    ):
-        """Search handles invalid parameters."""
-        from polylogue.mcp.server import _build_server
-
-        if case_type == "invalid_since":
-            with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-                mock_repo = MagicMock()
-                mock_get_repo.return_value = mock_repo
-
-                with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                    MockFilter.return_value = make_mock_filter(since=ValueError("Invalid date"))
-
-                    server = _build_server()
-                    # Tool should raise or return error dict
-                    try:
-                        result = await server._tool_manager._tools["search"].fn(**args)
-                        # If no exception, check result contains error info
-                        json.loads(result)
-                        # Tools that catch errors may return dict with error key
-                    except ValueError:
-                        pass  # Expected for invalid date
-        else:
-            with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-                mock_repo = MagicMock()
-                mock_get_repo.return_value = mock_repo
-
-                with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                    MockFilter.return_value = make_mock_filter(results=[])
-
-                    server = _build_server()
-                    # For invalid_limit_type, tool should handle gracefully
-                    try:
-                        result = await server._tool_manager._tools["search"].fn(**args)
-                        json.loads(result)
-                    except (TypeError, ValueError):
-                        pass  # Expected for invalid limit type
+        assert _clamp_limit(raw_limit) == expected

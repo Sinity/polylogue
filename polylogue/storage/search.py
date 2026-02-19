@@ -216,11 +216,7 @@ def _search_messages_impl(
                 raise ValueError(f"Invalid --since date '{since}': {exc}. Use ISO format (e.g., 2023-01-01)") from exc
             since_ts = since_dt.timestamp()
             sql += """
-                AND CASE
-                    WHEN messages.timestamp GLOB '*[^0-9.]*'
-                    THEN CAST(strftime('%s', messages.timestamp) AS REAL)
-                    ELSE CAST(messages.timestamp AS REAL)
-                END >= ?
+                AND messages.sort_key >= ?
             """
             params.append(since_ts)
 

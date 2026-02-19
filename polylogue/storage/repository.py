@@ -293,6 +293,22 @@ class ConversationRepository:
             title_contains=title_contains,
         )
 
+    async def aggregate_message_stats(
+        self,
+        conversation_ids: builtins.list[str] | None = None,
+    ) -> dict[str, int]:
+        """Compute aggregate message statistics via SQL.
+
+        Args:
+            conversation_ids: Optional list of IDs to scope stats to.
+                If None, computes stats across all conversations.
+
+        Returns:
+            Dict with keys: total, user, assistant, system, words_approx,
+            attachments, min_sort_key, max_sort_key.
+        """
+        return await self._backend.aggregate_message_stats(conversation_ids)
+
     async def get_source_conversations(self, provider: str) -> builtins.list[str]:
         """Get all conversation IDs for a given provider.
 
@@ -652,7 +668,10 @@ class ConversationRepository:
     ) -> dict[str, int]:
         """Internal implementation of save_conversation via backend.
 
-        Handles transaction control and skip detection.
+        Uses lightweight hash check + UPSERT without redundant full-record
+        reads inside the write lock. The UPSERT ON CONFLICT clauses handle
+        skip detection at the SQL level, so we don't need to pre-fetch
+        existing records.
 
         Args:
             conversation: Conversation record
@@ -675,45 +694,45 @@ class ConversationRepository:
         if backend is None:
             raise RuntimeError("Backend is not initialized")
 
+        # Lightweight hash check OUTSIDE the write lock — read-only, no contention
+        existing_hash: str | None = None
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT content_hash FROM conversations WHERE conversation_id = ?",
+                (conversation.conversation_id,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                existing_hash = row["content_hash"]
+
+        content_unchanged = existing_hash is not None and existing_hash == conversation.content_hash
+
+        # Acquire write lock only for the UPSERT — no pre-fetch reads
         async with backend.transaction():
-            # Check existing conversation
-            existing = await backend.get_conversation(conversation.conversation_id)
+            # Always UPSERT the conversation record (handles title/metadata updates
+            # even when content_hash is unchanged)
             await backend.save_conversation_record(conversation)
-            if existing and existing.content_hash == conversation.content_hash:
-                counts["skipped_conversations"] += 1
+
+            if content_unchanged:
+                # Content hasn't changed — skip the expensive message/attachment work.
+                # The conversation_content_hash includes all messages, so if the
+                # hash matches, no messages or attachments have been modified.
+                counts["skipped_conversations"] = 1
+                counts["skipped_messages"] = len(messages)
+                counts["skipped_attachments"] = len(attachments)
             else:
-                counts["conversations"] += 1
+                counts["conversations"] = 1
 
-            # Check existing messages
-            existing_messages = {
-                msg.message_id: msg for msg in await backend.get_messages(conversation.conversation_id)
-            }
-            for message in messages:
-                existing_msg = existing_messages.get(message.message_id)
-                if existing_msg and existing_msg.content_hash == message.content_hash:
-                    counts["skipped_messages"] += 1
-                else:
-                    counts["messages"] += 1
+                if messages:
+                    await backend.save_messages(messages)
+                    counts["messages"] = len(messages)
 
-            if messages:
-                await backend.save_messages(messages)
+                new_attachment_ids: set[str] = {str(att.attachment_id) for att in attachments}
+                await backend.prune_attachments(conversation.conversation_id, new_attachment_ids)
 
-            # Check existing attachments
-            existing_attachments = {
-                att.attachment_id: att
-                for att in await backend.get_attachments(conversation.conversation_id)
-            }
-            for attachment in attachments:
-                if attachment.attachment_id in existing_attachments:
-                    counts["skipped_attachments"] += 1
-                else:
-                    counts["attachments"] += 1
-
-            new_attachment_ids: set[str] = {str(att.attachment_id) for att in attachments}
-            await backend.prune_attachments(conversation.conversation_id, new_attachment_ids)
-
-            if attachments:
-                await backend.save_attachments(attachments)
+                if attachments:
+                    await backend.save_attachments(attachments)
+                    counts["attachments"] = len(attachments)
 
         return counts
 

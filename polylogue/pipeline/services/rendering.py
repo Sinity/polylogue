@@ -2,15 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
 from polylogue.protocols import OutputRenderer
 
+if TYPE_CHECKING:
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+
 logger = get_logger(__name__)
 
 __all__ = ["RenderService", "RenderResult"]
+
+# Per-conversation timeout: prevents infinite hangs on huge conversations
+# or lock contention with concurrent processes.
+RENDER_TIMEOUT_S = 120
+
+# Log a warning when a single render exceeds this duration.
+SLOW_RENDER_THRESHOLD_S = 10.0
 
 
 class RenderResult:
@@ -25,12 +38,7 @@ class RenderResult:
         self.rendered_count += 1
 
     def record_failure(self, conversation_id: str, error: str) -> None:
-        """Record a rendering failure.
-
-        Args:
-            conversation_id: ID of the conversation that failed to render
-            error: Error message
-        """
+        """Record a rendering failure."""
         self.failures.append(
             {
                 "conversation_id": conversation_id,
@@ -40,60 +48,118 @@ class RenderResult:
 
 
 class RenderService:
-    """Service for rendering conversations to Markdown and HTML (async version)."""
+    """Service for rendering conversations to Markdown and HTML (async version).
+
+    Performance features:
+    - Connection pool for concurrent DB reads (read_pool)
+    - Per-conversation timeout to prevent hangs
+    - Straggler detection with slow-render logging
+    - Worker count scaled to CPU count
+    """
 
     def __init__(
         self,
         renderer: OutputRenderer,
         render_root: Path,
+        backend: SQLiteBackend | None = None,
     ):
         """Initialize the async rendering service.
 
         Args:
             renderer: OutputRenderer implementation for rendering conversations
             render_root: Root directory for rendered output
+            backend: Optional shared backend for connection pooling
         """
         self.renderer = renderer
         self.render_root = render_root
+        self.backend = backend
 
     async def render_conversations(
         self,
         conversation_ids: list[str],
         *,
-        max_workers: int = 4,
+        max_workers: int | None = None,
         progress_callback: Any | None = None,
     ) -> RenderResult:
-        """Render multiple conversations concurrently.
+        """Render multiple conversations with connection pooling and timeouts.
 
-        Args:
-            conversation_ids: List of conversation IDs to render
-            max_workers: Maximum number of concurrent tasks
-            progress_callback: Optional callback(amount, desc=...) for progress updates
-
-        Returns:
-            RenderResult with success count and failures
+        Architecture:
+        1. Opens a read pool with N connections (matching worker count)
+        2. N async workers pull conversation IDs from a queue
+        3. Each render: DB query (pool conn) → CPU work (thread) → file write (thread)
+        4. Per-conversation timeout prevents infinite hangs
+        5. Slow renders (>10s) are logged for investigation
         """
-        import asyncio
-
         result = RenderResult()
-        semaphore = asyncio.Semaphore(max_workers)
         total = len(conversation_ids)
+        if not total:
+            return result
+
+        # Scale workers to CPU count (capped at 8 to avoid fd pressure)
+        if max_workers is None:
+            max_workers = min(os.cpu_count() or 4, 8)
+        worker_count = max(1, min(max_workers, total))
+
+        queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=max(worker_count * 2, 1))
 
         async def _render_one(convo_id: str) -> None:
-            async with semaphore:
-                try:
-                    await self.renderer.render(convo_id, self.render_root)
-                    result.record_success()
-                except Exception as exc:
-                    logger.warning("Failed to render conversation %s: %s", convo_id, exc)
-                    result.record_failure(convo_id, str(exc))
-                if progress_callback is not None:
-                    done = result.rendered_count + len(result.failures)
-                    progress_callback(1, desc=f"Rendering: {done}/{total}")
+            t0 = time.perf_counter()
+            try:
+                await asyncio.wait_for(
+                    self.renderer.render(convo_id, self.render_root),
+                    timeout=RENDER_TIMEOUT_S,
+                )
+                result.record_success()
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Render timed out after %ds", RENDER_TIMEOUT_S,
+                    conversation_id=convo_id,
+                )
+                result.record_failure(convo_id, f"render timed out after {RENDER_TIMEOUT_S}s")
+            except Exception as exc:
+                logger.warning("Failed to render conversation %s: %s", convo_id, exc)
+                result.record_failure(convo_id, str(exc))
 
-        await asyncio.gather(
-            *(_render_one(cid) for cid in conversation_ids),
-            return_exceptions=False,
-        )
+            elapsed = time.perf_counter() - t0
+            if elapsed > SLOW_RENDER_THRESHOLD_S:
+                logger.info(
+                    "Slow render: %.1fs", elapsed,
+                    conversation_id=convo_id,
+                )
+
+            if progress_callback is not None:
+                done = result.rendered_count + len(result.failures)
+                progress_callback(1, desc=f"Rendering: {done}/{total}")
+
+        async def _worker() -> None:
+            while True:
+                convo_id = await queue.get()
+                if convo_id is None:
+                    queue.task_done()
+                    return
+                try:
+                    await _render_one(convo_id)
+                finally:
+                    queue.task_done()
+
+        # Use read pool for connection reuse if backend is available
+        async def _run_workers() -> None:
+            workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
+
+            for convo_id in conversation_ids:
+                await queue.put(convo_id)
+
+            await queue.join()
+
+            for _ in range(worker_count):
+                await queue.put(None)
+
+            await asyncio.gather(*workers, return_exceptions=False)
+
+        if self.backend is not None:
+            async with self.backend.read_pool(size=worker_count):
+                await _run_workers()
+        else:
+            await _run_workers()
 
         return result

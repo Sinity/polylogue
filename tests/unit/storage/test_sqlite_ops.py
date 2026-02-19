@@ -745,7 +745,9 @@ async def test_prune_multiple_attachments_correctly(workspace_env, storage_repos
         for ref in refs:
             assert ref["ref_count"] == 1, f"Expected ref_count=1 for {ref['attachment_id']}, got {ref['ref_count']}"
 
-    # Now re-ingest with only 2 attachments, which should prune 8
+    # Now re-ingest with only 2 attachments, which should prune 8.
+    # Use a different content_hash to trigger the full save path (in real
+    # usage, attachment changes always produce different content hashes).
     new_attachments = [
         make_attachment("att-0", "conv:perf", "msg:perf", mime_type="text/plain", size_bytes=10, provider_meta=None),
         make_attachment("att-1", "conv:perf", "msg:perf", mime_type="text/plain", size_bytes=10, provider_meta=None),
@@ -753,7 +755,7 @@ async def test_prune_multiple_attachments_correctly(workspace_env, storage_repos
 
     await save_bundle(
         RecordBundle(
-            conversation=_conversation_record(),
+            conversation=make_conversation("conv:perf", provider_name="codex", title="Perf Test", created_at=None, updated_at=None, content_hash="hash-perf-v2", provider_meta=None),
             messages=[make_message("msg:perf", "conv:perf", text="hello", timestamp="1", content_hash="msg:perf", provider_meta=None)],
             attachments=new_attachments,
         ),

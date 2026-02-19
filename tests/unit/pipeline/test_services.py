@@ -192,7 +192,7 @@ class TestAcquisitionServiceAcquireSources:
         service = AcquisitionService(backend=backend)
         source = Source(name="test-source", path=Path("/tmp/inbox"))
         await service.acquire_sources([source], progress_callback=callback)
-        callback.assert_called_with(1, desc="Acquiring")
+        callback.assert_called_with(1, desc="Acquiring [test-source]")
 
     @pytest.mark.parametrize("error_scenario", ["iteration_error", "none_raw_data"])
     @patch("polylogue.pipeline.services.acquisition.iter_source_conversations_with_raw")
@@ -394,6 +394,7 @@ class TestParsingServiceParseSources:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_cursor.fetchmany = AsyncMock(return_value=[])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
 
         mock_cm = AsyncMock()
@@ -431,6 +432,7 @@ class TestParsingServiceParseSources:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_cursor.fetchmany = AsyncMock(return_value=[])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
 
         mock_cm = AsyncMock()
@@ -486,6 +488,7 @@ class TestParsingServiceParseSources:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_cursor.fetchmany = AsyncMock(return_value=[])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
 
         mock_cm = AsyncMock()
@@ -528,6 +531,7 @@ class TestParsingServiceParseSources:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_cursor.fetchmany = AsyncMock(return_value=[])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
 
         mock_cm = AsyncMock()

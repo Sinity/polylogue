@@ -21,6 +21,9 @@ _PROVIDER_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
 # Maximum reasonable file size (1TB)
 MAX_ATTACHMENT_SIZE = 1024 * 1024 * 1024 * 1024
 
+# SQLite SQLITE_MAX_LENGTH is 1 GB; keep raw blobs under 900 MB to leave headroom
+MAX_RAW_CONTENT_SIZE = 900 * 1024 * 1024
+
 
 class ConversationRecord(BaseModel):
     conversation_id: ConversationId
@@ -29,6 +32,7 @@ class ConversationRecord(BaseModel):
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    sort_key: float | None = None  # Pre-computed numeric updated_at for ORDER BY / WHERE
     content_hash: ContentHash
     provider_meta: dict[str, object] | None = None
     metadata: dict[str, object] | None = None
@@ -67,6 +71,7 @@ class MessageRecord(BaseModel):
     role: str | None = None
     text: str | None = None
     timestamp: str | None = None
+    sort_key: float | None = None  # Pre-computed numeric timestamp for ORDER BY
     content_hash: ContentHash
     provider_meta: dict[str, object] | None = None
     version: int = 1
@@ -144,6 +149,8 @@ class RawConversationRecord(BaseModel):
     raw_content: bytes  # Full JSON/JSONL bytes
     acquired_at: str  # ISO timestamp of acquisition
     file_mtime: str | None = None  # File modification time if available
+    parsed_at: str | None = None  # ISO timestamp of last successful parse
+    parse_error: str | None = None  # Error from last failed parse attempt
 
     @field_validator("raw_id", "provider_name", "source_path")
     @classmethod
@@ -228,6 +235,7 @@ def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
         title=row["title"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        sort_key=_row_get(row, "sort_key"),
         content_hash=row["content_hash"],
         provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
         metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
@@ -247,6 +255,7 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         role=row["role"],
         text=row["text"],
         timestamp=row["timestamp"],
+        sort_key=_row_get(row, "sort_key"),
         content_hash=row["content_hash"],
         provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
         version=row["version"],
@@ -266,6 +275,8 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
         raw_content=row["raw_content"],
         acquired_at=row["acquired_at"],
         file_mtime=row["file_mtime"],
+        parsed_at=_row_get(row, "parsed_at"),
+        parse_error=_row_get(row, "parse_error"),
     )
 
 
