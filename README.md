@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="docs/assets/hero-banner.svg" alt="polylogue" width="700">
-</p>
+
 
 <p align="center">
   <strong>Preserve, index, and expose your AI conversation history as a queryable, programmable archive.</strong>
@@ -13,10 +11,6 @@
 </p>
 
 ---
-
-<p align="center">
-  <img src="demos/output/01-overview.gif" alt="polylogue overview" width="700">
-</p>
 
 ## What It Does
 
