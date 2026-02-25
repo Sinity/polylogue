@@ -494,7 +494,7 @@ See [CLAUDE.md](CLAUDE.md) for development guidelines, [docs/internals.md](docs/
 
 ## License
 
-[MIT](LICENSE) — Simon Ohara
+[MIT](LICENSE)
 
 ---
 
