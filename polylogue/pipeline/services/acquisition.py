@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from polylogue.lib.log import get_logger
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.sources.source import iter_source_conversations_with_raw
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import Source
@@ -83,6 +83,11 @@ class AcquisitionService:
         """
         result = AcquireResult()
 
+        # Load known mtimes once for the entire acquisition phase.
+        # Files whose mtime hasn't changed will be skipped entirely,
+        # replacing a full read+SHA256 with a single stat() call.
+        known_mtimes = await self.backend.get_known_source_mtimes()
+
         # Use a single persistent connection with batched commits for the
         # entire acquisition phase.  This avoids fd/WAL exhaustion from
         # connection-per-INSERT and eliminates per-item fsync overhead.
@@ -96,7 +101,7 @@ class AcquisitionService:
                 try:
                     # Stream source items from a dedicated worker thread to avoid
                     # event-loop blocking and full-list materialization.
-                    async for raw_data, _parsed in self._iter_source_conversations_stream(source):
+                    async for raw_data, _parsed in self._iter_source_conversations_stream(source, known_mtimes=known_mtimes):
                         if raw_data is None:
                             # This shouldn't happen with capture_raw=True, but handle it
                             logger.warning("No raw data captured for conversation")
@@ -147,16 +152,19 @@ class AcquisitionService:
     async def _iter_source_conversations_stream(
         self,
         source: Source,
+        *,
+        known_mtimes: dict[str, str] | None = None,
     ) -> AsyncIterator[tuple[RawConversationData | None, Any]]:
         """Stream source conversations without materializing the full iterator.
 
         Args:
             source: Source to iterate
+            known_mtimes: Optional {source_path: file_mtime} for skipping unchanged files
 
         Yields:
             Tuples of (raw_data, parsed)
         """
-        iterator = iter_source_conversations_with_raw(source, capture_raw=True)
+        iterator = iter_source_conversations_with_raw(source, capture_raw=True, known_mtimes=known_mtimes)
         sentinel = object()
         batch_size = 128
 
@@ -186,8 +194,19 @@ class AcquisitionService:
             source_name: Config source name (e.g., "inbox"), stored separately
 
         Returns:
-            raw_id if newly stored, None if already exists
+            raw_id if newly stored, None if already exists or skipped
         """
+        size = len(raw_data.raw_bytes)
+        if size > MAX_RAW_CONTENT_SIZE:
+            logger.warning(
+                "Skipping oversized source file (%.0f MB > %d MB limit)",
+                size / (1024 * 1024),
+                MAX_RAW_CONTENT_SIZE // (1024 * 1024),
+                path=raw_data.source_path,
+                source=source_name,
+            )
+            return None
+
         raw_id = hashlib.sha256(raw_data.raw_bytes).hexdigest()
         acquired_at = datetime.now(timezone.utc).isoformat()
 

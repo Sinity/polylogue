@@ -1493,8 +1493,10 @@ class SQLiteBackend:
                     source_index,
                     raw_content,
                     acquired_at,
-                    file_mtime
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    file_mtime,
+                    parsed_at,
+                    parse_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.raw_id,
@@ -1505,6 +1507,8 @@ class SQLiteBackend:
                     record.raw_content,
                     record.acquired_at,
                     record.file_mtime,
+                    record.parsed_at,
+                    record.parse_error,
                 ),
             )
             if self._transaction_depth == 0:
@@ -1531,6 +1535,82 @@ class SQLiteBackend:
                 return None
 
             return _row_to_raw_conversation(row)
+
+    async def mark_raw_parsed(self, raw_id: str, *, error: str | None = None) -> None:
+        """Mark a raw conversation as parsed (or record a parse error).
+
+        On success (error=None): sets parsed_at, clears parse_error.
+        On failure (error=...): sets parse_error, leaves parsed_at NULL
+        so the record will be retried on next run.
+
+        Args:
+            raw_id: Raw conversation ID to update
+            error: If not None, the parse error message
+        """
+        from datetime import datetime, timezone
+
+        async with self._get_connection() as conn:
+            if error is None:
+                await conn.execute(
+                    "UPDATE raw_conversations SET parsed_at = ?, parse_error = NULL WHERE raw_id = ?",
+                    (datetime.now(timezone.utc).isoformat(), raw_id),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE raw_conversations SET parse_error = ? WHERE raw_id = ?",
+                    (error[:2000], raw_id),  # Truncate to avoid bloating the DB
+                )
+            if self._transaction_depth == 0:
+                await conn.commit()
+
+    async def get_known_source_mtimes(self) -> dict[str, str]:
+        """Return {source_path: file_mtime} for all raw records with an mtime.
+
+        Used by the acquisition stage to skip files whose mtime hasn't changed
+        since the last run, replacing a full file read + SHA256 hash with a
+        single stat() call.
+
+        Returns:
+            Dict mapping source_path to its last-known file_mtime
+        """
+        result: dict[str, str] = {}
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT source_path, file_mtime FROM raw_conversations WHERE file_mtime IS NOT NULL"
+            )
+            while True:
+                rows = await cursor.fetchmany(1000)
+                if not rows:
+                    break
+                for row in rows:
+                    result[row["source_path"]] = row["file_mtime"]
+        return result
+
+    async def reset_parse_status(self, *, provider: str | None = None) -> int:
+        """Clear parsed_at/parse_error to force re-parsing on next run.
+
+        Args:
+            provider: If set, only reset records for this provider.
+                      If None, reset all records.
+
+        Returns:
+            Number of records reset
+        """
+        async with self._get_connection() as conn:
+            if provider is not None:
+                cursor = await conn.execute(
+                    "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
+                    "WHERE provider_name = ? AND parsed_at IS NOT NULL",
+                    (provider,),
+                )
+            else:
+                cursor = await conn.execute(
+                    "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
+                    "WHERE parsed_at IS NOT NULL"
+                )
+            if self._transaction_depth == 0:
+                await conn.commit()
+            return cursor.rowcount
 
     async def get_raw_conversations_batch(
         self, raw_ids: list[str],
