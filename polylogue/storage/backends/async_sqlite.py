@@ -101,6 +101,12 @@ class SQLiteBackend:
         # Persistent connection for explicit transaction control
         self._txn_conn: aiosqlite.Connection | None = None
 
+        # Reusable connection for bulk operations (e.g., acquisition)
+        self._bulk_conn: aiosqlite.Connection | None = None
+
+        # Connection pool for concurrent read operations (e.g., rendering)
+        self._read_pool: asyncio.Queue[aiosqlite.Connection] | None = None
+
     async def _ensure_schema_once(self) -> None:
         """Ensure schema is initialized exactly once (thread-safe via asyncio lock)."""
         if self._schema_ensured:
@@ -116,18 +122,112 @@ class SQLiteBackend:
             self._schema_ensured = True
 
     @asynccontextmanager
+    async def bulk_connection(self) -> AsyncIterator[None]:
+        """Keep a single connection alive for many sequential operations.
+
+        When active, ``_get_connection()`` reuses this connection instead of
+        opening a new one per call.  All writes are grouped in a single
+        transaction — call ``bulk_flush()`` periodically for intermediate
+        durability.  On exit the final transaction is committed.
+
+        This avoids both connection-per-call overhead (fd/WAL exhaustion)
+        and per-item fsync overhead (each commit forces a WAL flush).
+        """
+        await self._ensure_schema_once()
+        conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA foreign_keys = ON")
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+        await conn.execute("BEGIN IMMEDIATE")
+        self._bulk_conn = conn
+        # Suppress per-item commits in methods that check _transaction_depth
+        self._transaction_depth += 1
+        try:
+            yield
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
+        finally:
+            self._transaction_depth -= 1
+            self._bulk_conn = None
+            await conn.close()
+
+    async def bulk_flush(self) -> None:
+        """Commit the current bulk transaction and start a new one.
+
+        Call periodically during long bulk operations for intermediate
+        durability.  Safe to call outside ``bulk_connection()`` (no-op).
+        """
+        if self._bulk_conn is not None:
+            await self._bulk_conn.commit()
+            await self._bulk_conn.execute("BEGIN IMMEDIATE")
+
+    @asynccontextmanager
+    async def read_pool(self, size: int = 4) -> AsyncIterator[None]:
+        """Open a pool of reusable read connections for concurrent operations.
+
+        While active, ``_get_connection()`` borrows from the pool instead of
+        opening a fresh connection per call.  This eliminates per-call
+        overhead: thread spawn, PRAGMA negotiation, and schema checks.
+
+        Use for read-heavy phases like rendering where many concurrent
+        tasks each need short-lived DB access.
+
+        Args:
+            size: Number of connections in the pool (match worker count)
+        """
+        await self._ensure_schema_once()
+        pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue()
+        connections: list[aiosqlite.Connection] = []
+
+        for _ in range(size):
+            conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys = ON")
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+            connections.append(conn)
+            pool.put_nowait(conn)
+
+        self._read_pool = pool
+        try:
+            yield
+        finally:
+            self._read_pool = None
+            for conn in connections:
+                await conn.close()
+
+    @asynccontextmanager
     async def _get_connection(self) -> AsyncIterator[aiosqlite.Connection]:
         """Get async database connection with schema ensured.
 
-        When a transaction is active (_txn_conn is set and depth > 0),
-        reuses the transaction connection to avoid deadlocks.
-        Otherwise, creates a fresh connection per call.
+        Connection reuse priority:
+        1. Transaction connection (_txn_conn) when inside begin/commit block
+        2. Bulk connection (_bulk_conn) when inside bulk_connection() context
+        3. Read pool connection when inside read_pool() context
+        4. Fresh connection per call (fallback)
         """
         await self._ensure_schema_once()
 
         # Reuse transaction connection when inside begin/commit block
         if self._txn_conn is not None and self._transaction_depth > 0:
             yield self._txn_conn
+            return
+
+        # Reuse bulk connection when inside bulk_connection() context
+        if self._bulk_conn is not None:
+            yield self._bulk_conn
+            return
+
+        # Borrow from read pool when available
+        if self._read_pool is not None:
+            conn = await self._read_pool.get()
+            try:
+                yield conn
+            finally:
+                self._read_pool.put_nowait(conn)
             return
 
         async with aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT) as conn:
@@ -1431,6 +1531,36 @@ class SQLiteBackend:
                 return None
 
             return _row_to_raw_conversation(row)
+
+    async def get_raw_conversations_batch(
+        self, raw_ids: list[str],
+    ) -> list[RawConversationRecord]:
+        """Fetch multiple raw conversations in a single query.
+
+        Replaces sequential per-ID queries with one ``IN (?)`` query,
+        eliminating N connection round-trips per batch.
+
+        Args:
+            raw_ids: List of raw_id hashes to fetch
+
+        Returns:
+            List of found records (missing IDs are silently skipped)
+        """
+        if not raw_ids:
+            return []
+        async with self._get_connection() as conn:
+            placeholders = ",".join("?" * len(raw_ids))
+            cursor = await conn.execute(
+                f"SELECT * FROM raw_conversations WHERE raw_id IN ({placeholders})",  # noqa: S608
+                raw_ids,
+            )
+            records: list[RawConversationRecord] = []
+            while True:
+                rows = await cursor.fetchmany(200)
+                if not rows:
+                    break
+                records.extend(_row_to_raw_conversation(row) for row in rows)
+            return records
 
     async def iter_raw_conversations(
         self,

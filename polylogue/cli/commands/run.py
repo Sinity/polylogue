@@ -26,6 +26,19 @@ from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
 
 
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds as a compact duration string."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours}h{mins:02d}m{secs:02d}s"
+
+
 def _run_sync_once(
     cfg: Config,
     env: AppEnv,
@@ -36,24 +49,54 @@ def _run_sync_once(
 ) -> RunResult:
     """Execute a single sync run."""
     if env.ui.plain:
+        pipeline_start = time.time()
         print("Syncing...", flush=True)
-        last_update = [time.time()]
+        stage_start = [time.time()]
+        last_update = [stage_start[0]]
         processed = [0]
+        stage_processed = [0]
 
         last_desc = [""]
+        last_stage = [""]
+
+        def _stage_key(desc: str) -> str:
+            """Extract base stage name, ignoring count suffixes like 'Rendering: 42/5060'."""
+            return desc.split(":")[0].split("[")[0].strip()
 
         def plain_progress(amount: int, desc: str | None = None) -> None:
             processed[0] += amount
+            stage_processed[0] += amount
             now = time.time()
-            # Always print on stage transitions (new desc), rate-limit otherwise
-            is_stage_change = desc is not None and desc != last_desc[0]
+            # Detect major stage transitions (e.g., Acquiring→Parsing→Rendering)
+            current_stage = _stage_key(desc) if desc else last_stage[0]
+            is_stage_change = current_stage != last_stage[0] and current_stage
             if is_stage_change:
+                # Print summary line for the completed stage
+                if last_stage[0]:
+                    prev_elapsed = now - stage_start[0]
+                    print(
+                        f"  {last_stage[0]}: done ({stage_processed[0] - amount:,} items"
+                        f" in {_format_elapsed(prev_elapsed)})",
+                        flush=True,
+                    )
+                last_stage[0] = current_stage
+                stage_start[0] = now
+                stage_processed[0] = amount
+            if desc:
                 last_desc[0] = desc
             if is_stage_change or now - last_update[0] >= 1:
-                print(f"  {desc or 'Processing'}: {processed[0]:,} items...", flush=True)
+                elapsed = now - stage_start[0]
+                total_elapsed = now - pipeline_start
+                rate = stage_processed[0] / elapsed if elapsed > 0.5 else 0
+                rate_str = f" ({rate:,.0f}/s)" if rate > 0 else ""
+                print(
+                    f"  {last_desc[0] or 'Processing'}: {processed[0]:,} items{rate_str}"
+                    f" [{_format_elapsed(total_elapsed)} elapsed]...",
+                    flush=True,
+                )
                 last_update[0] = now
 
-        return asyncio.run(run_sources(
+        result = asyncio.run(run_sources(
             config=cfg,
             stage=stage,
             plan=plan_snapshot,
@@ -62,6 +105,9 @@ def _run_sync_once(
             progress_callback=plain_progress,
             render_format=render_format,
         ))
+        total_elapsed = time.time() - pipeline_start
+        print(f"  Pipeline complete in {_format_elapsed(total_elapsed)}", flush=True)
+        return result
     else:
         from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 

@@ -258,9 +258,8 @@ class ParsingService:
         progress_callback: Any | None,
     ) -> None:
         """Process a batch of raw conversation IDs."""
-        # Load only this batch into memory
-        raw_records = [await backend.get_raw_conversation(raw_id) for raw_id in batch_ids]
-        raw_records = [r for r in raw_records if r is not None]
+        # Batch-load raw records in one query instead of N sequential round-trips
+        raw_records = await backend.get_raw_conversations_batch(batch_ids)
 
         worker_count = 16
         queue: asyncio.Queue[tuple[ParsedConversation, str, str] | None] = asyncio.Queue(
