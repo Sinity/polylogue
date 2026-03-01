@@ -230,11 +230,13 @@ class ParsingService:
         if raw_ids is not None:
             total = len(raw_ids)
             if progress_callback is not None:
-                progress_callback(0, desc=f"Parsing: 0/{total:,}")
+                progress_callback(0, desc=f"Parsing ({total:,} raw)")
             for batch_start in range(0, total, self.RAW_BATCH_SIZE):
                 batch_ids = raw_ids[batch_start : batch_start + self.RAW_BATCH_SIZE]
                 await self._process_raw_batch(backend, batch_ids, result, progress_callback, total=total)
         else:
+            if progress_callback is not None:
+                progress_callback(0, desc="Parsing")
             batch_ids: list[str] = []
             async for raw_record in backend.iter_raw_conversations(provider=provider):
                 batch_ids.append(raw_record.raw_id)
@@ -293,11 +295,7 @@ class ParsingService:
                     result.parse_failures += 1
                 finally:
                     if progress_callback:
-                        n = len(result.processed_ids) + result.parse_failures
-                        if total:
-                            progress_callback(1, desc=f"Parsing: {n}/{total:,}")
-                        else:
-                            progress_callback(1, desc=f"Parsing: {n}")
+                        progress_callback(1)
                     queue.task_done()
 
         workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
