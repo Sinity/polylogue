@@ -112,9 +112,19 @@ def codex_path() -> Path:
 GEMINI_DRIVE_FOLDER = "Google AI Studio"
 
 
+def drive_cache_path() -> Path:
+    """Local cache directory for Drive-sourced files."""
+    return data_home() / "drive-cache"
+
+
 @dataclass
 class Source:
-    """A conversation source (local path or Drive folder)."""
+    """A conversation source (local path, Drive folder, or both).
+
+    Drive sources have both a ``folder`` (Drive folder name) and a ``path``
+    (local cache directory).  The pipeline syncs Drive files to the cache
+    path, then the normal file-based acquisition picks them up.
+    """
 
     name: str
     path: Path | None = None
@@ -128,8 +138,6 @@ class Source:
         has_folder = self.folder is not None and self.folder.strip()
         if not has_path and not has_folder:
             raise ValueError(f"Source '{self.name}' must have either 'path' or 'folder'")
-        if has_path and has_folder:
-            raise ValueError(f"Source '{self.name}' cannot have both 'path' and 'folder'")
         if self.folder:
             self.folder = self.folder.strip()
 
@@ -202,8 +210,13 @@ def get_sources() -> list[Source]:
     if codex_path().exists():
         sources.append(Source(name="codex", path=codex_path()))
 
-    # Gemini via Google Drive (always included, requires auth)
-    sources.append(Source(name="gemini", folder=GEMINI_DRIVE_FOLDER))
+    # Gemini via Google Drive — files are synced to a local cache dir,
+    # then processed by the normal file-based acquisition pipeline.
+    sources.append(Source(
+        name="gemini",
+        folder=GEMINI_DRIVE_FOLDER,
+        path=drive_cache_path() / "gemini",
+    ))
 
     return sources
 
@@ -270,6 +283,7 @@ __all__ = [
     "claude_code_path",
     "codex_path",
     "GEMINI_DRIVE_FOLDER",
+    "drive_cache_path",
     # Classes
     "Source",
     "DriveConfig",

@@ -140,6 +140,9 @@ class ParsingService:
         if backend is None:
             raise RuntimeError("Repository backend is not initialized")
 
+        # Stage 0: Sync Drive sources to local cache (if any)
+        await self._sync_drive_sources(sources, progress_callback=progress_callback)
+
         # Stage 1: ACQUIRE - store raw bytes (async)
         acquire_service = AcquisitionService(backend=backend)
         acquire_result = await acquire_service.acquire_sources(
@@ -147,32 +150,29 @@ class ParsingService:
             progress_callback=progress_callback,
         )
 
-        # Find orphaned raw records (raw data exists but conversation was deleted/missing)
-        orphaned_ids: list[str] = []
+        # Find unparsed raw records (never successfully parsed or had errors)
+        unparsed_ids: list[str] = []
         async with backend._get_connection() as conn:
-            cursor = await conn.execute("""
-                SELECT r.raw_id
-                FROM raw_conversations r
-                LEFT JOIN conversations c ON r.raw_id = c.raw_id
-                WHERE c.conversation_id IS NULL
-            """)
+            cursor = await conn.execute(
+                "SELECT raw_id FROM raw_conversations WHERE parsed_at IS NULL"
+            )
             while True:
                 rows = await cursor.fetchmany(500)
                 if not rows:
                     break
-                orphaned_ids.extend(row["raw_id"] for row in rows)
+                unparsed_ids.extend(row["raw_id"] for row in rows)
 
-        # Combine newly acquired + orphaned raw IDs
+        # Combine newly acquired + unparsed raw IDs
         all_raw_ids = list(acquire_result.raw_ids)
-        if orphaned_ids:
+        if unparsed_ids:
             seen = set(all_raw_ids)
-            for oid in orphaned_ids:
-                if oid not in seen:
-                    all_raw_ids.append(oid)
-                    seen.add(oid)
+            for uid in unparsed_ids:
+                if uid not in seen:
+                    all_raw_ids.append(uid)
+                    seen.add(uid)
             logger.info(
-                "Found orphaned raw records to re-parse",
-                orphaned=len(orphaned_ids),
+                "Found unparsed raw records",
+                unparsed=len(unparsed_ids),
                 newly_acquired=len(acquire_result.raw_ids),
             )
 
@@ -272,6 +272,10 @@ class ParsingService:
         queue: asyncio.Queue[tuple[ParsedConversation, str, str] | None] = asyncio.Queue(
             maxsize=worker_count * 2
         )
+        # Track per-raw_id success/failure for parse marking
+        failed_raw_ids: dict[str, str] = {}  # raw_id -> error message
+        succeeded_raw_ids: set[str] = set()
+        tracking_lock = asyncio.Lock()
 
         async def _worker() -> None:
             while True:
@@ -290,9 +294,13 @@ class ParsingService:
                         raw_id=raw_id,
                     )
                     await result.merge_result(convo_id, result_counts, content_changed)
+                    async with tracking_lock:
+                        succeeded_raw_ids.add(raw_id)
                 except Exception as exc:
                     logger.error("Error processing conversation: %s", exc)
                     result.parse_failures += 1
+                    async with tracking_lock:
+                        failed_raw_ids[raw_id] = str(exc)[:500]
                 finally:
                     if progress_callback:
                         progress_callback(1)
@@ -314,6 +322,7 @@ class ParsingService:
                     error=str(exc),
                 )
                 result.parse_failures += 1
+                failed_raw_ids[raw_record.raw_id] = str(exc)[:500]
 
         # Free raw records as soon as work is queued.
         del raw_records
@@ -322,6 +331,14 @@ class ParsingService:
         for _ in range(worker_count):
             await queue.put(None)
         await asyncio.gather(*workers)
+
+        # Mark parse status for all processed raw records
+        for rid in succeeded_raw_ids:
+            if rid not in failed_raw_ids:
+                await backend.mark_raw_parsed(rid)
+        for rid, error in failed_raw_ids.items():
+            if rid not in succeeded_raw_ids:
+                await backend.mark_raw_parsed(rid, error=error)
 
     async def _parse_raw_record(self, raw_record: RawConversationRecord) -> list[ParsedConversation]:
         """Parse a raw conversation record into ParsedConversation(s).
@@ -468,6 +485,58 @@ class ParsingService:
                     provider,
                     exc,
                 )
+
+
+    async def _sync_drive_sources(
+        self,
+        sources: list[Source],
+        *,
+        progress_callback: Any | None = None,
+    ) -> None:
+        """Sync Drive sources to their local cache directories.
+
+        Downloads new/changed files from Google Drive to the source's local path,
+        so the normal file-based acquisition pipeline can pick them up.
+
+        Runs synchronous Google API calls in a thread pool to avoid blocking.
+        """
+        drive_sources = [s for s in sources if s.is_drive and s.path]
+        if not drive_sources:
+            return
+
+        for source in drive_sources:
+            if progress_callback:
+                progress_callback(0, desc=f"Syncing Drive [{source.name}]")
+
+            try:
+                result = await asyncio.to_thread(
+                    self._sync_one_drive_source, source,
+                )
+                if result:
+                    logger.info(
+                        "Drive sync complete",
+                        source=source.name,
+                        downloaded=len(result.downloaded_files),
+                        failed=len(result.failed_files),
+                        total=result.total_files,
+                    )
+            except Exception as exc:
+                # Drive errors are non-fatal — log and continue with local sources
+                logger.warning(
+                    "Skipping Drive source %s: %s", source.name, exc,
+                )
+
+    def _sync_one_drive_source(self, source: Source) -> Any:
+        """Sync a single Drive source (runs in thread pool)."""
+        from polylogue.sources.drive import download_drive_files
+        from polylogue.sources.drive_client import DriveClient
+
+        source.path.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
+
+        drive_config = self.config.drive_config if hasattr(self.config, "drive_config") else None
+        client = DriveClient(config=drive_config)
+        folder_id = client.resolve_folder_id(source.folder)  # type: ignore[arg-type]
+        return download_drive_files(client, folder_id, source.path)  # type: ignore[arg-type]
 
 
 __all__ = ["ParsingService", "ParseResult"]

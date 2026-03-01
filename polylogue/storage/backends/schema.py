@@ -8,7 +8,7 @@ from polylogue.lib.log import get_logger
 from polylogue.storage.store import _make_ref_id
 
 logger = get_logger(__name__)
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 
 _VEC0_DDL = """
@@ -31,7 +31,9 @@ SCHEMA_DDL = """
             source_index INTEGER,
             raw_content BLOB NOT NULL,
             acquired_at TEXT NOT NULL,
-            file_mtime TEXT
+            file_mtime TEXT,
+            parsed_at TEXT,
+            parse_error TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
@@ -39,6 +41,12 @@ SCHEMA_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_source
         ON raw_conversations(source_path);
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime
+        ON raw_conversations(source_path, file_mtime);
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_unparsed
+        ON raw_conversations(raw_id) WHERE parsed_at IS NULL;
 
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
@@ -66,6 +74,9 @@ SCHEMA_DDL = """
         CREATE INDEX IF NOT EXISTS idx_conversations_parent
         ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL;
 
+        CREATE INDEX IF NOT EXISTS idx_conversations_content_hash
+        ON conversations(content_hash);
+
         CREATE TABLE IF NOT EXISTS messages (
             message_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL,
@@ -84,6 +95,9 @@ SCHEMA_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_messages_conversation
         ON messages(conversation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_ts
+        ON messages(conversation_id, timestamp);
 
         CREATE INDEX IF NOT EXISTS idx_messages_parent
         ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL;
@@ -544,6 +558,62 @@ def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_v11_to_v12(conn: sqlite3.Connection) -> None:
+    """Migrate from v11 to v12: add parse tracking columns to raw_conversations.
+
+    Adds:
+    - parsed_at TEXT: timestamp when the record was successfully parsed
+    - parse_error TEXT: error message from last failed parse attempt
+    - idx_raw_conv_source_mtime: composite index for mtime-based acquisition skip
+
+    Backfill: marks existing raw records that have linked conversations as already
+    parsed, preventing the first post-migration run from re-parsing everything.
+    """
+    conn.execute("ALTER TABLE raw_conversations ADD COLUMN parsed_at TEXT")
+    conn.execute("ALTER TABLE raw_conversations ADD COLUMN parse_error TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime "
+        "ON raw_conversations(source_path, file_mtime)"
+    )
+
+    # Backfill: mark records that already have parsed conversations
+    conn.execute("""
+        UPDATE raw_conversations SET parsed_at = acquired_at
+        WHERE raw_id IN (
+            SELECT DISTINCT raw_id FROM conversations WHERE raw_id IS NOT NULL
+        )
+    """)
+
+
+def _migrate_v12_to_v13(conn: sqlite3.Connection) -> None:
+    """Migrate from v12 to v13: add performance indices.
+
+    Adds three indices identified via query pattern analysis:
+    - idx_raw_conv_unparsed: partial index on unparsed raw records
+      (shrinks as records get parsed — near-empty at steady state)
+    - idx_conversations_content_hash: speeds up dedup hash lookups
+    - idx_messages_conversation_ts: composite covering ORDER BY timestamp
+      (eliminates temp B-tree sort during rendering)
+    """
+    # Partial index: only indexes unparsed rows, so it stays small after
+    # initial catch-up and shrinks toward zero at steady state.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_conv_unparsed "
+        "ON raw_conversations(raw_id) WHERE parsed_at IS NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_content_hash "
+        "ON conversations(content_hash)"
+    )
+    # Composite index: the existing idx_messages_conversation covers WHERE
+    # but not ORDER BY timestamp, forcing a temp B-tree sort per conversation
+    # during rendering. This composite index satisfies both in one lookup.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_conversation_ts "
+        "ON messages(conversation_id, timestamp)"
+    )
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
@@ -556,6 +626,8 @@ _MIGRATIONS = {
     8: _migrate_v8_to_v9,
     9: _migrate_v9_to_v10,
     10: _migrate_v10_to_v11,
+    11: _migrate_v11_to_v12,
+    12: _migrate_v12_to_v13,
 }
 
 

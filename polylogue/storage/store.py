@@ -21,6 +21,9 @@ _PROVIDER_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
 # Maximum reasonable file size (1TB)
 MAX_ATTACHMENT_SIZE = 1024 * 1024 * 1024 * 1024
 
+# SQLite SQLITE_MAX_LENGTH is 1 GB; keep raw blobs under 900 MB to leave headroom
+MAX_RAW_CONTENT_SIZE = 900 * 1024 * 1024
+
 
 class ConversationRecord(BaseModel):
     conversation_id: ConversationId
@@ -144,6 +147,8 @@ class RawConversationRecord(BaseModel):
     raw_content: bytes  # Full JSON/JSONL bytes
     acquired_at: str  # ISO timestamp of acquisition
     file_mtime: str | None = None  # File modification time if available
+    parsed_at: str | None = None  # ISO timestamp of last successful parse
+    parse_error: str | None = None  # Error from last failed parse attempt
 
     @field_validator("raw_id", "provider_name", "source_path")
     @classmethod
@@ -266,6 +271,8 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
         raw_content=row["raw_content"],
         acquired_at=row["acquired_at"],
         file_mtime=row["file_mtime"],
+        parsed_at=_row_get(row, "parsed_at"),
+        parse_error=_row_get(row, "parse_error"),
     )
 
 

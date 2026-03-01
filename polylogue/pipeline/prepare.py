@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.lib.log import get_logger
 from polylogue.pipeline.enrichment import enrich_message_metadata
 from polylogue.pipeline.ids import (
     attachment_content_id,
@@ -24,6 +25,8 @@ from polylogue.types import AttachmentId, ConversationId, MessageId
 if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+
+logger = get_logger(__name__)
 
 
 async def prepare_records(
@@ -56,6 +59,18 @@ async def prepare_records(
         backend = SQLiteBackend()
         repository = ConversationRepository(backend=backend)
 
+    # Skip conversations with no messages — these are empty shells from
+    # parse filtering (e.g. JSONL files with only metadata records)
+    if not convo.messages:
+        cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
+        logger.debug("Skipping empty conversation (no messages)", conversation_id=cid)
+        return (
+            cid,
+            {"conversations": 0, "messages": 0, "attachments": 0,
+             "skipped_conversations": 1, "skipped_messages": 0, "skipped_attachments": 0},
+            False,
+        )
+
     content_hash = conversation_content_hash(convo)
 
     # Use the passed backend for lookups
@@ -84,9 +99,18 @@ async def prepare_records(
         changed = False
 
     # Resolve parent conversation ID if present (provider ID → internal polylogue ID)
+    # Only set FK if the parent conversation already exists in the database,
+    # otherwise the FK constraint fails when child is parsed before parent.
     parent_conversation_id = None
-    if convo.parent_conversation_provider_id:
-        parent_conversation_id = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
+    if convo.parent_conversation_provider_id and backend:
+        candidate_parent = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                (candidate_parent,),
+            )
+            if await cursor.fetchone():
+                parent_conversation_id = candidate_parent
 
     # Merge source into provider_meta rather than overwriting
     merged_provider_meta: dict[str, object] = {"source": source_name}
