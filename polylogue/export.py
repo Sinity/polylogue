@@ -54,14 +54,7 @@ def export_jsonl(*, archive_root: Path, output_path: Path | None = None) -> Path
                     """
                     SELECT * FROM messages
                     WHERE conversation_id = ?
-                    ORDER BY
-                        (timestamp IS NULL),
-                        CASE
-                            WHEN timestamp IS NULL THEN NULL
-                            WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS INTEGER)
-                            ELSE CAST(timestamp AS REAL)
-                        END,
-                        message_id
+                    ORDER BY (sort_key IS NULL), sort_key, message_id
                     """,
                     (convo_id,),
                 ).fetchall()

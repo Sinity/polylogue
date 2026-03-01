@@ -65,6 +65,10 @@ class SchemaValidator:
     - Nested structures that differ from samples
     """
 
+    # Class-level cache: avoids re-reading schema files and re-compiling
+    # validators for the same provider during a pipeline run.
+    _cache: dict[tuple[str, bool], SchemaValidator] = {}
+
     def __init__(self, schema: dict[str, Any], strict: bool = True):
         """Initialize validator with a schema.
 
@@ -81,7 +85,7 @@ class SchemaValidator:
 
     @classmethod
     def for_provider(cls, provider: str, strict: bool = True) -> SchemaValidator:
-        """Create a validator for a specific provider.
+        """Create a validator for a specific provider, caching by (provider, strict).
 
         Args:
             provider: Provider name (chatgpt, claude-ai, claude-code, codex, gemini)
@@ -93,6 +97,11 @@ class SchemaValidator:
         Raises:
             FileNotFoundError: If no schema exists for the provider
         """
+        key = (provider, strict)
+        cached = cls._cache.get(key)
+        if cached is not None:
+            return cached
+
         gz_path = SCHEMA_DIR / f"{provider}.schema.json.gz"
         plain_path = SCHEMA_DIR / f"{provider}.schema.json"
         if gz_path.exists():
@@ -101,7 +110,9 @@ class SchemaValidator:
             schema = json.loads(plain_path.read_text(encoding="utf-8"))
         else:
             raise FileNotFoundError(f"No schema found for provider: {provider}")
-        return cls(schema, strict=strict)
+        instance = cls(schema, strict=strict)
+        cls._cache[key] = instance
+        return instance
 
     @classmethod
     def available_providers(cls) -> list[str]:

@@ -8,7 +8,7 @@ from polylogue.lib.log import get_logger
 from polylogue.storage.store import _make_ref_id
 
 logger = get_logger(__name__)
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 15
 
 
 _VEC0_DDL = """
@@ -55,6 +55,7 @@ SCHEMA_DDL = """
             title TEXT,
             created_at TEXT,
             updated_at TEXT,
+            sort_key REAL,
             content_hash TEXT NOT NULL,
             provider_meta TEXT,
             metadata TEXT DEFAULT '{}',
@@ -77,6 +78,9 @@ SCHEMA_DDL = """
         CREATE INDEX IF NOT EXISTS idx_conversations_content_hash
         ON conversations(content_hash);
 
+        CREATE INDEX IF NOT EXISTS idx_conversations_sortkey
+        ON conversations(sort_key);
+
         CREATE TABLE IF NOT EXISTS messages (
             message_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL,
@@ -84,6 +88,7 @@ SCHEMA_DDL = """
             role TEXT,
             text TEXT,
             timestamp TEXT,
+            sort_key REAL,
             content_hash TEXT NOT NULL,
             provider_meta TEXT,
             version INTEGER NOT NULL,
@@ -96,8 +101,8 @@ SCHEMA_DDL = """
         CREATE INDEX IF NOT EXISTS idx_messages_conversation
         ON messages(conversation_id);
 
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation_ts
-        ON messages(conversation_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_sortkey
+        ON messages(conversation_id, sort_key);
 
         CREATE INDEX IF NOT EXISTS idx_messages_parent
         ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL;
@@ -593,7 +598,7 @@ def _migrate_v12_to_v13(conn: sqlite3.Connection) -> None:
       (shrinks as records get parsed — near-empty at steady state)
     - idx_conversations_content_hash: speeds up dedup hash lookups
     - idx_messages_conversation_ts: composite covering ORDER BY timestamp
-      (eliminates temp B-tree sort during rendering)
+      (superseded by sort_key index in v14, but created here for intermediate state)
     """
     # Partial index: only indexes unparsed rows, so it stays small after
     # initial catch-up and shrinks toward zero at steady state.
@@ -605,12 +610,70 @@ def _migrate_v12_to_v13(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_conversations_content_hash "
         "ON conversations(content_hash)"
     )
-    # Composite index: the existing idx_messages_conversation covers WHERE
-    # but not ORDER BY timestamp, forcing a temp B-tree sort per conversation
-    # during rendering. This composite index satisfies both in one lookup.
+    # Composite index: superseded by idx_messages_conversation_sortkey in v14,
+    # but still created here for databases running intermediate migrations.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_conversation_ts "
         "ON messages(conversation_id, timestamp)"
+    )
+
+
+def _migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
+    """Migrate from v13 to v14: add pre-computed sort_key to messages.
+
+    Adds a `sort_key REAL` column for O(1) timestamp sorting, replacing the
+    per-row CASE/GLOB/strftime computation in ORDER BY clauses. The column
+    stores Unix epoch seconds, computed from either numeric or ISO-8601
+    timestamp formats.
+
+    Backfills all existing rows and creates a covering index for the most
+    common query pattern: messages for a conversation ordered by time.
+    """
+    conn.execute("ALTER TABLE messages ADD COLUMN sort_key REAL")
+
+    # Backfill: convert existing timestamps to numeric sort keys using the
+    # same CASE/GLOB logic the queries used to do at runtime.
+    conn.execute("""
+        UPDATE messages SET sort_key = CASE
+            WHEN timestamp IS NULL THEN NULL
+            WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS REAL)
+            ELSE CAST(timestamp AS REAL)
+        END
+    """)
+
+    # Replace the old (conversation_id, timestamp) index with a sort_key one.
+    # The old index can't be used for ORDER BY because queries used computed
+    # expressions, not the raw timestamp column.
+    conn.execute("DROP INDEX IF EXISTS idx_messages_conversation_ts")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_conversation_sortkey "
+        "ON messages(conversation_id, sort_key)"
+    )
+
+
+def _migrate_v14_to_v15(conn: sqlite3.Connection) -> None:
+    """Migrate from v14 to v15: add pre-computed sort_key to conversations.
+
+    Mirrors the messages.sort_key column (v14) for the conversations table,
+    eliminating GLOB-based bifurcated timestamp comparisons in WHERE and
+    ORDER BY clauses for conversation listing/filtering.
+
+    Backfills from updated_at using the same numeric/ISO-8601 detection.
+    """
+    conn.execute("ALTER TABLE conversations ADD COLUMN sort_key REAL")
+
+    # Backfill: same CASE/GLOB logic as messages sort_key (v14)
+    conn.execute("""
+        UPDATE conversations SET sort_key = CASE
+            WHEN updated_at IS NULL THEN NULL
+            WHEN updated_at GLOB '*[^0-9.]*' THEN CAST(strftime('%s', updated_at) AS REAL)
+            ELSE CAST(updated_at AS REAL)
+        END
+    """)
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_sortkey "
+        "ON conversations(sort_key)"
     )
 
 
@@ -628,6 +691,8 @@ _MIGRATIONS = {
     10: _migrate_v10_to_v11,
     11: _migrate_v11_to_v12,
     12: _migrate_v12_to_v13,
+    13: _migrate_v13_to_v14,
+    14: _migrate_v14_to_v15,
 }
 
 

@@ -201,19 +201,11 @@ def _build_conversation_filters(
         where_clauses.append("parent_conversation_id = ?")
         params.append(parent_id)
     if since is not None:
-        where_clauses.append(
-            "((updated_at GLOB '[0-9]*' AND CAST(updated_at AS REAL) >= ?)"
-            " OR (updated_at NOT GLOB '[0-9]*' AND updated_at >= ?))"
-        )
+        where_clauses.append("sort_key >= ?")
         params.append(_iso_to_epoch(since))
-        params.append(since)
     if until is not None:
-        where_clauses.append(
-            "((updated_at GLOB '[0-9]*' AND CAST(updated_at AS REAL) <= ?)"
-            " OR (updated_at NOT GLOB '[0-9]*' AND updated_at <= ?))"
-        )
+        where_clauses.append("sort_key <= ?")
         params.append(_iso_to_epoch(until))
-        params.append(until)
     if title_contains is not None:
         escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         where_clauses.append("title LIKE ? ESCAPE '\\'")

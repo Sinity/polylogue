@@ -721,19 +721,20 @@ def iter_source_conversations_with_raw(
     failed_count = 0
     skipped_mtime = 0
     for path in paths:
+        # Compute file_mtime once (used for both skip check and raw capture)
+        file_mtime = _get_file_mtime(path) if capture_raw else None
+
         # Mtime-based skip: if we've seen this file before and its mtime
         # hasn't changed, skip the full read+hash entirely.
-        if known_mtimes and capture_raw:
-            current_mtime = _get_file_mtime(path)
+        if known_mtimes and file_mtime:
             path_str = str(path)
-            if current_mtime and path_str in known_mtimes and known_mtimes[path_str] == current_mtime:
+            if path_str in known_mtimes and known_mtimes[path_str] == file_mtime:
                 skipped_mtime += 1
                 continue
 
         try:
             provider_hint = detect_provider(None, path) or source.name
             should_group = provider_hint in _GROUP_PROVIDERS
-            file_mtime = _get_file_mtime(path) if capture_raw else None
 
             if path.suffix.lower() == ".zip":
                 yield from _process_zip(
