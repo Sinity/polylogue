@@ -233,6 +233,7 @@ async def run_sources(
     if stage == "acquire":
         from polylogue.pipeline.services.acquisition import AcquisitionService
 
+        stage_t0 = time.perf_counter()
         acquire_service = AcquisitionService(backend=backend)
         sources = _select_sources(config, source_names)
         acquire_result = await acquire_service.acquire_sources(
@@ -241,11 +242,17 @@ async def run_sources(
         )
         counts["acquired"] = acquire_result.counts["acquired"]
         counts["skipped"] = acquire_result.counts["skipped"]
+        logger.info(
+            "Acquire stage complete",
+            elapsed_s=round(time.perf_counter() - stage_t0, 1),
+            **acquire_result.counts,
+        )
 
     # Parse stage (acquire + parse, replaces old "ingest")
     elif stage in {"parse", "all"}:
         from polylogue.pipeline.services.parsing import ParsingService
 
+        stage_t0 = time.perf_counter()
         parsing_service = ParsingService(
             repository=repository,
             archive_root=config.archive_root,
@@ -266,12 +273,20 @@ async def run_sources(
             counts["parse_failures"] = parse_result.parse_failures
         changed_counts.update(parse_result.changed_counts)
         processed_ids = parse_result.processed_ids
+        logger.info(
+            "Parse stage complete",
+            elapsed_s=round(time.perf_counter() - stage_t0, 1),
+            conversations=parse_result.counts.get("conversations", 0),
+            processed_ids=len(processed_ids),
+            parse_failures=parse_result.parse_failures,
+        )
 
     # Schema generation stage (sync, run in thread pool)
     if stage == "generate-schemas":
         from polylogue.paths import db_path as _db_path
         from polylogue.schemas.schema_inference import generate_all_schemas
 
+        stage_t0 = time.perf_counter()
         output_dir = config.archive_root.parent / "schemas"
         results = await asyncio.to_thread(
             generate_all_schemas,
@@ -280,12 +295,19 @@ async def run_sources(
         )
         counts["schemas_generated"] = sum(1 for r in results if r.success)
         counts["schemas_failed"] = sum(1 for r in results if not r.success)
+        logger.info(
+            "Schema generation complete",
+            elapsed_s=round(time.perf_counter() - stage_t0, 1),
+            generated=counts["schemas_generated"],
+            failed=counts["schemas_failed"],
+        )
 
     # Rendering stage
     if stage in {"render", "all"}:
         from polylogue.pipeline.services.rendering import RenderService
         from polylogue.rendering.renderers import create_renderer
 
+        stage_t0 = time.perf_counter()
         ids = (
             await _all_conversation_ids(backend, source_names)
             if stage == "render"
@@ -294,10 +316,13 @@ async def run_sources(
         if ids:
             if progress_callback is not None:
                 progress_callback(0, desc=f"Rendering: 0/{len(ids)}")
-            renderer = create_renderer(format=render_format, config=config)
+            renderer = create_renderer(
+                format=render_format, config=config, backend=backend,
+            )
             render_service = RenderService(
                 renderer=renderer,
                 render_root=config.archive_root / "render",
+                backend=backend,
             )
             render_result = await render_service.render_conversations(
                 ids, progress_callback=progress_callback,
@@ -306,6 +331,13 @@ async def run_sources(
             render_failures = render_result.failures
             if render_failures:
                 counts["render_failures"] = len(render_failures)
+            logger.info(
+                "Render stage complete",
+                elapsed_s=round(time.perf_counter() - stage_t0, 1),
+                rendered=render_result.rendered_count,
+                failures=len(render_failures),
+                total=len(ids),
+            )
 
     # Indexing stage
     indexed = False

@@ -83,7 +83,7 @@ class TestAcquisitionService:
                 result = await service.acquire_sources([source], progress_callback=progress)
 
             assert len(progress_calls) == 1
-            assert progress_calls[0] == (1, "Acquiring")
+            assert progress_calls[0] == (1, "Acquiring [test]")
             assert result.counts["acquired"] == 1
             await backend.close()
 

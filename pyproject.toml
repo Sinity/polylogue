@@ -45,6 +45,7 @@ dependencies = [
   "pydantic-settings",
   "glom>=24.7.0",  # Declarative data extraction
   "mcp>=1.0.0",  # Model Context Protocol SDK
+  "pyyaml>=6.0",  # YAML output format
 ]
 
 [project.optional-dependencies]

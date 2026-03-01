@@ -661,7 +661,7 @@ class TestTagsCommand:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
-                mock_repo = MagicMock()
+                mock_repo = AsyncMock()
                 mock_repo_class.return_value = mock_repo
                 mock_repo.list_tags.return_value = {"important": 5, "review": 3, "draft": 1}
 
@@ -683,7 +683,7 @@ class TestTagsCommand:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
-                mock_repo = MagicMock()
+                mock_repo = AsyncMock()
                 mock_repo_class.return_value = mock_repo
                 mock_repo.list_tags.return_value = {"tag1": 10, "tag2": 2}
 
@@ -701,7 +701,7 @@ class TestTagsCommand:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
-                mock_repo = MagicMock()
+                mock_repo = AsyncMock()
                 mock_repo_class.return_value = mock_repo
                 mock_repo.list_tags.return_value = {"claude-tag": 3}
 
@@ -719,7 +719,7 @@ class TestTagsCommand:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
-                mock_repo = MagicMock()
+                mock_repo = AsyncMock()
                 mock_repo_class.return_value = mock_repo
                 mock_repo.list_tags.return_value = {"a": 10, "b": 5, "c": 1}
 
@@ -738,7 +738,7 @@ class TestTagsCommand:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
-                mock_repo = MagicMock()
+                mock_repo = AsyncMock()
                 mock_repo_class.return_value = mock_repo
                 mock_repo.list_tags.return_value = {}
 
@@ -756,7 +756,7 @@ class TestTagsCommand:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
-                mock_repo = MagicMock()
+                mock_repo = AsyncMock()
                 mock_repo_class.return_value = mock_repo
                 mock_repo.list_tags.return_value = {}
 

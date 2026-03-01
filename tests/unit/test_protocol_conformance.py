@@ -170,8 +170,14 @@ class TestOutputRendererConformance:
             conn.commit()
 
         output_dir = tmp_path / "out"
-        renderer = cls(archive_root=output_dir)
-        renderer.formatter.db_path = db_path
+        from polylogue.storage.backends.async_sqlite import SQLiteBackend
+        backend = SQLiteBackend(db_path=db_path)
+
+        if cls is HTMLRenderer:
+            renderer = cls(archive_root=output_dir, backend=backend)
+        else:
+            renderer = cls(archive_root=output_dir)
+            renderer.formatter.db_path = db_path
 
         result_path = await renderer.render(conv_id, output_dir)
 
