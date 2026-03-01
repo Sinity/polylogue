@@ -451,12 +451,12 @@ class TestClampLimit:
         assert _clamp_limit(1) == 1
         assert _clamp_limit(5000) == 5000
 
-    def test_clamp_limit_max(self):
-        """_clamp_limit caps at _MAX_LIMIT."""
+    def test_clamp_limit_large(self):
+        """_clamp_limit passes through large values (no server-side cap)."""
         from polylogue.mcp.server import _clamp_limit
 
-        assert _clamp_limit(99999) == 10000
-        assert _clamp_limit(10001) == 10000
+        assert _clamp_limit(99999) == 99999
+        assert _clamp_limit(10001) == 10001
 
     def test_clamp_limit_min(self):
         """_clamp_limit floors at 1."""
@@ -524,7 +524,7 @@ class TestSearchToolFilters:
                 if filter_type == "limit_normal":
                     filter_checker(filter_instance).assert_called_once_with(5)
                 elif filter_type == "limit_max":
-                    filter_checker(filter_instance).assert_called_once_with(10000)
+                    filter_checker(filter_instance).assert_called_once_with(99999)
                 elif filter_type == "limit_negative":
                     filter_checker(filter_instance).assert_called_once_with(1)
                 else:

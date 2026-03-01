@@ -215,7 +215,11 @@ class TestDataIntegrity:
     """Validate raw data integrity in seeded database."""
 
     def test_provider_meta_has_raw(self, seeded_db):
-        """All messages should have raw data in provider_meta."""
+        """Non-claude-code messages should have raw data in provider_meta.
+
+        Claude-code intentionally omits 'raw' from provider_meta to avoid
+        duplicating data already stored in raw_conversations.raw_content.
+        """
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
         cur.execute(
@@ -227,6 +231,7 @@ class TestDataIntegrity:
                        THEN 1 ELSE 0 END) as missing_raw
             FROM messages m
             JOIN conversations c ON m.conversation_id = c.conversation_id
+            WHERE c.provider_name != 'claude-code'
             GROUP BY c.provider_name
             """
         )
