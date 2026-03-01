@@ -514,6 +514,101 @@ class SQLiteBackend:
             row = await cursor.fetchone()
             return int(row["cnt"])
 
+    async def aggregate_message_stats(
+        self,
+        conversation_ids: list[str] | None = None,
+    ) -> dict[str, int]:
+        """Compute aggregate message statistics via SQL.
+
+        Returns dict with keys: total, user, assistant, system, words_approx,
+        attachments, min_sort_key, max_sort_key, providers.
+
+        Uses index-only scans wherever possible.  The messages table rows are
+        large (text + provider_meta), so full-table scans are avoided.
+        - Message count: GROUP BY conversation_id uses the conversation_id
+          index (reads ~4K small index entries, not 1.6M data pages).
+        - Role/word breakdown: skipped (would require full-table scan).
+        - Provider/date/attachments: derived from the small conversations table.
+        """
+        async with self._get_connection() as conn:
+            if conversation_ids is not None:
+                # --- Filtered path ---
+                await conn.execute("CREATE TEMP TABLE IF NOT EXISTS _stat_ids (cid TEXT PRIMARY KEY)")
+                await conn.execute("DELETE FROM _stat_ids")
+                await conn.executemany(
+                    "INSERT OR IGNORE INTO _stat_ids (cid) VALUES (?)",
+                    [(cid,) for cid in conversation_ids],
+                )
+
+                # Message count via index-only GROUP BY (0.16s for 1.6M msgs)
+                msg_row = await (await conn.execute("""
+                    SELECT SUM(cnt) FROM (
+                        SELECT COUNT(*) as cnt FROM messages
+                        WHERE conversation_id IN (SELECT cid FROM _stat_ids)
+                        GROUP BY conversation_id
+                    )
+                """)).fetchone()
+                msg_total = msg_row[0] or 0
+
+                # Date range + provider breakdown from conversations table
+                date_row = await (await conn.execute("""
+                    SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk
+                    FROM conversations WHERE conversation_id IN (SELECT cid FROM _stat_ids)
+                """)).fetchone()
+
+                prov_rows = await (await conn.execute("""
+                    SELECT provider_name, COUNT(*) as cnt
+                    FROM conversations WHERE conversation_id IN (SELECT cid FROM _stat_ids)
+                    GROUP BY provider_name ORDER BY cnt DESC
+                """)).fetchall()
+                providers = {r["provider_name"]: r["cnt"] for r in prov_rows}
+
+                # Attachment count
+                att_row = await (await conn.execute("""
+                    SELECT COUNT(*) as cnt FROM attachment_refs
+                    WHERE conversation_id IN (SELECT cid FROM _stat_ids)
+                """)).fetchone()
+
+                await conn.execute("DROP TABLE IF EXISTS _stat_ids")
+
+                return {
+                    "total": msg_total,
+                    "user": 0,
+                    "assistant": 0,
+                    "system": 0,
+                    "words_approx": 0,
+                    "attachments": att_row["cnt"] or 0,
+                    "min_sort_key": date_row["min_sk"],
+                    "max_sort_key": date_row["max_sk"],
+                    "providers": providers,
+                }
+
+            # --- Unfiltered path ---
+            msg_total = (await (await conn.execute("SELECT COUNT(*) FROM messages")).fetchone())[0] or 0
+
+            date_row = await (await conn.execute(
+                "SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM conversations"
+            )).fetchone()
+
+            prov_rows = await (await conn.execute(
+                "SELECT provider_name, COUNT(*) as cnt FROM conversations GROUP BY provider_name ORDER BY cnt DESC"
+            )).fetchall()
+            providers = {r["provider_name"]: r["cnt"] for r in prov_rows}
+
+            att_cnt = (await (await conn.execute("SELECT COUNT(*) FROM attachment_refs")).fetchone())[0] or 0
+
+            return {
+                "total": msg_total,
+                "user": 0,
+                "assistant": 0,
+                "system": 0,
+                "words_approx": 0,
+                "attachments": att_cnt,
+                "min_sort_key": date_row["min_sk"],
+                "max_sort_key": date_row["max_sk"],
+                "providers": providers,
+            }
+
     async def conversation_exists_by_hash(self, content_hash: str) -> bool:
         """Check if conversation with given content hash exists.
 

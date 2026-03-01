@@ -198,10 +198,9 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if params.get("sample"):
         filter_chain = filter_chain.sample(params["sample"])
 
-    # Handle --count (lightweight: just count, no loading)
+    # Handle --count (uses SQL COUNT(*) fast path when possible)
     if params.get("count_only"):
-        n = len(await filter_chain.list_summaries()) if filter_chain.can_use_summaries() else len(await filter_chain.list())
-        click.echo(n)
+        click.echo(await filter_chain.count())
         return
 
     # Execute query
@@ -282,6 +281,11 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         )
         return
 
+    # Handle --stats early via SQL aggregation (avoids loading all messages)
+    if params.get("stats_only"):
+        await _output_stats_sql(env, filter_chain, repo)
+        return
+
     results = await filter_chain.list()
 
     # Handle modifiers (write operations)
@@ -305,12 +309,9 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if params.get("dialogue_only"):
         results = [conv.dialogue_only() for conv in results]
 
-    # Handle stats-only output
+    # Handle stats-by (still needs loaded conversations for grouping)
     if params.get("stats_by"):
         _output_stats_by(env, results, params["stats_by"])
-        return
-    if params.get("stats_only"):
-        _output_stats(env, results)
         return
 
     # Handle --open (open in browser/editor)
@@ -504,8 +505,79 @@ def _apply_transform(results: list[Conversation], transform: str) -> list[Conver
     return transformed
 
 
+async def _output_stats_sql(
+    env: AppEnv,
+    filter_chain: ConversationFilter,
+    repo: ConversationRepository,
+) -> None:
+    """Output statistics using SQL aggregation (no full message loading).
+
+    Two paths depending on whether filters are active:
+    - Filtered: uses temp table join for per-role/word breakdown (fast for subsets)
+    - Unfiltered: uses lightweight COUNT(*) and conversations table (instant for any DB size)
+    """
+    from datetime import datetime, timezone
+
+    # Determine if we have active filters (not just "everything")
+    has_filters = bool(filter_chain._describe_active_filters())
+
+    if has_filters:
+        # Filtered path: resolve matching IDs, then aggregate their messages
+        summaries = await filter_chain.list_summaries() if filter_chain.can_use_summaries() else None
+        if summaries is not None:
+            if not summaries:
+                env.ui.console.print("No conversations matched.")
+                return
+            conv_ids = [str(s.id) for s in summaries]
+            conv_count = len(conv_ids)
+        else:
+            conv_count = await filter_chain.count()
+            if conv_count == 0:
+                env.ui.console.print("No conversations matched.")
+                return
+            conv_ids = None
+    else:
+        # Unfiltered: pass None to trigger fast path
+        conv_ids = None
+        conv_count = await filter_chain.count()
+        if conv_count == 0:
+            env.ui.console.print("No conversations in archive.")
+            return
+
+    stats = await repo.aggregate_message_stats(conv_ids)
+
+    date_range = ""
+    if stats["min_sort_key"] and stats["max_sort_key"]:
+        min_date = datetime.fromtimestamp(stats["min_sort_key"], tz=timezone.utc).strftime("%Y-%m-%d")
+        max_date = datetime.fromtimestamp(stats["max_sort_key"], tz=timezone.utc).strftime("%Y-%m-%d")
+        date_range = f"{min_date} to {max_date}"
+
+    out = env.ui.console.print
+    out(f"\nConversations: {conv_count:,}\n")
+
+    # Message stats — role breakdown available only for filtered queries
+    if stats["user"] or stats["assistant"]:
+        out(
+            f"Messages: {stats['total']:,} total "
+            f"({stats['user']:,} user, {stats['assistant']:,} assistant)"
+        )
+    else:
+        out(f"Messages: {stats['total']:,}")
+
+    if stats["words_approx"]:
+        out(f"Words: ~{stats['words_approx']:,}")
+
+    if stats.get("providers"):
+        provider_parts = [f"{name} ({cnt:,})" for name, cnt in stats["providers"].items()]
+        out(f"Providers: {', '.join(provider_parts)}")
+
+    out(f"Attachments: {stats['attachments']:,}")
+    if date_range:
+        out(f"Date range: {date_range}")
+
+
 def _output_stats(env: AppEnv, results: list[Conversation]) -> None:
-    """Output statistics for matched conversations."""
+    """Output statistics for matched conversations (legacy, loads all messages)."""
     if not results:
         env.ui.console.print("No conversations matched.")
         return

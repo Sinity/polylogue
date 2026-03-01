@@ -265,7 +265,7 @@ class TestExecuteQueryCount:
         use_summaries,
         result_count,
     ) -> None:
-        """Count-only mode uses summaries when available, falls back to list otherwise."""
+        """Count-only mode uses filter_chain.count() SQL fast path."""
         mock_load_config.return_value = MagicMock()
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
@@ -275,12 +275,8 @@ class TestExecuteQueryCount:
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
-        mock_filter.can_use_summaries.return_value = use_summaries
-
-        if use_summaries:
-            mock_filter.list_summaries = AsyncMock(return_value=[_make_summary(), _make_summary()])
-        else:
-            mock_filter.list = AsyncMock(return_value=[_make_conv() for _ in range(result_count)])
+        # count() is async — must return the expected count
+        mock_filter.count = AsyncMock(return_value=result_count)
 
         env = _make_env()
         params = _make_params(count_only=True)
@@ -357,7 +353,7 @@ class TestExecuteQueryBasic:
     @pytest.mark.parametrize(
         "stats_key,stats_value,mock_fn",
         [
-            ("stats_only", True, "_output_stats"),
+            ("stats_only", True, "_output_stats_sql"),
             ("stats_by", "provider", "_output_stats_by"),
         ],
     )
@@ -366,12 +362,12 @@ class TestExecuteQueryBasic:
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query._output_stats")
+    @patch("polylogue.cli.query._output_stats_sql", new_callable=AsyncMock)
     @patch("polylogue.cli.query._output_stats_by")
     def test_stats_modes(
         self,
         mock_stats_by,
-        mock_stats,
+        mock_stats_sql,
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
@@ -399,9 +395,8 @@ class TestExecuteQueryBasic:
 
         self._fn(env, params)
 
-        if mock_fn == "_output_stats":
-            mock_stats.assert_called_once()
-            assert mock_stats.call_args[0][1] == convs
+        if mock_fn == "_output_stats_sql":
+            mock_stats_sql.assert_called_once()
         else:
             mock_stats_by.assert_called_once()
             assert mock_stats_by.call_args[0][2] == "provider"

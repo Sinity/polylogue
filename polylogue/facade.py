@@ -423,7 +423,7 @@ class Polylogue:
             for provider, count in stats.providers.items():
                 print(f"  {provider}: {count}")
         """
-        conversations = await self.list_conversations(limit=10000)
+        conversations = await self.list_conversations(limit=None)
 
         providers: dict[str, int] = {}
         tags: dict[str, int] = {}
