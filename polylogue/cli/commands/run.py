@@ -75,7 +75,7 @@ def _run_sync_once(
                 if last_stage[0]:
                     prev_elapsed = now - stage_start[0]
                     print(
-                        f"  {last_stage[0]}: done ({stage_processed[0] - amount:,} items"
+                        f"  {last_stage[0]}: done ({stage_processed[0] - amount:,}"
                         f" in {_format_elapsed(prev_elapsed)})",
                         flush=True,
                     )
@@ -90,8 +90,8 @@ def _run_sync_once(
                 rate = stage_processed[0] / elapsed if elapsed > 0.5 else 0
                 rate_str = f" ({rate:,.0f}/s)" if rate > 0 else ""
                 print(
-                    f"  {last_desc[0] or 'Processing'}: {processed[0]:,} items{rate_str}"
-                    f" [{_format_elapsed(total_elapsed)} elapsed]...",
+                    f"  {last_desc[0] or 'Processing'}: {stage_processed[0]:,}{rate_str}"
+                    f" [{_format_elapsed(total_elapsed)} total]...",
                     flush=True,
                 )
                 last_update[0] = now
