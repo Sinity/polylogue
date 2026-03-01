@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict
 from contextlib import suppress
 from pathlib import Path
 
@@ -27,6 +26,9 @@ def export_jsonl(*, archive_root: Path, output_path: Path | None = None) -> Path
     Each line is a JSON object with keys ``conversation``, ``messages``,
     and ``attachments``, suitable for bulk processing or backup.
 
+    Streams one conversation at a time so peak memory stays proportional to the
+    largest single conversation, not the entire database.
+
     Args:
         archive_root: Root directory of the Polylogue archive.
         output_path: Destination file. Defaults to
@@ -38,52 +40,58 @@ def export_jsonl(*, archive_root: Path, output_path: Path | None = None) -> Path
     target = output_path or (archive_root / "exports" / "conversations.jsonl")
     target.parent.mkdir(parents=True, exist_ok=True)
     with open_connection(None) as conn, target.open("w", encoding="utf-8") as handle:
-        conversations = conn.execute("SELECT * FROM conversations").fetchall()
-        messages = conn.execute(
-            """
-            SELECT * FROM messages
-            ORDER BY
-                conversation_id,
-                (timestamp IS NULL),
-                CASE
-                    WHEN timestamp IS NULL THEN NULL
-                    WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS INTEGER)
-                    ELSE CAST(timestamp AS REAL)
-                END,
-                message_id
-            """
-        ).fetchall()
-        attachments = conn.execute(
-            """
-            SELECT
-                attachment_refs.ref_id,
-                attachment_refs.conversation_id,
-                attachment_refs.message_id,
-                attachment_refs.attachment_id,
-                attachment_refs.provider_meta AS ref_meta,
-                attachments.mime_type,
-                attachments.size_bytes,
-                attachments.path,
-                attachments.provider_meta
-            FROM attachment_refs
-            JOIN attachments ON attachments.attachment_id = attachment_refs.attachment_id
-            ORDER BY attachment_refs.conversation_id, attachment_refs.ref_id
-            """
-        ).fetchall()
-        messages_by_convo: defaultdict[str, list[dict[str, object]]] = defaultdict(list)
-        for msg in messages:
-            messages_by_convo[msg["conversation_id"]].append(_row_to_dict(msg))
-        attachments_by_convo: defaultdict[str, list[dict[str, object]]] = defaultdict(list)
-        for att in attachments:
-            attachments_by_convo[att["conversation_id"]].append(_row_to_dict(att))
-        for convo in conversations:
-            convo_id = convo["conversation_id"]
-            payload = {
-                "conversation": _row_to_dict(convo),
-                "messages": messages_by_convo.get(convo_id, []),
-                "attachments": attachments_by_convo.get(convo_id, []),
-            }
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        convo_cursor = conn.execute(
+            "SELECT * FROM conversations ORDER BY conversation_id"
+        )
+        while True:
+            convo_batch = convo_cursor.fetchmany(500)
+            if not convo_batch:
+                break
+            for convo in convo_batch:
+                convo_id = convo["conversation_id"]
+
+                msg_rows = conn.execute(
+                    """
+                    SELECT * FROM messages
+                    WHERE conversation_id = ?
+                    ORDER BY
+                        (timestamp IS NULL),
+                        CASE
+                            WHEN timestamp IS NULL THEN NULL
+                            WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS INTEGER)
+                            ELSE CAST(timestamp AS REAL)
+                        END,
+                        message_id
+                    """,
+                    (convo_id,),
+                ).fetchall()
+
+                att_rows = conn.execute(
+                    """
+                    SELECT
+                        attachment_refs.ref_id,
+                        attachment_refs.conversation_id,
+                        attachment_refs.message_id,
+                        attachment_refs.attachment_id,
+                        attachment_refs.provider_meta AS ref_meta,
+                        attachments.mime_type,
+                        attachments.size_bytes,
+                        attachments.path,
+                        attachments.provider_meta
+                    FROM attachment_refs
+                    JOIN attachments ON attachments.attachment_id = attachment_refs.attachment_id
+                    WHERE attachment_refs.conversation_id = ?
+                    ORDER BY attachment_refs.ref_id
+                    """,
+                    (convo_id,),
+                ).fetchall()
+
+                payload = {
+                    "conversation": _row_to_dict(convo),
+                    "messages": [_row_to_dict(m) for m in msg_rows],
+                    "attachments": [_row_to_dict(a) for a in att_rows],
+                }
+                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
     return target
 
 

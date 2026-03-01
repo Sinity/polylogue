@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
 from polylogue.pipeline.prepare import prepare_records
@@ -27,8 +27,6 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
-
-_ProcessResult: TypeAlias = tuple[str, dict[str, int], bool]
 
 
 class ParseResult:
@@ -149,6 +147,7 @@ class ParsingService:
         )
 
         # Find orphaned raw records (raw data exists but conversation was deleted/missing)
+        orphaned_ids: list[str] = []
         async with backend._get_connection() as conn:
             cursor = await conn.execute("""
                 SELECT r.raw_id
@@ -156,8 +155,11 @@ class ParsingService:
                 LEFT JOIN conversations c ON r.raw_id = c.raw_id
                 WHERE c.conversation_id IS NULL
             """)
-            orphaned_rows = await cursor.fetchall()
-        orphaned_ids = [row["raw_id"] for row in orphaned_rows]
+            while True:
+                rows = await cursor.fetchmany(500)
+                if not rows:
+                    break
+                orphaned_ids.extend(row["raw_id"] for row in rows)
 
         # Combine newly acquired + orphaned raw IDs
         all_raw_ids = list(acquire_result.raw_ids)
@@ -225,16 +227,18 @@ class ParsingService:
 
         # Collect raw_ids to process (just IDs, not full records — memory-safe)
         if raw_ids is not None:
-            ids_to_process = list(raw_ids)
+            for batch_start in range(0, len(raw_ids), self.RAW_BATCH_SIZE):
+                batch_ids = raw_ids[batch_start : batch_start + self.RAW_BATCH_SIZE]
+                await self._process_raw_batch(backend, batch_ids, result, progress_callback)
         else:
-            ids_to_process = [
-                r.raw_id async for r in backend.iter_raw_conversations(provider=provider)
-            ]
-
-        # Process in batches to limit memory
-        for batch_start in range(0, len(ids_to_process), self.RAW_BATCH_SIZE):
-            batch_ids = ids_to_process[batch_start : batch_start + self.RAW_BATCH_SIZE]
-            await self._process_raw_batch(backend, batch_ids, result, progress_callback)
+            batch_ids: list[str] = []
+            async for raw_record in backend.iter_raw_conversations(provider=provider):
+                batch_ids.append(raw_record.raw_id)
+                if len(batch_ids) >= self.RAW_BATCH_SIZE:
+                    await self._process_raw_batch(backend, batch_ids, result, progress_callback)
+                    batch_ids = []
+            if batch_ids:
+                await self._process_raw_batch(backend, batch_ids, result, progress_callback)
 
         if result.processed_ids:
             invalidate_search_cache()
@@ -258,15 +262,44 @@ class ParsingService:
         raw_records = [await backend.get_raw_conversation(raw_id) for raw_id in batch_ids]
         raw_records = [r for r in raw_records if r is not None]
 
-        # Parse raw records into conversation objects
-        items_to_process: list[tuple[ParsedConversation, str, str]] = []
+        worker_count = 16
+        queue: asyncio.Queue[tuple[ParsedConversation, str, str] | None] = asyncio.Queue(
+            maxsize=worker_count * 2
+        )
+
+        async def _worker() -> None:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    queue.task_done()
+                    return
+                convo_item, source_name_item, raw_id = item
+                try:
+                    convo_id, result_counts, content_changed = await prepare_records(
+                        convo_item,
+                        source_name_item,
+                        archive_root=self.archive_root,
+                        backend=backend,
+                        repository=self.repository,
+                        raw_id=raw_id,
+                    )
+                    await result.merge_result(convo_id, result_counts, content_changed)
+                except Exception as exc:
+                    logger.error("Error processing conversation: %s", exc)
+                    result.parse_failures += 1
+                finally:
+                    if progress_callback:
+                        progress_callback(1, desc="Parsing")
+                    queue.task_done()
+
+        workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
 
         for raw_record in raw_records:
             try:
                 parsed_convos = await self._parse_raw_record(raw_record)
                 source_name = raw_record.source_name or raw_record.source_path
                 for convo in parsed_convos:
-                    items_to_process.append((convo, source_name, raw_record.raw_id))
+                    await queue.put((convo, source_name, raw_record.raw_id))
             except (json.JSONDecodeError, ValueError, TypeError) as exc:
                 logger.error(
                     "Failed to parse raw conversation",
@@ -276,42 +309,13 @@ class ParsingService:
                 )
                 result.parse_failures += 1
 
-        # Free raw records from memory before processing
+        # Free raw records as soon as work is queued.
         del raw_records
 
-        # Process parsed conversations with asyncio concurrency control
-        semaphore = asyncio.Semaphore(16)  # Limit concurrent operations
-
-        async def _process_one(
-            convo_item: ParsedConversation,
-            source_name_item: str,
-            raw_id: str,
-        ) -> _ProcessResult:
-            async with semaphore:
-                convo_id, counts, changed = await prepare_records(
-                    convo_item,
-                    source_name_item,
-                    archive_root=self.archive_root,
-                    backend=backend,
-                    repository=self.repository,
-                    raw_id=raw_id,
-                )
-                return (convo_id, counts, changed)
-
-        # Process all items concurrently with semaphore limiting concurrency
-        tasks = [_process_one(convo, source_name, raw_id) for convo, source_name, raw_id in items_to_process]
-
-        for coro in asyncio.as_completed(tasks):
-            try:
-                convo_id, result_counts, content_changed = await coro
-                await result.merge_result(convo_id, result_counts, content_changed)
-                if progress_callback:
-                    progress_callback(1, desc="Parsing")
-            except Exception as exc:
-                logger.error("Error processing conversation: %s", exc)
-                result.parse_failures += 1
-                if progress_callback:
-                    progress_callback(1, desc="Parsing")
+        await queue.join()
+        for _ in range(worker_count):
+            await queue.put(None)
+        await asyncio.gather(*workers)
 
     async def _parse_raw_record(self, raw_record: RawConversationRecord) -> list[ParsedConversation]:
         """Parse a raw conversation record into ParsedConversation(s).

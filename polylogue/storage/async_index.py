@@ -66,33 +66,25 @@ async def update_index_for_conversations(
     async with backend._get_connection() as conn:
         await ensure_index(backend)
 
-        all_ids = list(conversation_ids)
-        placeholders = ", ".join("?" for _ in all_ids)
+        # Keep placeholder counts under SQLite parameter limits and avoid
+        # materializing all message rows in Python.
+        for id_chunk in _chunked(conversation_ids, size=500):
+            chunk_ids = list(id_chunk)
+            placeholders = ", ".join("?" for _ in chunk_ids)
+            params = tuple(chunk_ids)
 
-        # SQLite FTS Update - single delete then batch insert
-        await conn.execute(
-            f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
-            tuple(all_ids),
-        )
-
-        # Fetch all messages to index in one query
-        cursor = await conn.execute(
-            f"""
-            SELECT message_id, conversation_id, text
-            FROM messages
-            WHERE text IS NOT NULL AND conversation_id IN ({placeholders})
-            """,
-            tuple(all_ids),
-        )
-        message_rows = await cursor.fetchall()
-
-        # Build batch for executemany
-        fts_batch = [(row["message_id"], row["conversation_id"], row["text"]) for row in message_rows]
-
-        if fts_batch:
-            await conn.executemany(
-                "INSERT INTO messages_fts (message_id, conversation_id, content) VALUES (?, ?, ?)",
-                fts_batch,
+            await conn.execute(
+                f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
+                params,
+            )
+            await conn.execute(
+                f"""
+                INSERT INTO messages_fts (message_id, conversation_id, content)
+                SELECT message_id, conversation_id, text
+                FROM messages
+                WHERE text IS NOT NULL AND conversation_id IN ({placeholders})
+                """,
+                params,
             )
 
         await conn.commit()
