@@ -367,6 +367,37 @@ class ConversationFilter:
             params["title_contains"] = self._title_pattern
         return params
 
+    def _describe_active_filters(self) -> list[str]:
+        """Return descriptions of all active filters (empty if no filters set)."""
+        parts: list[str] = []
+        if self._fts_terms:
+            parts.append(f"contains: {', '.join(self._fts_terms)}")
+        if self._providers:
+            parts.append(f"provider: {', '.join(self._providers)}")
+        if self._excluded_providers:
+            parts.append(f"exclude provider: {', '.join(self._excluded_providers)}")
+        if self._tags:
+            parts.append(f"tag: {', '.join(self._tags)}")
+        if self._excluded_tags:
+            parts.append(f"exclude tag: {', '.join(self._excluded_tags)}")
+        if self._has_types:
+            parts.append(f"has: {', '.join(self._has_types)}")
+        if self._since_date:
+            parts.append(f"since: {self._since_date.isoformat()}")
+        if self._until_date:
+            parts.append(f"until: {self._until_date.isoformat()}")
+        if self._title_pattern:
+            parts.append(f"title: {self._title_pattern}")
+        if self._id_prefix:
+            parts.append(f"id: {self._id_prefix}")
+        if self._negative_fts_terms:
+            parts.append(f"exclude text: {', '.join(self._negative_fts_terms)}")
+        if self._predicates:
+            parts.append(f"custom predicates: {len(self._predicates)}")
+        if self._similar_text:
+            parts.append(f"similar: {self._similar_text[:30]}")
+        return parts
+
     def _has_post_filters(self) -> bool:
         """Check if any filters require in-memory post-processing."""
         return bool(
@@ -386,11 +417,9 @@ class ConversationFilter:
         the full dataset, a higher limit when sorting could reduce results.
         """
         if self._limit_count is None:
-            if self._has_post_filters():
-                # Post-filters (tags, excludes) can match anywhere in the archive,
-                # so we must scan the full dataset to avoid missing results.
-                return None
-            return 1000  # No limit requested — fetch a reasonable max
+            # No explicit limit — fetch everything. Callers that want
+            # a display cap should set .limit() explicitly.
+            return None
 
         if self._has_post_filters():
             # Post-filters may reject many candidates; over-fetch aggressively
@@ -511,8 +540,7 @@ class ConversationFilter:
 
         # Medium path: use summaries (lightweight) if possible
         if self.can_use_summaries():
-            saved_limit = self._limit_count
-            self._limit_count = None
+            saved_limit, self._limit_count = self._limit_count, None
             try:
                 results = await self.list_summaries()
             finally:
@@ -520,8 +548,7 @@ class ConversationFilter:
             return len(results)
 
         # Slow path: must load full conversations
-        saved_limit = self._limit_count
-        self._limit_count = None
+        saved_limit, self._limit_count = self._limit_count, None
         try:
             results = await self.list()
         finally:

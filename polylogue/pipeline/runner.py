@@ -273,6 +273,10 @@ async def run_sources(
             counts["parse_failures"] = parse_result.parse_failures
         changed_counts.update(parse_result.changed_counts)
         processed_ids = parse_result.processed_ids
+        # Use deduplicated conversation count for user-facing summary
+        # (counts["conversations"] accumulates per-raw-record, double-counting
+        # conversations that appear in multiple source files)
+        counts["conversations"] = len(processed_ids)
         logger.info(
             "Parse stage complete", **sm.to_dict(),
             processed_ids=len(processed_ids),
