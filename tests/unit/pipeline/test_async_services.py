@@ -75,7 +75,10 @@ class TestAcquisitionService:
             mock_raw.source_index = 0
             mock_raw.file_mtime = None
 
-            with patch.object(service, "_iter_source_conversations", return_value=[(mock_raw, None)]):
+            async def _mock_stream(_source):
+                yield (mock_raw, None)
+
+            with patch.object(service, "_iter_source_conversations_stream", _mock_stream):
                 source = Source(name="test", path=Path(tmpdir))
                 result = await service.acquire_sources([source], progress_callback=progress)
 
@@ -91,7 +94,10 @@ class TestAcquisitionService:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             service = AcquisitionService(backend)
 
-            with patch.object(service, "_iter_source_conversations", side_effect=ValueError("source broken")):
+            def _mock_stream_error(_source):
+                raise ValueError("source broken")
+
+            with patch.object(service, "_iter_source_conversations_stream", _mock_stream_error):
                 source = Source(name="broken", path=Path(tmpdir))
                 result = await service.acquire_sources([source])
 
@@ -115,7 +121,10 @@ class TestAcquisitionService:
 
             source = Source(name="test", path=Path(tmpdir))
 
-            with patch.object(service, "_iter_source_conversations", return_value=[(mock_raw, None)]):
+            async def _mock_stream(_source):
+                yield (mock_raw, None)
+
+            with patch.object(service, "_iter_source_conversations_stream", _mock_stream):
                 # First acquire
                 result1 = await service.acquire_sources([source])
                 assert result1.counts["acquired"] == 1

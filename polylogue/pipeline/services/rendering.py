@@ -76,24 +76,42 @@ class RenderService:
         import asyncio
 
         result = RenderResult()
-        semaphore = asyncio.Semaphore(max_workers)
         total = len(conversation_ids)
+        worker_count = max(1, min(max_workers, total))
+        queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=max(worker_count * 2, 1))
 
         async def _render_one(convo_id: str) -> None:
-            async with semaphore:
-                try:
-                    await self.renderer.render(convo_id, self.render_root)
-                    result.record_success()
-                except Exception as exc:
-                    logger.warning("Failed to render conversation %s: %s", convo_id, exc)
-                    result.record_failure(convo_id, str(exc))
-                if progress_callback is not None:
-                    done = result.rendered_count + len(result.failures)
-                    progress_callback(1, desc=f"Rendering: {done}/{total}")
+            try:
+                await self.renderer.render(convo_id, self.render_root)
+                result.record_success()
+            except Exception as exc:
+                logger.warning("Failed to render conversation %s: %s", convo_id, exc)
+                result.record_failure(convo_id, str(exc))
+            if progress_callback is not None:
+                done = result.rendered_count + len(result.failures)
+                progress_callback(1, desc=f"Rendering: {done}/{total}")
 
-        await asyncio.gather(
-            *(_render_one(cid) for cid in conversation_ids),
-            return_exceptions=False,
-        )
+        async def _worker() -> None:
+            while True:
+                convo_id = await queue.get()
+                if convo_id is None:
+                    queue.task_done()
+                    return
+                try:
+                    await _render_one(convo_id)
+                finally:
+                    queue.task_done()
+
+        workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
+
+        for convo_id in conversation_ids:
+            await queue.put(convo_id)
+
+        await queue.join()
+
+        for _ in range(worker_count):
+            await queue.put(None)
+
+        await asyncio.gather(*workers, return_exceptions=False)
 
         return result

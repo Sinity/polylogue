@@ -763,16 +763,21 @@ class SQLiteBackend:
 
             await conn.executemany(ref_query, ref_data)
 
-            # 3. Recalculate ref counts using the same async connection
-            for aid in {r.attachment_id for r in records}:
-                await conn.execute(
-                    """
-                    UPDATE attachments
-                    SET ref_count = (SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?)
-                    WHERE attachment_id = ?
-                    """,
-                    (aid, aid),
+            # 3. Recalculate ref counts in a single statement
+            affected_aids = list({r.attachment_id for r in records})
+            placeholders = ", ".join("?" for _ in affected_aids)
+            await conn.execute(
+                f"""
+                UPDATE attachments
+                SET ref_count = (
+                    SELECT COUNT(*)
+                    FROM attachment_refs
+                    WHERE attachment_refs.attachment_id = attachments.attachment_id
                 )
+                WHERE attachment_id IN ({placeholders})
+                """,
+                tuple(affected_aids),
+            )
             if self._transaction_depth == 0:
                 await conn.commit()
 
@@ -824,16 +829,21 @@ class SQLiteBackend:
                     (conversation_id,),
                 )
 
-            # Update ref counts first, then clean up orphans
-            for aid in attachment_ids_to_check:
-                await conn.execute(
-                    """
-                    UPDATE attachments
-                    SET ref_count = (SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?)
-                    WHERE attachment_id = ?
-                    """,
-                    (aid, aid),
+            # Update ref counts in bulk, then clean up orphans
+            aids_list = list(attachment_ids_to_check)
+            aid_placeholders = ", ".join("?" for _ in aids_list)
+            await conn.execute(
+                f"""
+                UPDATE attachments
+                SET ref_count = (
+                    SELECT COUNT(*)
+                    FROM attachment_refs
+                    WHERE attachment_refs.attachment_id = attachments.attachment_id
                 )
+                WHERE attachment_id IN ({aid_placeholders})
+                """,
+                tuple(aids_list),
+            )
 
             # Clean up orphaned attachments (ref_count <= 0)
             await conn.execute("DELETE FROM attachments WHERE ref_count <= 0")

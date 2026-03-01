@@ -110,42 +110,49 @@ async def _all_conversation_ids(backend: Any, source_names: Sequence[str] | None
     Returns:
         List of conversation IDs
     """
+    chunk_size = 500
+    selected: list[str] = []
+
     async with backend._get_connection() as conn:
         # Skip provider_meta if no filtering needed
         if not source_names:
             cursor = await conn.execute("SELECT conversation_id FROM conversations")
-            rows = await cursor.fetchall()
-            return [row["conversation_id"] for row in rows]
+            while True:
+                rows = await cursor.fetchmany(chunk_size)
+                if not rows:
+                    break
+                selected.extend(row["conversation_id"] for row in rows)
+            return selected
 
+        name_set = set(source_names)
         cursor = await conn.execute(
             "SELECT conversation_id, provider_name, provider_meta FROM conversations"
         )
-        rows = await cursor.fetchall()
+        while True:
+            rows = await cursor.fetchmany(chunk_size)
+            if not rows:
+                break
+            for row in rows:
+                if row["provider_name"] in name_set:
+                    selected.append(row["conversation_id"])
+                    continue
 
-    selected: list[str] = []
-    name_set = set(source_names)
+                meta = row["provider_meta"]
+                if not meta:
+                    continue
 
-    for row in rows:
-        if row["provider_name"] in name_set:
-            selected.append(row["conversation_id"])
-            continue
+                try:
+                    payload = loads(meta)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "Skipping conversation with invalid provider_meta JSON",
+                        conversation_id=row["conversation_id"],
+                        provider=row["provider_name"],
+                    )
+                    continue
 
-        meta = row["provider_meta"]
-        if not meta:
-            continue
-
-        try:
-            payload = loads(meta)
-        except (ValueError, TypeError):
-            logger.warning(
-                "Skipping conversation with invalid provider_meta JSON",
-                conversation_id=row["conversation_id"],
-                provider=row["provider_name"],
-            )
-            continue
-
-        if isinstance(payload, dict) and payload.get("source") in name_set:
-            selected.append(row["conversation_id"])
+                if isinstance(payload, dict) and payload.get("source") in name_set:
+                    selected.append(row["conversation_id"])
 
     return selected
 
