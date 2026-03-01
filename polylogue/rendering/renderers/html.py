@@ -47,6 +47,8 @@ class PygmentsHighlighter:
         """
         return self.formatter.get_style_defs(".highlight")
 
+    _lexer_cache: dict[str, object] = {}
+
     def highlight_code(self, code: str, language: str | None = None) -> str:
         """Highlight code block.
 
@@ -58,7 +60,17 @@ class PygmentsHighlighter:
             HTML with syntax highlighting
         """
         try:
-            lexer = get_lexer_by_name(language, stripall=True) if language else guess_lexer(code)
+            if language:
+                # Cache named lexers — they're stateless singletons
+                lexer = PygmentsHighlighter._lexer_cache.get(language)
+                if lexer is None:
+                    lexer = get_lexer_by_name(language, stripall=True)
+                    PygmentsHighlighter._lexer_cache[language] = lexer
+            elif len(code) < 50:
+                # Skip expensive guess_lexer() on tiny snippets — rarely accurate
+                lexer = get_lexer_by_name("text", stripall=True)
+            else:
+                lexer = guess_lexer(code)
         except ClassNotFound:
             # Fall back to plain text
             escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -137,6 +149,21 @@ class MarkdownRenderer:
 
 DEFAULT_HTML_TEMPLATE = (Path(__file__).parent.parent / "templates" / "conversation.html").read_text()
 
+# Cached Jinja2 environment + compiled template — avoids re-parsing on every call
+_CACHED_TEMPLATE_ENV: Environment | None = None
+
+
+def _get_cached_template():
+    """Return a module-level cached Jinja2 template for render_conversation_html()."""
+    global _CACHED_TEMPLATE_ENV
+    if _CACHED_TEMPLATE_ENV is None:
+        _CACHED_TEMPLATE_ENV = Environment(
+            loader=DictLoader({"conversation.html": DEFAULT_HTML_TEMPLATE}),
+            autoescape=select_autoescape(["html", "xml"]),
+        )
+    return _CACHED_TEMPLATE_ENV.get_template("conversation.html")
+
+
 _ROLE_CLASS_RE = re.compile(r"[^a-z0-9-]")
 
 
@@ -168,6 +195,13 @@ def _attach_branches(messages: list[dict[str, object]]) -> list[dict[str, object
             mainline.append(msg)
             mainline_by_id[str(msg["id"])] = msg
 
+    # Index mainline messages by parent_id for O(1) sibling lookup
+    mainline_by_parent: dict[str, dict[str, object]] = {}
+    for msg in mainline:
+        pid = msg.get("parent_message_id")
+        if pid:
+            mainline_by_parent[str(pid)] = msg
+
     # Attach branch messages to the mainline sibling that shares the same parent
     for msg in messages:
         branch_idx = msg.get("branch_index", 0)
@@ -175,13 +209,7 @@ def _attach_branches(messages: list[dict[str, object]]) -> list[dict[str, object
         if not branch_idx or not parent_id:
             continue
 
-        # Find the mainline sibling: the mainline message with the same parent_id
-        # This is the branch_index=0 message that shares the same parent
-        sibling = None
-        for m in mainline:
-            if m.get("parent_message_id") == parent_id and not m.get("branch_index"):
-                sibling = m
-                break
+        sibling = mainline_by_parent.get(str(parent_id))
 
         if sibling is not None:
             branches = sibling.setdefault("branches", [])
@@ -560,11 +588,7 @@ def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
     messages = _attach_branches(raw_messages)
     title = conv.display_title or str(conv.id)
 
-    env = Environment(
-        loader=DictLoader({"conversation.html": DEFAULT_HTML_TEMPLATE}),
-        autoescape=select_autoescape(["html", "xml"]),
-    )
-    template = env.get_template("conversation.html")
+    template = _get_cached_template()
 
     return template.render(
         title=title,
