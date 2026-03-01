@@ -150,13 +150,13 @@ class TestMigrationV11ToV12:
 
         conn.close()
 
-    def test_full_migration_path_v11_to_v13(self, tmp_path: Path) -> None:
-        """Full migration from v11 through v12 and v13 via _run_migrations."""
+    def test_full_migration_path_v11_to_v15(self, tmp_path: Path) -> None:
+        """Full migration from v11 through v12, v13, v14, and v15 via _run_migrations."""
         conn = self._make_v11_db(tmp_path)
-        _run_migrations(conn, 11, 13)
+        _run_migrations(conn, 11, 15)
 
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 13
+        assert version == 15
         conn.close()
 
 
@@ -512,10 +512,10 @@ class TestMtimeSkip:
 
 
 class TestFreshSchema:
-    """Test that fresh databases have all v12+v13 features."""
+    """Test that fresh databases have all v12+v13+v14+v15 features."""
 
     def test_fresh_db_has_parse_tracking_columns(self, tmp_path: Path) -> None:
-        """A fresh database has parsed_at and parse_error columns."""
+        """A fresh database has parsed_at, parse_error, and sort_key columns."""
         db_path = tmp_path / "fresh.db"
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -526,13 +526,21 @@ class TestFreshSchema:
         assert "parsed_at" in columns
         assert "parse_error" in columns
 
+        cursor = conn.execute("PRAGMA table_info(messages)")
+        msg_columns = {row[1] for row in cursor.fetchall()}
+        assert "sort_key" in msg_columns
+
+        cursor = conn.execute("PRAGMA table_info(conversations)")
+        conv_columns = {row[1] for row in cursor.fetchall()}
+        assert "sort_key" in conv_columns
+
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == SCHEMA_VERSION == 13
+        assert version == SCHEMA_VERSION
 
         conn.close()
 
     def test_fresh_db_has_all_indices(self, tmp_path: Path) -> None:
-        """A fresh database has all v12+v13 indices."""
+        """A fresh database has all v12+v13+v14+v15 indices."""
         db_path = tmp_path / "fresh.db"
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -547,5 +555,10 @@ class TestFreshSchema:
         # v13 indices
         assert "idx_raw_conv_unparsed" in indices
         assert "idx_conversations_content_hash" in indices
-        assert "idx_messages_conversation_ts" in indices
+
+        # v14 index (replaces idx_messages_conversation_ts)
+        assert "idx_messages_conversation_sortkey" in indices
+
+        # v15 index
+        assert "idx_conversations_sortkey" in indices
         conn.close()

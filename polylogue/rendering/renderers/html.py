@@ -322,14 +322,7 @@ class HTMLRenderer:
                        parent_message_id, branch_index
                 FROM messages
                 WHERE conversation_id = ?
-                ORDER BY
-                    (timestamp IS NULL),
-                    CASE
-                        WHEN timestamp IS NULL THEN NULL
-                        WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS INTEGER)
-                        ELSE CAST(timestamp AS REAL)
-                    END,
-                    message_id
+                ORDER BY (sort_key IS NULL), sort_key, message_id
                 """,
                 (conversation_id,),
             )

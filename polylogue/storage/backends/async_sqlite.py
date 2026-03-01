@@ -463,8 +463,8 @@ class SQLiteBackend:
                 SELECT * FROM conversations
                 {where_sql}
                 ORDER BY
-                    CASE WHEN updated_at IS NULL OR updated_at = '' THEN 1 ELSE 0 END,
-                    updated_at DESC,
+                    (sort_key IS NULL) ASC,
+                    sort_key DESC,
                     conversation_id DESC
             """
 
@@ -550,6 +550,7 @@ class SQLiteBackend:
                     title,
                     created_at,
                     updated_at,
+                    sort_key,
                     content_hash,
                     provider_meta,
                     metadata,
@@ -557,11 +558,12 @@ class SQLiteBackend:
                     parent_conversation_id,
                     branch_type,
                     raw_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(conversation_id) DO UPDATE SET
                     title = excluded.title,
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at,
+                    sort_key = excluded.sort_key,
                     content_hash = excluded.content_hash,
                     provider_meta = excluded.provider_meta,
                     parent_conversation_id = excluded.parent_conversation_id,
@@ -584,6 +586,7 @@ class SQLiteBackend:
                     record.title,
                     record.created_at,
                     record.updated_at,
+                    record.sort_key,
                     record.content_hash,
                     _json_or_none(record.provider_meta),
                     _json_or_none(record.metadata) or "{}",
@@ -652,7 +655,7 @@ class SQLiteBackend:
         """Get all messages for a conversation."""
         async with self._get_connection() as conn:
             cursor = await conn.execute(
-                "SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp",
+                "SELECT * FROM messages WHERE conversation_id = ? ORDER BY (sort_key IS NULL), sort_key, message_id",
                 (conversation_id,),
             )
             rows = await cursor.fetchall()
@@ -671,7 +674,7 @@ class SQLiteBackend:
         async with self._get_connection() as conn:
             placeholders = ",".join("?" for _ in conversation_ids)
             cursor = await conn.execute(
-                f"SELECT * FROM messages WHERE conversation_id IN ({placeholders}) ORDER BY timestamp",
+                f"SELECT * FROM messages WHERE conversation_id IN ({placeholders}) ORDER BY (sort_key IS NULL), sort_key, message_id",
                 conversation_ids,
             )
             rows = await cursor.fetchall()
@@ -700,16 +703,18 @@ class SQLiteBackend:
                     role,
                     text,
                     timestamp,
+                    sort_key,
                     content_hash,
                     provider_meta,
                     version,
                     parent_message_id,
                     branch_index
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     role = excluded.role,
                     text = excluded.text,
                     timestamp = excluded.timestamp,
+                    sort_key = excluded.sort_key,
                     content_hash = excluded.content_hash,
                     provider_meta = excluded.provider_meta,
                     parent_message_id = excluded.parent_message_id,
@@ -731,6 +736,7 @@ class SQLiteBackend:
                     r.role,
                     r.text,
                     r.timestamp,
+                    r.sort_key,
                     r.content_hash,
                     _json_or_none(r.provider_meta),
                     r.version,
@@ -1335,7 +1341,7 @@ class SQLiteBackend:
                 if dialogue_only:
                     query += " AND role IN ('user', 'assistant', 'human')"
 
-                query += " ORDER BY timestamp"
+                query += " ORDER BY (sort_key IS NULL), sort_key, message_id"
 
                 # Calculate how many to fetch this round
                 fetch_limit = chunk_size
@@ -1483,6 +1489,8 @@ class SQLiteBackend:
             True if inserted, False if already exists
         """
         async with self._get_connection() as conn:
+            # Two-step: try INSERT OR IGNORE first (cheap for the common
+            # "already exists" case), then update mtime metadata if needed.
             cursor = await conn.execute(
                 """
                 INSERT OR IGNORE INTO raw_conversations (
@@ -1511,9 +1519,22 @@ class SQLiteBackend:
                     record.parse_error,
                 ),
             )
+            inserted = bool(cursor.rowcount > 0)
+
+            # If the record already existed, update mtime/source_path so
+            # the mtime-based skip can settle on subsequent runs (a file
+            # may be renamed or touched without changing content).
+            if not inserted and record.file_mtime is not None:
+                await conn.execute(
+                    "UPDATE raw_conversations SET file_mtime = ?, source_path = ? "
+                    "WHERE raw_id = ? AND (file_mtime IS NOT ? OR source_path IS NOT ?)",
+                    (record.file_mtime, record.source_path,
+                     record.raw_id, record.file_mtime, record.source_path),
+                )
+
             if self._transaction_depth == 0:
                 await conn.commit()
-            return bool(cursor.rowcount > 0)
+            return inserted
 
     async def get_raw_conversation(self, raw_id: str) -> RawConversationRecord | None:
         """Retrieve a raw conversation by ID.
@@ -1600,13 +1621,13 @@ class SQLiteBackend:
             if provider is not None:
                 cursor = await conn.execute(
                     "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
-                    "WHERE provider_name = ? AND parsed_at IS NOT NULL",
+                    "WHERE provider_name = ? AND (parsed_at IS NOT NULL OR parse_error IS NOT NULL)",
                     (provider,),
                 )
             else:
                 cursor = await conn.execute(
                     "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
-                    "WHERE parsed_at IS NOT NULL"
+                    "WHERE parsed_at IS NOT NULL OR parse_error IS NOT NULL"
                 )
             if self._transaction_depth == 0:
                 await conn.commit()
