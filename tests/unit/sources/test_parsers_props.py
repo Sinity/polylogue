@@ -235,13 +235,17 @@ def test_claude_code_extracts_timestamps(session: list[dict]):
 @given(claude_code_session_strategy(min_messages=1, max_messages=5))
 @settings(max_examples=30)
 def test_claude_code_extracts_metadata(session: list[dict]):
-    """Claude Code parser extracts costUSD and durationMs to metadata."""
+    """Claude Code parser extracts costUSD and durationMs to metadata.
+
+    Note: claude-code no longer stores 'raw' in provider_meta to avoid
+    duplicating data already stored in raw_conversations.raw_content.
+    """
     result = claude.parse_code(session, "fallback")
 
     for parsed_msg in result.messages:
-        # provider_meta should contain raw data
         assert parsed_msg.provider_meta is not None
-        assert "raw" in parsed_msg.provider_meta
+        # raw is NOT stored — it's in raw_conversations instead
+        assert "raw" not in parsed_msg.provider_meta
 
 
 # =============================================================================
