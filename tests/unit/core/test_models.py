@@ -823,8 +823,8 @@ TOOL_USE_TEST_CASES = [
     # (role, provider_meta, expected_is_tool_use, description)
     ("tool", {}, True, "role=tool"),
     ("assistant", {"content_blocks": [{"type": "tool_use"}]}, True, "content_blocks tool_use"),
-    ("assistant", {"raw": {"isSidechain": True}}, True, "Claude sidechain"),
-    ("assistant", {"raw": {"isMeta": True}}, True, "Claude meta marker"),
+    ("assistant", {"isSidechain": True}, True, "Claude sidechain"),
+    ("assistant", {"isMeta": True}, True, "Claude meta marker"),
     ("assistant", {}, False, "normal assistant"),
     ("user", {}, False, "user message"),
 ]

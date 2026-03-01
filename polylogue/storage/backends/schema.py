@@ -8,7 +8,7 @@ from polylogue.lib.log import get_logger
 from polylogue.storage.store import _make_ref_id
 
 logger = get_logger(__name__)
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 _VEC0_DDL = """
@@ -62,7 +62,7 @@ SCHEMA_DDL = """
             source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
             version INTEGER NOT NULL,
             parent_conversation_id TEXT REFERENCES conversations(conversation_id),
-            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork') OR branch_type IS NULL),
+            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork', 'subagent') OR branch_type IS NULL),
             raw_id TEXT REFERENCES raw_conversations(raw_id)
         );
 
@@ -677,6 +677,92 @@ def _migrate_v14_to_v15(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
+    """Migrate from v15 to v16: add 'subagent' to branch_type CHECK constraint.
+
+    SQLite has no ALTER COLUMN — must recreate the conversations table with
+    the updated CHECK constraint.  FK enforcement is already disabled by the
+    migration runner, so child tables (messages, attachment_refs,
+    embedding_status) remain intact throughout.
+    """
+    # 1. Drop indexes that reference conversations (will be recreated)
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_provider")
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_source_name")
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_parent")
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_content_hash")
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_sortkey")
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_raw_id")
+
+    # 2. Rename existing table
+    conn.execute("ALTER TABLE conversations RENAME TO conversations_old")
+
+    # 3. Create new table with updated CHECK constraint
+    conn.execute("""
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            provider_conversation_id TEXT NOT NULL,
+            title TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            sort_key REAL,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            metadata TEXT DEFAULT '{}',
+            source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
+            version INTEGER NOT NULL,
+            parent_conversation_id TEXT REFERENCES conversations(conversation_id),
+            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork', 'subagent') OR branch_type IS NULL),
+            raw_id TEXT REFERENCES raw_conversations(raw_id)
+        )
+    """)
+
+    # 4. Copy data (exclude generated column source_name)
+    conn.execute("""
+        INSERT INTO conversations (
+            conversation_id, provider_name, provider_conversation_id,
+            title, created_at, updated_at, sort_key, content_hash,
+            provider_meta, metadata, version,
+            parent_conversation_id, branch_type, raw_id
+        )
+        SELECT
+            conversation_id, provider_name, provider_conversation_id,
+            title, created_at, updated_at, sort_key, content_hash,
+            provider_meta, metadata, version,
+            parent_conversation_id, branch_type, raw_id
+        FROM conversations_old
+    """)
+
+    # 5. Drop old table
+    conn.execute("DROP TABLE conversations_old")
+
+    # 6. Recreate all indexes
+    conn.execute(
+        "CREATE INDEX idx_conversations_provider "
+        "ON conversations(provider_name, provider_conversation_id)"
+    )
+    conn.execute(
+        "CREATE INDEX idx_conversations_source_name "
+        "ON conversations(source_name) WHERE source_name IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX idx_conversations_parent "
+        "ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX idx_conversations_content_hash "
+        "ON conversations(content_hash)"
+    )
+    conn.execute(
+        "CREATE INDEX idx_conversations_sortkey "
+        "ON conversations(sort_key)"
+    )
+    conn.execute(
+        "CREATE INDEX idx_conversations_raw_id "
+        "ON conversations(raw_id) WHERE raw_id IS NOT NULL"
+    )
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
@@ -693,6 +779,7 @@ _MIGRATIONS = {
     12: _migrate_v12_to_v13,
     13: _migrate_v13_to_v14,
     14: _migrate_v14_to_v15,
+    15: _migrate_v15_to_v16,
 }
 
 

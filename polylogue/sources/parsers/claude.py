@@ -599,8 +599,9 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
             record.message.get("content") if isinstance(record.message, dict) else None
         )
 
-        # Build provider_meta with useful fields from typed record
-        meta: dict[str, object] = {"raw": item}
+        # Build provider_meta with extracted fields (no raw record —
+        # raw data is already stored in raw_conversations.raw_content)
+        meta: dict[str, object] = {}
         if record.costUSD:
             meta["costUSD"] = record.costUSD
         if record.durationMs:
