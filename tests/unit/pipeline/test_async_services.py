@@ -75,7 +75,7 @@ class TestAcquisitionService:
             mock_raw.source_index = 0
             mock_raw.file_mtime = None
 
-            async def _mock_stream(_source):
+            async def _mock_stream(_source, **_kwargs):
                 yield (mock_raw, None)
 
             with patch.object(service, "_iter_source_conversations_stream", _mock_stream):
@@ -121,7 +121,7 @@ class TestAcquisitionService:
 
             source = Source(name="test", path=Path(tmpdir))
 
-            async def _mock_stream(_source):
+            async def _mock_stream(_source, **_kwargs):
                 yield (mock_raw, None)
 
             with patch.object(service, "_iter_source_conversations_stream", _mock_stream):

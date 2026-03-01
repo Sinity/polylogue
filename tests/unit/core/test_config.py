@@ -154,10 +154,12 @@ class TestSource:
         with pytest.raises(ValueError, match="must have either"):
             Source(name="broken")
 
-    def test_source_both_path_and_folder_raises(self):
-        """Source with both path and folder raises ValueError."""
-        with pytest.raises(ValueError, match="cannot have both"):
-            Source(name="confused", path=Path("/tmp"), folder="Drive Folder")
+    def test_source_both_path_and_folder_valid(self):
+        """Source with both path and folder is valid (Drive sources use local cache)."""
+        src = Source(name="gemini", path=Path("/tmp/cache"), folder="Drive Folder")
+        assert src.is_drive
+        assert src.path == Path("/tmp/cache")
+        assert src.folder == "Drive Folder"
 
     def test_source_name_stripped(self):
         """Source name is stripped of whitespace."""

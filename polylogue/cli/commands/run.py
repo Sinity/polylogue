@@ -224,6 +224,7 @@ def _display_result(
 @click.option("--notify", is_flag=True, help="Desktop notification on new conversations (requires --watch)")
 @click.option("--exec", "exec_cmd", help="Execute command on new conversations (requires --watch)")
 @click.option("--webhook", help="Call webhook URL on new conversations (requires --watch)")
+@click.option("--reparse", is_flag=True, help="Force re-parsing of all raw conversations (clears parse tracking)")
 @click.pass_obj
 def run_command(
     env: AppEnv,
@@ -235,6 +236,7 @@ def run_command(
     notify: bool,
     exec_cmd: str | None,
     webhook: str | None,
+    reparse: bool,
 ) -> None:
     """Run pipeline stages on configured sources."""
     # Validate watch-related flags
@@ -247,6 +249,14 @@ def run_command(
 
     selected_sources = resolve_sources(cfg, sources, "run")
     selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "run")
+
+    # Reset parse tracking if --reparse was requested
+    if reparse:
+        from polylogue.services import get_backend
+
+        backend = get_backend()
+        reset_count = asyncio.run(backend.reset_parse_status())
+        click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
 
     # Preview mode
     plan_snapshot = None
