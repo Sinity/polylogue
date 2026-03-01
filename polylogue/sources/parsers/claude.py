@@ -737,8 +737,17 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     created_at = min(timestamps) if timestamps else None
     updated_at = max(timestamps) if timestamps else None
 
-    # Use session_id as conversation ID if available
-    conv_id = session_id or fallback_id
+    # Use session_id as conversation ID if available.
+    # Subagent files (agent-<hash>.jsonl) share the parent's sessionId,
+    # so we must make their conversation_id unique to prevent UPSERT collision.
+    is_subagent = fallback_id.startswith("agent-")
+    parent_session_id: str | None = None
+    if is_subagent and session_id:
+        # Subagent: use session_id:fallback_id as unique conversation ID
+        conv_id = f"{session_id}:{fallback_id}"
+        parent_session_id = session_id
+    else:
+        conv_id = session_id or fallback_id
 
     # Build conversation-level provider_meta
     conv_meta: dict[str, Any] = {}
@@ -774,12 +783,16 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     if total_duration > 0:
         conv_meta["total_duration_ms"] = total_duration
 
-    # Detect if any message has isSidechain flag
-    has_sidechain = any(
+    # Detect branch type: subagent (from file path) or sidechain (from content)
+    if is_subagent:
+        branch_type = "subagent"
+    elif any(
         m.provider_meta and m.provider_meta.get("isSidechain")
         for m in messages
-    )
-    branch_type = "sidechain" if has_sidechain else None
+    ):
+        branch_type = "sidechain"
+    else:
+        branch_type = None
 
     # Collect unique cwd paths and models across messages
     cwds = set()
@@ -815,6 +828,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         updated_at=updated_at,
         messages=messages,
         provider_meta=conv_meta if conv_meta else None,
+        parent_conversation_provider_id=parent_session_id,
         branch_type=branch_type,
     )
 

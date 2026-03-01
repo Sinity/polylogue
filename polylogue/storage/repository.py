@@ -293,6 +293,22 @@ class ConversationRepository:
             title_contains=title_contains,
         )
 
+    async def aggregate_message_stats(
+        self,
+        conversation_ids: builtins.list[str] | None = None,
+    ) -> dict[str, int]:
+        """Compute aggregate message statistics via SQL.
+
+        Args:
+            conversation_ids: Optional list of IDs to scope stats to.
+                If None, computes stats across all conversations.
+
+        Returns:
+            Dict with keys: total, user, assistant, system, words_approx,
+            attachments, min_sort_key, max_sort_key.
+        """
+        return await self._backend.aggregate_message_stats(conversation_ids)
+
     async def get_source_conversations(self, provider: str) -> builtins.list[str]:
         """Get all conversation IDs for a given provider.
 
