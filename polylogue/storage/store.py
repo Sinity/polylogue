@@ -32,6 +32,7 @@ class ConversationRecord(BaseModel):
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    sort_key: float | None = None  # Pre-computed numeric updated_at for ORDER BY / WHERE
     content_hash: ContentHash
     provider_meta: dict[str, object] | None = None
     metadata: dict[str, object] | None = None
@@ -70,6 +71,7 @@ class MessageRecord(BaseModel):
     role: str | None = None
     text: str | None = None
     timestamp: str | None = None
+    sort_key: float | None = None  # Pre-computed numeric timestamp for ORDER BY
     content_hash: ContentHash
     provider_meta: dict[str, object] | None = None
     version: int = 1
@@ -233,6 +235,7 @@ def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
         title=row["title"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        sort_key=_row_get(row, "sort_key"),
         content_hash=row["content_hash"],
         provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
         metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
@@ -252,6 +255,7 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         role=row["role"],
         text=row["text"],
         timestamp=row["timestamp"],
+        sort_key=_row_get(row, "sort_key"),
         content_hash=row["content_hash"],
         provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
         version=row["version"],

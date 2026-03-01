@@ -13,11 +13,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+
+import orjson
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
-from polylogue.pipeline.prepare import prepare_records
+from polylogue.pipeline.ids import conversation_id as make_conversation_id
+from polylogue.pipeline.prepare import PrepareCache, prepare_records
 from polylogue.sources.source import _parse_json_payload
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import RawConversationRecord
@@ -264,16 +267,64 @@ class ParsingService:
         progress_callback: Any | None,
         total: int | None = None,
     ) -> None:
-        """Process a batch of raw conversation IDs."""
+        """Process a batch of raw conversation IDs.
+
+        Uses PrepareCache to replace N per-conversation DB queries with 2 bulk
+        queries for the entire batch. Flow:
+        1. Batch-load raw records from DB
+        2. Parse all into conversations (collect, don't queue yet)
+        3. Pre-compute candidate CIDs → bulk-load PrepareCache
+        4. Queue work items to async workers with shared cache
+        """
         # Batch-load raw records in one query instead of N sequential round-trips
         raw_records = await backend.get_raw_conversations_batch(batch_ids)
 
+        # Phase 1: Parse all raw records, collecting work items
+        work_items: list[tuple[ParsedConversation, str, str]] = []  # (convo, source_name, raw_id)
+        failed_raw_ids: dict[str, str] = {}  # raw_id -> error message
+
+        for raw_record in raw_records:
+            try:
+                parsed_convos = await self._parse_raw_record(raw_record)
+                source_name = raw_record.source_name or raw_record.source_path
+                for convo in parsed_convos:
+                    work_items.append((convo, source_name, raw_record.raw_id))
+            except (json.JSONDecodeError, orjson.JSONDecodeError, ValueError, TypeError) as exc:
+                logger.error(
+                    "Failed to parse raw conversation",
+                    raw_id=raw_record.raw_id,
+                    provider=raw_record.provider_name,
+                    error=str(exc),
+                )
+                result.parse_failures += 1
+                failed_raw_ids[raw_record.raw_id] = str(exc)[:500]
+
+        # Free raw records — parsed conversations are much smaller
+        del raw_records
+
+        if not work_items:
+            # All records failed to parse — mark failures and return
+            for rid, error in failed_raw_ids.items():
+                await backend.mark_raw_parsed(rid, error=error)
+            return
+
+        # Phase 2: Pre-compute candidate CIDs and bulk-load cache
+        candidate_cids: set[str] = set()
+        for convo, _, _ in work_items:
+            cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
+            candidate_cids.add(cid)
+            # Also include parent CIDs for FK resolution
+            if convo.parent_conversation_provider_id:
+                parent_cid = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
+                candidate_cids.add(parent_cid)
+
+        cache = await PrepareCache.load(backend, candidate_cids)
+
+        # Phase 3: Queue work to async workers with shared cache
         worker_count = min(os.cpu_count() or 4, 16)
         queue: asyncio.Queue[tuple[ParsedConversation, str, str] | None] = asyncio.Queue(
             maxsize=worker_count * 2
         )
-        # Track per-raw_id success/failure for parse marking
-        failed_raw_ids: dict[str, str] = {}  # raw_id -> error message
         succeeded_raw_ids: set[str] = set()
         tracking_lock = asyncio.Lock()
 
@@ -292,6 +343,7 @@ class ParsingService:
                         backend=backend,
                         repository=self.repository,
                         raw_id=raw_id,
+                        cache=cache,
                     )
                     await result.merge_result(convo_id, result_counts, content_changed)
                     async with tracking_lock:
@@ -308,37 +360,26 @@ class ParsingService:
 
         workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
 
-        for raw_record in raw_records:
-            try:
-                parsed_convos = await self._parse_raw_record(raw_record)
-                source_name = raw_record.source_name or raw_record.source_path
-                for convo in parsed_convos:
-                    await queue.put((convo, source_name, raw_record.raw_id))
-            except (json.JSONDecodeError, ValueError, TypeError) as exc:
-                logger.error(
-                    "Failed to parse raw conversation",
-                    raw_id=raw_record.raw_id,
-                    provider=raw_record.provider_name,
-                    error=str(exc),
-                )
-                result.parse_failures += 1
-                failed_raw_ids[raw_record.raw_id] = str(exc)[:500]
-
-        # Free raw records as soon as work is queued.
-        del raw_records
+        for item in work_items:
+            await queue.put(item)
+        del work_items  # Free parsed conversations as they're consumed
 
         await queue.join()
         for _ in range(worker_count):
             await queue.put(None)
         await asyncio.gather(*workers)
 
-        # Mark parse status for all processed raw records
+        # Mark parse status for all processed raw records.
+        # Three cases:
+        # - Only succeeded: mark as parsed (clears any previous error)
+        # - Only failed: mark with error (will be retried next run)
+        # - Both (bundle partially failed): mark with error so operators
+        #   can see what's wrong; record stays unparsed for retry
         for rid in succeeded_raw_ids:
             if rid not in failed_raw_ids:
                 await backend.mark_raw_parsed(rid)
         for rid, error in failed_raw_ids.items():
-            if rid not in succeeded_raw_ids:
-                await backend.mark_raw_parsed(rid, error=error)
+            await backend.mark_raw_parsed(rid, error=error)
 
     async def _parse_raw_record(self, raw_record: RawConversationRecord) -> list[ParsedConversation]:
         """Parse a raw conversation record into ParsedConversation(s).
@@ -353,21 +394,23 @@ class ParsingService:
             List of parsed conversations (usually 1, but could be more for bundles)
         """
         content = raw_record.raw_content
-        text = content.decode("utf-8") if isinstance(content, bytes) else str(content)
+        # orjson accepts both bytes and str, avoiding decode overhead for bytes
+        raw = content if isinstance(content, (bytes, str)) else str(content)
 
         # Try single JSON first (fast path for chatgpt, claude-ai)
         try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
+            payload = orjson.loads(raw)
+        except (orjson.JSONDecodeError, ValueError):
             # Fall back to JSONL parsing (claude-code, codex, gemini)
+            text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
             lines = []
             for line in text.split("\n"):
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    lines.append(json.loads(line))
-                except json.JSONDecodeError:
+                    lines.append(orjson.loads(line))
+                except (orjson.JSONDecodeError, ValueError):
                     continue
             if not lines:
                 raise

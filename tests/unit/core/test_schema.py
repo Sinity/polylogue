@@ -551,7 +551,11 @@ class TestGetSampleCountFromDb:
                  '{"source":"test"}', '{}', 1, None, None, None),
             )
             conn.execute(
-                "INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                """INSERT INTO messages
+                   (message_id, conversation_id, provider_message_id,
+                    role, text, timestamp, content_hash, provider_meta,
+                    version, parent_message_id, branch_index)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 ("m1", "c1", "pm1", "user", "hello", None, "hash2", '{"key":"val"}', 1, None, 0),
             )
             conn.commit()
@@ -576,7 +580,11 @@ class TestGetSampleCountFromDb:
                  None, '{}', 1, None, None, None),
             )
             conn.execute(
-                "INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                """INSERT INTO messages
+                   (message_id, conversation_id, provider_message_id,
+                    role, text, timestamp, content_hash, provider_meta,
+                    version, parent_message_id, branch_index)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 ("m1", "c1", "pm1", "user", "hello", None, "hash2", '{"k":"v"}', 1, None, 0),
             )
             conn.commit()
