@@ -394,6 +394,7 @@ class TestParsingServiceParseSources:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_cursor.fetchmany = AsyncMock(return_value=[])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
 
         mock_cm = AsyncMock()
@@ -431,6 +432,7 @@ class TestParsingServiceParseSources:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_cursor.fetchmany = AsyncMock(return_value=[])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
 
         mock_cm = AsyncMock()
@@ -486,6 +488,7 @@ class TestParsingServiceParseSources:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_cursor.fetchmany = AsyncMock(return_value=[])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
 
         mock_cm = AsyncMock()
@@ -528,6 +531,7 @@ class TestParsingServiceParseSources:
         mock_conn = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_cursor.fetchmany = AsyncMock(return_value=[])
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
 
         mock_cm = AsyncMock()

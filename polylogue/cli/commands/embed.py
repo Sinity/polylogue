@@ -203,6 +203,8 @@ def _embed_batch(
     limit: int | None = None,
 ) -> None:
     """Embed multiple conversations."""
+    import asyncio
+
     from rich.console import Console as RichConsole
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
@@ -210,16 +212,15 @@ def _embed_batch(
 
     backend = repo.backend
 
-    # Get conversations to embed
+    # Get conversations to embed — stream via fetchmany to bound memory.
+    conv_ids: list[tuple[str, str | None]] = []
     with open_connection(None) as conn:
         if rebuild:
-            # All conversations
-            rows = conn.execute(
+            cursor = conn.execute(
                 "SELECT conversation_id, title FROM conversations ORDER BY updated_at DESC"
-            ).fetchall()
+            )
         else:
-            # Only those needing embedding
-            rows = conn.execute(
+            cursor = conn.execute(
                 """
                 SELECT c.conversation_id, c.title
                 FROM conversations c
@@ -227,12 +228,17 @@ def _embed_batch(
                 WHERE e.conversation_id IS NULL OR e.needs_reindex = 1
                 ORDER BY c.updated_at DESC
                 """
-            ).fetchall()
-
-    conv_ids = [(row["conversation_id"], row["title"]) for row in rows]
-
-    if limit:
-        conv_ids = conv_ids[:limit]
+            )
+        while True:
+            rows = cursor.fetchmany(500)
+            if not rows:
+                break
+            for row in rows:
+                conv_ids.append((row["conversation_id"], row["title"]))
+                if limit and len(conv_ids) >= limit:
+                    break
+            if limit and len(conv_ids) >= limit:
+                break
 
     if not conv_ids:
         click.echo("All conversations are already embedded.")
@@ -243,9 +249,12 @@ def _embed_batch(
     embedded_count = 0
     error_count = 0
 
+    # Single event loop for all async backend calls, avoids per-call overhead.
+    loop = asyncio.new_event_loop()
+
     def _embed_one(conversation_id: str) -> bool:
         """Embed a single conversation. Returns True on success."""
-        messages = backend.get_messages(conversation_id)
+        messages = loop.run_until_complete(backend.get_messages(conversation_id))
 
         if messages:
             vec_provider.upsert(conversation_id, messages)  # type: ignore
@@ -255,38 +264,41 @@ def _embed_batch(
     # Use Rich progress bar only when console supports it
     use_rich = isinstance(env.ui.console, RichConsole)
 
-    if use_rich:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            console=env.ui.console,
-        ) as progress:
-            task = progress.add_task("Embedding", total=len(conv_ids))
+    try:
+        if use_rich:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                console=env.ui.console,
+            ) as progress:
+                task = progress.add_task("Embedding", total=len(conv_ids))
 
-            for conv_id, title in conv_ids:
-                progress.update(task, description=f"Embedding {title or conv_id[:12]}...")
+                for conv_id, title in conv_ids:
+                    progress.update(task, description=f"Embedding {title or conv_id[:12]}...")
+                    try:
+                        if _embed_one(conv_id):
+                            embedded_count += 1
+                    except Exception as exc:
+                        error_count += 1
+                        progress.console.print(f"Warning: {conv_id[:12]}: {exc}")
+                    progress.update(task, advance=1)
+        else:
+            for i, (conv_id, title) in enumerate(conv_ids, 1):
+                label = title or conv_id[:12]
+                click.echo(f"  [{i}/{len(conv_ids)}] {label}...", nl=False)
                 try:
                     if _embed_one(conv_id):
                         embedded_count += 1
+                        click.echo(" ok")
+                    else:
+                        click.echo(" (no messages)")
                 except Exception as exc:
                     error_count += 1
-                    progress.console.print(f"Warning: {conv_id[:12]}: {exc}")
-                progress.update(task, advance=1)
-    else:
-        for i, (conv_id, title) in enumerate(conv_ids, 1):
-            label = title or conv_id[:12]
-            click.echo(f"  [{i}/{len(conv_ids)}] {label}...", nl=False)
-            try:
-                if _embed_one(conv_id):
-                    embedded_count += 1
-                    click.echo(" ok")
-                else:
-                    click.echo(" (no messages)")
-            except Exception as exc:
-                error_count += 1
-                click.echo(f" error: {exc}")
+                    click.echo(f" error: {exc}")
+    finally:
+        loop.close()
 
     click.echo(
         f"\n✓ Embedded {embedded_count} conversations"

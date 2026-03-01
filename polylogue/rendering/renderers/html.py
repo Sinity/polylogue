@@ -270,24 +270,27 @@ class HTMLRenderer:
                 """,
                 (conversation_id,),
             )
-            rows = await cursor.fetchall()
-
-            for row in rows:
-                text = row["text"] or ""
-                if not text:
-                    continue
-                role = row["role"] or "message"
-                html_content = self.md_renderer.render(text)
-                raw_messages.append({
-                    "id": row["message_id"],
-                    "role": role,
-                    "role_class": _role_css_class(role),
-                    "text": text,
-                    "html_content": html_content,
-                    "timestamp": row["timestamp"],
-                    "parent_message_id": row["parent_message_id"],
-                    "branch_index": row["branch_index"] or 0,
-                })
+            while True:
+                rows = await cursor.fetchmany(200)
+                if not rows:
+                    break
+                for row in rows:
+                    text = row["text"] or ""
+                    if not text:
+                        continue
+                    role = row["role"] or "message"
+                    html_content = self.md_renderer.render(text)
+                    raw_messages.append({
+                        "id": row["message_id"],
+                        "role": role,
+                        "role_class": _role_css_class(role),
+                        # Keep only a short preview for TOC, not full duplicate text.
+                        "text": text[:120],
+                        "html_content": html_content,
+                        "timestamp": row["timestamp"],
+                        "parent_message_id": row["parent_message_id"],
+                        "branch_index": row["branch_index"] or 0,
+                    })
 
         return _attach_branches(raw_messages)
 
@@ -377,7 +380,7 @@ def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
             "id": msg.id,
             "role": role,
             "role_class": _role_css_class(role),
-            "text": msg.text,
+            "text": msg.text[:120],
             "html_content": html_content,
             "timestamp": str(msg.timestamp) if msg.timestamp else None,
             "parent_message_id": msg.parent_id,

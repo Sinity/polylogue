@@ -62,32 +62,25 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
     def _do(db_conn: sqlite3.Connection) -> None:
         ensure_index(db_conn)
 
-        all_ids = list(conversation_ids)
-        placeholders = ", ".join("?" for _ in all_ids)
+        # Keep placeholder counts under SQLite parameter limits and avoid
+        # materializing all message rows in Python.
+        for id_chunk in _chunked(conversation_ids, size=500):
+            chunk_ids = list(id_chunk)
+            placeholders = ", ".join("?" for _ in chunk_ids)
+            params = tuple(chunk_ids)
 
-        # SQLite FTS Update - single delete then batch insert
-        db_conn.execute(
-            f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
-            tuple(all_ids),
-        )
-
-        # Fetch all messages to index in one query
-        message_rows = db_conn.execute(
-            f"""
-            SELECT message_id, conversation_id, text
-            FROM messages
-            WHERE text IS NOT NULL AND conversation_id IN ({placeholders})
-            """,
-            tuple(all_ids),
-        ).fetchall()
-
-        # Build batch for executemany
-        fts_batch = [(row["message_id"], row["conversation_id"], row["text"]) for row in message_rows]
-
-        if fts_batch:
-            db_conn.executemany(
-                "INSERT INTO messages_fts (message_id, conversation_id, content) VALUES (?, ?, ?)",
-                fts_batch,
+            db_conn.execute(
+                f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
+                params,
+            )
+            db_conn.execute(
+                f"""
+                INSERT INTO messages_fts (message_id, conversation_id, content)
+                SELECT message_id, conversation_id, text
+                FROM messages
+                WHERE text IS NOT NULL AND conversation_id IN ({placeholders})
+                """,
+                params,
             )
 
         db_conn.commit()

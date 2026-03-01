@@ -10,6 +10,8 @@ Data flow:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import sqlite3
 from datetime import datetime, timezone
@@ -85,11 +87,9 @@ class AcquisitionService:
             logger.debug("Acquiring from source", source=source.name)
 
             try:
-                # Run the sync iterator in a thread pool to avoid blocking
-                for raw_data, _parsed in await asyncio.to_thread(
-                    self._iter_source_conversations,
-                    source,
-                ):
+                # Stream source items from a dedicated worker thread to avoid
+                # event-loop blocking and full-list materialization.
+                async for raw_data, _parsed in self._iter_source_conversations_stream(source):
                     if raw_data is None:
                         # This shouldn't happen with capture_raw=True, but handle it
                         logger.warning("No raw data captured for conversation")
@@ -132,22 +132,39 @@ class AcquisitionService:
 
         return result
 
-    @staticmethod
-    def _iter_source_conversations(source: Source) -> list[tuple[RawConversationData | None, Any]]:
-        """Wrapper for sync source iteration to run in thread pool.
+    async def _iter_source_conversations_stream(
+        self,
+        source: Source,
+    ) -> AsyncIterator[tuple[RawConversationData | None, Any]]:
+        """Stream source conversations without materializing the full iterator.
 
         Args:
             source: Source to iterate
 
-        Returns:
-            List of (raw_data, parsed) tuples
+        Yields:
+            Tuples of (raw_data, parsed)
         """
-        return list(
-            iter_source_conversations_with_raw(
-                source,
-                capture_raw=True,
-            )
-        )
+        iterator = iter_source_conversations_with_raw(source, capture_raw=True)
+        sentinel = object()
+        batch_size = 32
+
+        def _next_batch() -> list[tuple[RawConversationData | None, Any]]:
+            batch: list[tuple[RawConversationData | None, Any]] = []
+            for _ in range(batch_size):
+                item = next(iterator, sentinel)
+                if item is sentinel:
+                    break
+                batch.append(item)
+            return batch
+
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            while True:
+                batch = await loop.run_in_executor(executor, _next_batch)
+                if not batch:
+                    break
+                for item in batch:
+                    yield item
 
     async def _store_raw(self, raw_data: RawConversationData, source_name: str) -> str | None:
         """Store raw conversation data.
