@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.pipeline.services.rendering import RenderResult, RenderService
+from polylogue.pipeline.services.rendering import RenderService
 
 
 class TestRenderProgressCallback:
@@ -152,8 +152,24 @@ class TestIndexProgressCallback:
 class TestRunnerProgressPropagation:
     """Verify run_sources propagates progress_callback to render/index stages."""
 
-    def test_render_stage_accepts_callback(self, workspace_env):
-        """When stage='render', progress_callback is accepted without error."""
+    @pytest.mark.parametrize(
+        "stage,with_callback,expected_indexed,expected_rendered,expected_first_desc",
+        [
+            ("render", True, False, 0, None),
+            ("render", False, False, 0, None),
+            ("index", True, True, 0, "Indexing"),
+        ],
+    )
+    def test_stage_callback_matrix(
+        self,
+        workspace_env,
+        stage,
+        with_callback,
+        expected_indexed,
+        expected_rendered,
+        expected_first_desc,
+    ):
+        """run_sources accepts optional callback and emits stage-appropriate progress."""
         import asyncio
 
         from polylogue.config import Config
@@ -172,84 +188,34 @@ class TestRunnerProgressPropagation:
         def track_callback(amount, desc=None):
             callback_calls.append({"amount": amount, "desc": desc})
 
-        with patch(
-            "polylogue.pipeline.runner._all_conversation_ids",
-            new_callable=AsyncMock,
-        ) as mock_ids:
-            mock_ids.return_value = []
+        callback = track_callback if with_callback else None
 
+        if stage == "render":
+            with patch(
+                "polylogue.pipeline.runner._all_conversation_ids",
+                new_callable=AsyncMock,
+            ) as mock_ids:
+                mock_ids.return_value = []
+                result = asyncio.run(
+                    run_sources(
+                        config=config,
+                        stage=stage,
+                        progress_callback=callback,
+                    )
+                )
+        else:
             result = asyncio.run(
                 run_sources(
                     config=config,
-                    stage="render",
-                    progress_callback=track_callback,
+                    stage=stage,
+                    progress_callback=callback,
                 )
             )
 
-            # Should complete without error when callback is provided
-            assert result is not None
-
-    def test_callback_none_when_not_provided(self, workspace_env):
-        """When progress_callback is None, render still succeeds."""
-        import asyncio
-
-        from polylogue.config import Config
-        from polylogue.pipeline.runner import run_sources
-
-        archive_root = workspace_env["archive_root"]
-        archive_root.mkdir(parents=True, exist_ok=True)
-        config = Config(
-            sources=[],
-            archive_root=archive_root,
-            render_root=archive_root / "render",
-        )
-
-        with patch(
-            "polylogue.pipeline.runner._all_conversation_ids",
-            new_callable=AsyncMock,
-        ) as mock_ids:
-            mock_ids.return_value = []
-
-            # Call without progress_callback (should default to None)
-            result = asyncio.run(
-                run_sources(
-                    config=config,
-                    stage="render",
-                )
-            )
-
-            # Should succeed without error
-            assert result is not None
-
-    def test_index_stage_accepts_callback(self, workspace_env):
-        """When stage='index', progress_callback is accepted without error."""
-        import asyncio
-
-        from polylogue.config import Config
-        from polylogue.pipeline.runner import run_sources
-
-        archive_root = workspace_env["archive_root"]
-        archive_root.mkdir(parents=True, exist_ok=True)
-        config = Config(
-            sources=[],
-            archive_root=archive_root,
-            render_root=archive_root / "render",
-        )
-
-        callback_calls = []
-
-        def track_callback(amount, desc=None):
-            callback_calls.append({"amount": amount, "desc": desc})
-
-        result = asyncio.run(
-            run_sources(
-                config=config,
-                stage="index",
-                progress_callback=track_callback,
-            )
-        )
-
-        # Should complete without error when callback is provided
-        assert result is not None
-        # Index stage should have called callback at least once (initial "Indexing" call)
-        assert len(callback_calls) > 0
+        assert result.indexed is expected_indexed
+        assert result.counts.get("rendered", 0) == expected_rendered
+        if expected_first_desc is None:
+            assert callback_calls == []
+        else:
+            assert callback_calls
+            assert callback_calls[0]["desc"] == expected_first_desc

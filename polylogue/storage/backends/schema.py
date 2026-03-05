@@ -8,7 +8,7 @@ from polylogue.lib.log import get_logger
 from polylogue.storage.store import _make_ref_id
 
 logger = get_logger(__name__)
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 16
 
 
 _VEC0_DDL = """
@@ -31,7 +31,9 @@ SCHEMA_DDL = """
             source_index INTEGER,
             raw_content BLOB NOT NULL,
             acquired_at TEXT NOT NULL,
-            file_mtime TEXT
+            file_mtime TEXT,
+            parsed_at TEXT,
+            parse_error TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
@@ -40,6 +42,12 @@ SCHEMA_DDL = """
         CREATE INDEX IF NOT EXISTS idx_raw_conv_source
         ON raw_conversations(source_path);
 
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime
+        ON raw_conversations(source_path, file_mtime);
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_unparsed
+        ON raw_conversations(raw_id) WHERE parsed_at IS NULL;
+
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
             provider_name TEXT NOT NULL,
@@ -47,13 +55,14 @@ SCHEMA_DDL = """
             title TEXT,
             created_at TEXT,
             updated_at TEXT,
+            sort_key REAL,
             content_hash TEXT NOT NULL,
             provider_meta TEXT,
             metadata TEXT DEFAULT '{}',
             source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
             version INTEGER NOT NULL,
             parent_conversation_id TEXT REFERENCES conversations(conversation_id),
-            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork') OR branch_type IS NULL),
+            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork', 'subagent') OR branch_type IS NULL),
             raw_id TEXT REFERENCES raw_conversations(raw_id)
         );
 
@@ -66,6 +75,12 @@ SCHEMA_DDL = """
         CREATE INDEX IF NOT EXISTS idx_conversations_parent
         ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL;
 
+        CREATE INDEX IF NOT EXISTS idx_conversations_content_hash
+        ON conversations(content_hash);
+
+        CREATE INDEX IF NOT EXISTS idx_conversations_sortkey
+        ON conversations(sort_key);
+
         CREATE TABLE IF NOT EXISTS messages (
             message_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL,
@@ -73,6 +88,7 @@ SCHEMA_DDL = """
             role TEXT,
             text TEXT,
             timestamp TEXT,
+            sort_key REAL,
             content_hash TEXT NOT NULL,
             provider_meta TEXT,
             version INTEGER NOT NULL,
@@ -84,6 +100,9 @@ SCHEMA_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_messages_conversation
         ON messages(conversation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_sortkey
+        ON messages(conversation_id, sort_key);
 
         CREATE INDEX IF NOT EXISTS idx_messages_parent
         ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL;
@@ -544,6 +563,206 @@ def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_v11_to_v12(conn: sqlite3.Connection) -> None:
+    """Migrate from v11 to v12: add parse tracking columns to raw_conversations.
+
+    Adds:
+    - parsed_at TEXT: timestamp when the record was successfully parsed
+    - parse_error TEXT: error message from last failed parse attempt
+    - idx_raw_conv_source_mtime: composite index for mtime-based acquisition skip
+
+    Backfill: marks existing raw records that have linked conversations as already
+    parsed, preventing the first post-migration run from re-parsing everything.
+    """
+    conn.execute("ALTER TABLE raw_conversations ADD COLUMN parsed_at TEXT")
+    conn.execute("ALTER TABLE raw_conversations ADD COLUMN parse_error TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime "
+        "ON raw_conversations(source_path, file_mtime)"
+    )
+
+    # Backfill: mark records that already have parsed conversations
+    conn.execute("""
+        UPDATE raw_conversations SET parsed_at = acquired_at
+        WHERE raw_id IN (
+            SELECT DISTINCT raw_id FROM conversations WHERE raw_id IS NOT NULL
+        )
+    """)
+
+
+def _migrate_v12_to_v13(conn: sqlite3.Connection) -> None:
+    """Migrate from v12 to v13: add performance indices.
+
+    Adds three indices identified via query pattern analysis:
+    - idx_raw_conv_unparsed: partial index on unparsed raw records
+      (shrinks as records get parsed — near-empty at steady state)
+    - idx_conversations_content_hash: speeds up dedup hash lookups
+    - idx_messages_conversation_ts: composite covering ORDER BY timestamp
+      (superseded by sort_key index in v14, but created here for intermediate state)
+    """
+    # Partial index: only indexes unparsed rows, so it stays small after
+    # initial catch-up and shrinks toward zero at steady state.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_conv_unparsed "
+        "ON raw_conversations(raw_id) WHERE parsed_at IS NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_content_hash "
+        "ON conversations(content_hash)"
+    )
+    # Composite index: superseded by idx_messages_conversation_sortkey in v14,
+    # but still created here for databases running intermediate migrations.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_conversation_ts "
+        "ON messages(conversation_id, timestamp)"
+    )
+
+
+def _migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
+    """Migrate from v13 to v14: add pre-computed sort_key to messages.
+
+    Adds a `sort_key REAL` column for O(1) timestamp sorting, replacing the
+    per-row CASE/GLOB/strftime computation in ORDER BY clauses. The column
+    stores Unix epoch seconds, computed from either numeric or ISO-8601
+    timestamp formats.
+
+    Backfills all existing rows and creates a covering index for the most
+    common query pattern: messages for a conversation ordered by time.
+    """
+    conn.execute("ALTER TABLE messages ADD COLUMN sort_key REAL")
+
+    # Backfill: convert existing timestamps to numeric sort keys using the
+    # same CASE/GLOB logic the queries used to do at runtime.
+    conn.execute("""
+        UPDATE messages SET sort_key = CASE
+            WHEN timestamp IS NULL THEN NULL
+            WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS REAL)
+            ELSE CAST(timestamp AS REAL)
+        END
+    """)
+
+    # Replace the old (conversation_id, timestamp) index with a sort_key one.
+    # The old index can't be used for ORDER BY because queries used computed
+    # expressions, not the raw timestamp column.
+    conn.execute("DROP INDEX IF EXISTS idx_messages_conversation_ts")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_conversation_sortkey "
+        "ON messages(conversation_id, sort_key)"
+    )
+
+
+def _migrate_v14_to_v15(conn: sqlite3.Connection) -> None:
+    """Migrate from v14 to v15: add pre-computed sort_key to conversations.
+
+    Mirrors the messages.sort_key column (v14) for the conversations table,
+    eliminating GLOB-based bifurcated timestamp comparisons in WHERE and
+    ORDER BY clauses for conversation listing/filtering.
+
+    Backfills from updated_at using the same numeric/ISO-8601 detection.
+    """
+    conn.execute("ALTER TABLE conversations ADD COLUMN sort_key REAL")
+
+    # Backfill: same CASE/GLOB logic as messages sort_key (v14)
+    conn.execute("""
+        UPDATE conversations SET sort_key = CASE
+            WHEN updated_at IS NULL THEN NULL
+            WHEN updated_at GLOB '*[^0-9.]*' THEN CAST(strftime('%s', updated_at) AS REAL)
+            ELSE CAST(updated_at AS REAL)
+        END
+    """)
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_sortkey "
+        "ON conversations(sort_key)"
+    )
+
+
+def _migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
+    """Migrate from v15 to v16: add 'subagent' to branch_type CHECK constraint.
+
+    SQLite has no ALTER COLUMN — must recreate the conversations table with
+    the updated CHECK constraint.  FK enforcement is already disabled by the
+    migration runner, so child tables (messages, attachment_refs,
+    embedding_status) remain intact throughout.
+    """
+    # 1. Drop indexes that reference conversations (will be recreated)
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_provider")
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_source_name")
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_parent")
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_content_hash")
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_sortkey")
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_raw_id")
+
+    # 2. Rename existing table
+    conn.execute("ALTER TABLE conversations RENAME TO conversations_old")
+
+    # 3. Create new table with updated CHECK constraint
+    conn.execute("""
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            provider_conversation_id TEXT NOT NULL,
+            title TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            sort_key REAL,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            metadata TEXT DEFAULT '{}',
+            source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
+            version INTEGER NOT NULL,
+            parent_conversation_id TEXT REFERENCES conversations(conversation_id),
+            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork', 'subagent') OR branch_type IS NULL),
+            raw_id TEXT REFERENCES raw_conversations(raw_id)
+        )
+    """)
+
+    # 4. Copy data (exclude generated column source_name)
+    conn.execute("""
+        INSERT INTO conversations (
+            conversation_id, provider_name, provider_conversation_id,
+            title, created_at, updated_at, sort_key, content_hash,
+            provider_meta, metadata, version,
+            parent_conversation_id, branch_type, raw_id
+        )
+        SELECT
+            conversation_id, provider_name, provider_conversation_id,
+            title, created_at, updated_at, sort_key, content_hash,
+            provider_meta, metadata, version,
+            parent_conversation_id, branch_type, raw_id
+        FROM conversations_old
+    """)
+
+    # 5. Drop old table
+    conn.execute("DROP TABLE conversations_old")
+
+    # 6. Recreate all indexes
+    conn.execute(
+        "CREATE INDEX idx_conversations_provider "
+        "ON conversations(provider_name, provider_conversation_id)"
+    )
+    conn.execute(
+        "CREATE INDEX idx_conversations_source_name "
+        "ON conversations(source_name) WHERE source_name IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX idx_conversations_parent "
+        "ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX idx_conversations_content_hash "
+        "ON conversations(content_hash)"
+    )
+    conn.execute(
+        "CREATE INDEX idx_conversations_sortkey "
+        "ON conversations(sort_key)"
+    )
+    conn.execute(
+        "CREATE INDEX idx_conversations_raw_id "
+        "ON conversations(raw_id) WHERE raw_id IS NOT NULL"
+    )
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
@@ -556,6 +775,11 @@ _MIGRATIONS = {
     8: _migrate_v8_to_v9,
     9: _migrate_v9_to_v10,
     10: _migrate_v10_to_v11,
+    11: _migrate_v11_to_v12,
+    12: _migrate_v12_to_v13,
+    13: _migrate_v13_to_v14,
+    14: _migrate_v14_to_v15,
+    15: _migrate_v15_to_v16,
 }
 
 

@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+
+import orjson
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
-from polylogue.pipeline.prepare import prepare_records
+from polylogue.pipeline.ids import conversation_id as make_conversation_id
+from polylogue.pipeline.prepare import PrepareCache, prepare_records
 from polylogue.sources.source import _parse_json_payload
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import RawConversationRecord
@@ -27,8 +31,6 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
-
-_ProcessResult: TypeAlias = tuple[str, dict[str, int], bool]
 
 
 class ParseResult:
@@ -141,6 +143,9 @@ class ParsingService:
         if backend is None:
             raise RuntimeError("Repository backend is not initialized")
 
+        # Stage 0: Sync Drive sources to local cache (if any)
+        await self._sync_drive_sources(sources, progress_callback=progress_callback)
+
         # Stage 1: ACQUIRE - store raw bytes (async)
         acquire_service = AcquisitionService(backend=backend)
         acquire_result = await acquire_service.acquire_sources(
@@ -148,28 +153,29 @@ class ParsingService:
             progress_callback=progress_callback,
         )
 
-        # Find orphaned raw records (raw data exists but conversation was deleted/missing)
+        # Find unparsed raw records (never successfully parsed or had errors)
+        unparsed_ids: list[str] = []
         async with backend._get_connection() as conn:
-            cursor = await conn.execute("""
-                SELECT r.raw_id
-                FROM raw_conversations r
-                LEFT JOIN conversations c ON r.raw_id = c.raw_id
-                WHERE c.conversation_id IS NULL
-            """)
-            orphaned_rows = await cursor.fetchall()
-        orphaned_ids = [row["raw_id"] for row in orphaned_rows]
+            cursor = await conn.execute(
+                "SELECT raw_id FROM raw_conversations WHERE parsed_at IS NULL"
+            )
+            while True:
+                rows = await cursor.fetchmany(500)
+                if not rows:
+                    break
+                unparsed_ids.extend(row["raw_id"] for row in rows)
 
-        # Combine newly acquired + orphaned raw IDs
+        # Combine newly acquired + unparsed raw IDs
         all_raw_ids = list(acquire_result.raw_ids)
-        if orphaned_ids:
+        if unparsed_ids:
             seen = set(all_raw_ids)
-            for oid in orphaned_ids:
-                if oid not in seen:
-                    all_raw_ids.append(oid)
-                    seen.add(oid)
+            for uid in unparsed_ids:
+                if uid not in seen:
+                    all_raw_ids.append(uid)
+                    seen.add(uid)
             logger.info(
-                "Found orphaned raw records to re-parse",
-                orphaned=len(orphaned_ids),
+                "Found unparsed raw records",
+                unparsed=len(unparsed_ids),
                 newly_acquired=len(acquire_result.raw_ids),
             )
 
@@ -225,16 +231,23 @@ class ParsingService:
 
         # Collect raw_ids to process (just IDs, not full records — memory-safe)
         if raw_ids is not None:
-            ids_to_process = list(raw_ids)
+            total = len(raw_ids)
+            if progress_callback is not None:
+                progress_callback(0, desc=f"Parsing ({total:,} raw)")
+            for batch_start in range(0, total, self.RAW_BATCH_SIZE):
+                batch_ids = raw_ids[batch_start : batch_start + self.RAW_BATCH_SIZE]
+                await self._process_raw_batch(backend, batch_ids, result, progress_callback, total=total)
         else:
-            ids_to_process = [
-                r.raw_id async for r in backend.iter_raw_conversations(provider=provider)
-            ]
-
-        # Process in batches to limit memory
-        for batch_start in range(0, len(ids_to_process), self.RAW_BATCH_SIZE):
-            batch_ids = ids_to_process[batch_start : batch_start + self.RAW_BATCH_SIZE]
-            await self._process_raw_batch(backend, batch_ids, result, progress_callback)
+            if progress_callback is not None:
+                progress_callback(0, desc="Parsing")
+            batch_ids: list[str] = []
+            async for raw_record in backend.iter_raw_conversations(provider=provider):
+                batch_ids.append(raw_record.raw_id)
+                if len(batch_ids) >= self.RAW_BATCH_SIZE:
+                    await self._process_raw_batch(backend, batch_ids, result, progress_callback)
+                    batch_ids = []
+            if batch_ids:
+                await self._process_raw_batch(backend, batch_ids, result, progress_callback)
 
         if result.processed_ids:
             invalidate_search_cache()
@@ -252,22 +265,31 @@ class ParsingService:
         batch_ids: list[str],
         result: ParseResult,
         progress_callback: Any | None,
+        total: int | None = None,
     ) -> None:
-        """Process a batch of raw conversation IDs."""
-        # Load only this batch into memory
-        raw_records = [await backend.get_raw_conversation(raw_id) for raw_id in batch_ids]
-        raw_records = [r for r in raw_records if r is not None]
+        """Process a batch of raw conversation IDs.
 
-        # Parse raw records into conversation objects
-        items_to_process: list[tuple[ParsedConversation, str, str]] = []
+        Uses PrepareCache to replace N per-conversation DB queries with 2 bulk
+        queries for the entire batch. Flow:
+        1. Batch-load raw records from DB
+        2. Parse all into conversations (collect, don't queue yet)
+        3. Pre-compute candidate CIDs → bulk-load PrepareCache
+        4. Queue work items to async workers with shared cache
+        """
+        # Batch-load raw records in one query instead of N sequential round-trips
+        raw_records = await backend.get_raw_conversations_batch(batch_ids)
+
+        # Phase 1: Parse all raw records, collecting work items
+        work_items: list[tuple[ParsedConversation, str, str]] = []  # (convo, source_name, raw_id)
+        failed_raw_ids: dict[str, str] = {}  # raw_id -> error message
 
         for raw_record in raw_records:
             try:
                 parsed_convos = await self._parse_raw_record(raw_record)
                 source_name = raw_record.source_name or raw_record.source_path
                 for convo in parsed_convos:
-                    items_to_process.append((convo, source_name, raw_record.raw_id))
-            except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                    work_items.append((convo, source_name, raw_record.raw_id))
+            except (json.JSONDecodeError, orjson.JSONDecodeError, ValueError, TypeError) as exc:
                 logger.error(
                     "Failed to parse raw conversation",
                     raw_id=raw_record.raw_id,
@@ -275,43 +297,89 @@ class ParsingService:
                     error=str(exc),
                 )
                 result.parse_failures += 1
+                failed_raw_ids[raw_record.raw_id] = str(exc)[:500]
 
-        # Free raw records from memory before processing
+        # Free raw records — parsed conversations are much smaller
         del raw_records
 
-        # Process parsed conversations with asyncio concurrency control
-        semaphore = asyncio.Semaphore(16)  # Limit concurrent operations
+        if not work_items:
+            # All records failed to parse — mark failures and return
+            for rid, error in failed_raw_ids.items():
+                await backend.mark_raw_parsed(rid, error=error)
+            return
 
-        async def _process_one(
-            convo_item: ParsedConversation,
-            source_name_item: str,
-            raw_id: str,
-        ) -> _ProcessResult:
-            async with semaphore:
-                convo_id, counts, changed = await prepare_records(
-                    convo_item,
-                    source_name_item,
-                    archive_root=self.archive_root,
-                    backend=backend,
-                    repository=self.repository,
-                    raw_id=raw_id,
-                )
-                return (convo_id, counts, changed)
+        # Phase 2: Pre-compute candidate CIDs and bulk-load cache
+        candidate_cids: set[str] = set()
+        for convo, _, _ in work_items:
+            cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
+            candidate_cids.add(cid)
+            # Also include parent CIDs for FK resolution
+            if convo.parent_conversation_provider_id:
+                parent_cid = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
+                candidate_cids.add(parent_cid)
 
-        # Process all items concurrently with semaphore limiting concurrency
-        tasks = [_process_one(convo, source_name, raw_id) for convo, source_name, raw_id in items_to_process]
+        cache = await PrepareCache.load(backend, candidate_cids)
 
-        for coro in asyncio.as_completed(tasks):
-            try:
-                convo_id, result_counts, content_changed = await coro
-                await result.merge_result(convo_id, result_counts, content_changed)
-                if progress_callback:
-                    progress_callback(1, desc="Parsing")
-            except Exception as exc:
-                logger.error("Error processing conversation: %s", exc)
-                result.parse_failures += 1
-                if progress_callback:
-                    progress_callback(1, desc="Parsing")
+        # Phase 3: Queue work to async workers with shared cache
+        worker_count = min(os.cpu_count() or 4, 16)
+        queue: asyncio.Queue[tuple[ParsedConversation, str, str] | None] = asyncio.Queue(
+            maxsize=worker_count * 2
+        )
+        succeeded_raw_ids: set[str] = set()
+        tracking_lock = asyncio.Lock()
+
+        async def _worker() -> None:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    queue.task_done()
+                    return
+                convo_item, source_name_item, raw_id = item
+                try:
+                    convo_id, result_counts, content_changed = await prepare_records(
+                        convo_item,
+                        source_name_item,
+                        archive_root=self.archive_root,
+                        backend=backend,
+                        repository=self.repository,
+                        raw_id=raw_id,
+                        cache=cache,
+                    )
+                    await result.merge_result(convo_id, result_counts, content_changed)
+                    async with tracking_lock:
+                        succeeded_raw_ids.add(raw_id)
+                except Exception as exc:
+                    logger.error("Error processing conversation: %s", exc)
+                    result.parse_failures += 1
+                    async with tracking_lock:
+                        failed_raw_ids[raw_id] = str(exc)[:500]
+                finally:
+                    if progress_callback:
+                        progress_callback(1)
+                    queue.task_done()
+
+        workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
+
+        for item in work_items:
+            await queue.put(item)
+        del work_items  # Free parsed conversations as they're consumed
+
+        await queue.join()
+        for _ in range(worker_count):
+            await queue.put(None)
+        await asyncio.gather(*workers)
+
+        # Mark parse status for all processed raw records.
+        # Three cases:
+        # - Only succeeded: mark as parsed (clears any previous error)
+        # - Only failed: mark with error (will be retried next run)
+        # - Both (bundle partially failed): mark with error so operators
+        #   can see what's wrong; record stays unparsed for retry
+        for rid in succeeded_raw_ids:
+            if rid not in failed_raw_ids:
+                await backend.mark_raw_parsed(rid)
+        for rid, error in failed_raw_ids.items():
+            await backend.mark_raw_parsed(rid, error=error)
 
     async def _parse_raw_record(self, raw_record: RawConversationRecord) -> list[ParsedConversation]:
         """Parse a raw conversation record into ParsedConversation(s).
@@ -326,21 +394,23 @@ class ParsingService:
             List of parsed conversations (usually 1, but could be more for bundles)
         """
         content = raw_record.raw_content
-        text = content.decode("utf-8") if isinstance(content, bytes) else str(content)
+        # orjson accepts both bytes and str, avoiding decode overhead for bytes
+        raw = content if isinstance(content, (bytes, str)) else str(content)
 
         # Try single JSON first (fast path for chatgpt, claude-ai)
         try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
+            payload = orjson.loads(raw)
+        except (orjson.JSONDecodeError, ValueError):
             # Fall back to JSONL parsing (claude-code, codex, gemini)
+            text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
             lines = []
             for line in text.split("\n"):
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    lines.append(json.loads(line))
-                except json.JSONDecodeError:
+                    lines.append(orjson.loads(line))
+                except (orjson.JSONDecodeError, ValueError):
                     continue
             if not lines:
                 raise
@@ -458,6 +528,58 @@ class ParsingService:
                     provider,
                     exc,
                 )
+
+
+    async def _sync_drive_sources(
+        self,
+        sources: list[Source],
+        *,
+        progress_callback: Any | None = None,
+    ) -> None:
+        """Sync Drive sources to their local cache directories.
+
+        Downloads new/changed files from Google Drive to the source's local path,
+        so the normal file-based acquisition pipeline can pick them up.
+
+        Runs synchronous Google API calls in a thread pool to avoid blocking.
+        """
+        drive_sources = [s for s in sources if s.is_drive and s.path]
+        if not drive_sources:
+            return
+
+        for source in drive_sources:
+            if progress_callback:
+                progress_callback(0, desc=f"Syncing Drive [{source.name}]")
+
+            try:
+                result = await asyncio.to_thread(
+                    self._sync_one_drive_source, source,
+                )
+                if result:
+                    logger.info(
+                        "Drive sync complete",
+                        source=source.name,
+                        downloaded=len(result.downloaded_files),
+                        failed=len(result.failed_files),
+                        total=result.total_files,
+                    )
+            except Exception as exc:
+                # Drive errors are non-fatal — log and continue with local sources
+                logger.warning(
+                    "Skipping Drive source %s: %s", source.name, exc,
+                )
+
+    def _sync_one_drive_source(self, source: Source) -> Any:
+        """Sync a single Drive source (runs in thread pool)."""
+        from polylogue.sources.drive import download_drive_files
+        from polylogue.sources.drive_client import DriveClient
+
+        source.path.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
+
+        drive_config = self.config.drive_config if hasattr(self.config, "drive_config") else None
+        client = DriveClient(config=drive_config)
+        folder_id = client.resolve_folder_id(source.folder)  # type: ignore[arg-type]
+        return download_drive_files(client, folder_id, source.path)  # type: ignore[arg-type]
 
 
 __all__ = ["ParsingService", "ParseResult"]

@@ -98,17 +98,19 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             title,
             created_at,
             updated_at,
+            sort_key,
             content_hash,
             provider_meta,
             version,
             parent_conversation_id,
             branch_type,
             raw_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
             title = excluded.title,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
+            sort_key = excluded.sort_key,
             content_hash = excluded.content_hash,
             provider_meta = excluded.provider_meta,
             parent_conversation_id = excluded.parent_conversation_id,
@@ -131,6 +133,7 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             record.title,
             record.created_at,
             record.updated_at,
+            record.sort_key,
             record.content_hash,
             _json_or_none(record.provider_meta),
             record.version,
@@ -153,16 +156,18 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             role,
             text,
             timestamp,
+            sort_key,
             content_hash,
             provider_meta,
             version,
             parent_message_id,
             branch_index
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(message_id) DO UPDATE SET
             role = excluded.role,
             text = excluded.text,
             timestamp = excluded.timestamp,
+            sort_key = excluded.sort_key,
             content_hash = excluded.content_hash,
             provider_meta = excluded.provider_meta,
             parent_message_id = excluded.parent_message_id,
@@ -183,6 +188,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             record.role,
             record.text,
             record.timestamp,
+            record.sort_key,
             record.content_hash,
             _json_or_none(record.provider_meta),
             record.version,
@@ -370,6 +376,8 @@ class ConversationBuilder:
         self.db_path = db_path
         now = datetime.now(timezone.utc).isoformat()
 
+        from polylogue.pipeline.prepare import _timestamp_sort_key
+
         self.conv = ConversationRecord(
             conversation_id=conversation_id,
             provider_name="test",
@@ -377,6 +385,7 @@ class ConversationBuilder:
             title="Test Conversation",
             created_at=now,
             updated_at=now,
+            sort_key=_timestamp_sort_key(now),
             content_hash=uuid4().hex,
         )
         self.messages: list[MessageRecord] = []
@@ -395,7 +404,12 @@ class ConversationBuilder:
         return self
 
     def updated_at(self, updated_at: str) -> ConversationBuilder:
-        self.conv = self.conv.model_copy(update={"updated_at": updated_at})
+        from polylogue.pipeline.prepare import _timestamp_sort_key
+
+        self.conv = self.conv.model_copy(update={
+            "updated_at": updated_at,
+            "sort_key": _timestamp_sort_key(updated_at),
+        })
         return self
 
     def metadata(self, metadata: dict[str, Any] | None) -> ConversationBuilder:
@@ -434,12 +448,15 @@ class ConversationBuilder:
         # Handle timestamp: ... = auto-generate, None = keep None, str = use value
         ts = datetime.now(timezone.utc).isoformat() if timestamp is ... else timestamp
 
+        from polylogue.pipeline.prepare import _timestamp_sort_key
+
         msg = MessageRecord(
             message_id=msg_id,
             conversation_id=self.conv.conversation_id,
             role=role,
             text=text,
             timestamp=ts,
+            sort_key=_timestamp_sort_key(ts) if ts is not None else None,
             content_hash=uuid4().hex[:16],
             **kwargs,
         )
@@ -549,12 +566,16 @@ def make_message(
         msg = make_message("m1", role="assistant", text="Reply")
         msg = make_message("m1", content_hash="explicit-hash")  # Override hash
     """
+    from polylogue.pipeline.prepare import _timestamp_sort_key
+
+    ts = timestamp or datetime.now(timezone.utc).isoformat()
     return MessageRecord(
         message_id=message_id,
         conversation_id=conversation_id,
         role=role,
         text=text,
-        timestamp=timestamp or datetime.now(timezone.utc).isoformat(),
+        timestamp=ts,
+        sort_key=kwargs.pop("sort_key", _timestamp_sort_key(ts)),
         content_hash=kwargs.pop("content_hash", uuid4().hex[:16]),
         **kwargs,
     )

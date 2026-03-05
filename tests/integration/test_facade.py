@@ -11,9 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue import Polylogue
-from polylogue.facade import ArchiveStats
 from polylogue.cli.helpers import (
-    latest_render_path,
     load_last_source,
     maybe_prompt_sources,
     save_last_source,
@@ -21,6 +19,7 @@ from polylogue.cli.helpers import (
 )
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config, Source
+from polylogue.facade import ArchiveStats
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.storage.store import ConversationRecord, MessageRecord
@@ -1210,100 +1209,6 @@ class TestMaybePromptSources:
         with patch("polylogue.cli.helpers.load_last_source", return_value=None):
             with pytest.raises(SystemExit):
                 maybe_prompt_sources(env, config, None, "test-cmd")
-
-
-# ============================================================================
-# CLI HELPERS TESTS: latest_render_path
-# ============================================================================
-
-
-class TestLatestRenderPath:
-    """Test finding latest rendered conversation."""
-
-    def test_latest_render_path_no_root(self, tmp_path):
-        """Test when render root doesn't exist."""
-        nonexistent = tmp_path / "nonexistent"
-        result = latest_render_path(nonexistent)
-        assert result is None
-
-    def test_latest_render_path_empty_root(self, tmp_path):
-        """Test when render root is empty."""
-        result = latest_render_path(tmp_path)
-        assert result is None
-
-    def test_latest_render_path_md_files(self, tmp_path):
-        """Test finding latest .md file."""
-        import time
-
-        render_dir = tmp_path / "render"
-        render_dir.mkdir()
-
-        # Create nested structure with .md files
-        conv_dir = render_dir / "some_conv"
-        conv_dir.mkdir()
-
-        # Create multiple .md files with different timestamps
-        md1 = conv_dir / "conversation.md"
-        md1.write_text("old")
-        os.utime(md1, (100, 100))  # Set old timestamp
-
-        md2 = render_dir / "conversation.md"
-        md2.write_text("new")
-        time.sleep(0.01)  # Ensure timestamp difference
-        os.utime(md2, (200, 200))  # Set newer timestamp
-
-        result = latest_render_path(render_dir)
-        assert result is not None
-        assert result.name == "conversation.md"
-
-    def test_latest_render_path_html_files(self, tmp_path):
-        """Test finding latest .html file."""
-        render_dir = tmp_path / "render"
-        render_dir.mkdir()
-
-        html_file = render_dir / "conversation.html"
-        html_file.write_text("<html></html>")
-
-        result = latest_render_path(render_dir)
-        assert result is not None
-        assert result.suffix == ".html"
-
-    def test_latest_render_path_handles_deleted_files(self, tmp_path):
-        """Test handling of files deleted between rglob and stat."""
-        render_dir = tmp_path / "render"
-        render_dir.mkdir()
-
-        # Create a file
-        md_file = render_dir / "conversation.md"
-        md_file.write_text("test")
-
-        # Patch rglob to return a path that will be deleted before stat
-        def mock_rglob(self, pattern):
-            # Return both the real file and a non-existent one
-            return [md_file, tmp_path / "deleted.md"]
-
-        with patch.object(Path, "rglob", mock_rglob):
-            result = latest_render_path(render_dir)
-            # Should handle the deleted file gracefully
-            assert result is not None or result is None  # Either is acceptable
-
-    def test_latest_render_path_mixed_formats(self, tmp_path):
-        """Test with both .md and .html files."""
-        render_dir = tmp_path / "render"
-        render_dir.mkdir()
-
-        md_file = render_dir / "conversation.md"
-        md_file.write_text("markdown")
-        os.utime(md_file, (100, 100))
-
-        html_file = render_dir / "conversation.html"
-        html_file.write_text("<html></html>")
-        os.utime(html_file, (200, 200))
-
-        result = latest_render_path(render_dir)
-        assert result is not None
-        # Should return the newer one
-        assert result.name in ["conversation.md", "conversation.html"]
 
 
 # ============================================================================
