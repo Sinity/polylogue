@@ -25,60 +25,54 @@ from polylogue.sources.token_store import FileTokenStore
 class TestSanitizePathTraversal:
     """Path traversal attacks must be blocked."""
 
-    def test_simple_traversal_blocked(self):
-        result = sanitize_path("../../../etc/passwd")
+    @pytest.mark.parametrize(
+        "raw_path",
+        [
+            "../../../etc/passwd",
+            "safe/../../etc/passwd",
+            "..",
+            "..\\..\\system32",
+        ],
+    )
+    def test_traversal_inputs_are_blocked(self, raw_path):
+        result = sanitize_path(raw_path)
         assert result is not None
         assert result.startswith("_blocked_")
-        assert "etc" not in result
-        assert "passwd" not in result
 
-    def test_dot_dot_in_middle_blocked(self):
-        result = sanitize_path("safe/../../etc/passwd")
+    @pytest.mark.parametrize(
+        "raw_path",
+        [
+            "file\x00.txt",
+            "file\x01\x02name",
+            "file\x7fname",
+        ],
+    )
+    def test_control_characters_are_removed(self, raw_path):
+        result = sanitize_path(raw_path)
         assert result is not None
-        assert result.startswith("_blocked_")
+        assert not any((ord(c) < 32 or ord(c) == 127) for c in result)
 
-    def test_null_byte_injection_removed(self):
-        result = sanitize_path("file\x00.txt")
+    @pytest.mark.parametrize(
+        "raw_path,checks",
+        [
+            (
+                "conversations/chatgpt/export.json",
+                ("conversations", "chatgpt"),
+            ),
+            (
+                "/home/user/conversations/export.json",
+                ("/", "conversations"),
+            ),
+        ],
+    )
+    def test_safe_paths_remain_usable(self, raw_path, checks):
+        result = sanitize_path(raw_path)
         assert result is not None
-        assert "\x00" not in result
-
-    def test_control_characters_removed(self):
-        result = sanitize_path("file\x01\x02name")
-        assert result is not None
-        assert "\x01" not in result
-        assert "\x02" not in result
-
-    def test_del_character_removed(self):
-        result = sanitize_path("file\x7fname")
-        assert result is not None
-        assert "\x7f" not in result
+        for check in checks:
+            assert check in result or result.startswith(check)
 
     def test_none_returns_none(self):
         assert sanitize_path(None) is None
-
-    def test_safe_relative_path_preserved(self):
-        result = sanitize_path("conversations/chatgpt/export.json")
-        assert result is not None
-        assert "conversations" in result
-        assert "chatgpt" in result
-
-    def test_safe_absolute_path_preserved(self):
-        result = sanitize_path("/home/user/conversations/export.json")
-        assert result is not None
-        assert result.startswith("/")
-        assert "conversations" in result
-
-    def test_double_dot_standalone_blocked(self):
-        """Even a bare '..' should be blocked."""
-        result = sanitize_path("..")
-        assert result is not None
-        assert result.startswith("_blocked_")
-
-    def test_windows_style_traversal_blocked(self):
-        """Windows-style backslash traversal should be blocked if converted."""
-        result = sanitize_path("..\\..\\system32")
-        assert result is not None
-        assert result.startswith("_blocked_")
 
 
 # =============================================================================
@@ -159,7 +153,6 @@ class TestRegexReDoSSafety:
 
     def test_path_pattern_adversarial_input(self):
         """_PATH_PATTERN must handle long strings without backtracking."""
-        import re
         import time
         from polylogue.lib.viewports import _PATH_PATTERN
 

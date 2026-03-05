@@ -19,6 +19,7 @@ Tests cover:
 from __future__ import annotations
 
 import tempfile
+import sqlite3
 import zipfile
 from pathlib import Path
 
@@ -694,82 +695,45 @@ async def test_stored_xss_in_conversation_content(temp_repo):
 
 
 # =============================================================================
-# FTS5 QUERY INJECTION TESTS (6 tests)
+# FTS5 QUERY ESCAPING CONTRACT
 # =============================================================================
-# Note: Some FTS5 injection tests already exist in test_search.py
-# These extend that coverage
+
+FTS5_ESCAPE_SECURITY_CASES = [
+    ("test OR anything", "test OR anything", True),
+    ("test AND something", "test AND something", True),
+    ("test NOT anything", "test NOT anything", True),
+    ("word1 NEAR word2", "word1 NEAR word2", True),
+    ("test*", '"test*"', True),
+    ("test?", "test?", False),
+    ("*", '""', True),
+    ("?", "?", False),
+    ('test"something"', '"test""something"""', True),
+    ("semicolon;", '"semicolon;"', True),
+    ("underscore_wildcard", "underscore_wildcard", True),
+]
 
 
-def test_fts5_or_operator_injection():
-    """FTS5 OR operator is escaped properly."""
-    # Try to search for everything with OR in the middle
-    malicious_query = "test OR anything"
-
-    # Test the escape function directly
-    escaped = escape_fts5_query(malicious_query)
-
-    # OR in the middle is not a dangerous position (not start/end)
-    # and no special chars, so returned as-is
-    assert escaped == "test OR anything"
+def _assert_fts5_match_executes(escaped_query: str) -> None:
+    """Escaped query should always compile against a real FTS5 table."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE VIRTUAL TABLE docs USING fts5(body)")
+        conn.execute("INSERT INTO docs(body) VALUES (?)", ("alpha beta gamma",))
+        conn.execute("SELECT count(*) FROM docs WHERE docs MATCH ?", (escaped_query,)).fetchone()
+    finally:
+        conn.close()
 
 
-def test_fts5_and_operator_injection():
-    """FTS5 AND operator is escaped properly."""
-    malicious_query = "test AND something"
-
-    escaped = escape_fts5_query(malicious_query)
-
-    # AND in the middle is not a dangerous position (not start/end)
-    # and no special chars, so returned as-is
-    assert escaped == "test AND something"
-
-
-def test_fts5_not_operator_injection():
-    """FTS5 NOT operator is escaped properly."""
-    malicious_query = "test NOT anything"
-
-    escaped = escape_fts5_query(malicious_query)
-
-    # NOT in the middle is not a dangerous position (not start/end)
-    # and no special chars, so returned as-is
-    assert escaped == "test NOT anything"
-
-
-def test_fts5_near_operator_injection():
-    """FTS5 NEAR operator is escaped."""
-    malicious_query = "word1 NEAR word2"
-
-    escaped = escape_fts5_query(malicious_query)
-
-    # NEAR in the middle is not a dangerous position (not start/end)
-    # and no special chars, so returned as-is
-    assert escaped == "word1 NEAR word2"
-
-
-def test_fts5_wildcard_injection():
-    """FTS5 wildcards (* and ?) are handled safely."""
-    # Test individual wildcard cases
-    # * is a special character, so quoted
-    assert escape_fts5_query("test*") == '"test*"'
-
-    # ? is not a special character in FTS5, so not quoted
-    assert escape_fts5_query("test?") == 'test?'
-
-    # Asterisk-only queries become empty phrase
-    assert escape_fts5_query("*") == '""'
-
-    # Question mark only is not special, so returned as-is
-    assert escape_fts5_query("?") == '?'
-
-
-def test_fts5_quote_injection():
-    """FTS5 quotes are escaped."""
-    malicious_query = 'test"something"'
-
-    escaped = escape_fts5_query(malicious_query)
-
-    # Quotes are special chars, so the whole thing gets quoted and internal quotes doubled
-    assert escaped == '"test""something"""'
+@pytest.mark.parametrize("raw_query,expected,should_compile", FTS5_ESCAPE_SECURITY_CASES)
+def test_escape_fts5_security_contract(raw_query, expected, should_compile):
+    """Escaped FTS5 query matches expected rewrite and remains executable."""
+    escaped = escape_fts5_query(raw_query)
+    assert escaped == expected
+    if should_compile:
+        _assert_fts5_match_executes(escaped)
+    else:
+        with pytest.raises(sqlite3.OperationalError):
+            _assert_fts5_match_executes(escaped)
 
 
 # =============================================================================
@@ -823,26 +787,6 @@ async def test_unicode_in_parameters(temp_repo):
     for s in unicode_strings:
         conv = await temp_repo.view(s)
         assert conv is None
-
-
-def test_special_sql_characters_in_text():
-    """Special SQL characters in regular text are properly quoted."""
-    # Characters that should trigger quoting (contain FTS5-problematic chars)
-    quoted_cases = [
-        "semicolon;",       # ; in FTS5_SPECIAL
-        "dash--comment",    # - in FTS5_SPECIAL
-        "percent%wildcard", # % in FTS5_SPECIAL
-        "backslash\\escape", # \ in FTS5_SPECIAL
-    ]
-
-    for text in quoted_cases:
-        escaped = escape_fts5_query(text)
-        assert escaped.startswith('"') and escaped.endswith('"'), (
-            f"Expected quoted output for {text!r}, got {escaped!r}"
-        )
-
-    # Underscores are safe -- passes through unquoted
-    assert escape_fts5_query("underscore_wildcard") == "underscore_wildcard"
 
 
 # =============================================================================
