@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from polylogue.config import Config, Source
 from polylogue.pipeline.runner import (
     _all_conversation_ids,
@@ -497,122 +499,78 @@ class TestLatestRun:
 class TestRunSourcesIntegration:
     """Integration tests for run_sources function."""
 
-    def test_parse_stage_only(self, workspace_env, tmp_path: Path):
-        """Only parsing runs when stage='parse'."""
-        # Create test data
-        inbox = tmp_path / "inbox"
-        inbox.mkdir()
-        conv_file = inbox / "conversations.json"
-        conv_data = {
-            "id": "conv-ingest",
-            "title": "Ingest Test",
-            "create_time": 1704067200,
-            "update_time": 1704067200,
-            "mapping": {
-                "root": {"id": "root", "message": None, "children": ["m1"]},
-                "m1": {
-                    "id": "m1",
-                    "message": {
+    @pytest.mark.parametrize(
+        "stage,with_source_data",
+        [
+            ("parse", True),
+            ("render", False),
+            ("index", False),
+            ("all", True),
+        ],
+    )
+    def test_stage_matrix(self, workspace_env, tmp_path: Path, stage: str, with_source_data: bool):
+        """Each stage executes only its expected pipeline responsibilities."""
+        sources = []
+        if with_source_data:
+            inbox = tmp_path / f"inbox-{stage}"
+            inbox.mkdir(parents=True, exist_ok=True)
+            conv_file = inbox / "conversations.json"
+            conv_data = {
+                "id": f"conv-{stage}",
+                "title": f"{stage.title()} stage",
+                "create_time": 1704067200,
+                "update_time": 1704067200,
+                "mapping": {
+                    "root": {"id": "root", "message": None, "children": ["m1"]},
+                    "m1": {
                         "id": "m1",
-                        "author": {"role": "user"},
-                        "content": {"parts": ["Test"]},
-                        "create_time": 1704067200,
+                        "message": {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "content": {"parts": ["Test"]},
+                            "create_time": 1704067200,
+                        },
+                        "parent": "root",
+                        "children": [],
                     },
-                    "parent": "root",
-                    "children": [],
                 },
-            },
-        }
-        conv_file.write_text(json.dumps([conv_data]), encoding="utf-8")
+            }
+            conv_file.write_text(json.dumps([conv_data]), encoding="utf-8")
+            sources = [Source(name=f"test-{stage}", path=inbox)]
 
-        source = Source(name="test-ingest", path=inbox)
         config = Config(
-            sources=[source],
+            sources=sources,
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = asyncio.run(run_sources(config=config, stage="parse"))
+        if stage == "render":
+            with patch("polylogue.pipeline.runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
+                mock_ids.return_value = []
+                result = asyncio.run(run_sources(config=config, stage=stage))
+        else:
+            result = asyncio.run(run_sources(config=config, stage=stage))
 
-        assert result.counts["conversations"] >= 1
-        # Render count should be 0 (only parse ran)
-        assert result.counts.get("rendered", 0) == 0
-
-    def test_render_stage_only(self, workspace_env, tmp_path: Path):
-        """Only rendering runs when stage='render'."""
-        config = Config(
-            sources=[],
-            archive_root=workspace_env["archive_root"],
-            render_root=workspace_env["archive_root"] / "render",
-        )
-
-        with patch("polylogue.pipeline.runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
-            mock_ids.return_value = []  # No conversations to render
-
-            result = asyncio.run(run_sources(config=config, stage="render"))
-
-            # Ingest counts should be 0
+        if stage == "parse":
+            assert result.counts["conversations"] >= 1
+            assert result.counts.get("rendered", 0) == 0
+            assert result.indexed is False
+        elif stage == "render":
             assert result.counts["conversations"] == 0
             assert result.counts["messages"] == 0
-
-    def test_index_stage_only(self, workspace_env, tmp_path: Path):
-        """Only indexing runs when stage='index'."""
-        config = Config(
-            sources=[],
-            archive_root=workspace_env["archive_root"],
-            render_root=workspace_env["archive_root"] / "render",
-        )
-
-        result = asyncio.run(run_sources(config=config, stage="index"))
-
-        assert result.indexed is True
-        assert result.index_error is None
-        assert result.counts["conversations"] == 0
-
-    def test_all_stages(self, workspace_env, tmp_path: Path):
-        """All stages run when stage='all'."""
-        # Create test data
-        inbox = tmp_path / "inbox"
-        inbox.mkdir()
-        conv_file = inbox / "conversations.json"
-        conv_data = {
-            "id": "conv-all",
-            "title": "All Stages",
-            "create_time": 1704067200,
-            "update_time": 1704067200,
-            "mapping": {
-                "root": {"id": "root", "message": None, "children": ["m1"]},
-                "m1": {
-                    "id": "m1",
-                    "message": {
-                        "id": "m1",
-                        "author": {"role": "user"},
-                        "content": {"parts": ["Test message"]},
-                        "create_time": 1704067200,
-                    },
-                    "parent": "root",
-                    "children": [],
-                },
-            },
-        }
-        conv_file.write_text(json.dumps([conv_data]), encoding="utf-8")
-
-        source = Source(name="test-all", path=inbox)
-        config = Config(
-            sources=[source],
-            archive_root=workspace_env["archive_root"],
-            render_root=workspace_env["archive_root"] / "render",
-        )
-
-        result = asyncio.run(run_sources(config=config, stage="all"))
-
-        # All stages should have run
-        assert result.counts["conversations"] >= 1
-        assert result.counts.get("rendered", 0) >= 1
-        if result.indexed:
+            assert result.counts.get("rendered", 0) == 0
+            assert result.indexed is False
+        elif stage == "index":
+            assert result.counts["conversations"] == 0
+            assert result.indexed is True
             assert result.index_error is None
-        else:
-            assert result.index_error is not None
+        elif stage == "all":
+            assert result.counts["conversations"] >= 1
+            assert result.counts.get("rendered", 0) >= 1
+            if result.indexed:
+                assert result.index_error is None
+            else:
+                assert result.index_error is not None
 
     def test_drift_calculation_with_plan(self, workspace_env, tmp_path: Path):
         """Drift is calculated comparing actual vs plan."""

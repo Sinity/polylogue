@@ -11,7 +11,6 @@ Tests cover complete workflows:
 - Format conversion workflows
 """
 
-import asyncio
 import json
 import tempfile
 from pathlib import Path
@@ -165,20 +164,27 @@ async def test_render_formats(format, temp_config_and_repo, chatgpt_sample_sourc
     convs = [c for c in convs if c.provider == "chatgpt"]
     assert len(convs) > 0
 
-    # Render in specified format
-    from polylogue.rendering.core import ConversationFormatter
-
-    formatter = ConversationFormatter(archive_root, db_path=db_path)
-    formatted = await formatter.format(str(convs[0].id))
-
     if format == "markdown":
+        # Markdown formatting path uses ConversationFormatter directly.
+        from polylogue.rendering.core import ConversationFormatter
+
+        formatter = ConversationFormatter(archive_root, db_path=db_path)
+        formatted = await formatter.format(str(convs[0].id))
         output = formatted.markdown_text
         assert "#" in output or "**" in output or "*" in output
     elif format == "html":
-        # HTML rendering would need a separate HTMLRenderer
-        # For now, just test that markdown renders
-        output = formatted.markdown_text
-        assert len(output) > 0
+        # HTML rendering path uses the HTML renderer and validates generated files.
+        from polylogue.rendering.renderers import create_renderer
+
+        renderer = create_renderer("html", config=config, backend=storage_repo.backend)
+        output_path = await renderer.render(str(convs[0].id), config.render_root)
+        assert output_path.exists()
+        assert output_path.suffix == ".html"
+
+        output = output_path.read_text(encoding="utf-8")
+        assert "<html" in output.lower()
+        # HTML renderer writes markdown sidecar too.
+        assert output_path.with_name("conversation.md").exists()
 
     # Verify content present (at least one message should be there)
     assert any(m.text in output for m in convs[0].messages if m.text), "No message text found in output"
@@ -637,31 +643,22 @@ async def test_search_with_special_characters(temp_config_and_repo):
 # =============================================================================
 
 
-async def test_pipeline_runner_e2e(workspace_env, chatgpt_sample_source):
-    """run_sources orchestrates full workflow."""
+@pytest.mark.parametrize(
+    "stage",
+    ["all", "parse"],
+)
+async def test_pipeline_runner_stage_matrix(workspace_env, chatgpt_sample_source, stage):
+    """run_sources handles both full and parse-only execution modes."""
     from polylogue.config import get_config
 
     config = get_config()
     config.sources = [chatgpt_sample_source]
 
-    # Use run_sources function
-    result = await run_sources(config=config, source_names=[chatgpt_sample_source.name])
+    result = await run_sources(config=config, stage=stage, source_names=[chatgpt_sample_source.name])
 
-    # Verify data was processed
     assert result is not None
     assert result.counts["conversations"] > 0
-
-
-async def test_pipeline_runner_with_preview_mode(workspace_env, chatgpt_sample_source):
-    """run_sources with stage control."""
-    from polylogue.config import get_config
-
-    config = get_config()
-    config.sources = [chatgpt_sample_source]
-
-    # Run parse stage
-    result = await run_sources(config=config, stage="parse", source_names=[chatgpt_sample_source.name])
-
-    # Should report results
-    assert result is not None
-    assert result.counts["conversations"] > 0
+    if stage == "parse":
+        assert result.counts.get("rendered", 0) == 0
+    else:
+        assert result.counts.get("rendered", 0) >= 1
