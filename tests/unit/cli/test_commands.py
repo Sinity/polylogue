@@ -167,62 +167,69 @@ class TestResolveSources:
 class TestCliLatestRenderPath:
     """Tests for latest_render_path() function."""
 
-    def test_nonexistent_dir_returns_none(self, tmp_path):
-        """latest_render_path should return None for nonexistent dir."""
-        result = helpers.latest_render_path(tmp_path / "missing")
-        assert result is None
+    @pytest.mark.parametrize(
+        "case_id",
+        [
+            "nonexistent-root",
+            "empty-root",
+            "single-markdown",
+            "single-html",
+            "latest-mtime-wins",
+            "missing-candidate-is-skipped",
+        ],
+    )
+    def test_latest_render_path_contract(self, tmp_path, case_id):
+        """latest_render_path handles empty roots, formats, ordering, and races."""
+        render_root = tmp_path / "render"
+        expected: Path | None = None
 
-    def test_empty_dir_returns_none(self, tmp_path):
-        """latest_render_path should return None for empty dir."""
-        result = helpers.latest_render_path(tmp_path)
-        assert result is None
+        if case_id == "nonexistent-root":
+            render_root = tmp_path / "missing"
+        elif case_id == "empty-root":
+            render_root.mkdir()
+        elif case_id == "single-markdown":
+            conv_dir = render_root / "conv1"
+            conv_dir.mkdir(parents=True)
+            expected = conv_dir / "conversation.md"
+            expected.write_text("# Test", encoding="utf-8")
+        elif case_id == "single-html":
+            conv_dir = render_root / "conv1"
+            conv_dir.mkdir(parents=True)
+            expected = conv_dir / "conversation.html"
+            expected.write_text("<html>test</html>", encoding="utf-8")
+        elif case_id == "latest-mtime-wins":
+            import os
 
-    def test_finds_markdown_file(self, tmp_path):
-        """latest_render_path should find conversation.md files."""
-        sub = tmp_path / "conv1"
-        sub.mkdir()
-        (sub / "conversation.md").write_text("# Test")
-        result = helpers.latest_render_path(tmp_path)
-        assert result is not None
-        assert result.name == "conversation.md"
+            conv1 = render_root / "conv1"
+            conv2 = render_root / "conv2"
+            conv1.mkdir(parents=True)
+            conv2.mkdir(parents=True)
+            older = conv1 / "conversation.md"
+            expected = conv2 / "conversation.html"
+            older.write_text("old", encoding="utf-8")
+            expected.write_text("new", encoding="utf-8")
+            os.utime(older, (100, 100))
+            os.utime(expected, (200, 200))
+        elif case_id == "missing-candidate-is-skipped":
+            conv_dir = render_root / "conv1"
+            conv_dir.mkdir(parents=True)
+            existing = conv_dir / "conversation.md"
+            existing.write_text("# Existing", encoding="utf-8")
+            expected = existing
 
-    def test_finds_html_file(self, tmp_path):
-        """latest_render_path should find conversation.html files."""
-        sub = tmp_path / "conv1"
-        sub.mkdir()
-        (sub / "conversation.html").write_text("<html>test</html>")
-        result = helpers.latest_render_path(tmp_path)
-        assert result is not None
-        assert result.name == "conversation.html"
+            original_rglob = Path.rglob
 
-    def test_prefers_latest_by_mtime(self, tmp_path):
-        """latest_render_path should return most recently modified file."""
-        import time
+            def fake_rglob(self, pattern):
+                if self == render_root and pattern in {"conversation.md", "conversation.html"}:
+                    missing = render_root / "deleted" / pattern
+                    return list(original_rglob(self, pattern)) + [missing]
+                return original_rglob(self, pattern)
 
-        sub1 = tmp_path / "conv1"
-        sub1.mkdir()
-        file1 = sub1 / "conversation.md"
-        file1.write_text("# Old")
-        time.sleep(0.01)  # Ensure different mtime
+            with patch.object(Path, "rglob", fake_rglob):
+                assert helpers.latest_render_path(render_root) == expected
+            return
 
-        sub2 = tmp_path / "conv2"
-        sub2.mkdir()
-        file2 = sub2 / "conversation.md"
-        file2.write_text("# New")
-
-        result = helpers.latest_render_path(tmp_path)
-        assert result == file2
-
-    def test_handles_missing_file_between_list_and_stat(self, tmp_path):
-        """latest_render_path should gracefully skip deleted files."""
-        sub = tmp_path / "conv1"
-        sub.mkdir()
-        file1 = sub / "conversation.md"
-        file1.write_text("# Test")
-
-        # Real test: just verify nonexistent file doesn't break
-        result = helpers.latest_render_path(tmp_path)
-        assert result is not None
+        assert helpers.latest_render_path(render_root) == expected
 
 
 # =============================================================================
@@ -748,45 +755,6 @@ def test_cli_no_args_shows_stats(tmp_path):
     result = run_cli(["--plain"], env=env, cwd=tmp_path)
     # Should succeed and show archive stats
     assert result.exit_code == 0
-
-
-# Race condition test
-
-
-@pytest.mark.integration
-def test_latest_render_path_handles_deleted_file(tmp_path):
-    """latest_render_path() doesn't crash if file deleted between list and stat."""
-    from polylogue.cli import helpers as helpers_mod
-
-    render_root = tmp_path / "render"
-    conv_dir = render_root / "test" / "conv1-abc"
-    conv_dir.mkdir(parents=True, exist_ok=True)
-
-    html_file = conv_dir / "conversation.html"
-    html_file.write_text("<html>test</html>", encoding="utf-8")
-
-    # Verify it works normally first
-    result = helpers_mod.latest_render_path(render_root)
-    assert result is not None
-    assert result.name == "conversation.html"
-
-    # Now test with a file that gets "deleted" during iteration
-    # Create multiple files
-    conv_dir2 = render_root / "test" / "conv2-def"
-    conv_dir2.mkdir(parents=True, exist_ok=True)
-    html_file2 = conv_dir2 / "conversation.html"
-    html_file2.write_text("<html>test2</html>", encoding="utf-8")
-
-    # Touch html_file2 to make it the newest
-    html_file2.touch()
-
-    # Delete the first file to simulate race condition
-    html_file.unlink()
-
-    # Should still work, returning the file that exists
-    result = helpers_mod.latest_render_path(render_root)
-    assert result is not None
-    assert "conv2" in str(result)
 
 
 # --open missing render test

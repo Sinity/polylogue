@@ -30,6 +30,57 @@ LIST_FILTER_CASES = [
     ("invalid_limit_type", [1, 2], "limit", "error expected"),
 ]
 
+QUERY_TOOL_CASES = [
+    (
+        "search-basic",
+        "search",
+        {"query": "hello", "limit": 10},
+        1,
+        {
+            "contains": ("hello",),
+            "limit": (10,),
+        },
+        "test:conv-123",
+    ),
+    (
+        "search-provider-since",
+        "search",
+        {"query": "hello", "provider": "claude", "since": "2024-01-01", "limit": 5},
+        1,
+        {
+            "contains": ("hello",),
+            "provider": ("claude",),
+            "since": ("2024-01-01",),
+            "limit": (5,),
+        },
+        "test:conv-123",
+    ),
+    (
+        "list-basic",
+        "list_conversations",
+        {"limit": 10},
+        1,
+        {
+            "limit": (10,),
+        },
+        "test:conv-123",
+    ),
+    (
+        "list-with-filters",
+        "list_conversations",
+        {"provider": "claude", "since": "2024-01-01", "tag": "bug", "title": "incident", "limit": 2},
+        1,
+        {
+            "provider": ("claude",),
+            "since": ("2024-01-01",),
+            "tag": ("bug",),
+            "title": ("incident",),
+            "limit": (2,),
+        },
+        "test:conv-123",
+    ),
+]
+
 # Prompt edge case test data
 PROMPT_EDGE_CASES = [
     (
@@ -54,6 +105,31 @@ PROMPT_EDGE_CASES = [
         "language filter on extract_code",
     ),
 ]
+
+
+async def _insert_conversation(
+    repo: ConversationRepository,
+    *,
+    conversation_id: str,
+    provider: str,
+    provider_conversation_id: str,
+    text: str,
+) -> None:
+    conversation = ConversationRecord(
+        conversation_id=conversation_id,
+        provider_name=provider,
+        provider_conversation_id=provider_conversation_id,
+        title=f"{provider} conversation",
+        content_hash=f"hash-{conversation_id}",
+    )
+    message = MessageRecord(
+        message_id=f"{conversation_id}:m1",
+        conversation_id=conversation_id,
+        role="user",
+        text=text,
+        content_hash=f"hash-{conversation_id}:m1",
+    )
+    await repo.save_conversation(conversation, [message], [])
 
 
 # =============================================================================
@@ -239,140 +315,47 @@ class TestRepositoryIntegration:
 # =============================================================================
 
 
-class TestSearchTool:
-    """Tests for search tool execution."""
+class TestQueryTools:
+    """Shared contract tests for search and list_conversations tools."""
 
+    @pytest.mark.parametrize(
+        "case_id,tool_name,args,expected_len,expected_calls,expected_first_id",
+        QUERY_TOOL_CASES,
+    )
     @pytest.mark.asyncio
-    async def test_search_with_valid_query(self, simple_conversation):
-        """Search returns matching conversations."""
+    async def test_query_tool_filter_contract(
+        self,
+        simple_conversation,
+        case_id,
+        tool_name,
+        args,
+        expected_len,
+        expected_calls,
+        expected_first_id,
+    ):
+        """Query tools return JSON lists and invoke expected filter-chain methods."""
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
             mock_repo.search.return_value = [simple_conversation]
-            mock_get_repo.return_value = mock_repo
-
-            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                MockFilter.return_value = make_mock_filter(results=[simple_conversation])
-
-                server = _build_server()
-                # Get the tool function from the server
-                search_fn = server._tool_manager._tools["search"].fn
-                result = await search_fn(query="hello", limit=10)
-
-                # Parse the JSON result
-                results = json.loads(result)
-                assert len(results) == 1
-                assert results[0]["id"] == "test:conv-123"
-                assert results[0]["provider"] == "chatgpt"
-
-    @pytest.mark.asyncio
-    async def test_search_with_limit(self):
-        """Search respects limit parameter."""
-        from polylogue.mcp.server import _build_server
-
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.search.return_value = []
-            mock_get_repo.return_value = mock_repo
-
-            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                filter_instance = make_mock_filter(results=[])
-                MockFilter.return_value = filter_instance
-
-                server = _build_server()
-                result = await server._tool_manager._tools["search"].fn(query="test", limit=5)
-
-                # Verify filter was called with clamped limit
-                filter_instance.limit.assert_called()
-                # Parse result to verify valid JSON
-                parsed = json.loads(result)
-                assert parsed == []
-
-    @pytest.mark.asyncio
-    async def test_search_empty_results(self):
-        """Search handles empty results gracefully."""
-        from polylogue.mcp.server import _build_server
-
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.search.return_value = []
-            mock_get_repo.return_value = mock_repo
-
-            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                MockFilter.return_value = make_mock_filter(results=[])
-
-                server = _build_server()
-                result = await server._tool_manager._tools["search"].fn(query="nonexistent", limit=10)
-
-                results = json.loads(result)
-                assert results == []
-
-
-class TestListTool:
-    """Tests for list_conversations tool execution."""
-
-    @pytest.mark.asyncio
-    async def test_list_returns_conversations(self, simple_conversation):
-        """List returns recent conversations."""
-        from polylogue.mcp.server import _build_server
-
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
             mock_repo.list.return_value = [simple_conversation]
             mock_get_repo.return_value = mock_repo
 
             with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                MockFilter.return_value = make_mock_filter(results=[simple_conversation])
-
-                server = _build_server()
-                result = await server._tool_manager._tools["list_conversations"].fn(limit=10)
-
-                results = json.loads(result)
-                assert len(results) == 1
-                assert results[0]["message_count"] == 2
-
-    @pytest.mark.asyncio
-    async def test_list_with_limit(self):
-        """List respects limit parameter."""
-        from polylogue.mcp.server import _build_server
-
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.list.return_value = []
-            mock_get_repo.return_value = mock_repo
-
-            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                filter_instance = make_mock_filter(results=[])
+                filter_instance = make_mock_filter(results=[simple_conversation])
                 MockFilter.return_value = filter_instance
 
                 server = _build_server()
-                result = await server._tool_manager._tools["list_conversations"].fn(limit=25)
+                raw = await server._tool_manager._tools[tool_name].fn(**args)
 
-                filter_instance.limit.assert_called()
-                parsed = json.loads(result)
-                assert parsed == []
+        payload = json.loads(raw)
+        assert isinstance(payload, list), f"{case_id}: expected list payload"
+        assert len(payload) == expected_len, f"{case_id}: unexpected payload length"
+        assert payload[0]["id"] == expected_first_id, f"{case_id}: wrong conversation returned"
 
-    @pytest.mark.asyncio
-    async def test_list_with_provider_filter(self):
-        """List filters by provider."""
-        from polylogue.mcp.server import _build_server
-
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.list.return_value = []
-            mock_get_repo.return_value = mock_repo
-
-            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                filter_instance = make_mock_filter(results=[])
-                MockFilter.return_value = filter_instance
-
-                server = _build_server()
-                result = await server._tool_manager._tools["list_conversations"].fn(provider="claude", limit=10)
-
-                filter_instance.provider.assert_called_once_with("claude")
-                parsed = json.loads(result)
-                assert parsed == []
+        for method_name, method_args in expected_calls.items():
+            getattr(filter_instance, method_name).assert_called_once_with(*method_args)
 
 
 class TestGetTool:
@@ -508,25 +491,37 @@ class TestMCPToolValidation:
                 assert isinstance(parsed, (list, dict))
 
     @pytest.mark.asyncio
-    async def test_list_with_invalid_limit(self):
-        """List tool handles invalid limit gracefully."""
+    async def test_list_with_invalid_limit(self, tmp_path):
+        """Negative limits are clamped and still return a valid list payload."""
         from polylogue.mcp.server import _build_server
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.list.return_value = []
-            mock_get_repo.return_value = mock_repo
+        backend = SQLiteBackend(db_path=tmp_path / "mcp-invalid-limit.db")
+        repo = ConversationRepository(backend=backend)
 
-            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                MockFilter.return_value = make_mock_filter(results=[])
+        try:
+            await _insert_conversation(
+                repo,
+                conversation_id="chatgpt:one",
+                provider="chatgpt",
+                provider_conversation_id="one",
+                text="first result",
+            )
+            await _insert_conversation(
+                repo,
+                conversation_id="chatgpt:two",
+                provider="chatgpt",
+                provider_conversation_id="two",
+                text="second result",
+            )
 
+            with patch("polylogue.mcp.server._get_repo", return_value=repo):
                 server = _build_server()
-                # Negative limit should be clamped or handled
                 result = await server._tool_manager._tools["list_conversations"].fn(limit=-1)
-
-                assert result is not None
                 parsed = json.loads(result)
                 assert isinstance(parsed, list)
+                assert len(parsed) == 1
+        finally:
+            await backend.close()
 
     @pytest.mark.asyncio
     async def test_get_with_nonexistent_id(self):
@@ -545,3 +540,77 @@ class TestMCPToolValidation:
             parsed = json.loads(result)
             # Should return error dict or empty
             assert isinstance(parsed, dict)
+
+
+class TestMCPRealRepositoryPaths:
+    """Integration tests that exercise real repository + filter behavior."""
+
+    @pytest.mark.asyncio
+    async def test_search_uses_real_repository_and_filter_stack(self, tmp_path):
+        """Search tool should return persisted conversations from a real temp DB."""
+        from polylogue.mcp.server import _build_server
+
+        backend = SQLiteBackend(db_path=tmp_path / "mcp-search.db")
+        repo = ConversationRepository(backend=backend)
+
+        try:
+            await _insert_conversation(
+                repo,
+                conversation_id="chatgpt:needle",
+                provider="chatgpt",
+                provider_conversation_id="needle",
+                text="finding a needle in a haystack",
+            )
+            await _insert_conversation(
+                repo,
+                conversation_id="claude:other",
+                provider="claude",
+                provider_conversation_id="other",
+                text="something unrelated",
+            )
+
+            with patch("polylogue.mcp.server._get_repo", return_value=repo):
+                server = _build_server()
+                result = await server._tool_manager._tools["search"].fn(query="needle", limit=10)
+
+            parsed = json.loads(result)
+            assert len(parsed) == 1
+            assert parsed[0]["id"] == "chatgpt:needle"
+            assert parsed[0]["provider"] == "chatgpt"
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_list_applies_provider_filter_on_real_repository(self, tmp_path):
+        """List tool provider filter should scope results in a real repository."""
+        from polylogue.mcp.server import _build_server
+
+        backend = SQLiteBackend(db_path=tmp_path / "mcp-list.db")
+        repo = ConversationRepository(backend=backend)
+
+        try:
+            await _insert_conversation(
+                repo,
+                conversation_id="chatgpt:one",
+                provider="chatgpt",
+                provider_conversation_id="one",
+                text="chatgpt content",
+            )
+            await _insert_conversation(
+                repo,
+                conversation_id="claude:one",
+                provider="claude",
+                provider_conversation_id="one",
+                text="claude content",
+            )
+
+            with patch("polylogue.mcp.server._get_repo", return_value=repo):
+                server = _build_server()
+                result = await server._tool_manager._tools["list_conversations"].fn(provider="claude", limit=10)
+
+            parsed = json.loads(result)
+            assert len(parsed) == 1
+            assert parsed[0]["id"] == "claude:one"
+            assert parsed[0]["provider"] == "claude"
+        finally:
+            await backend.close()
