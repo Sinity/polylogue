@@ -20,8 +20,8 @@ from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import ConversationSummary
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.index import rebuild_index
+from polylogue.storage.repository import ConversationRepository
 from tests.infra.helpers import ConversationBuilder
 
 
@@ -183,14 +183,13 @@ class TestConversationFilterHasTypes:
             assert len(result) >= 1
             assert any(expected_id_substr in c.id for c in result)
         elif content_type == "attachments":
-            # In lazy-load mode, attachments are not loaded, so this may return empty
-            # This is expected behavior
-            assert isinstance(result, list)
+            # Some code paths may lazily skip attachment hydration; if present,
+            # results must come from known attachment conversations.
+            expected_ids = {"conv-attachments", "conv-multi-attach"}
+            assert all(c.id in expected_ids for c in result)
         elif content_type == "summary":
             # Should return conversations with summary metadata
-            if len(result) > 0:
-                for conv in result:
-                    assert conv.summary is not None
+            assert all(conv.summary is not None for conv in result)
 
     @pytest.mark.asyncio
     async def test_has_multiple_types_combines_filters(self, filter_repo_advanced):
@@ -201,8 +200,8 @@ class TestConversationFilterHasTypes:
             .has("summary")  # If any conv has both
             .list()
         )
-        # Result should be conversations matching all criteria
-        assert isinstance(result, list)
+        # Fixture has no conversation with BOTH attachments and summary.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_has_nonexistent_type_is_ignored(self, filter_repo_advanced):
@@ -403,9 +402,12 @@ class TestConversationFilterCombinedPosNeg:
             .exclude_text("error")
             .list()
         )
-        # All should contain "data" but not "error"
-        # (Implementation-dependent on FTS availability)
+        assert len(result) >= 1
         assert isinstance(result, list)
+        for conv in result:
+            text_blob = " ".join((m.text or "").lower() for m in conv.messages)
+            assert "data" in text_blob
+            assert "error" not in text_blob
 
     @pytest.mark.asyncio
     async def test_tag_with_exclude_provider(self, filter_repo_advanced):
@@ -430,8 +432,7 @@ class TestConversationFilterCombinedPosNeg:
             .exclude_provider("claude")
             .list()
         )
-        # May be empty if thinking only in claude, but should not crash
-        assert isinstance(result, list)
+        assert result == []
 
 
 # ============================================================================
@@ -734,15 +735,17 @@ class TestConversationFilterBranchingMethods:
     async def test_is_continuation_filters_correctly(self, filter_repo_branches):
         """is_continuation() filters to continuations."""
         result = await ConversationFilter(filter_repo_branches).is_continuation().list()
-        # May or may not have continuations depending on data
-        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0].id == "continuation-conv"
+        assert all(c.is_continuation for c in result)
 
     @pytest.mark.asyncio
     async def test_is_sidechain_filters_correctly(self, filter_repo_branches):
         """is_sidechain() filters to sidechains."""
         result = await ConversationFilter(filter_repo_branches).is_sidechain().list()
-        # May or may not have sidechains depending on data
-        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0].id == "sidechain-conv"
+        assert all(c.is_sidechain for c in result)
 
     @pytest.mark.asyncio
     async def test_parent_filters_by_parent_id(self, filter_repo_branches):
@@ -756,15 +759,15 @@ class TestConversationFilterBranchingMethods:
     async def test_has_branches_filters_conversations_with_branching(self, filter_repo_branches):
         """has_branches() filters conversations containing branching messages."""
         result = await ConversationFilter(filter_repo_branches).has_branches().list()
-        # May or may not have branching depending on message data
-        assert isinstance(result, list)
+        # Fixture data has session-branching but no message branch_index>0.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_is_root_false_excludes_roots(self, filter_repo_branches):
         """is_root(False) excludes root conversations."""
         result = await ConversationFilter(filter_repo_branches).is_root(False).list()
-        # Should not include root conversations
-        assert all(c.parent_id is not None for c in result if not c.is_root)
+        assert all(not c.is_root for c in result)
+        assert all(c.parent_id is not None for c in result)
 
 
 # ============================================================================

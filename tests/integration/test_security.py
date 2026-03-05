@@ -384,10 +384,8 @@ def test_filename_dots_only_rejected():
             name=name,
         )
 
-        # Should not allow dots-only names
-        # (or should transform them)
-        normalized = att.name.strip(".")
-        assert len(normalized) > 0 or att.name not in [".", ".."]
+        # Dots-only names are normalized to safe fallback.
+        assert att.name == "file"
 
 
 def test_filename_reserved_names_handled():
@@ -824,7 +822,7 @@ async def test_unicode_in_parameters(temp_repo):
 
     for s in unicode_strings:
         conv = await temp_repo.view(s)
-        assert conv is None or isinstance(conv, object)
+        assert conv is None
 
 
 def test_special_sql_characters_in_text():
@@ -971,7 +969,7 @@ async def test_repository_survives_injection_property(temp_repo, injection_paylo
     """
     # View should not crash or return incorrect data
     conv = await temp_repo.view(injection_payload)
-    assert conv is None or hasattr(conv, "id")
+    assert conv is None
 
     # List should not crash
     result = await temp_repo.list(provider=injection_payload[:50])  # Truncate long payloads

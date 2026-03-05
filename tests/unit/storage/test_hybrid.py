@@ -142,7 +142,12 @@ class TestHybridSearchProvider:
 
         # Create hybrid provider with mocks
         fts_mock = MagicMock()
-        fts_mock.search.return_value = [f"msg-{i}" for i in range(4)]
+        fts_mock.search.return_value = [
+            "claude-msg-0",
+            "chatgpt-msg-0",
+            "claude-msg-1",
+            "chatgpt-msg-1",
+        ]
         fts_mock.db_path = tmp_path / "test.db"
 
         vec_mock = MagicMock()
@@ -153,7 +158,7 @@ class TestHybridSearchProvider:
         # Search with provider filter
         result = provider.search_conversations("test", limit=10, providers=["claude"])
         # Should filter to only claude conversations
-        assert all("claude" in conv_id for conv_id in result) or len(result) == 0
+        assert set(result) == {"claude-conv-0", "claude-conv-1"}
 
 
 class TestReciprocalRankFusion:
@@ -494,8 +499,7 @@ class TestProviderFilteringIntegration:
 
             # Should return chatgpt conversations, not empty
             assert len(results) > 0
-            # All results should be chatgpt conversations
-            assert all("chatgpt" in conv_id for conv_id in results)
+            assert set(results) == {f"conv-chatgpt-{i}" for i in range(5)}
 
     def test_provider_filter_none_returns_all(self, hybrid_provider):
         """When providers=None, should return conversations from all providers."""
@@ -615,13 +619,8 @@ class TestFTS5ProviderDirectFiltering:
         syntax_error_queries = ["test?"]
 
         for query in syntax_error_queries:
-            # Should raise OperationalError with syntax error
-            # This is expected behavior - FTS5 query syntax is strict
-            try:
-                results = fts_provider.search(query)
-            except Exception:
-                # Expected - FTS5 syntax error
-                pass
+            with pytest.raises(Exception):
+                fts_provider.search(query)
 
 
 class TestSearchProviderSourceFiltering:

@@ -11,16 +11,14 @@ import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from polylogue.config import Config, Source
 from polylogue.pipeline.runner import (
     _all_conversation_ids,
     _select_sources,
     _write_run_json,
     latest_run,
-    run_sources,
     plan_sources,
+    run_sources,
 )
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import PlanResult
@@ -567,8 +565,9 @@ class TestRunSourcesIntegration:
 
         result = asyncio.run(run_sources(config=config, stage="index"))
 
-        # Should have indexed flag set
-        assert result.indexed in (True, False)  # Either works for empty DB
+        assert result.indexed is True
+        assert result.index_error is None
+        assert result.counts["conversations"] == 0
 
     def test_all_stages(self, workspace_env, tmp_path: Path):
         """All stages run when stage='all'."""
@@ -610,7 +609,10 @@ class TestRunSourcesIntegration:
         # All stages should have run
         assert result.counts["conversations"] >= 1
         assert result.counts.get("rendered", 0) >= 1
-        assert result.indexed in (True, False)
+        if result.indexed:
+            assert result.index_error is None
+        else:
+            assert result.index_error is not None
 
     def test_drift_calculation_with_plan(self, workspace_env, tmp_path: Path):
         """Drift is calculated comparing actual vs plan."""
