@@ -35,10 +35,8 @@ class TestSearchFilters:
         runner = CliRunner()
         # Query mode: positional args = query, -p = provider filter
         result = runner.invoke(cli, ["--plain", "Python", "-p", "chatgpt"])
-        # exit_code 0 = found, exit_code 2 = no results
-        assert result.exit_code in (0, 2)
-        if result.exit_code == 0:
-            assert "Python" in result.output or "conv1" in result.output
+        assert result.exit_code == 0
+        assert "Python" in result.output or "conv1" in result.output
 
     def test_search_with_since_date(self, search_workspace):
         """Filter search results by date."""
@@ -48,24 +46,23 @@ class TestSearchFilters:
         since_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
         # Query mode: positional args = query, --since = date filter
         result = runner.invoke(cli, ["--plain", "Python", "--since", since_date])
-        assert result.exit_code in (0, 2)
-        # Should find recent Python conversation
+        assert result.exit_code == 0
+        assert "Python" in result.output or "conv1" in result.output
 
     def test_search_with_invalid_since_date(self, search_workspace):
         """Handle invalid --since date format gracefully."""
         runner = CliRunner()
         # Query mode with invalid date
         result = runner.invoke(cli, ["--plain", "Python", "--since", "not-a-date"])
-        # The filter chain should handle this gracefully
-        # Either fail with error message or treat as "no results"
-        assert result.exit_code in (0, 1, 2)
+        assert result.exit_code == 1
+        assert "date" in result.output.lower() or "invalid" in result.output.lower()
 
     def test_search_with_limit(self, search_workspace):
         """Limit number of search results."""
         runner = CliRunner()
         # Query mode with --limit
         result = runner.invoke(cli, ["--plain", "JavaScript", "--limit", "1", "--list"])
-        assert result.exit_code in (0, 2)
+        assert result.exit_code == 0
         # Should return at most 1 result
 
 
@@ -77,40 +74,36 @@ class TestSearchOutputFormats:
         runner = CliRunner()
         # Query mode with -f json and --list
         result = runner.invoke(cli, ["--plain", "Python", "-f", "json", "--list"])
-        assert result.exit_code in (0, 2)
-        if result.exit_code == 0:
-            data = json.loads(result.output)
-            assert isinstance(data, list)
-            if data:
-                # JSON output contains conversation-level info
-                assert "id" in data[0]
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert data
+        assert "id" in data[0]
 
     def test_search_json_format_single(self, search_workspace):
         """Search with JSON output for single result."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", "JavaScript", "-f", "json", "--limit", "1"])
-        assert result.exit_code in (0, 2)
-        if result.exit_code == 0:
-            data = json.loads(result.output)
-            # Single result = dict, multiple or --list = list
-            assert isinstance(data, (list, dict))
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        # Single result = dict, multiple or --list = list
+        assert isinstance(data, (list, dict))
 
     def test_search_list_mode(self, search_workspace):
         """Search in list mode (shows all results)."""
         runner = CliRunner()
         # Query mode with --list
         result = runner.invoke(cli, ["--plain", "async", "--list"])
-        assert result.exit_code in (0, 2)
+        assert result.exit_code == 0
         # Should list all results
 
     def test_search_markdown_format(self, search_workspace):
         """Search with markdown output format."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", "Rust", "-f", "markdown", "--limit", "1"])
-        assert result.exit_code in (0, 2)
-        if result.exit_code == 0:
-            # Markdown output should contain headers
-            assert "#" in result.output or "Rust" in result.output
+        assert result.exit_code == 0
+        # Markdown output should contain headers
+        assert "#" in result.output or "Rust" in result.output
 
 
 class TestSearchEdgeCases:
@@ -186,5 +179,9 @@ class TestSearchIndexRebuild:
         runner = CliRunner()
         # Query mode
         result = runner.invoke(cli, ["--plain", "searchable"])
-        # Should either succeed (rebuild worked) or report no results
-        assert result.exit_code in (0, 1, 2)
+        # Should either succeed (rebuild worked) or report no results.
+        assert result.exit_code in (0, 2)
+        if result.exit_code == 0:
+            assert "searchable" in result.output.lower() or "c1" in result.output
+        else:
+            assert "no conversation" in result.output.lower() or "matched" in result.output.lower()
