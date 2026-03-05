@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from polylogue.lib.models import ConversationSummary
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.store import ConversationRecord, MessageRecord
 
 # =============================================================================
 # Helper Function Tests
@@ -27,16 +33,19 @@ class TestServerBuilding:
         assert hasattr(server, "_prompt_manager")
 
     def test_server_has_all_tools(self):
-        """Built server has all expected tools."""
+        """Mutation-focused MCP tools are registered."""
         from polylogue.mcp.server import _build_server
 
         server = _build_server()
         tool_names = set(server._tool_manager._tools.keys())
 
-        assert "search" in tool_names
-        assert "list_conversations" in tool_names
-        assert "get_conversation" in tool_names
-        assert "stats" in tool_names
+        assert "add_tag" in tool_names
+        assert "remove_tag" in tool_names
+        assert "list_tags" in tool_names
+        assert "get_metadata" in tool_names
+        assert "set_metadata" in tool_names
+        assert "delete_metadata" in tool_names
+        assert "delete_conversation" in tool_names
 
     def test_server_has_all_resources(self):
         """Built server has all expected resources and templates."""
@@ -60,6 +69,31 @@ class TestServerBuilding:
         assert "analyze_errors" in prompt_names
         assert "summarize_week" in prompt_names
         assert "extract_code" in prompt_names
+
+
+async def _insert_conversation(
+    repo: ConversationRepository,
+    *,
+    conversation_id: str,
+    provider: str,
+    provider_conversation_id: str,
+    text: str,
+) -> None:
+    conversation = ConversationRecord(
+        conversation_id=conversation_id,
+        provider_name=provider,
+        provider_conversation_id=provider_conversation_id,
+        title=f"{provider} conversation",
+        content_hash=f"hash-{conversation_id}",
+    )
+    message = MessageRecord(
+        message_id=f"{conversation_id}:m1",
+        conversation_id=conversation_id,
+        role="user",
+        text=text,
+        content_hash=f"hash-{conversation_id}:m1",
+    )
+    await repo.save_conversation(conversation, [message], [])
 
 
 # =============================================================================
@@ -546,3 +580,72 @@ class TestUpdateIndexTool:
                     parsed = json.loads(result)
                     assert parsed["status"] == "ok"
                     assert parsed["conversation_count"] == 2
+
+
+class TestMutationToolsRealRepository:
+    """Exercise mutation tools with a real repository backend."""
+
+    def test_add_list_remove_tag_roundtrip(self, tmp_path):
+        """add_tag/list_tags/remove_tag should mutate persisted data."""
+        from polylogue.mcp.server import _build_server
+
+        backend = SQLiteBackend(db_path=tmp_path / "mcp-mutations-real.db")
+        repo = ConversationRepository(backend=backend)
+
+        class _SyncRepoProxy:
+            def __init__(self, async_repo: ConversationRepository) -> None:
+                self._repo = async_repo
+                self.backend = async_repo.backend
+
+            def add_tag(self, conversation_id: str, tag: str) -> None:
+                asyncio.run(self._repo.add_tag(conversation_id, tag))
+
+            def remove_tag(self, conversation_id: str, tag: str) -> None:
+                asyncio.run(self._repo.remove_tag(conversation_id, tag))
+
+            def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
+                return asyncio.run(self._repo.list_tags(provider=provider))
+
+        try:
+            conv_id = "chatgpt:real-tag"
+            asyncio.run(
+                _insert_conversation(
+                    repo,
+                    conversation_id=conv_id,
+                    provider="chatgpt",
+                    provider_conversation_id="real-tag",
+                    text="tag me",
+                )
+            )
+
+            proxy = _SyncRepoProxy(repo)
+
+            with patch("polylogue.mcp.server._get_repo", return_value=proxy):
+                server = _build_server()
+
+                initial_tags = json.loads(server._tool_manager._tools["list_tags"].fn(provider="chatgpt"))
+                assert initial_tags.get("important", 0) == 0
+
+                add_payload = json.loads(
+                    server._tool_manager._tools["add_tag"].fn(
+                        conversation_id=conv_id,
+                        tag="important",
+                    )
+                )
+                assert add_payload["status"] == "ok"
+
+                list_payload = json.loads(server._tool_manager._tools["list_tags"].fn(provider="chatgpt"))
+                assert list_payload.get("important", 0) == 1
+
+                remove_payload = json.loads(
+                    server._tool_manager._tools["remove_tag"].fn(
+                        conversation_id=conv_id,
+                        tag="important",
+                    )
+                )
+                assert remove_payload["status"] == "ok"
+
+                list_after = json.loads(server._tool_manager._tools["list_tags"].fn(provider="chatgpt"))
+                assert list_after.get("important", 0) == 0
+        finally:
+            asyncio.run(backend.close())
