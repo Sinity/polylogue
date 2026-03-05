@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from polylogue.lib.models import ConversationSummary
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.store import ConversationRecord, MessageRecord
+from tests.integration.mcp_contract import (
+    EXPECTED_PROMPT_NAMES,
+    EXPECTED_RESOURCE_TEMPLATE_URIS,
+    EXPECTED_RESOURCE_URIS,
+    EXPECTED_TOOL_NAMES,
+)
 
 # =============================================================================
 # Helper Function Tests
@@ -16,8 +28,8 @@ from polylogue.lib.models import ConversationSummary
 class TestServerBuilding:
     """Tests for server construction."""
 
-    def test_build_server_returns_fastmcp_instance(self):
-        """_build_server returns a FastMCP server instance."""
+    def test_build_server_exposes_managers(self):
+        """_build_server returns a server with tool/resource/prompt managers."""
         from polylogue.mcp.server import _build_server
 
         server = _build_server()
@@ -26,40 +38,52 @@ class TestServerBuilding:
         assert hasattr(server, "_resource_manager")
         assert hasattr(server, "_prompt_manager")
 
-    def test_server_has_all_tools(self):
-        """Built server has all expected tools."""
+    @pytest.mark.parametrize(
+        "surface_attr,actual_getter,expected",
+        [
+            ("tools", lambda server: set(server._tool_manager._tools.keys()), EXPECTED_TOOL_NAMES),
+            ("resources", lambda server: set(server._resource_manager._resources.keys()), EXPECTED_RESOURCE_URIS),
+            (
+                "resource_templates",
+                lambda server: set(server._resource_manager._templates.keys()),
+                EXPECTED_RESOURCE_TEMPLATE_URIS,
+            ),
+            ("prompts", lambda server: set(server._prompt_manager._prompts.keys()), EXPECTED_PROMPT_NAMES),
+        ],
+    )
+    def test_server_surface_contract(self, surface_attr, actual_getter, expected):
+        """Server registers every expected MCP surface."""
         from polylogue.mcp.server import _build_server
 
         server = _build_server()
-        tool_names = set(server._tool_manager._tools.keys())
+        actual = actual_getter(server)
+        missing = expected - actual
+        assert not missing, f"Missing {surface_attr}: {sorted(missing)}"
 
-        assert "search" in tool_names
-        assert "list_conversations" in tool_names
-        assert "get_conversation" in tool_names
-        assert "stats" in tool_names
 
-    def test_server_has_all_resources(self):
-        """Built server has all expected resources and templates."""
-        from polylogue.mcp.server import _build_server
-
-        server = _build_server()
-        resource_uris = set(server._resource_manager._resources.keys())
-        template_uris = set(server._resource_manager._templates.keys())
-
-        assert "polylogue://stats" in resource_uris
-        assert "polylogue://conversations" in resource_uris
-        assert "polylogue://conversation/{conv_id}" in template_uris
-
-    def test_server_has_all_prompts(self):
-        """Built server has all expected prompts."""
-        from polylogue.mcp.server import _build_server
-
-        server = _build_server()
-        prompt_names = set(server._prompt_manager._prompts.keys())
-
-        assert "analyze_errors" in prompt_names
-        assert "summarize_week" in prompt_names
-        assert "extract_code" in prompt_names
+async def _insert_conversation(
+    repo: ConversationRepository,
+    *,
+    conversation_id: str,
+    provider: str,
+    provider_conversation_id: str,
+    text: str,
+) -> None:
+    conversation = ConversationRecord(
+        conversation_id=conversation_id,
+        provider_name=provider,
+        provider_conversation_id=provider_conversation_id,
+        title=f"{provider} conversation",
+        content_hash=f"hash-{conversation_id}",
+    )
+    message = MessageRecord(
+        message_id=f"{conversation_id}:m1",
+        conversation_id=conversation_id,
+        role="user",
+        text=text,
+        content_hash=f"hash-{conversation_id}:m1",
+    )
+    await repo.save_conversation(conversation, [message], [])
 
 
 # =============================================================================
@@ -546,3 +570,72 @@ class TestUpdateIndexTool:
                     parsed = json.loads(result)
                     assert parsed["status"] == "ok"
                     assert parsed["conversation_count"] == 2
+
+
+class TestMutationToolsRealRepository:
+    """Exercise mutation tools with a real repository backend."""
+
+    def test_add_list_remove_tag_roundtrip(self, tmp_path):
+        """add_tag/list_tags/remove_tag should mutate persisted data."""
+        from polylogue.mcp.server import _build_server
+
+        backend = SQLiteBackend(db_path=tmp_path / "mcp-mutations-real.db")
+        repo = ConversationRepository(backend=backend)
+
+        class _SyncRepoProxy:
+            def __init__(self, async_repo: ConversationRepository) -> None:
+                self._repo = async_repo
+                self.backend = async_repo.backend
+
+            def add_tag(self, conversation_id: str, tag: str) -> None:
+                asyncio.run(self._repo.add_tag(conversation_id, tag))
+
+            def remove_tag(self, conversation_id: str, tag: str) -> None:
+                asyncio.run(self._repo.remove_tag(conversation_id, tag))
+
+            def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
+                return asyncio.run(self._repo.list_tags(provider=provider))
+
+        try:
+            conv_id = "chatgpt:real-tag"
+            asyncio.run(
+                _insert_conversation(
+                    repo,
+                    conversation_id=conv_id,
+                    provider="chatgpt",
+                    provider_conversation_id="real-tag",
+                    text="tag me",
+                )
+            )
+
+            proxy = _SyncRepoProxy(repo)
+
+            with patch("polylogue.mcp.server._get_repo", return_value=proxy):
+                server = _build_server()
+
+                initial_tags = json.loads(server._tool_manager._tools["list_tags"].fn(provider="chatgpt"))
+                assert initial_tags.get("important", 0) == 0
+
+                add_payload = json.loads(
+                    server._tool_manager._tools["add_tag"].fn(
+                        conversation_id=conv_id,
+                        tag="important",
+                    )
+                )
+                assert add_payload["status"] == "ok"
+
+                list_payload = json.loads(server._tool_manager._tools["list_tags"].fn(provider="chatgpt"))
+                assert list_payload.get("important", 0) == 1
+
+                remove_payload = json.loads(
+                    server._tool_manager._tools["remove_tag"].fn(
+                        conversation_id=conv_id,
+                        tag="important",
+                    )
+                )
+                assert remove_payload["status"] == "ok"
+
+                list_after = json.loads(server._tool_manager._tools["list_tags"].fn(provider="chatgpt"))
+                assert list_after.get("important", 0) == 0
+        finally:
+            asyncio.run(backend.close())

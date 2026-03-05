@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from click.testing import CliRunner
+import pytest
 
 from polylogue.cli import cli
 from tests.infra.helpers import DbFactory
@@ -14,103 +15,63 @@ from tests.infra.helpers import DbFactory
 # =============================================================================
 
 SEARCH_FILTER_CASES = [
-    ("provider", "-p", "chatgpt", "provider filter"),
-    ("since", "--since", None, "date filter"),  # date computed at runtime
-    ("limit", "--limit", "1", "limit filter"),
+    ("provider", ["Python", "-p", "chatgpt"], 0, None),
+    ("since_valid", ["Python", "--since", "__DYNAMIC_DATE__"], 0, None),
+    ("since_invalid", ["Python", "--since", "not-a-date"], 1, "date"),
+    ("limit_list", ["JavaScript", "--limit", "1", "--list"], 0, None),
 ]
 
 SEARCH_FORMAT_CASES = [
-    ("json", "-f", "json", "JSON format"),
-    ("json_single", "-f", "json", "JSON single result"),
-    ("list", "--list", None, "list mode"),
-    ("markdown", "-f", "markdown", "markdown format"),
+    ("json_list", ["Python", "-f", "json", "--list"], "json_list"),
+    ("json_single", ["JavaScript", "-f", "json", "--limit", "1"], "json_single"),
+    ("list_mode", ["async", "--list"], "plain_list"),
+    ("markdown", ["Rust", "-f", "markdown", "--limit", "1"], "markdown"),
 ]
 
 
-class TestSearchFilters:
-    """Tests for search filtering options."""
+class TestSearchQueryContracts:
+    """Matrix coverage for search filters and output formats."""
 
-    def test_search_with_provider_filter(self, search_workspace):
-        """Filter search results by provider."""
-        runner = CliRunner()
-        # Query mode: positional args = query, -p = provider filter
-        result = runner.invoke(cli, ["--plain", "Python", "-p", "chatgpt"])
-        # exit_code 0 = found, exit_code 2 = no results
-        assert result.exit_code in (0, 2)
-        if result.exit_code == 0:
-            assert "Python" in result.output or "conv1" in result.output
-
-    def test_search_with_since_date(self, search_workspace):
-        """Filter search results by date."""
+    @pytest.mark.parametrize(
+        "case_id,args,expected_exit,error_hint",
+        SEARCH_FILTER_CASES,
+    )
+    def test_filter_contract(self, search_workspace, case_id, args, expected_exit, error_hint):
+        """Filter flags produce expected status codes and validation behavior."""
         from datetime import datetime, timedelta
 
         runner = CliRunner()
-        since_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
-        # Query mode: positional args = query, --since = date filter
-        result = runner.invoke(cli, ["--plain", "Python", "--since", since_date])
-        assert result.exit_code in (0, 2)
-        # Should find recent Python conversation
+        resolved_args = list(args)
+        if "__DYNAMIC_DATE__" in resolved_args:
+            idx = resolved_args.index("__DYNAMIC_DATE__")
+            resolved_args[idx] = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
 
-    def test_search_with_invalid_since_date(self, search_workspace):
-        """Handle invalid --since date format gracefully."""
+        result = runner.invoke(cli, ["--plain", *resolved_args])
+        assert result.exit_code == expected_exit, case_id
+        if error_hint:
+            assert error_hint in result.output.lower(), case_id
+
+    @pytest.mark.parametrize(
+        "case_id,args,expectation",
+        SEARCH_FORMAT_CASES,
+    )
+    def test_output_contract(self, search_workspace, case_id, args, expectation):
+        """Output format combinations produce parseable and mode-consistent output."""
         runner = CliRunner()
-        # Query mode with invalid date
-        result = runner.invoke(cli, ["--plain", "Python", "--since", "not-a-date"])
-        # The filter chain should handle this gracefully
-        # Either fail with error message or treat as "no results"
-        assert result.exit_code in (0, 1, 2)
+        result = runner.invoke(cli, ["--plain", *args])
+        assert result.exit_code == 0, case_id
 
-    def test_search_with_limit(self, search_workspace):
-        """Limit number of search results."""
-        runner = CliRunner()
-        # Query mode with --limit
-        result = runner.invoke(cli, ["--plain", "JavaScript", "--limit", "1", "--list"])
-        assert result.exit_code in (0, 2)
-        # Should return at most 1 result
-
-
-class TestSearchOutputFormats:
-    """Tests for different output formats."""
-
-    def test_search_json_output(self, search_workspace):
-        """Search with JSON output format."""
-        runner = CliRunner()
-        # Query mode with -f json and --list
-        result = runner.invoke(cli, ["--plain", "Python", "-f", "json", "--list"])
-        assert result.exit_code in (0, 2)
-        if result.exit_code == 0:
+        if expectation == "json_list":
             data = json.loads(result.output)
-            assert isinstance(data, list)
-            if data:
-                # JSON output contains conversation-level info
-                assert "id" in data[0]
-
-    def test_search_json_format_single(self, search_workspace):
-        """Search with JSON output for single result."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["--plain", "JavaScript", "-f", "json", "--limit", "1"])
-        assert result.exit_code in (0, 2)
-        if result.exit_code == 0:
+            assert isinstance(data, list), case_id
+            assert data and "id" in data[0], case_id
+        elif expectation == "json_single":
             data = json.loads(result.output)
-            # Single result = dict, multiple or --list = list
-            assert isinstance(data, (list, dict))
-
-    def test_search_list_mode(self, search_workspace):
-        """Search in list mode (shows all results)."""
-        runner = CliRunner()
-        # Query mode with --list
-        result = runner.invoke(cli, ["--plain", "async", "--list"])
-        assert result.exit_code in (0, 2)
-        # Should list all results
-
-    def test_search_markdown_format(self, search_workspace):
-        """Search with markdown output format."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["--plain", "Rust", "-f", "markdown", "--limit", "1"])
-        assert result.exit_code in (0, 2)
-        if result.exit_code == 0:
-            # Markdown output should contain headers
-            assert "#" in result.output or "Rust" in result.output
+            assert isinstance(data, (list, dict)), case_id
+        elif expectation == "plain_list":
+            assert result.output.strip(), case_id
+        elif expectation == "markdown":
+            assert "#" in result.output or "Rust" in result.output, case_id
 
 
 class TestSearchEdgeCases:
@@ -186,5 +147,9 @@ class TestSearchIndexRebuild:
         runner = CliRunner()
         # Query mode
         result = runner.invoke(cli, ["--plain", "searchable"])
-        # Should either succeed (rebuild worked) or report no results
-        assert result.exit_code in (0, 1, 2)
+        # Should either succeed (rebuild worked) or report no results.
+        assert result.exit_code in (0, 2)
+        if result.exit_code == 0:
+            assert "searchable" in result.output.lower() or "c1" in result.output
+        else:
+            assert "no conversation" in result.output.lower() or "matched" in result.output.lower()

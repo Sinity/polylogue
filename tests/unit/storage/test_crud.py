@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.schemas.unified import (
+    extract_from_provider_meta,
     extract_harmonized_message,
     is_message_record,
 )
@@ -802,12 +803,11 @@ class TestBackendComparison:
 
         for (pm_json,) in rows:
             pm = json.loads(pm_json)
-            raw = pm.get("raw", pm)
 
-            if not is_message_record("claude-code", raw):
+            if not is_message_record("claude-code", pm.get("raw", pm)):
                 continue
 
-            new_msg = extract_harmonized_message("claude-code", raw)
+            new_msg = extract_from_provider_meta("claude-code", pm)
             tool_calls_found += len(new_msg.tool_calls)
             reasoning_found += len(new_msg.reasoning_traces)
 

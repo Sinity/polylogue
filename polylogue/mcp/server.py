@@ -29,8 +29,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_MAX_LIMIT = 10000
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -92,9 +90,9 @@ def _conversation_to_full_dict(conv: Conversation) -> dict[str, Any]:
 
 
 def _clamp_limit(limit: int | Any) -> int:
-    """Clamp a limit value to [1, _MAX_LIMIT]."""
+    """Ensure limit is a positive integer, defaulting to 10 on bad input."""
     try:
-        return max(1, min(int(limit), _MAX_LIMIT))
+        return max(1, int(limit))
     except (TypeError, ValueError):
         return 10
 
@@ -559,11 +557,11 @@ def _build_server() -> FastMCP:
 
     @mcp.resource("polylogue://conversations")
     async def conversations_resource() -> str:
-        """List of all conversations in the archive (up to 1000)."""
+        """List of all conversations in the archive."""
         from polylogue.lib.filters import ConversationFilter
 
         repo = _get_repo()
-        convs = await ConversationFilter(repo).limit(1000).list()
+        convs = await ConversationFilter(repo).list()
         return json.dumps([_conversation_to_dict(c) for c in convs], indent=2)
 
     @mcp.resource("polylogue://conversation/{conv_id}")
@@ -608,12 +606,14 @@ def _build_server() -> FastMCP:
     async def analyze_errors(
         provider: str | None = None,
         since: str | None = None,
+        limit: int = 50,
     ) -> str:
         """Analyze error patterns and solutions across conversations.
 
         Args:
             provider: Filter by provider (claude, chatgpt, etc.)
             since: Only analyze conversations since this date
+            limit: Max conversations to analyze (default: 50)
         """
         from polylogue.lib.filters import ConversationFilter
 
@@ -624,7 +624,7 @@ def _build_server() -> FastMCP:
         if since:
             filter_chain = filter_chain.since(since)
 
-        convs = await filter_chain.limit(50).list()
+        convs = await filter_chain.limit(_clamp_limit(limit)).list()
 
         error_contexts = []
         for conv in convs:
@@ -658,13 +658,19 @@ Error contexts:
 """
 
     @mcp.prompt()
-    async def summarize_week() -> str:
-        """Summarize key insights from the past week's conversations."""
+    async def summarize_week(
+        limit: int = 100,
+    ) -> str:
+        """Summarize key insights from the past week's conversations.
+
+        Args:
+            limit: Max conversations to include (default: 100)
+        """
         from polylogue.lib.filters import ConversationFilter
 
         repo = _get_repo()
         week_ago = (datetime.now(tz=timezone.utc) - timedelta(days=7)).isoformat()
-        convs = await ConversationFilter(repo).since(week_ago).limit(100).list()
+        convs = await ConversationFilter(repo).since(week_ago).limit(_clamp_limit(limit)).list()
 
         by_provider: dict[str, int] = {}
         total_messages = 0
@@ -689,16 +695,20 @@ Focus on actionable insights and patterns, not exhaustive summaries.
 """
 
     @mcp.prompt()
-    async def extract_code(language: str = "") -> str:
+    async def extract_code(
+        language: str = "",
+        limit: int = 50,
+    ) -> str:
         """Extract and organize code snippets from conversations.
 
         Args:
             language: Programming language to focus on (optional)
+            limit: Max conversations to scan (default: 50)
         """
         from polylogue.lib.filters import ConversationFilter
 
         repo = _get_repo()
-        convs = await ConversationFilter(repo).limit(50).list()
+        convs = await ConversationFilter(repo).limit(_clamp_limit(limit)).list()
 
         code_snippets: list[dict[str, str]] = []
         for conv in convs:

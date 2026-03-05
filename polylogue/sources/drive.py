@@ -45,7 +45,12 @@ def download_drive_files(
     for file_info in client.iter_json_files(folder_id):
         file_id = file_info.file_id
         name = file_info.name
-        dest_path = dest_dir / safe_path_component(name, fallback="drive_file")
+        safe_name = safe_path_component(name, fallback="drive_file")
+        # Ensure JSON-containing files have a .json extension so the
+        # file-based acquisition pipeline picks them up.
+        if not any(safe_name.lower().endswith(ext) for ext in (".json", ".jsonl", ".ndjson")):
+            safe_name += ".json"
+        dest_path = dest_dir / safe_name
 
         try:
             client.download_to_path(file_id, dest_path)

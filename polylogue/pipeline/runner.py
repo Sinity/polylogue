@@ -18,6 +18,7 @@ from uuid import uuid4
 from polylogue.config import Config, Source
 from polylogue.lib.json import dumps, loads
 from polylogue.lib.log import get_logger
+from polylogue.lib.metrics import PipelineMetrics
 from polylogue.storage.store import PlanResult, RunRecord, RunResult
 
 logger = get_logger(__name__)
@@ -110,42 +111,49 @@ async def _all_conversation_ids(backend: Any, source_names: Sequence[str] | None
     Returns:
         List of conversation IDs
     """
+    chunk_size = 500
+    selected: list[str] = []
+
     async with backend._get_connection() as conn:
         # Skip provider_meta if no filtering needed
         if not source_names:
             cursor = await conn.execute("SELECT conversation_id FROM conversations")
-            rows = await cursor.fetchall()
-            return [row["conversation_id"] for row in rows]
+            while True:
+                rows = await cursor.fetchmany(chunk_size)
+                if not rows:
+                    break
+                selected.extend(row["conversation_id"] for row in rows)
+            return selected
 
+        name_set = set(source_names)
         cursor = await conn.execute(
             "SELECT conversation_id, provider_name, provider_meta FROM conversations"
         )
-        rows = await cursor.fetchall()
+        while True:
+            rows = await cursor.fetchmany(chunk_size)
+            if not rows:
+                break
+            for row in rows:
+                if row["provider_name"] in name_set:
+                    selected.append(row["conversation_id"])
+                    continue
 
-    selected: list[str] = []
-    name_set = set(source_names)
+                meta = row["provider_meta"]
+                if not meta:
+                    continue
 
-    for row in rows:
-        if row["provider_name"] in name_set:
-            selected.append(row["conversation_id"])
-            continue
+                try:
+                    payload = loads(meta)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "Skipping conversation with invalid provider_meta JSON",
+                        conversation_id=row["conversation_id"],
+                        provider=row["provider_name"],
+                    )
+                    continue
 
-        meta = row["provider_meta"]
-        if not meta:
-            continue
-
-        try:
-            payload = loads(meta)
-        except (ValueError, TypeError):
-            logger.warning(
-                "Skipping conversation with invalid provider_meta JSON",
-                conversation_id=row["conversation_id"],
-                provider=row["provider_name"],
-            )
-            continue
-
-        if isinstance(payload, dict) and payload.get("source") in name_set:
-            selected.append(row["conversation_id"])
+                if isinstance(payload, dict) and payload.get("source") in name_set:
+                    selected.append(row["conversation_id"])
 
     return selected
 
@@ -200,6 +208,7 @@ async def run_sources(
     from polylogue.services import get_backend, get_repository
 
     start = time.perf_counter()
+    metrics = PipelineMetrics()
 
     backend = get_backend()
     repository = get_repository()
@@ -226,19 +235,23 @@ async def run_sources(
     if stage == "acquire":
         from polylogue.pipeline.services.acquisition import AcquisitionService
 
+        sm = metrics.start_stage("acquire")
         acquire_service = AcquisitionService(backend=backend)
         sources = _select_sources(config, source_names)
         acquire_result = await acquire_service.acquire_sources(
             sources,
             progress_callback=progress_callback,
         )
+        sm.stop(items=acquire_result.counts["acquired"])
         counts["acquired"] = acquire_result.counts["acquired"]
         counts["skipped"] = acquire_result.counts["skipped"]
+        logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
 
     # Parse stage (acquire + parse, replaces old "ingest")
     elif stage in {"parse", "all"}:
         from polylogue.pipeline.services.parsing import ParsingService
 
+        sm = metrics.start_stage("parse")
         parsing_service = ParsingService(
             repository=repository,
             archive_root=config.archive_root,
@@ -251,6 +264,7 @@ async def run_sources(
             download_assets=True,
             progress_callback=progress_callback,
         )
+        sm.stop(items=parse_result.counts.get("conversations", 0))
 
         # Merge results
         for key, value in parse_result.counts.items():
@@ -259,12 +273,22 @@ async def run_sources(
             counts["parse_failures"] = parse_result.parse_failures
         changed_counts.update(parse_result.changed_counts)
         processed_ids = parse_result.processed_ids
+        # Use deduplicated conversation count for user-facing summary
+        # (counts["conversations"] accumulates per-raw-record, double-counting
+        # conversations that appear in multiple source files)
+        counts["conversations"] = len(processed_ids)
+        logger.info(
+            "Parse stage complete", **sm.to_dict(),
+            processed_ids=len(processed_ids),
+            parse_failures=parse_result.parse_failures,
+        )
 
     # Schema generation stage (sync, run in thread pool)
     if stage == "generate-schemas":
         from polylogue.paths import db_path as _db_path
         from polylogue.schemas.schema_inference import generate_all_schemas
 
+        stage_t0 = time.perf_counter()
         output_dir = config.archive_root.parent / "schemas"
         results = await asyncio.to_thread(
             generate_all_schemas,
@@ -273,12 +297,19 @@ async def run_sources(
         )
         counts["schemas_generated"] = sum(1 for r in results if r.success)
         counts["schemas_failed"] = sum(1 for r in results if not r.success)
+        logger.info(
+            "Schema generation complete",
+            elapsed_s=round(time.perf_counter() - stage_t0, 1),
+            generated=counts["schemas_generated"],
+            failed=counts["schemas_failed"],
+        )
 
     # Rendering stage
     if stage in {"render", "all"}:
         from polylogue.pipeline.services.rendering import RenderService
         from polylogue.rendering.renderers import create_renderer
 
+        sm = metrics.start_stage("render")
         ids = (
             await _all_conversation_ids(backend, source_names)
             if stage == "render"
@@ -287,10 +318,13 @@ async def run_sources(
         if ids:
             if progress_callback is not None:
                 progress_callback(0, desc=f"Rendering: 0/{len(ids)}")
-            renderer = create_renderer(format=render_format, config=config)
+            renderer = create_renderer(
+                format=render_format, config=config, backend=backend,
+            )
             render_service = RenderService(
                 renderer=renderer,
                 render_root=config.archive_root / "render",
+                backend=backend,
             )
             render_result = await render_service.render_conversations(
                 ids, progress_callback=progress_callback,
@@ -299,6 +333,12 @@ async def run_sources(
             render_failures = render_result.failures
             if render_failures:
                 counts["render_failures"] = len(render_failures)
+        sm.stop(items=counts.get("rendered", 0))
+        logger.info(
+            "Render stage complete", **sm.to_dict(),
+            failures=len(render_failures),
+            total=len(ids) if ids else 0,
+        )
 
     # Indexing stage
     indexed = False
@@ -308,6 +348,7 @@ async def run_sources(
 
     index_service = IndexService(config=config, backend=backend)
 
+    sm = metrics.start_stage("index")
     try:
         if stage == "index":
             if progress_callback is not None:
@@ -334,6 +375,8 @@ async def run_sources(
         logger.error("Indexing failed", error=str(exc))
         index_error = str(exc)
         indexed = False
+    sm.stop(items=len(processed_ids) if processed_ids else 0)
+    logger.info("Index stage complete", **sm.to_dict(), indexed=indexed)
 
     # Calculate drift and finalize
     duration_ms = int((time.perf_counter() - start) * 1000)
@@ -372,6 +415,7 @@ async def run_sources(
         "indexed": indexed,
         "index_error": index_error,
         "duration_ms": duration_ms,
+        "metrics": metrics.to_summary(),
     }
     _write_run_json(config.archive_root, run_payload)
 
