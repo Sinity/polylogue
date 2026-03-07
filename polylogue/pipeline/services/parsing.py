@@ -11,19 +11,19 @@ It does NOT handle raw storage - that's the acquisition stage's job.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 import json
 import os
-
-import orjson
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import orjson
+
 from polylogue.lib.log import get_logger
-from polylogue.lib.raw_payload import decode_raw_payload, infer_payload_provider
-from polylogue.pipeline.services.ingest_state import IngestState
+from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
+from polylogue.pipeline.services.ingest_state import IngestState
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.source import parse_payload
 from polylogue.storage.search_cache import invalidate_search_cache
@@ -462,17 +462,16 @@ class ParsingService:
         Returns:
             List of parsed conversations (usually 1, but could be more for bundles)
         """
-        payload = decode_raw_payload(raw_record.raw_content).payload
-        provider = infer_payload_provider(
-            payload,
+        envelope = build_raw_payload_envelope(
+            raw_record.raw_content,
             source_path=raw_record.source_path,
             fallback_provider=raw_record.provider_name,
         )
 
         # Use the existing parser dispatcher
         return parse_payload(
-            provider,
-            payload,
+            envelope.provider,
+            envelope.payload,
             raw_record.raw_id,  # Use raw_id as fallback conversation ID
         )
 

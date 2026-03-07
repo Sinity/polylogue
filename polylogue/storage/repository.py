@@ -18,7 +18,13 @@ from typing import TYPE_CHECKING
 from polylogue.lib.log import get_logger
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord
+from polylogue.storage.store import (
+    AttachmentRecord,
+    ConversationRecord,
+    ConversationRenderProjection,
+    MessageRecord,
+    RunRecord,
+)
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
@@ -120,6 +126,22 @@ class ConversationRepository:
         )
 
         return Conversation.from_records(conv_record, msg_records, att_records)
+
+    async def get_render_projection(self, conversation_id: str) -> ConversationRenderProjection | None:
+        """Fetch repository-owned render projection with raw attachment layout preserved."""
+        conv_record = await self._backend.get_conversation(conversation_id)
+        if not conv_record:
+            return None
+
+        msg_records, att_records = await asyncio.gather(
+            self._backend.get_messages(conversation_id),
+            self._backend.get_attachments(conversation_id),
+        )
+        return ConversationRenderProjection(
+            conversation=conv_record,
+            messages=msg_records,
+            attachments=att_records,
+        )
 
     async def view(self, conversation_id: str) -> Conversation | None:
         """Get a conversation with ID resolution support.
@@ -260,7 +282,7 @@ class ConversationRepository:
         if not conv_records:
             return []
 
-        return await self._get_many([rec.conversation_id for rec in conv_records])
+        return await self.get_many([rec.conversation_id for rec in conv_records])
 
     async def count(
         self,
@@ -344,7 +366,7 @@ class ConversationRepository:
         child_records = await self._backend.list_conversations(parent_id=conversation_id)
         if not child_records:
             return []
-        return await self._get_many([rec.conversation_id for rec in child_records])
+        return await self.get_many([rec.conversation_id for rec in child_records])
 
     async def get_root(self, conversation_id: str) -> Conversation:
         """Walk up the parent chain to find the root conversation.
@@ -432,9 +454,9 @@ class ConversationRepository:
             List of Conversation objects with all data eager-loaded
         """
         ids = await self._backend.search_conversations(query, limit=limit, providers=providers)
-        return await self._get_many(ids)
+        return await self.get_many(ids)
 
-    async def _get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
+    async def get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
         """Bulk fetch conversations with eager-loaded messages and attachments.
 
         Uses batch queries to fetch all messages and attachments in 2 queries
@@ -562,7 +584,7 @@ class ConversationRepository:
             key=lambda x: conv_scores[x],
         )[:limit]
 
-        return await self._get_many(ranked_ids)
+        return await self.get_many(ranked_ids)
 
     async def _get_message_conversation_mapping(
         self, message_ids: builtins.list[str]
@@ -956,7 +978,6 @@ class ConversationRepository:
         # Get database size
         db_size = 0
         try:
-            from pathlib import Path
 
             db_size = self._backend.db_path.stat().st_size
         except Exception as exc:

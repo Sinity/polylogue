@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -205,6 +206,15 @@ class RunResult(BaseModel):
 class ExistingConversation(BaseModel):
     conversation_id: str
     content_hash: str
+
+
+@dataclass(frozen=True)
+class ConversationRenderProjection:
+    """Repository-owned render projection preserving raw attachment layout."""
+
+    conversation: ConversationRecord
+    messages: list[MessageRecord]
+    attachments: list[AttachmentRecord]
 
 
 def _json_or_none(value: dict[str, object] | None) -> str | None:

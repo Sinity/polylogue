@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
 from polylogue.lib.provider_identity import canonical_runtime_provider
-from polylogue.lib.raw_payload import decode_raw_payload, infer_payload_provider
+from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.store import RawConversationRecord
 
@@ -191,9 +191,13 @@ class ValidationService:
             collected_drift: list[str] = []
 
             try:
-                decoded = decode_raw_payload(raw_record.raw_content)
-                payload = decoded.payload
-                malformed_lines = decoded.malformed_jsonl_lines
+                envelope = build_raw_payload_envelope(
+                    raw_record.raw_content,
+                    source_path=raw_record.source_path,
+                    fallback_provider=raw_record.provider_name,
+                )
+                payload = envelope.payload
+                malformed_lines = envelope.malformed_jsonl_lines
             except Exception as exc:
                 result.counts["errors"] += 1
                 result.invalid_raw_ids.append(raw_id)
@@ -220,14 +224,8 @@ class ValidationService:
                             malformed_lines=malformed_lines,
                         )
 
-                provider = infer_payload_provider(
-                    payload,
-                    source_path=raw_record.source_path,
-                    fallback_provider=raw_record.provider_name,
-                )
-
                 try:
-                    validator = SchemaValidator.for_provider(provider)
+                    validator = SchemaValidator.for_provider(envelope.provider)
                 except (FileNotFoundError, ImportError):
                     result.counts["skipped_no_schema"] += 1
 
@@ -245,7 +243,7 @@ class ValidationService:
                             drift_count += 1
                             collected_drift.extend(sample_result.drift_warnings[:3])
 
-                canonical_provider = validator.provider or provider
+                canonical_provider = validator.provider or envelope.provider
 
                 if invalid_count:
                     result.counts["invalid"] += 1
