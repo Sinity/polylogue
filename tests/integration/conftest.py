@@ -44,7 +44,26 @@ def make_mock_filter(results=None, **method_overrides):
         Configured MagicMock filter instance with chaining support.
     """
     f = MagicMock()
-    for method in ("provider", "contains", "after", "before", "tags", "title", "since", "limit", "tag"):
+    for method in (
+        "contains",
+        "exclude_text",
+        "provider",
+        "exclude_provider",
+        "tag",
+        "exclude_tag",
+        "has",
+        "title",
+        "id",
+        "since",
+        "until",
+        "sort",
+        "reverse",
+        "limit",
+        "sample",
+        "after",
+        "before",
+        "tags",
+    ):
         getattr(f, method).return_value = f
     f.list = AsyncMock(return_value=results or [])
     for method_name, override_value in method_overrides.items():
