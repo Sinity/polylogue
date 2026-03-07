@@ -114,6 +114,7 @@ def _make_repo_mock() -> MagicMock:
     repo.delete_conversation = AsyncMock(return_value=False)
     repo.resolve_id = AsyncMock(return_value=None)
     repo.get_summary = AsyncMock(return_value=None)
+    repo.get_conversation_stats = AsyncMock(return_value={})
     repo.get_session_tree = AsyncMock(return_value=[])
     repo.get_stats_by = AsyncMock(return_value={})
     return repo

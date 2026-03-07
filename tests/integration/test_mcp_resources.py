@@ -38,13 +38,13 @@ SERIALIZATION_CASES = [
         "no_timestamps",
         Conversation(id="t1", provider="test", title="No Times", messages=[]),
         {"created_at": None, "updated_at": None, "message_count": 0},
-        "_conversation_to_dict",
+        "summary",
     ),
     (
         "empty_messages",
         Conversation(id="t2", provider="test", title="Empty", messages=[]),
         {"messages": []},
-        "_conversation_to_full_dict",
+        "detail",
     ),
     (
         "empty_role",
@@ -55,7 +55,7 @@ SERIALIZATION_CASES = [
             messages=[Message(id="m1", role="", text="test")],
         ),
         {"messages": [{"role": "unknown"}]},
-        "_conversation_to_full_dict",
+        "detail",
     ),
     (
         "null_text",
@@ -66,7 +66,7 @@ SERIALIZATION_CASES = [
             messages=[Message(id="m1", role="user", text=None)],
         ),
         {"messages": [{"text": ""}]},
-        "_conversation_to_full_dict",
+        "detail",
     ),
     (
         "null_timestamp",
@@ -77,7 +77,7 @@ SERIALIZATION_CASES = [
             messages=[Message(id="m1", role="user", text="hi")],
         ),
         {"messages": [{"timestamp": None}]},
-        "_conversation_to_full_dict",
+        "detail",
     ),
     (
         "unusual_role",
@@ -88,7 +88,7 @@ SERIALIZATION_CASES = [
             messages=[Message(id="m1", role="tool", text="test")],
         ),
         {"messages": [{"role": "tool"}]},
-        "_conversation_to_full_dict",
+        "detail",
     ),
 ]
 
@@ -382,13 +382,15 @@ class TestExtractCodePrompt:
 
 
 class TestConversationSerialization:
-    """Tests for conversation serialization helpers."""
+    """Tests for typed MCP conversation payloads."""
 
     def test_conversation_to_dict(self, simple_conversation):
-        """_conversation_to_dict serializes conversation metadata."""
-        from polylogue.mcp.server import _conversation_to_dict
+        """Summary payload serializes conversation metadata."""
+        from polylogue.mcp.payloads import MCPConversationSummaryPayload
 
-        result = _conversation_to_dict(simple_conversation)
+        result = MCPConversationSummaryPayload.from_conversation(
+            simple_conversation
+        ).model_dump(mode="json")
 
         assert result["id"] == "test:conv-123"
         assert result["provider"] == "chatgpt"
@@ -397,10 +399,12 @@ class TestConversationSerialization:
         assert "updated_at" in result
 
     def test_conversation_to_full_dict(self, simple_conversation):
-        """_conversation_to_full_dict includes messages."""
-        from polylogue.mcp.server import _conversation_to_full_dict
+        """Detail payload includes messages."""
+        from polylogue.mcp.payloads import MCPConversationDetailPayload
 
-        result = _conversation_to_full_dict(simple_conversation)
+        result = MCPConversationDetailPayload.from_conversation(
+            simple_conversation
+        ).model_dump(mode="json")
 
         assert "messages" in result
         assert len(result["messages"]) == 2
@@ -412,7 +416,7 @@ class TestConversationSerialization:
         assert "timestamp" in msg
 
     @pytest.mark.parametrize(
-        "case_id,conv,expected_fields,func_name",
+        "case_id,conv,expected_fields,payload_kind",
         SERIALIZATION_CASES,
     )
     def test_serialization_edge_cases(
@@ -420,17 +424,21 @@ class TestConversationSerialization:
         case_id,
         conv,
         expected_fields,
-        func_name,
+        payload_kind,
     ):
         """Serialization handles edge cases."""
-        if func_name == "_conversation_to_dict":
-            from polylogue.mcp.server import _conversation_to_dict
+        if payload_kind == "summary":
+            from polylogue.mcp.payloads import MCPConversationSummaryPayload
 
-            result = _conversation_to_dict(conv)
+            result = MCPConversationSummaryPayload.from_conversation(conv).model_dump(
+                mode="json"
+            )
         else:
-            from polylogue.mcp.server import _conversation_to_full_dict
+            from polylogue.mcp.payloads import MCPConversationDetailPayload
 
-            result = _conversation_to_full_dict(conv)
+            result = MCPConversationDetailPayload.from_conversation(conv).model_dump(
+                mode="json"
+            )
 
         for key, expected_value in expected_fields.items():
             if key == "messages":
