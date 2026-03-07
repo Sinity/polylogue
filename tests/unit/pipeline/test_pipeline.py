@@ -18,6 +18,7 @@ from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
     conversation_id,
+    materialize_attachment_path,
     message_content_hash,
     move_attachment_to_archive,
 )
@@ -29,8 +30,8 @@ from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation,
 # ============================================================================
 
 
-def test_attachment_content_id_moves_file_into_assets(tmp_path):
-    """attachment_content_id moves file to archive and returns digest."""
+def test_attachment_content_id_returns_target_path_without_moving(tmp_path):
+    """attachment_content_id is pure and returns the eventual archive path."""
     archive_root = tmp_path / "archive"
     uploads = tmp_path / "uploads"
     archive_root.mkdir()
@@ -55,6 +56,22 @@ def test_attachment_content_id_moves_file_into_assets(tmp_path):
     assert digest
     assert updated_path == str(target)  # returned path, not mutated attachment.path
     assert updated_meta is not None and "sha256" in updated_meta
+    assert source_file.exists()
+    assert not target.exists()
+
+
+def test_materialize_attachment_path_moves_file_into_assets(tmp_path):
+    """materialize_attachment_path performs the explicit archive move."""
+    archive_root = tmp_path / "archive"
+    uploads = tmp_path / "uploads"
+    archive_root.mkdir()
+    uploads.mkdir()
+    source_file = uploads / "note.txt"
+    source_file.write_text("hello world", encoding="utf-8")
+    target = asset_path(archive_root, "abc123")
+
+    materialize_attachment_path(source_file, target)
+
     assert not source_file.exists()
     assert target.exists()
 

@@ -3,7 +3,7 @@
 Covers:
 - polylogue/cli/commands/embed.py
 - polylogue/cli/commands/run.py
-- Event handlers (NotificationHandler, ExecHandler, WebhookHandler)
+- Run observers (NotificationObserver, ExecObserver, WebhookObserver)
 """
 
 from __future__ import annotations
@@ -27,11 +27,10 @@ from polylogue.cli.commands.run import (
     _display_result,
     _run_sync_once,
 )
-from polylogue.pipeline.events import (
-    ExecHandler,
-    NotificationHandler,
-    SyncEvent,
-    WebhookHandler,
+from polylogue.pipeline.observers import (
+    ExecObserver,
+    NotificationObserver,
+    WebhookObserver,
 )
 from polylogue.storage.store import PlanResult, RunResult
 
@@ -468,19 +467,19 @@ class TestDisplayResult:
 
 
 # =============================================================================
-# TEST CLASS: NotificationHandler
+# TEST CLASS: NotificationObserver
 # =============================================================================
 
 
 class TestNotifyNewConversations:
-    """Test NotificationHandler event handling."""
+    """Test NotificationObserver run handling."""
 
     @pytest.mark.parametrize("num_conversations", [1, 3, 999])
     def test_notify_new_conversations_variants(self, num_conversations):
-        """NotificationHandler calls notify-send with various conversation counts."""
+        """NotificationObserver calls notify-send with various conversation counts."""
         with patch("subprocess.run") as mock_run:
-            handler = NotificationHandler()
-            handler.on_sync(SyncEvent(new_conversations=num_conversations, run_result=None))  # type: ignore[arg-type]
+            handler = NotificationObserver()
+            handler.on_completed(MagicMock(counts={"conversations": num_conversations}))
 
             mock_run.assert_called_once()
             call_args = mock_run.call_args[0][0]
@@ -488,29 +487,29 @@ class TestNotifyNewConversations:
             assert str(num_conversations) in str(call_args)
 
     def test_notify_zero_is_noop(self):
-        """NotificationHandler does nothing for 0 new conversations."""
+        """NotificationObserver does nothing for 0 new conversations."""
         with patch("subprocess.run") as mock_run:
-            handler = NotificationHandler()
-            handler.on_sync(SyncEvent(new_conversations=0, run_result=None))  # type: ignore[arg-type]
+            handler = NotificationObserver()
+            handler.on_completed(MagicMock(counts={"conversations": 0}))
             mock_run.assert_not_called()
 
     def test_notify_new_conversations_not_found(self):
-        """NotificationHandler silently ignores FileNotFoundError."""
+        """NotificationObserver silently ignores FileNotFoundError."""
         with patch("subprocess.run") as mock_run:
             mock_run.side_effect = FileNotFoundError()
 
-            handler = NotificationHandler()
+            handler = NotificationObserver()
             # Should not raise
-            handler.on_sync(SyncEvent(new_conversations=1, run_result=None))  # type: ignore[arg-type]
+            handler.on_completed(MagicMock(counts={"conversations": 1}))
 
 
 # =============================================================================
-# TEST CLASS: ExecHandler
+# TEST CLASS: ExecObserver
 # =============================================================================
 
 
 class TestExecOnNew:
-    """Test ExecHandler event handling."""
+    """Test ExecObserver run handling."""
 
     @pytest.mark.parametrize("command,num_conversations", [
         ("echo $POLYLOGUE_NEW_COUNT", 5),
@@ -518,14 +517,14 @@ class TestExecOnNew:
         ("my-script --count 5", 1),
     ])
     def test_exec_on_new_variants(self, command, num_conversations):
-        """ExecHandler executes commands with correct environment and settings.
+        """ExecObserver executes commands with correct environment and settings.
 
         Commands run with shell=False for security.  Shell metacharacters
         like ;, &&, |, backticks, and $() are rejected at construction time.
         """
         with patch("subprocess.run") as mock_run:
-            handler = ExecHandler(command)
-            handler.on_sync(SyncEvent(new_conversations=num_conversations, run_result=None))  # type: ignore[arg-type]
+            handler = ExecObserver(command)
+            handler.on_completed(MagicMock(counts={"conversations": num_conversations}))
 
             mock_run.assert_called_once()
             call_kwargs = mock_run.call_args
@@ -540,18 +539,18 @@ class TestExecOnNew:
         "echo $(id)",
     ])
     def test_exec_on_new_rejects_dangerous_commands(self, dangerous_command):
-        """ExecHandler rejects commands with shell metacharacters."""
+        """ExecObserver rejects commands with shell metacharacters."""
         with pytest.raises(ValueError, match="unsafe"):
-            ExecHandler(dangerous_command)
+            ExecObserver(dangerous_command)
 
 
 # =============================================================================
-# TEST CLASS: WebhookHandler
+# TEST CLASS: WebhookObserver
 # =============================================================================
 
 
 class TestWebhookOnNew:
-    """Test WebhookHandler event handling."""
+    """Test WebhookObserver run handling."""
 
     @pytest.mark.parametrize("url,num_conversations", [
         ("http://example.com/webhook", 3),
@@ -559,14 +558,14 @@ class TestWebhookOnNew:
         ("https://api.example.com/sync", 1),
     ])
     def test_webhook_on_new_variants(self, url, num_conversations):
-        """WebhookHandler sends POST requests with correct payloads and timeouts."""
+        """WebhookObserver sends POST requests with correct payloads and timeouts."""
         # Mock SSRF validation (DNS resolution unavailable in sandboxed tests)
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 443))]
-        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo):
             with patch("urllib.request.urlopen") as mock_urlopen:
                 with patch("urllib.request.Request") as mock_request:
-                    handler = WebhookHandler(url)
-                    handler.on_sync(SyncEvent(new_conversations=num_conversations, run_result=None))  # type: ignore[arg-type]
+                    handler = WebhookObserver(url)
+                    handler.on_completed(MagicMock(counts={"conversations": num_conversations}))
 
                     mock_urlopen.assert_called_once()
                     call_kwargs = mock_urlopen.call_args[1]
@@ -584,15 +583,15 @@ class TestWebhookOnNew:
                 assert payload["new_conversations"] == num_conversations
 
     def test_webhook_on_new_exception_logged(self):
-        """WebhookHandler logs exceptions without raising."""
+        """WebhookObserver logs exceptions without raising."""
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
-        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo):
             with patch("urllib.request.urlopen") as mock_urlopen:
                 mock_urlopen.side_effect = ConnectionError("Connection failed")
 
-                handler = WebhookHandler("http://example.com/webhook")
+                handler = WebhookObserver("http://example.com/webhook")
                 # Should not raise
-                handler.on_sync(SyncEvent(new_conversations=1, run_result=None))  # type: ignore[arg-type]
+                handler.on_completed(MagicMock(counts={"conversations": 1}))
 
 
 # =============================================================================

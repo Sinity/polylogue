@@ -9,6 +9,7 @@ Async/await version of the pipeline runner with support for:
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -56,62 +57,49 @@ def _select_sources(config: Config, source_names: Sequence[str] | None) -> list[
 def plan_sources(
     config: Config,
     *,
+    stage: str = "all",
     ui: object | None = None,
     source_names: Sequence[str] | None = None,
 ) -> PlanResult:
-    """Plan the pipeline by counting conversations and messages from sources.
+    """Build a canonical preview plan without writing pipeline state."""
+    from polylogue.services import get_backend
+    from polylogue.pipeline.services.planning import PlanningService
 
-    This is a sync function because it only counts conversations from source
-    files without parsing. Source iteration is synchronous file I/O.
+    async def _build() -> PlanResult:
+        backend = get_backend()
+        planner = PlanningService(backend=backend, config=config)
+        plan = await planner.build_plan(
+            sources=_select_sources(config, source_names),
+            stage=stage,
+            ui=ui,
+        )
+        return plan.summary
 
-    Args:
-        config: Application configuration
-        ui: Optional UI object for user interaction
-        source_names: Optional list of source names to process
+    return _run_coroutine_sync(_build())
 
-    Returns:
-        PlanResult with conversation/message/attachment counts
-    """
-    from polylogue.sources import DriveAuthError, iter_drive_conversations, iter_source_conversations
 
-    counts: dict[str, int] = {"conversations": 0, "messages": 0, "attachments": 0}
-    sources: list[str] = []
-    cursors: dict[str, dict[str, Any]] = {}
+def _run_coroutine_sync(coro: Any) -> Any:
+    """Run a coroutine from sync code, even when already inside an event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
 
-    for source in _select_sources(config, source_names):
-        sources.append(source.name)
-        cursor_state: dict[str, Any] = {}
+    result: dict[str, Any] = {}
+    error: list[BaseException] = []
 
-        # Iterate source conversations (sync file I/O)
-        if source.folder:
-            try:
-                conversations = iter_drive_conversations(
-                    source=source,
-                    archive_root=config.archive_root,
-                    ui=ui,
-                    download_assets=False,
-                    cursor_state=cursor_state,
-                    drive_config=config.drive_config,
-                )
-            except DriveAuthError as exc:
-                logger.warning("Skipping Drive source %s: %s", source.name, exc)
-                if cursor_state is not None:
-                    cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
-                    cursor_state["latest_error"] = str(exc)
-                    cursor_state["latest_error_source"] = source.name
-                continue
-        else:
-            conversations = iter_source_conversations(source, cursor_state=cursor_state)
+    def _worker() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:  # pragma: no cover - re-raised on caller thread
+            error.append(exc)
 
-        for convo in conversations:
-            counts["conversations"] += 1
-            counts["messages"] += len(convo.messages)
-            counts["attachments"] += len(convo.attachments)
-
-        if cursor_state:
-            cursors[source.name] = cursor_state
-
-    return PlanResult(timestamp=int(time.time()), counts=counts, sources=sources, cursors=cursors)
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    return result.get("value")
 
 
 async def _all_conversation_ids(backend: Any, source_names: Sequence[str] | None = None) -> list[str]:
@@ -249,7 +237,9 @@ async def run_sources(
         sources = _select_sources(config, source_names)
         acquire_result = await acquire_service.acquire_sources(
             sources,
+            ui=ui,
             progress_callback=progress_callback,
+            drive_config=config.drive_config,
         )
         sm.stop(items=acquire_result.counts["acquired"])
         counts["acquired"] = acquire_result.counts["acquired"]
@@ -269,6 +259,8 @@ async def run_sources(
 
         ingest_result = await parsing_service.ingest_sources(
             sources=sources,
+            stage=stage,
+            ui=ui,
             progress_callback=progress_callback,
             parse_records=stage in _PARSE_STAGES,
         )
@@ -408,20 +400,9 @@ async def run_sources(
     processed_messages = counts["messages"] + counts["skipped_messages"]
     processed_attachments = counts["attachments"] + counts["skipped_attachments"]
 
-    if plan:
-        expected_conversations = plan.counts.get("conversations", 0)
-        expected_messages = plan.counts.get("messages", 0)
-        expected_attachments = plan.counts.get("attachments", 0)
-        drift["new"]["conversations"] = max(processed_conversations - expected_conversations, 0)
-        drift["new"]["messages"] = max(processed_messages - expected_messages, 0)
-        drift["new"]["attachments"] = max(processed_attachments - expected_attachments, 0)
-        drift["removed"]["conversations"] = max(expected_conversations - processed_conversations, 0)
-        drift["removed"]["messages"] = max(expected_messages - processed_messages, 0)
-        drift["removed"]["attachments"] = max(expected_attachments - processed_attachments, 0)
-    else:
-        drift["new"]["conversations"] = counts["conversations"]
-        drift["new"]["messages"] = counts["messages"]
-        drift["new"]["attachments"] = counts["attachments"]
+    drift["new"]["conversations"] = counts["conversations"]
+    drift["new"]["messages"] = counts["messages"]
+    drift["new"]["attachments"] = counts["attachments"]
 
     # Record run
     run_id = uuid4().hex
@@ -441,7 +422,7 @@ async def run_sources(
         RunRecord(
             run_id=run_id,
             timestamp=str(run_payload["timestamp"]),
-            plan_snapshot=plan.counts if plan else None,
+            plan_snapshot=plan.model_dump() if plan else None,
             counts=counts,
             drift=drift,
             indexed=indexed,
