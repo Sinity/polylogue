@@ -23,6 +23,19 @@ from polylogue.storage.store import PlanResult, RunRecord, RunResult
 
 logger = get_logger(__name__)
 
+RUN_STAGE_CHOICES: tuple[str, ...] = (
+    "acquire",
+    "validate",
+    "parse",
+    "render",
+    "index",
+    "generate-schemas",
+    "all",
+)
+_INGEST_STAGES = frozenset({"validate", "parse", "all"})
+_PARSE_STAGES = frozenset({"parse", "all"})
+_RENDER_STAGES = frozenset({"render", "all"})
+
 
 def _select_sources(config: Config, source_names: Sequence[str] | None) -> list[Source]:
     """Select sources from config, filtering by names if provided.
@@ -158,6 +171,44 @@ async def _all_conversation_ids(backend: Any, source_names: Sequence[str] | None
     return selected
 
 
+async def _run_index_stage(
+    *,
+    stage: str,
+    source_names: Sequence[str] | None,
+    processed_ids: set[str],
+    backend: Any,
+    index_service: Any,
+    progress_callback: Any | None = None,
+) -> tuple[bool, int]:
+    """Execute index behavior for `index`/`all` stages.
+
+    Returns:
+        `(indexed, item_count)` where item_count is used for stage metrics.
+    """
+    if stage == "index":
+        if progress_callback is not None:
+            progress_callback(0, desc="Indexing")
+        if source_names:
+            ids = await _all_conversation_ids(backend, source_names)
+            if ids:
+                return await index_service.update_index(ids), len(ids)
+            return await index_service.ensure_index_exists(), 0
+        return await index_service.rebuild_index(), 0
+
+    if stage == "all":
+        idx = await index_service.get_index_status()
+        if not idx["exists"]:
+            if progress_callback is not None:
+                progress_callback(0, desc="Indexing (rebuild)")
+            return await index_service.rebuild_index(), len(processed_ids)
+        if processed_ids:
+            if progress_callback is not None:
+                progress_callback(0, desc=f"Indexing: {len(processed_ids)} conversations")
+            return await index_service.update_index(list(processed_ids)), len(processed_ids)
+
+    return False, 0
+
+
 def _write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
     """Write run result JSON to the runs directory.
 
@@ -191,11 +242,11 @@ async def run_sources(
     Async version of run_sources supporting:
     - Parallel acquisition, parsing, rendering, and indexing
     - Progress callbacks for long-running operations
-    - Full stage control ("acquire", "parse", "render", "index", "generate-schemas", "all")
+    - Full stage control ("acquire", "validate", "parse", "render", "index", "generate-schemas", "all")
 
     Args:
         config: Application configuration
-        stage: Pipeline stage ("acquire", "parse", "render", "index", "generate-schemas", "all")
+        stage: Pipeline stage ("acquire", "validate", "parse", "render", "index", "generate-schemas", "all")
         plan: Optional plan result for drift detection
         ui: Optional UI object for user interaction
         source_names: Optional list of source names to process
@@ -247,41 +298,62 @@ async def run_sources(
         counts["skipped"] = acquire_result.counts["skipped"]
         logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
 
-    # Parse stage (acquire + parse, replaces old "ingest")
-    elif stage in {"parse", "all"}:
+    # Validate/Parse stages (canonical ingest orchestration)
+    elif stage in _INGEST_STAGES:
         from polylogue.pipeline.services.parsing import ParsingService
 
-        sm = metrics.start_stage("parse")
+        sources = _select_sources(config, source_names)
         parsing_service = ParsingService(
             repository=repository,
             archive_root=config.archive_root,
             config=config,
         )
-        sources = _select_sources(config, source_names)
-        parse_result = await parsing_service.parse_sources(
-            sources,
-            ui=ui,
-            download_assets=True,
-            progress_callback=progress_callback,
-        )
-        sm.stop(items=parse_result.counts.get("conversations", 0))
 
-        # Merge results
-        for key, value in parse_result.counts.items():
-            counts[key] = value
-        if parse_result.parse_failures:
-            counts["parse_failures"] = parse_result.parse_failures
-        changed_counts.update(parse_result.changed_counts)
-        processed_ids = parse_result.processed_ids
-        # Use deduplicated conversation count for user-facing summary
-        # (counts["conversations"] accumulates per-raw-record, double-counting
-        # conversations that appear in multiple source files)
-        counts["conversations"] = len(processed_ids)
-        logger.info(
-            "Parse stage complete", **sm.to_dict(),
-            processed_ids=len(processed_ids),
-            parse_failures=parse_result.parse_failures,
+        ingest_result = await parsing_service.ingest_sources(
+            sources=sources,
+            progress_callback=progress_callback,
+            parse_records=stage in _PARSE_STAGES,
         )
+        acquire_result = ingest_result.acquire_result
+        validation_result = ingest_result.validation_result
+
+        counts["acquired"] = acquire_result.counts["acquired"]
+        counts["skipped"] = acquire_result.counts["skipped"]
+        counts["acquire_errors"] = acquire_result.counts["errors"]
+        logger.info("Acquire stage complete", **acquire_result.counts)
+
+        if validation_result is not None:
+            counts["validated"] = validation_result.counts["validated"]
+            counts["validation_invalid"] = validation_result.counts["invalid"]
+            counts["validation_drift"] = validation_result.counts["drift"]
+            counts["validation_skipped_no_schema"] = validation_result.counts["skipped_no_schema"]
+            counts["validation_errors"] = validation_result.counts["errors"]
+            logger.info(
+                "Validate stage complete",
+                parseable=len(validation_result.parseable_raw_ids),
+                invalid=validation_result.counts["invalid"],
+                drift=validation_result.counts["drift"],
+                skipped_no_schema=validation_result.counts["skipped_no_schema"],
+                errors=validation_result.counts["errors"],
+            )
+
+        if stage in _PARSE_STAGES:
+            parse_result = ingest_result.parse_result
+            for key, value in parse_result.counts.items():
+                counts[key] = value
+            if parse_result.parse_failures:
+                counts["parse_failures"] = parse_result.parse_failures
+            changed_counts.update(parse_result.changed_counts)
+            processed_ids = parse_result.processed_ids
+            # Use deduplicated conversation count for user-facing summary
+            # (counts["conversations"] accumulates per-raw-record, double-counting
+            # conversations that appear in multiple source files)
+            counts["conversations"] = len(processed_ids)
+            logger.info(
+                "Parse stage complete",
+                processed_ids=len(processed_ids),
+                parse_failures=parse_result.parse_failures,
+            )
 
     # Schema generation stage (sync, run in thread pool)
     if stage == "generate-schemas":
@@ -305,7 +377,7 @@ async def run_sources(
         )
 
     # Rendering stage
-    if stage in {"render", "all"}:
+    if stage in _RENDER_STAGES:
         from polylogue.pipeline.services.rendering import RenderService
         from polylogue.rendering.renderers import create_renderer
 
@@ -349,33 +421,21 @@ async def run_sources(
     index_service = IndexService(config=config, backend=backend)
 
     sm = metrics.start_stage("index")
+    index_items = 0
     try:
-        if stage == "index":
-            if progress_callback is not None:
-                progress_callback(0, desc="Indexing")
-            if source_names:
-                ids = await _all_conversation_ids(backend, source_names)
-                if ids:
-                    indexed = await index_service.update_index(ids)
-                else:
-                    indexed = await index_service.ensure_index_exists()
-            else:
-                indexed = await index_service.rebuild_index()
-        elif stage == "all":
-            idx = await index_service.get_index_status()
-            if not idx["exists"]:
-                if progress_callback is not None:
-                    progress_callback(0, desc="Indexing (rebuild)")
-                indexed = await index_service.rebuild_index()
-            elif processed_ids:
-                if progress_callback is not None:
-                    progress_callback(0, desc=f"Indexing: {len(processed_ids)} conversations")
-                indexed = await index_service.update_index(list(processed_ids))
+        indexed, index_items = await _run_index_stage(
+            stage=stage,
+            source_names=source_names,
+            processed_ids=processed_ids,
+            backend=backend,
+            index_service=index_service,
+            progress_callback=progress_callback,
+        )
     except Exception as exc:
         logger.error("Indexing failed", error=str(exc))
         index_error = str(exc)
         indexed = False
-    sm.stop(items=len(processed_ids) if processed_ids else 0)
+    sm.stop(items=index_items)
     logger.info("Index stage complete", **sm.to_dict(), indexed=indexed)
 
     # Calculate drift and finalize
@@ -503,6 +563,7 @@ async def latest_run(backend: Any | None = None) -> RunRecord | None:
 
 
 __all__ = [
+    "RUN_STAGE_CHOICES",
     "plan_sources",
     "run_sources",
     "latest_run",

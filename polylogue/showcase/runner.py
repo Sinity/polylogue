@@ -16,8 +16,6 @@ from click.testing import CliRunner
 from polylogue.showcase.exercises import (
     EXERCISES,
     Exercise,
-    Validation,
-    exercises_by_group,
     topological_order,
 )
 
@@ -83,11 +81,17 @@ class ShowcaseRunner:
         output_dir: Path | None = None,
         fail_fast: bool = False,
         verbose: bool = False,
+        showcase_data: str = "fixtures",
+        synthetic_count: int = 3,
     ) -> None:
+        if showcase_data not in {"fixtures", "synthetic"}:
+            raise ValueError(f"Unknown showcase_data: {showcase_data}")
         self.live = live
         self.output_dir = output_dir
         self.fail_fast = fail_fast
         self.verbose = verbose
+        self.showcase_data = showcase_data
+        self.synthetic_count = synthetic_count
         self._env_vars: dict[str, str] = {}
         self._workspace_dir: Path | None = None
         self._shared_state: dict[str, Any] = {}
@@ -176,8 +180,11 @@ class ShowcaseRunner:
         for d in [data_home, state_home, archive_root, render_root, fake_home]:
             d.mkdir(parents=True, exist_ok=True)
 
-        # Copy static fixtures from package resources
-        self._copy_fixtures(fixture_dir)
+        # Seed fixture data for the workspace.
+        if self.showcase_data == "synthetic":
+            self._generate_synthetic_fixtures(fixture_dir, count=self.synthetic_count)
+        else:
+            self._copy_fixtures(fixture_dir)
 
         # Also copy fixtures into the inbox location so get_sources() finds them
         # inbox_root() = {XDG_DATA_HOME}/polylogue/inbox
@@ -263,6 +270,25 @@ class ShowcaseRunner:
                 if file_entry.is_file():
                     dest_file = dest_dir / file_entry.name
                     dest_file.write_bytes(file_entry.read_bytes())
+
+    def _generate_synthetic_fixtures(self, fixture_dir: Path, *, count: int) -> None:
+        """Generate schema-driven synthetic fixtures for all providers."""
+        from polylogue.schemas.synthetic import SyntheticCorpus
+
+        fixture_dir.mkdir(parents=True, exist_ok=True)
+        for provider in SyntheticCorpus.available_providers():
+            corpus = SyntheticCorpus.for_provider(provider)
+            provider_dir = fixture_dir / provider
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
+            raw_items = corpus.generate(
+                count=count,
+                messages_per_conversation=range(6, 20),
+                seed=42,
+                style="showcase",
+            )
+            for idx, raw_bytes in enumerate(raw_items):
+                (provider_dir / f"showcase-{idx:02d}{ext}").write_bytes(raw_bytes)
 
     def _run_exercise(self, exercise: Exercise) -> ExerciseResult:
         """Run a single exercise and validate the result."""

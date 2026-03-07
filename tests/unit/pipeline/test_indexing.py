@@ -6,7 +6,6 @@ import sqlite3
 
 from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
-from tests.infra.helpers import make_conversation, make_message
 
 
 class TestIndexService:
@@ -121,7 +120,7 @@ class TestIndexServiceErrors:
 
     async def test_update_index_failure(self):
         """update_index should return False on exception."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import MagicMock, patch
 
         from polylogue.pipeline.services.indexing import IndexService
 
@@ -137,7 +136,7 @@ class TestIndexServiceErrors:
 
     async def test_rebuild_index_failure(self):
         """rebuild_index should return False on exception."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import MagicMock, patch
 
         from polylogue.pipeline.services.indexing import IndexService
 
@@ -153,7 +152,7 @@ class TestIndexServiceErrors:
 
     async def test_ensure_index_failure(self):
         """ensure_index_exists should return False on exception."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import MagicMock, patch
 
         from polylogue.pipeline.services.indexing import IndexService
 
@@ -170,7 +169,7 @@ class TestIndexServiceErrors:
 
     async def test_get_index_status_failure(self):
         """get_index_status should return fallback on exception."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import MagicMock, patch
 
         from polylogue.pipeline.services.indexing import IndexService
 

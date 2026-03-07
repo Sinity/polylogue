@@ -20,6 +20,7 @@ from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.demo import demo_command
 from polylogue.cli.commands.embed import embed_command
 from polylogue.cli.commands.mcp import mcp_command
+from polylogue.cli.commands.qa import qa_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
 from polylogue.cli.commands.site import site_command
@@ -320,6 +321,7 @@ def cli(
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
         polylogue mcp       Start MCP server
+        polylogue qa        Snapshot/index QA artifacts
 
     Run `polylogue <command> --help` for subcommand details.
     """
@@ -351,6 +353,7 @@ cli.add_command(embed_command)
 cli.add_command(site_command)
 cli.add_command(tags_command)
 cli.add_command(demo_command)
+cli.add_command(qa_command)
 
 
 def main() -> None:

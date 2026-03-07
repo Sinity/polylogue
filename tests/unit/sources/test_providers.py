@@ -167,7 +167,9 @@ class TestParseJsonPayload:
         [
             # Provider-specific list/dict branching
             ("chatgpt", {"mapping": {"root": {}}, "title": "Test"}, True),
+            ("chatgpt", [{"mapping": {}}, {"mapping": {}}], True),
             ("claude", {"chat_messages": []}, True),
+            ("claude", [{"chat_messages": []}], True),
             ("claude-code", [{"type": "user"}, {"type": "assistant"}], True),
             ("claude-code", {"messages": [{"type": "user"}]}, True),  # dict with messages
             ("codex", [{"prompt": "test", "completion": "result"}], True),
@@ -181,7 +183,9 @@ class TestParseJsonPayload:
         ],
         ids=[
             "chatgpt_dict",
+            "chatgpt_list_bundle",
             "claude_dict",
+            "claude_list_bundle",
             "claude_code_list",
             "claude_code_dict_messages",
             "codex_list",

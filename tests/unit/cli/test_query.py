@@ -174,38 +174,6 @@ class TestFormatHelpers:
         assert "* USER" in result and "* ASSISTANT" in result
 
 
-class TestQueryOutputStats:
-    """Tests for _output_stats aggregation."""
-
-    @pytest.mark.parametrize(
-        "stat_term",
-        ["messages", "user", "assistant", "tool", "thinking", "date"],
-        ids=[
-            "total_messages",
-            "role_counts_user",
-            "role_counts_assistant",
-            "tool_calls",
-            "thinking_traces",
-            "date_range",
-        ],
-    )
-    def test_shows_stat(self, mock_env, sample_conversations, stat_term):
-        """Tests _output_stats displays specific statistics."""
-        query._output_stats(mock_env, sample_conversations)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert stat_term.lower() in output.lower() or (stat_term == "date" and "2024" in output)
-
-    def test_handles_no_results(self, mock_env):
-        """Handles empty results list."""
-        query._output_stats(mock_env, [])
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "no conversation" in output.lower()
-
-
 class TestQueryFormatList:
     """Tests for _format_list helper."""
 

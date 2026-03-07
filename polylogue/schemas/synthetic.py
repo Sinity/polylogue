@@ -23,7 +23,6 @@ Usage::
 
 from __future__ import annotations
 
-import gzip
 import json
 import random
 import uuid
@@ -31,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from polylogue.schemas.registry import SCHEMA_DIR
+from polylogue.schemas.registry import SchemaRegistry, canonical_schema_provider
 
 
 # =============================================================================
@@ -57,6 +56,16 @@ class WireFormat:
     encoding: str  # "json" | "jsonl"
     tree: TreeConfig | None = None
     messages_path: str | None = None  # Dot-path to messages array
+
+
+@dataclass(frozen=True)
+class ConversationTheme:
+    """Narrative theme for visually coherent synthetic conversations."""
+
+    title: str
+    instructions: str
+    user_turns: tuple[str, ...]
+    assistant_turns: tuple[str, ...]
 
 
 # Per-provider wire format configs — the only manual piece (~50 lines).
@@ -118,9 +127,78 @@ _ROLE_TEXTS: dict[str, list[str]] = {
     "tool": ["Function executed successfully.", "Error: resource not found."],
 }
 
+_SHOWCASE_THEMES: tuple[ConversationTheme, ...] = (
+    ConversationTheme(
+        title="Debugging flaky async pipeline tests",
+        instructions="You are a coding assistant focused on debugging async Python services.",
+        user_turns=(
+            "Our async pipeline test is flaky in CI. Locally it usually passes, but CI fails around 1 in 6 runs.",
+            "The failure is around a race between acquisition and parse workers. We see duplicate writes occasionally.",
+            "I added timestamps and correlation IDs. The duplicate writes happen when retries overlap with stale tasks.",
+            "Would you enforce idempotency at storage or add stricter queue coordination first?",
+            "Great. I implemented idempotent upserts and the flake rate dropped to zero in 200 CI runs.",
+        ),
+        assistant_turns=(
+            "Start by capturing a deterministic trace: per-task IDs, queue depth, retry count, and commit boundaries.",
+            "That pattern suggests retry re-entry without a completed marker. Guard writes with a stable content key and upsert semantics.",
+            "Do both, but prioritize storage idempotency first. Queue coordination reduces load; idempotency guarantees correctness.",
+            "Add a regression test that injects delayed worker scheduling and verifies single-write invariants under retries.",
+            "Excellent result. Keep the stress test in CI and expose duplicate-write counters in your health metrics.",
+        ),
+    ),
+    ConversationTheme(
+        title="Designing schema validation stages",
+        instructions="You are a systems assistant specializing in data contracts and pipeline reliability.",
+        user_turns=(
+            "We split our ingestion into acquire, validate, and parse stages. I want strong guarantees without huge overhead.",
+            "Right now we persist raw payloads and parse status, but validation metadata is incomplete.",
+            "Should strict validation be default, with an explicit opt-out for advisory mode?",
+            "How do we avoid re-validating unchanged payloads every run?",
+            "Done. We now persist validation status and only parse rows marked passed or skipped.",
+        ),
+        assistant_turns=(
+            "That stage split is correct. Validation should produce an explicit status artifact consumed by parse.",
+            "Persist validated_at, status, error, drift_count, and validation_mode so state survives reruns and compaction.",
+            "Yes. Make strict the default and reserve advisory/off for deliberate local workflows or troubleshooting.",
+            "Use raw content hash IDs and validate only pending records. Keep a reset path for forced revalidation.",
+            "Perfect. Add tests for pending-validation selection and parse gating to protect the contract long-term.",
+        ),
+    ),
+    ConversationTheme(
+        title="Improving search index performance",
+        instructions="You are a performance-focused assistant for storage and indexing systems.",
+        user_turns=(
+            "Search index rebuilds are slow after large imports. We need a strategy that scales with conversation growth.",
+            "Current profile shows heavy time in repeated per-conversation metadata queries.",
+            "I can batch those lookups. Any guidance on cache boundaries?",
+            "We also need better observability for stage-level throughput and bottlenecks.",
+            "Implemented batch lookup + stage metrics. End-to-end index time improved by 38 percent.",
+        ),
+        assistant_turns=(
+            "First remove N+1 patterns: batch metadata loads and reuse immutable data across worker tasks.",
+            "Great target. Build a prepare cache keyed by conversation IDs and warm it per processing batch.",
+            "Cache per-run, scoped to candidate IDs only. Avoid global caches that can leak stale rows between runs.",
+            "Emit per-stage counters, durations, and throughput. Include queue lag and retry/error distributions.",
+            "Strong improvement. Add a benchmark regression gate so future refactors cannot silently erode performance.",
+        ),
+    ),
+)
 
-def _text_for_role(rng: random.Random, role: str) -> str:
+
+def _text_for_role(
+    rng: random.Random,
+    role: str,
+    *,
+    turn_index: int | None = None,
+    theme: ConversationTheme | None = None,
+) -> str:
     """Generate plausible text content for a given role."""
+    if theme is not None and turn_index is not None:
+        exchange_idx = max(turn_index, 0) // 2
+        if role in {"user", "human"} and theme.user_turns:
+            return theme.user_turns[exchange_idx % len(theme.user_turns)]
+        if role in {"assistant", "model"} and theme.assistant_turns:
+            return theme.assistant_turns[exchange_idx % len(theme.assistant_turns)]
     texts = _ROLE_TEXTS.get(role, _ROLE_TEXTS["user"])
     return rng.choice(texts)
 
@@ -149,23 +227,24 @@ class SyntheticCorpus:
     @classmethod
     def for_provider(cls, provider: str) -> SyntheticCorpus:
         """Create a corpus generator for a specific provider."""
-        schema_path = SCHEMA_DIR / f"{provider}.schema.json.gz"
-        if not schema_path.exists():
-            raise FileNotFoundError(f"No schema for provider {provider}: {schema_path}")
+        canonical_provider = canonical_schema_provider(provider)
+        schema = SchemaRegistry().get_schema(canonical_provider, version="latest")
+        if schema is None:
+            raise FileNotFoundError(f"No schema for provider {provider} (canonical: {canonical_provider})")
 
-        schema = json.loads(gzip.decompress(schema_path.read_bytes()))
-        wire_format = PROVIDER_WIRE_FORMATS.get(provider)
+        wire_format = PROVIDER_WIRE_FORMATS.get(canonical_provider)
         if not wire_format:
-            raise ValueError(f"No wire format config for provider: {provider}")
+            raise ValueError(f"No wire format config for provider: {canonical_provider}")
 
-        return cls(schema, wire_format, provider)
+        return cls(schema, wire_format, canonical_provider)
 
     @classmethod
     def available_providers(cls) -> list[str]:
         """List providers that have both schemas and wire format configs."""
+        schema_providers = set(SchemaRegistry().list_providers())
         return [
             p for p in PROVIDER_WIRE_FORMATS
-            if (SCHEMA_DIR / f"{p}.schema.json.gz").exists()
+            if p in schema_providers
         ]
 
     def generate(
@@ -173,6 +252,7 @@ class SyntheticCorpus:
         count: int = 5,
         messages_per_conversation: range = range(3, 15),
         seed: int | None = None,
+        style: str = "default",
     ) -> list[bytes]:
         """Generate ``count`` conversations as wire-format bytes.
 
@@ -180,40 +260,59 @@ class SyntheticCorpus:
             count: Number of conversations to generate.
             messages_per_conversation: Range of message counts per conversation.
             seed: Random seed for reproducibility.
+            style: Generation style. ``default`` preserves baseline random text;
+                ``showcase`` generates coherent narrative turns for human-readable
+                demo/showcase corpora.
 
         Returns:
             List of raw bytes, each a valid wire-format conversation.
         """
+        if style not in {"default", "showcase"}:
+            raise ValueError(f"Unknown synthetic style: {style}")
+
         rng = random.Random(seed)
         results = []
         for _ in range(count):
             n_messages = rng.choice(messages_per_conversation)
-            data = self._generate_conversation(n_messages, rng)
+            theme = rng.choice(_SHOWCASE_THEMES) if style == "showcase" else None
+            data = self._generate_conversation(n_messages, rng, theme=theme)
             raw = self._serialize(data)
             results.append(raw)
         return results
 
     # ── Conversation-level dispatch ──────────────────────────────────────
 
-    def _generate_conversation(self, n_messages: int, rng: random.Random) -> Any:
+    def _generate_conversation(
+        self,
+        n_messages: int,
+        rng: random.Random,
+        *,
+        theme: ConversationTheme | None = None,
+    ) -> Any:
         """Generate one conversation's data structure."""
         wf = self.wire_format
 
         if wf.encoding == "jsonl":
-            return self._generate_jsonl_records(n_messages, rng)
+            return self._generate_jsonl_records(n_messages, rng, theme=theme)
 
         if wf.tree and wf.tree.container_path:
-            return self._generate_tree_json(n_messages, rng)
+            return self._generate_tree_json(n_messages, rng, theme=theme)
 
         if wf.messages_path:
-            return self._generate_linear_json(n_messages, rng)
+            return self._generate_linear_json(n_messages, rng, theme=theme)
 
         # Fallback: pure schema-driven
         return self._generate_from_schema(self.schema, rng)
 
     # ── JSON with tree structure (ChatGPT) ──────────────────────────────
 
-    def _generate_tree_json(self, n_messages: int, rng: random.Random) -> dict:
+    def _generate_tree_json(
+        self,
+        n_messages: int,
+        rng: random.Random,
+        *,
+        theme: ConversationTheme | None = None,
+    ) -> dict:
         tree_cfg = self.wire_format.tree
         assert tree_cfg is not None and tree_cfg.container_path is not None
 
@@ -259,7 +358,7 @@ class SyntheticCorpus:
                     node[tree_cfg.children_field] = []
 
             role = roles[i % len(roles)]
-            self._fix_message_fields(node, role, rng, i, base_ts=base_ts)
+            self._fix_message_fields(node, role, rng, i, base_ts=base_ts, theme=theme)
             nodes.append(node)
 
         # Build mapping dict (UUID → node)
@@ -270,11 +369,20 @@ class SyntheticCorpus:
         if "current_node" in self.schema.get("properties", {}):
             top["current_node"] = nodes[-1][tree_cfg.key_field]
 
+        if theme is not None and "title" in self.schema.get("properties", {}):
+            top["title"] = theme.title
+
         return top
 
     # ── JSON with linear messages (Claude AI, Gemini) ───────────────────
 
-    def _generate_linear_json(self, n_messages: int, rng: random.Random) -> dict:
+    def _generate_linear_json(
+        self,
+        n_messages: int,
+        rng: random.Random,
+        *,
+        theme: ConversationTheme | None = None,
+    ) -> dict:
         msgs_path = self.wire_format.messages_path
         assert msgs_path is not None
 
@@ -315,7 +423,7 @@ class SyntheticCorpus:
             if not isinstance(msg, dict):
                 msg = {}
             role = roles[i % len(roles)]
-            self._fix_message_fields(msg, role, rng, i, base_ts=base_ts)
+            self._fix_message_fields(msg, role, rng, i, base_ts=base_ts, theme=theme)
             messages.append(msg)
 
         # Set messages at the correct nested path
@@ -327,11 +435,21 @@ class SyntheticCorpus:
                 target.setdefault(part, {})
                 target = target[part]
 
+        if theme is not None and self.provider == "claude-ai":
+            if "name" in self.schema.get("properties", {}):
+                top["name"] = theme.title
+
         return top
 
     # ── JSONL records (Claude Code, Codex) ──────────────────────────────
 
-    def _generate_jsonl_records(self, n_messages: int, rng: random.Random) -> list[dict]:
+    def _generate_jsonl_records(
+        self,
+        n_messages: int,
+        rng: random.Random,
+        *,
+        theme: ConversationTheme | None = None,
+    ) -> list[dict]:
         tree_cfg = self.wire_format.tree
 
         records: list[dict] = []
@@ -345,7 +463,7 @@ class SyntheticCorpus:
                 record = {}
 
             role = roles[i % len(roles)]
-            self._fix_message_fields(record, role, rng, i, base_ts=base_ts)
+            self._fix_message_fields(record, role, rng, i, base_ts=base_ts, theme=theme)
 
             if tree_cfg:
                 # UUID-based tree linkage
@@ -361,6 +479,13 @@ class SyntheticCorpus:
 
                 if tree_cfg.session_field:
                     record[tree_cfg.session_field] = session_id
+
+            if theme is not None:
+                payload = record.get("payload")
+                if isinstance(payload, dict) and "instructions" in payload:
+                    payload["instructions"] = theme.instructions
+                if "instructions" in record:
+                    record["instructions"] = theme.instructions
 
             records.append(record)
 
@@ -393,6 +518,7 @@ class SyntheticCorpus:
         rng: random.Random,
         index: int,
         base_ts: float = 1700000000.0,
+        theme: ConversationTheme | None = None,
     ) -> None:
         """Ensure parser-essential fields have valid values.
 
@@ -405,17 +531,26 @@ class SyntheticCorpus:
 
         match self.provider:
             case "chatgpt":
-                self._fix_chatgpt(data, role, rng, ts)
+                self._fix_chatgpt(data, role, rng, ts, index=index, theme=theme)
             case "claude-ai":
-                self._fix_claude_ai(data, role, rng, ts)
+                self._fix_claude_ai(data, role, rng, ts, index=index, theme=theme)
             case "claude-code":
-                self._fix_claude_code(data, role, rng, ts)
+                self._fix_claude_code(data, role, rng, ts, index=index, theme=theme)
             case "codex":
-                self._fix_codex(data, role, rng, ts)
+                self._fix_codex(data, role, rng, ts, index=index, theme=theme)
             case "gemini":
-                self._fix_gemini(data, role, rng)
+                self._fix_gemini(data, role, rng, index=index, theme=theme)
 
-    def _fix_chatgpt(self, data: dict, role: str, rng: random.Random, ts: float) -> None:
+    def _fix_chatgpt(
+        self,
+        data: dict,
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None:
         msg = data.get("message")
         if not isinstance(msg, dict):
             # Schema might generate null message — force a valid one
@@ -429,21 +564,39 @@ class SyntheticCorpus:
         content = msg.setdefault("content", {})
         if isinstance(content, dict):
             if "parts" not in content or not content["parts"]:
-                content["parts"] = [_text_for_role(rng, role)]
+                content["parts"] = [_text_for_role(rng, role, turn_index=index, theme=theme)]
             content.setdefault("content_type", "text")
 
         msg.setdefault("create_time", ts)
         msg.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
 
-    def _fix_claude_ai(self, data: dict, role: str, rng: random.Random, ts: float) -> None:
+    def _fix_claude_ai(
+        self,
+        data: dict,
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None:
         data.setdefault("uuid", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
         data["sender"] = role
         if not data.get("text"):
-            data["text"] = _text_for_role(rng, role)
+            data["text"] = _text_for_role(rng, role, turn_index=index, theme=theme)
         if "created_at" not in data:
             data["created_at"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
-    def _fix_claude_code(self, data: dict, role: str, rng: random.Random, ts: float) -> None:
+    def _fix_claude_code(
+        self,
+        data: dict,
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None:
         data["type"] = role
         if not isinstance(data.get("message"), dict):
             data["message"] = {}
@@ -452,16 +605,31 @@ class SyntheticCorpus:
         # Real Claude Code data has message.role set; ensure synthetic does too.
         msg["role"] = role
         if "content" not in msg:
-            msg["content"] = [{"type": "text", "text": _text_for_role(rng, role)}]
+            msg["content"] = [{
+                "type": "text",
+                "text": _text_for_role(rng, role, turn_index=index, theme=theme),
+            }]
         if "timestamp" not in data:
             data["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
-    def _fix_codex(self, data: dict, role: str, rng: random.Random, ts: float) -> None:
+    def _fix_codex(
+        self,
+        data: dict,
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None:
         data["type"] = "message"
         data["role"] = role
         if "content" not in data:
             content_type = "input_text" if role == "user" else "output_text"
-            data["content"] = [{"type": content_type, "text": _text_for_role(rng, role)}]
+            data["content"] = [{
+                "type": content_type,
+                "text": _text_for_role(rng, role, turn_index=index, theme=theme),
+            }]
         data.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
         if "timestamp" not in data:
             data["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
@@ -469,10 +637,18 @@ class SyntheticCorpus:
         # which expects the message inside payload rather than at top level
         data.pop("payload", None)
 
-    def _fix_gemini(self, data: dict, role: str, rng: random.Random) -> None:
+    def _fix_gemini(
+        self,
+        data: dict,
+        role: str,
+        rng: random.Random,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None:
         data["role"] = role
         if not data.get("text"):
-            data["text"] = _text_for_role(rng, role)
+            data["text"] = _text_for_role(rng, role, turn_index=index, theme=theme)
 
     # ── Recursive schema-to-data generation ─────────────────────────────
 

@@ -15,7 +15,6 @@ Unique coverage:
 
 from __future__ import annotations
 
-import pytest
 
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.sources.providers.chatgpt import (

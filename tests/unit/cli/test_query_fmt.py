@@ -8,7 +8,6 @@ Covers:
 - _format_conversation: format dispatch
 - _format_list: list format dispatch
 - _apply_transform: strip-tools, strip-thinking, strip-all
-- _output_stats: stats output
 - _output_stats_by: grouped stats output
 - _write_message_streaming: streaming format output
 """
@@ -766,56 +765,6 @@ class TestApplyTransform:
         conv2 = _make_conv(id="c2")
         result = self._fn([conv1, conv2], "strip-tools")
         assert len(result) == 2
-
-
-# =============================================================================
-# Tests for _output_stats
-# =============================================================================
-
-
-class TestOutputStats:
-    def test_basic_stats(self) -> None:
-        from polylogue.cli.query import _output_stats
-
-        dt = datetime(2025, 6, 15, tzinfo=timezone.utc)
-        conv = _make_conv(updated_at=dt)
-        env = MagicMock()
-        _output_stats(env, [conv])
-        env.ui.console.print.assert_called()
-
-    def test_empty_results(self) -> None:
-        from polylogue.cli.query import _output_stats
-
-        env = MagicMock()
-        _output_stats(env, [])
-        env.ui.console.print.assert_called_once_with("No conversations matched.")
-
-    def test_aggregates_stats(self) -> None:
-        from polylogue.cli.query import _output_stats
-
-        dt1 = datetime(2025, 1, 15, tzinfo=timezone.utc)
-        dt2 = datetime(2025, 6, 15, tzinfo=timezone.utc)
-        convs = [
-            _make_conv(id="c1", updated_at=dt1),
-            _make_conv(id="c2", updated_at=dt2),
-        ]
-        env = MagicMock()
-        _output_stats(env, convs)
-        # Should have aggregated both conversations
-        env.ui.console.print.assert_called()
-
-    def test_calculates_word_count(self) -> None:
-        from polylogue.cli.query import _output_stats
-
-        msgs = [
-            _make_msg("user", "One two"),
-            _make_msg("assistant", "Three four five"),
-        ]
-        conv = _make_conv(messages=msgs)
-        env = MagicMock()
-        _output_stats(env, [conv])
-        # Should have called print with stats
-        env.ui.console.print.assert_called()
 
 
 # =============================================================================

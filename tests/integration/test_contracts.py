@@ -1,7 +1,7 @@
-"""Contract tests: verify all parsers work on all real data.
+"""Contract tests: verify all parsers work on seeded synthetic provider data.
 
-These tests use the raw_conversations table as the source of truth.
-Run `polylogue run --stage acquire` to populate it with real exports.
+These tests use the `raw_synthetic_samples` fixture as the source of truth.
+They intentionally avoid real user exports in CI/unit workflows.
 
 Control sample count via POLYLOGUE_TEST_SAMPLES:
 - POLYLOGUE_TEST_SAMPLES=100 (default) - Fast CI
@@ -38,8 +38,8 @@ def parse_raw_content(sample: RawConversationRecord) -> tuple[list | dict, str]:
     return json.loads(content), provider
 
 
-class TestParserExtractsFromRealData:
-    """Each parser must extract meaningful data from real exports."""
+class TestParserExtractsFromSeededData:
+    """Each parser must extract meaningful data from seeded synthetic exports."""
 
     def test_all_parsers_extract(self, raw_synthetic_samples: list[RawConversationRecord]) -> None:
         """Every raw conversation can be parsed without crashing."""
@@ -123,7 +123,7 @@ class TestParserExtractsFromRealData:
 
 
 class TestEdgeCaseHandling:
-    """Verify parsers handle known edge cases in real data."""
+    """Verify parsers handle known edge cases in seeded synthetic data."""
 
     def test_codex_continuations(self, raw_synthetic_samples: list[RawConversationRecord]) -> None:
         """Codex conversations with multiple session_meta are continuations."""
