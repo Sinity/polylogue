@@ -1,0 +1,198 @@
+"""Run observer primitives for progress and post-run notifications."""
+
+from __future__ import annotations
+
+import ipaddress
+import re
+import shlex
+import socket
+from typing import TYPE_CHECKING
+from urllib.parse import urlparse
+
+from polylogue.lib.log import get_logger
+
+if TYPE_CHECKING:
+    from polylogue.storage.store import RunResult
+
+logger = get_logger(__name__)
+
+# Pattern for detecting shell metacharacters that could enable command injection.
+_UNSAFE_PATTERN = re.compile(r'[;&|`(){}[\]<>!\\]|\$\(')
+
+
+def _new_conversation_count(result: RunResult) -> int:
+    value = result.counts.get("conversations", 0)
+    return value if isinstance(value, int) else 0
+
+
+class RunObserver:
+    """Base observer for pipeline progress and lifecycle notifications."""
+
+    def on_progress(self, amount: int, desc: str | None = None) -> None:
+        return None
+
+    def on_completed(self, result: RunResult) -> None:
+        return None
+
+    def on_idle(self, result: RunResult) -> None:
+        return None
+
+    def on_error(self, exc: Exception) -> None:
+        return None
+
+
+class CompositeObserver(RunObserver):
+    """Dispatches observer notifications to multiple observers in order."""
+
+    __slots__ = ("_observers",)
+
+    def __init__(self, observers: list[RunObserver]) -> None:
+        self._observers = observers
+
+    def _dispatch(self, method_name: str, *args: object) -> None:
+        for observer in self._observers:
+            try:
+                getattr(observer, method_name)(*args)
+            except Exception:
+                logger.exception("Observer %s failed during %s", type(observer).__name__, method_name)
+
+    def on_progress(self, amount: int, desc: str | None = None) -> None:
+        self._dispatch("on_progress", amount, desc)
+
+    def on_completed(self, result: RunResult) -> None:
+        self._dispatch("on_completed", result)
+
+    def on_idle(self, result: RunResult) -> None:
+        self._dispatch("on_idle", result)
+
+    def on_error(self, exc: Exception) -> None:
+        self._dispatch("on_error", exc)
+
+
+class NotificationObserver(RunObserver):
+    """Desktop notification via ``notify-send`` (or equivalent)."""
+
+    def on_completed(self, result: RunResult) -> None:
+        count = _new_conversation_count(result)
+        if count <= 0:
+            return
+        try:
+            import subprocess
+
+            subprocess.run(
+                ["notify-send", "Polylogue", f"Synced {count} new conversation(s)"],
+                capture_output=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            pass
+
+
+def _validate_webhook_url(url: str) -> None:
+    """Validate a webhook URL for SSRF protection."""
+    parsed = urlparse(url)
+
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Webhook URL must use http or https scheme, got: {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise ValueError("Webhook URL must have a hostname")
+
+    hostname = parsed.hostname
+    try:
+        addr_infos = socket.getaddrinfo(hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve webhook hostname {hostname!r}: {exc}") from exc
+
+    for _family, _type, _proto, _canonname, sockaddr in addr_infos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise ValueError(
+                f"Webhook URL resolves to private/reserved address {ip} "
+                f"(hostname: {hostname!r}). This is blocked for SSRF protection."
+            )
+
+
+class WebhookObserver(RunObserver):
+    """POST to webhook URL when a run produces new conversations."""
+
+    __slots__ = ("_url",)
+
+    def __init__(self, url: str) -> None:
+        _validate_webhook_url(url)
+        self._url = url
+
+    def on_completed(self, result: RunResult) -> None:
+        count = _new_conversation_count(result)
+        if count <= 0:
+            return
+        try:
+            import json
+            import urllib.request
+
+            _validate_webhook_url(self._url)
+
+            data = json.dumps({"event": "sync", "new_conversations": count}).encode()
+            req = urllib.request.Request(
+                self._url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=10)  # noqa: S310
+        except ValueError as exc:
+            logger.warning("Webhook blocked for %s: %s", self._url, exc)
+        except Exception as exc:
+            logger.warning("Webhook failed for %s: %s", self._url, exc)
+
+
+def _validate_exec_command(command: str) -> list[str]:
+    """Validate and parse an exec command string into a safe argv list."""
+    if not command or not command.strip():
+        raise ValueError("Exec command cannot be empty")
+
+    if _UNSAFE_PATTERN.search(command):
+        raise ValueError(
+            f"Exec command contains unsafe shell metacharacters: {command!r}. "
+            "Use a simple command without shell operators like ;, &, |, $, backticks, etc."
+        )
+
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise ValueError(f"Cannot parse exec command {command!r}: {exc}") from exc
+
+    if not argv:
+        raise ValueError("Exec command parsed to empty argument list")
+
+    return argv
+
+
+class ExecObserver(RunObserver):
+    """Run a command when a run produces new conversations."""
+
+    __slots__ = ("_argv",)
+
+    def __init__(self, command: str) -> None:
+        self._argv = _validate_exec_command(command)
+
+    def on_completed(self, result: RunResult) -> None:
+        count = _new_conversation_count(result)
+        if count <= 0:
+            return
+        import os
+        import subprocess
+
+        env = os.environ.copy()
+        env["POLYLOGUE_NEW_COUNT"] = str(count)
+        subprocess.run(self._argv, env=env, check=False)
+
+
+__all__ = [
+    "CompositeObserver",
+    "ExecObserver",
+    "NotificationObserver",
+    "RunObserver",
+    "WebhookObserver",
+    "_validate_exec_command",
+    "_validate_webhook_url",
+]

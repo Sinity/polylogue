@@ -32,6 +32,7 @@ from polylogue.storage.store import (
     ConversationRecord,
     MessageRecord,
     RawConversationRecord,
+    RawConversationState,
     RunRecord,
     _json_or_none,
     _make_ref_id,
@@ -1811,6 +1812,46 @@ class SQLiteBackend:
                     break
                 records.extend(_row_to_raw_conversation(row) for row in rows)
             return records
+
+    async def get_raw_conversation_states(
+        self,
+        raw_ids: list[str],
+    ) -> dict[str, RawConversationState]:
+        """Fetch persisted processing state for raw conversation IDs."""
+        if not raw_ids:
+            return {}
+
+        async with self._get_connection() as conn:
+            placeholders = ",".join("?" * len(raw_ids))
+            cursor = await conn.execute(
+                f"""
+                SELECT
+                    raw_id,
+                    source_name,
+                    source_path,
+                    parsed_at,
+                    parse_error,
+                    validation_status,
+                    validation_provider
+                FROM raw_conversations
+                WHERE raw_id IN ({placeholders})
+                """,
+                raw_ids,
+            )
+            rows = await cursor.fetchall()
+
+        return {
+            row["raw_id"]: RawConversationState(
+                raw_id=row["raw_id"],
+                source_name=row["source_name"],
+                source_path=row["source_path"],
+                parsed_at=row["parsed_at"],
+                parse_error=row["parse_error"],
+                validation_status=row["validation_status"],
+                validation_provider=row["validation_provider"],
+            )
+            for row in rows
+        }
 
     async def iter_raw_conversations(
         self,
