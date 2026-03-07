@@ -34,6 +34,8 @@ async with Polylogue() as archive:
     stats = await archive.stats()  # Returns ArchiveStats
     convs = await archive.get_conversations(["id1", "id2"])
     results = await archive.search("error handling")
+    for hit in results.hits:
+        print(hit.title)
     filtered = await archive.filter().contains("python").provider("claude").list()
     await archive.rebuild_index()
 ```

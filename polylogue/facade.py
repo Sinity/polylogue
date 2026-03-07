@@ -24,7 +24,6 @@ Example:
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -32,16 +31,68 @@ from typing import TYPE_CHECKING
 import structlog
 
 from polylogue.config import Config, Source
+from polylogue.render_paths import render_root
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.search import SearchHit, SearchResult
 
 logger = structlog.get_logger(__name__)
+
+
+def _build_search_snippet(text: str, query: str) -> str:
+    """Create a deterministic snippet around the earliest query-term match."""
+    if not text:
+        return ""
+
+    terms = [term.lower() for term in query.split() if term.strip()]
+    lowered = text.lower()
+    positions = [lowered.find(term) for term in terms if lowered.find(term) >= 0]
+    anchor = min(positions) if positions else 0
+    start = max(0, anchor - 60)
+    end = min(len(text), anchor + 140)
+    snippet = text[start:end].strip()
+    if start > 0:
+        snippet = f"...{snippet}"
+    if end < len(text):
+        snippet = f"{snippet}..."
+    return snippet
+
+
+def _conversation_search_hit(
+    conversation: Conversation,
+    *,
+    query: str,
+    render_root_path: Path,
+) -> SearchHit:
+    """Adapt a canonical conversation result into the SearchResult surface."""
+    terms = [term.lower() for term in query.split() if term.strip()]
+    matching_message = next(
+        (
+            msg
+            for msg in conversation.messages
+            if msg.text and any(term in msg.text.lower() for term in terms)
+        ),
+        next((msg for msg in conversation.messages if msg.text), None),
+    )
+    message_id = str(matching_message.id) if matching_message else ""
+    timestamp = matching_message.timestamp.isoformat() if matching_message and matching_message.timestamp else None
+    snippet = _build_search_snippet(matching_message.text or "", query) if matching_message else ""
+    conversation_path = render_root(render_root_path, conversation.provider, str(conversation.id)) / "conversation.md"
+    return SearchHit(
+        conversation_id=str(conversation.id),
+        provider_name=conversation.provider,
+        source_name=None,
+        message_id=message_id,
+        title=conversation.display_title,
+        timestamp=timestamp,
+        snippet=snippet,
+        conversation_path=conversation_path,
+    )
 
 if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation
     from polylogue.pipeline.services.parsing import ParseResult
-    from polylogue.storage.search import SearchResult
 
 
 class ArchiveStats:
@@ -235,32 +286,40 @@ class Polylogue:
         source: str | None = None,
         since: str | None = None,
     ) -> SearchResult:
-        """Search conversations using full-text search.
+        """Search conversations through the canonical query/filter path.
 
         Args:
             query: Search query string
             limit: Maximum number of results to return (default: 100)
-            source: Optional source/provider filter
+            source: Optional source/provider scope
             since: Optional timestamp filter (ISO format)
 
         Returns:
-            SearchResult with matching conversations
+            SearchResult adapted from canonical conversation matches
 
         Example:
             results = await archive.search("python error handling", limit=20)
             for hit in results.hits:
                 print(f"{hit.title}: {hit.snippet}")
         """
-        from polylogue.storage.search import search_messages
+        from polylogue.lib.query_spec import ConversationQuerySpec
 
-        return await asyncio.to_thread(
-            search_messages,
-            query=query,
-            archive_root=self._config.archive_root,
-            render_root_path=self._config.render_root,
-            limit=limit,
-            source=source,
+        spec = ConversationQuerySpec(
+            query_terms=(query,),
+            providers=(source,) if source else (),
             since=since,
+            limit=limit,
+        )
+        conversations = await spec.build_filter(self._repository).list()
+        return SearchResult(
+            hits=[
+                _conversation_search_hit(
+                    conversation,
+                    query=query,
+                    render_root_path=self._config.render_root,
+                )
+                for conversation in conversations
+            ]
         )
 
     async def parse_file(
