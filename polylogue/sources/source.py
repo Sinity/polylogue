@@ -170,7 +170,7 @@ def _looks_like_chunked_conversation_list(payload: list[Any]) -> bool:
     return bool(payload) and all(_looks_like_chunked_conversation(item) for item in payload)
 
 
-def _parse_json_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
+def parse_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
     """Dispatch parsed payload to the appropriate provider parser.
 
     This function is the central routing point for all conversation parsing.
@@ -201,7 +201,7 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str, _depth: i
         results: list[ParsedConversation] = []
         for i, item in enumerate(payload["conversations"]):
             if isinstance(item, dict):
-                results.extend(_parse_json_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
+                    results.extend(parse_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
         return results
     if provider == Provider.CHATGPT:
         if isinstance(payload, list):
@@ -242,7 +242,7 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str, _depth: i
         if _looks_like_chunked_conversation_list(payload):
             results = []
             for i, item in enumerate(payload):
-                results.extend(_parse_json_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
+                results.extend(parse_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
             return results
         return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
 
@@ -290,7 +290,7 @@ def parse_drive_payload(provider: str, payload: Any, fallback_id: str, _depth: i
         if "chunkedPrompt" in payload or "chunks" in payload:
             return [drive.parse_chunked_prompt(provider, payload, fallback_id)]
         detected = detect_provider(payload, Path(fallback_id)) or provider
-        return _parse_json_payload(detected, payload, fallback_id)
+        return parse_payload(detected, payload, fallback_id)
     return []
 
 
@@ -601,7 +601,7 @@ class _ConversationEmitter:
 
         raw_data = self._make_raw(raw_bytes) if raw_bytes else None
         provider = detect_provider(payloads, Path(stream_name)) or self._ctx.provider_hint
-        for conv in _parse_json_payload(provider, payloads, self._ctx.fallback_id):
+        for conv in parse_payload(provider, payloads, self._ctx.fallback_id):
             yield (raw_data, self._maybe_enrich(conv))
 
     def _emit_individual(
@@ -631,7 +631,7 @@ class _ConversationEmitter:
                 else:
                     raw_data = None
 
-                for conv in _parse_json_payload(provider, payload, self._ctx.fallback_id):
+                for conv in parse_payload(provider, payload, self._ctx.fallback_id):
                     yield (raw_data, self._maybe_enrich(conv, provider))
                 source_index += 1
             except Exception:
@@ -982,5 +982,6 @@ __all__ = [
     "iter_source_conversations",
     "iter_source_conversations_with_raw",
     "iter_source_raw_data",
+    "parse_payload",
     "parse_drive_payload",
 ]

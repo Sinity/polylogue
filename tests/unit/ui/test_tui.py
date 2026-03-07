@@ -212,7 +212,7 @@ async def test_search_flow(storage_repository, conversation_builder):
     from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import rebuild_index
 
-    with open_connection(storage_repository._backend._db_path) as conn:
+    with open_connection(storage_repository.backend.db_path) as conn:
         rebuild_index(conn)
 
     app = _make_app(storage_repository)
@@ -245,7 +245,7 @@ async def test_search_no_results(storage_repository, conversation_builder):
     from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import rebuild_index
 
-    with open_connection(storage_repository._backend._db_path) as conn:
+    with open_connection(storage_repository.backend.db_path) as conn:
         rebuild_index(conn)
 
     app = _make_app(storage_repository)

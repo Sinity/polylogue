@@ -15,7 +15,7 @@ from polylogue.sources.parsers.chatgpt import extract_messages_from_mapping
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.codex import parse as codex_parse
-from polylogue.sources.source import _parse_json_payload
+from polylogue.sources.source import parse_payload
 
 # =============================================================================
 # 1. CHATGPT AUTHOR FIELD CRASH
@@ -269,7 +269,7 @@ def test_codex_role_normalization_model_to_assistant():
 # =============================================================================
 
 
-def test_parse_json_payload_recursion_depth_limit():
+def test_parse_payload_recursion_depth_limit():
     """Test that deeply nested payloads don't cause stack overflow."""
     # Build a deeply nested payload with conversations key at depth > 10
     # Start with depth 12 (exceeds MAX_PARSE_DEPTH=10)
@@ -322,13 +322,13 @@ def test_parse_json_payload_recursion_depth_limit():
 
     # Should return a list (not crash on deep recursion)
     # The recursion limit prevents infinite loops but still returns an empty conversation
-    result = _parse_json_payload("chatgpt", payload, "test-deep")
+    result = parse_payload("chatgpt", payload, "test-deep")
     assert isinstance(result, list)
     # Should still return a result, but with no messages due to empty mapping
     assert len(result) >= 0
 
 
-def test_parse_json_payload_shallow_nesting_succeeds():
+def test_parse_payload_shallow_nesting_succeeds():
     """Test that moderately nested payloads within depth limit are parsed."""
     # Build a nested payload at depth 5 (within MAX_PARSE_DEPTH=10)
     payload = {
@@ -354,7 +354,7 @@ def test_parse_json_payload_shallow_nesting_succeeds():
         ]
     }
 
-    result = _parse_json_payload("chatgpt", payload, "test-shallow")
+    result = parse_payload("chatgpt", payload, "test-shallow")
     assert isinstance(result, list)
     assert len(result) > 0
 

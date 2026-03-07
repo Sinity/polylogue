@@ -155,6 +155,8 @@ def _execute_sync_once(
         source_names=selected_sources,
         progress_callback=progress_callback,
         render_format=render_format,
+        backend=env.backend,
+        repository=env.repository,
     ))
 
 
@@ -326,26 +328,27 @@ def run_command(
     if (notify or exec_cmd or webhook) and not watch:
         fail("run", "--notify, --exec, and --webhook require --watch mode")
 
-    from polylogue.services import get_service_config
-
-    cfg = get_service_config()
+    cfg = env.config
 
     selected_sources = resolve_sources(cfg, sources, "run")
     selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "run")
 
     # Reset parse tracking if --reparse was requested
     if reparse:
-        from polylogue.services import get_backend
-
-        backend = get_backend()
-        reset_count = asyncio.run(backend.reset_parse_status())
+        reset_count = asyncio.run(env.backend.reset_parse_status())
         click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
 
     # Preview mode
     plan_snapshot = None
     if preview:
         try:
-            plan_snapshot = plan_sources(cfg, stage=stage, ui=env.ui, source_names=selected_sources)
+            plan_snapshot = plan_sources(
+                cfg,
+                stage=stage,
+                ui=env.ui,
+                source_names=selected_sources,
+                backend=env.backend,
+            )
         except DriveError as exc:
             fail("run", str(exc))
         plan_lines = []
@@ -435,9 +438,7 @@ def run_command(
 @click.pass_obj
 def sources_command(env: AppEnv, json_output: bool) -> None:
     """List configured sources."""
-    from polylogue.services import get_service_config
-
-    cfg = get_service_config()
+    cfg = env.config
     if json_output:
         payload = [
             {

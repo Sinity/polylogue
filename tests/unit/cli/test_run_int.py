@@ -337,8 +337,8 @@ def mock_plan_result():
 def mock_repository():
     """Mock ConversationRepository."""
     repo = MagicMock()
-    repo._backend = MagicMock()
-    repo._backend._get_connection = MagicMock()
+    repo.backend = MagicMock()
+    repo.backend._get_connection = MagicMock()
     return repo
 
 
@@ -347,8 +347,13 @@ def mock_backend():
     """Mock SQLite backend."""
     backend = MagicMock()
     backend._get_connection = MagicMock()
-    backend.iter_raw_conversations = MagicMock(return_value=[])
-    backend.get_raw_conversation = MagicMock(return_value=None)
+    async def _empty_iter():
+        if False:
+            yield None
+
+    backend.iter_raw_conversations = MagicMock(return_value=_empty_iter())
+    backend.get_raw_conversation = AsyncMock(return_value=None)
+    backend.get_raw_conversations_batch = AsyncMock(return_value=[])
     return backend
 
 
@@ -587,7 +592,7 @@ class TestParsingService:
     async def test_parse_from_raw(self, mock_backend, backend_initialized, provider):
         """parse_from_raw validates backend and filters by provider."""
         repo = MagicMock()
-        repo._backend = mock_backend if backend_initialized else None
+        repo.backend = mock_backend if backend_initialized else None
         service = ParsingService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
         if not backend_initialized:
             with pytest.raises(RuntimeError, match="backend is not initialized"):
@@ -612,13 +617,13 @@ class TestParsingService:
     async def test_parse_raw_record_content_types(self, mock_backend, format_type, content, provider, is_bytes):
         """_parse_raw_record handles JSONL, JSON, and string content."""
         repo = MagicMock()
-        repo._backend = mock_backend
+        repo.backend = mock_backend
         service = ParsingService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
         raw_record = MagicMock()
         raw_record.raw_content = content.encode("utf-8") if is_bytes else content
         raw_record.provider_name = provider
         raw_record.raw_id = "raw-123"
-        with patch("polylogue.pipeline.services.parsing._parse_json_payload") as mock_parse:
+        with patch("polylogue.pipeline.services.parsing.parse_payload") as mock_parse:
             mock_parse.return_value = [] if format_type == "string" else [ParsedConversation(provider_name=provider, provider_conversation_id=f"conv-{format_type}", messages=[])]
             await service._parse_raw_record(raw_record)
             mock_parse.assert_called_once()

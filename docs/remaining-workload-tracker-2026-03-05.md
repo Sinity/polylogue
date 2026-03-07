@@ -6,7 +6,8 @@ Canonical checkpoint for unfinished work. Originally updated to final closure st
 
 - Project closure scope from the original schema/validation thread: **completed**.
 - Additional backlog discovered after post-closure audit: **yes**.
-- Current blocker class: **runtime integration debt and cleanup debt**, not schema closure.
+- Current blocker class: **none**.
+- Current residual class: **cleanup/investigation debt**, not runtime correctness or schema closure.
 
 ## Final Completion Snapshot (2026-03-06)
 
@@ -133,3 +134,41 @@ Key findings:
 3. Review whether `tests/unit/storage/test_scale.py` should stay in the default suite at current corpus sizes or move partly into a dedicated performance slice.
 4. Profile setup-heavy files (`test_fts5.py`, filter suites, health/integration setups) for avoidable repeated DB/bootstrap work.
 5. Compare warm-cache vs cold-cache runs only if operator-reported “used to be much faster” still does not match the measured recent-history deltas above.
+
+## Current Live Backlog (Supersedes Expanded Remaining Backlog Above)
+
+As of the latest cleanup pass on 2026-03-07, the earlier "expanded remaining backlog" is largely resolved.
+
+### Newly Completed Since That Audit
+
+- MCP server async misuse is fixed.
+  - Resources, prompts, and mutation/read tools now use async-safe repository access.
+- MCP index operations now match the current `IndexService` API.
+- Ambient singleton runtime access is removed from CLI/runtime entry points.
+  - Runtime scope is carried explicitly via `RuntimeServices` / `AppEnv`.
+- Forced-plain-mode logic is unified.
+- Markdown/attachment formatting duplication is reduced to a shared rendering path.
+- Parsing now fails explicitly when a repository backend is missing instead of exploding later on awaited mocks.
+- Additional private-boundary cleanup landed:
+  - `Polylogue.backend` public property
+  - `SQLiteBackend.connection()` public async context
+  - production callers moved off direct `_get_connection()` reach-through where practical
+  - several tests moved off `_backend` / private DB-path access
+- Full regression suite after these changes:
+  - `4532 passed in 273.83s (0:04:33)`
+
+### Remaining Actual Backlog
+
+1. Continue reducing private/internal storage reach-throughs in tests and storage-layer helpers.
+   - Most remaining uses are test-side or storage-internal, not runtime entry-point bugs.
+2. Reduce broad `Any` usage in pipeline/query/MCP orchestration surfaces.
+   - This is now mostly type-sharpening and interface cleanup.
+3. Optional test-runtime investigation if desired.
+   - Directory-level timings
+   - sqlite-vec retry-wait removal in tests
+   - scale-suite scope review
+
+### Closure Note
+
+- No known runtime integration blockers remain from the 2026-03-07 audit.
+- Remaining work is incremental cleanup/performance work, not correctness debt blocking normal use.
