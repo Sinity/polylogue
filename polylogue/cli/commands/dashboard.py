@@ -3,7 +3,6 @@ from __future__ import annotations
 import click
 
 from polylogue.cli.types import AppEnv
-from polylogue.config import get_config
 
 
 @click.command("dashboard")
@@ -12,8 +11,7 @@ def dashboard_command(env: AppEnv) -> None:
     """Launch the Mission Control TUI dashboard."""
     from polylogue.ui.tui.app import PolylogueApp
 
-    config = get_config()
-    app = PolylogueApp(config=config)
+    app = PolylogueApp(config=env.config, repository=env.repository)
     app.run()
 
 

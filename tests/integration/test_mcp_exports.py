@@ -2,12 +2,38 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tests.integration.conftest import make_mock_filter
+
+
+def _invoke_surface(fn, /, *args, **kwargs):
+    """Call an MCP surface whether it is sync or async."""
+    result = fn(*args, **kwargs)
+    if asyncio.iscoroutine(result):
+        return asyncio.run(result)
+    return result
+
+
+async def _invoke_surface_async(fn, /, *args, **kwargs):
+    """Await an MCP surface from async tests."""
+    result = fn(*args, **kwargs)
+    if asyncio.iscoroutine(result):
+        return await result
+    return result
+
+
+def _make_repo_mock() -> MagicMock:
+    """Create a repository mock with async methods for MCP handlers."""
+    repo = MagicMock()
+    repo.view = AsyncMock(return_value=None)
+    repo.get = AsyncMock(return_value=None)
+    repo.list_tags = AsyncMock(return_value={})
+    return repo
 
 # =============================================================================
 # Tier 5: Export Tool Tests
@@ -23,13 +49,13 @@ class TestExportConversationTool:
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             with patch("polylogue.lib.formatting.format_conversation") as mock_format:
-                mock_repo = MagicMock()
+                mock_repo = _make_repo_mock()
                 mock_repo.view.return_value = simple_conversation
                 mock_get_repo.return_value = mock_repo
                 mock_format.return_value = "# Test Conversation\n\nFormatted content"
 
                 server = _build_server()
-                result = server._tool_manager._tools["export_conversation"].fn(
+                result = _invoke_surface(server._tool_manager._tools["export_conversation"].fn,
                     id="test:conv-123", format="markdown"
                 )
 
@@ -44,12 +70,12 @@ class TestExportConversationTool:
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
+            mock_repo = _make_repo_mock()
             mock_repo.view.return_value = None
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._tool_manager._tools["export_conversation"].fn(id="nonexistent")
+            result = _invoke_surface(server._tool_manager._tools["export_conversation"].fn, id="nonexistent")
 
             parsed = json.loads(result)
             assert "error" in parsed
@@ -61,13 +87,13 @@ class TestExportConversationTool:
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             with patch("polylogue.lib.formatting.format_conversation") as mock_format:
-                mock_repo = MagicMock()
+                mock_repo = _make_repo_mock()
                 mock_repo.view.return_value = simple_conversation
                 mock_get_repo.return_value = mock_repo
                 mock_format.return_value = "# Content"
 
                 server = _build_server()
-                server._tool_manager._tools["export_conversation"].fn(
+                _invoke_surface(server._tool_manager._tools["export_conversation"].fn,
                     id="test:conv-123", format="invalid_format"
                 )
 
@@ -89,12 +115,12 @@ class TestNewResources:
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
+            mock_repo = _make_repo_mock()
             mock_repo.list_tags.return_value = {"feature": 10, "bug": 5}
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._resource_manager._resources["polylogue://tags"].fn()
+            result = _invoke_surface(server._resource_manager._resources["polylogue://tags"].fn, )
 
             parsed = json.loads(result)
             assert parsed["feature"] == 10
@@ -118,7 +144,7 @@ class TestNewResources:
                 mock_get_health.return_value = mock_report
 
                 server = _build_server()
-                result = server._resource_manager._resources["polylogue://health"].fn()
+                result = _invoke_surface(server._resource_manager._resources["polylogue://health"].fn, )
 
                 parsed = json.loads(result)
                 assert "checks" in parsed
@@ -138,12 +164,12 @@ class TestNewPrompts:
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
+            mock_repo = _make_repo_mock()
             mock_repo.view.side_effect = [simple_conversation, simple_conversation]
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._prompt_manager._prompts["compare_conversations"].fn(
+            result = _invoke_surface(server._prompt_manager._prompts["compare_conversations"].fn,
                 id1="test:conv-1", id2="test:conv-2"
             )
 
@@ -159,12 +185,12 @@ class TestNewPrompts:
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                mock_repo = MagicMock()
+                mock_repo = _make_repo_mock()
                 mock_get_repo.return_value = mock_repo
                 MockFilter.return_value = make_mock_filter(results=[simple_conversation])
 
                 server = _build_server()
-                result = await server._prompt_manager._prompts["extract_patterns"].fn()
+                result = await _invoke_surface_async(server._prompt_manager._prompts["extract_patterns"].fn, )
 
                 assert isinstance(result, str)
                 assert "patterns" in result.lower()
@@ -200,4 +226,3 @@ class TestSafeCall:
         assert "error" in parsed
         assert "Something went wrong" in parsed["error"]
         assert parsed["tool"] == "test_fn"
-

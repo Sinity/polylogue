@@ -96,7 +96,7 @@ class PrepareCache:
         for chunk_start in range(0, len(cid_list), 500):
             chunk = cid_list[chunk_start : chunk_start + 500]
             placeholders = ", ".join("?" for _ in chunk)
-            async with backend._get_connection() as conn:
+            async with backend.connection() as conn:
                 cursor = await conn.execute(
                     f"SELECT conversation_id, content_hash FROM conversations "
                     f"WHERE conversation_id IN ({placeholders})",
@@ -115,7 +115,7 @@ class PrepareCache:
         for chunk_start in range(0, len(existing_cids), 500):
             chunk = existing_cids[chunk_start : chunk_start + 500]
             placeholders = ", ".join("?" for _ in chunk)
-            async with backend._get_connection() as conn:
+            async with backend.connection() as conn:
                 cursor = await conn.execute(
                     f"SELECT conversation_id, provider_message_id, message_id "
                     f"FROM messages WHERE conversation_id IN ({placeholders}) "
@@ -182,13 +182,14 @@ async def prepare_records(
     Returns:
         Tuple of (conversation_id, result_counts, content_changed)
     """
-    # Create default repository if none provided
+    if repository is None and backend is None:
+        raise ValueError("prepare_records requires a repository or backend")
     if repository is None:
         from polylogue.storage.repository import ConversationRepository
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
-        backend = SQLiteBackend()
         repository = ConversationRepository(backend=backend)
+    if backend is None:
+        backend = repository.backend
 
     # Skip conversations with no messages — these are empty shells from
     # parse filtering (e.g. JSONL files with only metadata records)
@@ -210,7 +211,7 @@ async def prepare_records(
     if cache is not None:
         existing = cache.existing.get(candidate_cid)
     elif backend:
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT conversation_id, content_hash
@@ -241,7 +242,7 @@ async def prepare_records(
             if candidate_parent in cache.known_ids:
                 parent_conversation_id = candidate_parent
         elif backend:
-            async with backend._get_connection() as conn:
+            async with backend.connection() as conn:
                 cursor = await conn.execute(
                     "SELECT 1 FROM conversations WHERE conversation_id = ?",
                     (candidate_parent,),
@@ -277,7 +278,7 @@ async def prepare_records(
     if cache is not None:
         existing_message_ids = cache.message_ids.get(cid, {})
     elif backend:
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT provider_message_id, message_id
