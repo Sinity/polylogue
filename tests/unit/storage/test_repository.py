@@ -718,7 +718,7 @@ class TestEmbedConversation:
     async def test_embed_conversation_counts_messages(self, repo_with_conversations, conv_id, has_messages, expected_count):
         """embed_conversation() uses provider and returns correct message count."""
         if not has_messages:
-            (ConversationBuilder(repo_with_conversations.backend._db_path, "conv-empty")
+            (ConversationBuilder(repo_with_conversations.backend.db_path, "conv-empty")
              .provider("claude")
              .title("Empty Conversation")
              .save())

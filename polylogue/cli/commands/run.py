@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 import json
 import time
@@ -32,6 +32,7 @@ from polylogue.pipeline.observers import (
     RunObserver,
     WebhookObserver,
 )
+from polylogue.protocols import ProgressCallback
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, plan_sources, run_sources
 from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
@@ -144,7 +145,7 @@ def _execute_sync_once(
     selected_sources: list[str] | None,
     render_format: str,
     plan_snapshot: PlanResult | None = None,
-    progress_callback: Callable[[int, str | None], None] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> RunResult:
     """Execute a single sync run with the provided progress callback."""
     return asyncio.run(run_sources(

@@ -112,7 +112,7 @@ class TestConnectionManagement:
         backend = sqlite_backend
 
         # Insert 20 conversations
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             for i in range(20):
                 await conn.execute(
                     "INSERT INTO conversations (conversation_id, provider_name, "
@@ -133,7 +133,7 @@ class TestConnectionManagement:
         backend = sqlite_backend
 
         # Insert conversations with messages
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             for i in range(5):
                 await conn.execute(
                     "INSERT INTO conversations (conversation_id, provider_name, "
@@ -170,7 +170,7 @@ class TestConnectionManagement:
         """Requesting nonexistent IDs should return only existing ones."""
         backend = sqlite_backend
 
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             await conn.execute(
                 "INSERT INTO conversations (conversation_id, provider_name, "
                 "provider_conversation_id, content_hash, version) "
@@ -220,7 +220,7 @@ class TestConcurrentSaveGuards:
         await asyncio.gather(*[_save_one(i) for i in range(10)])
 
         # Verify all saved
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
             row = await cursor.fetchone()
             assert row[0] == 10
@@ -255,7 +255,7 @@ class TestConcurrentSaveGuards:
         await asyncio.gather(*[_upsert(i) for i in range(5)])
 
         # Should have exactly 1 conversation (upserted, not duplicated)
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
             row = await cursor.fetchone()
             assert row[0] == 1
@@ -279,7 +279,7 @@ class TestConcurrentSaveGuards:
             await backend.save_conversation(conv, [], [])
 
         async def _read() -> int:
-            async with backend._get_connection() as conn:
+            async with backend.connection() as conn:
                 cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
                 row = await cursor.fetchone()
                 return row[0]

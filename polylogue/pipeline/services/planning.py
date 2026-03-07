@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any
 
+from polylogue.config import Config, Source
+from polylogue.protocols import ProgressCallback
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import PlanResult, RawConversationRecord
 
 from .acquisition import AcquisitionService
@@ -39,17 +41,17 @@ class IngestPlan:
 class PlanningService:
     """Build canonical preview/runtime plans from source scans and DB state."""
 
-    def __init__(self, backend: Any, config: Any):
+    def __init__(self, backend: SQLiteBackend, config: Config):
         self.backend = backend
         self.config = config
 
     async def build_plan(
         self,
         *,
-        sources: list[Any],
+        sources: list[Source],
         stage: str = "all",
         ui: object | None = None,
-        progress_callback: Any | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> IngestPlan:
         source_names = [source.name for source in sources]
         db_scope_names = source_names or None
@@ -104,7 +106,7 @@ class PlanningService:
             sources,
             progress_callback=progress_callback,
             ui=ui,
-            drive_config=self.config.drive_config if hasattr(self.config, "drive_config") else None,
+            drive_config=self.config.drive_config,
         )
 
         scanned_records = scan_result.records

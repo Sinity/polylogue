@@ -67,9 +67,6 @@ class ConversationRepository:
         else:
             self._backend = SQLiteBackend(db_path=db_path)
 
-        # Expose db_path for schema inference (generate_provider_schema needs it)
-        self._db_path = getattr(self._backend, "_db_path", None)
-
     async def __aenter__(self) -> ConversationRepository:
         """Enter async context manager."""
         return self
@@ -582,7 +579,7 @@ class ConversationRepository:
         placeholders = ",".join("?" * len(message_ids))
         query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
 
-        async with self._backend._get_connection() as conn:
+        async with self._backend.connection() as conn:
             cursor = await conn.execute(query, message_ids)
             rows = await cursor.fetchall()
 
@@ -704,7 +701,7 @@ class ConversationRepository:
 
         # Lightweight hash check OUTSIDE the write lock — read-only, no contention
         existing_hash: str | None = None
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute(
                 "SELECT content_hash FROM conversations WHERE conversation_id = ?",
                 (conversation.conversation_id,),
@@ -918,7 +915,7 @@ class ConversationRepository:
         """
         from polylogue.lib.stats import ArchiveStats
 
-        async with self._backend._get_connection() as conn:
+        async with self._backend.connection() as conn:
             # Total counts
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
             conv_count = (await cursor.fetchone())[0]
@@ -959,7 +956,7 @@ class ConversationRepository:
         try:
             from pathlib import Path
 
-            db_size = Path(self._db_path).stat().st_size if self._db_path else 0
+            db_size = self._backend.db_path.stat().st_size
         except Exception as exc:
             logger.warning("DB size check failed: %s", exc)
 
