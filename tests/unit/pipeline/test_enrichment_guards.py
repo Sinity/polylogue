@@ -140,8 +140,10 @@ class TestEnrichContentBlocks:
         """Empty fenced blocks are handled gracefully."""
         blocks = [{"type": "text", "text": "```\n\n```"}]
         result = enrich_content_blocks(blocks)
-        # Should handle without error
-        assert len(result) >= 0
+        assert len(result) == 1
+        assert result[0]["type"] == "code"
+        assert result[0]["text"] == ""
+        assert result[0]["language"] is None
 
     def test_existing_code_block_with_javascript_language(self):
         """Code blocks with language pass through unchanged (javascript)."""

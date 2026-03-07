@@ -43,6 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
+from polylogue.schemas.unified import extract_from_provider_meta
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from polylogue.types import ConversationId, MessageId
 
@@ -171,19 +172,27 @@ class Message(BaseModel):
     role: str
     text: str | None = None
     timestamp: datetime | None = None
+    provider: str | None = None
     attachments: list[Attachment] = Field(default_factory=list)
     provider_meta: dict[str, object] | None = None
     parent_id: str | None = None
     branch_index: int = 0
 
     @classmethod
-    def from_record(cls, record: MessageRecord, attachments: list[AttachmentRecord]) -> Message:
+    def from_record(
+        cls,
+        record: MessageRecord,
+        attachments: list[AttachmentRecord],
+        *,
+        provider: str | None = None,
+    ) -> Message:
         ts = parse_timestamp(record.timestamp)
         return cls(
             id=record.message_id,
             role=(record.role or "").strip() or "unknown",
             text=record.text,
             timestamp=ts,
+            provider=provider,
             attachments=[Attachment.from_record(a) for a in attachments],
             provider_meta=record.provider_meta,
             parent_id=record.parent_message_id,
@@ -226,6 +235,23 @@ class Message(BaseModel):
 
     # --- Content classification (dynamic, heuristic-based) ---
 
+    @cached_property
+    def harmonized(self):
+        """Harmonized viewports extracted from provider_meta when provider is known."""
+        if not self.provider or not self.provider_meta:
+            return None
+        try:
+            return extract_from_provider_meta(
+                self.provider,
+                self.provider_meta,
+                message_id=self.id,
+                role=self.role,
+                text=self.text,
+                timestamp=self.timestamp,
+            )
+        except Exception:
+            return None
+
     def _is_chatgpt_thinking(self) -> bool:
         """Check if this is a ChatGPT reasoning model thinking trace."""
         if not self.provider_meta:
@@ -252,6 +278,13 @@ class Message(BaseModel):
     @property
     def is_tool_use(self) -> bool:
         """Message contains tool/function calls or results."""
+        harmonized = self.harmonized
+        if harmonized is not None and (
+            harmonized.has_tool_use
+            or any(block.type.value in {"tool_use", "tool_result"} for block in harmonized.content_blocks)
+        ):
+            return True
+
         # Check structured content_blocks (populated at parse time)
         if self.provider_meta:
             blocks = self.provider_meta.get("content_blocks", [])
@@ -274,6 +307,13 @@ class Message(BaseModel):
     @property
     def is_thinking(self) -> bool:
         """Message contains reasoning/thinking traces."""
+        harmonized = self.harmonized
+        if harmonized is not None and (
+            harmonized.has_reasoning
+            or any(block.type.value == "thinking" for block in harmonized.content_blocks)
+        ):
+            return True
+
         # Check structured content_blocks (populated at parse time)
         if self.provider_meta:
             blocks = self.provider_meta.get("content_blocks", [])
@@ -530,7 +570,11 @@ class Conversation(BaseModel):
                 att_map.setdefault(att.message_id, []).append(att)
 
         rich_messages = [
-            Message.from_record(msg, att_map.get(msg.message_id, []))
+            Message.from_record(
+                msg,
+                att_map.get(msg.message_id, []),
+                provider=conversation.provider_name,
+            )
             for msg in messages
         ]
 

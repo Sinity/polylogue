@@ -19,7 +19,7 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import (
     message_id as make_message_id,
 )
-from polylogue.sources.source import RecordBundle, SaveResult, save_bundle
+from polylogue.sources.source import RecordBundle, save_bundle
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, ExistingConversation, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId
 

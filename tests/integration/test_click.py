@@ -542,6 +542,7 @@ class TestCliMetadata:
             "dashboard",
             "demo",
             "embed",
+            "qa",
             "site",
             "tags",
         }

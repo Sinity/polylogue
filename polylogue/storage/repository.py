@@ -507,12 +507,14 @@ class ConversationRepository:
         Yields:
             Message objects one at a time
         """
+        conv_record = await self._backend.get_conversation(conversation_id)
+        provider_name = conv_record.provider_name if conv_record else None
         async for record in self._backend.iter_messages(
             conversation_id,
             dialogue_only=dialogue_only,
             limit=limit,
         ):
-            yield Message.from_record(record, attachments=[])
+            yield Message.from_record(record, attachments=[], provider=provider_name)
 
     async def search_similar(
         self,

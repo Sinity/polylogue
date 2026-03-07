@@ -1,7 +1,7 @@
-"""Validate extraction logic against real database data.
+"""Validate extraction logic against seeded synthetic database data.
 
 Uses polylogue database's `provider_meta.raw` as ground truth.
-Extraction must work on 100% of real data with zero errors.
+Extraction should work on 100% of seeded synthetic data with zero errors.
 
 Test modes:
     - Default: Sample 100 messages per provider (fast)
@@ -100,7 +100,7 @@ class TestExtractionValidation:
 
     @pytest.mark.parametrize("provider", ["claude-code", "chatgpt", "codex"])
     def test_extraction_succeeds(self, seeded_db, provider):
-        """Extraction should succeed on real messages from fixtures.
+        """Extraction should succeed on seeded synthetic messages.
 
         Sample limit controlled by POLYLOGUE_TEST_SAMPLES env var:
         - Default (100): Fast feedback
@@ -377,7 +377,7 @@ class TestRawConversationParsing:
     """Validate provider parsers against raw_conversations table.
 
     This is the SYSTEMATIC test for parsers - instead of crafting test cases,
-    we run parsers against real stored data to ensure 100% success rate.
+    we run parsers against seeded stored data to ensure 100% success rate.
     """
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "codex"])
@@ -385,9 +385,9 @@ class TestRawConversationParsing:
         """Every raw_conversation for this provider parses without error.
 
         This test replaces many spot checks in test_parsers_unit.py by:
-        1. Testing against REAL provider data (not synthetic)
+        1. Testing against seeded provider-format data through full storage paths
         2. Testing ALL stored conversations (not cherry-picked examples)
-        3. Ensuring parsers work on edge cases naturally in the data
+        3. Ensuring parsers work on naturally varied records from generated corpus
         """
         from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
         from polylogue.sources.parsers.claude import parse_code as claude_code_parse
