@@ -109,6 +109,36 @@ async def test_search_includes_conversation_metadata(workspace_env, storage_repo
     assert hit.source_name == "my-source"
 
 
+async def test_search_returns_best_message_per_conversation(workspace_env, storage_repository):
+    """search_messages() picks the strongest per-conversation hit deterministically."""
+    archive_root = workspace_env["archive_root"]
+    bundle = RecordBundle(
+        conversation=make_conversation("conv-best-hit", title="Best Hit Test"),
+        messages=[
+            make_message(
+                "msg-best-old",
+                "conv-best-hit",
+                text="deterministic best hit token",
+                timestamp="2024-01-01T00:00:00",
+            ),
+            make_message(
+                "msg-best-new",
+                "conv-best-hit",
+                text="deterministic best hit token",
+                timestamp="2024-02-01T00:00:00",
+            ),
+        ],
+        attachments=[],
+    )
+    await save_bundle(bundle, repository=storage_repository)
+    rebuild_index()
+
+    results = search_messages("deterministic best hit token", archive_root=archive_root, limit=5)
+
+    assert len(results.hits) == 1
+    assert results.hits[0].message_id == "msg-best-new"
+
+
 # ============================================================================
 # Tests for search ranking and special characters
 # ============================================================================
@@ -684,7 +714,7 @@ class TestFTS5Provider:
         # The populated fixture has messages about quicksort
         results = populated_fts.search("quicksort")
         assert len(results) == 2  # Both messages mention quicksort
-        # Results should be in relevance order (checked implicitly by ORDER BY rank)
+        # Results should be in relevance order (checked implicitly by the stable BM25 ordering)
 
     def test_search_escapes_fts5_special_chars(self, populated_fts):
         """Search query escapes FTS5 special characters."""
@@ -702,6 +732,10 @@ class TestFTS5Provider:
 
         # Could be empty or match all - depends on FTS5 behavior
         assert isinstance(results, list)
+
+    def test_search_returns_empty_for_blank_query(self, populated_fts):
+        """Blank queries short-circuit instead of issuing empty MATCH searches."""
+        assert populated_fts.search("") == []
 
 
 INDEX_CHUNKED_CASES = [

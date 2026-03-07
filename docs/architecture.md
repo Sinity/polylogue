@@ -189,8 +189,7 @@ polylogue/
 │   ├── prepare.py           # Ingest preparation (hashing, dedup)
 │   ├── enrichment.py        # Post-ingest enrichment
 │   ├── ids.py               # Content hash generation
-│   ├── event_bus.py         # Pipeline event system
-│   ├── events.py            # Event type definitions
+│   ├── events.py            # Watch sync event definitions + handlers
 │   └── watch.py             # File watching for continuous sync
 │
 ├── storage/                  # Storage Layer
@@ -273,11 +272,11 @@ Entry point for all user interaction. Uses Click with a custom `QueryFirstGroup`
 
 ### Pipeline Layer (`pipeline/`)
 
-Orchestrates the full ingestion lifecycle. The `runner.py` module coordinates the four pipeline services in sequence, with event-bus notifications at each stage.
+Orchestrates the full ingestion lifecycle. The `runner.py` module coordinates the pipeline services in sequence (`acquire -> validate -> parse -> render -> index`) and reports stage progress via callbacks; watch-mode notifications flow through `events.py` and `watch.py`.
 
 - **runner.py**: `run_sources()` is the top-level async entry point
-- **services/**: Stateless service classes (acquisition, parsing, rendering, indexing) injected with repositories
-- **event_bus.py**: Decoupled progress reporting (the TUI subscribes to pipeline events)
+- **services/**: Stateless service classes (acquisition, validation, parsing, rendering, indexing) injected with repositories
+- **events.py** / **watch.py**: Watch-mode sync events and downstream notification handlers
 
 ### Ingestion Layer (`sources/`)
 
