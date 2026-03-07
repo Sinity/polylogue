@@ -155,6 +155,11 @@ class Polylogue:
         """Get the archive root directory."""
         return self._config.archive_root
 
+    @property
+    def backend(self) -> SQLiteBackend:
+        """Get the archive backend."""
+        return self._backend
+
     async def get_conversation(self, conversation_id: str) -> Conversation | None:
         """Get a conversation by ID.
 

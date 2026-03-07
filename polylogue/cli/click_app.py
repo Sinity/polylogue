@@ -24,7 +24,7 @@ from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
 from polylogue.cli.commands.site import site_command
 from polylogue.cli.commands.tags import tags_command
-from polylogue.cli.formatting import announce_plain_mode, should_use_plain
+from polylogue.cli.formatting import announce_plain_mode, plain_forced_by_env, should_use_plain
 from polylogue.cli.types import AppEnv
 from polylogue.lib.log import configure_logging
 from polylogue.ui import create_ui
@@ -332,9 +332,7 @@ def cli(
     ctx.obj = env
 
     # Announce plain mode if auto-detected (not explicitly requested)
-    env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
-    forced_plain = bool(env_force and env_force.lower() not in {"0", "false", "no"})
-    if use_plain and not plain and not forced_plain:
+    if use_plain and not plain and not plain_forced_by_env():
         announce_plain_mode()
 
 

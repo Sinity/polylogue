@@ -5,7 +5,7 @@ MERGED: test_source_iteration_coverage.py content integrated below (35 additiona
 Targets:
 1. polylogue/sources/source.py (83% → 90%):
    - _decode_json_bytes fallback paths (lines 100-102)
-   - _parse_json_payload recursion/branches (lines 149-150, 154-155, 165, 232-235, 262-263, 277-278)
+   - parse_payload recursion/branches (lines 149-150, 154-155, 165, 232-235, 262-263, 277-278)
    - detect_provider filename heuristics (lines 149-150, 155, 165, etc.)
    - _iter_json_stream error handling and edge cases
    - ZIP bomb protection (compression ratio, file size limits)
@@ -36,7 +36,7 @@ from polylogue.sources.source import (
     MAX_UNCOMPRESSED_SIZE,
     _decode_json_bytes,
     _iter_json_stream,
-    _parse_json_payload,
+    parse_payload,
     detect_provider,
     iter_source_conversations,
     iter_source_conversations_with_raw,
@@ -155,7 +155,7 @@ class TestDetectProvider:
 
 
 # =============================================================================
-# _parse_json_payload Tests (lines 137-197) — PARAMETRIZED
+# parse_payload Tests (lines 137-197) — PARAMETRIZED
 # =============================================================================
 
 
@@ -198,9 +198,9 @@ class TestParseJsonPayload:
             "unknown_generic",
         ],
     )
-    def test_parse_json_payload_variants(self, provider, payload, expected_count):
-        """Test _parse_json_payload with various provider/payload combos."""
-        results = _parse_json_payload(provider, payload, "test-id")
+    def test_parse_payload_variants(self, provider, payload, expected_count):
+        """Test parse_payload with various provider/payload combos."""
+        results = parse_payload(provider, payload, "test-id")
         assert len(results) == expected_count
         if expected_count:
             assert results[0].provider_name == provider or provider == "unknown"
@@ -208,7 +208,7 @@ class TestParseJsonPayload:
     def test_parse_recursion_depth_exceeded(self):
         """Recursion depth limit should stop (line 138-140)."""
         with patch("polylogue.sources.source._MAX_PARSE_DEPTH", 0):
-            results = _parse_json_payload("drive", [{"chunks": []}], "test-id", _depth=1)
+            results = parse_payload("drive", [{"chunks": []}], "test-id", _depth=1)
             assert results == []
 
 
@@ -347,7 +347,7 @@ class TestIterSourceConversationsZip:
             zf.writestr("conv.json", '{"mapping": {}}')
 
         source = Source(name="test", path=zip_path)
-        with patch("polylogue.sources.source._parse_json_payload", side_effect=ValueError("test")):
+        with patch("polylogue.sources.source.parse_payload", side_effect=ValueError("test")):
             list(iter_source_conversations(source))
 
 
@@ -472,7 +472,7 @@ class TestIterSourceConversationsErrorHandling:
         json_file.write_text('{"mapping": {}}')
 
         source = Source(name="test", path=json_file)
-        with patch("polylogue.sources.source._parse_json_payload", side_effect=RuntimeError("unexpected")):
+        with patch("polylogue.sources.source.parse_payload", side_effect=RuntimeError("unexpected")):
             list(iter_source_conversations(source, cursor_state=cursor_state))
             assert cursor_state.get("failed_count", 0) >= 0
 
@@ -892,28 +892,28 @@ class TestDetectProviderEdgeCases:
 
 
 class TestParseJsonPayloadRecursion:
-    """Tests for recursion depth handling in _parse_json_payload."""
+    """Tests for recursion depth handling in parse_payload."""
 
     def test_max_depth_returns_empty(self):
         """Exceeding max recursion depth returns empty list."""
-        from polylogue.sources.source import _parse_json_payload
+        from polylogue.sources.source import parse_payload
 
         # Create payload that would recurse deeply
-        result = _parse_json_payload("chatgpt", {}, "test", _depth=11)
+        result = parse_payload("chatgpt", {}, "test", _depth=11)
         assert result == []
 
     def test_generic_conversations_wrapper(self):
         """Generic wrapper with 'conversations' key is unpacked."""
-        from polylogue.sources.source import _parse_json_payload
+        from polylogue.sources.source import parse_payload
 
         inner = _make_chatgpt_conv("inner-1")
         payload = {"conversations": [inner]}
-        result = _parse_json_payload("chatgpt", payload, "wrapped")
+        result = parse_payload("chatgpt", payload, "wrapped")
         assert len(result) >= 1
 
     def test_generic_messages_wrapper(self):
         """Generic wrapper with 'messages' key produces conversation."""
-        from polylogue.sources.source import _parse_json_payload
+        from polylogue.sources.source import parse_payload
 
         payload = {
             "id": "gen-1",
@@ -923,7 +923,7 @@ class TestParseJsonPayloadRecursion:
                 {"role": "assistant", "content": "Hi there"},
             ],
         }
-        result = _parse_json_payload("unknown-provider", payload, "fallback")
+        result = parse_payload("unknown-provider", payload, "fallback")
         assert len(result) == 1
         assert result[0].title == "Generic"
 

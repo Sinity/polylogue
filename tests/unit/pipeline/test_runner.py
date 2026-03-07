@@ -22,6 +22,7 @@ from polylogue.pipeline.runner import (
     plan_sources,
     run_sources,
 )
+from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import PlanResult
 from tests.infra.helpers import make_conversation, store_records
@@ -31,7 +32,7 @@ class TestRenderFailureTracking:
     """Tests for tracking render failures in async pipeline.
 
     Uses workspace_env fixture so XDG_DATA_HOME points to a temp dir,
-    ensuring run_sources() → get_backend() → create backend
+    ensuring run_sources() uses a temp-backed backend
     all converge on the same database.
     """
 
@@ -308,10 +309,9 @@ class TestAllConversationIds:
                 conv = make_conversation(f"conv-{i}", title=f"Conversation {i}")
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_backend
-
-        backend = get_backend()
+        backend = create_backend(db_path)
         ids = asyncio.run(_all_conversation_ids(backend))
+        asyncio.run(backend.close())
 
         assert len(ids) == 3
         assert set(ids) == {"conv-0", "conv-1", "conv-2"}
@@ -327,10 +327,9 @@ class TestAllConversationIds:
                 conv = make_conversation(conv_id, provider_name=provider, title=f"Conv {conv_id}")
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_backend
-
-        backend = get_backend()
+        backend = create_backend(db_path)
         ids = asyncio.run(_all_conversation_ids(backend, source_names=["chatgpt"]))
+        asyncio.run(backend.close())
 
         assert len(ids) == 2
         assert set(ids) == {"chatgpt-1", "chatgpt-2"}
@@ -346,10 +345,9 @@ class TestAllConversationIds:
                 conv = make_conversation(conv_id, provider_name="chatgpt", title=f"Conv {conv_id}", provider_meta={"source": source})
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_backend
-
-        backend = get_backend()
+        backend = create_backend(db_path)
         ids = asyncio.run(_all_conversation_ids(backend, source_names=["export-a"]))
+        asyncio.run(backend.close())
 
         assert len(ids) == 2
         assert set(ids) == {"a-1", "a-2"}
@@ -372,11 +370,10 @@ class TestAllConversationIds:
             conv_empty = make_conversation("empty-meta-1", title="Empty Meta", provider_meta={})
             store_records(conversation=conv_empty, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_backend
-
-        backend = get_backend()
+        backend = create_backend(db_path)
         # Should not raise and filter correctly
         ids = asyncio.run(_all_conversation_ids(backend, source_names=["my-source"]))
+        asyncio.run(backend.close())
         assert "valid-1" in ids
         assert "null-meta-1" not in ids  # Skipped due to null meta
         assert "empty-meta-1" not in ids  # Skipped due to no source in meta
@@ -689,4 +686,62 @@ class TestRunSourcesIntegration:
 
             assert result.indexed is False
             assert result.index_error is not None
-            assert "Index rebuild failed" in result.index_error
+        assert "Index rebuild failed" in result.index_error
+
+    def test_parse_stage_reuses_persisted_validation_status(self, workspace_env, tmp_path: Path):
+        """parse stage should process previously validated-but-unparsed raw records."""
+        from polylogue.storage.store import RawConversationRecord
+
+        backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
+        raw_content = json.dumps([
+            {
+                "id": "conv-prevalidated",
+                "title": "Prevalidated",
+                "create_time": 1704067200,
+                "update_time": 1704067200,
+                "mapping": {
+                    "root": {"id": "root", "message": None, "children": ["m1"]},
+                    "m1": {
+                        "id": "m1",
+                        "message": {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "content": {"parts": ["hello"]},
+                            "create_time": 1704067200,
+                        },
+                        "parent": "root",
+                        "children": [],
+                    },
+                },
+            }
+        ]).encode("utf-8")
+        raw_id = "raw-prevalidated"
+        asyncio.run(
+            backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name="chatgpt",
+                    source_name="seeded",
+                    source_path="/tmp/prevalidated.json",
+                    raw_content=raw_content,
+                    acquired_at="2026-03-05T00:00:00Z",
+                )
+            )
+        )
+        asyncio.run(
+            backend.mark_raw_validated(
+                raw_id,
+                status="passed",
+                provider="chatgpt",
+                mode="strict",
+            )
+        )
+
+        config = Config(
+            sources=[],
+            archive_root=workspace_env["archive_root"],
+            render_root=workspace_env["archive_root"] / "render",
+        )
+        result = asyncio.run(run_sources(config=config, stage="parse"))
+        asyncio.run(backend.close())
+        assert result.counts["conversations"] >= 1

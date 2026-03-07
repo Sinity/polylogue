@@ -96,7 +96,7 @@ Polylogue writes run metadata to disk and keeps a SQLite history so automation c
 ### Run Ledger
 
 - Every `run` writes `archive_root/runs/run-<timestamp>-<run_id>.json`.
-- The same run records are stored in `$XDG_STATE_HOME/polylogue/polylogue.db` (table: `runs`).
+- The same run records are stored in `$XDG_DATA_HOME/polylogue/polylogue.db` (table: `runs`).
 - Render output lives under `render_root` (defaults to `archive_root/render`).
 
 ### Health Checks

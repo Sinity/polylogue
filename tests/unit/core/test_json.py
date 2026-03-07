@@ -24,8 +24,7 @@ from hypothesis import strategies as st
 from polylogue.lib import json as core_json
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
-from polylogue.lib.timestamps import format_timestamp, parse_timestamp
-from polylogue.services import get_backend, get_repository, get_service_config, reset
+from polylogue.services import build_runtime_services
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
@@ -873,53 +872,45 @@ def test_version_edge_cases_comprehensive(scenario, desc):
 # =============================================================================
 
 
-class TestServices:
+class TestRuntimeServices:
     def test_get_backend_returns_sqlite(self, workspace_env):
-        # Must import after workspace_env reloads the module
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend as _SQLiteBackend
-
-        backend = get_backend()
-        assert isinstance(backend, _SQLiteBackend)
+        services = build_runtime_services()
+        assert isinstance(services.get_backend(), SQLiteBackend)
 
     def test_get_repository_returns_repo(self, workspace_env):
-        from polylogue.storage.repository import ConversationRepository as _ConversationRepository
-
-        repo = get_repository()
-        assert isinstance(repo, _ConversationRepository)
+        services = build_runtime_services()
+        assert isinstance(services.get_repository(), ConversationRepository)
 
     def test_get_config_returns_config(self):
         from polylogue.config import Config as _Config
 
-        config = get_service_config()
+        services = build_runtime_services()
+        config = services.get_config()
         assert isinstance(config, _Config)
         assert config.archive_root is not None
 
-    def test_reset_clears_singletons(self, workspace_env):
-        repo1 = get_repository()
-        reset()
-        repo2 = get_repository()
-        assert repo1 is not repo2
-
-    def test_singleton_returns_same_instance(self, workspace_env):
-        repo1 = get_repository()
-        repo2 = get_repository()
+    def test_repository_is_cached_per_runtime_scope(self, workspace_env):
+        services = build_runtime_services()
+        repo1 = services.get_repository()
+        repo2 = services.get_repository()
         assert repo1 is repo2
 
-    def test_backend_singleton_returns_same_instance(self, workspace_env):
-        backend1 = get_backend()
-        backend2 = get_backend()
+    def test_backend_is_cached_per_runtime_scope(self, workspace_env):
+        services = build_runtime_services()
+        backend1 = services.get_backend()
+        backend2 = services.get_backend()
         assert backend1 is backend2
 
-    def test_repository_uses_same_backend(self, workspace_env):
-        repo1 = get_repository()
-        repo2 = get_repository()
-        assert repo1.backend is repo2.backend
+    def test_repository_uses_runtime_backend(self, workspace_env):
+        services = build_runtime_services()
+        repo = services.get_repository()
+        assert repo.backend is services.get_backend()
 
-    def test_reset_affects_backend_singleton(self, workspace_env):
-        backend1 = get_backend()
-        reset()
-        backend2 = get_backend()
-        assert backend1 is not backend2
+    def test_distinct_runtime_scopes_do_not_share_instances(self, workspace_env):
+        services1 = build_runtime_services()
+        services2 = build_runtime_services()
+        assert services1.get_repository() is not services2.get_repository()
+        assert services1.get_backend() is not services2.get_backend()
 
 
 # =============================================================================

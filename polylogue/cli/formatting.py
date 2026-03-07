@@ -10,12 +10,18 @@ from pathlib import Path
 from polylogue.config import Source
 from polylogue.lib.timestamps import format_timestamp
 
+_FALSEY_ENV_VALUES = frozenset({"0", "false", "no"})
+
+
+def plain_forced_by_env() -> bool:
+    env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
+    return bool(env_force and env_force.lower() not in _FALSEY_ENV_VALUES)
+
 
 def should_use_plain(*, plain: bool) -> bool:
     if plain:
         return True
-    env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
-    if env_force and env_force.lower() not in {"0", "false", "no"}:
+    if plain_forced_by_env():
         return True
     return not (sys.stdout.isatty() and sys.stderr.isatty())
 

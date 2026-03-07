@@ -19,8 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
-from polylogue.services import get_repository as _get_repo
-from polylogue.services import get_service_config as _get_config
+from polylogue.services import RuntimeServices, build_runtime_services
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -28,6 +27,7 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
 
 logger = get_logger(__name__)
+_runtime_services: RuntimeServices | None = None
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -130,6 +130,30 @@ def _error_json(message: str, **extra: Any) -> str:
     return json.dumps({"error": message, **extra})
 
 
+def _set_runtime_services(services: RuntimeServices | None) -> None:
+    """Set the runtime service scope for the server process."""
+    global _runtime_services
+    _runtime_services = services
+
+
+def _get_runtime_services() -> RuntimeServices:
+    """Return the configured runtime service scope for MCP handlers."""
+    global _runtime_services
+    if _runtime_services is None:
+        _runtime_services = build_runtime_services()
+    return _runtime_services
+
+
+def _get_repo():
+    """Return the MCP repository from the configured runtime services."""
+    return _get_runtime_services().get_repository()
+
+
+def _get_config():
+    """Return the MCP config from the configured runtime services."""
+    return _get_runtime_services().get_config()
+
+
 # ---------------------------------------------------------------------------
 # Build the FastMCP server
 # ---------------------------------------------------------------------------
@@ -224,26 +248,26 @@ def _build_server() -> FastMCP:
         return await _async_safe_call("list_conversations", _run)
 
     @mcp.tool()
-    def get_conversation(id: str) -> str:
+    async def get_conversation(id: str) -> str:
         """Get a conversation by ID (supports prefix matching). Returns full message content.
 
         Args:
             id: Conversation ID or unique prefix
         """
-        def _run() -> str:
+        async def _run() -> str:
             repo = _get_repo()
-            conv = repo.view(id)
+            conv = await repo.view(id)
             if conv is None:
                 return _error_json(f"Conversation not found: {id}")
             return json.dumps(_conversation_to_full_dict(conv), indent=2)
-        return _safe_call("get_conversation", _run)
+        return await _async_safe_call("get_conversation", _run)
 
     @mcp.tool()
-    def stats() -> str:
+    async def stats() -> str:
         """Get archive statistics: total conversations, messages, provider breakdown, database size."""
-        def _run() -> str:
+        async def _run() -> str:
             repo = _get_repo()
-            archive_stats = repo.get_archive_stats()
+            archive_stats = await repo.get_archive_stats()
             data = {
                 "total_conversations": archive_stats.total_conversations,
                 "total_messages": archive_stats.total_messages,
@@ -253,68 +277,68 @@ def _build_server() -> FastMCP:
                 "db_size_mb": round(archive_stats.db_size_bytes / 1_048_576, 1) if archive_stats.db_size_bytes else 0,
             }
             return json.dumps(data, indent=2)
-        return _safe_call("stats", _run)
+        return await _async_safe_call("stats", _run)
 
     # ==================================================================
     # Tier 2: Mutation tools (Phase 3A — wire existing repo methods)
     # ==================================================================
 
     @mcp.tool()
-    def add_tag(conversation_id: str, tag: str) -> str:
+    async def add_tag(conversation_id: str, tag: str) -> str:
         """Add a tag to a conversation. Idempotent — adding an existing tag is a no-op.
 
         Args:
             conversation_id: Conversation ID
             tag: Tag to add
         """
-        def _run() -> str:
+        async def _run() -> str:
             repo = _get_repo()
-            repo.add_tag(conversation_id, tag)
+            await repo.add_tag(conversation_id, tag)
             return json.dumps({"status": "ok", "conversation_id": conversation_id, "tag": tag})
-        return _safe_call("add_tag", _run)
+        return await _async_safe_call("add_tag", _run)
 
     @mcp.tool()
-    def remove_tag(conversation_id: str, tag: str) -> str:
+    async def remove_tag(conversation_id: str, tag: str) -> str:
         """Remove a tag from a conversation. Idempotent — removing a missing tag is a no-op.
 
         Args:
             conversation_id: Conversation ID
             tag: Tag to remove
         """
-        def _run() -> str:
+        async def _run() -> str:
             repo = _get_repo()
-            repo.remove_tag(conversation_id, tag)
+            await repo.remove_tag(conversation_id, tag)
             return json.dumps({"status": "ok", "conversation_id": conversation_id, "tag": tag})
-        return _safe_call("remove_tag", _run)
+        return await _async_safe_call("remove_tag", _run)
 
     @mcp.tool()
-    def list_tags(provider: str | None = None) -> str:
+    async def list_tags(provider: str | None = None) -> str:
         """List all tags with their counts, optionally filtered by provider.
 
         Args:
             provider: Filter tags by provider (optional)
         """
-        def _run() -> str:
+        async def _run() -> str:
             repo = _get_repo()
-            tags = repo.list_tags(provider=provider)
+            tags = await repo.list_tags(provider=provider)
             return json.dumps(tags, indent=2)
-        return _safe_call("list_tags", _run)
+        return await _async_safe_call("list_tags", _run)
 
     @mcp.tool()
-    def get_metadata(conversation_id: str) -> str:
+    async def get_metadata(conversation_id: str) -> str:
         """Get all metadata key-value pairs for a conversation.
 
         Args:
             conversation_id: Conversation ID
         """
-        def _run() -> str:
+        async def _run() -> str:
             repo = _get_repo()
-            metadata = repo.get_metadata(conversation_id)
+            metadata = await repo.get_metadata(conversation_id)
             return json.dumps(metadata, indent=2, default=str)
-        return _safe_call("get_metadata", _run)
+        return await _async_safe_call("get_metadata", _run)
 
     @mcp.tool()
-    def set_metadata(conversation_id: str, key: str, value: str) -> str:
+    async def set_metadata(conversation_id: str, key: str, value: str) -> str:
         """Set a metadata key-value pair on a conversation. JSON-serializable values accepted.
 
         Args:
@@ -322,68 +346,68 @@ def _build_server() -> FastMCP:
             key: Metadata key
             value: Metadata value (JSON string for complex values)
         """
-        def _run() -> str:
+        async def _run() -> str:
             repo = _get_repo()
             # Try to parse as JSON for complex values, fall back to string
             try:
                 parsed_value = json.loads(value)
             except (json.JSONDecodeError, TypeError):
                 parsed_value = value
-            repo.update_metadata(conversation_id, key, parsed_value)
+            await repo.update_metadata(conversation_id, key, parsed_value)
             return json.dumps({"status": "ok", "conversation_id": conversation_id, "key": key})
-        return _safe_call("set_metadata", _run)
+        return await _async_safe_call("set_metadata", _run)
 
     @mcp.tool()
-    def delete_metadata(conversation_id: str, key: str) -> str:
+    async def delete_metadata(conversation_id: str, key: str) -> str:
         """Delete a metadata key from a conversation.
 
         Args:
             conversation_id: Conversation ID
             key: Metadata key to delete
         """
-        def _run() -> str:
+        async def _run() -> str:
             repo = _get_repo()
-            repo.delete_metadata(conversation_id, key)
+            await repo.delete_metadata(conversation_id, key)
             return json.dumps({"status": "ok", "conversation_id": conversation_id, "key": key})
-        return _safe_call("delete_metadata", _run)
+        return await _async_safe_call("delete_metadata", _run)
 
     @mcp.tool()
-    def delete_conversation(conversation_id: str, confirm: bool = False) -> str:
+    async def delete_conversation(conversation_id: str, confirm: bool = False) -> str:
         """Delete a conversation permanently. Requires confirm=true as a safety guard.
 
         Args:
             conversation_id: Conversation ID to delete
             confirm: Must be true to actually delete (safety guard)
         """
-        def _run() -> str:
+        async def _run() -> str:
             if not confirm:
                 return _error_json(
                     "Safety guard: set confirm=true to delete",
                     conversation_id=conversation_id,
                 )
             repo = _get_repo()
-            deleted = repo.delete_conversation(conversation_id)
+            deleted = await repo.delete_conversation(conversation_id)
             return json.dumps({
                 "status": "deleted" if deleted else "not_found",
                 "conversation_id": conversation_id,
             })
-        return _safe_call("delete_conversation", _run)
+        return await _async_safe_call("delete_conversation", _run)
 
     # ==================================================================
     # Tier 3: Enhanced read tools (Phase 3B)
     # ==================================================================
 
     @mcp.tool()
-    def get_conversation_summary(id: str) -> str:
+    async def get_conversation_summary(id: str) -> str:
         """Get a lightweight conversation summary without messages. Faster than get_conversation.
 
         Args:
             id: Conversation ID or unique prefix
         """
-        def _run() -> str:
+        async def _run() -> str:
             repo = _get_repo()
-            full_id = repo.resolve_id(id) or id
-            summary = repo.get_summary(full_id)
+            full_id = await repo.resolve_id(id) or id
+            summary = await repo.get_summary(full_id)
             if summary is None:
                 return _error_json(f"Conversation not found: {id}")
             return json.dumps({
@@ -394,55 +418,32 @@ def _build_server() -> FastMCP:
                 "created_at": summary.created_at.isoformat() if summary.created_at else None,
                 "updated_at": summary.updated_at.isoformat() if summary.updated_at else None,
             }, indent=2)
-        return _safe_call("get_conversation_summary", _run)
+        return await _async_safe_call("get_conversation_summary", _run)
 
     @mcp.tool()
-    def get_session_tree(conversation_id: str) -> str:
+    async def get_session_tree(conversation_id: str) -> str:
         """Get the full session tree for a conversation (parent, siblings, children).
 
         Args:
             conversation_id: Any conversation ID in the session tree
         """
-        def _run() -> str:
+        async def _run() -> str:
             repo = _get_repo()
-            tree = repo.get_session_tree(conversation_id)
+            tree = await repo.get_session_tree(conversation_id)
             return json.dumps([_conversation_to_dict(c) for c in tree], indent=2)
-        return _safe_call("get_session_tree", _run)
+        return await _async_safe_call("get_session_tree", _run)
 
     @mcp.tool()
-    def get_stats_by(group_by: str = "provider") -> str:
+    async def get_stats_by(group_by: str = "provider") -> str:
         """Get conversation counts grouped by provider, month, or year.
 
         Args:
             group_by: Grouping dimension ('provider', 'month', or 'year')
         """
-        def _run() -> str:
+        async def _run() -> str:
             repo = _get_repo()
-            conn = repo.backend._get_connection()
-
-            if group_by == "month":
-                rows = conn.execute("""
-                    SELECT strftime('%Y-%m', updated_at) as period, COUNT(*) as count
-                    FROM conversations
-                    WHERE updated_at IS NOT NULL
-                    GROUP BY period ORDER BY period DESC
-                """).fetchall()
-            elif group_by == "year":
-                rows = conn.execute("""
-                    SELECT strftime('%Y', updated_at) as period, COUNT(*) as count
-                    FROM conversations
-                    WHERE updated_at IS NOT NULL
-                    GROUP BY period ORDER BY period DESC
-                """).fetchall()
-            else:  # provider
-                rows = conn.execute("""
-                    SELECT provider_name as period, COUNT(*) as count
-                    FROM conversations
-                    GROUP BY provider_name ORDER BY count DESC
-                """).fetchall()
-
-            return json.dumps({row[0]: row[1] for row in rows}, indent=2)
-        return _safe_call("get_stats_by", _run)
+            return json.dumps(await repo.get_stats_by(group_by), indent=2)
+        return await _async_safe_call("get_stats_by", _run)
 
     @mcp.tool()
     def health_check() -> str:
@@ -472,49 +473,49 @@ def _build_server() -> FastMCP:
     # ==================================================================
 
     @mcp.tool()
-    def rebuild_index() -> str:
+    async def rebuild_index() -> str:
         """Rebuild the full-text search index from scratch. Use after bulk imports or if search seems stale."""
-        def _run() -> str:
+        async def _run() -> str:
             from polylogue.pipeline.services.indexing import IndexService
 
             config = _get_config()
-            conn = _get_repo().backend._get_connection()
-            service = IndexService(config=config, conn=conn)
-            success = service.rebuild_index()
-            status_info = service.get_index_status()
+            repo = _get_repo()
+            service = IndexService(config=config, backend=repo.backend)
+            success = await service.rebuild_index()
+            status_info = await service.get_index_status()
             return json.dumps({
                 "status": "ok" if success else "failed",
                 "index_exists": status_info.get("exists", False),
                 "indexed_messages": status_info.get("count", 0),
             }, indent=2)
-        return _safe_call("rebuild_index", _run)
+        return await _async_safe_call("rebuild_index", _run)
 
     @mcp.tool()
-    def update_index(conversation_ids: list[str]) -> str:
+    async def update_index(conversation_ids: list[str]) -> str:
         """Update the search index for specific conversations (incremental).
 
         Args:
             conversation_ids: List of conversation IDs to re-index
         """
-        def _run() -> str:
+        async def _run() -> str:
             from polylogue.pipeline.services.indexing import IndexService
 
             config = _get_config()
-            conn = _get_repo().backend._get_connection()
-            service = IndexService(config=config, conn=conn)
-            success = service.update_index(conversation_ids)
+            repo = _get_repo()
+            service = IndexService(config=config, backend=repo.backend)
+            success = await service.update_index(conversation_ids)
             return json.dumps({
                 "status": "ok" if success else "failed",
                 "conversation_count": len(conversation_ids),
             }, indent=2)
-        return _safe_call("update_index", _run)
+        return await _async_safe_call("update_index", _run)
 
     # ==================================================================
     # Tier 5: Export tool (Phase 3D)
     # ==================================================================
 
     @mcp.tool()
-    def export_conversation(
+    async def export_conversation(
         id: str,
         format: str = "markdown",
     ) -> str:
@@ -524,28 +525,28 @@ def _build_server() -> FastMCP:
             id: Conversation ID or unique prefix
             format: Output format ('markdown', 'json', 'html', 'yaml', 'plaintext', 'csv', 'obsidian', 'org')
         """
-        def _run() -> str:
+        async def _run() -> str:
             from polylogue.lib.formatting import format_conversation
 
             repo = _get_repo()
-            conv = repo.view(id)
+            conv = await repo.view(id)
             if conv is None:
                 return _error_json(f"Conversation not found: {id}")
 
             valid_formats = {"markdown", "json", "html", "yaml", "plaintext", "csv", "obsidian", "org"}
             fmt = format if format in valid_formats else "markdown"
             return format_conversation(conv, fmt, None)
-        return _safe_call("export_conversation", _run)
+        return await _async_safe_call("export_conversation", _run)
 
     # ==================================================================
     # Resources
     # ==================================================================
 
     @mcp.resource("polylogue://stats")
-    def stats_resource() -> str:
+    async def stats_resource() -> str:
         """Overall statistics about the conversation archive."""
         repo = _get_repo()
-        archive_stats = repo.get_archive_stats()
+        archive_stats = await repo.get_archive_stats()
         return json.dumps(
             {
                 "total_conversations": archive_stats.total_conversations,
@@ -565,19 +566,19 @@ def _build_server() -> FastMCP:
         return json.dumps([_conversation_to_dict(c) for c in convs], indent=2)
 
     @mcp.resource("polylogue://conversation/{conv_id}")
-    def conversation_resource(conv_id: str) -> str:
+    async def conversation_resource(conv_id: str) -> str:
         """Get a single conversation with full message content."""
         repo = _get_repo()
-        conv = repo.get(conv_id)
+        conv = await repo.get(conv_id)
         if not conv:
             return json.dumps({"error": f"Conversation not found: {conv_id}"})
         return json.dumps(_conversation_to_full_dict(conv), indent=2)
 
     @mcp.resource("polylogue://tags")
-    def tags_resource() -> str:
+    async def tags_resource() -> str:
         """All tags with their counts."""
         repo = _get_repo()
-        tags = repo.list_tags()
+        tags = await repo.list_tags()
         return json.dumps(tags, indent=2)
 
     @mcp.resource("polylogue://health")
@@ -737,7 +738,7 @@ Code snippets:
 """
 
     @mcp.prompt()
-    def compare_conversations(id1: str, id2: str) -> str:
+    async def compare_conversations(id1: str, id2: str) -> str:
         """Compare two conversations side by side, analyzing differences in approach and outcomes.
 
         Args:
@@ -745,8 +746,8 @@ Code snippets:
             id2: Second conversation ID
         """
         repo = _get_repo()
-        conv1 = repo.view(id1)
-        conv2 = repo.view(id2)
+        conv1 = await repo.view(id1)
+        conv2 = await repo.view(id2)
 
         def _summarize(conv: Any) -> dict[str, Any]:
             if conv is None:
@@ -832,18 +833,20 @@ Conversation summaries:
 _server_instance: FastMCP | None = None
 
 
-def _get_server() -> FastMCP:
+def _get_server(services: RuntimeServices | None = None) -> FastMCP:
     global _server_instance
+    if services is not None:
+        _set_runtime_services(services)
     if _server_instance is None:
         _server_instance = _build_server()
     return _server_instance
 
 
-def serve_stdio() -> None:
+def serve_stdio(services: RuntimeServices | None = None) -> None:
     """Start MCP server with stdio transport.
 
     This is the main entry point called from ``polylogue mcp`` CLI command.
     Uses the official MCP SDK for proper protocol compliance.
     """
-    server = _get_server()
+    server = _get_server(services)
     server.run(transport="stdio")

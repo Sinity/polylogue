@@ -14,12 +14,22 @@ from polylogue.lib.models import Conversation, Message
 def mock_repo():
     """Create a mock ConversationRepository."""
     repo = MagicMock()
-    repo.list.return_value = []
-    repo.search.return_value = []
-    repo.view.return_value = None
-    repo.get.return_value = None
-    repo.resolve_id.return_value = None
-    repo.get_archive_stats.return_value = MagicMock()
+    repo.list = AsyncMock(return_value=[])
+    repo.search = AsyncMock(return_value=[])
+    repo.view = AsyncMock(return_value=None)
+    repo.get = AsyncMock(return_value=None)
+    repo.resolve_id = AsyncMock(return_value=None)
+    repo.get_archive_stats = AsyncMock(return_value=MagicMock())
+    repo.get_summary = AsyncMock(return_value=None)
+    repo.get_session_tree = AsyncMock(return_value=[])
+    repo.get_stats_by = AsyncMock(return_value={})
+    repo.add_tag = AsyncMock(return_value=None)
+    repo.remove_tag = AsyncMock(return_value=None)
+    repo.list_tags = AsyncMock(return_value={})
+    repo.get_metadata = AsyncMock(return_value={})
+    repo.update_metadata = AsyncMock(return_value=None)
+    repo.delete_metadata = AsyncMock(return_value=None)
+    repo.delete_conversation = AsyncMock(return_value=False)
     return repo
 
 

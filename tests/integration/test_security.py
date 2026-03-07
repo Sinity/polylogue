@@ -677,7 +677,7 @@ async def test_stored_xss_in_conversation_content(temp_repo):
     xss_payload = "<script>alert('XSS')</script>"
 
     # Create conversation with XSS in message
-    backend = temp_repo._backend
+    backend = temp_repo.backend
 
     conv_record = make_conversation("xss-test", title="XSS Test")
     msg_record = make_message("msg-xss", "xss-test", text=xss_payload)

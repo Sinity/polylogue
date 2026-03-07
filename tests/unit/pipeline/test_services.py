@@ -394,7 +394,7 @@ class TestParsingServiceParseSources:
         """Empty sources list returns empty ParseResult via an empty canonical plan."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
-        mock_repo._backend = mock_backend
+        mock_repo.backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
         service = ParsingService(
@@ -432,7 +432,7 @@ class TestParsingServiceParseSources:
         """parse_sources executes the planner, stores raws, validates, then parses."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
-        mock_repo._backend = mock_backend
+        mock_repo.backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
         service = ParsingService(
@@ -518,7 +518,7 @@ class TestParsingServiceParseSources:
         """If the canonical plan has nothing parseable, parse stage is skipped."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
-        mock_repo._backend = mock_backend
+        mock_repo.backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
         service = ParsingService(
@@ -555,7 +555,7 @@ class TestParsingServiceParseSources:
         """Progress callback is forwarded to planning, validation, and parse stages."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
-        mock_repo._backend = mock_backend
+        mock_repo.backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
         service = ParsingService(
@@ -623,7 +623,7 @@ class TestParsingServiceParseSources:
     async def test_backend_not_initialized_raises(self):
         """RuntimeError raised if repository backend is None."""
         mock_repo = MagicMock()
-        mock_repo._backend = None
+        mock_repo.backend = None
         mock_config = MagicMock(spec=Config)
 
         service = ParsingService(

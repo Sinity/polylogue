@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from polylogue.lib.log import get_logger
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
-from polylogue.sources.source import _parse_json_payload
+from polylogue.sources.source import parse_payload
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import RawConversationRecord
 
@@ -114,6 +114,13 @@ class ParsingService:
         self._drift_counts: dict[str, int] = {}
         self._drift_lock = asyncio.Lock()
 
+    def _require_backend(self) -> Any:
+        """Return the repository backend or fail explicitly."""
+        backend = self.repository.backend
+        if backend is None:
+            raise RuntimeError("repository backend is not initialized")
+        return backend
+
     async def parse_sources(
         self,
         sources: list[Source],
@@ -165,9 +172,7 @@ class ParsingService:
         from polylogue.pipeline.services.planning import PlanningService
         from polylogue.pipeline.services.validation import ValidationService
 
-        backend = self.repository._backend
-        if backend is None:
-            raise RuntimeError("Repository backend is not initialized")
+        backend = self._require_backend()
 
         plan_stage = stage if stage in {"acquire", "validate", "parse", "all"} else ("all" if parse_records else "validate")
         planning_service = PlanningService(backend=backend, config=self.config)
@@ -279,9 +284,7 @@ class ParsingService:
             self._drift_counts.clear()
 
         # Use the repository's backend - same connection management
-        backend = self.repository._backend
-        if backend is None:
-            raise RuntimeError("Repository backend is not initialized")
+        backend = self._require_backend()
 
         # Collect raw_ids to process (just IDs, not full records — memory-safe)
         if raw_ids is not None:
@@ -474,8 +477,8 @@ class ParsingService:
         await self._validate_payload(raw_record.provider_name, payload, raw_record.raw_id)
 
         # Use the existing parser dispatcher
-        return _parse_json_payload(
-            raw_record.provider_name,
+        return parse_payload(
+            provider,
             payload,
             raw_record.raw_id,  # Use raw_id as fallback conversation ID
         )
