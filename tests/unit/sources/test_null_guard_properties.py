@@ -20,10 +20,8 @@ Covers:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
-import pytest
-from hypothesis import given, settings, assume, HealthCheck
+from hypothesis import given, settings, HealthCheck
 from hypothesis import strategies as st
 
 from polylogue.lib.models import Conversation, Message, ConversationSummary

@@ -13,10 +13,7 @@ are invisible in unit tests with small datasets.
 
 from __future__ import annotations
 
-import re
 import sqlite3
-import textwrap
-from pathlib import Path
 
 import pytest
 

@@ -24,7 +24,6 @@ from hypothesis import strategies as st
 from polylogue.lib import json as core_json
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
-from polylogue.lib.timestamps import format_timestamp, parse_timestamp
 from polylogue.services import get_backend, get_repository, get_service_config, reset
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository

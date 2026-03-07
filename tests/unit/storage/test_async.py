@@ -505,9 +505,9 @@ async def test_context_manager_cleanup():
             # Perform some operation to initialize
             await repo.get_conversation("test")
 
-        # After exit, backend should be closed (close() is a no-op but safe)
-        # We can verify by trying to use the backend directly
-        # The repository should handle this gracefully
+        # __aexit__ should have called close(); repeated close should be safe.
+        await repo.close()
+        assert await repo.get_conversation("test") is None
 
 
 @pytest.mark.asyncio

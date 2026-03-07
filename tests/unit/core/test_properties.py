@@ -419,11 +419,11 @@ def test_json_loads_handles_arbitrary_text(text: str) -> None:
     """loads() handles arbitrary text gracefully (may raise ValueError)."""
     try:
         result = loads(text)
-        # If it parses, result should be some JSON value
-        assert result is not None or result is None  # Always true, just checking no crash
     except ValueError:
-        # Expected for invalid JSON
-        pass
+        return
+
+    assert isinstance(result, (dict, list, str, int, float, bool, type(None)))
+    assert loads(dumps(result)) == result
 
 
 @given(st.binary())
@@ -431,9 +431,11 @@ def test_json_loads_handles_arbitrary_bytes(data: bytes) -> None:
     """loads() handles arbitrary bytes gracefully (may raise ValueError)."""
     try:
         result = loads(data)
-        assert result is not None or result is None
     except ValueError:
-        pass
+        return
+
+    assert isinstance(result, (dict, list, str, int, float, bool, type(None)))
+    assert loads(dumps(result)) == result
 
 
 # JSON uses IEEE 754 doubles, so integers beyond ±2^53 lose precision

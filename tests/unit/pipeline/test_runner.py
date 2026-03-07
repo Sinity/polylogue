@@ -502,14 +502,16 @@ class TestRunSourcesIntegration:
     @pytest.mark.parametrize(
         "stage,with_source_data",
         [
+            ("validate", True),
             ("parse", True),
             ("render", False),
             ("index", False),
             ("all", True),
         ],
     )
-    def test_stage_matrix(self, workspace_env, tmp_path: Path, stage: str, with_source_data: bool):
+    def test_stage_matrix(self, workspace_env, tmp_path: Path, stage: str, with_source_data: bool, monkeypatch):
         """Each stage executes only its expected pipeline responsibilities."""
+        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
         sources = []
         if with_source_data:
             inbox = tmp_path / f"inbox-{stage}"
@@ -551,7 +553,11 @@ class TestRunSourcesIntegration:
         else:
             result = asyncio.run(run_sources(config=config, stage=stage))
 
-        if stage == "parse":
+        if stage == "validate":
+            assert result.counts.get("validated", 0) >= 1
+            assert result.counts["conversations"] == 0
+            assert result.indexed is False
+        elif stage == "parse":
             assert result.counts["conversations"] >= 1
             assert result.counts.get("rendered", 0) == 0
             assert result.indexed is False
@@ -670,4 +676,62 @@ class TestRunSourcesIntegration:
 
             assert result.indexed is False
             assert result.index_error is not None
-            assert "Index rebuild failed" in result.index_error
+        assert "Index rebuild failed" in result.index_error
+
+    def test_parse_stage_reuses_persisted_validation_status(self, workspace_env, tmp_path: Path):
+        """parse stage should process previously validated-but-unparsed raw records."""
+        from polylogue.services import get_backend
+        from polylogue.storage.store import RawConversationRecord
+
+        backend = get_backend()
+        raw_content = json.dumps([
+            {
+                "id": "conv-prevalidated",
+                "title": "Prevalidated",
+                "create_time": 1704067200,
+                "update_time": 1704067200,
+                "mapping": {
+                    "root": {"id": "root", "message": None, "children": ["m1"]},
+                    "m1": {
+                        "id": "m1",
+                        "message": {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "content": {"parts": ["hello"]},
+                            "create_time": 1704067200,
+                        },
+                        "parent": "root",
+                        "children": [],
+                    },
+                },
+            }
+        ]).encode("utf-8")
+        raw_id = "raw-prevalidated"
+        asyncio.run(
+            backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name="chatgpt",
+                    source_name="seeded",
+                    source_path="/tmp/prevalidated.json",
+                    raw_content=raw_content,
+                    acquired_at="2026-03-05T00:00:00Z",
+                )
+            )
+        )
+        asyncio.run(
+            backend.mark_raw_validated(
+                raw_id,
+                status="passed",
+                provider="chatgpt",
+                mode="strict",
+            )
+        )
+
+        config = Config(
+            sources=[],
+            archive_root=workspace_env["archive_root"],
+            render_root=workspace_env["archive_root"] / "render",
+        )
+        result = asyncio.run(run_sources(config=config, stage="parse"))
+        assert result.counts["conversations"] >= 1
