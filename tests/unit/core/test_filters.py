@@ -973,8 +973,7 @@ class TestValidatorAvailableProviders:
 
     def test_available_providers_missing_schema_dir(self):
         """Test when SCHEMA_DIR doesn't exist."""
-        with patch("polylogue.schemas.validator.SCHEMA_DIR") as mock_dir:
-            mock_dir.exists.return_value = False
+        with patch("polylogue.schemas.validator.SchemaRegistry.list_providers", return_value=[]):
             result = SchemaValidator.available_providers()
             assert result == []
 
