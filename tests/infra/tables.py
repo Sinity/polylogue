@@ -191,7 +191,8 @@ PARSE_TIMESTAMP_FORMAT_TABLE: list[tuple] = [
 # expected_prefix: the ISO 8601 date prefix that must appear in the output
 # =============================================================================
 
-from datetime import datetime as _datetime, timezone as _timezone
+from datetime import datetime as _datetime
+from datetime import timezone as _timezone
 
 FORMAT_TIMESTAMP_TABLE: list[tuple] = [
     (1700000000, "2023-", "epoch_int_gives_2023"),

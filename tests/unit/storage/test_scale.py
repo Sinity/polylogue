@@ -12,11 +12,8 @@ patterns work correctly at moderate scale.
 
 from __future__ import annotations
 
-
-
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import ConversationRecord, MessageRecord
-
 
 # Number of conversations for scale tests.
 # 200 is enough to expose N+1 patterns while keeping tests fast (<2s).
@@ -123,7 +120,7 @@ class TestGetManyScale:
         # Create conversations with 1, 5, and 10 messages
         test_cases = [(1, 1), (5, 5), (10, 10)]
         all_ids = []
-        for count, msgs in test_cases:
+        for _count, msgs in test_cases:
             for i in range(20):
                 cid = f"var-{msgs}msg-{i:03d}"
                 all_ids.append(cid)

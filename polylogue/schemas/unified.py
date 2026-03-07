@@ -35,7 +35,6 @@ except ImportError:
 
 from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.types import Provider
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -45,6 +44,7 @@ from polylogue.lib.viewports import (
     ToolCall,
     classify_tool,
 )
+from polylogue.types import Provider
 
 
 def _missing_role() -> str:

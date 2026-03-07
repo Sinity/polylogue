@@ -13,10 +13,10 @@ Service classes that handle specific pipeline operations:
 from __future__ import annotations
 
 from .acquisition import AcquireResult, AcquisitionService
-from .ingest_state import IngestPhase, IngestState
 from .indexing import IndexService
-from .planning import IngestPlan, PlanningService
+from .ingest_state import IngestPhase, IngestState
 from .parsing import ParseResult, ParsingService
+from .planning import IngestPlan, PlanningService
 from .rendering import RenderResult, RenderService
 from .validation import ValidateResult, ValidationService
 

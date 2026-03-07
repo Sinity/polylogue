@@ -22,9 +22,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from polylogue.lib.models import Conversation, Message
 from polylogue.lib.filters import ConversationFilter
-
+from polylogue.lib.models import Conversation, Message
 
 # =============================================================================
 # Filter state isolation (implicit in CLI routing bugs)

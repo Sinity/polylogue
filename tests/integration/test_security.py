@@ -18,8 +18,8 @@ Tests cover:
 
 from __future__ import annotations
 
-import tempfile
 import sqlite3
+import tempfile
 import zipfile
 from pathlib import Path
 
