@@ -12,6 +12,7 @@ from typing import Any, cast
 
 from .config import Config
 from .lib.log import get_logger
+from .lib.provider_identity import CORE_SCHEMA_PROVIDERS
 from .sources.drive_client import default_credentials_path, default_token_path
 from .storage.backends.connection import connection_context, open_connection
 from .storage.index import index_status
@@ -292,7 +293,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
         from .schemas.registry import SchemaRegistry
 
         registry = SchemaRegistry()
-        known_providers = ["chatgpt", "claude-ai", "claude-code", "codex", "gemini"]
+        known_providers = list(CORE_SCHEMA_PROVIDERS)
         available = registry.list_providers()
         missing = [p for p in known_providers if p not in available]
 

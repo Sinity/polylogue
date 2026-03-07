@@ -25,9 +25,10 @@ Close remaining schema/validation/pipeline refactor workload, reduce entropy, an
 - Local QA/session artifacts: `qa_outputs/`, `qa_archive/`, `QA_SESSION.md` (now ignored).
 
 ## Residual Technical Opportunities (Optional)
-1. Consolidate provider identity handling in one dedicated module consumed by both schema and non-schema paths.
-2. Consider extracting ingest-stage state transitions into a typed state machine object (acquired/validated/parsed) for stricter invariants.
-3. Add a dedicated `polylogue qa` command to snapshot and index QA outputs in a single reproducible path.
+Completed on 2026-03-07:
+1. Provider identity handling is now centralized in `polylogue/lib/provider_identity.py` and consumed by schema + non-schema paths.
+2. Ingest-stage transitions now use typed state guards via `polylogue/pipeline/services/ingest_state.py`.
+3. Added `polylogue qa` command for reproducible QA artifact snapshot/index workflow.
 
 ## Remaining Blockers
 - None found in code/test/runtime behavior for current scope.
