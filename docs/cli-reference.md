@@ -169,7 +169,7 @@ polylogue run --watch --exec "echo new"   # Execute command on new conversations
 polylogue run --watch --webhook URL       # Call webhook on new conversations
 ```
 
-**Pipeline stages**: `acquire` → `parse` → `render` → `index` → `generate-schemas`. Default runs all stages. Use `--stage` to run specific stages.
+**Pipeline stages**: `acquire` → `validate` → `parse` → `render` → `index` → `generate-schemas`. Default runs all stages. `parse` consumes only rows marked `validation_status=passed|skipped`.
 
 **Source scoping**: Use `--source NAME` (repeatable) to process only specific sources. Use `polylogue sources` to list available sources.
 
@@ -238,6 +238,7 @@ polylogue demo --corpus                     # Write raw provider-format files
 polylogue demo --corpus -p chatgpt -n 5     # ChatGPT only, 5 conversations
 polylogue demo --corpus -o /tmp/corpus      # Custom output directory
 polylogue demo --showcase                   # Full CLI surface-area validation
+polylogue demo --showcase --showcase-data synthetic -n 5
 polylogue demo --showcase --live            # Read-only against real data
 polylogue demo --showcase --json            # Machine-readable report
 polylogue demo --showcase --verbose         # Print each exercise output
@@ -247,7 +248,7 @@ polylogue demo --showcase --verbose         # Print each exercise output
 
 - `--seed`: Creates a full demo environment (database + rendered files) and prints environment variables (`POLYLOGUE_ARCHIVE_ROOT`, etc.) to point your shell at the demo data. Use `eval $(polylogue demo --seed --env-only)` for seamless shell integration.
 - `--corpus`: Writes raw provider-format files (JSON, JSONL) to disk for inspection. Useful for understanding wire formats or testing parsers.
-- `--showcase`: Exercises the entire CLI surface area (58 exercises across 7 groups) and generates verification reports — a summary, JSON results, and a markdown cookbook of all commands with output.
+- `--showcase`: Exercises the entire CLI surface area (58 exercises across 7 groups) and generates verification reports — a summary, JSON results, and a markdown cookbook of all commands with output. Default seed source is packaged fixtures; use `--showcase-data synthetic` for schema-driven seeding.
 
 **Options:**
 
@@ -256,6 +257,7 @@ polylogue demo --showcase --verbose         # Print each exercise output
 | `--seed` | | Create full demo environment |
 | `--corpus` | | Generate raw fixture files |
 | `--showcase` | | Exercise all CLI commands and generate reports |
+| `--showcase-data fixtures\|synthetic` | | Showcase seed source (default: fixtures) |
 | `--provider NAME` | `-p` | Providers to include (repeatable, default: all) |
 | `--count N` | `-n` | Conversations per provider (default: 3) |
 | `--output-dir PATH` | `-o` | Output directory |
@@ -276,6 +278,9 @@ polylogue check --repair --preview        # Preview what would be repaired
 polylogue check --repair --vacuum         # Compact database after repair
 polylogue check --deep                    # Run SQLite integrity check
 polylogue check --json                    # Machine-readable output
+polylogue check --schemas                 # Raw-corpus schema verification gate
+polylogue check --schemas --schema-provider chatgpt --schema-samples all
+polylogue check --schemas --schema-provider claude-code --schema-record-limit 500 --schema-record-offset 1000
 polylogue auth                            # OAuth flow for Google Drive
 polylogue auth --refresh                  # Force token refresh
 polylogue auth --revoke                   # Revoke stored credentials
@@ -357,7 +362,7 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 
 - Use `--source NAME` (repeatable) on `run` to avoid reprocessing everything.
 - Use `--source last` to reuse the previous interactive selection.
-- Example: `polylogue run --source gemini --stage ingest`.
+- Example: `polylogue run --source gemini --stage validate`.
 
 ### Preview Mode
 
@@ -385,6 +390,8 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 - `polylogue check` verifies database integrity, FTS index, and render files.
 - `polylogue check --repair` fixes issues that can be auto-fixed.
 - `polylogue check --vacuum` compacts the database and reclaims space.
+- `polylogue check --schemas` runs non-mutating schema verification over `raw_conversations`.
+- Use `--schema-provider` to scope providers, `--schema-samples` for per-record sample depth (`N` or `all`), and `--schema-record-limit/--schema-record-offset` for chunked verification on large corpora.
 
 ## Examples
 

@@ -1,0 +1,143 @@
+# Demo + Parse/Validate Audit (2026-03-05)
+
+> Status update (2026-03-06): Historical audit snapshot.
+> Active closure status and remaining workload are tracked in:
+> - `docs/tasklist-master-2026-03-06.md`
+> - `docs/workload-closure-2026-03-06.md`
+> - `docs/remaining-workload-tracker-2026-03-05.md`
+
+## Scope
+
+This audit answers:
+- How demo mode currently works and where fixtures are used.
+- Whether current behavior aligns with schema-driven goals.
+- How relevant "parse, don't validate" is in this codebase.
+- Whether always-on validation is viable and useful.
+
+## Executive Summary
+
+1. `demo --seed` and `demo --corpus` are schema-driven via `SyntheticCorpus`.
+2. `demo --showcase` now supports explicit seed source selection:
+   - default `--showcase-data fixtures` (packaged static fixtures),
+   - optional `--showcase-data synthetic` (schema-driven generation, now with narrative-style turns for readable cookbook output).
+3. "parse, don't validate" here refers to viewport/domain extraction style, not a ban on JSON Schema validation.
+4. Always-on full validation is technically feasible and likely affordable, but only after schema-target mismatches are fixed.
+5. Tests being schema-driven is desirable; mislabeled "real data" wording is the real issue.
+
+## Demo Mode Architecture (Current)
+
+### `demo --corpus`
+- Uses `SyntheticCorpus.for_provider(...)` and writes raw provider-format files.
+- Code path: `polylogue/cli/commands/demo.py` (`_do_corpus`).
+
+### `demo --seed`
+- Uses `SyntheticCorpus` to generate files, then runs full pipeline (`run_sources(stage="all")`).
+- Code path: `polylogue/cli/commands/demo.py` (`_do_seed`).
+
+### `demo --showcase`
+- Uses `ShowcaseRunner._seed_workspace()`.
+- Seed source is selectable via `--showcase-data fixtures|synthetic`.
+- `fixtures`: copies static files from `polylogue/showcase/fixtures/*` into workspace and inbox.
+- `synthetic`: generates provider fixtures via `SyntheticCorpus` and then runs the same pipeline.
+- Code path: `polylogue/showcase/runner.py` (`_seed_workspace`, `_copy_fixtures`, `_generate_synthetic_fixtures`).
+- `--live` skips seeding and runs read-only exercises against real archive.
+
+## Fixture Reliance Findings
+
+1. Showcase defaults to static packaged fixtures, but now supports synthetic seeding.
+- `fixtures` remains deterministic and schema-independent.
+- `synthetic` provides schema-driven parity with seed/corpus/tests.
+
+2. Documentation has been aligned with implementation.
+- `docs/demo.md` and `docs/cli-reference.md` now describe the explicit showcase seed-source option.
+
+3. Showcase still has minimal direct runner-level coverage.
+- `tests/unit/cli/test_demo.py` covers `demo --corpus` and `demo --seed` basics.
+- Added CLI-level coverage for `--showcase-data` wiring.
+- Added dedicated `ShowcaseRunner` tests for fixture vs synthetic seed selection.
+
+## Better / More Elegant Demo Architecture
+
+### Option A (recommended): Dual-mode showcase data source
+- Add explicit flag for showcase seeding source, e.g. `--showcase-data fixtures|synthetic`.
+- Keep `fixtures` for stable cookbook snapshots.
+- Enable `synthetic` for schema-driven end-to-end parity with tests and `demo --seed`.
+
+### Option B: Unify seeding under a shared dataset provider
+- Extract shared seeding logic used by:
+  - `demo --seed`
+  - `demo --showcase`
+  - test fixtures (`seeded_db`, `synthetic_source`, `raw_synthetic_samples`)
+- This reduces drift and duplicate logic.
+
+### Option C: Keep fixtures but generate/refresh them from schemas
+- Use synthetic generator to regenerate showcase fixture corpus on demand.
+- Keep curated fixture snapshots in repo for deterministic docs while minimizing hand-maintained data.
+
+## "Parse, Don't Validate" in This Repo
+
+`polylogue/lib/viewports.py` uses this phrase to describe a domain-modeling style:
+- parse provider-specific raw structures into typed/harmonized viewports.
+- then use typed data for semantics.
+
+This is not equivalent to "never run schema validation".
+
+Current ingestion reality is **stage-separated validation + parse**:
+- `ValidationService` runs schema validation before parse and persists `validation_status`.
+- Parse service decodes payload and dispatches provider parser; it does not run schema validation inline.
+- `POLYLOGUE_SCHEMA_VALIDATION=off|advisory|strict` controls behavior.
+- `POLYLOGUE_SCHEMA_VALIDATION_MAX_SAMPLES=all|N` controls validation breadth for list payloads.
+
+## Should We Validate Always?
+
+## Empirical Benchmark (local, 100 raw records/provider)
+
+Measured via validator sampling+validate loop used by `ValidationService`:
+
+| Provider | Mode | Raw records | Samples validated | Elapsed (s) |
+|---|---:|---:|---:|---:|
+| claude-code | max_samples=16 | 100 | 705 | 0.214 |
+| claude-code | max_samples=all | 100 | 8,276 | 1.047 |
+| codex | max_samples=16 | 100 | 1,252 | 0.353 |
+| codex | max_samples=all | 100 | 87,958 | 2.704 |
+
+Interpretation:
+- "all" is ~5x (claude-code) to ~8x (codex) slower than sampled validation on these subsets.
+- Absolute time remains modest for the sampled window.
+- Full-dataset cost is likely meaningful but not prohibitive for QA/verification runs.
+
+## Practical Caveats Before Making "always validate" the Default
+
+1. Schema/shape mismatches still exist in some providers (notably gemini/codex history).
+2. JSONL malformed lines are currently dropped during parse fallback; strict schema alone does not catch dropped lines unless we make that path strict-fail.
+3. Parsers still do semantic normalization (branching, parent links, content extraction, tool semantics) beyond pure shape checks.
+4. Parser-stage duplication has been removed (validation is stage-exclusive), but parser semantic checks still add cost for heavy providers.
+5. Acquisition parse duplication has been removed by switching acquisition to a dedicated raw-only iterator (`iter_source_raw_data`), but full performance profiling still needs rerun on representative datasets.
+
+## Post-Change Acquisition Micro-Benchmark (local, synthetic 100 files/provider)
+
+Measured previous parse-heavy acquisition path vs raw-only acquisition path:
+
+| Provider | Previous path | Raw-only path | Speedup | Time reduction |
+|---|---:|---:|---:|---:|
+| claude-code | 0.031s | 0.014s | 2.19x | 54.4% |
+| codex | 0.011s | 0.004s | 2.72x | 63.2% |
+
+Interpretation:
+- Raw-acquisition path now avoids significant provider-parse overhead.
+- End-to-end profiling is still required on full real datasets (I/O, DB flush cadence, and parse stage overlap).
+
+## Recommendation
+
+Use two explicit safety levels:
+
+1. **Operational default (ingestion):** `strict` + configurable sampling (`16` or higher), to avoid catastrophic slowdown in routine runs.
+2. **Guarantee gate (QA/release):** full-corpus strict validation (`max_samples=all`) with explicit command/workflow, used before schema promotion and release confidence checks.
+
+This keeps production runs practical and still gives the strong guarantees you want when you need them.
+
+## Workload Derived From This Audit
+
+1. Fix remaining schema-target mismatches so strict-all is clean for every provider.
+2. Add explicit schema verification workflow/command for full-corpus validation.
+3. Sweep remaining docs/tests wording for any stale "real data" labeling where data is synthetic.
