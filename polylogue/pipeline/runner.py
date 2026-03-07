@@ -13,13 +13,14 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 from uuid import uuid4
 
 from polylogue.config import Config, Source
 from polylogue.lib.json import dumps
 from polylogue.lib.log import get_logger
 from polylogue.lib.metrics import PipelineMetrics
+from polylogue.protocols import ProgressCallback
 from polylogue.storage.backends import SQLiteBackend, create_backend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import PlanResult, RunRecord, RunResult
@@ -97,12 +98,12 @@ def _run_coroutine_sync(coro: Awaitable[T]) -> T:
     except RuntimeError:
         return asyncio.run(coro)
 
-    result: dict[str, Any] = {}
+    result: list[T] = []
     error: list[BaseException] = []
 
     def _worker() -> None:
         try:
-            result["value"] = asyncio.run(coro)
+            result.append(asyncio.run(coro))
         except BaseException as exc:  # pragma: no cover - re-raised on caller thread
             error.append(exc)
 
@@ -111,7 +112,9 @@ def _run_coroutine_sync(coro: Awaitable[T]) -> T:
     thread.join()
     if error:
         raise error[0]
-    return result.get("value")
+    if not result:
+        raise RuntimeError("Coroutine thread completed without returning a result")
+    return result[0]
 
 
 async def _all_conversation_ids(
@@ -195,7 +198,7 @@ async def run_sources(
     plan: PlanResult | None = None,
     ui: object | None = None,
     source_names: Sequence[str] | None = None,
-    progress_callback: Any | None = None,
+    progress_callback: ProgressCallback | None = None,
     render_format: str = "html",
     backend: SQLiteBackend | None = None,
     repository: ConversationRepository | None = None,

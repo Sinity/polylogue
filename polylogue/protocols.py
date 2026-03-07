@@ -63,8 +63,18 @@ class OutputRenderer(Protocol):
         ...
 
 
+@runtime_checkable
+class ProgressCallback(Protocol):
+    """Progress callback shared by pipeline stages and CLI observers."""
+
+    def __call__(self, amount: int, desc: str | None = None) -> None:
+        """Report incremental progress."""
+        ...
+
+
 __all__ = [
     "SearchProvider",
     "VectorProvider",
     "OutputRenderer",
+    "ProgressCallback",
 ]

@@ -17,20 +17,24 @@ import os
 
 import orjson
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
 from polylogue.lib.raw_payload import decode_raw_payload, infer_payload_provider
 from polylogue.pipeline.services.ingest_state import IngestState
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
+from polylogue.protocols import ProgressCallback
 from polylogue.sources.source import parse_payload
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import Config, Source
+    from polylogue.pipeline.services.acquisition import AcquireResult
+    from polylogue.pipeline.services.validation import ValidateResult
     from polylogue.sources.parsers.base import ParsedConversation
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
@@ -90,8 +94,8 @@ class ParseResult:
 class IngestResult:
     """Result of acquire -> validate -> parse orchestration."""
 
-    acquire_result: Any
-    validation_result: Any | None
+    acquire_result: AcquireResult
+    validation_result: ValidateResult | None
     parse_result: ParseResult
     parse_raw_ids: list[str]
 
@@ -108,7 +112,6 @@ class ParsingService:
         repository: ConversationRepository,
         archive_root: Path,
         config: Config,
-        drive_client_factory: Any | None = None,
     ):
         """Initialize the async parsing service.
 
@@ -116,14 +119,12 @@ class ParsingService:
             repository: Async storage repository for database operations
             archive_root: Root directory for archived conversations
             config: Application configuration
-            drive_client_factory: Optional factory callable returning a DriveClient
         """
         self.repository = repository
         self.archive_root = archive_root
         self.config = config
-        self.drive_client_factory = drive_client_factory
 
-    def _require_backend(self) -> Any:
+    def _require_backend(self) -> SQLiteBackend:
         """Return the repository backend or fail explicitly."""
         backend = self.repository.backend
         if backend is None:
@@ -136,7 +137,7 @@ class ParsingService:
         *,
         ui: object | None = None,
         download_assets: bool = True,
-        progress_callback: Any | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> ParseResult:
         """Parse conversations from sources via acquire → validate → parse flow.
 
@@ -167,7 +168,7 @@ class ParsingService:
         sources: list[Source],
         stage: str = "all",
         ui: object | None = None,
-        progress_callback: Any | None = None,
+        progress_callback: ProgressCallback | None = None,
         parse_records: bool = True,
     ) -> IngestResult:
         """Canonical ingestion orchestration for runtime callers.
@@ -260,7 +261,7 @@ class ParsingService:
         *,
         raw_ids: list[str] | None = None,
         provider: str | None = None,
-        progress_callback: Any | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> ParseResult:
         """Parse raw_conversations from DB into conversations.
 
@@ -327,10 +328,10 @@ class ParsingService:
 
     async def _process_raw_batch(
         self,
-        backend: Any,
+        backend: SQLiteBackend,
         batch_ids: list[str],
         result: ParseResult,
-        progress_callback: Any | None,
+        progress_callback: ProgressCallback | None,
     ) -> None:
         """Process a batch of raw conversation IDs.
 

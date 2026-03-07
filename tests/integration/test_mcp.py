@@ -246,14 +246,14 @@ class TestRepositoryDataInsertion:
         backend.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
         backend.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        # Setup async context manager for _get_connection() — used by lightweight hash check
+        # Setup async context manager for connection() — used by lightweight hash check
         mock_cursor = AsyncMock()
         mock_cursor.fetchone = AsyncMock(return_value=None)  # No existing conversation
         mock_conn = AsyncMock()
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        backend._get_connection = MagicMock()
-        backend._get_connection.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        backend._get_connection.return_value.__aexit__ = AsyncMock(return_value=False)
+        backend.connection = MagicMock()
+        backend.connection.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        backend.connection.return_value.__aexit__ = AsyncMock(return_value=False)
 
         # Mock the async backend methods that save_via_backend calls
         backend.save_conversation_record = AsyncMock()

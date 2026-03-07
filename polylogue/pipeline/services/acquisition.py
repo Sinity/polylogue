@@ -15,16 +15,17 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import sqlite3
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
 from polylogue.lib.provider_identity import canonical_runtime_provider
+from polylogue.protocols import ProgressCallback
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.sources.source import iter_source_raw_data
 from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
 
 if TYPE_CHECKING:
-    from polylogue.config import Source
+    from polylogue.config import DriveConfig, Source
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
@@ -53,7 +54,7 @@ class ScanResult:
             "scanned": 0,
             "errors": 0,
         }
-        self.cursors: dict[str, dict[str, Any]] = {}
+        self.cursors: dict[str, dict[str, object]] = {}
 
 
 class AcquisitionService:
@@ -80,9 +81,9 @@ class AcquisitionService:
         self,
         sources: list[Source],
         *,
-        progress_callback: Any | None = None,
+        progress_callback: ProgressCallback | None = None,
         ui: object | None = None,
-        drive_config: object | None = None,
+        drive_config: DriveConfig | None = None,
         progress_label: str = "Scanning",
     ) -> ScanResult:
         """Scan raw payloads from sources without writing them."""
@@ -91,7 +92,7 @@ class AcquisitionService:
 
         for source in sources:
             logger.debug("Scanning source", source=source.name)
-            cursor_state: dict[str, Any] = {}
+            cursor_state: dict[str, object] = {}
             try:
                 async for record in self._iter_raw_record_stream(
                     source,
@@ -124,8 +125,8 @@ class AcquisitionService:
         sources: list[Source],
         *,
         ui: object | None = None,
-        progress_callback: Any | None = None,
-        drive_config: object | None = None,
+        progress_callback: ProgressCallback | None = None,
+        drive_config: DriveConfig | None = None,
     ) -> AcquireResult:
         """Acquire raw data from multiple sources.
 
@@ -239,8 +240,8 @@ class AcquisitionService:
         *,
         known_mtimes: dict[str, str] | None = None,
         ui: object | None = None,
-        cursor_state: dict[str, Any] | None = None,
-        drive_config: object | None = None,
+        cursor_state: dict[str, object] | None = None,
+        drive_config: DriveConfig | None = None,
     ) -> AsyncIterator[RawConversationData]:
         """Stream Drive payloads as raw records without touching the local cache."""
         from polylogue.sources.drive import iter_drive_raw_data
@@ -279,8 +280,8 @@ class AcquisitionService:
         *,
         known_mtimes: dict[str, str] | None = None,
         ui: object | None = None,
-        cursor_state: dict[str, Any] | None = None,
-        drive_config: object | None = None,
+        cursor_state: dict[str, object] | None = None,
+        drive_config: DriveConfig | None = None,
     ) -> AsyncIterator[RawConversationRecord]:
         """Yield prepared RawConversationRecord values for a source."""
         raw_stream: AsyncIterator[RawConversationData]
