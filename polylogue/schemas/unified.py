@@ -447,7 +447,14 @@ def _extract_codex(raw: dict[str, Any]) -> HarmonizedMessage:
 # =============================================================================
 
 
-def _harmonize_from_extracted_meta(provider_meta: dict[str, Any]) -> HarmonizedMessage:
+def _harmonize_from_extracted_meta(
+    provider_meta: dict[str, Any],
+    *,
+    message_id: str | None = None,
+    role: str | None = None,
+    text: str | None = None,
+    timestamp: datetime | str | float | int | None = None,
+) -> HarmonizedMessage:
     """Build HarmonizedMessage from claude-code's extracted provider_meta.
 
     When ``raw`` is absent (the original record lives in ``raw_conversations``),
@@ -459,46 +466,89 @@ def _harmonize_from_extracted_meta(provider_meta: dict[str, Any]) -> HarmonizedM
     thinking = provider_meta.get("thinking_traces", [])
     tools = provider_meta.get("tool_invocations", [])
 
-    reasoning_traces = [
-        ReasoningTrace(text=t.get("text", ""), provider="claude-code")
-        for t in thinking
-    ] if thinking else []
+    reasoning_traces = (
+        [
+            ReasoningTrace(
+                text=str(t.get("text", "")),
+                provider="claude-code",
+                raw=t if isinstance(t, dict) else {},
+            )
+            for t in thinking
+            if isinstance(t, dict) and t.get("text")
+        ]
+        if thinking
+        else []
+    )
 
-    tool_calls = [
-        ToolCall(
-            name=t.get("tool_name") or t.get("name", "unknown"),
-            tool_id=t.get("tool_id") or t.get("id"),
-            input_data=t.get("input") or t.get("input_data"),
-            provider="claude-code",
-        )
-        for t in tools
-    ] if tools else []
+    tool_calls: list[ToolCall] = []
+    if tools:
+        for t in tools:
+            if not isinstance(t, dict):
+                continue
+            tool_name = str(t.get("tool_name") or t.get("name") or "unknown")
+            tool_input = t.get("input")
+            if not isinstance(tool_input, dict):
+                alt_input = t.get("input_data")
+                tool_input = alt_input if isinstance(alt_input, dict) else {}
+            tool_id = t.get("id") or t.get("tool_id")
+            tool_calls.append(
+                ToolCall(
+                    name=tool_name,
+                    id=str(tool_id) if tool_id is not None else None,
+                    input=tool_input,
+                    category=classify_tool(tool_name, tool_input),
+                    provider="claude-code",
+                    raw=t,
+                )
+            )
 
     token_info = provider_meta.get("token_usage")
-    tokens = TokenUsage(
-        input_tokens=token_info.get("input_tokens"),
-        output_tokens=token_info.get("output_tokens"),
-        cache_creation_tokens=token_info.get("cache_creation_input_tokens"),
-        cache_read_tokens=token_info.get("cache_read_input_tokens"),
-    ) if isinstance(token_info, dict) else None
+    tokens = (
+        TokenUsage(
+            input_tokens=token_info.get("input_tokens"),
+            output_tokens=token_info.get("output_tokens"),
+            cache_write_tokens=token_info.get("cache_creation_input_tokens"),
+            cache_read_tokens=token_info.get("cache_read_input_tokens"),
+        )
+        if isinstance(token_info, dict)
+        else None
+    )
 
     cost_usd = provider_meta.get("costUSD")
     cost = CostInfo(total_usd=cost_usd) if cost_usd else None
 
-    blocks = []
+    blocks: list[ContentBlock] = []
+    text_parts: list[str] = []
     for b in content_blocks:
+        if not isinstance(b, dict):
+            continue
         btype = b.get("type", "text")
         try:
             ct = ContentType(btype)
         except ValueError:
             ct = ContentType.UNKNOWN
-        blocks.append(ContentBlock(type=ct, text=b.get("text"), name=b.get("name")))
+        if ct in {ContentType.TEXT, ContentType.THINKING} and isinstance(b.get("text"), str):
+            text_parts.append(b["text"])
+        blocks.append(
+            ContentBlock(
+                type=ct,
+                text=b.get("text"),
+                raw=b,
+            )
+        )
+
+    normalized_role = "unknown"
+    if isinstance(role, str) and role:
+        normalized_role = normalize_role(role)
+    message_text = text if isinstance(text, str) else ""
+    if not message_text:
+        message_text = "\n".join(part for part in text_parts if part).strip()
 
     return HarmonizedMessage(
-        id=None,
-        role="unknown",  # Role is in the Message model, not provider_meta
-        text="",  # Text is in the Message model, not provider_meta
-        timestamp=None,
+        id=message_id,
+        role=normalized_role,
+        text=message_text,
+        timestamp=parse_timestamp(timestamp),
         reasoning_traces=reasoning_traces,
         tool_calls=tool_calls,
         content_blocks=blocks,
@@ -511,7 +561,15 @@ def _harmonize_from_extracted_meta(provider_meta: dict[str, Any]) -> HarmonizedM
     )
 
 
-def extract_from_provider_meta(provider: str, provider_meta: dict[str, Any]) -> HarmonizedMessage:
+def extract_from_provider_meta(
+    provider: str,
+    provider_meta: dict[str, Any],
+    *,
+    message_id: str | None = None,
+    role: str | None = None,
+    text: str | None = None,
+    timestamp: datetime | str | float | int | None = None,
+) -> HarmonizedMessage:
     """Extract HarmonizedMessage from polylogue database format.
 
     Providers that store a ``raw`` key in provider_meta will use that for
@@ -531,7 +589,13 @@ def extract_from_provider_meta(provider: str, provider_meta: dict[str, Any]) -> 
         return extract_harmonized_message(provider, raw)
     # No raw key — claude-code stores extracted fields directly
     if provider in ("claude-code", "claude_code"):
-        return _harmonize_from_extracted_meta(provider_meta)
+        return _harmonize_from_extracted_meta(
+            provider_meta,
+            message_id=message_id or provider_meta.get("provider_message_id"),
+            role=role or provider_meta.get("role"),
+            text=text or provider_meta.get("text"),
+            timestamp=timestamp or provider_meta.get("timestamp"),
+        )
     # Other providers: try extraction from provider_meta as fallback
     return extract_harmonized_message(provider, provider_meta)
 
@@ -562,6 +626,11 @@ def is_message_record(provider: str, raw: dict[str, Any]) -> bool:
 def harmonize_parsed_message(
     provider: str,
     provider_meta: dict[str, Any] | None,
+    *,
+    message_id: str | None = None,
+    role: str | None = None,
+    text: str | None = None,
+    timestamp: datetime | str | float | int | None = None,
 ) -> HarmonizedMessage | None:
     """Convert ParsedMessage.provider_meta to HarmonizedMessage.
 
@@ -584,7 +653,14 @@ def harmonize_parsed_message(
     if not is_message_record(provider, raw):
         return None
 
-    return extract_harmonized_message(provider, raw)
+    return extract_from_provider_meta(
+        provider,
+        provider_meta,
+        message_id=message_id,
+        role=role,
+        text=text,
+        timestamp=timestamp,
+    )
 
 
 def bulk_harmonize(
@@ -604,7 +680,14 @@ def bulk_harmonize(
     for pm in parsed_messages:
         meta = getattr(pm, "provider_meta", None)
         if meta:
-            harmonized = harmonize_parsed_message(provider, meta)
+            harmonized = harmonize_parsed_message(
+                provider,
+                meta,
+                message_id=getattr(pm, "provider_message_id", None),
+                role=getattr(pm, "role", None),
+                text=getattr(pm, "text", None),
+                timestamp=getattr(pm, "timestamp", None),
+            )
             if harmonized:
                 results.append(harmonized)
     return results

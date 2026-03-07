@@ -191,11 +191,11 @@ async def run_sources(
     Async version of run_sources supporting:
     - Parallel acquisition, parsing, rendering, and indexing
     - Progress callbacks for long-running operations
-    - Full stage control ("acquire", "parse", "render", "index", "generate-schemas", "all")
+    - Full stage control ("acquire", "validate", "parse", "render", "index", "generate-schemas", "all")
 
     Args:
         config: Application configuration
-        stage: Pipeline stage ("acquire", "parse", "render", "index", "generate-schemas", "all")
+        stage: Pipeline stage ("acquire", "validate", "parse", "render", "index", "generate-schemas", "all")
         plan: Optional plan result for drift detection
         ui: Optional UI object for user interaction
         source_names: Optional list of source names to process
@@ -247,41 +247,62 @@ async def run_sources(
         counts["skipped"] = acquire_result.counts["skipped"]
         logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
 
-    # Parse stage (acquire + parse, replaces old "ingest")
-    elif stage in {"parse", "all"}:
+    # Validate/Parse stages (canonical ingest orchestration)
+    elif stage in {"validate", "parse", "all"}:
         from polylogue.pipeline.services.parsing import ParsingService
 
-        sm = metrics.start_stage("parse")
+        sources = _select_sources(config, source_names)
         parsing_service = ParsingService(
             repository=repository,
             archive_root=config.archive_root,
             config=config,
         )
-        sources = _select_sources(config, source_names)
-        parse_result = await parsing_service.parse_sources(
-            sources,
-            ui=ui,
-            download_assets=True,
-            progress_callback=progress_callback,
-        )
-        sm.stop(items=parse_result.counts.get("conversations", 0))
 
-        # Merge results
-        for key, value in parse_result.counts.items():
-            counts[key] = value
-        if parse_result.parse_failures:
-            counts["parse_failures"] = parse_result.parse_failures
-        changed_counts.update(parse_result.changed_counts)
-        processed_ids = parse_result.processed_ids
-        # Use deduplicated conversation count for user-facing summary
-        # (counts["conversations"] accumulates per-raw-record, double-counting
-        # conversations that appear in multiple source files)
-        counts["conversations"] = len(processed_ids)
-        logger.info(
-            "Parse stage complete", **sm.to_dict(),
-            processed_ids=len(processed_ids),
-            parse_failures=parse_result.parse_failures,
+        ingest_result = await parsing_service.ingest_sources(
+            sources=sources,
+            progress_callback=progress_callback,
+            parse_records=stage in {"parse", "all"},
         )
+        acquire_result = ingest_result.acquire_result
+        validation_result = ingest_result.validation_result
+
+        counts["acquired"] = acquire_result.counts["acquired"]
+        counts["skipped"] = acquire_result.counts["skipped"]
+        counts["acquire_errors"] = acquire_result.counts["errors"]
+        logger.info("Acquire stage complete", **acquire_result.counts)
+
+        if validation_result is not None:
+            counts["validated"] = validation_result.counts["validated"]
+            counts["validation_invalid"] = validation_result.counts["invalid"]
+            counts["validation_drift"] = validation_result.counts["drift"]
+            counts["validation_skipped_no_schema"] = validation_result.counts["skipped_no_schema"]
+            counts["validation_errors"] = validation_result.counts["errors"]
+            logger.info(
+                "Validate stage complete",
+                parseable=len(validation_result.parseable_raw_ids),
+                invalid=validation_result.counts["invalid"],
+                drift=validation_result.counts["drift"],
+                skipped_no_schema=validation_result.counts["skipped_no_schema"],
+                errors=validation_result.counts["errors"],
+            )
+
+        if stage in {"parse", "all"}:
+            parse_result = ingest_result.parse_result
+            for key, value in parse_result.counts.items():
+                counts[key] = value
+            if parse_result.parse_failures:
+                counts["parse_failures"] = parse_result.parse_failures
+            changed_counts.update(parse_result.changed_counts)
+            processed_ids = parse_result.processed_ids
+            # Use deduplicated conversation count for user-facing summary
+            # (counts["conversations"] accumulates per-raw-record, double-counting
+            # conversations that appear in multiple source files)
+            counts["conversations"] = len(processed_ids)
+            logger.info(
+                "Parse stage complete",
+                processed_ids=len(processed_ids),
+                parse_failures=parse_result.parse_failures,
+            )
 
     # Schema generation stage (sync, run in thread pool)
     if stage == "generate-schemas":
