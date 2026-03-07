@@ -576,51 +576,6 @@ async def _output_stats_sql(
         out(f"Date range: {date_range}")
 
 
-def _output_stats(env: AppEnv, results: list[Conversation]) -> None:
-    """Output statistics for matched conversations (legacy, loads all messages)."""
-    if not results:
-        env.ui.console.print("No conversations matched.")
-        return
-
-    total_messages = 0
-    total_words = 0
-    user_messages = 0
-    assistant_messages = 0
-    thinking_traces = 0
-    tool_calls = 0
-    attachments = 0
-
-    for c in results:
-        for m in c.messages:
-            total_messages += 1
-            total_words += m.word_count
-            attachments += len(m.attachments)
-            if m.role == "user":
-                user_messages += 1
-            elif m.role == "assistant":
-                assistant_messages += 1
-            if m.is_thinking:
-                thinking_traces += 1
-            if m.is_tool_use:
-                tool_calls += 1
-
-    dates = [c.updated_at for c in results if c.updated_at]
-    date_range = ""
-    if dates:
-        min_date = min(dates).strftime("%Y-%m-%d")
-        max_date = max(dates).strftime("%Y-%m-%d")
-        date_range = f"{min_date} to {max_date}"
-
-    env.ui.console.print(f"\nMatched: {len(results)} conversations\n")
-    env.ui.console.print(f"Messages: {total_messages} total ({user_messages} user, {assistant_messages} assistant)")
-    env.ui.console.print(f"Words: {total_words:,}")
-    env.ui.console.print(f"Thinking: {thinking_traces} traces")
-    env.ui.console.print(f"Tool use: {tool_calls} calls")
-    env.ui.console.print(f"Attachments: {attachments}")
-    if date_range:
-        env.ui.console.print(f"Date range: {date_range}")
-
-
 def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -> None:
     """Output statistics grouped by a dimension."""
     from collections import defaultdict
