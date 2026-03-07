@@ -12,12 +12,10 @@ patterns work correctly at moderate scale.
 
 from __future__ import annotations
 
-import asyncio
 
-import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.storage.store import ConversationRecord, MessageRecord
 
 
 # Number of conversations for scale tests.

@@ -29,8 +29,8 @@ from polylogue.storage.store import (
 from tests.infra.helpers import (
     make_attachment,
     make_conversation,
-    make_message,
     make_hash,
+    make_message,
 )
 
 
@@ -712,6 +712,42 @@ def compare_extractions(provider: str, raw: dict) -> list[ComparisonResult]:
     return results
 
 
+def _load_claude_code_message_records_from_raw(seeded_db: str | Path, *, limit: int = 500) -> list[dict]:
+    """Load Claude Code message records from raw_conversations JSONL payloads."""
+    conn = sqlite3.connect(seeded_db)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT raw_content
+        FROM raw_conversations
+        WHERE provider_name = 'claude-code'
+        LIMIT ?
+        """,
+        (max(1, limit),),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    records: list[dict] = []
+    for (raw_content,) in rows:
+        text = (
+            raw_content.decode("utf-8", errors="replace")
+            if isinstance(raw_content, (bytes, bytearray))
+            else str(raw_content)
+        )
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and is_message_record("claude-code", payload):
+                records.append(payload)
+                if len(records) >= limit:
+                    return records
+    return records
 
 
 class TestBackendComparison:
@@ -742,80 +778,50 @@ class TestBackendComparison:
         assert old_normalize_role("assistant") == new_normalize_role("assistant")
 
     def test_claude_code_extraction_equivalence(self, seeded_db):
-        """Compare old and new extraction on real Claude Code data."""
-        conn = sqlite3.connect(seeded_db)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT m.provider_meta
-            FROM messages m
-            JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name = 'claude-code'
-            LIMIT 500
-            """
-        )
-
-        rows = cur.fetchall()
-        conn.close()
+        """Compare old and new extraction on Claude Code raw message records."""
+        records = _load_claude_code_message_records_from_raw(seeded_db, limit=500)
+        assert records, "Expected claude-code message records in seeded raw corpus"
 
         equiv_count = Counter()
         diff_samples = []
+        role_mismatches = 0
 
-        for (pm_json,) in rows:
-            pm = json.loads(pm_json)
-            raw = pm.get("raw", pm)
-
-            if not is_message_record("claude-code", raw):
-                continue
-
+        for raw in records:
             results = compare_extractions("claude-code", raw)
-
             for r in results:
                 if r.equivalent:
                     equiv_count[r.field] += 1
                 else:
+                    if r.field == "role":
+                        role_mismatches += 1
                     if len(diff_samples) < 10:
                         diff_samples.append(r)
 
         total = sum(equiv_count.values())
-        if total == 0:
-            pytest.skip("No claude-code messages in seeded database")
+        assert total > 0
+        assert role_mismatches == 0
 
     def test_new_extraction_is_superset(self, seeded_db):
-        """New extraction should provide more information, not less."""
-        conn = sqlite3.connect(seeded_db)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT m.provider_meta
-            FROM messages m
-            JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name = 'claude-code'
-            LIMIT 500
-            """
-        )
-
-        rows = cur.fetchall()
-        conn.close()
+        """New extraction should expose tool/reasoning data on raw records."""
+        records = _load_claude_code_message_records_from_raw(seeded_db, limit=500)
+        assert records, "Expected claude-code message records in seeded raw corpus"
 
         tool_calls_found = 0
         reasoning_found = 0
+        processed = 0
 
-        for (pm_json,) in rows:
-            pm = json.loads(pm_json)
-
-            if not is_message_record("claude-code", pm.get("raw", pm)):
-                continue
-
-            new_msg = extract_from_provider_meta("claude-code", pm)
+        for raw in records:
+            new_msg = extract_from_provider_meta("claude-code", {"raw": raw})
+            processed += 1
             tool_calls_found += len(new_msg.tool_calls)
             reasoning_found += len(new_msg.reasoning_traces)
 
+        assert processed > 0
         assert tool_calls_found >= 0
         assert reasoning_found >= 0
-        print(f"Reasoning traces extracted: {reasoning_found}")
-
-        assert tool_calls_found > 0 or reasoning_found >= 0, "New extraction should find viewports"
+        assert tool_calls_found > 0 or reasoning_found > 0, (
+            "New extraction should find tool calls or reasoning traces"
+        )
 
 
 class TestTransactionAtomicity:

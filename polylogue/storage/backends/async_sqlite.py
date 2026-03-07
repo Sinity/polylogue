@@ -1598,8 +1598,14 @@ class SQLiteBackend:
                     acquired_at,
                     file_mtime,
                     parsed_at,
-                    parse_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    parse_error,
+                    validated_at,
+                    validation_status,
+                    validation_error,
+                    validation_drift_count,
+                    validation_provider,
+                    validation_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.raw_id,
@@ -1612,6 +1618,12 @@ class SQLiteBackend:
                     record.file_mtime,
                     record.parsed_at,
                     record.parse_error,
+                    record.validated_at,
+                    record.validation_status,
+                    record.validation_error,
+                    record.validation_drift_count,
+                    record.validation_provider,
+                    record.validation_mode,
                 ),
             )
             inserted = bool(cursor.rowcount > 0)
@@ -1679,6 +1691,56 @@ class SQLiteBackend:
             if self._transaction_depth == 0:
                 await conn.commit()
 
+    async def mark_raw_validated(
+        self,
+        raw_id: str,
+        *,
+        status: str,
+        error: str | None = None,
+        drift_count: int = 0,
+        provider: str | None = None,
+        mode: str | None = None,
+    ) -> None:
+        """Persist validation status for a raw conversation record.
+
+        Args:
+            raw_id: Raw conversation ID to update
+            status: Validation status ("passed", "failed", "skipped")
+            error: Optional validation error text
+            drift_count: Number of drift warnings observed for this payload
+            provider: Canonical provider schema used during validation
+            mode: Validation mode ("off", "advisory", "strict")
+        """
+        from datetime import datetime, timezone
+
+        if status not in {"passed", "failed", "skipped"}:
+            raise ValueError(f"Invalid validation status: {status}")
+
+        async with self._get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE raw_conversations
+                SET validated_at = ?,
+                    validation_status = ?,
+                    validation_error = ?,
+                    validation_drift_count = ?,
+                    validation_provider = ?,
+                    validation_mode = ?
+                WHERE raw_id = ?
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    status,
+                    (error[:2000] if error else None),
+                    max(0, int(drift_count)),
+                    provider,
+                    mode,
+                    raw_id,
+                ),
+            )
+            if self._transaction_depth == 0:
+                await conn.commit()
+
     async def get_known_source_mtimes(self) -> dict[str, str]:
         """Return {source_path: file_mtime} for all raw records with an mtime.
 
@@ -1723,6 +1785,37 @@ class SQLiteBackend:
                 cursor = await conn.execute(
                     "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
                     "WHERE parsed_at IS NOT NULL OR parse_error IS NOT NULL"
+                )
+            if self._transaction_depth == 0:
+                await conn.commit()
+            return cursor.rowcount
+
+    async def reset_validation_status(self, *, provider: str | None = None) -> int:
+        """Clear validation tracking to force re-validation on next run.
+
+        Args:
+            provider: If set, only reset records for this provider.
+                      If None, reset all records.
+
+        Returns:
+            Number of records reset
+        """
+        async with self._get_connection() as conn:
+            if provider is not None:
+                cursor = await conn.execute(
+                    "UPDATE raw_conversations "
+                    "SET validated_at = NULL, validation_status = NULL, validation_error = NULL, "
+                    "validation_drift_count = NULL, validation_provider = NULL, validation_mode = NULL "
+                    "WHERE provider_name = ? "
+                    "AND (validated_at IS NOT NULL OR validation_status IS NOT NULL OR validation_error IS NOT NULL)",
+                    (provider,),
+                )
+            else:
+                cursor = await conn.execute(
+                    "UPDATE raw_conversations "
+                    "SET validated_at = NULL, validation_status = NULL, validation_error = NULL, "
+                    "validation_drift_count = NULL, validation_provider = NULL, validation_mode = NULL "
+                    "WHERE validated_at IS NOT NULL OR validation_status IS NOT NULL OR validation_error IS NOT NULL"
                 )
             if self._transaction_depth == 0:
                 await conn.commit()

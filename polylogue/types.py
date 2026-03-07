@@ -4,6 +4,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import NewType
 
+from polylogue.lib.provider_identity import canonical_runtime_provider
+
 # Semantic ID types - provides compile-time distinction
 ConversationId = NewType("ConversationId", str)
 MessageId = NewType("MessageId", str)
@@ -24,14 +26,7 @@ class Provider(str, Enum):
     @classmethod
     def from_string(cls, value: str | None) -> Provider:
         """Normalize provider string to enum, defaulting to UNKNOWN."""
-        if not value:
-            return cls.UNKNOWN
-        normalized = value.lower().strip().replace("_", "-")
-        # Handle aliases
-        if normalized in ("gpt", "openai"):
-            return cls.CHATGPT
-        if normalized in ("claude-ai", "anthropic"):
-            return cls.CLAUDE
+        normalized = canonical_runtime_provider(value)
         try:
             return cls(normalized)
         except ValueError:

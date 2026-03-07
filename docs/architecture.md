@@ -273,10 +273,10 @@ Entry point for all user interaction. Uses Click with a custom `QueryFirstGroup`
 
 ### Pipeline Layer (`pipeline/`)
 
-Orchestrates the full ingestion lifecycle. The `runner.py` module coordinates the four pipeline services in sequence, with event-bus notifications at each stage.
+Orchestrates the full ingestion lifecycle. The `runner.py` module coordinates the pipeline services in sequence (`acquire -> validate -> parse -> render -> index`), with event-bus notifications at each stage.
 
 - **runner.py**: `run_sources()` is the top-level async entry point
-- **services/**: Stateless service classes (acquisition, parsing, rendering, indexing) injected with repositories
+- **services/**: Stateless service classes (acquisition, validation, parsing, rendering, indexing) injected with repositories
 - **event_bus.py**: Decoupled progress reporting (the TUI subscribes to pipeline events)
 
 ### Ingestion Layer (`sources/`)
@@ -524,7 +524,8 @@ tests/
 | `raw_synthetic_samples` | session | Raw conversation data for unit tests |
 | `repository` | function | Fresh `ConversationRepository` with in-memory backend |
 
-All fixtures use the same `SyntheticCorpus` infrastructure as `polylogue demo`, ensuring the demo exercises identical code paths to the test suite.
+All fixtures use the same `SyntheticCorpus` infrastructure as `polylogue demo --seed/--corpus`.
+Note: `polylogue demo --showcase` currently seeds from packaged static fixtures.
 
 ### Test Markers
 

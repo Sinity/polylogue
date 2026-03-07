@@ -76,9 +76,9 @@ class TestAcquisitionService:
             mock_raw.file_mtime = None
 
             async def _mock_stream(_source, **_kwargs):
-                yield (mock_raw, None)
+                yield mock_raw
 
-            with patch.object(service, "_iter_source_conversations_stream", _mock_stream):
+            with patch.object(service, "_iter_source_raw_stream", _mock_stream):
                 source = Source(name="test", path=Path(tmpdir))
                 result = await service.acquire_sources([source], progress_callback=progress)
 
@@ -97,7 +97,7 @@ class TestAcquisitionService:
             def _mock_stream_error(_source):
                 raise ValueError("source broken")
 
-            with patch.object(service, "_iter_source_conversations_stream", _mock_stream_error):
+            with patch.object(service, "_iter_source_raw_stream", _mock_stream_error):
                 source = Source(name="broken", path=Path(tmpdir))
                 result = await service.acquire_sources([source])
 
@@ -122,9 +122,9 @@ class TestAcquisitionService:
             source = Source(name="test", path=Path(tmpdir))
 
             async def _mock_stream(_source, **_kwargs):
-                yield (mock_raw, None)
+                yield mock_raw
 
-            with patch.object(service, "_iter_source_conversations_stream", _mock_stream):
+            with patch.object(service, "_iter_source_raw_stream", _mock_stream):
                 # First acquire
                 result1 = await service.acquire_sources([source])
                 assert result1.counts["acquired"] == 1
