@@ -34,7 +34,7 @@ eval $(polylogue demo --seed --env-only)
 polylogue demo --seed -p chatgpt,claude -n 10
 ```
 
-The seeded environment uses `run_sources` — the same pipeline as `polylogue run` — so the demo exercises the full ingest → parse → render → index flow.
+The seeded environment uses `run_sources` — the same pipeline as `polylogue run` — so the demo exercises the full acquire → validate → parse → render → index flow.
 
 ### `--corpus` Mode
 
@@ -58,6 +58,7 @@ Exercises the entire CLI surface area — 58 exercises across 7 groups (structur
 
 ```bash
 polylogue demo --showcase                     # Full validation
+polylogue demo --showcase --showcase-data synthetic -n 5
 polylogue demo --showcase --live              # Read-only against real data
 polylogue demo --showcase --json              # Machine-readable report
 polylogue demo --showcase --verbose           # Print each exercise output
@@ -65,7 +66,9 @@ polylogue demo --showcase --verbose           # Print each exercise output
 
 **What it does:**
 
-1. Seeds a temporary workspace with synthetic data (unless `--live`)
+1. Seeds a temporary workspace (unless `--live`)
+   - default: packaged static fixtures
+   - optional: `--showcase-data synthetic` for schema-driven synthetic fixtures
 2. Runs every query mode, output format, filter combination, and mutation operation
 3. Produces three reports:
    - `showcase-summary.txt` — pass/fail counts and timing
@@ -83,6 +86,7 @@ See [CLI Reference](cli-reference.md#demo) for the full flag reference.
 | `--seed` | | | Create full demo environment |
 | `--corpus` | | | Generate raw fixture files |
 | `--showcase` | | | Exercise all CLI commands and generate reports |
+| `--showcase-data` | | fixtures | Showcase seed source (`fixtures` or `synthetic`) |
 | `--provider` | `-p` | all | Providers to include (repeatable) |
 | `--count` | `-n` | 3 | Conversations per provider |
 | `--output-dir` | `-o` | auto | Output directory |
@@ -94,15 +98,17 @@ See [CLI Reference](cli-reference.md#demo) for the full flag reference.
 
 ## How It Works
 
-Both modes use `SyntheticCorpus` from `polylogue.schemas.synthetic`, which generates realistic conversation structures for each supported provider:
+`demo --seed` and `demo --corpus` use `SyntheticCorpus` from `polylogue.schemas.synthetic`, which generates realistic conversation structures for each supported provider:
 
-- **ChatGPT**: `conversations.json` with UUID-based message graphs
-- **Claude**: JSONL files with `chat_messages` arrays
-- **Claude Code**: JSON arrays with `parentUuid`/`sessionId` markers
-- **Codex**: Session-based JSONL exports
+- **ChatGPT**: JSON documents with UUID-based message graphs (`mapping`)
+- **Claude AI**: JSON documents with `chat_messages` arrays
+- **Claude Code**: JSONL records with `parentUuid`/`sessionId` markers
+- **Codex**: Session-style JSONL exports
 - **Gemini**: Structured `chunkedPrompt` format
 
-The synthetic data includes realistic message patterns: multi-turn dialogues, code blocks, thinking traces, tool use, and attachments metadata.
+`demo --showcase` seeds from packaged static fixtures under `polylogue/showcase/fixtures/` by default. Use `--showcase-data synthetic` for schema-driven synthetic seeding (unless `--live` is used). Synthetic showcase seeding uses a narrative style so generated conversations read coherently in the cookbook output.
+
+Synthetic generation includes realistic message patterns: multi-turn dialogues, code blocks, thinking traces, tool use, and attachments metadata.
 
 ## Relationship to Test Fixtures
 
@@ -112,7 +118,7 @@ The test suite uses the same `SyntheticCorpus` infrastructure through shared fix
 - `synthetic_source` — A temporary source directory with generated files
 - `raw_synthetic_samples` — Raw conversation data for unit tests
 
-This means the demo command exercises the exact same code paths as the test suite.
+This means `demo --seed` / `demo --corpus` exercise the same schema-driven generation paths as the test suite fixtures.
 
 ---
 
