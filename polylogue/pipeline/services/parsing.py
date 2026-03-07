@@ -13,14 +13,17 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-
-import orjson
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import orjson
+
 from polylogue.lib.log import get_logger
+from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
+from polylogue.pipeline.services.ingest_state import IngestState
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.source import parse_payload
 from polylogue.storage.search_cache import invalidate_search_cache
@@ -457,36 +460,16 @@ class ParsingService:
         Returns:
             List of parsed conversations (usually 1, but could be more for bundles)
         """
-        content = raw_record.raw_content
-        # orjson accepts both bytes and str, avoiding decode overhead for bytes
-        raw = content if isinstance(content, (bytes, str)) else str(content)
-
-        # Try single JSON first (fast path for chatgpt, claude-ai)
-        try:
-            payload = orjson.loads(raw)
-        except (orjson.JSONDecodeError, ValueError):
-            # Fall back to JSONL parsing (claude-code, codex, gemini)
-            text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-            lines = []
-            for line in text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    lines.append(orjson.loads(line))
-                except (orjson.JSONDecodeError, ValueError):
-                    continue
-            if not lines:
-                raise
-            payload = lines
-
-        # Schema validation: non-blocking, logs drift and errors
-        await self._validate_payload(raw_record.provider_name, payload, raw_record.raw_id)
+        envelope = build_raw_payload_envelope(
+            raw_record.raw_content,
+            source_path=raw_record.source_path,
+            fallback_provider=raw_record.provider_name,
+        )
 
         # Use the existing parser dispatcher
         return parse_payload(
-            provider,
-            payload,
+            envelope.provider,
+            envelope.payload,
             raw_record.raw_id,  # Use raw_id as fallback conversation ID
         )
 

@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
+from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.services import RuntimeServices, build_runtime_services
 
 if TYPE_CHECKING:
@@ -193,18 +194,14 @@ def _build_server() -> FastMCP:
             since: Only conversations updated after this date (ISO format or natural language like 'last week')
         """
         async def _run() -> str:
-            from polylogue.lib.filters import ConversationFilter
-
             repo = _get_repo()
-            clamped = _clamp_limit(limit)
-
-            filter_chain = ConversationFilter(repo).contains(query).limit(clamped)
-            if provider:
-                filter_chain = filter_chain.provider(provider)
-            if since:
-                filter_chain = filter_chain.since(since)
-
-            results = await filter_chain.list()
+            spec = ConversationQuerySpec(
+                query_terms=(query,),
+                providers=(provider,) if provider else (),
+                since=since,
+                limit=_clamp_limit(limit),
+            )
+            results = await spec.build_filter(repo).list()
             return json.dumps([_conversation_to_dict(r) for r in results], indent=2)
         return await _async_safe_call("search", _run)
 
@@ -228,22 +225,16 @@ def _build_server() -> FastMCP:
             sort: Sort order ('updated' or 'created', default: 'updated')
         """
         async def _run() -> str:
-            from polylogue.lib.filters import ConversationFilter
-
             repo = _get_repo()
-            clamped = _clamp_limit(limit)
-
-            filter_chain = ConversationFilter(repo).limit(clamped)
-            if provider:
-                filter_chain = filter_chain.provider(provider)
-            if since:
-                filter_chain = filter_chain.since(since)
-            if tag:
-                filter_chain = filter_chain.tag(tag)
-            if title:
-                filter_chain = filter_chain.title(title)
-
-            conversations = await filter_chain.list()
+            spec = ConversationQuerySpec(
+                providers=(provider,) if provider else (),
+                tags=(tag,) if tag else (),
+                title=title,
+                since=since,
+                sort=sort,
+                limit=_clamp_limit(limit),
+            )
+            conversations = await spec.build_filter(repo).list()
             return json.dumps([_conversation_to_dict(c) for c in conversations], indent=2)
         return await _async_safe_call("list_conversations", _run)
 
@@ -559,10 +550,8 @@ def _build_server() -> FastMCP:
     @mcp.resource("polylogue://conversations")
     async def conversations_resource() -> str:
         """List of all conversations in the archive."""
-        from polylogue.lib.filters import ConversationFilter
-
         repo = _get_repo()
-        convs = await ConversationFilter(repo).list()
+        convs = await ConversationQuerySpec().build_filter(repo).list()
         return json.dumps([_conversation_to_dict(c) for c in convs], indent=2)
 
     @mcp.resource("polylogue://conversation/{conv_id}")
@@ -616,16 +605,14 @@ def _build_server() -> FastMCP:
             since: Only analyze conversations since this date
             limit: Max conversations to analyze (default: 50)
         """
-        from polylogue.lib.filters import ConversationFilter
-
         repo = _get_repo()
-        filter_chain = ConversationFilter(repo).contains("error")
-        if provider:
-            filter_chain = filter_chain.provider(provider)
-        if since:
-            filter_chain = filter_chain.since(since)
-
-        convs = await filter_chain.limit(_clamp_limit(limit)).list()
+        spec = ConversationQuerySpec(
+            query_terms=("error",),
+            providers=(provider,) if provider else (),
+            since=since,
+            limit=_clamp_limit(limit),
+        )
+        convs = await spec.build_filter(repo).list()
 
         error_contexts = []
         for conv in convs:
@@ -667,11 +654,13 @@ Error contexts:
         Args:
             limit: Max conversations to include (default: 100)
         """
-        from polylogue.lib.filters import ConversationFilter
-
         repo = _get_repo()
         week_ago = (datetime.now(tz=timezone.utc) - timedelta(days=7)).isoformat()
-        convs = await ConversationFilter(repo).since(week_ago).limit(_clamp_limit(limit)).list()
+        spec = ConversationQuerySpec(
+            since=week_ago,
+            limit=_clamp_limit(limit),
+        )
+        convs = await spec.build_filter(repo).list()
 
         by_provider: dict[str, int] = {}
         total_messages = 0
@@ -706,10 +695,8 @@ Focus on actionable insights and patterns, not exhaustive summaries.
             language: Programming language to focus on (optional)
             limit: Max conversations to scan (default: 50)
         """
-        from polylogue.lib.filters import ConversationFilter
-
         repo = _get_repo()
-        convs = await ConversationFilter(repo).limit(_clamp_limit(limit)).list()
+        convs = await ConversationQuerySpec(limit=_clamp_limit(limit)).build_filter(repo).list()
 
         code_snippets: list[dict[str, str]] = []
         for conv in convs:
@@ -789,15 +776,12 @@ Conversation 2:
             provider: Filter by provider (optional)
             limit: Number of conversations to analyze (default: 30)
         """
-        from polylogue.lib.filters import ConversationFilter
-
         repo = _get_repo()
-        clamped = _clamp_limit(limit)
-        filter_chain = ConversationFilter(repo).limit(clamped)
-        if provider:
-            filter_chain = filter_chain.provider(provider)
-
-        convs = await filter_chain.list()
+        spec = ConversationQuerySpec(
+            providers=(provider,) if provider else (),
+            limit=_clamp_limit(limit),
+        )
+        convs = await spec.build_filter(repo).list()
 
         summaries = []
         for conv in convs:

@@ -33,6 +33,7 @@ import structlog
 
 from polylogue.config import Config, Source
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
 
 logger = structlog.get_logger(__name__)
 
@@ -130,8 +131,8 @@ class Polylogue:
         )
 
         # Create async backend
-        self._db_path = db_path
         self._backend = SQLiteBackend(db_path=db_path)
+        self._repository = ConversationRepository(backend=self._backend)
 
     async def __aenter__(self) -> Polylogue:
         """Enter async context manager."""
@@ -143,7 +144,7 @@ class Polylogue:
 
     async def close(self) -> None:
         """Close database connections and release resources."""
-        await self._backend.close()
+        await self._repository.close()
 
     @property
     def config(self) -> Config:
@@ -159,6 +160,11 @@ class Polylogue:
     def backend(self) -> SQLiteBackend:
         """Get the archive backend."""
         return self._backend
+
+    @property
+    def repository(self) -> ConversationRepository:
+        """Get the archive repository."""
+        return self._repository
 
     async def get_conversation(self, conversation_id: str) -> Conversation | None:
         """Get a conversation by ID.
@@ -177,18 +183,7 @@ class Polylogue:
             conv = await archive.get_conversation("claude:abc123")
             conv = await archive.get_conversation("abc12345")  # prefix match
         """
-        full_id = await self._backend.resolve_id(conversation_id) or conversation_id
-        conv_record = await self._backend.get_conversation(full_id)
-        if not conv_record:
-            return None
-
-        # Get messages and attachments
-        msg_records = await self._backend.get_messages(full_id)
-
-        # Convert to Conversation model
-        from polylogue.storage.repository import _records_to_conversation
-
-        return _records_to_conversation(conv_record, msg_records, [])
+        return await self._repository.view(conversation_id)
 
     async def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
         """Get multiple conversations by ID using batch queries.
@@ -206,23 +201,7 @@ class Polylogue:
             ids = ["id1", "id2", "id3", "id4", "id5"]
             convs = await archive.get_conversations(ids)
         """
-        if not conversation_ids:
-            return []
-
-        from polylogue.storage.repository import _records_to_conversation
-
-        records = await self._backend.get_conversations_batch(conversation_ids)
-        if not records:
-            return []
-
-        by_id = {rec.conversation_id: rec for rec in records}
-        present_ids = [cid for cid in conversation_ids if cid in by_id]
-        msgs_by_id = await self._backend.get_messages_batch(present_ids)
-
-        return [
-            _records_to_conversation(by_id[cid], msgs_by_id.get(cid, []), [])
-            for cid in present_ids
-        ]
+        return await self._repository.get_many(conversation_ids)
 
     async def list_conversations(
         self,
@@ -243,22 +222,10 @@ class Polylogue:
         Example:
             convs = await archive.list_conversations(provider="claude", limit=10)
         """
-        conv_records = await self._backend.list_conversations(
+        return await self._repository.list(
             provider=provider,
             limit=limit,
         )
-        if not conv_records:
-            return []
-
-        from polylogue.storage.repository import _records_to_conversation
-
-        ids = [cr.conversation_id for cr in conv_records]
-        msgs_by_id = await self._backend.get_messages_batch(ids)
-
-        return [
-            _records_to_conversation(cr, msgs_by_id.get(cr.conversation_id, []), [])
-            for cr in conv_records
-        ]
 
     async def search(
         self,
@@ -319,11 +286,8 @@ class Polylogue:
             print(f"Imported {result.counts['conversations']} conversations")
         """
         from polylogue.pipeline.services.parsing import ParsingService
-        from polylogue.storage.repository import ConversationRepository
-
-        repository = ConversationRepository(backend=self._backend)
         parsing_service = ParsingService(
-            repository=repository,
+            repository=self._repository,
             archive_root=self._config.archive_root,
             config=self._config,
         )
@@ -358,11 +322,8 @@ class Polylogue:
             result = await archive.parse_sources()
         """
         from polylogue.pipeline.services.parsing import ParsingService
-        from polylogue.storage.repository import ConversationRepository
-
-        repository = ConversationRepository(backend=self._backend)
         parsing_service = ParsingService(
-            repository=repository,
+            repository=self._repository,
             archive_root=self._config.archive_root,
             config=self._config,
         )
@@ -402,9 +363,6 @@ class Polylogue:
             convs = await archive.filter().provider("claude").contains("error").limit(10).list()
         """
         from polylogue.lib.filters import ConversationFilter
-        from polylogue.storage.repository import ConversationRepository
-
-        repository = ConversationRepository(backend=self._backend)
 
         vector_provider = None
         try:
@@ -414,7 +372,7 @@ class Polylogue:
         except (ValueError, ImportError):
             pass
 
-        return ConversationFilter(repository, vector_provider=vector_provider)
+        return ConversationFilter(self._repository, vector_provider=vector_provider)
 
     async def stats(self) -> ArchiveStats:
         """Get statistics about the archive.

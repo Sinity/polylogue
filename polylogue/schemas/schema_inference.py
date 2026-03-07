@@ -31,6 +31,11 @@ except ImportError:
     GENSON_AVAILABLE = False
 
 
+from polylogue.lib.raw_payload import (
+    build_raw_payload_envelope,
+    extract_payload_samples,
+    limit_samples,
+)
 from polylogue.storage.backends.connection import default_db_path
 
 # UUID pattern for detecting dynamic keys
@@ -49,6 +54,8 @@ class ProviderConfig:
     db_provider_name: str | None = None  # Provider name in polylogue DB
     session_dir: Path | None = None  # For JSONL session-based providers
     max_sessions: int | None = None
+    sample_granularity: str = "document"  # "document" | "record"
+    record_type_key: str | None = None  # best-effort stratification key
 
 
 # Provider configurations
@@ -57,27 +64,34 @@ PROVIDERS: dict[str, ProviderConfig] = {
         name="chatgpt",
         description="ChatGPT message format",
         db_provider_name="chatgpt",
+        sample_granularity="document",
     ),
     "claude-code": ProviderConfig(
         name="claude-code",
         description="Claude Code message format",
         db_provider_name="claude-code",
+        sample_granularity="record",
+        record_type_key="type",
     ),
     "claude-ai": ProviderConfig(
         name="claude-ai",
         description="Claude AI web message format",
         db_provider_name="claude",  # DB uses "claude"
+        sample_granularity="document",
     ),
     "gemini": ProviderConfig(
         name="gemini",
         description="Gemini AI Studio message format",
         db_provider_name="gemini",
+        sample_granularity="document",
     ),
     "codex": ProviderConfig(
         name="codex",
         description="OpenAI Codex CLI session format",
         session_dir=Path.home() / ".codex/sessions",
         max_sessions=100,
+        sample_granularity="record",
+        record_type_key="type",
     ),
 }
 
@@ -411,7 +425,52 @@ def _is_content_field(path: str) -> bool:
     return terminal in _CONTENT_FIELD_NAMES
 
 
-def _is_safe_enum_value(value: str) -> bool:
+def _path_field_names(path: str) -> list[str]:
+    """Extract concrete field-name segments from a schema path."""
+    names: list[str] = []
+    for segment in path.split("."):
+        if not segment or segment in {"$", "*"}:
+            continue
+        name = segment.split("[", 1)[0]
+        if not name or name == "*":
+            continue
+        names.append(name)
+    return names
+
+
+def _looks_identifier_field_name(name: str) -> bool:
+    """Return True when a field name is likely an identifier slot."""
+    if not name:
+        return False
+
+    normalized = re.sub(r"[^a-z0-9]", "", name.lower())
+    if normalized in _IDENTIFIER_FIELD_TOKENS:
+        return True
+
+    lowered = name.lower()
+    if lowered.endswith(("_id", "-id", "_ids", "-ids")):
+        return True
+    return bool(name.endswith(("Id", "ID", "Ids", "IDs")))
+
+
+def _is_identifier_field(path: str) -> bool:
+    """Return True if any field segment in path is identifier-like."""
+    return any(_looks_identifier_field_name(name) for name in _path_field_names(path))
+
+
+def _looks_high_entropy_token(value: str) -> bool:
+    """Detect opaque identifier-like tokens from value shape alone."""
+    if not _HIGH_ENTROPY_TOKEN_RE.match(value):
+        return False
+    has_alpha = any(ch.isalpha() for ch in value)
+    has_digit = any(ch.isdigit() for ch in value)
+    if not (has_alpha and has_digit):
+        return False
+    unique_ratio = len(set(value)) / len(value)
+    return unique_ratio >= 0.45
+
+
+def _is_safe_enum_value(value: str, *, path: str = "$") -> bool:
     """Return True if a string value is safe to include in schema annotations.
 
     Uses a conservative allowlist approach: only values that look like
@@ -440,9 +499,7 @@ def _is_safe_enum_value(value: str) -> bool:
     if _TIMESTAMP_RE.match(value):
         return False
     # Block domain-name-like values (contain dots with known TLDs)
-    if "." in value and re.search(r"\.(com|org|net|pl|io|de|uk|ru|fr|co)\b", lower):
-        return False
-    return True
+    return not ("." in value and re.search(r"\.(com|org|net|pl|io|de|uk|ru|fr|co)\b", lower))
 
 
 def _annotate_schema(
@@ -546,35 +603,30 @@ def _annotate_schema(
 # =============================================================================
 
 
-def load_samples_from_db(
+def _resolve_provider_config(provider_name: str) -> ProviderConfig:
+    config = next((c for c in PROVIDERS.values() if c.db_provider_name == provider_name), None)
+    if config is not None:
+        return config
+    return ProviderConfig(
+        name=provider_name,
+        description=f"{provider_name} export format",
+        db_provider_name=provider_name,
+        sample_granularity="document",
+    )
+
+
+def _iter_samples_from_db(
     provider_name: str,
-    db_path: Path | None = None,
-    max_samples: int | None = None,
-) -> list[dict[str, Any]]:
-    """Load raw samples from polylogue database.
-
-    Args:
-        provider_name: Provider name in database
-        db_path: Path to polylogue.db
-        max_samples: Optional limit (None = all)
-
-    Returns:
-        List of raw message dicts
-    """
-    if db_path is None:
-        db_path = default_db_path()
-    if not db_path.exists():
-        return []
-
-    samples = []
+    *,
+    db_path: Path,
+    config: ProviderConfig,
+) -> Any:
     conn = sqlite3.connect(db_path)
 
     try:
-        limit_clause = f"LIMIT {max_samples}" if max_samples else ""
-
-        # Load from raw_conversations table (new approach)
-        rows = conn.execute(f"""
-            SELECT raw_content, provider_name
+        cursor = conn.execute(
+            """
+            SELECT raw_content, source_path, provider_name
             FROM raw_conversations
             WHERE provider_name = ?
             {limit_clause}
@@ -605,6 +657,22 @@ def load_samples_from_db(
             # Early exit once we have ample records (2× genson cap)
             if len(samples) >= _MAX_GENSON_SAMPLES * 2:
                 break
+            for row in rows:
+                try:
+                    envelope = build_raw_payload_envelope(
+                        row[0],
+                        source_path=row[1],
+                        fallback_provider=row[2],
+                        jsonl_dict_only=True,
+                    )
+                except Exception:
+                    continue
+                yield from extract_payload_samples(
+                    envelope.payload,
+                    sample_granularity=config.sample_granularity,
+                    max_samples=None,
+                    record_type_key=config.record_type_key,
+                )
     finally:
         conn.close()
 
@@ -651,7 +719,46 @@ def load_samples_from_sessions(
         except OSError:
             pass
 
-    return samples
+
+def load_samples_from_db(
+    provider_name: str,
+    db_path: Path | None = None,
+    max_samples: int | None = None,
+) -> list[dict[str, Any]]:
+    """Load raw samples from polylogue database."""
+    if db_path is None:
+        db_path = default_db_path()
+    if not db_path.exists():
+        return []
+
+    config = _resolve_provider_config(provider_name)
+    samples = list(_iter_samples_from_db(provider_name, db_path=db_path, config=config))
+    if max_samples is None:
+        return samples
+    return limit_samples(
+        samples,
+        limit=max_samples,
+        stratify=config.sample_granularity == "record",
+        record_type_key=config.record_type_key,
+    )
+
+
+def load_samples_from_sessions(
+    session_dir: Path,
+    max_sessions: int | None = None,
+    max_samples: int | None = None,
+    record_type_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load samples from JSONL session files."""
+    samples = list(_iter_samples_from_sessions(session_dir, max_sessions=max_sessions))
+    if max_samples is None:
+        return samples
+    return limit_samples(
+        samples,
+        limit=max_samples,
+        stratify=True,
+        record_type_key=record_type_key,
+    )
 
 
 def get_sample_count_from_db(
