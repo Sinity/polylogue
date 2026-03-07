@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import concurrent.futures
 import json
 import threading
@@ -17,14 +16,14 @@ from polylogue.cli.commands.run import (
     run_command,
     sources_command,
 )
+from polylogue.config import Source, get_config
 from polylogue.pipeline.events import (
     ExecHandler,
     NotificationHandler,
     SyncEvent,
     WebhookHandler,
 )
-from polylogue.config import Source, get_config
-from polylogue.pipeline.runner import latest_run, run_sources, plan_sources
+from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -57,7 +56,9 @@ async def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
     )
 
     config = get_config()
-    config.sources = [Source(name="codex", path=source_file)]
+    # Generic fixture payload is not provider-schema-conformant; use a generic
+    # source name so validate stage treats it as schema-less test input.
+    config.sources = [Source(name="inbox", path=source_file)]
 
     if with_plan:
         plan = plan_sources(config)
@@ -410,6 +411,7 @@ class TestDisplayResultComprehensive:
         [
             ("render", ["inbox"], True, 1, [], None),
             ("acquire", ["inbox"], False, 1, [], None),
+            ("validate", ["inbox"], False, 1, [], None),
             ("parse", ["inbox"], False, 1, [], None),
             ("all", None, True, 1, [], None),
             ("all", None, True, 0, [], None),
@@ -955,40 +957,59 @@ def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
 	assert attachment.provider_meta == original_meta
 
 
-def test_store_records_commits_within_lock(tmp_path: Path):
-	"""Verify store_records commits inside the lock scope."""
-	from tests.infra.helpers import make_conversation, make_message, store_records
+def test_store_records_commits_within_lock(monkeypatch):
+	"""Verify store_records commits while _WRITE_LOCK is held."""
+	from contextlib import contextmanager
 
-	# Create a test database
-	db_path = tmp_path / "test.db"
+	import tests.infra.helpers as helpers
+	from tests.infra.helpers import make_conversation, make_message
 
-	# Track commit calls to verify ordering
-	commit_order = []
-	lock_held = threading.Event()
+	class TrackingLock:
+		def __init__(self) -> None:
+			self.held = False
 
-	original_commit = None
+		def __enter__(self):
+			self.held = True
+			return self
 
-	def tracking_commit(self):
-		commit_order.append(("commit", lock_held.is_set()))
-		if original_commit:
-			return original_commit(self)
+		def __exit__(self, exc_type, exc, tb):
+			self.held = False
+			return False
 
-	# We need to verify that commit happens while _WRITE_LOCK is held
-	# This is tricky to test directly, but we can verify the code structure
+	class DummyConn:
+		def __init__(self, lock: TrackingLock) -> None:
+			self._lock = lock
+			self.commit_states: list[bool] = []
 
-	# For now, just verify the function works and commits
-	from polylogue.storage.backends.connection import open_connection
+		def commit(self) -> None:
+			self.commit_states.append(self._lock.held)
 
-	with open_connection(db_path) as conn:
-		record = make_conversation("test:1", title="Test", content_hash="abc123")
-		messages = [make_message("test:1:msg1", "test:1", text="Hello")]
-		result = store_records(
-			conversation=record,
-			messages=messages,
-			attachments=[],
-			conn=conn,
-		)
-		assert result["conversations"] >= 0  # Either inserted or skipped
+	lock = TrackingLock()
+	conn = DummyConn(lock)
+
+	@contextmanager
+	def fake_connection_context(passed_conn):
+		yield passed_conn
+
+	monkeypatch.setattr(helpers, "_WRITE_LOCK", lock)
+	monkeypatch.setattr(helpers, "connection_context", fake_connection_context)
+	monkeypatch.setattr(helpers, "upsert_conversation", lambda *_: True)
+	monkeypatch.setattr(helpers, "upsert_message", lambda *_: True)
+	monkeypatch.setattr(helpers, "upsert_attachment", lambda *_: True)
+	monkeypatch.setattr(helpers, "_prune_attachment_refs", lambda *_: None)
+
+	record = make_conversation("test:1", title="Test", content_hash="abc123")
+	messages = [make_message("test:1:msg1", "test:1", text="Hello")]
+	result = helpers.store_records(
+		conversation=record,
+		messages=messages,
+		attachments=[],
+		conn=conn,
+	)
+
+	assert result["conversations"] == 1
+	assert result["messages"] == 1
+	assert conn.commit_states == [True]
 
 
 def test_concurrent_store_records_no_deadlock(workspace_env):

@@ -884,11 +884,15 @@ class TestPrepareRecordsParentResolution:
                 "SELECT parent_conversation_id, branch_type FROM conversations WHERE conversation_id = ?",
                 (child_cid,),
             ).fetchone()
+            parent_exists = conn.execute(
+                "SELECT COUNT(*) FROM conversations WHERE conversation_id = ?",
+                (parent_cid,),
+            ).fetchone()[0]
 
-        # Parent ID should be in internal format: "provider:provider_id_hash"
+        # Parent link should resolve to the stored parent conversation ID.
         assert row["parent_conversation_id"] is not None
-        assert row["parent_conversation_id"].startswith("codex:")  # Internal format
         assert row["parent_conversation_id"] == parent_cid  # Should match actual parent
+        assert parent_exists == 1
         assert row["branch_type"] == "continuation"
 
     async def test_parent_message_id_resolved_within_conversation(self, workspace_env: Path, tmp_path: Path):

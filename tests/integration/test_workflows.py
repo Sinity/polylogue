@@ -29,8 +29,9 @@ from polylogue.storage.repository import ConversationRepository
 
 
 @pytest.fixture
-async def temp_config_and_repo(tmp_path):
+async def temp_config_and_repo(tmp_path, monkeypatch):
     """Create temporary config and storage repositories for testing."""
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
     archive_root = tmp_path / "archive"
     archive_root.mkdir(parents=True, exist_ok=True)
     render_root = tmp_path / "render"

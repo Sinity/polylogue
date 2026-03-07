@@ -29,9 +29,9 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context, open_connection
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema, _run_migrations
 from polylogue.storage.store import (
-    _json_or_none,
     ConversationRecord,
     MessageRecord,
+    _json_or_none,
 )
 from tests.infra.helpers import (
     _make_ref_id,
@@ -312,6 +312,458 @@ def test_migrate_v3_to_v4_adds_source_name_column(tmp_path):
     ).fetchone()
     assert index_row is not None
 
+    conn.close()
+
+
+def test_migrate_v15_to_v16_preserves_child_fk_targets(tmp_path):
+    """v15->v16 must not rewrite child FKs to temporary conversations_old."""
+    db_path = tmp_path / "test_v15_to_v16_fk.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA user_version = 15")
+
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY
+        );
+
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            provider_conversation_id TEXT NOT NULL,
+            title TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            sort_key REAL,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            metadata TEXT DEFAULT '{}',
+            source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
+            version INTEGER NOT NULL,
+            parent_conversation_id TEXT REFERENCES conversations(conversation_id),
+            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork') OR branch_type IS NULL),
+            raw_id TEXT REFERENCES raw_conversations(raw_id)
+        );
+
+        CREATE TABLE attachments (
+            attachment_id TEXT PRIMARY KEY,
+            mime_type TEXT,
+            size_bytes INTEGER,
+            path TEXT,
+            ref_count INTEGER NOT NULL DEFAULT 0,
+            provider_meta TEXT,
+            UNIQUE (attachment_id)
+        );
+
+        CREATE TABLE messages (
+            message_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            provider_message_id TEXT,
+            role TEXT,
+            text TEXT,
+            timestamp TEXT,
+            sort_key REAL,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            version INTEGER NOT NULL,
+            parent_message_id TEXT,
+            branch_index INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE attachment_refs (
+            ref_id TEXT PRIMARY KEY,
+            attachment_id TEXT NOT NULL REFERENCES attachments(attachment_id) ON DELETE CASCADE,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_id TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
+            provider_meta TEXT
+        );
+
+        CREATE TABLE embedding_status (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_count_embedded INTEGER DEFAULT 0,
+            last_embedded_at TEXT,
+            needs_reindex INTEGER DEFAULT 1,
+            error_message TEXT
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO conversations (
+            conversation_id, provider_name, provider_conversation_id,
+            title, content_hash, provider_meta, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("conv1", "test", "ext1", "Conv", "hash1", '{"source":"src"}', 1),
+    )
+    conn.execute(
+        """
+        INSERT INTO messages (
+            message_id, conversation_id, role, text, content_hash, version
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("msg1", "conv1", "user", "hello", "mhash1", 1),
+    )
+    conn.execute(
+        """
+        INSERT INTO attachments (
+            attachment_id, mime_type, size_bytes, path, ref_count
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        ("att1", "text/plain", 5, "/tmp/a.txt", 1),
+    )
+    conn.execute(
+        """
+        INSERT INTO attachment_refs (
+            ref_id, attachment_id, conversation_id, message_id
+        ) VALUES (?, ?, ?, ?)
+        """,
+        ("ref1", "att1", "conv1", "msg1"),
+    )
+    conn.execute(
+        """
+        INSERT INTO embedding_status (
+            conversation_id, message_count_embedded, needs_reindex
+        ) VALUES (?, ?, ?)
+        """,
+        ("conv1", 1, 0),
+    )
+    conn.commit()
+
+    _run_migrations(conn, 15, 16)
+
+    msg_fks = conn.execute("PRAGMA foreign_key_list(messages)").fetchall()
+    ref_fks = conn.execute("PRAGMA foreign_key_list(attachment_refs)").fetchall()
+    emb_fks = conn.execute("PRAGMA foreign_key_list(embedding_status)").fetchall()
+
+    assert "conversations_old" not in {row["table"] for row in msg_fks}
+    assert "conversations_old" not in {row["table"] for row in ref_fks}
+    assert "conversations_old" not in {row["table"] for row in emb_fks}
+
+    assert "conversations" in {row["table"] for row in msg_fks}
+    assert "conversations" in {row["table"] for row in ref_fks}
+    assert "conversations" in {row["table"] for row in emb_fks}
+
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(
+        """
+        INSERT INTO messages (
+            message_id, conversation_id, role, text, content_hash, version
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("msg2", "conv1", "assistant", "ok", "mhash2", 1),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_migrate_v16_to_v17_repairs_conversations_old_fk_targets(tmp_path):
+    """v16->v17 repairs child tables that reference dropped conversations_old."""
+    db_path = tmp_path / "test_v16_to_v17_repair.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA user_version = 16")
+
+    conn.executescript(
+        """
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            provider_conversation_id TEXT NOT NULL,
+            title TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            sort_key REAL,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            metadata TEXT DEFAULT '{}',
+            source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
+            version INTEGER NOT NULL,
+            parent_conversation_id TEXT REFERENCES conversations(conversation_id),
+            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork', 'subagent') OR branch_type IS NULL),
+            raw_id TEXT
+        );
+
+        CREATE TABLE attachments (
+            attachment_id TEXT PRIMARY KEY,
+            mime_type TEXT,
+            size_bytes INTEGER,
+            path TEXT,
+            ref_count INTEGER NOT NULL DEFAULT 0,
+            provider_meta TEXT,
+            UNIQUE (attachment_id)
+        );
+
+        CREATE TABLE messages (
+            message_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations_old(conversation_id) ON DELETE CASCADE,
+            provider_message_id TEXT,
+            role TEXT,
+            text TEXT,
+            timestamp TEXT,
+            sort_key REAL,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            version INTEGER NOT NULL,
+            parent_message_id TEXT,
+            branch_index INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE attachment_refs (
+            ref_id TEXT PRIMARY KEY,
+            attachment_id TEXT NOT NULL REFERENCES attachments(attachment_id) ON DELETE CASCADE,
+            conversation_id TEXT NOT NULL REFERENCES conversations_old(conversation_id) ON DELETE CASCADE,
+            message_id TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
+            provider_meta TEXT
+        );
+
+        CREATE TABLE embedding_status (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations_old(conversation_id) ON DELETE CASCADE,
+            message_count_embedded INTEGER DEFAULT 0,
+            last_embedded_at TEXT,
+            needs_reindex INTEGER DEFAULT 1,
+            error_message TEXT
+        );
+
+        CREATE VIRTUAL TABLE messages_fts USING fts5(
+            message_id UNINDEXED,
+            conversation_id UNINDEXED,
+            content
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO conversations (
+            conversation_id, provider_name, provider_conversation_id,
+            title, content_hash, provider_meta, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("conv1", "test", "ext1", "Conv", "hash1", '{"source":"src"}', 1),
+    )
+    conn.execute(
+        """
+        INSERT INTO attachments (
+            attachment_id, mime_type, size_bytes, path, ref_count
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        ("att1", "text/plain", 5, "/tmp/a.txt", 1),
+    )
+    conn.execute(
+        """
+        INSERT INTO messages (
+            message_id, conversation_id, role, text, content_hash, version
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("msg1", "conv1", "user", "hello", "mhash1", 1),
+    )
+    conn.execute(
+        """
+        INSERT INTO attachment_refs (
+            ref_id, attachment_id, conversation_id, message_id
+        ) VALUES (?, ?, ?, ?)
+        """,
+        ("ref1", "att1", "conv1", "msg1"),
+    )
+    conn.execute(
+        """
+        INSERT INTO embedding_status (
+            conversation_id, message_count_embedded, needs_reindex
+        ) VALUES (?, ?, ?)
+        """,
+        ("conv1", 1, 0),
+    )
+    conn.commit()
+
+    _run_migrations(conn, 16, 17)
+
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert version == 17
+
+    schema_rows = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name IN ('messages','attachment_refs','embedding_status')"
+    ).fetchall()
+    assert all("conversations_old" not in (row["sql"] or "") for row in schema_rows)
+
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(
+        """
+        INSERT INTO messages (
+            message_id, conversation_id, role, text, content_hash, version
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("msg2", "conv1", "assistant", "ok", "mhash2", 1),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_migrate_v16_to_v17_resumes_from_partial_old_table_state(tmp_path):
+    """v16->v17 must resume safely if *_old tables already exist from interruption."""
+    db_path = tmp_path / "test_v16_to_v17_resume.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA user_version = 16")
+
+    conn.executescript(
+        """
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            provider_conversation_id TEXT NOT NULL,
+            title TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            sort_key REAL,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            metadata TEXT DEFAULT '{}',
+            source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
+            version INTEGER NOT NULL,
+            parent_conversation_id TEXT REFERENCES conversations(conversation_id),
+            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork', 'subagent') OR branch_type IS NULL),
+            raw_id TEXT
+        );
+
+        CREATE TABLE attachments (
+            attachment_id TEXT PRIMARY KEY,
+            mime_type TEXT,
+            size_bytes INTEGER,
+            path TEXT,
+            ref_count INTEGER NOT NULL DEFAULT 0,
+            provider_meta TEXT,
+            UNIQUE (attachment_id)
+        );
+
+        CREATE TABLE messages (
+            message_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            provider_message_id TEXT,
+            role TEXT,
+            text TEXT,
+            timestamp TEXT,
+            sort_key REAL,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            version INTEGER NOT NULL,
+            parent_message_id TEXT,
+            branch_index INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE attachment_refs (
+            ref_id TEXT PRIMARY KEY,
+            attachment_id TEXT NOT NULL REFERENCES attachments(attachment_id) ON DELETE CASCADE,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_id TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
+            provider_meta TEXT
+        );
+
+        CREATE TABLE embedding_status (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_count_embedded INTEGER DEFAULT 0,
+            last_embedded_at TEXT,
+            needs_reindex INTEGER DEFAULT 1,
+            error_message TEXT
+        );
+
+        CREATE TABLE messages_old (
+            message_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations_old(conversation_id) ON DELETE CASCADE,
+            provider_message_id TEXT,
+            role TEXT,
+            text TEXT,
+            timestamp TEXT,
+            sort_key REAL,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            version INTEGER NOT NULL,
+            parent_message_id TEXT,
+            branch_index INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE attachment_refs_old (
+            ref_id TEXT PRIMARY KEY,
+            attachment_id TEXT NOT NULL REFERENCES attachments(attachment_id) ON DELETE CASCADE,
+            conversation_id TEXT NOT NULL REFERENCES conversations_old(conversation_id) ON DELETE CASCADE,
+            message_id TEXT REFERENCES messages_old(message_id) ON DELETE SET NULL,
+            provider_meta TEXT
+        );
+
+        CREATE TABLE embedding_status_old (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations_old(conversation_id) ON DELETE CASCADE,
+            message_count_embedded INTEGER DEFAULT 0,
+            last_embedded_at TEXT,
+            needs_reindex INTEGER DEFAULT 1,
+            error_message TEXT
+        );
+
+        CREATE VIRTUAL TABLE messages_fts USING fts5(
+            message_id UNINDEXED,
+            conversation_id UNINDEXED,
+            content
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO conversations (
+            conversation_id, provider_name, provider_conversation_id,
+            title, content_hash, provider_meta, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("conv1", "test", "ext1", "Conv", "hash1", '{"source":"src"}', 1),
+    )
+    conn.execute(
+        """
+        INSERT INTO attachments (
+            attachment_id, mime_type, size_bytes, path, ref_count
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        ("att1", "text/plain", 5, "/tmp/a.txt", 1),
+    )
+    conn.execute(
+        """
+        INSERT INTO messages_old (
+            message_id, conversation_id, role, text, content_hash, version
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("msg1", "conv1", "user", "hello", "mhash1", 1),
+    )
+    conn.execute(
+        """
+        INSERT INTO attachment_refs_old (
+            ref_id, attachment_id, conversation_id, message_id
+        ) VALUES (?, ?, ?, ?)
+        """,
+        ("ref1", "att1", "conv1", "msg1"),
+    )
+    conn.execute(
+        """
+        INSERT INTO embedding_status_old (
+            conversation_id, message_count_embedded, needs_reindex
+        ) VALUES (?, ?, ?)
+        """,
+        ("conv1", 1, 0),
+    )
+    conn.commit()
+
+    _run_migrations(conn, 16, 17)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 17
+    assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='messages_old'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='attachment_refs_old'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='embedding_status_old'").fetchone()[0] == 0
+
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE message_id='msg1'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE ref_id='ref1'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM embedding_status WHERE conversation_id='conv1'").fetchone()[0] == 1
     conn.close()
 
 

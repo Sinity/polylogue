@@ -20,8 +20,7 @@ from polylogue.storage.index import ensure_index, rebuild_index, update_index_fo
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
-from tests.infra.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records, make_hash
-
+from tests.infra.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
 
 # ============================================================================
 # Tests for search_messages()
@@ -453,9 +452,9 @@ def test_escape_fts5_injection_prevention(special_query, should_quote):
         assert result.startswith('"'), f"Expected quoted: {special_query}"
         assert result.endswith('"'), f"Expected quoted: {special_query}"
     else:
-        # These may or may not be quoted depending on special chars
-        # The important thing is they don't cause FTS5 errors
-        assert isinstance(result, str), f"Should return string: {special_query}"
+        # Safe mid-query operator usage should pass through unchanged.
+        assert result == special_query, f"Unexpected rewrite: {special_query} -> {result}"
+        assert not result.startswith('"')
 
 
 # ============================================================================

@@ -15,7 +15,6 @@ from tests.infra.helpers import (
     make_attachment,
     make_conversation,
     make_message,
-    store_records,
 )
 
 # =============================================================================

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from click.testing import CliRunner
 
@@ -112,3 +114,36 @@ class TestDemoDefault:
         result = runner.invoke(click_cli, ["demo", "-o", str(tmp_path), "-p", "chatgpt", "-n", "1"])
         assert result.exit_code == 0
         assert (tmp_path / "chatgpt").is_dir()
+
+
+class TestDemoShowcase:
+    """``polylogue demo --showcase`` wiring and argument handling."""
+
+    def test_showcase_data_passed_to_runner(self, runner, tmp_path):
+        with patch("polylogue.cli.commands.demo._do_showcase") as mock_showcase:
+            result = runner.invoke(
+                click_cli,
+                [
+                    "demo",
+                    "--showcase",
+                    "--showcase-data",
+                    "synthetic",
+                    "-n",
+                    "7",
+                    "-o",
+                    str(tmp_path),
+                ],
+            )
+        assert result.exit_code == 0
+        assert mock_showcase.call_count == 1
+        args = mock_showcase.call_args.args
+        assert args[6] == "synthetic"
+        assert args[7] == 7
+
+    def test_showcase_data_requires_showcase_mode(self, runner, tmp_path):
+        result = runner.invoke(
+            click_cli,
+            ["demo", "--corpus", "--showcase-data", "synthetic", "-o", str(tmp_path)],
+        )
+        assert result.exit_code != 0
+        assert "--showcase-data requires --showcase" in result.output
