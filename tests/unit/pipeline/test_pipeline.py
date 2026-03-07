@@ -476,7 +476,7 @@ async def test_prepare_records_creates_message_records(async_backend, test_repos
     assert counts["conversations"] == 1
     assert counts["messages"] == 2
     # Verify messages are in DB
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT message_id, role FROM messages WHERE conversation_id = ?",
             (cid,),
@@ -523,7 +523,7 @@ async def test_prepare_records_handles_empty_provider_message_ids(async_backend,
 
     assert counts["messages"] == 2
     # Both messages should be created (one with fallback, one with explicit ID)
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT message_id FROM messages WHERE conversation_id = ? ORDER BY rowid",
             (cid,),
@@ -533,7 +533,7 @@ async def test_prepare_records_handles_empty_provider_message_ids(async_backend,
     # First one should have a fallback ID (contains provider_message_id as 'msg-1')
     # Second one should contain the explicit ID
     provider_ids = []
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         for row in rows:
             cursor = await conn.execute(
                 "SELECT provider_message_id FROM messages WHERE message_id = ?", (row["message_id"],)
@@ -575,7 +575,7 @@ async def test_prepare_records_stores_source_metadata(async_backend, test_reposi
     )
 
     # Verify source is recorded
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT provider_meta FROM conversations WHERE conversation_id = ?",
             (cid,),
@@ -625,7 +625,7 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(async_backend
     )
 
     # Verify each message has a unique content hash
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT content_hash FROM messages WHERE conversation_id = ? ORDER BY provider_message_id",
             (cid,),
@@ -675,7 +675,7 @@ async def test_prepare_records_with_attachments(async_backend, test_repository, 
 
     assert counts["attachments"] == 1
     # Verify attachment ref in DB (attachments use attachment_refs table)
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT ar.*, a.mime_type FROM attachment_refs ar "
             "JOIN attachments a ON ar.attachment_id = a.attachment_id "

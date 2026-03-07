@@ -1005,7 +1005,7 @@ class TestParsingServiceIntegration:
         parse_result = await ParsingService(repository=ConversationRepository(backend=backend),
                                        archive_root=cli_workspace["archive_root"], config=config).parse_from_raw(raw_ids=raw_ids)
         assert parse_result.counts["conversations"] >= 1 and len(parse_result.processed_ids) >= 1
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT raw_id FROM conversations WHERE conversation_id = ?",
                              (list(parse_result.processed_ids)[0],))
             row = await cursor.fetchone()

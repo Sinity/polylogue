@@ -629,7 +629,7 @@ async def test_backend_delete_conversation_cleans_fts(sqlite_backend: SQLiteBack
     await sqlite_backend.save_messages([msg])
     await sqlite_backend.commit()
 
-    with open_connection(sqlite_backend._db_path) as conn:
+    with open_connection(sqlite_backend.db_path) as conn:
         ensure_index(conn)
         update_index_for_conversations(["conv1"], conn)
         conn.commit()
@@ -640,7 +640,7 @@ async def test_backend_delete_conversation_cleans_fts(sqlite_backend: SQLiteBack
     result = await sqlite_backend.delete_conversation("conv1")
     assert result is True
 
-    with open_connection(sqlite_backend._db_path) as conn:
+    with open_connection(sqlite_backend.db_path) as conn:
         fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
         assert fts_count == 0
     await sqlite_backend.close()

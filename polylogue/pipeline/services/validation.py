@@ -7,11 +7,16 @@ It validates raw payloads against provider schemas and reports drift/invalid dat
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
 from polylogue.lib.provider_identity import canonical_runtime_provider
 from polylogue.lib.raw_payload import decode_raw_payload, infer_payload_provider
+from polylogue.protocols import ProgressCallback
+from polylogue.storage.store import RawConversationRecord
+
+if TYPE_CHECKING:
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 
@@ -49,7 +54,7 @@ class ValidationService:
     # Keep batches aligned with parse batching.
     RAW_BATCH_SIZE = 200
 
-    def __init__(self, backend: Any):
+    def __init__(self, backend: SQLiteBackend):
         self.backend = backend
 
     def _schema_validation_mode(self) -> str:
@@ -66,7 +71,7 @@ class ValidationService:
         )
         return self.SCHEMA_VALIDATION_DEFAULT
 
-    def _schema_validation_max_samples(self, payload: Any) -> int:
+    def _schema_validation_max_samples(self, payload: object) -> int:
         """Return sample count for record-style payload validation."""
         raw = os.environ.get(self.SCHEMA_VALIDATION_MAX_SAMPLES_ENV)
         if raw is None:
@@ -97,7 +102,7 @@ class ValidationService:
         self,
         *,
         raw_ids: list[str],
-        progress_callback: Any | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> ValidateResult:
         """Validate raw records and persist the resulting status."""
         if not raw_ids:
@@ -144,8 +149,8 @@ class ValidationService:
     async def evaluate_raw_records(
         self,
         *,
-        raw_records: list[Any],
-        progress_callback: Any | None = None,
+        raw_records: list[RawConversationRecord],
+        progress_callback: ProgressCallback | None = None,
         persist: bool = False,
         mode: str | None = None,
     ) -> ValidateResult:

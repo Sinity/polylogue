@@ -203,7 +203,7 @@ class TestRawConversationStorage:
         await backend.save_conversation_record(conv)
 
         # Verify the link exists in database
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             row = await conn.execute(
                 "SELECT raw_id FROM conversations WHERE conversation_id = ?",
                 ("conv-link-test",),
@@ -227,7 +227,7 @@ class TestRawConversationStorage:
         await backend.save_conversation_record(conv)
 
         # Verify it saved correctly
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             row = await conn.execute(
                 "SELECT raw_id FROM conversations WHERE conversation_id = ?",
                 ("conv-no-raw",),
