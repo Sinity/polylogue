@@ -16,6 +16,7 @@ from polylogue.schemas.unified import (
     extract_claude_code_text,
     extract_codex_text,
     extract_content_blocks,
+    extract_from_provider_meta,
     extract_harmonized_message,
     extract_reasoning_traces,
     extract_token_usage,
@@ -765,7 +766,6 @@ class TestUnifiedExtractContentBlocks:
     @pytest.mark.parametrize("content,expected_len,expected_types,description", CONTENT_BLOCKS_CASES)
     def test_extract_content_blocks(self, content, expected_len, expected_types, description):
         """Test content block extraction with various block types."""
-        from polylogue.lib.viewports import ContentType
         result = extract_content_blocks(content)
         assert len(result) == expected_len
         if expected_types:
@@ -873,6 +873,48 @@ class TestUnifiedHarmonizeParsedMessage:
         }
         result = harmonize_parsed_message("claude-ai", meta)
         assert isinstance(result, HarmonizedMessage)
+
+    def test_harmonize_parsed_message_claude_code_no_raw_preserves_tool_fields(self):
+        """No-raw Claude Code path should preserve tool id/input/category with context."""
+        meta = {
+            "content_blocks": [{"type": "text", "text": "Need to read file"}],
+            "tool_invocations": [
+                {
+                    "tool_name": "Read",
+                    "id": "tool-1",
+                    "input": {"file_path": "README.md"},
+                }
+            ],
+            "thinking_traces": [{"text": "First inspect the repo"}],
+        }
+        result = harmonize_parsed_message(
+            "claude-code",
+            meta,
+            message_id="msg-1",
+            role="assistant",
+            text="Need to read file",
+            timestamp="2026-01-01T00:00:00Z",
+        )
+        assert result is not None
+        assert result.id == "msg-1"
+        assert result.role == "assistant"
+        assert result.text == "Need to read file"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].id == "tool-1"
+        assert result.tool_calls[0].input == {"file_path": "README.md"}
+        assert result.tool_calls[0].category.value == "file_read"
+
+    def test_extract_from_provider_meta_claude_code_no_raw_reconstructs_text(self):
+        """Direct no-raw extraction should infer text from content blocks."""
+        meta = {
+            "content_blocks": [
+                {"type": "text", "text": "line one"},
+                {"type": "text", "text": "line two"},
+            ],
+        }
+        result = extract_from_provider_meta("claude-code", meta)
+        assert result.text == "line one\nline two"
+        assert result.role == "unknown"
 
 
 class TestUnifiedBulkHarmonize:
