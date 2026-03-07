@@ -112,10 +112,12 @@ class FTS5Provider:
         Raises:
             DatabaseError: If query is malformed or search fails
         """
-        from polylogue.storage.search import escape_fts5_query
+        from polylogue.storage.search import normalize_fts5_query
 
         # Escape the query to prevent syntax errors
-        fts_query = escape_fts5_query(query)
+        fts_query = normalize_fts5_query(query)
+        if fts_query is None:
+            return []
 
         with open_connection(self.db_path) as conn:
             # Check if index exists
@@ -130,7 +132,7 @@ class FTS5Provider:
                 SELECT message_id
                 FROM messages_fts
                 WHERE messages_fts MATCH ?
-                ORDER BY rank
+                ORDER BY bm25(messages_fts), message_id
                 """,
                 (fts_query,),
             ).fetchall()

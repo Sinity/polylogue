@@ -1183,11 +1183,7 @@ class SQLiteBackend:
     async def search_conversations(
         self, query: str, limit: int = 100, providers: list[str] | None = None
     ) -> list[str]:
-        """Search conversations using full-text search with BM25 ranking.
-
-        Escapes user input for safe FTS5 MATCH, then ranks results using
-        BM25 (via FTS5's built-in rank function). Results are grouped by
-        conversation with the best matching message determining position.
+        """Search conversations using the canonical ranked FTS conversation query.
 
         Args:
             query: Raw search query string (will be escaped for FTS5)
@@ -1197,7 +1193,7 @@ class SQLiteBackend:
         Returns:
             List of conversation IDs matching the query, ordered by relevance
         """
-        from polylogue.storage.search import escape_fts5_query
+        from polylogue.storage.search import build_ranked_conversation_search_query
 
         async with self._get_connection() as conn:
             # Check if FTS table exists before querying
@@ -1211,28 +1207,17 @@ class SQLiteBackend:
 
                 raise DatabaseError("Search index not built. Run indexing first or use a different backend.")
 
-            fts_query = escape_fts5_query(query)
-            if not fts_query:
+            query_spec = build_ranked_conversation_search_query(
+                query=query,
+                limit=limit,
+                scope_names=providers,
+            )
+            if query_spec is None:
                 return []
 
-            if providers:
-                from_clause = "messages_fts JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id"
-                provider_filter_sql, provider_filter_params = _build_source_scope_filter(
-                    providers,
-                    provider_column="conversations.provider_name",
-                    source_column="conversations.source_name",
-                )
-                provider_filter = f" AND {provider_filter_sql}"
-                params: tuple[Any, ...] = (fts_query, *provider_filter_params, limit)
-            else:
-                from_clause = "messages_fts"
-                provider_filter = ""
-                params = (fts_query, limit)
+            sql, params = query_spec
 
-            cursor = await conn.execute(
-                f"SELECT DISTINCT messages_fts.conversation_id FROM {from_clause} WHERE messages_fts MATCH ?{provider_filter} LIMIT ?",
-                params,
-            )
+            cursor = await conn.execute(sql, params)
             rows = await cursor.fetchall()
 
         return [str(row["conversation_id"]) for row in rows]
