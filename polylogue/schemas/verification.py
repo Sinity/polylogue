@@ -6,12 +6,13 @@ so operators can run explicit schema gates before schema promotion/releases.
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import sqlite3
+from pathlib import Path
 from typing import Any
 
-from polylogue.lib.raw_payload import decode_raw_payload, infer_payload_provider
+from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.backends.connection import default_db_path
 
@@ -139,9 +140,14 @@ def verify_raw_corpus(
                 provider_stats.total_records += 1
 
                 try:
-                    decoded = decode_raw_payload(row["raw_content"], jsonl_dict_only=True)
-                    payload = decoded.payload
-                    malformed_lines = decoded.malformed_jsonl_lines
+                    envelope = build_raw_payload_envelope(
+                        row["raw_content"],
+                        source_path=str(row["source_path"] or ""),
+                        fallback_provider=raw_provider,
+                        jsonl_dict_only=True,
+                    )
+                    payload = envelope.payload
+                    malformed_lines = envelope.malformed_jsonl_lines
                 except Exception as exc:
                     provider_stats.decode_errors += 1
                     if quarantine_malformed:
@@ -159,14 +165,8 @@ def verify_raw_corpus(
                         provider_stats.quarantined_records += 1
                     continue
 
-                provider_name = infer_payload_provider(
-                    payload,
-                    source_path=str(row["source_path"] or ""),
-                    fallback_provider=raw_provider,
-                )
-
                 try:
-                    validator = SchemaValidator.for_provider(provider_name)
+                    validator = SchemaValidator.for_provider(envelope.provider)
                 except (FileNotFoundError, ImportError):
                     provider_stats.skipped_no_schema += 1
                     continue
