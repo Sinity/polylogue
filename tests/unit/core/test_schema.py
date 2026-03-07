@@ -163,6 +163,26 @@ def test_validation_samples_record_mode_skips_non_record_documents():
     assert samples == []
 
 
+def test_validation_samples_document_lists_validate_all_dicts_up_to_limit():
+    """Document-mode list payloads should validate each dict sample, not just the first."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+        },
+        provider="chatgpt",
+    )
+
+    payload: list[dict[str, str]] = [
+        {"id": "doc-1"},
+        {"id": "doc-2"},
+        {"id": "doc-3"},
+    ]
+
+    assert validator.validation_samples(payload, max_samples=2) == payload[:2]
+    assert validator.validation_samples(payload, max_samples=None) == payload
+
+
 def test_schema_validator_prefers_registry_latest(monkeypatch):
     """Validator should use latest versioned schema when available."""
     fake_schema = {

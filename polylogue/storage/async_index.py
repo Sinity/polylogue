@@ -17,7 +17,7 @@ async def ensure_index(backend: SQLiteBackend) -> None:
     Args:
         backend: Async SQLite backend instance
     """
-    async with backend._get_connection() as conn:
+    async with backend.connection() as conn:
         await conn.execute(
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -35,7 +35,7 @@ async def rebuild_index(backend: SQLiteBackend) -> None:
     Args:
         backend: Async SQLite backend instance
     """
-    async with backend._get_connection() as conn:
+    async with backend.connection() as conn:
         await ensure_index(backend)
         await conn.execute("DELETE FROM messages_fts")
         await conn.execute(
@@ -63,7 +63,7 @@ async def update_index_for_conversations(
     if not conversation_ids:
         return
 
-    async with backend._get_connection() as conn:
+    async with backend.connection() as conn:
         await ensure_index(backend)
 
         # Keep placeholder counts under SQLite parameter limits and avoid
@@ -105,7 +105,7 @@ async def index_status(backend: SQLiteBackend) -> dict[str, object]:
     Returns:
         Dictionary with 'exists' (bool) and 'count' (int) keys
     """
-    async with backend._get_connection() as conn:
+    async with backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
         )

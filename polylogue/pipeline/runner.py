@@ -9,17 +9,26 @@ Async/await version of the pipeline runner with support for:
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypeVar
 from uuid import uuid4
 
 from polylogue.config import Config, Source
-from polylogue.lib.json import dumps, loads
+from polylogue.lib.json import dumps
 from polylogue.lib.log import get_logger
 from polylogue.lib.metrics import PipelineMetrics
+from polylogue.protocols import ProgressCallback
+from polylogue.storage.backends import SQLiteBackend, create_backend
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import PlanResult, RunRecord, RunResult
+
+if TYPE_CHECKING:
+    from polylogue.pipeline.services.indexing import IndexService
+
+T = TypeVar("T")
 
 logger = get_logger(__name__)
 
@@ -56,65 +65,62 @@ def _select_sources(config: Config, source_names: Sequence[str] | None) -> list[
 def plan_sources(
     config: Config,
     *,
+    stage: str = "all",
     ui: object | None = None,
     source_names: Sequence[str] | None = None,
+    backend: SQLiteBackend | None = None,
 ) -> PlanResult:
-    """Plan the pipeline by counting conversations and messages from sources.
+    """Build a canonical preview plan without writing pipeline state."""
+    from polylogue.pipeline.services.planning import PlanningService
 
-    This is a sync function because it only counts conversations from source
-    files without parsing. Source iteration is synchronous file I/O.
+    async def _build() -> PlanResult:
+        planner = PlanningService(backend=active_backend, config=config)
+        plan = await planner.build_plan(
+            sources=_select_sources(config, source_names),
+            stage=stage,
+            ui=ui,
+        )
+        return plan.summary
 
-    Args:
-        config: Application configuration
-        ui: Optional UI object for user interaction
-        source_names: Optional list of source names to process
-
-    Returns:
-        PlanResult with conversation/message/attachment counts
-    """
-    from polylogue.sources import DriveAuthError, iter_drive_conversations, iter_source_conversations
-
-    counts: dict[str, int] = {"conversations": 0, "messages": 0, "attachments": 0}
-    sources: list[str] = []
-    cursors: dict[str, dict[str, Any]] = {}
-
-    for source in _select_sources(config, source_names):
-        sources.append(source.name)
-        cursor_state: dict[str, Any] = {}
-
-        # Iterate source conversations (sync file I/O)
-        if source.folder:
-            try:
-                conversations = iter_drive_conversations(
-                    source=source,
-                    archive_root=config.archive_root,
-                    ui=ui,
-                    download_assets=False,
-                    cursor_state=cursor_state,
-                    drive_config=config.drive_config,
-                )
-            except DriveAuthError as exc:
-                logger.warning("Skipping Drive source %s: %s", source.name, exc)
-                if cursor_state is not None:
-                    cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
-                    cursor_state["latest_error"] = str(exc)
-                    cursor_state["latest_error_source"] = source.name
-                continue
-        else:
-            conversations = iter_source_conversations(source, cursor_state=cursor_state)
-
-        for convo in conversations:
-            counts["conversations"] += 1
-            counts["messages"] += len(convo.messages)
-            counts["attachments"] += len(convo.attachments)
-
-        if cursor_state:
-            cursors[source.name] = cursor_state
-
-    return PlanResult(timestamp=int(time.time()), counts=counts, sources=sources, cursors=cursors)
+    owns_backend = backend is None
+    active_backend = backend or create_backend()
+    try:
+        return _run_coroutine_sync(_build())
+    finally:
+        if owns_backend:
+            _run_coroutine_sync(active_backend.close())
 
 
-async def _all_conversation_ids(backend: Any, source_names: Sequence[str] | None = None) -> list[str]:
+def _run_coroutine_sync(coro: Awaitable[T]) -> T:
+    """Run a coroutine from sync code, even when already inside an event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: list[T] = []
+    error: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            result.append(asyncio.run(coro))
+        except BaseException as exc:  # pragma: no cover - re-raised on caller thread
+            error.append(exc)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    if not result:
+        raise RuntimeError("Coroutine thread completed without returning a result")
+    return result[0]
+
+
+async def _all_conversation_ids(
+    backend: SQLiteBackend,
+    source_names: Sequence[str] | None = None,
+) -> list[str]:
     """Fetch all conversation IDs from database, optionally filtered by source names.
 
     Args:
@@ -124,51 +130,9 @@ async def _all_conversation_ids(backend: Any, source_names: Sequence[str] | None
     Returns:
         List of conversation IDs
     """
-    chunk_size = 500
-    selected: list[str] = []
-
-    async with backend._get_connection() as conn:
-        # Skip provider_meta if no filtering needed
-        if not source_names:
-            cursor = await conn.execute("SELECT conversation_id FROM conversations")
-            while True:
-                rows = await cursor.fetchmany(chunk_size)
-                if not rows:
-                    break
-                selected.extend(row["conversation_id"] for row in rows)
-            return selected
-
-        name_set = set(source_names)
-        cursor = await conn.execute(
-            "SELECT conversation_id, provider_name, provider_meta FROM conversations"
-        )
-        while True:
-            rows = await cursor.fetchmany(chunk_size)
-            if not rows:
-                break
-            for row in rows:
-                if row["provider_name"] in name_set:
-                    selected.append(row["conversation_id"])
-                    continue
-
-                meta = row["provider_meta"]
-                if not meta:
-                    continue
-
-                try:
-                    payload = loads(meta)
-                except (ValueError, TypeError):
-                    logger.warning(
-                        "Skipping conversation with invalid provider_meta JSON",
-                        conversation_id=row["conversation_id"],
-                        provider=row["provider_name"],
-                    )
-                    continue
-
-                if isinstance(payload, dict) and payload.get("source") in name_set:
-                    selected.append(row["conversation_id"])
-
-    return selected
+    return await backend.list_conversation_ids(
+        source_names=list(source_names) if source_names is not None else None
+    )
 
 
 async def _run_index_stage(
@@ -176,9 +140,9 @@ async def _run_index_stage(
     stage: str,
     source_names: Sequence[str] | None,
     processed_ids: set[str],
-    backend: Any,
-    index_service: Any,
-    progress_callback: Any | None = None,
+    backend: SQLiteBackend,
+    index_service: IndexService,
+    progress_callback: Callable[..., None] | None = None,
 ) -> tuple[bool, int]:
     """Execute index behavior for `index`/`all` stages.
 
@@ -234,8 +198,10 @@ async def run_sources(
     plan: PlanResult | None = None,
     ui: object | None = None,
     source_names: Sequence[str] | None = None,
-    progress_callback: Any | None = None,
+    progress_callback: ProgressCallback | None = None,
     render_format: str = "html",
+    backend: SQLiteBackend | None = None,
+    repository: ConversationRepository | None = None,
 ) -> RunResult:
     """Run the async pipeline with stage control.
 
@@ -256,13 +222,14 @@ async def run_sources(
     Returns:
         RunResult with counts, drift, indexing status, and metadata
     """
-    from polylogue.services import get_backend, get_repository
 
     start = time.perf_counter()
     metrics = PipelineMetrics()
 
-    backend = get_backend()
-    repository = get_repository()
+    owns_backend = backend is None
+    active_backend = backend or create_backend()
+    owns_repository = repository is None
+    active_repository = repository or ConversationRepository(backend=active_backend)
 
     # Track counts for reporting
     counts = {
@@ -282,284 +249,233 @@ async def run_sources(
     processed_ids: set[str] = set()
     render_failures: list[dict[str, str]] = []
 
-    # Acquire stage (raw storage only)
-    if stage == "acquire":
-        from polylogue.pipeline.services.acquisition import AcquisitionService
-
-        sm = metrics.start_stage("acquire")
-        acquire_service = AcquisitionService(backend=backend)
-        sources = _select_sources(config, source_names)
-        acquire_result = await acquire_service.acquire_sources(
-            sources,
-            progress_callback=progress_callback,
-        )
-        sm.stop(items=acquire_result.counts["acquired"])
-        counts["acquired"] = acquire_result.counts["acquired"]
-        counts["skipped"] = acquire_result.counts["skipped"]
-        logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
-
-    # Validate/Parse stages (canonical ingest orchestration)
-    elif stage in _INGEST_STAGES:
-        from polylogue.pipeline.services.parsing import ParsingService
-
-        sources = _select_sources(config, source_names)
-        parsing_service = ParsingService(
-            repository=repository,
-            archive_root=config.archive_root,
-            config=config,
-        )
-
-        ingest_result = await parsing_service.ingest_sources(
-            sources=sources,
-            progress_callback=progress_callback,
-            parse_records=stage in _PARSE_STAGES,
-        )
-        acquire_result = ingest_result.acquire_result
-        validation_result = ingest_result.validation_result
-
-        counts["acquired"] = acquire_result.counts["acquired"]
-        counts["skipped"] = acquire_result.counts["skipped"]
-        counts["acquire_errors"] = acquire_result.counts["errors"]
-        logger.info("Acquire stage complete", **acquire_result.counts)
-
-        if validation_result is not None:
-            counts["validated"] = validation_result.counts["validated"]
-            counts["validation_invalid"] = validation_result.counts["invalid"]
-            counts["validation_drift"] = validation_result.counts["drift"]
-            counts["validation_skipped_no_schema"] = validation_result.counts["skipped_no_schema"]
-            counts["validation_errors"] = validation_result.counts["errors"]
-            logger.info(
-                "Validate stage complete",
-                parseable=len(validation_result.parseable_raw_ids),
-                invalid=validation_result.counts["invalid"],
-                drift=validation_result.counts["drift"],
-                skipped_no_schema=validation_result.counts["skipped_no_schema"],
-                errors=validation_result.counts["errors"],
-            )
-
-        if stage in _PARSE_STAGES:
-            parse_result = ingest_result.parse_result
-            for key, value in parse_result.counts.items():
-                counts[key] = value
-            if parse_result.parse_failures:
-                counts["parse_failures"] = parse_result.parse_failures
-            changed_counts.update(parse_result.changed_counts)
-            processed_ids = parse_result.processed_ids
-            # Use deduplicated conversation count for user-facing summary
-            # (counts["conversations"] accumulates per-raw-record, double-counting
-            # conversations that appear in multiple source files)
-            counts["conversations"] = len(processed_ids)
-            logger.info(
-                "Parse stage complete",
-                processed_ids=len(processed_ids),
-                parse_failures=parse_result.parse_failures,
-            )
-
-    # Schema generation stage (sync, run in thread pool)
-    if stage == "generate-schemas":
-        from polylogue.paths import db_path as _db_path
-        from polylogue.schemas.schema_inference import generate_all_schemas
-
-        stage_t0 = time.perf_counter()
-        output_dir = config.archive_root.parent / "schemas"
-        results = await asyncio.to_thread(
-            generate_all_schemas,
-            output_dir=output_dir,
-            db_path=_db_path(),
-        )
-        counts["schemas_generated"] = sum(1 for r in results if r.success)
-        counts["schemas_failed"] = sum(1 for r in results if not r.success)
-        logger.info(
-            "Schema generation complete",
-            elapsed_s=round(time.perf_counter() - stage_t0, 1),
-            generated=counts["schemas_generated"],
-            failed=counts["schemas_failed"],
-        )
-
-    # Rendering stage
-    if stage in _RENDER_STAGES:
-        from polylogue.pipeline.services.rendering import RenderService
-        from polylogue.rendering.renderers import create_renderer
-
-        sm = metrics.start_stage("render")
-        ids = (
-            await _all_conversation_ids(backend, source_names)
-            if stage == "render"
-            else list(processed_ids)
-        )
-        if ids:
-            if progress_callback is not None:
-                progress_callback(0, desc=f"Rendering: 0/{len(ids)}")
-            renderer = create_renderer(
-                format=render_format, config=config, backend=backend,
-            )
-            render_service = RenderService(
-                renderer=renderer,
-                render_root=config.archive_root / "render",
-                backend=backend,
-            )
-            render_result = await render_service.render_conversations(
-                ids, progress_callback=progress_callback,
-            )
-            counts["rendered"] = render_result.rendered_count
-            render_failures = render_result.failures
-            if render_failures:
-                counts["render_failures"] = len(render_failures)
-        sm.stop(items=counts.get("rendered", 0))
-        logger.info(
-            "Render stage complete", **sm.to_dict(),
-            failures=len(render_failures),
-            total=len(ids) if ids else 0,
-        )
-
-    # Indexing stage
-    indexed = False
-    index_error: str | None = None
-
-    from polylogue.pipeline.services.indexing import IndexService
-
-    index_service = IndexService(config=config, backend=backend)
-
-    sm = metrics.start_stage("index")
-    index_items = 0
     try:
-        indexed, index_items = await _run_index_stage(
-            stage=stage,
-            source_names=source_names,
-            processed_ids=processed_ids,
-            backend=backend,
-            index_service=index_service,
-            progress_callback=progress_callback,
-        )
-    except Exception as exc:
-        logger.error("Indexing failed", error=str(exc))
-        index_error = str(exc)
+        # Acquire stage (raw storage only)
+        if stage == "acquire":
+            from polylogue.pipeline.services.acquisition import AcquisitionService
+
+            sm = metrics.start_stage("acquire")
+            acquire_service = AcquisitionService(backend=active_backend)
+            sources = _select_sources(config, source_names)
+            acquire_result = await acquire_service.acquire_sources(
+                sources,
+                ui=ui,
+                progress_callback=progress_callback,
+                drive_config=config.drive_config,
+            )
+            sm.stop(items=acquire_result.counts["acquired"])
+            counts["acquired"] = acquire_result.counts["acquired"]
+            counts["skipped"] = acquire_result.counts["skipped"]
+            logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
+
+        # Validate/Parse stages (canonical ingest orchestration)
+        elif stage in _INGEST_STAGES:
+            from polylogue.pipeline.services.parsing import ParsingService
+
+            sources = _select_sources(config, source_names)
+            parsing_service = ParsingService(
+                repository=active_repository,
+                archive_root=config.archive_root,
+                config=config,
+            )
+
+            ingest_result = await parsing_service.ingest_sources(
+                sources=sources,
+                stage=stage,
+                ui=ui,
+                progress_callback=progress_callback,
+                parse_records=stage in _PARSE_STAGES,
+            )
+            acquire_result = ingest_result.acquire_result
+            validation_result = ingest_result.validation_result
+
+            counts["acquired"] = acquire_result.counts["acquired"]
+            counts["skipped"] = acquire_result.counts["skipped"]
+            counts["acquire_errors"] = acquire_result.counts["errors"]
+            logger.info("Acquire stage complete", **acquire_result.counts)
+
+            if validation_result is not None:
+                counts["validated"] = validation_result.counts["validated"]
+                counts["validation_invalid"] = validation_result.counts["invalid"]
+                counts["validation_drift"] = validation_result.counts["drift"]
+                counts["validation_skipped_no_schema"] = validation_result.counts["skipped_no_schema"]
+                counts["validation_errors"] = validation_result.counts["errors"]
+                logger.info(
+                    "Validate stage complete",
+                    parseable=len(validation_result.parseable_raw_ids),
+                    invalid=validation_result.counts["invalid"],
+                    drift=validation_result.counts["drift"],
+                    skipped_no_schema=validation_result.counts["skipped_no_schema"],
+                    errors=validation_result.counts["errors"],
+                )
+
+            if stage in _PARSE_STAGES:
+                parse_result = ingest_result.parse_result
+                for key, value in parse_result.counts.items():
+                    counts[key] = value
+                if parse_result.parse_failures:
+                    counts["parse_failures"] = parse_result.parse_failures
+                changed_counts.update(parse_result.changed_counts)
+                processed_ids = parse_result.processed_ids
+                counts["conversations"] = len(processed_ids)
+                logger.info(
+                    "Parse stage complete",
+                    processed_ids=len(processed_ids),
+                    parse_failures=parse_result.parse_failures,
+                )
+
+        if stage == "generate-schemas":
+            from polylogue.paths import db_path as _db_path
+            from polylogue.schemas.schema_inference import generate_all_schemas
+
+            stage_t0 = time.perf_counter()
+            output_dir = config.archive_root.parent / "schemas"
+            results = await asyncio.to_thread(
+                generate_all_schemas,
+                output_dir=output_dir,
+                db_path=_db_path(),
+            )
+            counts["schemas_generated"] = sum(1 for r in results if r.success)
+            counts["schemas_failed"] = sum(1 for r in results if not r.success)
+            logger.info(
+                "Schema generation complete",
+                elapsed_s=round(time.perf_counter() - stage_t0, 1),
+                generated=counts["schemas_generated"],
+                failed=counts["schemas_failed"],
+            )
+
+        if stage in _RENDER_STAGES:
+            from polylogue.pipeline.services.rendering import RenderService
+            from polylogue.rendering.renderers import create_renderer
+
+            sm = metrics.start_stage("render")
+            ids = (
+                await _all_conversation_ids(active_backend, source_names)
+                if stage == "render"
+                else list(processed_ids)
+            )
+            if ids:
+                if progress_callback is not None:
+                    progress_callback(0, desc=f"Rendering: 0/{len(ids)}")
+                renderer = create_renderer(
+                    format=render_format,
+                    config=config,
+                    backend=active_backend,
+                )
+                render_service = RenderService(
+                    renderer=renderer,
+                    render_root=config.archive_root / "render",
+                    backend=active_backend,
+                )
+                render_result = await render_service.render_conversations(
+                    ids,
+                    progress_callback=progress_callback,
+                )
+                counts["rendered"] = render_result.rendered_count
+                render_failures = render_result.failures
+                if render_failures:
+                    counts["render_failures"] = len(render_failures)
+            sm.stop(items=counts.get("rendered", 0))
+            logger.info(
+                "Render stage complete",
+                **sm.to_dict(),
+                failures=len(render_failures),
+                total=len(ids) if ids else 0,
+            )
+
         indexed = False
-    sm.stop(items=index_items)
-    logger.info("Index stage complete", **sm.to_dict(), indexed=indexed)
+        index_error: str | None = None
 
-    # Calculate drift and finalize
-    duration_ms = int((time.perf_counter() - start) * 1000)
-    drift = {
-        "new": {"conversations": 0, "messages": 0, "attachments": 0},
-        "removed": {"conversations": 0, "messages": 0, "attachments": 0},
-        "changed": dict(changed_counts),
-    }
+        from polylogue.pipeline.services.indexing import IndexService
 
-    processed_conversations = counts["conversations"] + counts["skipped_conversations"]
-    processed_messages = counts["messages"] + counts["skipped_messages"]
-    processed_attachments = counts["attachments"] + counts["skipped_attachments"]
+        index_service = IndexService(config=config, backend=active_backend)
 
-    if plan:
-        expected_conversations = plan.counts.get("conversations", 0)
-        expected_messages = plan.counts.get("messages", 0)
-        expected_attachments = plan.counts.get("attachments", 0)
-        drift["new"]["conversations"] = max(processed_conversations - expected_conversations, 0)
-        drift["new"]["messages"] = max(processed_messages - expected_messages, 0)
-        drift["new"]["attachments"] = max(processed_attachments - expected_attachments, 0)
-        drift["removed"]["conversations"] = max(expected_conversations - processed_conversations, 0)
-        drift["removed"]["messages"] = max(expected_messages - processed_messages, 0)
-        drift["removed"]["attachments"] = max(expected_attachments - processed_attachments, 0)
-    else:
+        sm = metrics.start_stage("index")
+        index_items = 0
+        try:
+            indexed, index_items = await _run_index_stage(
+                stage=stage,
+                source_names=source_names,
+                processed_ids=processed_ids,
+                backend=active_backend,
+                index_service=index_service,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            logger.error("Indexing failed", error=str(exc), exc_info=True)
+            index_error = f"{type(exc).__name__}: {exc}"
+            indexed = False
+        sm.stop(items=index_items)
+        logger.info("Index stage complete", **sm.to_dict(), indexed=indexed)
+
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        drift = {
+            "new": {"conversations": 0, "messages": 0, "attachments": 0},
+            "removed": {"conversations": 0, "messages": 0, "attachments": 0},
+            "changed": dict(changed_counts),
+        }
+
         drift["new"]["conversations"] = counts["conversations"]
         drift["new"]["messages"] = counts["messages"]
         drift["new"]["attachments"] = counts["attachments"]
 
-    # Record run
-    run_id = uuid4().hex
-    run_payload = {
-        "run_id": run_id,
-        "timestamp": int(time.time()),
-        "counts": counts,
-        "drift": drift,
-        "indexed": indexed,
-        "index_error": index_error,
-        "duration_ms": duration_ms,
-        "metrics": metrics.to_summary(),
-    }
-    _write_run_json(config.archive_root, run_payload)
+        run_id = uuid4().hex
+        run_payload = {
+            "run_id": run_id,
+            "timestamp": int(time.time()),
+            "counts": counts,
+            "drift": drift,
+            "indexed": indexed,
+            "index_error": index_error,
+            "duration_ms": duration_ms,
+            "metrics": metrics.to_summary(),
+        }
+        _write_run_json(config.archive_root, run_payload)
 
-    await repository.record_run(
-        RunRecord(
+        await active_repository.record_run(
+            RunRecord(
+                run_id=run_id,
+                timestamp=str(run_payload["timestamp"]),
+                plan_snapshot=plan.model_dump() if plan else None,
+                counts=counts,
+                drift=drift,
+                indexed=indexed,
+                duration_ms=duration_ms,
+            ),
+        )
+
+        return RunResult(
             run_id=run_id,
-            timestamp=str(run_payload["timestamp"]),
-            plan_snapshot=plan.counts if plan else None,
             counts=counts,
             drift=drift,
             indexed=indexed,
+            index_error=index_error,
             duration_ms=duration_ms,
-        ),
-    )
-
-    return RunResult(
-        run_id=run_id,
-        counts=counts,
-        drift=drift,
-        indexed=indexed,
-        index_error=index_error,
-        duration_ms=duration_ms,
-        render_failures=render_failures,
-    )
+            render_failures=render_failures,
+        )
+    finally:
+        if owns_repository:
+            await active_repository.close()
+        elif owns_backend:
+            await active_backend.close()
 
 
-async def latest_run(backend: Any | None = None) -> RunRecord | None:
+async def latest_run(backend: SQLiteBackend | None = None) -> RunRecord | None:
     """Fetch the most recent run record from the database asynchronously.
 
     Args:
-        backend: Optional SQLiteBackend. If None, uses get_backend()
+        backend: Optional SQLiteBackend. If None, creates a temporary backend.
 
     Returns:
         RunRecord if a run exists, None otherwise
     """
-    if backend is None:
-        from polylogue.services import get_backend
-
-        backend = get_backend()
-
-    async with backend._get_connection() as conn:
-        cursor = await conn.execute(
-            "SELECT * FROM runs ORDER BY timestamp DESC LIMIT 1"
-        )
-        row = await cursor.fetchone()
-
-    if not row:
-        return None
-
-    # Parse JSON columns
-    plan_snapshot = None
-    counts = None
-    drift = None
-
-    raw_plan = row["plan_snapshot"]
-    if isinstance(raw_plan, str) and raw_plan:
-        try:
-            plan_snapshot = loads(raw_plan)
-        except (ValueError, TypeError) as exc:
-            logger.debug("Corrupt plan_snapshot JSON in run %s: %s", row["run_id"], exc)
-
-    raw_counts = row["counts_json"]
-    if isinstance(raw_counts, str) and raw_counts:
-        try:
-            counts = loads(raw_counts)
-        except (ValueError, TypeError) as exc:
-            logger.debug("Corrupt counts_json in run %s: %s", row["run_id"], exc)
-
-    raw_drift = row["drift_json"]
-    if isinstance(raw_drift, str) and raw_drift:
-        try:
-            drift = loads(raw_drift)
-        except (ValueError, TypeError) as exc:
-            logger.debug("Corrupt drift_json in run %s: %s", row["run_id"], exc)
-
-    return RunRecord(
-        run_id=row["run_id"],
-        timestamp=row["timestamp"],
-        plan_snapshot=plan_snapshot,
-        counts=counts,
-        drift=drift,
-        indexed=bool(row["indexed"]) if row["indexed"] is not None else None,
-        duration_ms=row["duration_ms"],
-    )
+    owns_backend = backend is None
+    active_backend = backend or create_backend()
+    try:
+        return await active_backend.get_latest_run()
+    finally:
+        if owns_backend:
+            await active_backend.close()
 
 
 __all__ = [

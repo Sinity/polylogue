@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import click
 
@@ -12,6 +14,8 @@ from polylogue.cli.formatting import (
     format_counts,
     format_cursors,
     format_index_status,
+    format_plan_counts,
+    format_plan_details,
 )
 from polylogue.cli.helpers import (
     fail,
@@ -21,7 +25,15 @@ from polylogue.cli.helpers import (
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
+from polylogue.pipeline.observers import (
+    CompositeObserver,
+    ExecObserver,
+    NotificationObserver,
+    RunObserver,
+    WebhookObserver,
+)
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, plan_sources, run_sources
+from polylogue.protocols import ProgressCallback
 from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
 
@@ -39,6 +51,145 @@ def _format_elapsed(seconds: float) -> str:
     return f"{hours}h{mins:02d}m{secs:02d}s"
 
 
+class _PlainProgressObserver(RunObserver):
+    """Plain-text progress output for non-TTY runs."""
+
+    def __init__(self) -> None:
+        self.pipeline_start = time.time()
+        self.stage_start = self.pipeline_start
+        self.last_update = self.pipeline_start
+        self.stage_processed = 0
+        self.last_desc = ""
+        self.last_stage = ""
+        print("Syncing...", flush=True)
+
+    def _stage_key(self, desc: str) -> str:
+        return desc.split(":")[0].split("[")[0].strip()
+
+    def on_progress(self, amount: int, desc: str | None = None) -> None:
+        self.stage_processed += amount
+        now = time.time()
+        current_stage = self._stage_key(desc) if desc else self.last_stage
+        is_stage_change = current_stage != self.last_stage and current_stage
+        if is_stage_change:
+            if self.last_stage:
+                prev_elapsed = now - self.stage_start
+                print(
+                    f"  {self.last_stage}: done ({self.stage_processed - amount:,}"
+                    f" in {_format_elapsed(prev_elapsed)})",
+                    flush=True,
+                )
+            self.last_stage = current_stage
+            self.stage_start = now
+            self.stage_processed = amount
+        if desc:
+            self.last_desc = desc
+        if is_stage_change or now - self.last_update >= 1:
+            elapsed = now - self.stage_start
+            total_elapsed = now - self.pipeline_start
+            rate = self.stage_processed / elapsed if elapsed > 0.5 else 0
+            rate_str = f" ({rate:,.0f}/s)" if rate > 0 else ""
+            print(
+                f"  {self.last_desc or 'Processing'}: {self.stage_processed:,}{rate_str}"
+                f" [{_format_elapsed(total_elapsed)} total]...",
+                flush=True,
+            )
+            self.last_update = now
+
+    def on_completed(self, result: RunResult) -> None:
+        total_elapsed = time.time() - self.pipeline_start
+        print(f"  Pipeline complete in {_format_elapsed(total_elapsed)}", flush=True)
+
+
+class _RichProgressObserver(RunObserver):
+    """Rich progress bridge for TTY runs."""
+
+    __slots__ = ("_progress", "_task_id")
+
+    def __init__(self, progress: object, task_id: object) -> None:
+        self._progress = progress
+        self._task_id = task_id
+
+    def on_progress(self, amount: int, desc: str | None = None) -> None:
+        if desc:
+            self._progress.update(self._task_id, description=desc)
+        self._progress.update(self._task_id, advance=amount)
+
+
+@contextmanager
+def _progress_observer(env: AppEnv) -> Iterator[RunObserver]:
+    """Yield a progress observer appropriate for the active UI."""
+    if env.ui.plain:
+        yield _PlainProgressObserver()
+        return
+
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeRemainingColumn(),
+        console=env.ui.console,  # type: ignore[arg-type]
+        transient=True,
+    ) as progress:
+        task_id = progress.add_task("Syncing sources...", total=None)
+        yield _RichProgressObserver(progress, task_id)
+
+
+def _execute_sync_once(
+    cfg: Config,
+    env: AppEnv,
+    stage: str,
+    selected_sources: list[str] | None,
+    render_format: str,
+    plan_snapshot: PlanResult | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> RunResult:
+    """Execute a single sync run with the provided progress callback."""
+    return asyncio.run(run_sources(
+        config=cfg,
+        stage=stage,
+        plan=plan_snapshot,
+        ui=env.ui,
+        source_names=selected_sources,
+        progress_callback=progress_callback,
+        render_format=render_format,
+        backend=env.backend,
+        repository=env.repository,
+    ))
+
+
+def _run_with_progress(
+    cfg: Config,
+    env: AppEnv,
+    stage: str,
+    selected_sources: list[str] | None,
+    render_format: str,
+    plan_snapshot: PlanResult | None = None,
+    observer: RunObserver | None = None,
+) -> RunResult:
+    """Execute a sync run while bridging progress updates through a run observer."""
+    with _progress_observer(env) as progress_observer:
+        progress_bridge = (
+            CompositeObserver([progress_observer, observer])
+            if observer is not None
+            else progress_observer
+        )
+        result = _execute_sync_once(
+            cfg,
+            env,
+            stage,
+            selected_sources,
+            render_format,
+            plan_snapshot=plan_snapshot,
+            progress_callback=progress_bridge.on_progress,
+        )
+        progress_observer.on_completed(result)
+        return result
+
+
 def _run_sync_once(
     cfg: Config,
     env: AppEnv,
@@ -46,96 +197,27 @@ def _run_sync_once(
     selected_sources: list[str] | None,
     render_format: str,
     plan_snapshot: PlanResult | None = None,
+    observer: RunObserver | None = None,
 ) -> RunResult:
-    """Execute a single sync run."""
-    if env.ui.plain:
-        pipeline_start = time.time()
-        print("Syncing...", flush=True)
-        stage_start = [time.time()]
-        last_update = [stage_start[0]]
-        processed = [0]
-        stage_processed = [0]
+    """Execute a single sync run and emit lifecycle notifications to an observer."""
+    try:
+        result = _run_with_progress(
+            cfg,
+            env,
+            stage,
+            selected_sources,
+            render_format,
+            plan_snapshot=plan_snapshot,
+            observer=observer,
+        )
+    except Exception as exc:
+        if observer is not None:
+            observer.on_error(exc)
+        raise
 
-        last_desc = [""]
-        last_stage = [""]
-
-        def _stage_key(desc: str) -> str:
-            """Extract base stage name, ignoring count suffixes like 'Rendering: 42/5060'."""
-            return desc.split(":")[0].split("[")[0].strip()
-
-        def plain_progress(amount: int, desc: str | None = None) -> None:
-            processed[0] += amount
-            stage_processed[0] += amount
-            now = time.time()
-            # Detect major stage transitions (e.g., Acquiring→Parsing→Rendering)
-            current_stage = _stage_key(desc) if desc else last_stage[0]
-            is_stage_change = current_stage != last_stage[0] and current_stage
-            if is_stage_change:
-                # Print summary line for the completed stage
-                if last_stage[0]:
-                    prev_elapsed = now - stage_start[0]
-                    print(
-                        f"  {last_stage[0]}: done ({stage_processed[0] - amount:,}"
-                        f" in {_format_elapsed(prev_elapsed)})",
-                        flush=True,
-                    )
-                last_stage[0] = current_stage
-                stage_start[0] = now
-                stage_processed[0] = amount
-            if desc:
-                last_desc[0] = desc
-            if is_stage_change or now - last_update[0] >= 1:
-                elapsed = now - stage_start[0]
-                total_elapsed = now - pipeline_start
-                rate = stage_processed[0] / elapsed if elapsed > 0.5 else 0
-                rate_str = f" ({rate:,.0f}/s)" if rate > 0 else ""
-                print(
-                    f"  {last_desc[0] or 'Processing'}: {stage_processed[0]:,}{rate_str}"
-                    f" [{_format_elapsed(total_elapsed)} total]...",
-                    flush=True,
-                )
-                last_update[0] = now
-
-        result = asyncio.run(run_sources(
-            config=cfg,
-            stage=stage,
-            plan=plan_snapshot,
-            ui=env.ui,
-            source_names=selected_sources,
-            progress_callback=plain_progress,
-            render_format=render_format,
-        ))
-        total_elapsed = time.time() - pipeline_start
-        print(f"  Pipeline complete in {_format_elapsed(total_elapsed)}", flush=True)
-        return result
-    else:
-        from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TimeRemainingColumn(),
-            console=env.ui.console,  # type: ignore[arg-type]
-            transient=True,
-        ) as progress:
-            task_id = progress.add_task("Syncing sources...", total=None)
-
-            def progress_callback(amount: int, desc: str | None = None) -> None:
-                if desc:
-                    progress.update(task_id, description=desc)
-                progress.update(task_id, advance=amount)
-
-            return asyncio.run(run_sources(
-                config=cfg,
-                stage=stage,
-                plan=plan_snapshot,
-                ui=env.ui,
-                source_names=selected_sources,
-                progress_callback=progress_callback,
-                render_format=render_format,
-            ))
+    if observer is not None:
+        observer.on_completed(result)
+    return result
 
 
 def _display_result(
@@ -247,33 +329,37 @@ def run_command(
     if (notify or exec_cmd or webhook) and not watch:
         fail("run", "--notify, --exec, and --webhook require --watch mode")
 
-    from polylogue.services import get_service_config
-
-    cfg = get_service_config()
+    cfg = env.config
 
     selected_sources = resolve_sources(cfg, sources, "run")
     selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "run")
 
     # Reset parse tracking if --reparse was requested
     if reparse:
-        from polylogue.services import get_backend
-
-        backend = get_backend()
-        reset_count = asyncio.run(backend.reset_parse_status())
+        reset_count = asyncio.run(env.backend.reset_parse_status())
         click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
 
     # Preview mode
     plan_snapshot = None
     if preview:
         try:
-            plan_snapshot = plan_sources(cfg, ui=env.ui, source_names=selected_sources)
+            plan_snapshot = plan_sources(
+                cfg,
+                stage=stage,
+                ui=env.ui,
+                source_names=selected_sources,
+                backend=env.backend,
+            )
         except DriveError as exc:
             fail("run", str(exc))
         plan_lines = []
         if selected_sources:
             plan_lines.append(f"Sources: {', '.join(selected_sources)}")
         if plan_snapshot is not None:
-            plan_lines.append(f"Counts: {format_counts(plan_snapshot.counts)}")
+            plan_lines.append(f"Work: {format_plan_counts(plan_snapshot.counts)}")
+            detail_line = format_plan_details(plan_snapshot.details)
+            if detail_line:
+                plan_lines.append(f"State: {detail_line}")
             cursor_line = format_cursors(plan_snapshot.cursors)
             if cursor_line:
                 plan_lines.append(f"Cursors: {cursor_line}")
@@ -289,54 +375,52 @@ def run_command(
 
     # Watch mode
     if watch:
-        from polylogue.pipeline.events import (
-            CompositeSyncHandler,
-            ExecHandler,
-            NotificationHandler,
-            SyncEvent,
-            WebhookHandler,
-        )
         from polylogue.pipeline.watch import WatchRunner
 
-        # Build event handlers from CLI flags
-        handlers: list[object] = []
+        observers: list[RunObserver] = []
 
-        # Always display results when new conversations arrive
-        class _DisplayHandler:
-            def on_sync(self, event: SyncEvent) -> None:
-                if event.new_conversations > 0 and event.run_result is not None:
-                    _display_result(env, cfg, event.run_result, stage, selected_sources)
+        class _DisplayObserver(RunObserver):
+            def on_completed(self, result: RunResult) -> None:
+                if result.counts.get("conversations", 0) > 0:
+                    _display_result(env, cfg, result, stage, selected_sources)
 
-        handlers.append(_DisplayHandler())
+        class _StatusObserver(RunObserver):
+            def on_idle(self, result: RunResult) -> None:
+                click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
+
+            def on_error(self, exc: Exception) -> None:
+                if isinstance(exc, DriveError):
+                    click.echo(f"Sync error: {exc}", err=True)
+                else:
+                    click.echo(f"Unexpected error during sync: {exc}", err=True)
+
+        observers.extend([_DisplayObserver(), _StatusObserver()])
 
         if notify:
-            handlers.append(NotificationHandler())
+            observers.append(NotificationObserver())
         if exec_cmd:
-            handlers.append(ExecHandler(exec_cmd))
+            observers.append(ExecObserver(exec_cmd))
         if webhook:
-            handlers.append(WebhookHandler(webhook))
+            observers.append(WebhookObserver(webhook))
 
-        composite = CompositeSyncHandler(handlers)  # type: ignore[arg-type]
+        composite = CompositeObserver(observers)
 
         def _sync_once() -> RunResult:
-            return _run_sync_once(cfg, env, stage, selected_sources, render_format)
-
-        def _on_idle(result: RunResult) -> None:
-            click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
-
-        def _on_error(exc: Exception) -> None:
-            if isinstance(exc, DriveError):
-                click.echo(f"Sync error: {exc}", err=True)
-            else:
-                click.echo(f"Unexpected error during sync: {exc}", err=True)
+            return _run_with_progress(
+                cfg,
+                env,
+                stage,
+                selected_sources,
+                render_format,
+                plan_snapshot=plan_snapshot,
+                observer=composite,
+            )
 
         env.ui.console.print("Watch mode: syncing every 60 seconds. Press Ctrl+C to stop.")
         runner = WatchRunner(
             sync_fn=_sync_once,
-            handler=composite,
+            observer=composite,
             interval=60,
-            on_idle=_on_idle,
-            on_error=_on_error,
         )
         runner.run()
         env.ui.console.print("\nWatch mode stopped.")
@@ -355,9 +439,7 @@ def run_command(
 @click.pass_obj
 def sources_command(env: AppEnv, json_output: bool) -> None:
     """List configured sources."""
-    from polylogue.services import get_service_config
-
-    cfg = get_service_config()
+    cfg = env.config
     if json_output:
         payload = [
             {

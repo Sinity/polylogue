@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from polylogue.lib.models import Conversation, Message
 from tests.integration.conftest import make_mock_filter
+
+
+def _invoke_surface(fn, /, *args, **kwargs):
+    """Call an MCP surface whether it is sync or async."""
+    result = fn(*args, **kwargs)
+    if asyncio.iscoroutine(result):
+        return asyncio.run(result)
+    return result
+
+
+async def _invoke_surface_async(fn, /, *args, **kwargs):
+    """Await an MCP surface from async tests."""
+    result = fn(*args, **kwargs)
+    if asyncio.iscoroutine(result):
+        return await result
+    return result
 
 # =============================================================================
 # Test data tables (SCREAMING_CASE constants)
@@ -21,13 +38,13 @@ SERIALIZATION_CASES = [
         "no_timestamps",
         Conversation(id="t1", provider="test", title="No Times", messages=[]),
         {"created_at": None, "updated_at": None, "message_count": 0},
-        "_conversation_to_dict",
+        "summary",
     ),
     (
         "empty_messages",
         Conversation(id="t2", provider="test", title="Empty", messages=[]),
         {"messages": []},
-        "_conversation_to_full_dict",
+        "detail",
     ),
     (
         "empty_role",
@@ -38,7 +55,7 @@ SERIALIZATION_CASES = [
             messages=[Message(id="m1", role="", text="test")],
         ),
         {"messages": [{"role": "unknown"}]},
-        "_conversation_to_full_dict",
+        "detail",
     ),
     (
         "null_text",
@@ -49,7 +66,7 @@ SERIALIZATION_CASES = [
             messages=[Message(id="m1", role="user", text=None)],
         ),
         {"messages": [{"text": ""}]},
-        "_conversation_to_full_dict",
+        "detail",
     ),
     (
         "null_timestamp",
@@ -60,7 +77,7 @@ SERIALIZATION_CASES = [
             messages=[Message(id="m1", role="user", text="hi")],
         ),
         {"messages": [{"timestamp": None}]},
-        "_conversation_to_full_dict",
+        "detail",
     ),
     (
         "unusual_role",
@@ -71,7 +88,7 @@ SERIALIZATION_CASES = [
             messages=[Message(id="m1", role="tool", text="test")],
         ),
         {"messages": [{"role": "tool"}]},
-        "_conversation_to_full_dict",
+        "detail",
     ),
 ]
 
@@ -90,15 +107,15 @@ class TestStatsResource:
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.get_archive_stats.return_value = ArchiveStats(
+            mock_repo.get_archive_stats = AsyncMock(return_value=ArchiveStats(
                 total_conversations=2,
                 total_messages=4,
                 providers={"chatgpt": 2},
-            )
+            ))
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._resource_manager._resources["polylogue://stats"].fn()
+            result = _invoke_surface(server._resource_manager._resources["polylogue://stats"].fn)
 
             stats = json.loads(result)
             assert stats["total_conversations"] == 2
@@ -122,7 +139,7 @@ class TestConversationsResource:
                 MockFilter.return_value = make_mock_filter(results=[simple_conversation])
 
                 server = _build_server()
-                result = await server._resource_manager._resources["polylogue://conversations"].fn()
+                result = await _invoke_surface_async(server._resource_manager._resources["polylogue://conversations"].fn)
 
                 convs = json.loads(result)
                 assert len(convs) == 1
@@ -137,11 +154,14 @@ class TestConversationResource:
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.get.return_value = simple_conversation
+            mock_repo.get = AsyncMock(return_value=simple_conversation)
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn(conv_id="test:conv-123")
+            result = _invoke_surface(
+                server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
+                conv_id="test:conv-123",
+            )
 
             conv = json.loads(result)
             assert conv["id"] == "test:conv-123"
@@ -153,11 +173,14 @@ class TestConversationResource:
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.get.return_value = None
+            mock_repo.get = AsyncMock(return_value=None)
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn(conv_id="nonexistent")
+            result = _invoke_surface(
+                server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
+                conv_id="nonexistent",
+            )
 
             result_dict = json.loads(result)
             assert "error" in result_dict
@@ -359,13 +382,15 @@ class TestExtractCodePrompt:
 
 
 class TestConversationSerialization:
-    """Tests for conversation serialization helpers."""
+    """Tests for typed MCP conversation payloads."""
 
     def test_conversation_to_dict(self, simple_conversation):
-        """_conversation_to_dict serializes conversation metadata."""
-        from polylogue.mcp.server import _conversation_to_dict
+        """Summary payload serializes conversation metadata."""
+        from polylogue.mcp.payloads import MCPConversationSummaryPayload
 
-        result = _conversation_to_dict(simple_conversation)
+        result = MCPConversationSummaryPayload.from_conversation(
+            simple_conversation
+        ).model_dump(mode="json")
 
         assert result["id"] == "test:conv-123"
         assert result["provider"] == "chatgpt"
@@ -374,10 +399,12 @@ class TestConversationSerialization:
         assert "updated_at" in result
 
     def test_conversation_to_full_dict(self, simple_conversation):
-        """_conversation_to_full_dict includes messages."""
-        from polylogue.mcp.server import _conversation_to_full_dict
+        """Detail payload includes messages."""
+        from polylogue.mcp.payloads import MCPConversationDetailPayload
 
-        result = _conversation_to_full_dict(simple_conversation)
+        result = MCPConversationDetailPayload.from_conversation(
+            simple_conversation
+        ).model_dump(mode="json")
 
         assert "messages" in result
         assert len(result["messages"]) == 2
@@ -389,7 +416,7 @@ class TestConversationSerialization:
         assert "timestamp" in msg
 
     @pytest.mark.parametrize(
-        "case_id,conv,expected_fields,func_name",
+        "case_id,conv,expected_fields,payload_kind",
         SERIALIZATION_CASES,
     )
     def test_serialization_edge_cases(
@@ -397,17 +424,21 @@ class TestConversationSerialization:
         case_id,
         conv,
         expected_fields,
-        func_name,
+        payload_kind,
     ):
         """Serialization handles edge cases."""
-        if func_name == "_conversation_to_dict":
-            from polylogue.mcp.server import _conversation_to_dict
+        if payload_kind == "summary":
+            from polylogue.mcp.payloads import MCPConversationSummaryPayload
 
-            result = _conversation_to_dict(conv)
+            result = MCPConversationSummaryPayload.from_conversation(conv).model_dump(
+                mode="json"
+            )
         else:
-            from polylogue.mcp.server import _conversation_to_full_dict
+            from polylogue.mcp.payloads import MCPConversationDetailPayload
 
-            result = _conversation_to_full_dict(conv)
+            result = MCPConversationDetailPayload.from_conversation(conv).model_dump(
+                mode="json"
+            )
 
         for key, expected_value in expected_fields.items():
             if key == "messages":

@@ -5,32 +5,24 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-from click.testing import CliRunner
-
 from polylogue.cli.click_app import cli as click_cli
 
 
-@pytest.fixture
-def runner() -> CliRunner:
-    return CliRunner()
-
-
-def test_qa_listed_in_main_help(runner: CliRunner) -> None:
-    result = runner.invoke(click_cli, ["--help"])
+def test_qa_listed_in_main_help(cli_runner) -> None:
+    result = cli_runner.invoke(click_cli, ["--help"])
     assert result.exit_code == 0
     assert "qa" in result.output
 
 
-def test_qa_fails_without_sources(runner: CliRunner) -> None:
-    with runner.isolated_filesystem():
-        result = runner.invoke(click_cli, ["qa"])
+def test_qa_fails_without_sources(cli_runner) -> None:
+    with cli_runner.isolated_filesystem():
+        result = cli_runner.invoke(click_cli, ["qa"])
         assert result.exit_code != 0
         assert "No QA sources found" in result.output
 
 
-def test_qa_snapshots_default_sources(runner: CliRunner) -> None:
-    with runner.isolated_filesystem():
+def test_qa_snapshots_default_sources(cli_runner) -> None:
+    with cli_runner.isolated_filesystem():
         cwd = Path.cwd()
         (cwd / "qa_outputs").mkdir()
         (cwd / "qa_outputs" / "Q01.txt").write_text("hello", encoding="utf-8")
@@ -38,7 +30,7 @@ def test_qa_snapshots_default_sources(runner: CliRunner) -> None:
         (cwd / "qa_archive" / "A01.txt").write_text("world", encoding="utf-8")
 
         archive_root = cwd / ".archive"
-        result = runner.invoke(
+        result = cli_runner.invoke(
             click_cli,
             ["qa", "--name", "nightly"],
             env={
@@ -58,15 +50,15 @@ def test_qa_snapshots_default_sources(runner: CliRunner) -> None:
         assert (snapshots_root / "latest").exists()
 
 
-def test_qa_json_output(runner: CliRunner) -> None:
-    with runner.isolated_filesystem():
+def test_qa_json_output(cli_runner) -> None:
+    with cli_runner.isolated_filesystem():
         cwd = Path.cwd()
         custom = cwd / "custom-qa"
         custom.mkdir()
         (custom / "result.log").write_text("ok", encoding="utf-8")
 
         archive_root = cwd / ".archive"
-        result = runner.invoke(
+        result = cli_runner.invoke(
             click_cli,
             ["qa", "--source", str(custom), "--json"],
             env={

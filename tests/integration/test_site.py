@@ -8,15 +8,42 @@ Tests the SiteBuilder class including:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+
+# =============================================================================
+# Async mock helpers
+# =============================================================================
+
+
+async def _empty_messages(*args, **kwargs):
+    """Async generator that yields nothing — used to mock iter_messages."""
+    return
+    yield  # noqa: unreachable — makes this an async generator
+
+
+def _async_repo(summaries):
+    """Build an AsyncMock ConversationRepository pre-configured with summaries."""
+    repo = AsyncMock()
+    repo.list_summaries.return_value = summaries
+    repo.iter_messages = _empty_messages
+    return repo
+
+
+def _async_backend(counts):
+    """Build an AsyncMock SQLiteBackend pre-configured with message counts."""
+    backend = AsyncMock()
+    backend.get_message_counts_batch.return_value = counts
+    return backend
+
 
 # =============================================================================
 # Fixtures
@@ -160,12 +187,13 @@ class TestSiteBuilderBuild:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(
@@ -196,12 +224,13 @@ class TestSiteBuilderBuild:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="Test Archive")
@@ -221,12 +250,13 @@ class TestSiteBuilderBuild:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = []
 
             config = SiteConfig(title="Empty Archive")
@@ -249,15 +279,16 @@ class TestSiteBuilderBuild:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {
                 "test-conv-001": 3,
                 "gemini-conv-001": 2,
             }
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [mock_summary, mock_summary_gemini]
 
             config = SiteConfig(title="Multi-Provider Archive")
@@ -282,12 +313,13 @@ class TestSiteBuilderBuild:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="No Dashboard", include_dashboard=False)
@@ -309,12 +341,13 @@ class TestSiteBuilderBuild:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="With Dashboard", include_dashboard=True)
@@ -352,19 +385,20 @@ class TestConversationIndex:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
 
             # This should not raise AttributeError
-            conversations = builder._build_index()
+            conversations = asyncio.run(builder._build_index())
 
             # Verify the index was built successfully
             assert len(conversations) == 1
@@ -389,17 +423,18 @@ class TestConversationIndex:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"no-title-conv-xyz": 1}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [mock_summary_no_title]
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = builder._build_index()
+            conversations = asyncio.run(builder._build_index())
 
             assert len(conversations) == 1
             index = conversations[0]
@@ -417,17 +452,18 @@ class TestConversationIndex:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = builder._build_index()
+            conversations = asyncio.run(builder._build_index())
 
             index = conversations[0]
             assert index.message_count == 3
@@ -453,17 +489,18 @@ class TestConversationIndex:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [summary_with_content]
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = builder._build_index()
+            conversations = asyncio.run(builder._build_index())
 
             index = conversations[0]
             assert index.preview == "Hello, how are you?"
@@ -479,17 +516,18 @@ class TestConversationIndex:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = builder._build_index()
+            conversations = asyncio.run(builder._build_index())
 
             index = conversations[0]
             assert index.created_at == "2024-01-15"
@@ -517,12 +555,13 @@ class TestSiteCommand:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = []
 
             # Create a mock AppEnv object
@@ -557,12 +596,13 @@ class TestSiteCommand:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = []
 
             from polylogue.cli.types import AppEnv
@@ -609,12 +649,13 @@ class TestSiteCommand:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = []
 
             from polylogue.cli.types import AppEnv
@@ -644,12 +685,13 @@ class TestSiteCommand:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = []
 
             from polylogue.cli.types import AppEnv
@@ -715,12 +757,13 @@ class TestSiteCommand:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"test-conv-123": 1}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [test_summary]
 
             from polylogue.cli.types import AppEnv
@@ -767,12 +810,13 @@ class TestSiteBuilderIntegration:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"conv-123": 1}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [summary]
 
             config = SiteConfig(title="Test Archive", include_dashboard=True)
@@ -808,12 +852,13 @@ class TestSiteBuilderIntegration:
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
-            mock_backend = MagicMock()
+            mock_backend = AsyncMock()
             mock_backend_class.return_value = mock_backend
             mock_backend.get_message_counts_batch.return_value = {"conv-123": 1}
 
-            mock_repo = MagicMock()
+            mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [summary]
 
             config = SiteConfig(
@@ -830,4 +875,4 @@ class TestSiteBuilderIntegration:
             assert len(search_data) == 1
             assert search_data[0]["id"] == "conv-123"
             assert search_data[0]["title"] == "Test"
-            assert search_data[0]["provider"] == "test"
+            assert search_data[0]["provider"] == "unknown"

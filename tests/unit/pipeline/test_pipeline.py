@@ -11,6 +11,8 @@ Consolidated from:
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from polylogue.assets import asset_path
@@ -18,6 +20,7 @@ from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
     conversation_id,
+    materialize_attachment_path,
     message_content_hash,
     move_attachment_to_archive,
 )
@@ -29,8 +32,8 @@ from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation,
 # ============================================================================
 
 
-def test_attachment_content_id_moves_file_into_assets(tmp_path):
-    """attachment_content_id moves file to archive and returns digest."""
+def test_attachment_content_id_returns_target_path_without_moving(tmp_path):
+    """attachment_content_id is pure and returns the eventual archive path."""
     archive_root = tmp_path / "archive"
     uploads = tmp_path / "uploads"
     archive_root.mkdir()
@@ -55,6 +58,22 @@ def test_attachment_content_id_moves_file_into_assets(tmp_path):
     assert digest
     assert updated_path == str(target)  # returned path, not mutated attachment.path
     assert updated_meta is not None and "sha256" in updated_meta
+    assert source_file.exists()
+    assert not target.exists()
+
+
+def test_materialize_attachment_path_moves_file_into_assets(tmp_path):
+    """materialize_attachment_path performs the explicit archive move."""
+    archive_root = tmp_path / "archive"
+    uploads = tmp_path / "uploads"
+    archive_root.mkdir()
+    uploads.mkdir()
+    source_file = uploads / "note.txt"
+    source_file.write_text("hello world", encoding="utf-8")
+    target = asset_path(archive_root, "abc123")
+
+    materialize_attachment_path(source_file, target)
+
     assert not source_file.exists()
     assert target.exists()
 
@@ -303,7 +322,7 @@ async def test_prepare_records_new_conversation(async_backend, test_repository, 
     assert counts["messages"] == 1
     assert counts["skipped_conversations"] == 0
     assert changed is False  # First insert not considered a "change"
-    assert cid == "test:new-conv-1"
+    assert cid == "unknown:new-conv-1"
 
 
 async def test_prepare_records_unchanged_conversation_skips(async_backend, test_repository, tmp_path):
@@ -457,7 +476,7 @@ async def test_prepare_records_creates_message_records(async_backend, test_repos
     assert counts["conversations"] == 1
     assert counts["messages"] == 2
     # Verify messages are in DB
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT message_id, role FROM messages WHERE conversation_id = ?",
             (cid,),
@@ -504,7 +523,7 @@ async def test_prepare_records_handles_empty_provider_message_ids(async_backend,
 
     assert counts["messages"] == 2
     # Both messages should be created (one with fallback, one with explicit ID)
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT message_id FROM messages WHERE conversation_id = ? ORDER BY rowid",
             (cid,),
@@ -514,7 +533,7 @@ async def test_prepare_records_handles_empty_provider_message_ids(async_backend,
     # First one should have a fallback ID (contains provider_message_id as 'msg-1')
     # Second one should contain the explicit ID
     provider_ids = []
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         for row in rows:
             cursor = await conn.execute(
                 "SELECT provider_message_id FROM messages WHERE message_id = ?", (row["message_id"],)
@@ -556,7 +575,7 @@ async def test_prepare_records_stores_source_metadata(async_backend, test_reposi
     )
 
     # Verify source is recorded
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT provider_meta FROM conversations WHERE conversation_id = ?",
             (cid,),
@@ -606,7 +625,7 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(async_backend
     )
 
     # Verify each message has a unique content hash
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT content_hash FROM messages WHERE conversation_id = ? ORDER BY provider_message_id",
             (cid,),
@@ -656,7 +675,7 @@ async def test_prepare_records_with_attachments(async_backend, test_repository, 
 
     assert counts["attachments"] == 1
     # Verify attachment ref in DB (attachments use attachment_refs table)
-    async with async_backend._get_connection() as conn:
+    async with async_backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT ar.*, a.mime_type FROM attachment_refs ar "
             "JOIN attachments a ON ar.attachment_id = a.attachment_id "
@@ -666,6 +685,59 @@ async def test_prepare_records_with_attachments(async_backend, test_repository, 
         att_refs = await cursor.fetchall()
     assert len(att_refs) == 1
     assert att_refs[0]["mime_type"] == "application/pdf"
+
+
+async def test_prepare_records_rolls_back_attachment_move_on_save_failure(async_backend, test_repository, tmp_path):
+    """Attachment moves are rolled back if bundle persistence fails."""
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    source_file = uploads / "document.pdf"
+    source_file.write_bytes(b"pdf bytes")
+
+    convo = ParsedConversation(
+        provider_name="test",
+        provider_conversation_id="conv-rollback",
+        title="Rollback",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role="user",
+                text="See attachment",
+                timestamp="2024-01-01T00:00:00Z",
+            ),
+        ],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="att-1",
+                message_provider_id="m1",
+                name="document.pdf",
+                mime_type="application/pdf",
+                size_bytes=len(b"pdf bytes"),
+                path=str(source_file),
+            ),
+        ],
+    )
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+
+    with patch(
+        "polylogue.pipeline.prepare.save_bundle",
+        new=AsyncMock(side_effect=RuntimeError("save failed")),
+    ):
+        with pytest.raises(RuntimeError, match="save failed"):
+            await prepare_records(
+                convo,
+                "test-source",
+                archive_root=archive_root,
+                backend=async_backend,
+                repository=test_repository,
+            )
+
+    assert source_file.exists()
+    assert not any(path.is_file() for path in (archive_root / "assets").rglob("*"))
 
 
 async def test_prepare_records_returns_correct_tuple_structure(async_backend, test_repository, tmp_path):

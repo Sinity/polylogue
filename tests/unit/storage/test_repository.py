@@ -360,6 +360,29 @@ class TestSearch:
             else:
                 assert results == []
 
+    async def test_search_summaries_orders_by_best_hit_then_newest(self, repo, repo_db):
+        """search_summaries() preserves ranked conversation ordering."""
+        (
+            ConversationBuilder(repo_db, "conv-rank-old")
+            .provider("claude")
+            .title("Older match")
+            .add_message("m-rank-old", role="user", text="deterministic ranking token", timestamp="2024-01-01T00:00:00")
+            .save()
+        )
+        (
+            ConversationBuilder(repo_db, "conv-rank-new")
+            .provider("claude")
+            .title("Newer match")
+            .add_message("m-rank-new", role="user", text="deterministic ranking token", timestamp="2024-02-01T00:00:00")
+            .save()
+        )
+        with open_connection(repo_db) as conn:
+            rebuild_index(conn)
+
+        results = await repo.search_summaries("deterministic ranking token", limit=2)
+
+        assert [summary.id for summary in results[:2]] == ["conv-rank-new", "conv-rank-old"]
+
 
 # =============================================================================
 # iter_messages (Parametrized)
@@ -695,7 +718,7 @@ class TestEmbedConversation:
     async def test_embed_conversation_counts_messages(self, repo_with_conversations, conv_id, has_messages, expected_count):
         """embed_conversation() uses provider and returns correct message count."""
         if not has_messages:
-            (ConversationBuilder(repo_with_conversations.backend._db_path, "conv-empty")
+            (ConversationBuilder(repo_with_conversations.backend.db_path, "conv-empty")
              .provider("claude")
              .title("Empty Conversation")
              .save())

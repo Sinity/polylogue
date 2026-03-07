@@ -451,15 +451,14 @@ class TestParseCodeSemantic:
         assert len(result.messages) == 1
         meta = result.messages[0].provider_meta
 
-        # Check semantic data was extracted
-        assert "thinking_traces" in meta
-        assert len(meta["thinking_traces"]) == 1
-
-        assert "tool_invocations" in meta
-        assert len(meta["tool_invocations"]) == 1
-
-        assert "file_changes" in meta
-        assert len(meta["file_changes"]) == 1
+        # provider_meta is now {"raw": <original record>}; semantics are
+        # extracted at read time via extract_from_provider_meta / harmonized
+        assert "raw" in meta
+        raw = meta["raw"]
+        content = raw["message"]["content"]
+        types = [b["type"] for b in content]
+        assert "thinking" in types
+        assert "tool_use" in types
 
     def test_extracts_git_operations(self):
         """parse_code extracts git operations from Bash commands."""
@@ -485,8 +484,13 @@ class TestParseCodeSemantic:
         result = parse_code(payload, "test-session")
 
         meta = result.messages[0].provider_meta
-        assert "git_operations" in meta
-        assert meta["git_operations"][0]["command"] == "commit"
+        # Derived semantics are now extracted at read time; raw is stored
+        assert "raw" in meta
+        from polylogue.schemas.unified import extract_from_provider_meta
+        harmonized = extract_from_provider_meta("claude-code", meta)
+        git_ops = harmonized.git_operations
+        assert len(git_ops) == 1
+        assert git_ops[0].name == "Bash"
 
     def test_extracts_subagent_spawns(self):
         """parse_code extracts subagent spawns from Task tools."""
@@ -515,8 +519,13 @@ class TestParseCodeSemantic:
         result = parse_code(payload, "test-session")
 
         meta = result.messages[0].provider_meta
-        assert "subagent_spawns" in meta
-        assert meta["subagent_spawns"][0]["agent_type"] == "Explore"
+        # Subagent spawns are now extracted at read time via harmonized
+        assert "raw" in meta
+        from polylogue.schemas.unified import extract_from_provider_meta
+        harmonized = extract_from_provider_meta("claude-code", meta)
+        task_calls = [t for t in harmonized.tool_calls if t.name == "Task"]
+        assert len(task_calls) == 1
+        assert task_calls[0].input["subagent_type"] == "Explore"
 
     def test_tracks_context_compactions(self):
         """parse_code tracks context compaction events at conversation level."""

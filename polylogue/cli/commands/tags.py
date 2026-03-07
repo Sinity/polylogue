@@ -31,13 +31,7 @@ def tags_command(
     """
     import asyncio
 
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
-    from polylogue.storage.repository import ConversationRepository
-
-    backend = SQLiteBackend()
-    repo = ConversationRepository(backend=backend)
-
-    tags = asyncio.run(repo.list_tags(provider=provider))
+    tags = asyncio.run(env.repository.list_tags(provider=provider))
 
     if count is not None:
         # Truncate to top N (already sorted by count desc from SQL)

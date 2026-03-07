@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+from polylogue.errors import DatabaseError
 from polylogue.lib.log import get_logger
 from polylogue.render_paths import render_root
 
-from polylogue.errors import DatabaseError
-
-from .backends.connection import open_connection
+from .backends.connection import _build_source_scope_filter, open_connection
 from .search_cache import SearchCacheKey
 
 logger = get_logger(__name__)
@@ -46,6 +46,15 @@ class SearchHit:
 @dataclass
 class SearchResult:
     hits: list[SearchHit]
+
+
+def normalize_fts5_query(query: str) -> str | None:
+    """Normalize a raw search query into a safe FTS5 MATCH expression."""
+    if not query or not query.strip():
+        return None
+
+    fts_query = escape_fts5_query(query)
+    return None if fts_query == '""' else fts_query
 
 
 def _resolve_conversation_path(
@@ -142,6 +151,85 @@ def escape_fts5_query(query: str) -> str:
     return query
 
 
+def build_ranked_conversation_search_query(
+    *,
+    query: str,
+    limit: int,
+    scope_names: Sequence[str] | None = None,
+    since: str | None = None,
+    include_snippet: bool = False,
+) -> tuple[str, tuple[object, ...]] | None:
+    """Build the canonical ranked conversation search query.
+
+    This returns one best-matching row per conversation, ordered by the
+    strongest message-level FTS hit with deterministic tie-breaks.
+    """
+    fts_query = normalize_fts5_query(query)
+    if fts_query is None:
+        return None
+
+    candidate_columns = [
+        "messages_fts.message_id",
+        "messages_fts.conversation_id",
+        "conversations.provider_name",
+        "conversations.source_name",
+        "conversations.title",
+        "messages.timestamp",
+        "messages.sort_key",
+        "bm25(messages_fts) AS relevance",
+    ]
+    if include_snippet:
+        candidate_columns.append("snippet(messages_fts, 2, '[', ']', '…', 12) AS snippet")
+
+    sql = f"""
+        WITH candidate_hits AS (
+            SELECT
+                {", ".join(candidate_columns)}
+            FROM messages_fts
+            JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id
+            JOIN messages ON messages.message_id = messages_fts.message_id
+            WHERE messages_fts MATCH ?
+    """
+    params: list[object] = [fts_query]
+
+    if scope_names:
+        scope_sql, scope_params = _build_source_scope_filter(
+            scope_names,
+            provider_column="conversations.provider_name",
+            source_column="conversations.source_name",
+        )
+        sql += f" AND {scope_sql}"
+        params.extend(scope_params)
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+        except ValueError as exc:
+            raise ValueError(f"Invalid --since date '{since}': {exc}. Use ISO format (e.g., 2023-01-01)") from exc
+        sql += " AND messages.sort_key >= ?"
+        params.append(since_dt.timestamp())
+
+    sql += """
+        ),
+        ranked_hits AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY conversation_id
+                    ORDER BY relevance ASC, sort_key DESC, message_id ASC
+                ) AS conversation_rank
+            FROM candidate_hits
+        )
+        SELECT *
+        FROM ranked_hits
+        WHERE conversation_rank = 1
+        ORDER BY relevance ASC, sort_key DESC, message_id ASC
+        LIMIT ?
+    """
+    params.append(limit)
+    return sql, tuple(params)
+
+
 @lru_cache(maxsize=128)
 def _search_messages_cached(cache_key: SearchCacheKey) -> SearchResult:
     """Internal cached implementation of search_messages.
@@ -173,58 +261,22 @@ def _search_messages_impl(
     source: str | None,
     since: str | None,
 ) -> SearchResult:
+    query_spec = build_ranked_conversation_search_query(
+        query=query,
+        limit=limit,
+        scope_names=[source] if source else None,
+        since=since,
+        include_snippet=True,
+    )
+    if query_spec is None:
+        return SearchResult(hits=[])
+
+    sql, params = query_spec
+
     with open_connection(db_path) as conn:
         exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         if not exists:
             raise DatabaseError("Search index not built. Run `polylogue run` with index enabled.")
-
-        # Escape the query to avoid syntax errors with special characters
-        fts_query = escape_fts5_query(query)
-
-        # We fetch more than the limit to allow for deduplication in Python
-        # since FTS5 doesn't easily support snippet() with GROUP BY.
-        sql_limit = limit * 5
-
-        sql = """
-            SELECT
-                messages_fts.message_id,
-                messages_fts.conversation_id,
-                conversations.provider_name,
-                conversations.provider_meta,
-                conversations.source_name,
-                conversations.title,
-                messages.timestamp,
-                snippet(messages_fts, 2, '[', ']', '…', 12) AS snippet
-            FROM messages_fts
-            JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id
-            JOIN messages ON messages.message_id = messages_fts.message_id
-            WHERE messages_fts MATCH ?
-        """
-        params: list[object] = [fts_query]
-
-        if source:
-            # Case-insensitive comparison for provider_name or source_name
-            sql += (
-                " AND (conversations.provider_name = ? COLLATE NOCASE OR conversations.source_name = ? COLLATE NOCASE)"
-            )
-            params.extend([source, source])
-
-        if since:
-            try:
-                since_dt = datetime.fromisoformat(since)
-            except ValueError as exc:
-                raise ValueError(f"Invalid --since date '{since}': {exc}. Use ISO format (e.g., 2023-01-01)") from exc
-            since_ts = since_dt.timestamp()
-            sql += """
-                AND messages.sort_key >= ?
-            """
-            params.append(since_ts)
-
-        # Sort by rank (relevance)
-        sql += " ORDER BY rank"
-
-        sql += " LIMIT ?"
-        params.append(sql_limit)
 
         try:
             rows = conn.execute(sql, tuple(params)).fetchall()
@@ -232,14 +284,8 @@ def _search_messages_impl(
             raise DatabaseError(f"Invalid search query: {exc}") from exc
 
     hits: list[SearchHit] = []
-    seen_conversations: set[str] = set()
-
     for row in rows:
         cid = row["conversation_id"]
-        if cid in seen_conversations:
-            continue
-
-        seen_conversations.add(cid)
 
         conversation_path = _resolve_conversation_path(
             archive_root,
@@ -261,9 +307,6 @@ def _search_messages_impl(
                 conversation_path=conversation_path,
             )
         )
-
-        if len(hits) >= limit:
-            break
 
     return SearchResult(hits=hits)
 

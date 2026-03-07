@@ -40,6 +40,21 @@ def move_attachment_to_archive(source: Path, dest: Path) -> None:
     shutil.move(str(source), str(dest))
 
 
+def materialize_attachment_path(source: Path, dest: Path) -> None:
+    """Ensure an attachment source is present at the archived destination path.
+
+    If the destination already exists, the duplicate source file is deleted.
+    Otherwise the source is moved into place.
+    """
+    if source == dest:
+        return
+    if dest.exists():
+        if source.exists():
+            source.unlink()
+        return
+    move_attachment_to_archive(source, dest)
+
+
 def _normalize_for_hash(value: Any) -> Any:
     """Normalize a value for hashing, distinguishing None from empty.
 
@@ -82,11 +97,8 @@ def attachment_content_id(
 
     Returns:
         Tuple of (attachment_id, updated_provider_meta, updated_path).
-        The caller is responsible for applying any updates to the attachment.
-        This function does NOT mutate the attachment object.
-
-    Raises:
-        OSError: If attachment file move fails (FileNotFoundError, PermissionError, etc).
+        The caller is responsible for applying any updates or archive materialization.
+        This function does NOT mutate the attachment object or the filesystem.
     """
     meta = dict(attachment.provider_meta or {})
 
@@ -110,14 +122,7 @@ def attachment_content_id(
             digest = hash_file(path)
             meta.setdefault("sha256", digest)
             target = asset_path(archive_root, digest)
-            if target != path:
-                if target.exists():
-                    path.unlink()
-                else:
-                    move_attachment_to_archive(path, target)
-                updated_path = str(target)
-            else:
-                updated_path = str(path)
+            updated_path = str(target if target != path else path)
             return (digest, meta, updated_path)
     seed = attachment_seed(provider_name, attachment)
     return (hash_text(seed), meta, updated_path)
