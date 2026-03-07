@@ -14,6 +14,7 @@ polylogue sources [OPTIONS...]                    # List configured sources
 polylogue dashboard                               # Launch TUI dashboard
 polylogue mcp                                     # MCP server mode
 polylogue check                                   # Health check
+polylogue qa                                      # Snapshot/index QA artifacts
 polylogue auth                                    # OAuth flow (Drive)
 polylogue reset                                   # Reset database/state
 polylogue completions --shell SHELL               # Generate shell completions
@@ -281,6 +282,9 @@ polylogue check --json                    # Machine-readable output
 polylogue check --schemas                 # Raw-corpus schema verification gate
 polylogue check --schemas --schema-provider chatgpt --schema-samples all
 polylogue check --schemas --schema-provider claude-code --schema-record-limit 500 --schema-record-offset 1000
+polylogue qa                              # Snapshot qa_outputs/qa_archive into archive_root
+polylogue qa --source qa_outputs --source qa_archive
+polylogue qa --name nightly --json
 polylogue auth                            # OAuth flow for Google Drive
 polylogue auth --refresh                  # Force token refresh
 polylogue auth --revoke                   # Revoke stored credentials
@@ -291,6 +295,9 @@ polylogue reset --auth                    # Delete OAuth tokens
 polylogue reset --all                     # Reset everything
 polylogue reset --all --yes               # Non-interactive reset
 ```
+
+`polylogue qa` writes snapshots to `<archive_root>/qa/snapshots/<timestamp>-<name>` with
+`manifest.json` (hashes + metadata), `INDEX.md`, and a best-effort `latest` symlink.
 
 ## Global Flags
 

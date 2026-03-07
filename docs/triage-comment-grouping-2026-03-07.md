@@ -114,6 +114,7 @@ Comment:
 3. Normalize or drop policy-risk edits (`.gitignore`, local tool files) intentionally.
 
 ## Additional Unification Candidates
-1. Consolidate provider identity handling for non-schema flows (roles/filtering/reporting) into a shared provider identity module, mirroring the new registry canonicalization for schema flows.
-2. Extract ingest-stage status transitions (`acquired` → `validated` → `parsed`) into a typed state helper to reduce ad-hoc status branching across services.
-3. Add a first-class QA artifact command/workflow to produce indexed run evidence without manual path wrangling.
+Completed on 2026-03-07:
+1. Provider identity handling now consolidated in `polylogue/lib/provider_identity.py`.
+2. Ingest-stage status transitions now enforced by `polylogue/pipeline/services/ingest_state.py`.
+3. First-class QA artifact command added as `polylogue qa`.

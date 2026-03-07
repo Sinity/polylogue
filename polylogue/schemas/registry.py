@@ -22,20 +22,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from polylogue.lib.provider_identity import (
+    canonical_schema_provider as _canonical_schema_provider,
+)
 from polylogue.paths import data_home
 
 # In-package baseline schemas (canonical definition — imported by validator, synthetic)
 SCHEMA_DIR = Path(__file__).parent / "providers"
 
-_SCHEMA_PROVIDER_ALIASES = {
-    "claude": "claude-ai",
-}
-
 
 def canonical_schema_provider(provider: str) -> str:
     """Normalize provider names to canonical schema identifiers."""
-    normalized = provider.strip().lower().replace("_", "-")
-    return _SCHEMA_PROVIDER_ALIASES.get(normalized, normalized)
+    return _canonical_schema_provider(provider, preserve_unknown=True, default=provider)
 
 
 @dataclass

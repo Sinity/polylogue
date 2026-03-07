@@ -8,6 +8,7 @@ from typing import Any
 
 import orjson
 
+from polylogue.lib.provider_identity import canonical_runtime_provider
 from polylogue.sources.source import detect_provider
 
 
@@ -68,8 +69,16 @@ def infer_payload_provider(
     if normalized:
         inferred = detect_provider(payload, Path(normalized))
         if inferred:
-            return inferred
-    return fallback_provider
+            return canonical_runtime_provider(
+                inferred,
+                preserve_unknown=True,
+                default=inferred,
+            )
+    return canonical_runtime_provider(
+        fallback_provider,
+        preserve_unknown=True,
+        default=fallback_provider,
+    )
 
 
 __all__ = ["DecodedPayload", "decode_raw_payload", "infer_payload_provider"]

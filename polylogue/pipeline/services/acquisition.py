@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
+from polylogue.lib.provider_identity import canonical_runtime_provider
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.sources.source import iter_source_raw_data
 from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
@@ -215,7 +216,11 @@ class AcquisitionService:
 
         record = RawConversationRecord(
             raw_id=raw_id,
-            provider_name=raw_data.provider_hint or source_name,
+            provider_name=canonical_runtime_provider(
+                raw_data.provider_hint or source_name,
+                preserve_unknown=True,
+                default=source_name,
+            ),
             source_name=source_name,  # Config source name, distinct from provider
             source_path=raw_data.source_path,
             source_index=raw_data.source_index,
