@@ -240,11 +240,7 @@ class TestCliLatestRenderPath:
 class TestDashboardCommand:
     """Tests for dashboard_command()."""
 
-    @pytest.fixture
-    def runner(self):
-        return CliRunner()
-
-    def test_dashboard_launches_app(self, runner):
+    def test_dashboard_launches_app(self, cli_runner):
         """dashboard_command should create and run PolylogueApp."""
         with patch("polylogue.cli.commands.dashboard.get_config") as mock_get_config, patch(
             "polylogue.ui.tui.app.PolylogueApp"
@@ -254,12 +250,12 @@ class TestDashboardCommand:
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
 
-            result = runner.invoke(click_cli, ["dashboard", "--plain"])
+            result = cli_runner.invoke(click_cli, ["dashboard", "--plain"])
             # May fail or succeed depending on TUI init, but should run
             # Just verify it doesn't error on our mocks
             assert not isinstance(result.exception, AttributeError) or result.exit_code == 0
 
-    def test_dashboard_creates_app_with_config(self, runner):
+    def test_dashboard_creates_app_with_config(self, cli_runner):
         """dashboard_command should pass config to PolylogueApp."""
         with patch("polylogue.cli.commands.dashboard.get_config") as mock_get_config, patch(
             "polylogue.ui.tui.app.PolylogueApp"
@@ -271,13 +267,13 @@ class TestDashboardCommand:
             mock_app_cls.return_value = mock_app
             mock_app.run.side_effect = Exception("Test exit")
 
-            runner.invoke(click_cli, ["dashboard", "--plain"])
+            cli_runner.invoke(click_cli, ["dashboard", "--plain"])
             # If we got to the exception, the command ran and created the app
             # Verify app was created with config
             if mock_app_cls.called:
                 mock_app_cls.assert_called_once_with(config=mock_config)
 
-    def test_dashboard_with_cli_runner(self, runner):
+    def test_dashboard_with_cli_runner(self, cli_runner):
         """dashboard_command via CLI runner."""
         with patch("polylogue.cli.commands.dashboard.get_config") as mock_get_config, patch(
             "polylogue.ui.tui.app.PolylogueApp"
@@ -287,7 +283,7 @@ class TestDashboardCommand:
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
 
-            result = runner.invoke(click_cli, ["dashboard", "--plain"])
+            result = cli_runner.invoke(click_cli, ["dashboard", "--plain"])
             # Should invoke without unknown service error
             assert "Unknown" not in result.output or result.exit_code == 0
 

@@ -251,31 +251,16 @@ class ParsingService:
         """Collect unparsed/unvalidated raw IDs, including newly acquired rows."""
         selected = list(acquired_raw_ids or [])
         seen = set(selected)
-        placeholders = ",".join("?" * len(source_names)) if source_names else ""
-
-        async with backend._get_connection() as conn:
-            if source_names:
-                cursor = await conn.execute(
-                    "SELECT raw_id FROM raw_conversations "
-                    "WHERE parsed_at IS NULL AND validated_at IS NULL "
-                    f"AND (source_name IN ({placeholders}) OR provider_name IN ({placeholders}))",
-                    tuple(source_names + source_names),
-                )
-            else:
-                cursor = await conn.execute(
-                    "SELECT raw_id FROM raw_conversations "
-                    "WHERE parsed_at IS NULL AND validated_at IS NULL"
-                )
-            while True:
-                rows = await cursor.fetchmany(500)
-                if not rows:
-                    break
-                for row in rows:
-                    raw_id = row["raw_id"]
-                    if raw_id in seen:
-                        continue
-                    selected.append(raw_id)
-                    seen.add(raw_id)
+        raw_ids = await backend.list_raw_ids(
+            source_names=source_names,
+            require_unparsed=True,
+            require_unvalidated=True,
+        )
+        for raw_id in raw_ids:
+            if raw_id in seen:
+                continue
+            selected.append(raw_id)
+            seen.add(raw_id)
         return selected
 
     async def _collect_parse_ready_raw_ids(
@@ -288,33 +273,16 @@ class ParsingService:
         """Collect unparsed rows marked passed/skipped, including current pass IDs."""
         selected = list(parseable_raw_ids or [])
         seen = set(selected)
-        placeholders = ",".join("?" * len(source_names)) if source_names else ""
-
-        async with backend._get_connection() as conn:
-            if source_names:
-                cursor = await conn.execute(
-                    "SELECT raw_id FROM raw_conversations "
-                    "WHERE parsed_at IS NULL "
-                    "AND (validation_status = 'passed' OR validation_status = 'skipped') "
-                    f"AND (source_name IN ({placeholders}) OR provider_name IN ({placeholders}))",
-                    tuple(source_names + source_names),
-                )
-            else:
-                cursor = await conn.execute(
-                    "SELECT raw_id FROM raw_conversations "
-                    "WHERE parsed_at IS NULL "
-                    "AND (validation_status = 'passed' OR validation_status = 'skipped')"
-                )
-            while True:
-                rows = await cursor.fetchmany(500)
-                if not rows:
-                    break
-                for row in rows:
-                    raw_id = row["raw_id"]
-                    if raw_id in seen:
-                        continue
-                    selected.append(raw_id)
-                    seen.add(raw_id)
+        raw_ids = await backend.list_raw_ids(
+            source_names=source_names,
+            require_unparsed=True,
+            validation_statuses=["passed", "skipped"],
+        )
+        for raw_id in raw_ids:
+            if raw_id in seen:
+                continue
+            selected.append(raw_id)
+            seen.add(raw_id)
         return selected
 
     async def sync_drive_sources(

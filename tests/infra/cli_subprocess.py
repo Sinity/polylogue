@@ -68,15 +68,16 @@ def run_cli(
     if env:
         clean_env.update(env)
 
-    # Run from the project root to ensure uv finds the project
+    # Point uv at the project root explicitly so tests can still exercise
+    # arbitrary working directories via `cwd`.
     project_root = Path(__file__).parent.parent.parent
 
     result = subprocess.run(
-        ["uv", "run", "polylogue"] + args,
+        ["uv", "run", "--project", str(project_root), "polylogue"] + args,
         capture_output=True,
         text=True,
         env=clean_env,
-        cwd=project_root,  # Always run from project root for uv
+        cwd=cwd or project_root,
         timeout=timeout,
     )
 
