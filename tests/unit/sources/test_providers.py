@@ -163,21 +163,24 @@ class TestParseJsonPayload:
     """Test JSON payload parsing with provider branching."""
 
     @pytest.mark.parametrize(
-        "provider,payload,expect_results",
+        "provider,payload,expected_count",
         [
             # Provider-specific list/dict branching
-            ("chatgpt", {"mapping": {"root": {}}, "title": "Test"}, True),
-            ("claude", {"chat_messages": []}, True),
-            ("claude-code", [{"type": "user"}, {"type": "assistant"}], True),
-            ("claude-code", {"messages": [{"type": "user"}]}, True),  # dict with messages
-            ("codex", [{"prompt": "test", "completion": "result"}], True),
-            ("codex", {"prompt": "test", "completion": "result"}, True),  # dict wrapped
-            ("gemini", [{"role": "user", "text": "Hello"}], True),
-            ("drive", [{"chunks": [{"role": "user"}]}, {"chunks": [{"role": "assistant"}]}], True),
-            ("chatgpt", {"conversations": [{"mapping": {}}, {"mapping": {}}]}, True),
-            ("unknown", {"id": "msg-conv", "messages": [{"role": "user"}]}, True),
-            ("claude-code", [], True),  # empty list
-            ("unknown", {"some": "data"}, True),  # fallback generic dict
+            ("chatgpt", {"mapping": {"root": {}}, "title": "Test"}, 1),
+            ("chatgpt", [{"mapping": {}}, {"mapping": {}}], 2),
+            ("claude", {"chat_messages": []}, 1),
+            ("claude", [{"chat_messages": []}], 1),
+            ("claude-code", [{"type": "user"}, {"type": "assistant"}], 1),
+            ("claude-code", {"messages": [{"type": "user"}]}, 1),
+            ("codex", [{"prompt": "test", "completion": "result"}], 1),
+            ("codex", {"prompt": "test", "completion": "result"}, 1),
+            ("gemini", [{"role": "user", "text": "Hello"}], 1),
+            ("gemini", [{"chunkedPrompt": {"chunks": [{"role": "user", "text": "Hello"}]}}], 1),
+            ("drive", [{"chunks": [{"role": "user"}]}, {"chunks": [{"role": "assistant"}]}], 2),
+            ("chatgpt", {"conversations": [{"mapping": {}}, {"mapping": {}}]}, 2),
+            ("unknown", {"id": "msg-conv", "messages": [{"role": "user"}]}, 1),
+            ("claude-code", [], 1),
+            ("unknown", {"some": "data"}, 0),
         ],
         ids=[
             "chatgpt_dict",
@@ -187,6 +190,7 @@ class TestParseJsonPayload:
             "codex_list",
             "codex_dict_wrapped",
             "gemini_list",
+            "gemini_grouped_conversations",
             "drive_list_conversations",
             "conversations_array",
             "unknown_messages_array",
@@ -194,11 +198,11 @@ class TestParseJsonPayload:
             "unknown_generic",
         ],
     )
-    def test_parse_json_payload_variants(self, provider, payload, expect_results):
+    def test_parse_json_payload_variants(self, provider, payload, expected_count):
         """Test _parse_json_payload with various provider/payload combos."""
         results = _parse_json_payload(provider, payload, "test-id")
-        assert expect_results
-        if results:
+        assert len(results) == expected_count
+        if expected_count:
             assert results[0].provider_name == provider or provider == "unknown"
 
     def test_parse_recursion_depth_exceeded(self):

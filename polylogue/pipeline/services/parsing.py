@@ -185,9 +185,98 @@ class ParsingService:
                 raw_ids=all_raw_ids,
                 progress_callback=progress_callback,
             )
-        else:
-            # Nothing to process
-            return ParseResult()
+        ingest_state.record_validation_result(
+            validation_result.parseable_raw_ids if validation_result else [],
+        )
+
+        parse_raw_ids: list[str] = []
+        parse_result = ParseResult()
+        if parse_records:
+            parse_raw_ids = await self._collect_parse_ready_raw_ids(
+                backend=backend,
+                source_names=source_names,
+                parseable_raw_ids=(validation_result.parseable_raw_ids if validation_result else None),
+            )
+            current_validation_ids = set(ingest_state.validation_raw_ids)
+            persisted_validated_ids = [
+                raw_id
+                for raw_id in parse_raw_ids
+                if raw_id not in current_validation_ids
+            ]
+            ingest_state.record_parse_candidates(
+                parse_raw_ids,
+                persisted_validated_raw_ids=persisted_validated_ids,
+            )
+            if parse_raw_ids:
+                parse_result = await self.parse_from_raw(
+                    raw_ids=parse_raw_ids,
+                    progress_callback=progress_callback,
+                )
+            ingest_state.record_parse_completed()
+            parse_raw_ids = ingest_state.parse_raw_ids
+
+        return IngestResult(
+            acquire_result=acquire_result,
+            validation_result=validation_result,
+            parse_result=parse_result,
+            parse_raw_ids=parse_raw_ids,
+        )
+
+    async def _collect_pending_validation_raw_ids(
+        self,
+        *,
+        backend: Any,
+        source_names: list[str] | None,
+        acquired_raw_ids: list[str] | None,
+    ) -> list[str]:
+        """Collect unparsed/unvalidated raw IDs, including newly acquired rows."""
+        selected = list(acquired_raw_ids or [])
+        seen = set(selected)
+        raw_ids = await backend.list_raw_ids(
+            source_names=source_names,
+            require_unparsed=True,
+            require_unvalidated=True,
+        )
+        for raw_id in raw_ids:
+            if raw_id in seen:
+                continue
+            selected.append(raw_id)
+            seen.add(raw_id)
+        return selected
+
+    async def _collect_parse_ready_raw_ids(
+        self,
+        *,
+        backend: Any,
+        source_names: list[str] | None,
+        parseable_raw_ids: list[str] | None,
+    ) -> list[str]:
+        """Collect unparsed rows marked passed/skipped, including current pass IDs."""
+        selected = list(parseable_raw_ids or [])
+        seen = set(selected)
+        raw_ids = await backend.list_raw_ids(
+            source_names=source_names,
+            require_unparsed=True,
+            validation_statuses=["passed", "skipped"],
+        )
+        for raw_id in raw_ids:
+            if raw_id in seen:
+                continue
+            selected.append(raw_id)
+            seen.add(raw_id)
+        return selected
+
+    async def sync_drive_sources(
+        self,
+        sources: list[Source],
+        *,
+        progress_callback: Any | None = None,
+    ) -> None:
+        """Public wrapper for Drive source synchronization.
+
+        Runner orchestration uses this to keep Drive prefetching in one place.
+        """
+        await self._sync_drive_sources(sources, progress_callback=progress_callback)
 
     # Batch size for processing raw records to limit memory usage.
     # Each raw record may contain multi-MB JSONL content; loading thousands

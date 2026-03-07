@@ -22,7 +22,11 @@ import aiosqlite
 import polylogue.paths as _paths
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.log import get_logger
-from polylogue.storage.backends.connection import DB_TIMEOUT, _build_conversation_filters
+from polylogue.storage.backends.connection import (
+    DB_TIMEOUT,
+    _build_conversation_filters,
+    _build_source_scope_filter,
+)
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
@@ -1115,6 +1119,67 @@ class SQLiteBackend:
             row = await cursor.fetchone()
             return row["last"] if row and row["last"] else None
 
+    async def list_conversation_ids(
+        self,
+        *,
+        source_names: list[str] | None = None,
+    ) -> list[str]:
+        """List conversation IDs, optionally scoped to source names or legacy provider names."""
+        predicate, params = _build_source_scope_filter(
+            source_names,
+            provider_column="provider_name",
+            source_column="source_name",
+        )
+        sql = "SELECT conversation_id FROM conversations"
+        if predicate:
+            sql += f" WHERE {predicate}"
+
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(sql, tuple(params))
+            rows = await cursor.fetchall()
+
+        return [str(row["conversation_id"]) for row in rows]
+
+    async def list_raw_ids(
+        self,
+        *,
+        source_names: list[str] | None = None,
+        require_unparsed: bool = False,
+        require_unvalidated: bool = False,
+        validation_statuses: list[str] | None = None,
+    ) -> list[str]:
+        """List raw conversation IDs for a pipeline state slice."""
+        where_clauses: list[str] = []
+        params: list[str] = []
+
+        if require_unparsed:
+            where_clauses.append("parsed_at IS NULL")
+        if require_unvalidated:
+            where_clauses.append("validated_at IS NULL")
+        if validation_statuses:
+            placeholders = ",".join("?" for _ in validation_statuses)
+            where_clauses.append(f"validation_status IN ({placeholders})")
+            params.extend(validation_statuses)
+
+        predicate, scope_params = _build_source_scope_filter(
+            source_names,
+            provider_column="provider_name",
+            source_column="source_name",
+        )
+        if predicate:
+            where_clauses.append(predicate)
+            params.extend(scope_params)
+
+        sql = "SELECT raw_id FROM raw_conversations"
+        if where_clauses:
+            sql += f" WHERE {' AND '.join(where_clauses)}"
+
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(sql, tuple(params))
+            rows = await cursor.fetchall()
+
+        return [str(row["raw_id"]) for row in rows]
+
     async def search_conversations(
         self, query: str, limit: int = 100, providers: list[str] | None = None
     ) -> list[str]:
@@ -1151,10 +1216,14 @@ class SQLiteBackend:
                 return []
 
             if providers:
-                placeholders = ",".join("?" for _ in providers)
                 from_clause = "messages_fts JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id"
-                provider_filter = f" AND (conversations.provider_name IN ({placeholders}) OR conversations.source_name IN ({placeholders}))"
-                params: tuple[Any, ...] = (fts_query, *providers, *providers, limit)
+                provider_filter_sql, provider_filter_params = _build_source_scope_filter(
+                    providers,
+                    provider_column="conversations.provider_name",
+                    source_column="conversations.source_name",
+                )
+                provider_filter = f" AND {provider_filter_sql}"
+                params: tuple[Any, ...] = (fts_query, *provider_filter_params, limit)
             else:
                 from_clause = "messages_fts"
                 provider_filter = ""

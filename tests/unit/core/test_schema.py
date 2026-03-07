@@ -83,6 +83,154 @@ def test_validate_detects_drift(mock_path_attr, mock_schema_dir):
         assert "extra" in result.drift_warnings[0]
 
 
+@patch("polylogue.schemas.registry.SCHEMA_DIR")
+def test_provider_alias_maps_claude_to_claude_ai(mock_path_attr, mock_schema_dir):
+    """Provider alias `claude` should resolve to the `claude-ai` schema."""
+    alias_schema = {
+        "type": "object",
+        "properties": {"uuid": {"type": "string"}},
+        "required": ["uuid"],
+        "additionalProperties": False,
+    }
+    (mock_schema_dir / "claude-ai.schema.json").write_text(json.dumps(alias_schema), encoding="utf-8")
+
+    with patch("polylogue.schemas.registry.SCHEMA_DIR", mock_schema_dir):
+        SchemaValidator._cache.clear()
+        validator = SchemaValidator.for_provider("claude")
+        assert validator.provider == "claude-ai"
+        assert "uuid" in validator.schema["properties"]
+
+
+def test_validation_samples_stratify_record_payloads():
+    """Record payload sampling should preserve heterogeneous record variants."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "x-polylogue-sample-granularity": "record",
+            "properties": {"type": {"type": "string"}},
+        },
+        provider="codex",
+    )
+
+    payload: list[dict[str, Any]] = (
+        [{"type": "session_meta"} for _ in range(12)]
+        + [{"type": "response_item"} for _ in range(12)]
+        + [{"record_type": "state"} for _ in range(12)]
+    )
+
+    samples = validator.validation_samples(payload, max_samples=6)
+    signatures = {
+        f"type:{item['type']}" if "type" in item else f"record_type:{item['record_type']}"
+        for item in samples
+    }
+
+    assert len(samples) == 6
+    assert "type:session_meta" in signatures
+    assert "type:response_item" in signatures
+    assert "record_type:state" in signatures
+
+
+def test_validation_samples_all_mode_returns_all_record_dicts():
+    """`max_samples=None` should validate all record dicts for record payloads."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "x-polylogue-sample-granularity": "record",
+            "properties": {"type": {"type": "string"}},
+        },
+        provider="codex",
+    )
+
+    payload: list[dict[str, Any]] = [{"type": "a"}, {"type": "b"}, {"type": "c"}]
+    samples = validator.validation_samples(payload, max_samples=None)
+    assert samples == payload
+
+
+def test_validation_samples_record_mode_skips_non_record_documents():
+    """Record-mode validation should skip non-record dict payloads."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "x-polylogue-sample-granularity": "record",
+            "properties": {"type": {"type": "string"}},
+        },
+        provider="claude-code",
+    )
+
+    payload = {"version": 1, "entries": []}
+    samples = validator.validation_samples(payload, max_samples=16)
+    assert samples == []
+
+
+def test_validation_samples_document_lists_validate_all_dicts_up_to_limit():
+    """Document-mode list payloads should validate each dict sample, not just the first."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+        },
+        provider="chatgpt",
+    )
+
+    payload: list[dict[str, str]] = [
+        {"id": "doc-1"},
+        {"id": "doc-2"},
+        {"id": "doc-3"},
+    ]
+
+    assert validator.validation_samples(payload, max_samples=2) == payload[:2]
+    assert validator.validation_samples(payload, max_samples=None) == payload
+
+
+def test_schema_validator_prefers_registry_latest(monkeypatch):
+    """Validator should use latest versioned schema when available."""
+    fake_schema = {
+        "type": "object",
+        "properties": {"from_registry": {"type": "string"}},
+        "additionalProperties": False,
+    }
+
+    class _FakeRegistry:
+        def get_schema(self, provider: str, version: str = "latest"):
+            if provider == "chatgpt" and version == "latest":
+                return fake_schema
+            return None
+
+    monkeypatch.setattr("polylogue.schemas.validator.SchemaRegistry", _FakeRegistry)
+    SchemaValidator._cache.clear()
+    validator = SchemaValidator.for_provider("chatgpt")
+    assert "from_registry" in validator.schema["properties"]
+
+
+def test_dynamic_key_maps_do_not_emit_drift_warnings():
+    """Schemas marked as dynamic-key containers should not emit key-level drift."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {
+                "mapping": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": {"type": "object"},
+                    "x-polylogue-dynamic-keys": True,
+                }
+            },
+            "additionalProperties": False,
+        },
+        strict=True,
+    )
+
+    data = {
+        "mapping": {
+            "550e8400-e29b-41d4-a716-446655440000": {"id": "node-1"},
+            "660f9511-f3ac-52e5-b827-557766551111": {"id": "node-2"},
+        }
+    }
+    result = validator.validate(data)
+    assert result.is_valid
+    assert not result.has_drift
+
+
 def test_available_providers(mock_schema_dir):
     """available_providers lists schema files."""
     with patch("polylogue.schemas.validator.SCHEMA_DIR", mock_schema_dir):

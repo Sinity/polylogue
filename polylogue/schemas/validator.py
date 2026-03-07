@@ -152,6 +152,111 @@ class SchemaValidator:
             drift_warnings=drift_warnings,
         )
 
+    def validation_samples(self, payload: Any, *, max_samples: int | None = 16) -> list[dict[str, Any]]:
+        """Extract representative objects from a payload for validation.
+
+        For record-oriented providers (JSONL), this returns a stratified subset of
+        record dicts. For document-oriented providers, this returns the top-level
+        payload object.
+        """
+        if not isinstance(payload, (dict, list)):
+            return []
+
+        granularity = self.schema.get("x-polylogue-sample-granularity")
+        if not isinstance(granularity, str):
+            granularity = "record" if self.provider in _RECORD_VALIDATION_PROVIDERS else "document"
+
+        if granularity != "record":
+            if isinstance(payload, dict):
+                return [payload]
+            documents = [item for item in payload if isinstance(item, dict)]
+            if max_samples is None:
+                return documents
+            if max_samples <= 0:
+                return []
+            return documents[:max_samples]
+
+        def _is_record_candidate(item: dict[str, Any]) -> bool:
+            if any(key in item for key in _RECORD_CANDIDATE_KEYS):
+                return True
+            payload_obj = item.get("payload")
+            return isinstance(payload_obj, dict)
+
+        if isinstance(payload, dict):
+            return [payload] if _is_record_candidate(payload) else []
+
+        def _signature(item: dict[str, Any]) -> str:
+            for key in ("type", "record_type"):
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    return f"{key}:{value}"
+            payload_obj = item.get("payload")
+            if isinstance(payload_obj, dict):
+                value = payload_obj.get("type")
+                if isinstance(value, str) and value:
+                    return f"payload.type:{value}"
+            return "unknown"
+
+        if max_samples is None:
+            return [
+                item for item in payload
+                if isinstance(item, dict) and _is_record_candidate(item)
+            ]
+
+        if max_samples <= 0:
+            return []
+
+        # Fast path for sampled mode: scan at most a bounded number of records
+        # and keep a small per-signature reservoir, avoiding full-list scans
+        # on massive JSONL payloads.
+        scan_cap = max(1024, max_samples * 64)
+        per_bucket_cap = 8
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        head_items: list[dict[str, Any]] = []
+        dict_count = 0
+        truncated = False
+        for item in payload:
+            if not isinstance(item, dict) or not _is_record_candidate(item):
+                continue
+            dict_count += 1
+            if dict_count <= max_samples:
+                head_items.append(item)
+            sig = _signature(item)
+            bucket = buckets.setdefault(sig, [])
+            if len(bucket) < per_bucket_cap:
+                bucket.append(item)
+            if dict_count >= scan_cap:
+                truncated = True
+                break
+
+        if dict_count == 0:
+            return []
+        if not truncated and dict_count <= max_samples:
+            return head_items
+
+        ordered_keys = sorted(buckets, key=lambda k: len(buckets[k]), reverse=True)
+        selected: list[dict[str, Any]] = []
+
+        for key in ordered_keys:
+            if len(selected) >= max_samples:
+                break
+            selected.append(buckets[key].pop(0))
+
+        while len(selected) < max_samples:
+            progressed = False
+            for key in ordered_keys:
+                bucket = buckets[key]
+                if not bucket:
+                    continue
+                selected.append(bucket.pop(0))
+                progressed = True
+                if len(selected) >= max_samples:
+                    break
+            if not progressed:
+                break
+
+        return selected
+
     def _format_error(self, error: ValidationError) -> str:
         """Format a validation error for display."""
         path = ".".join(str(p) for p in error.absolute_path) or "root"

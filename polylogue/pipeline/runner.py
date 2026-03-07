@@ -111,51 +111,9 @@ async def _all_conversation_ids(backend: Any, source_names: Sequence[str] | None
     Returns:
         List of conversation IDs
     """
-    chunk_size = 500
-    selected: list[str] = []
-
-    async with backend._get_connection() as conn:
-        # Skip provider_meta if no filtering needed
-        if not source_names:
-            cursor = await conn.execute("SELECT conversation_id FROM conversations")
-            while True:
-                rows = await cursor.fetchmany(chunk_size)
-                if not rows:
-                    break
-                selected.extend(row["conversation_id"] for row in rows)
-            return selected
-
-        name_set = set(source_names)
-        cursor = await conn.execute(
-            "SELECT conversation_id, provider_name, provider_meta FROM conversations"
-        )
-        while True:
-            rows = await cursor.fetchmany(chunk_size)
-            if not rows:
-                break
-            for row in rows:
-                if row["provider_name"] in name_set:
-                    selected.append(row["conversation_id"])
-                    continue
-
-                meta = row["provider_meta"]
-                if not meta:
-                    continue
-
-                try:
-                    payload = loads(meta)
-                except (ValueError, TypeError):
-                    logger.warning(
-                        "Skipping conversation with invalid provider_meta JSON",
-                        conversation_id=row["conversation_id"],
-                        provider=row["provider_name"],
-                    )
-                    continue
-
-                if isinstance(payload, dict) and payload.get("source") in name_set:
-                    selected.append(row["conversation_id"])
-
-    return selected
+    return await backend.list_conversation_ids(
+        source_names=list(source_names) if source_names is not None else None
+    )
 
 
 def _write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
