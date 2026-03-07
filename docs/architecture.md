@@ -245,7 +245,7 @@ polylogue/
 │   └── server.py            # Model Context Protocol implementation
 │
 ├── config.py                 # Configuration (Config, IndexConfig, DriveConfig)
-├── services.py               # Singleton factories: get_backend(), get_repository()
+├── services.py               # Invocation-scoped runtime service container
 ├── facade.py                 # Polylogue — async-first library API
 ├── paths.py                  # XDG path resolution
 ├── protocols.py              # SearchProvider protocol

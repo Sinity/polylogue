@@ -488,6 +488,14 @@ class ConversationRepository:
             return None
         return await self._backend.get_conversation_stats(conversation_id)
 
+    async def get_message_counts_batch(self, conversation_ids: builtins.list[str]) -> dict[str, int]:
+        """Get message counts for multiple conversations."""
+        return await self._backend.get_message_counts_batch(conversation_ids)
+
+    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
+        """Get conversation counts grouped by provider, month, or year."""
+        return await self._backend.get_stats_by(group_by)
+
     async def iter_messages(
         self,
         conversation_id: str,

@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from polylogue.lib.models import Conversation, Message
 from tests.integration.conftest import make_mock_filter
+
+
+def _invoke_surface(fn, /, *args, **kwargs):
+    """Call an MCP surface whether it is sync or async."""
+    result = fn(*args, **kwargs)
+    if asyncio.iscoroutine(result):
+        return asyncio.run(result)
+    return result
+
+
+async def _invoke_surface_async(fn, /, *args, **kwargs):
+    """Await an MCP surface from async tests."""
+    result = fn(*args, **kwargs)
+    if asyncio.iscoroutine(result):
+        return await result
+    return result
 
 # =============================================================================
 # Test data tables (SCREAMING_CASE constants)
@@ -90,15 +107,15 @@ class TestStatsResource:
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.get_archive_stats.return_value = ArchiveStats(
+            mock_repo.get_archive_stats = AsyncMock(return_value=ArchiveStats(
                 total_conversations=2,
                 total_messages=4,
                 providers={"chatgpt": 2},
-            )
+            ))
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._resource_manager._resources["polylogue://stats"].fn()
+            result = _invoke_surface(server._resource_manager._resources["polylogue://stats"].fn)
 
             stats = json.loads(result)
             assert stats["total_conversations"] == 2
@@ -122,7 +139,7 @@ class TestConversationsResource:
                 MockFilter.return_value = make_mock_filter(results=[simple_conversation])
 
                 server = _build_server()
-                result = await server._resource_manager._resources["polylogue://conversations"].fn()
+                result = await _invoke_surface_async(server._resource_manager._resources["polylogue://conversations"].fn)
 
                 convs = json.loads(result)
                 assert len(convs) == 1
@@ -137,11 +154,14 @@ class TestConversationResource:
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.get.return_value = simple_conversation
+            mock_repo.get = AsyncMock(return_value=simple_conversation)
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn(conv_id="test:conv-123")
+            result = _invoke_surface(
+                server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
+                conv_id="test:conv-123",
+            )
 
             conv = json.loads(result)
             assert conv["id"] == "test:conv-123"
@@ -153,11 +173,14 @@ class TestConversationResource:
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.get.return_value = None
+            mock_repo.get = AsyncMock(return_value=None)
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn(conv_id="nonexistent")
+            result = _invoke_surface(
+                server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
+                conv_id="nonexistent",
+            )
 
             result_dict = json.loads(result)
             assert "error" in result_dict

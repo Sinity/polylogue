@@ -27,11 +27,10 @@ class Search(Container):
         self._repository = repository
 
     def _get_repo(self) -> ConversationRepository:
-        """Get the repository, falling back to the service singleton."""
-        if self._repository is not None:
-            return self._repository
-        from polylogue.services import get_repository
-        return get_repository()
+        """Get the injected repository."""
+        if self._repository is None:
+            raise RuntimeError("Search widget requires an injected repository")
+        return self._repository
 
     def compose(self) -> ComposeResult:
         with Vertical():

@@ -90,7 +90,6 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     """
     from polylogue.cli.helpers import fail, load_effective_config
     from polylogue.config import ConfigError
-    from polylogue.services import get_repository
     from polylogue.storage.search_providers import create_vector_provider
 
     # Load config
@@ -99,7 +98,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     except ConfigError as exc:
         fail("query", str(exc))
 
-    repo = get_repository()
+    repo = env.repository
 
     # Get vector provider (may be None if not configured)
     vector_provider = None
@@ -290,14 +289,14 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     # Handle modifiers (write operations)
     if params.get("set_meta") or params.get("add_tag"):
-        await _apply_modifiers(env, results, params)
+        await _apply_modifiers(env, results, params, repo)
         return
 
     if params.get("delete_matched"):
         if not _describe_filters(params):
             click.echo("Error: --delete requires at least one filter to prevent accidental deletion of the entire archive.", err=True)
             raise SystemExit(1)
-        await _delete_conversations(env, results, params)
+        await _delete_conversations(env, results, params, repo)
         return
 
     # Apply transforms
@@ -330,10 +329,10 @@ async def _apply_modifiers(
     env: AppEnv,
     results: list[Conversation],
     params: dict[str, Any],
+    repo: ConversationRepository | None = None,
 ) -> None:
     """Apply metadata modifiers to matched conversations."""
-    from polylogue.services import get_repository
-
+    repo = repo or env.repository
     if not results:
         env.ui.console.print("No conversations matched.")
         return
@@ -370,9 +369,6 @@ async def _apply_modifiers(
             env.ui.console.print("Aborted.")
             return
 
-    # Load repository
-    repo = get_repository()
-
     # Track counts for reporting
     tags_added = 0
     meta_set = 0
@@ -405,12 +401,12 @@ async def _delete_conversations(
     env: AppEnv,
     results: list[Conversation],
     params: dict[str, Any],
+    repo: ConversationRepository | None = None,
 ) -> None:
     """Delete matched conversations."""
     from collections import Counter
 
-    from polylogue.services import get_repository
-
+    repo = repo or env.repository
     if not results:
         env.ui.console.print("No conversations matched.")
         return
@@ -467,9 +463,6 @@ async def _delete_conversations(
         if not env.ui.confirm("Proceed?", default=False):
             env.ui.console.print("Aborted.")
             return
-
-    # Load repository
-    repo = get_repository()
 
     deleted_count = 0
     for conv in results:
@@ -719,7 +712,7 @@ async def _output_summary_list(
     msg_counts: dict[str, int] = {}
     if repo:
         ids = [str(s.id) for s in summaries]
-        msg_counts = await repo.backend.get_message_counts_batch(ids)
+        msg_counts = await repo.get_message_counts_batch(ids)
 
     fields = params.get("fields")
     selected: set[str] | None = None
@@ -946,7 +939,7 @@ async def stream_conversation(
         Number of messages streamed
     """
     # Get conversation metadata for header
-    conv_record = await repo.backend.get_conversation(conversation_id)
+    conv_record = await repo.get_conversation(conversation_id)
     if not conv_record:
         click.echo(f"Conversation not found: {conversation_id}", err=True)
         raise SystemExit(1)

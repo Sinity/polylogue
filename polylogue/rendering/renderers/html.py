@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -15,8 +14,8 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.util import ClassNotFound
 
-from polylogue.assets import asset_path
 from polylogue.render_paths import render_root
+from polylogue.rendering.core import render_markdown_document
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
@@ -296,7 +295,7 @@ class HTMLRenderer:
         """
         backend = self._get_backend()
 
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             # Conversation metadata
             cursor = await conn.execute(
                 "SELECT conversation_id, title, provider_name, created_at, updated_at "
@@ -443,77 +442,15 @@ class HTMLRenderer:
         messages: list[dict[str, Any]],
         attachments_by_message: dict[str | None, list[dict[str, Any]]],
     ) -> str:
-        """Format conversation data to markdown text.
-
-        Inline implementation avoids depending on ConversationFormatter's
-        DB-coupled format() method, enabling fully-offline rendering in
-        thread pool workers.
-        """
-        def _format_text(text: str) -> str:
-            if not text:
-                return ""
-            stripped = text.strip()
-            if (stripped.startswith("{") and stripped.endswith("}")) or (
-                stripped.startswith("[") and stripped.endswith("]")
-            ):
-                try:
-                    parsed = json.loads(stripped)
-                    return f"```json\n{json.dumps(parsed, indent=2)}\n```"
-                except json.JSONDecodeError:
-                    pass
-            return text
-
-        def _append_attachment(att: dict[str, Any], lines: list[str]) -> None:
-            name = None
-            meta = att.get("provider_meta")
-            if meta:
-                try:
-                    meta_dict = json.loads(meta)
-                    name = meta_dict.get("name") or meta_dict.get("provider_id") or meta_dict.get("drive_id")
-                except (json.JSONDecodeError, TypeError):
-                    name = None
-            label = name or att["attachment_id"]
-            path_value = att.get("path") or str(asset_path(self.archive_root, att["attachment_id"]))
-            lines.append(f"- Attachment: {label} ({path_value})")
-
-        lines = [f"# {title}", "", f"Provider: {provider}", f"Conversation ID: {conversation_id}", ""]
-        message_ids = set()
-
-        for msg in messages:
-            message_ids.add(msg["message_id"])
-            role = msg["role"] or "message"
-            text = msg["text"] or ""
-            timestamp = msg["timestamp"]
-            msg_atts = attachments_by_message.get(msg["message_id"], [])
-
-            if not text.strip() and not msg_atts:
-                continue
-
-            lines.append(f"## {role}")
-            if timestamp:
-                lines.append(f"_Timestamp: {timestamp}_")
-            lines.append("")
-
-            formatted_text = _format_text(text)
-            if formatted_text:
-                lines.append(formatted_text)
-                lines.append("")
-
-            for att in msg_atts:
-                _append_attachment(att, lines)
-            lines.append("")
-
-        # Orphaned attachments
-        orphan_keys = [key for key in attachments_by_message if key not in message_ids]
-        if orphan_keys:
-            lines.append("## attachments")
-            lines.append("")
-            for key in sorted(orphan_keys, key=lambda item: (item is None, str(item) if item else "")):
-                for att in attachments_by_message.get(key, []):
-                    _append_attachment(att, lines)
-            lines.append("")
-
-        return "\n".join(lines).strip() + "\n"
+        """Format conversation data to canonical markdown."""
+        return render_markdown_document(
+            title=title,
+            provider=provider,
+            conversation_id=conversation_id,
+            messages=messages,
+            attachments_by_message=attachments_by_message,
+            archive_root=self.archive_root,
+        )
 
     async def render(self, conversation_id: str, output_path: Path) -> Path:
         """Render a conversation to enhanced HTML format.
