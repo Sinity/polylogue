@@ -4,11 +4,28 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import click
 
 from polylogue.cli.types import AppEnv
+
+
+@contextmanager
+def _temporary_env(updates: dict[str, str]) -> Iterator[None]:
+    """Temporarily set environment variables and restore previous values on exit."""
+    previous = {key: os.environ.get(key) for key in updates}
+    os.environ.update(updates)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 @click.command("demo")
@@ -198,11 +215,13 @@ def _do_seed(
     for d in [data_home, state_home, archive_root, render_root]:
         d.mkdir(parents=True, exist_ok=True)
 
-    os.environ["XDG_DATA_HOME"] = str(data_home)
-    os.environ["XDG_STATE_HOME"] = str(state_home)
-    os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
-    os.environ["POLYLOGUE_RENDER_ROOT"] = str(render_root)
-    os.environ["POLYLOGUE_FORCE_PLAIN"] = "1"
+    env_vars = {
+        "XDG_DATA_HOME": str(data_home),
+        "XDG_STATE_HOME": str(state_home),
+        "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
+        "POLYLOGUE_RENDER_ROOT": str(render_root),
+        "POLYLOGUE_FORCE_PLAIN": "1",
+    }
 
     sources: list[Source] = []
     for provider in providers:
@@ -221,27 +240,20 @@ def _do_seed(
 
         sources.append(Source(name=provider, path=provider_dir))
 
-    config = Config(
-        archive_root=archive_root,
-        render_root=render_root,
-        sources=sources,
-    )
+    with _temporary_env(env_vars):
+        config = Config(
+            archive_root=archive_root,
+            render_root=render_root,
+            sources=sources,
+        )
 
-    result = asyncio.run(run_sources(
-        config=config,
-        stage="all",
-        plan=None,
-        ui=None,
-        source_names=None,
-    ))
-
-    env_vars = {
-        "XDG_DATA_HOME": str(data_home),
-        "XDG_STATE_HOME": str(state_home),
-        "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-        "POLYLOGUE_RENDER_ROOT": str(render_root),
-        "POLYLOGUE_FORCE_PLAIN": "1",
-    }
+        result = asyncio.run(run_sources(
+            config=config,
+            stage="all",
+            plan=None,
+            ui=None,
+            source_names=None,
+        ))
 
     if env_only:
         for key, value in env_vars.items():

@@ -175,9 +175,12 @@ class SchemaValidator:
         if granularity != "record":
             if isinstance(payload, dict):
                 return [payload]
-            # Document-like payloads in list form are rare; validate the first dict.
-            first_dict = next((item for item in payload if isinstance(item, dict)), None)
-            return [first_dict] if isinstance(first_dict, dict) else []
+            documents = [item for item in payload if isinstance(item, dict)]
+            if max_samples is None:
+                return documents
+            if max_samples <= 0:
+                return []
+            return documents[:max_samples]
 
         def _is_record_candidate(item: dict[str, Any]) -> bool:
             if any(key in item for key in _RECORD_CANDIDATE_KEYS):
