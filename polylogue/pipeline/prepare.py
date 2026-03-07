@@ -26,8 +26,8 @@ from polylogue.storage.store import AttachmentRecord, ConversationRecord, Existi
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
 if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 

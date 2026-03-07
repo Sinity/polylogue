@@ -10,10 +10,9 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+from polylogue.errors import DatabaseError
 from polylogue.lib.log import get_logger
 from polylogue.render_paths import render_root
-
-from polylogue.errors import DatabaseError
 
 from .backends.connection import _build_source_scope_filter, open_connection
 from .search_cache import SearchCacheKey

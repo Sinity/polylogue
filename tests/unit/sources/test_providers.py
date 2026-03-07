@@ -36,10 +36,10 @@ from polylogue.sources.source import (
     MAX_UNCOMPRESSED_SIZE,
     _decode_json_bytes,
     _iter_json_stream,
-    parse_payload,
     detect_provider,
     iter_source_conversations,
     iter_source_conversations_with_raw,
+    parse_payload,
 )
 
 # =============================================================================

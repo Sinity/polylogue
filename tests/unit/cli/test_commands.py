@@ -22,7 +22,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from click.testing import CliRunner
 
 from polylogue.cli import helpers
 from polylogue.cli.click_app import cli as click_cli

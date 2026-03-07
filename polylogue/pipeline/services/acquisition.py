@@ -10,10 +10,9 @@ Data flow:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-import hashlib
-import sqlite3
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 

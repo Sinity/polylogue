@@ -15,7 +15,6 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
 import aiosqlite
 
@@ -263,12 +262,12 @@ class SQLiteBackend:
         """
         import sqlite3
 
+        from polylogue.storage.backends.connection import _load_sqlite_vec
         from polylogue.storage.backends.schema import (
             _VEC0_DDL,
             SCHEMA_DDL,
             SCHEMA_VERSION,
         )
-        from polylogue.storage.backends.connection import _load_sqlite_vec
         from polylogue.storage.backends.schema import (
             _ensure_schema as _sync_ensure_schema,
         )
