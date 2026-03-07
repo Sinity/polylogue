@@ -223,8 +223,10 @@ def _build_source_scope_filter(
     source_column: str = "source_name",
 ) -> tuple[str, list[str]]:
     """Build a source-scope predicate matching source names and legacy provider names."""
-    if not names:
+    if names is None:
         return "", []
+    if not names:
+        return "0", []
 
     placeholders = ",".join("?" for _ in names)
     return (

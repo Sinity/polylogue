@@ -10,7 +10,7 @@ import webbrowser
 from pathlib import Path
 
 # Pattern for detecting shell metacharacters that could enable command injection.
-# NOTE: stricter than pipeline/events._UNSAFE_PATTERN — blocks ALL $ (not just $()
+# NOTE: stricter than pipeline/observers._UNSAFE_PATTERN — blocks ALL $ (not just $()
 # because editor commands have no legitimate use for env var references.
 _UNSAFE_PATTERN = re.compile(r'[;&|`$(){}[\]<>!\\]')
 

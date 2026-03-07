@@ -8,7 +8,7 @@ import re
 import sqlite3
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from polylogue.errors import DatabaseError
 from polylogue.lib.json import dumps as json_dumps
@@ -175,9 +175,21 @@ class RawConversationRecord(BaseModel):
 
 class PlanResult(BaseModel):
     timestamp: int
+    stage: str = "all"
     counts: dict[str, int]
+    details: dict[str, int] = Field(default_factory=dict)
     sources: list[str]
     cursors: dict[str, dict[str, Any]]
+
+
+class RawConversationState(BaseModel):
+    raw_id: str
+    source_name: str | None = None
+    source_path: str | None = None
+    parsed_at: str | None = None
+    parse_error: str | None = None
+    validation_status: str | None = None
+    validation_provider: str | None = None
 
 
 class RunResult(BaseModel):
