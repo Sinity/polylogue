@@ -11,14 +11,12 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-import pytest
-
+from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import (
     Conversation,
     ConversationSummary,
     Message,
 )
-from polylogue.lib.messages import MessageCollection
 from polylogue.rendering.core import format_conversation_markdown
 
 

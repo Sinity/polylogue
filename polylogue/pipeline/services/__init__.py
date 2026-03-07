@@ -14,8 +14,9 @@ from __future__ import annotations
 
 from .acquisition import AcquireResult, AcquisitionService
 from .indexing import IndexService
-from .planning import IngestPlan, PlanningService
+from .ingest_state import IngestPhase, IngestState
 from .parsing import ParseResult, ParsingService
+from .planning import IngestPlan, PlanningService
 from .rendering import RenderResult, RenderService
 
 __all__ = [

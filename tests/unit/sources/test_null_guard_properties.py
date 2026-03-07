@@ -22,14 +22,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-import pytest
-from hypothesis import given, settings, assume, HealthCheck
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.lib.models import Conversation, Message, ConversationSummary
 from polylogue.lib.messages import MessageCollection
+from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.timestamps import parse_timestamp
-
 
 # =============================================================================
 # Hypothesis strategies for sparse/adversarial provider data

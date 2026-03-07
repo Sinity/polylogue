@@ -8,6 +8,7 @@ Extracted from monolithic test_search_index.py.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -619,7 +620,7 @@ class TestFTS5ProviderDirectFiltering:
         syntax_error_queries = ["test?"]
 
         for query in syntax_error_queries:
-            with pytest.raises(Exception):
+            with pytest.raises(sqlite3.OperationalError):
                 fts_provider.search(query)
 
 

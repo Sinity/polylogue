@@ -18,7 +18,6 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import ConversationRecord, MessageRecord
 
-
 # =============================================================================
 # async_index.py Tests
 # =============================================================================

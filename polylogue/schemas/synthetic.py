@@ -33,7 +33,6 @@ from typing import Any
 
 from polylogue.schemas.registry import SCHEMA_DIR
 
-
 # =============================================================================
 # Wire Format Configuration
 # =============================================================================
@@ -326,6 +325,9 @@ class SyntheticCorpus:
             else:
                 target.setdefault(part, {})
                 target = target[part]
+
+        if theme is not None and self.provider == "claude-ai" and "name" in self.schema.get("properties", {}):
+            top["name"] = theme.title
 
         return top
 

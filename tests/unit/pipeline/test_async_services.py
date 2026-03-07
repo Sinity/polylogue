@@ -18,9 +18,8 @@ import pytest
 from polylogue.config import Config, Source
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.indexing import IndexService
-from polylogue.pipeline.services.rendering import RenderService, RenderResult
+from polylogue.pipeline.services.rendering import RenderResult, RenderService
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-
 
 # =============================================================================
 # AcquisitionService Tests

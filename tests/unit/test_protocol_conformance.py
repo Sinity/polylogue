@@ -30,7 +30,6 @@ from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.hybrid import HybridSearchProvider
 from polylogue.ui.facade import ConsoleLike, PlainConsole
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -138,9 +137,9 @@ class TestOutputRendererConformance:
     @pytest.mark.parametrize("cls", [MarkdownRenderer, HTMLRenderer], ids=["markdown", "html"])
     async def test_render_produces_output(self, cls, tmp_path: Path) -> None:
         """render() must write a non-empty output file for a seeded conversation."""
-        from tests.infra.helpers import upsert_conversation, upsert_message
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.store import ConversationRecord, MessageRecord
+        from tests.infra.helpers import upsert_conversation, upsert_message
 
         db_path = tmp_path / "test.db"
         conv_id = "smoke-conv-0001"

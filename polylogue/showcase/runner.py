@@ -157,10 +157,9 @@ class ShowcaseRunner:
         """Filter exercises based on mode."""
         selected: list[Exercise] = []
         for ex in EXERCISES:
-            if self.live:
+            if self.live and ex.writes:
                 # Live mode: skip writes and exercises that need seeded data
-                if ex.writes:
-                    continue
+                continue
             selected.append(ex)
         return selected
 

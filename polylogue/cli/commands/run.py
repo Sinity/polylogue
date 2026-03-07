@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
-from contextlib import contextmanager
 import json
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import click
 
@@ -32,8 +32,8 @@ from polylogue.pipeline.observers import (
     RunObserver,
     WebhookObserver,
 )
-from polylogue.protocols import ProgressCallback
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, plan_sources, run_sources
+from polylogue.protocols import ProgressCallback
 from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
 

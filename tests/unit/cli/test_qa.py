@@ -7,6 +7,7 @@ from pathlib import Path
 
 from polylogue.cli.click_app import cli as click_cli
 
+
 def test_qa_listed_in_main_help(cli_runner) -> None:
     result = cli_runner.invoke(click_cli, ["--help"])
     assert result.exit_code == 0

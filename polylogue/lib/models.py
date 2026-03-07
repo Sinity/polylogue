@@ -265,11 +265,10 @@ class Message(BaseModel):
             return not self._is_chatgpt_thinking()
 
         # Claude-code sidechain/meta markers
-        if self.provider_meta:
-            if self.provider_meta.get("isSidechain") or self.provider_meta.get("isMeta"):
-                return True
-
-        return False
+        return bool(
+            self.provider_meta
+            and (self.provider_meta.get("isSidechain") or self.provider_meta.get("isMeta"))
+        )
 
     @property
     def is_thinking(self) -> bool:
