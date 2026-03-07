@@ -10,6 +10,7 @@ import os
 from typing import Any
 
 from polylogue.lib.log import get_logger
+from polylogue.lib.provider_identity import canonical_runtime_provider
 from polylogue.lib.raw_payload import decode_raw_payload, infer_payload_provider
 
 logger = get_logger(__name__)
@@ -136,7 +137,11 @@ class ValidationService:
                 validation_status = "passed"
                 validation_error: str | None = None
                 parseable = True
-                canonical_provider = raw_record.provider_name
+                canonical_provider = canonical_runtime_provider(
+                    raw_record.provider_name,
+                    preserve_unknown=True,
+                    default=raw_record.provider_name,
+                )
                 invalid_count = 0
                 drift_count = 0
                 collected_errors: list[str] = []
