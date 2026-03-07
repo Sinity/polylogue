@@ -9,8 +9,8 @@ from ..assets import asset_path
 from ..config import Source
 from ..lib.log import get_logger
 from ..paths import safe_path_component
-from .parsers.base import RawConversationData
 from .drive_client import DriveClient, _parse_modified_time
+from .parsers.base import RawConversationData
 from .source import ParsedConversation, detect_provider, parse_drive_payload
 
 logger = get_logger(__name__)

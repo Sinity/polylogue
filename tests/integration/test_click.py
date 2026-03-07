@@ -17,8 +17,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 # =============================================================================
 # _handle_query_mode internal routing
 # =============================================================================

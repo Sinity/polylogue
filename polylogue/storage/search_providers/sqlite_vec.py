@@ -21,8 +21,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from polylogue.lib.log import get_logger
 from polylogue.errors import DatabaseError
+from polylogue.lib.log import get_logger
 from polylogue.storage.backends.connection import DB_TIMEOUT
 from polylogue.storage.store import MessageRecord
 

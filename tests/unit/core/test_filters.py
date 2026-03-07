@@ -30,8 +30,8 @@ from polylogue.schemas.validator import (
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.index import rebuild_index
+from polylogue.storage.repository import ConversationRepository
 from tests.infra.helpers import ConversationBuilder
 
 # =============================================================================
@@ -769,7 +769,7 @@ class TestUnifiedExtractContentBlocks:
         result = extract_content_blocks(content)
         assert len(result) == expected_len
         if expected_types:
-            for block, expected_type in zip(result, expected_types):
+            for block, expected_type in zip(result, expected_types, strict=True):
                 assert block.type.value == expected_type
 
 

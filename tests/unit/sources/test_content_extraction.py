@@ -15,18 +15,16 @@ Unique coverage:
 
 from __future__ import annotations
 
-
-from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.sources.providers.chatgpt import (
     ChatGPTAuthor,
     ChatGPTContent,
     ChatGPTMessage,
 )
+from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.sources.providers.gemini import (
     GeminiMessage,
     GeminiPart,
 )
-
 
 # =============================================================================
 # ClaudeCodeRecord: direct _text_from_blocks call (not via text_content property)

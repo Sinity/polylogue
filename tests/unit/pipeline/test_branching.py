@@ -21,11 +21,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from polylogue.config import Source
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources import iter_source_conversations
-import pytest
-
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
