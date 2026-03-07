@@ -20,12 +20,22 @@ from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
 from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.mcp.payloads import (
+    MCPArchiveStatsPayload,
+    MCPConversationDetailPayload,
+    MCPConversationSummaryListPayload,
+    MCPConversationSummaryPayload,
+    MCPErrorPayload,
+    MCPHealthReportPayload,
+    MCPMetadataPayload,
+    MCPMutationStatusPayload,
+    MCPStatsByPayload,
+    MCPTagCountsPayload,
+)
 from polylogue.services import RuntimeServices, build_runtime_services
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
-
-    from polylogue.lib.models import Conversation
 
 logger = get_logger(__name__)
 _runtime_services: RuntimeServices | None = None
@@ -59,35 +69,13 @@ def _extract_fenced_code(text: str, language: str = "") -> list[dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Serialization helpers
+# Payload helpers
 # ---------------------------------------------------------------------------
 
 
-def _conversation_to_dict(conv: Conversation) -> dict[str, Any]:
-    """Convert Conversation to a JSON-serializable dict."""
-    return {
-        "id": str(conv.id),
-        "provider": conv.provider,
-        "title": conv.display_title,
-        "message_count": len(conv.messages),
-        "created_at": conv.created_at.isoformat() if conv.created_at else None,
-        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
-    }
-
-
-def _conversation_to_full_dict(conv: Conversation) -> dict[str, Any]:
-    """Convert Conversation with messages to a JSON-serializable dict."""
-    result = _conversation_to_dict(conv)
-    result["messages"] = [
-        {
-            "id": str(msg.id),
-            "role": (msg.role.value if hasattr(msg.role, "value") else str(msg.role)) if msg.role else "unknown",
-            "text": msg.text or "",
-            "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
-        }
-        for msg in conv.messages
-    ]
-    return result
+def _json_payload(payload: Any, *, exclude_none: bool = False) -> str:
+    """Serialize a typed MCP payload with canonical JSON formatting."""
+    return payload.to_json(exclude_none=exclude_none)
 
 
 def _clamp_limit(limit: int | Any) -> int:
@@ -108,10 +96,7 @@ def _safe_call(fn_name: str, fn: Any) -> str:
         return fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
-        return json.dumps({
-            "error": str(exc),
-            "tool": fn_name,
-        })
+        return _json_payload(MCPErrorPayload(error=str(exc), tool=fn_name), exclude_none=True)
 
 
 async def _async_safe_call(fn_name: str, fn: Any) -> str:
@@ -120,15 +105,12 @@ async def _async_safe_call(fn_name: str, fn: Any) -> str:
         return await fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
-        return json.dumps({
-            "error": str(exc),
-            "tool": fn_name,
-        })
+        return _json_payload(MCPErrorPayload(error=str(exc), tool=fn_name), exclude_none=True)
 
 
 def _error_json(message: str, **extra: Any) -> str:
     """Return a JSON-encoded error dict."""
-    return json.dumps({"error": message, **extra})
+    return _json_payload(MCPErrorPayload(error=message, **extra), exclude_none=True)
 
 
 def _set_runtime_services(services: RuntimeServices | None) -> None:
@@ -202,7 +184,14 @@ def _build_server() -> FastMCP:
                 limit=_clamp_limit(limit),
             )
             results = await spec.build_filter(repo).list()
-            return json.dumps([_conversation_to_dict(r) for r in results], indent=2)
+            return _json_payload(
+                MCPConversationSummaryListPayload(
+                    root=[
+                        MCPConversationSummaryPayload.from_conversation(result)
+                        for result in results
+                    ]
+                )
+            )
         return await _async_safe_call("search", _run)
 
     @mcp.tool()
@@ -235,7 +224,14 @@ def _build_server() -> FastMCP:
                 limit=_clamp_limit(limit),
             )
             conversations = await spec.build_filter(repo).list()
-            return json.dumps([_conversation_to_dict(c) for c in conversations], indent=2)
+            return _json_payload(
+                MCPConversationSummaryListPayload(
+                    root=[
+                        MCPConversationSummaryPayload.from_conversation(conv)
+                        for conv in conversations
+                    ]
+                )
+            )
         return await _async_safe_call("list_conversations", _run)
 
     @mcp.tool()
@@ -250,7 +246,7 @@ def _build_server() -> FastMCP:
             conv = await repo.view(id)
             if conv is None:
                 return _error_json(f"Conversation not found: {id}")
-            return json.dumps(_conversation_to_full_dict(conv), indent=2)
+            return _json_payload(MCPConversationDetailPayload.from_conversation(conv))
         return await _async_safe_call("get_conversation", _run)
 
     @mcp.tool()
@@ -259,15 +255,13 @@ def _build_server() -> FastMCP:
         async def _run() -> str:
             repo = _get_repo()
             archive_stats = await repo.get_archive_stats()
-            data = {
-                "total_conversations": archive_stats.total_conversations,
-                "total_messages": archive_stats.total_messages,
-                "providers": archive_stats.providers,
-                "embedded_conversations": archive_stats.embedded_conversations,
-                "embedded_messages": archive_stats.embedded_messages,
-                "db_size_mb": round(archive_stats.db_size_bytes / 1_048_576, 1) if archive_stats.db_size_bytes else 0,
-            }
-            return json.dumps(data, indent=2)
+            return _json_payload(
+                MCPArchiveStatsPayload.from_archive_stats(
+                    archive_stats,
+                    include_embedded=True,
+                    include_db_size=True,
+                )
+            )
         return await _async_safe_call("stats", _run)
 
     # ==================================================================
@@ -285,7 +279,14 @@ def _build_server() -> FastMCP:
         async def _run() -> str:
             repo = _get_repo()
             await repo.add_tag(conversation_id, tag)
-            return json.dumps({"status": "ok", "conversation_id": conversation_id, "tag": tag})
+            return _json_payload(
+                MCPMutationStatusPayload(
+                    status="ok",
+                    conversation_id=conversation_id,
+                    tag=tag,
+                ),
+                exclude_none=True,
+            )
         return await _async_safe_call("add_tag", _run)
 
     @mcp.tool()
@@ -299,7 +300,14 @@ def _build_server() -> FastMCP:
         async def _run() -> str:
             repo = _get_repo()
             await repo.remove_tag(conversation_id, tag)
-            return json.dumps({"status": "ok", "conversation_id": conversation_id, "tag": tag})
+            return _json_payload(
+                MCPMutationStatusPayload(
+                    status="ok",
+                    conversation_id=conversation_id,
+                    tag=tag,
+                ),
+                exclude_none=True,
+            )
         return await _async_safe_call("remove_tag", _run)
 
     @mcp.tool()
@@ -312,7 +320,7 @@ def _build_server() -> FastMCP:
         async def _run() -> str:
             repo = _get_repo()
             tags = await repo.list_tags(provider=provider)
-            return json.dumps(tags, indent=2)
+            return _json_payload(MCPTagCountsPayload(root=tags))
         return await _async_safe_call("list_tags", _run)
 
     @mcp.tool()
@@ -325,7 +333,7 @@ def _build_server() -> FastMCP:
         async def _run() -> str:
             repo = _get_repo()
             metadata = await repo.get_metadata(conversation_id)
-            return json.dumps(metadata, indent=2, default=str)
+            return _json_payload(MCPMetadataPayload(root=metadata))
         return await _async_safe_call("get_metadata", _run)
 
     @mcp.tool()
@@ -345,7 +353,14 @@ def _build_server() -> FastMCP:
             except (json.JSONDecodeError, TypeError):
                 parsed_value = value
             await repo.update_metadata(conversation_id, key, parsed_value)
-            return json.dumps({"status": "ok", "conversation_id": conversation_id, "key": key})
+            return _json_payload(
+                MCPMutationStatusPayload(
+                    status="ok",
+                    conversation_id=conversation_id,
+                    key=key,
+                ),
+                exclude_none=True,
+            )
         return await _async_safe_call("set_metadata", _run)
 
     @mcp.tool()
@@ -359,7 +374,14 @@ def _build_server() -> FastMCP:
         async def _run() -> str:
             repo = _get_repo()
             await repo.delete_metadata(conversation_id, key)
-            return json.dumps({"status": "ok", "conversation_id": conversation_id, "key": key})
+            return _json_payload(
+                MCPMutationStatusPayload(
+                    status="ok",
+                    conversation_id=conversation_id,
+                    key=key,
+                ),
+                exclude_none=True,
+            )
         return await _async_safe_call("delete_metadata", _run)
 
     @mcp.tool()
@@ -378,10 +400,13 @@ def _build_server() -> FastMCP:
                 )
             repo = _get_repo()
             deleted = await repo.delete_conversation(conversation_id)
-            return json.dumps({
-                "status": "deleted" if deleted else "not_found",
-                "conversation_id": conversation_id,
-            })
+            return _json_payload(
+                MCPMutationStatusPayload(
+                    status="deleted" if deleted else "not_found",
+                    conversation_id=conversation_id,
+                ),
+                exclude_none=True,
+            )
         return await _async_safe_call("delete_conversation", _run)
 
     # ==================================================================
@@ -401,14 +426,13 @@ def _build_server() -> FastMCP:
             summary = await repo.get_summary(full_id)
             if summary is None:
                 return _error_json(f"Conversation not found: {id}")
-            return json.dumps({
-                "id": str(summary.id),
-                "provider": summary.provider,
-                "title": summary.title,
-                "message_count": summary.message_count,
-                "created_at": summary.created_at.isoformat() if summary.created_at else None,
-                "updated_at": summary.updated_at.isoformat() if summary.updated_at else None,
-            }, indent=2)
+            stats = await repo.get_conversation_stats(str(full_id))
+            return _json_payload(
+                MCPConversationSummaryPayload.from_summary(
+                    summary,
+                    message_count=stats["total_messages"] if stats else 0,
+                )
+            )
         return await _async_safe_call("get_conversation_summary", _run)
 
     @mcp.tool()
@@ -421,7 +445,14 @@ def _build_server() -> FastMCP:
         async def _run() -> str:
             repo = _get_repo()
             tree = await repo.get_session_tree(conversation_id)
-            return json.dumps([_conversation_to_dict(c) for c in tree], indent=2)
+            return _json_payload(
+                MCPConversationSummaryListPayload(
+                    root=[
+                        MCPConversationSummaryPayload.from_conversation(conv)
+                        for conv in tree
+                    ]
+                )
+            )
         return await _async_safe_call("get_session_tree", _run)
 
     @mcp.tool()
@@ -433,7 +464,7 @@ def _build_server() -> FastMCP:
         """
         async def _run() -> str:
             repo = _get_repo()
-            return json.dumps(await repo.get_stats_by(group_by), indent=2)
+            return _json_payload(MCPStatsByPayload(root=await repo.get_stats_by(group_by)))
         return await _async_safe_call("get_stats_by", _run)
 
     @mcp.tool()
@@ -444,19 +475,15 @@ def _build_server() -> FastMCP:
 
             config = _get_config()
             report = get_health(config)
-            return json.dumps({
-                "checks": [
-                    {
-                        "name": c.name,
-                        "status": c.status.value if hasattr(c.status, "value") else str(c.status),
-                        "count": c.count,
-                        "detail": c.detail,
-                    }
-                    for c in report.checks
-                ],
-                "summary": report.summary,
-                "cached": getattr(report, "cached", False),
-            }, indent=2)
+            return _json_payload(
+                MCPHealthReportPayload.from_report(
+                    report,
+                    include_counts=True,
+                    include_detail=True,
+                    include_cached=True,
+                ),
+                exclude_none=True,
+            )
         return _safe_call("health_check", _run)
 
     # ==================================================================
@@ -474,11 +501,14 @@ def _build_server() -> FastMCP:
             service = IndexService(config=config, backend=repo.backend)
             success = await service.rebuild_index()
             status_info = await service.get_index_status()
-            return json.dumps({
-                "status": "ok" if success else "failed",
-                "index_exists": status_info.get("exists", False),
-                "indexed_messages": status_info.get("count", 0),
-            }, indent=2)
+            return _json_payload(
+                MCPMutationStatusPayload(
+                    status="ok" if success else "failed",
+                    index_exists=status_info.get("exists", False),
+                    indexed_messages=status_info.get("count", 0),
+                ),
+                exclude_none=True,
+            )
         return await _async_safe_call("rebuild_index", _run)
 
     @mcp.tool()
@@ -495,10 +525,13 @@ def _build_server() -> FastMCP:
             repo = _get_repo()
             service = IndexService(config=config, backend=repo.backend)
             success = await service.update_index(conversation_ids)
-            return json.dumps({
-                "status": "ok" if success else "failed",
-                "conversation_count": len(conversation_ids),
-            }, indent=2)
+            return _json_payload(
+                MCPMutationStatusPayload(
+                    status="ok" if success else "failed",
+                    conversation_count=len(conversation_ids),
+                ),
+                exclude_none=True,
+            )
         return await _async_safe_call("update_index", _run)
 
     # ==================================================================
@@ -538,13 +571,13 @@ def _build_server() -> FastMCP:
         """Overall statistics about the conversation archive."""
         repo = _get_repo()
         archive_stats = await repo.get_archive_stats()
-        return json.dumps(
-            {
-                "total_conversations": archive_stats.total_conversations,
-                "total_messages": archive_stats.total_messages,
-                "providers": archive_stats.providers,
-            },
-            indent=2,
+        return _json_payload(
+            MCPArchiveStatsPayload.from_archive_stats(
+                archive_stats,
+                include_embedded=False,
+                include_db_size=False,
+            ),
+            exclude_none=True,
         )
 
     @mcp.resource("polylogue://conversations")
@@ -552,7 +585,14 @@ def _build_server() -> FastMCP:
         """List of all conversations in the archive."""
         repo = _get_repo()
         convs = await ConversationQuerySpec().build_filter(repo).list()
-        return json.dumps([_conversation_to_dict(c) for c in convs], indent=2)
+        return _json_payload(
+            MCPConversationSummaryListPayload(
+                root=[
+                    MCPConversationSummaryPayload.from_conversation(conv)
+                    for conv in convs
+                ]
+            )
+        )
 
     @mcp.resource("polylogue://conversation/{conv_id}")
     async def conversation_resource(conv_id: str) -> str:
@@ -560,15 +600,15 @@ def _build_server() -> FastMCP:
         repo = _get_repo()
         conv = await repo.get(conv_id)
         if not conv:
-            return json.dumps({"error": f"Conversation not found: {conv_id}"})
-        return json.dumps(_conversation_to_full_dict(conv), indent=2)
+            return _error_json(f"Conversation not found: {conv_id}")
+        return _json_payload(MCPConversationDetailPayload.from_conversation(conv))
 
     @mcp.resource("polylogue://tags")
     async def tags_resource() -> str:
         """All tags with their counts."""
         repo = _get_repo()
         tags = await repo.list_tags()
-        return json.dumps(tags, indent=2)
+        return _json_payload(MCPTagCountsPayload(root=tags))
 
     @mcp.resource("polylogue://health")
     def health_resource() -> str:
@@ -578,15 +618,17 @@ def _build_server() -> FastMCP:
 
             config = _get_config()
             report = get_health(config)
-            return json.dumps({
-                "checks": [
-                    {"name": c.name, "status": c.status.value if hasattr(c.status, "value") else str(c.status)}
-                    for c in report.checks
-                ],
-                "summary": report.summary,
-            }, indent=2)
+            return _json_payload(
+                MCPHealthReportPayload.from_report(
+                    report,
+                    include_counts=False,
+                    include_detail=False,
+                    include_cached=False,
+                ),
+                exclude_none=True,
+            )
         except Exception as exc:
-            return json.dumps({"error": str(exc)})
+            return _json_payload(MCPErrorPayload(error=str(exc)), exclude_none=True)
 
     # ==================================================================
     # Prompts
