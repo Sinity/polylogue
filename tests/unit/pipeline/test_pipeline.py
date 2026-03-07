@@ -11,6 +11,8 @@ Consolidated from:
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from polylogue.assets import asset_path
@@ -683,6 +685,59 @@ async def test_prepare_records_with_attachments(async_backend, test_repository, 
         att_refs = await cursor.fetchall()
     assert len(att_refs) == 1
     assert att_refs[0]["mime_type"] == "application/pdf"
+
+
+async def test_prepare_records_rolls_back_attachment_move_on_save_failure(async_backend, test_repository, tmp_path):
+    """Attachment moves are rolled back if bundle persistence fails."""
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    source_file = uploads / "document.pdf"
+    source_file.write_bytes(b"pdf bytes")
+
+    convo = ParsedConversation(
+        provider_name="test",
+        provider_conversation_id="conv-rollback",
+        title="Rollback",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role="user",
+                text="See attachment",
+                timestamp="2024-01-01T00:00:00Z",
+            ),
+        ],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="att-1",
+                message_provider_id="m1",
+                name="document.pdf",
+                mime_type="application/pdf",
+                size_bytes=len(b"pdf bytes"),
+                path=str(source_file),
+            ),
+        ],
+    )
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+
+    with patch(
+        "polylogue.pipeline.prepare.save_bundle",
+        new=AsyncMock(side_effect=RuntimeError("save failed")),
+    ):
+        with pytest.raises(RuntimeError, match="save failed"):
+            await prepare_records(
+                convo,
+                "test-source",
+                archive_root=archive_root,
+                backend=async_backend,
+                repository=test_repository,
+            )
+
+    assert source_file.exists()
+    assert not any(path.is_file() for path in (archive_root / "assets").rglob("*"))
 
 
 async def test_prepare_records_returns_correct_tuple_structure(async_backend, test_repository, tmp_path):

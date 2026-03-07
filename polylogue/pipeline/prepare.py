@@ -13,6 +13,7 @@ from polylogue.pipeline.ids import (
     conversation_content_hash,
     materialize_attachment_path,
     message_content_hash,
+    move_attachment_to_archive,
 )
 from polylogue.pipeline.ids import (
     conversation_id as make_conversation_id,
@@ -130,6 +131,31 @@ class PrepareCache:
                     cache.message_ids[cid][str(row["provider_message_id"])] = MessageId(row["message_id"])
 
         return cache
+
+
+@dataclass
+class AttachmentMaterializationPlan:
+    """Filesystem actions needed to align attachment paths with archive storage."""
+
+    move_before_save: list[tuple[Path, Path]] = field(default_factory=list)
+    delete_after_save: list[Path] = field(default_factory=list)
+
+
+def _plan_attachment_materialization(
+    source_path: str | None,
+    target_path: str | None,
+) -> AttachmentMaterializationPlan:
+    """Decide how an attachment path should be materialized, if at all."""
+    if not source_path or not target_path or source_path == target_path:
+        return AttachmentMaterializationPlan()
+
+    source = Path(source_path)
+    target = Path(target_path)
+    if not source.exists():
+        return AttachmentMaterializationPlan()
+    if target.exists():
+        return AttachmentMaterializationPlan(delete_after_save=[source])
+    return AttachmentMaterializationPlan(move_before_save=[(source, target)])
 
 
 async def prepare_records(
@@ -302,21 +328,16 @@ async def prepare_records(
         )
 
     attachments: list[AttachmentRecord] = []
-    pending_attachment_moves: list[tuple[Path, Path]] = []
+    materialization_plan = AttachmentMaterializationPlan()
     for att in convo.attachments:
         aid, updated_meta, updated_path = attachment_content_id(convo.provider_name, att, archive_root=archive_root)
         # Merge updated metadata with provider_id if present
         meta: dict[str, object] = dict(updated_meta or {})
         if att.provider_attachment_id:
             meta.setdefault("provider_id", att.provider_attachment_id)
-        if (
-            isinstance(att.path, str)
-            and att.path
-            and isinstance(updated_path, str)
-            and updated_path
-            and updated_path != att.path
-        ):
-            pending_attachment_moves.append((Path(att.path), Path(updated_path)))
+        attachment_plan = _plan_attachment_materialization(att.path, updated_path)
+        materialization_plan.move_before_save.extend(attachment_plan.move_before_save)
+        materialization_plan.delete_after_save.extend(attachment_plan.delete_after_save)
         message_id_val: MessageId | None = (
             message_ids.get(att.message_provider_id or "") if att.message_provider_id else None
         )
@@ -332,17 +353,30 @@ async def prepare_records(
             )
         )
 
-    for source_path, target_path in pending_attachment_moves:
-        materialize_attachment_path(source_path, target_path)
+    applied_moves: list[tuple[Path, Path]] = []
+    try:
+        for source_path, target_path in materialization_plan.move_before_save:
+            materialize_attachment_path(source_path, target_path)
+            applied_moves.append((source_path, target_path))
 
-    result = await save_bundle(
-        RecordBundle(
-            conversation=conversation_record,
-            messages=messages,
-            attachments=attachments,
-        ),
-        repository=repository,
-    )
+        result = await save_bundle(
+            RecordBundle(
+                conversation=conversation_record,
+                messages=messages,
+                attachments=attachments,
+            ),
+            repository=repository,
+        )
+    except Exception:
+        for source_path, target_path in reversed(applied_moves):
+            if target_path.exists():
+                move_attachment_to_archive(target_path, source_path)
+        raise
+
+    for duplicate_source in materialization_plan.delete_after_save:
+        if duplicate_source.exists():
+            duplicate_source.unlink()
+
     return (
         cid,
         {
