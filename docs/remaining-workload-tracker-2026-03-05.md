@@ -172,3 +172,117 @@ As of the latest cleanup pass on 2026-03-07, the earlier "expanded remaining bac
 
 - No known runtime integration blockers remain from the 2026-03-07 audit.
 - Remaining work is incremental cleanup/performance work, not correctness debt blocking normal use.
+
+## Ambitious Consolidation Backlog (2026-03-07, Later Pass)
+
+The lightweight cleanup backlog above is not the whole story. A deeper codebase survey surfaced several larger structural opportunities that would remove duplicated semantic paths and make correctness easier to enforce.
+
+### High-Leverage Consolidation Targets
+
+1. Replace the current static-site builder data path with a real async projection pipeline.
+   - `polylogue/site/builder.py` is synchronously calling async repository APIs (`list_summaries()`, `iter_messages()`) and its tests mostly patch those methods with `MagicMock`.
+   - This is both a refactor opportunity and a latent correctness problem.
+   - Target shape:
+     - async site build command/runtime path
+     - repository-owned site/index projection
+     - tests using a real DB harness instead of patched async methods
+
+2. Unify provider semantic extraction behind one typed adapter layer.
+   - Provider models in `polylogue/sources/providers/*` already expose typed extraction methods, but `polylogue/schemas/unified.py` reimplements a second provider-dispatch and extraction stack over raw dicts.
+   - This creates drift risk between:
+     - parser-time semantics,
+     - harmonization/viewports,
+     - schema/verification behavior.
+   - Target shape:
+     - one provider adapter protocol
+     - parser, harmonizer, schema verification, and semantic views all consuming the same typed extraction path
+     - delete duplicate provider-specific extraction code in `schemas/unified.py`
+
+3. Split query execution into typed selection/action/output plans instead of one monolithic params dict.
+   - `polylogue/cli/query.py` still acts as a command interpreter driven by `dict[str, Any]`, mixing:
+     - selection,
+     - output formatting,
+     - mutations,
+     - streaming,
+     - browser/clipboard side effects.
+   - `ConversationQuerySpec` solved only the selection subset.
+   - Target shape:
+     - `ConversationQuerySpec` for selection
+     - `QueryActionSpec` for mutate/open/stream/stats modes
+     - `QueryOutputSpec` for render/export destinations
+     - one canonical execution planner reused by CLI, facade, and MCP where applicable
+
+4. Collapse conversation presentation/export shaping into a single projection model.
+   - Conversation shaping currently remains split across:
+     - `polylogue/rendering/core.py`
+     - `polylogue/rendering/renderers/html.py`
+     - `polylogue/lib/formatting.py`
+     - `polylogue/site/builder.py`
+     - TUI/browser display paths
+   - The code is better than before, but there is still no single “presentation model” for:
+     - message text blocks,
+     - timestamps,
+     - attachments,
+     - branching,
+     - summary/export fields.
+   - Target shape:
+     - repository-owned `ConversationPresentation`
+     - renderer/export/site/UI layers consume the same normalized structure
+     - delete parallel list/json/html/markdown shaping code
+
+5. Collapse source scanning into one envelope pipeline.
+   - `polylogue/sources/source.py` still exposes two public iterators:
+     - `iter_source_conversations_with_raw()`
+     - `iter_source_raw_data()`
+   - They share lower-level machinery, but the public API still reflects two separate source-reading semantics.
+   - Target shape:
+     - one scan/envelope pipeline
+     - one decode/provider-detect/profile step
+     - downstream stages choose whether to persist raw only or parse conversations
+     - less duplicated ZIP/path/mtime/cursor logic
+
+6. Turn health/repair into a declarative registry instead of a giant imperative module.
+   - `polylogue/health.py` mixes:
+     - health check definitions,
+     - cache IO,
+     - SQL execution,
+     - repair procedures,
+     - summary shaping.
+   - Every new check/repair currently expands a long imperative file.
+   - Target shape:
+     - typed `HealthCheckSpec` / `RepairSpec`
+     - shared executor + cache handling
+     - CLI/MCP/reporting consume the same result model
+
+7. Replace mock-heavy test seams with production-shaped harnesses.
+   - `tests/infra/helpers.py` duplicates storage write logic that no longer lives in production code.
+   - `tests/integration/test_site.py` and other suites patch internal runtime surfaces rather than exercising them through real contracts.
+   - Target shape:
+     - one canonical DB seeding harness built on public repository/backend APIs
+     - one canonical inbox/source fixture harness
+     - much less `MagicMock` around storage/query/runtime boundaries
+
+8. Split the giant backend/repository surfaces by domain.
+   - `polylogue/storage/backends/async_sqlite.py` and `polylogue/storage/repository.py` still combine:
+     - CRUD,
+     - summaries,
+     - raw acquisition state,
+     - rendering projections,
+     - message streaming,
+     - stats,
+     - vector helpers,
+     - run tracking.
+   - Target shape:
+     - narrower domain ports such as read/query/raw/render/run/search stores
+     - cleaner ownership and less temptation for callers to reach through private internals
+
+### Immediate Priority Ordering For The Next Major Refactor Pass
+
+1. Site builder async/projection rewrite.
+2. Provider extraction unification.
+3. Query planner split (`selection` vs `action` vs `output`).
+4. Presentation/export projection unification.
+5. Source envelope pipeline collapse.
+6. Test harness consolidation.
+7. Health/repair registry extraction.
+8. Backend/repository domain split.
