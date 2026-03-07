@@ -52,6 +52,7 @@ def _make_repo_mock() -> MagicMock:
     repo.delete_conversation = AsyncMock(return_value=False)
     repo.resolve_id = AsyncMock(return_value=None)
     repo.get_summary = AsyncMock(return_value=None)
+    repo.get_conversation_stats = AsyncMock(return_value={})
     repo.get_session_tree = AsyncMock(return_value=[])
     repo.get_stats_by = AsyncMock(return_value={})
     repo.backend = MagicMock()
@@ -407,12 +408,13 @@ class TestGetConversationSummaryTool:
                 id="test:conv-123",
                 provider="chatgpt",
                 title="Test Conv",
-                message_count=5,
+                message_count=None,
                 created_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
                 updated_at=datetime(2024, 1, 15, 11, 0, 0, tzinfo=timezone.utc),
             )
             mock_repo.resolve_id.return_value = "test:conv-123"
             mock_repo.get_summary.return_value = mock_summary
+            mock_repo.get_conversation_stats.return_value = {"total_messages": 5}
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
