@@ -12,7 +12,6 @@ Tests cover:
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -23,6 +22,7 @@ from polylogue.storage.backends.schema import (
     _ensure_schema,
     _migrate_v11_to_v12,
     _migrate_v12_to_v13,
+    _migrate_v17_to_v18,
     _run_migrations,
 )
 from polylogue.storage.store import RawConversationRecord
@@ -265,6 +265,60 @@ class TestMigrationV12ToV13:
         conn.close()
 
 
+class TestMigrationV17ToV18:
+    """Tests for the v17 -> v18 schema migration (validation persistence)."""
+
+    def _make_v17_db(self, tmp_path: Path) -> sqlite3.Connection:
+        db_path = tmp_path / "test_v17.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE raw_conversations (
+                raw_id TEXT PRIMARY KEY,
+                provider_name TEXT NOT NULL,
+                source_name TEXT,
+                source_path TEXT NOT NULL,
+                source_index INTEGER,
+                raw_content BLOB NOT NULL,
+                acquired_at TEXT NOT NULL,
+                file_mtime TEXT,
+                parsed_at TEXT,
+                parse_error TEXT
+            );
+        """)
+        conn.execute("PRAGMA user_version = 17")
+        conn.commit()
+        return conn
+
+    def test_migration_adds_validation_columns(self, tmp_path: Path) -> None:
+        conn = self._make_v17_db(tmp_path)
+        _migrate_v17_to_v18(conn)
+        conn.commit()
+
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(raw_conversations)").fetchall()
+        }
+        assert "validated_at" in columns
+        assert "validation_status" in columns
+        assert "validation_error" in columns
+        assert "validation_drift_count" in columns
+        assert "validation_provider" in columns
+        assert "validation_mode" in columns
+        conn.close()
+
+    def test_migration_creates_validation_indices(self, tmp_path: Path) -> None:
+        conn = self._make_v17_db(tmp_path)
+        _migrate_v17_to_v18(conn)
+        conn.commit()
+
+        indices = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+        }
+        assert "idx_raw_conv_pending_validation" in indices
+        assert "idx_raw_conv_parse_ready" in indices
+        conn.close()
+
+
 # ─── Backend method tests ──────────────────────────────────────────────────
 
 
@@ -326,6 +380,66 @@ class TestMarkRawParsed:
         rec = await backend.get_raw_conversation("test-raw")
         assert rec is not None
         assert len(rec.parse_error) == 2000  # type: ignore[arg-type]
+
+
+class TestMarkRawValidated:
+    """Tests for mark_raw_validated backend method."""
+
+    @pytest.fixture
+    def backend(self, tmp_path: Path) -> SQLiteBackend:
+        return SQLiteBackend(db_path=tmp_path / "test.db")
+
+    async def _save_raw(self, backend: SQLiteBackend, raw_id: str = "test-raw") -> None:
+        record = RawConversationRecord(
+            raw_id=raw_id,
+            provider_name="test",
+            source_path="/test.json",
+            raw_content=b'{"test": true}',
+            acquired_at="2026-01-01T00:00:00Z",
+            file_mtime="2026-01-01T00:00:00Z",
+        )
+        await backend.save_raw_conversation(record)
+
+    async def test_mark_passed(self, backend: SQLiteBackend) -> None:
+        await self._save_raw(backend)
+        await backend.mark_raw_validated(
+            "test-raw",
+            status="passed",
+            drift_count=2,
+            provider="chatgpt",
+            mode="strict",
+        )
+
+        rec = await backend.get_raw_conversation("test-raw")
+        assert rec is not None
+        assert rec.validated_at is not None
+        assert rec.validation_status == "passed"
+        assert rec.validation_error is None
+        assert rec.validation_drift_count == 2
+        assert rec.validation_provider == "chatgpt"
+        assert rec.validation_mode == "strict"
+
+    async def test_mark_failed_truncates_error(self, backend: SQLiteBackend) -> None:
+        await self._save_raw(backend)
+        long_error = "x" * 5000
+        await backend.mark_raw_validated(
+            "test-raw",
+            status="failed",
+            error=long_error,
+            provider="chatgpt",
+            mode="strict",
+        )
+
+        rec = await backend.get_raw_conversation("test-raw")
+        assert rec is not None
+        assert rec.validation_status == "failed"
+        assert rec.validation_error is not None
+        assert len(rec.validation_error) == 2000
+
+    async def test_invalid_status_raises(self, backend: SQLiteBackend) -> None:
+        await self._save_raw(backend)
+        with pytest.raises(ValueError, match="Invalid validation status"):
+            await backend.mark_raw_validated("test-raw", status="unknown")
 
 
 class TestGetKnownSourceMtimes:
@@ -443,6 +557,49 @@ class TestResetParseStatus:
         assert count == 0
 
 
+class TestResetValidationStatus:
+    """Tests for reset_validation_status backend method."""
+
+    @pytest.fixture
+    def backend(self, tmp_path: Path) -> SQLiteBackend:
+        return SQLiteBackend(db_path=tmp_path / "test.db")
+
+    async def _populate(self, backend: SQLiteBackend) -> None:
+        for i, provider in enumerate(["chatgpt", "chatgpt", "claude"]):
+            await backend.save_raw_conversation(RawConversationRecord(
+                raw_id=f"raw-{i}",
+                provider_name=provider,
+                source_path=f"/path/{i}.json",
+                raw_content=f'{{"i": {i}}}'.encode(),
+                acquired_at="2026-01-01T00:00:00Z",
+            ))
+        await backend.mark_raw_validated("raw-0", status="passed", provider="chatgpt", mode="strict")
+        await backend.mark_raw_validated("raw-2", status="failed", error="bad schema", provider="claude", mode="strict")
+
+    async def test_reset_all(self, backend: SQLiteBackend) -> None:
+        await self._populate(backend)
+        count = await backend.reset_validation_status()
+        assert count == 2
+
+        for i in range(3):
+            rec = await backend.get_raw_conversation(f"raw-{i}")
+            assert rec is not None
+            assert rec.validated_at is None
+            assert rec.validation_status is None
+            assert rec.validation_error is None
+
+    async def test_reset_by_provider(self, backend: SQLiteBackend) -> None:
+        await self._populate(backend)
+        count = await backend.reset_validation_status(provider="chatgpt")
+        assert count == 1
+
+        rec0 = await backend.get_raw_conversation("raw-0")
+        rec2 = await backend.get_raw_conversation("raw-2")
+        assert rec0 is not None and rec2 is not None
+        assert rec0.validation_status is None
+        assert rec2.validation_status == "failed"
+
+
 # ─── Mtime skip integration test ──────────────────────────────────────────
 
 
@@ -515,7 +672,7 @@ class TestFreshSchema:
     """Test that fresh databases have all v12+v13+v14+v15 features."""
 
     def test_fresh_db_has_parse_tracking_columns(self, tmp_path: Path) -> None:
-        """A fresh database has parsed_at, parse_error, and sort_key columns."""
+        """A fresh database has parse+validation tracking and sort_key columns."""
         db_path = tmp_path / "fresh.db"
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -525,6 +682,9 @@ class TestFreshSchema:
         columns = {row[1] for row in cursor.fetchall()}
         assert "parsed_at" in columns
         assert "parse_error" in columns
+        assert "validated_at" in columns
+        assert "validation_status" in columns
+        assert "validation_error" in columns
 
         cursor = conn.execute("PRAGMA table_info(messages)")
         msg_columns = {row[1] for row in cursor.fetchall()}
@@ -540,7 +700,7 @@ class TestFreshSchema:
         conn.close()
 
     def test_fresh_db_has_all_indices(self, tmp_path: Path) -> None:
-        """A fresh database has all v12+v13+v14+v15 indices."""
+        """A fresh database has parse/validation + sort key indices."""
         db_path = tmp_path / "fresh.db"
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -554,6 +714,8 @@ class TestFreshSchema:
 
         # v13 indices
         assert "idx_raw_conv_unparsed" in indices
+        assert "idx_raw_conv_pending_validation" in indices
+        assert "idx_raw_conv_parse_ready" in indices
         assert "idx_conversations_content_hash" in indices
 
         # v14 index (replaces idx_messages_conversation_ts)

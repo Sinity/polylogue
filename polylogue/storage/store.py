@@ -151,6 +151,12 @@ class RawConversationRecord(BaseModel):
     file_mtime: str | None = None  # File modification time if available
     parsed_at: str | None = None  # ISO timestamp of last successful parse
     parse_error: str | None = None  # Error from last failed parse attempt
+    validated_at: str | None = None  # ISO timestamp of last validation attempt
+    validation_status: str | None = None  # "passed" | "failed" | "skipped"
+    validation_error: str | None = None  # Error from last failed validation attempt
+    validation_drift_count: int | None = None  # Drift warnings seen during last validation
+    validation_provider: str | None = None  # Canonical provider used for validation schema
+    validation_mode: str | None = None  # Validation mode used ("off" | "advisory" | "strict")
 
     @field_validator("raw_id", "provider_name", "source_path")
     @classmethod
@@ -277,6 +283,12 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
         file_mtime=row["file_mtime"],
         parsed_at=_row_get(row, "parsed_at"),
         parse_error=_row_get(row, "parse_error"),
+        validated_at=_row_get(row, "validated_at"),
+        validation_status=_row_get(row, "validation_status"),
+        validation_error=_row_get(row, "validation_error"),
+        validation_drift_count=_row_get(row, "validation_drift_count"),
+        validation_provider=_row_get(row, "validation_provider"),
+        validation_mode=_row_get(row, "validation_mode"),
     )
 
 

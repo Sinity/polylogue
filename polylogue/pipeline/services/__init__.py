@@ -5,6 +5,7 @@ Service classes that handle specific pipeline operations:
 - IndexService: Full-text and vector search indexing
 - RenderService: Markdown and HTML rendering
 - AcquisitionService: Raw data acquisition from sources
+- ValidationService: Schema validation for raw payloads
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from .acquisition import AcquireResult, AcquisitionService
 from .indexing import IndexService
 from .parsing import ParseResult, ParsingService
 from .rendering import RenderResult, RenderService
+from .validation import ValidateResult, ValidationService
 
 __all__ = [
     "AcquireResult",
@@ -22,4 +24,6 @@ __all__ = [
     "ParsingService",
     "RenderResult",
     "RenderService",
+    "ValidateResult",
+    "ValidationService",
 ]
