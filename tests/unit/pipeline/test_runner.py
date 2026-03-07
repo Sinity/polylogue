@@ -209,8 +209,8 @@ class TestSelectSources:
 class TestPlanSources:
     """Tests for plan_sources function."""
 
-    def test_plan_empty_config(self, tmp_path: Path):
-        """Returns zeros for empty config."""
+    def test_plan_empty_config(self, workspace_env, tmp_path: Path):
+        """Empty configs produce no preview actions."""
         config = Config(
             sources=[],
             archive_root=tmp_path / "archive",
@@ -220,12 +220,14 @@ class TestPlanSources:
         result = plan_sources(config)
 
         assert isinstance(result, PlanResult)
-        assert result.counts == {"conversations": 0, "messages": 0, "attachments": 0}
+        assert result.stage == "all"
+        assert result.counts == {}
+        assert result.details == {}
         assert result.sources == []
         assert result.cursors == {}
 
     def test_plan_single_source(self, tmp_path: Path):
-        """Correct counts for single source."""
+        """Single-source preview reports canonical pipeline actions."""
         # Create test conversations
         inbox = tmp_path / "inbox"
         inbox.mkdir()
@@ -272,9 +274,24 @@ class TestPlanSources:
 
         result = plan_sources(config)
 
-        assert result.counts["conversations"] == 1
-        assert result.counts["messages"] == 2
+        assert result.counts["scan"] == 1
+        assert result.counts["store_raw"] == 1
+        assert result.counts["validate"] == 1
+        assert result.counts["parse"] == 1
         assert result.sources == ["test-source"]
+
+    async def test_plan_inside_running_event_loop(self, workspace_env, tmp_path: Path):
+        """plan_sources remains callable from sync code inside an active event loop."""
+        config = Config(
+            sources=[],
+            archive_root=tmp_path / "archive",
+            render_root=tmp_path / "render",
+        )
+
+        result = plan_sources(config)
+
+        assert result.counts == {}
+        assert result.sources == []
 
 
 class TestAllConversationIds:
@@ -578,8 +595,8 @@ class TestRunSourcesIntegration:
             else:
                 assert result.index_error is not None
 
-    def test_drift_calculation_with_plan(self, workspace_env, tmp_path: Path):
-        """Drift is calculated comparing actual vs plan."""
+    def test_plan_snapshot_is_persisted_without_affecting_drift(self, workspace_env, tmp_path: Path):
+        """Run drift is derived from actual output, while plan snapshots are recorded separately."""
         config = Config(
             sources=[],
             archive_root=workspace_env["archive_root"],
@@ -596,10 +613,12 @@ class TestRunSourcesIntegration:
 
         result = asyncio.run(run_sources(config=config, stage="parse", plan=plan))
 
-        # With 0 actual, drift should show removed items
-        assert "new" in result.drift
-        assert "removed" in result.drift
-        assert result.drift["removed"]["conversations"] == 10  # All expected are "removed"
+        latest = asyncio.run(latest_run())
+        assert latest is not None
+        assert latest.plan_snapshot is not None
+        assert latest.plan_snapshot["counts"] == plan.counts
+        assert result.drift["new"]["conversations"] == 0
+        assert result.drift["removed"]["conversations"] == 0
 
     def test_drift_calculation_without_plan(self, workspace_env, tmp_path: Path):
         """Without plan, all items counted as 'new'."""

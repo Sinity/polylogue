@@ -44,6 +44,18 @@ class AcquireResult:
         self.raw_ids: list[str] = []  # List of acquired raw_ids
 
 
+class ScanResult:
+    """Result of scanning raw payloads from sources without persisting them."""
+
+    def __init__(self) -> None:
+        self.records: list[RawConversationRecord] = []
+        self.counts: dict[str, int] = {
+            "scanned": 0,
+            "errors": 0,
+        }
+        self.cursors: dict[str, dict[str, Any]] = {}
+
+
 class AcquisitionService:
     """Service for acquiring raw conversation data from sources.
 
@@ -64,11 +76,56 @@ class AcquisitionService:
         """
         self.backend = backend
 
-    async def acquire_sources(
+    async def scan_sources(
         self,
         sources: list[Source],
         *,
         progress_callback: Any | None = None,
+        ui: object | None = None,
+        drive_config: object | None = None,
+        progress_label: str = "Scanning",
+    ) -> ScanResult:
+        """Scan raw payloads from sources without writing them."""
+        result = ScanResult()
+        known_mtimes = await self.backend.get_known_source_mtimes()
+
+        for source in sources:
+            logger.debug("Scanning source", source=source.name)
+            cursor_state: dict[str, Any] = {}
+            try:
+                async for record in self._iter_raw_record_stream(
+                    source,
+                    known_mtimes=known_mtimes,
+                    ui=ui,
+                    cursor_state=cursor_state,
+                    drive_config=drive_config,
+                ):
+                    result.records.append(record)
+                    result.counts["scanned"] += 1
+                    if progress_callback:
+                        progress_callback(1, desc=f"{progress_label} [{source.name}]")
+            except Exception as exc:
+                logger.error(
+                    "Failed to scan source",
+                    source=source.name,
+                    error=str(exc),
+                )
+                result.counts["errors"] += 1
+                cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
+                cursor_state["latest_error"] = str(exc)
+
+            if cursor_state:
+                result.cursors[source.name] = cursor_state
+
+        return result
+
+    async def acquire_sources(
+        self,
+        sources: list[Source],
+        *,
+        ui: object | None = None,
+        progress_callback: Any | None = None,
+        drive_config: object | None = None,
     ) -> AcquireResult:
         """Acquire raw data from multiple sources.
 
@@ -83,11 +140,23 @@ class AcquisitionService:
             AcquireResult with counts and list of acquired raw_ids
         """
         result = AcquireResult()
+        scan_result = await self.scan_sources(
+            sources,
+            progress_callback=progress_callback,
+            ui=ui,
+            drive_config=drive_config,
+            progress_label="Acquiring",
+        )
+        result = await self.store_records(scan_result.records)
+        result.counts["errors"] += scan_result.counts["errors"]
+        return result
 
-        # Load known mtimes once for the entire acquisition phase.
-        # Files whose mtime hasn't changed will be skipped entirely,
-        # replacing a full read+SHA256 with a single stat() call.
-        known_mtimes = await self.backend.get_known_source_mtimes()
+    async def store_records(
+        self,
+        records: list[RawConversationRecord],
+    ) -> AcquireResult:
+        """Persist scanned raw records without rescanning sources."""
+        result = AcquireResult()
 
         # Use a single persistent connection with batched commits for the
         # entire acquisition phase.  This avoids fd/WAL exhaustion from
@@ -96,53 +165,27 @@ class AcquisitionService:
         items_since_flush = 0
 
         async with self.backend.bulk_connection():
-            for source in sources:
-                logger.debug("Acquiring from source", source=source.name)
-
+            for record in records:
                 try:
-                    # Stream source items from a dedicated worker thread to avoid
-                    # event-loop blocking and full-list materialization.
-                    async for raw_data in self._iter_source_raw_stream(
-                        source,
-                        known_mtimes=known_mtimes,
-                    ):
-                        if raw_data is None:
-                            # Defensive handling for malformed iterators/mocks
-                            logger.warning("No raw data captured for conversation")
-                            result.counts["errors"] += 1
-                            continue
-
-                        try:
-                            raw_id = await self._store_raw(raw_data, source.name)
-                            if raw_id:
-                                result.counts["acquired"] += 1
-                                result.raw_ids.append(raw_id)
-                            else:
-                                result.counts["skipped"] += 1
-                        except sqlite3.DatabaseError as exc:
-                            logger.error(
-                                "Failed to store raw conversation",
-                                source=source.name,
-                                path=raw_data.source_path,
-                                error=str(exc),
-                            )
-                            result.counts["errors"] += 1
-
-                        items_since_flush += 1
-                        if items_since_flush >= flush_interval:
-                            await self.backend.bulk_flush()
-                            items_since_flush = 0
-
-                        if progress_callback:
-                            progress_callback(1, desc=f"Acquiring [{source.name}]")
-
+                    inserted = await self.backend.save_raw_conversation(record)
+                    if inserted:
+                        result.counts["acquired"] += 1
+                        result.raw_ids.append(record.raw_id)
+                    else:
+                        result.counts["skipped"] += 1
                 except Exception as exc:
                     logger.error(
-                        "Failed to iterate source",
-                        source=source.name,
+                        "Failed to store raw conversation",
+                        source=record.source_name,
+                        path=record.source_path,
                         error=str(exc),
                     )
                     result.counts["errors"] += 1
+
+                items_since_flush += 1
+                if items_since_flush >= flush_interval:
+                    await self.backend.bulk_flush()
+                    items_since_flush = 0
 
         logger.info(
             "Acquisition complete",
@@ -190,31 +233,103 @@ class AcquisitionService:
                 for item in batch:
                     yield item
 
-    async def _store_raw(self, raw_data: RawConversationData, source_name: str) -> str | None:
-        """Store raw conversation data.
+    async def _iter_drive_raw_stream(
+        self,
+        source: Source,
+        *,
+        known_mtimes: dict[str, str] | None = None,
+        ui: object | None = None,
+        cursor_state: dict[str, Any] | None = None,
+        drive_config: object | None = None,
+    ) -> AsyncIterator[RawConversationData]:
+        """Stream Drive payloads as raw records without touching the local cache."""
+        from polylogue.sources.drive import iter_drive_raw_data
+
+        sentinel = object()
+        batch_size = 32
+        iterator = iter_drive_raw_data(
+            source=source,
+            ui=ui,
+            cursor_state=cursor_state,
+            drive_config=drive_config,
+            known_mtimes=known_mtimes,
+        )
+
+        def _next_batch() -> list[RawConversationData]:
+            batch: list[RawConversationData] = []
+            for _ in range(batch_size):
+                item = next(iterator, sentinel)
+                if item is sentinel:
+                    break
+                batch.append(item)
+            return batch
+
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            while True:
+                batch = await loop.run_in_executor(executor, _next_batch)
+                if not batch:
+                    break
+                for item in batch:
+                    yield item
+
+    async def _iter_raw_record_stream(
+        self,
+        source: Source,
+        *,
+        known_mtimes: dict[str, str] | None = None,
+        ui: object | None = None,
+        cursor_state: dict[str, Any] | None = None,
+        drive_config: object | None = None,
+    ) -> AsyncIterator[RawConversationRecord]:
+        """Yield prepared RawConversationRecord values for a source."""
+        raw_stream: AsyncIterator[RawConversationData]
+        if source.is_drive:
+            raw_stream = self._iter_drive_raw_stream(
+                source,
+                known_mtimes=known_mtimes,
+                ui=ui,
+                cursor_state=cursor_state,
+                drive_config=drive_config,
+            )
+        else:
+            raw_stream = self._iter_source_raw_stream(
+                source,
+                known_mtimes=known_mtimes,
+            )
+
+        async for raw_data in raw_stream:
+            try:
+                yield self._make_raw_record(raw_data, source.name)
+            except ValueError as exc:
+                logger.warning(
+                    "Skipping raw payload",
+                    source=source.name,
+                    path=raw_data.source_path,
+                    error=str(exc),
+                )
+
+    def _make_raw_record(self, raw_data: RawConversationData, source_name: str) -> RawConversationRecord:
+        """Prepare a raw conversation record from scanned payload bytes.
 
         Args:
             raw_data: Raw conversation data to store
             source_name: Config source name (e.g., "inbox"), stored separately
 
         Returns:
-            raw_id if newly stored, None if already exists or skipped
+            RawConversationRecord ready for persistence
         """
         size = len(raw_data.raw_bytes)
         if size > MAX_RAW_CONTENT_SIZE:
-            logger.warning(
-                "Skipping oversized source file (%.0f MB > %d MB limit)",
-                size / (1024 * 1024),
-                MAX_RAW_CONTENT_SIZE // (1024 * 1024),
-                path=raw_data.source_path,
-                source=source_name,
+            raise ValueError(
+                f"Oversized source file at {raw_data.source_path} "
+                f"({size} bytes > {MAX_RAW_CONTENT_SIZE} max)"
             )
-            return None
 
         raw_id = hashlib.sha256(raw_data.raw_bytes).hexdigest()
         acquired_at = datetime.now(timezone.utc).isoformat()
 
-        record = RawConversationRecord(
+        return RawConversationRecord(
             raw_id=raw_id,
             provider_name=canonical_runtime_provider(
                 raw_data.provider_hint or source_name,
@@ -228,7 +343,3 @@ class AcquisitionService:
             acquired_at=acquired_at,
             file_mtime=raw_data.file_mtime,
         )
-
-        if await self.backend.save_raw_conversation(record):
-            return raw_id
-        return None

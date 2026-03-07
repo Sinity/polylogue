@@ -158,30 +158,39 @@ class ParsingService:
         self,
         *,
         sources: list[Source],
+        stage: str = "all",
+        ui: object | None = None,
         progress_callback: Any | None = None,
         parse_records: bool = True,
     ) -> IngestResult:
         """Canonical ingestion orchestration for runtime callers.
 
         Flow:
-        1. Sync drive sources to local cache
-        2. Acquire raw payloads
+        1. Build a canonical plan from source scans + persisted raw state
+        2. Acquire any newly scanned raw payloads
         3. Validate pending raw payloads (new + backlog)
         4. Optionally parse validated raw payloads
         """
         from polylogue.pipeline.services.acquisition import AcquisitionService
+        from polylogue.pipeline.services.planning import PlanningService
         from polylogue.pipeline.services.validation import ValidationService
 
         backend = self.repository._backend
         if backend is None:
             raise RuntimeError("Repository backend is not initialized")
 
-        await self.sync_drive_sources(sources, progress_callback=progress_callback)
+        plan_stage = stage if stage in {"acquire", "validate", "parse", "all"} else ("all" if parse_records else "validate")
+        planning_service = PlanningService(backend=backend, config=self.config)
+        plan = await planning_service.build_plan(
+            sources=sources,
+            stage=plan_stage,
+            ui=ui,
+            progress_callback=progress_callback,
+        )
 
         acquire_service = AcquisitionService(backend=backend)
-        acquire_result = await acquire_service.acquire_sources(
-            sources,
-            progress_callback=progress_callback,
+        acquire_result = await acquire_service.store_records(
+            plan.store_records,
         )
         source_names = [source.name for source in sources]
         ingest_state = IngestState(
@@ -190,11 +199,7 @@ class ParsingService:
         )
         ingest_state.record_acquired(acquire_result.raw_ids)
 
-        validation_ids = await self._collect_pending_validation_raw_ids(
-            backend=backend,
-            source_names=source_names,
-            acquired_raw_ids=acquire_result.raw_ids,
-        )
+        validation_ids = [record.raw_id for record in plan.validate_records]
         ingest_state.record_validation_candidates(validation_ids)
 
         validation_result = None
@@ -211,11 +216,10 @@ class ParsingService:
         parse_raw_ids: list[str] = []
         parse_result = ParseResult()
         if parse_records:
-            parse_raw_ids = await self._collect_parse_ready_raw_ids(
-                backend=backend,
-                source_names=source_names,
-                parseable_raw_ids=(validation_result.parseable_raw_ids if validation_result else None),
-            )
+            parse_raw_ids = list(plan.parse_ready_raw_ids)
+            if validation_result is not None:
+                parse_raw_ids.extend(validation_result.parseable_raw_ids)
+                parse_raw_ids = list(dict.fromkeys(parse_raw_ids))
             current_validation_ids = set(ingest_state.validation_raw_ids)
             persisted_validated_ids = [
                 raw_id
@@ -240,62 +244,6 @@ class ParsingService:
             parse_result=parse_result,
             parse_raw_ids=parse_raw_ids,
         )
-
-    async def _collect_pending_validation_raw_ids(
-        self,
-        *,
-        backend: Any,
-        source_names: list[str] | None,
-        acquired_raw_ids: list[str] | None,
-    ) -> list[str]:
-        """Collect unparsed/unvalidated raw IDs, including newly acquired rows."""
-        selected = list(acquired_raw_ids or [])
-        seen = set(selected)
-        raw_ids = await backend.list_raw_ids(
-            source_names=source_names,
-            require_unparsed=True,
-            require_unvalidated=True,
-        )
-        for raw_id in raw_ids:
-            if raw_id in seen:
-                continue
-            selected.append(raw_id)
-            seen.add(raw_id)
-        return selected
-
-    async def _collect_parse_ready_raw_ids(
-        self,
-        *,
-        backend: Any,
-        source_names: list[str] | None,
-        parseable_raw_ids: list[str] | None,
-    ) -> list[str]:
-        """Collect unparsed rows marked passed/skipped, including current pass IDs."""
-        selected = list(parseable_raw_ids or [])
-        seen = set(selected)
-        raw_ids = await backend.list_raw_ids(
-            source_names=source_names,
-            require_unparsed=True,
-            validation_statuses=["passed", "skipped"],
-        )
-        for raw_id in raw_ids:
-            if raw_id in seen:
-                continue
-            selected.append(raw_id)
-            seen.add(raw_id)
-        return selected
-
-    async def sync_drive_sources(
-        self,
-        sources: list[Source],
-        *,
-        progress_callback: Any | None = None,
-    ) -> None:
-        """Public wrapper for Drive source synchronization.
-
-        Runner orchestration uses this to keep Drive prefetching in one place.
-        """
-        await self._sync_drive_sources(sources, progress_callback=progress_callback)
 
     # Batch size for processing raw records to limit memory usage.
     # Each raw record may contain multi-MB JSONL content; loading thousands
@@ -523,57 +471,5 @@ class ParsingService:
             payload,
             raw_record.raw_id,  # Use raw_id as fallback conversation ID
         )
-
-    async def _sync_drive_sources(
-        self,
-        sources: list[Source],
-        *,
-        progress_callback: Any | None = None,
-    ) -> None:
-        """Sync Drive sources to their local cache directories.
-
-        Downloads new/changed files from Google Drive to the source's local path,
-        so the normal file-based acquisition pipeline can pick them up.
-
-        Runs synchronous Google API calls in a thread pool to avoid blocking.
-        """
-        drive_sources = [s for s in sources if s.is_drive and s.path]
-        if not drive_sources:
-            return
-
-        for source in drive_sources:
-            if progress_callback:
-                progress_callback(0, desc=f"Syncing Drive [{source.name}]")
-
-            try:
-                result = await asyncio.to_thread(
-                    self._sync_one_drive_source, source,
-                )
-                if result:
-                    logger.info(
-                        "Drive sync complete",
-                        source=source.name,
-                        downloaded=len(result.downloaded_files),
-                        failed=len(result.failed_files),
-                        total=result.total_files,
-                    )
-            except Exception as exc:
-                # Drive errors are non-fatal — log and continue with local sources
-                logger.warning(
-                    "Skipping Drive source %s: %s", source.name, exc,
-                )
-
-    def _sync_one_drive_source(self, source: Source) -> Any:
-        """Sync a single Drive source (runs in thread pool)."""
-        from polylogue.sources.drive import download_drive_files
-        from polylogue.sources.drive_client import DriveClient
-
-        source.path.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
-
-        drive_config = self.config.drive_config if hasattr(self.config, "drive_config") else None
-        client = DriveClient(config=drive_config)
-        folder_id = client.resolve_folder_id(source.folder)  # type: ignore[arg-type]
-        return download_drive_files(client, folder_id, source.path)  # type: ignore[arg-type]
-
 
 __all__ = ["ParsingService", "ParseResult", "IngestResult"]

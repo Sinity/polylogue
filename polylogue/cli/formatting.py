@@ -66,6 +66,42 @@ def format_counts(counts: Mapping[str, object]) -> str:
     return ", ".join(parts)
 
 
+def format_plan_counts(counts: Mapping[str, object]) -> str:
+    labels = [
+        ("scan", "scan"),
+        ("store_raw", "store"),
+        ("validate", "validate"),
+        ("parse", "parse"),
+        ("render", "render"),
+        ("index", "index"),
+    ]
+    parts: list[str] = []
+    for key, label in labels:
+        value = counts.get(key)
+        if isinstance(value, int) and value:
+            parts.append(f"{value} {label}")
+    if not parts:
+        return "no pipeline actions"
+    return ", ".join(parts)
+
+
+def format_plan_details(details: Mapping[str, object]) -> str | None:
+    labels = [
+        ("new_raw", "new raw"),
+        ("existing_raw", "existing raw"),
+        ("backlog_validate", "validate backlog"),
+        ("backlog_parse", "parse backlog"),
+        ("preview_invalid", "would fail validation"),
+        ("preview_skipped_no_schema", "no schema"),
+    ]
+    parts: list[str] = []
+    for key, label in labels:
+        value = details.get(key)
+        if isinstance(value, int) and value:
+            parts.append(f"{value} {label}")
+    return ", ".join(parts) if parts else None
+
+
 def format_index_status(stage: str, indexed: bool, index_error: str | None) -> str:
     if stage in {"parse", "render"}:
         return "Index: skipped"
