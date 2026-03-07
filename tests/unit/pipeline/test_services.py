@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,6 +24,7 @@ from polylogue.pipeline.services.validation import ValidationService
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.store import RawConversationRecord
 
 # ============================================================================
 # IndexService Tests
@@ -632,6 +634,7 @@ class TestParsingServiceParseSources:
         """Empty sources list returns empty ParseResult (no acquisition needed)."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
+        mock_backend.list_raw_ids = AsyncMock(return_value=[])
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
@@ -678,6 +681,7 @@ class TestParsingServiceParseSources:
         """parse_sources calls acquire stage, then parse stage with returned raw_ids."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
+        mock_backend.list_raw_ids = AsyncMock(return_value=[])
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
@@ -747,6 +751,7 @@ class TestParsingServiceParseSources:
         """If acquisition returns no raw_ids, parse stage is skipped."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
+        mock_backend.list_raw_ids = AsyncMock(return_value=[])
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
@@ -799,6 +804,7 @@ class TestParsingServiceParseSources:
         """Progress callback is forwarded to both acquire and parse stages."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
+        mock_backend.list_raw_ids = AsyncMock(return_value=[])
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
@@ -878,6 +884,86 @@ class TestParsingServiceParseSources:
 
         with pytest.raises(RuntimeError, match="backend is not initialized"):
             await service.parse_sources([source])
+
+    async def test_collect_pending_validation_raw_ids_uses_source_scope(self, tmp_path: Path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        service = ParsingService(
+            repository=ConversationRepository(backend=backend),
+            archive_root=tmp_path / "archive",
+            config=Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render"),
+        )
+
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-scoped",
+                provider_name="chatgpt",
+                source_name="inbox-a",
+                source_path="/tmp/a.json",
+                raw_content=b'{"id":"a"}',
+                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+        )
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-legacy-provider",
+                provider_name="inbox-a",
+                source_name=None,
+                source_path="/tmp/legacy.json",
+                raw_content=b'{"id":"legacy"}',
+                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+        )
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-other",
+                provider_name="chatgpt",
+                source_name="inbox-b",
+                source_path="/tmp/b.json",
+                raw_content=b'{"id":"b"}',
+                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+        )
+
+        raw_ids = await service._collect_pending_validation_raw_ids(
+            backend=backend,
+            source_names=["inbox-a"],
+            acquired_raw_ids=None,
+        )
+
+        assert set(raw_ids) == {"raw-scoped", "raw-legacy-provider"}
+
+    async def test_collect_parse_ready_raw_ids_filters_validation_status(self, tmp_path: Path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        service = ParsingService(
+            repository=ConversationRepository(backend=backend),
+            archive_root=tmp_path / "archive",
+            config=Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render"),
+        )
+
+        for raw_id, status in (
+            ("raw-passed", "passed"),
+            ("raw-skipped", "skipped"),
+            ("raw-failed", "failed"),
+        ):
+            await backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name="chatgpt",
+                    source_name="inbox-a",
+                    source_path=f"/tmp/{raw_id}.json",
+                    raw_content=b'{"id":"x"}',
+                    acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+                    validation_status=status,
+                )
+            )
+
+        raw_ids = await service._collect_parse_ready_raw_ids(
+            backend=backend,
+            source_names=["inbox-a"],
+            parseable_raw_ids=None,
+        )
+
+        assert set(raw_ids) == {"raw-passed", "raw-skipped"}
 
 
 # ============================================================================

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
@@ -191,12 +191,13 @@ def _build_conversation_filters(
         where_clauses.append("provider_name = ?")
         params.append(provider)
     if providers:
-        placeholders = ",".join("?" for _ in providers)
-        where_clauses.append(
-            f"(provider_name IN ({placeholders}) OR source_name IN ({placeholders}))"
+        source_scope_sql, source_scope_params = _build_source_scope_filter(
+            providers,
+            provider_column="provider_name",
+            source_column="source_name",
         )
-        params.extend(providers)
-        params.extend(providers)
+        where_clauses.append(source_scope_sql)
+        params.extend(source_scope_params)
     if parent_id is not None:
         where_clauses.append("parent_conversation_id = ?")
         params.append(parent_id)
@@ -215,8 +216,26 @@ def _build_conversation_filters(
     return where_sql, params
 
 
+def _build_source_scope_filter(
+    names: Sequence[str] | None,
+    *,
+    provider_column: str = "provider_name",
+    source_column: str = "source_name",
+) -> tuple[str, list[str]]:
+    """Build a source-scope predicate matching source names and legacy provider names."""
+    if not names:
+        return "", []
+
+    placeholders = ",".join("?" for _ in names)
+    return (
+        f"({provider_column} IN ({placeholders}) OR {source_column} IN ({placeholders}))",
+        [*names, *names],
+    )
+
+
 __all__ = [
     "DB_TIMEOUT",
+    "_build_source_scope_filter",
     "connection_context",
     "create_default_backend",
     "default_db_path",

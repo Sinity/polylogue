@@ -26,7 +26,7 @@ class SearchProvider(Protocol):
         ...
 
     def search(self, query: str) -> list[str]:
-        """Search indexed messages, returning matching conversation IDs ranked by relevance."""
+        """Search indexed messages, returning matching message IDs ranked by relevance."""
         ...
 
 
