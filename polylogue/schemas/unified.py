@@ -123,7 +123,7 @@ class HarmonizedMessage(BaseModel):
 
 # Transform functions now imported from core modules:
 # - parse_timestamp from polylogue.lib.timestamps
-# - normalize_role, ROLE_MAP from polylogue.lib.roles
+# - normalize_role from polylogue.lib.roles
 
 
 # =============================================================================
