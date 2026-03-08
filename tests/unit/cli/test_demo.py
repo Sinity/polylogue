@@ -51,9 +51,10 @@ class TestDemoTierFilter:
             )
         assert result.exit_code == 0
         assert mock_showcase.call_count == 1
-        # tier_filter is the last positional arg to _do_showcase
+        # tier_filter is the second-to-last positional arg; audit_dir is last
         args = mock_showcase.call_args.args
-        assert args[-1] == 2
+        assert args[-2] == 2   # tier_filter
+        assert args[-1] is None  # audit_dir
 
     def test_no_tier_defaults_none(self, cli_runner, tmp_path):
         with patch("polylogue.cli.commands.demo._do_showcase") as mock_showcase:
@@ -63,7 +64,8 @@ class TestDemoTierFilter:
             )
         assert result.exit_code == 0
         args = mock_showcase.call_args.args
-        assert args[-1] is None
+        assert args[-2] is None  # tier_filter
+        assert args[-1] is None  # audit_dir
 
     def test_showcase_data_requires_showcase_mode(self, cli_runner, tmp_path):
         result = cli_runner.invoke(
