@@ -243,6 +243,72 @@ def test_search_conversations_provider_filter() -> None:
 # create_hybrid_provider factory law
 # ---------------------------------------------------------------------------
 
+def test_search_conversations_limit_zero_returns_empty() -> None:
+    """search_conversations with limit=0 must return [], not one result."""
+    fts, vec = _make_providers()
+    provider = HybridSearchProvider(fts, vec)
+    conn = _messages_db({"msg1": "conv_A", "msg2": "conv_B"})
+    fts.db_path = conn
+
+    provider.search_scored = MagicMock(  # type: ignore[method-assign]
+        return_value=[("msg1", 0.9), ("msg2", 0.8)]
+    )
+    result = provider.search_conversations("test", limit=0)
+    assert result == [], f"limit=0 must return empty list, got {result}"
+
+
+def test_search_conversations_empty_providers_equivalent_to_none() -> None:
+    """providers=[] and providers=None are both treated as 'no filter' (all conversations).
+
+    The guard `if providers:` is falsy for both None and [], so an empty list
+    does NOT mean 'empty allowlist'. Both values include all conversations.
+    This is intentional — callers have no reason to pass providers=[] expecting
+    zero results.
+    """
+    fts, vec = _make_providers()
+    provider = HybridSearchProvider(fts, vec)
+    conn = _messages_db({"msg1": "conv_A"})
+    fts.db_path = conn
+
+    provider.search_scored = MagicMock(  # type: ignore[method-assign]
+        return_value=[("msg1", 0.9)]
+    )
+    result_empty_list = provider.search_conversations("test", limit=10, providers=[])
+    result_none = provider.search_conversations("test", limit=10, providers=None)
+    # Both must behave identically — no filter applied
+    assert result_empty_list == result_none == ["conv_A"]
+
+
+def test_search_conversations_orphan_message_ids_skipped() -> None:
+    """Message IDs returned by search but absent from the DB are gracefully skipped."""
+    fts, vec = _make_providers()
+    provider = HybridSearchProvider(fts, vec)
+    # Only msg2 exists in the DB; msg1 and msg3 are orphans (e.g., deleted)
+    conn = _messages_db({"msg2": "conv_B"})
+    fts.db_path = conn
+
+    provider.search_scored = MagicMock(  # type: ignore[method-assign]
+        return_value=[("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)]
+    )
+    result = provider.search_conversations("test", limit=10)
+    assert result == ["conv_B"], "Orphan message IDs must be silently skipped"
+
+
+def test_rrf_deduplicates_within_same_list() -> None:
+    """Duplicate IDs within a single result list are counted only once at their best rank."""
+    # "msg1" appears twice in list1; should score as rank=1 only (not rank=1 + rank=3)
+    list1 = [("msg1", 0.9), ("msg2", 0.8), ("msg1", 0.5)]
+    fused = reciprocal_rank_fusion(list1, k=60)
+    scores = dict(fused)
+    # msg1 at rank 1 → 1/61; msg2 at rank 2 → 1/62
+    # If dedup works, msg1=1/61 > msg2=1/62
+    # If not dedup, msg1=1/61+1/63 >> msg2 — but the ratio would differ
+    expected_msg1 = 1.0 / (60 + 1)
+    assert abs(scores["msg1"] - expected_msg1) < 1e-10, (
+        f"msg1 should score exactly 1/(60+1) from best rank; got {scores['msg1']}"
+    )
+
+
 def test_create_hybrid_provider_returns_none_when_no_vector() -> None:
     """create_hybrid_provider returns None when no vector provider is available."""
     with patch(
