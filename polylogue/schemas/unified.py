@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 try:
     from glom import glom
@@ -33,7 +33,7 @@ except ImportError:
     def glom(target: Any, spec: Any) -> Any: ...
 
 
-from polylogue.lib.roles import normalize_role
+from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
@@ -66,7 +66,7 @@ class HarmonizedMessage(BaseModel):
 
     # Core fields
     id: str | None = None
-    role: str
+    role: Role
     text: str
     timestamp: datetime | None = None
 
@@ -82,8 +82,23 @@ class HarmonizedMessage(BaseModel):
     duration_ms: int | None = None
 
     # Provider info
-    provider: str
+    provider: Provider
     raw: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def coerce_role(cls, v: object) -> Role:
+        if isinstance(v, Role):
+            return v
+        raw = (str(v) if v is not None else "").strip() or "unknown"
+        return Role.normalize(raw)
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def coerce_provider(cls, v: object) -> Provider:
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v) if v is not None else "unknown")
 
     @property
     def has_reasoning(self) -> bool:
@@ -116,7 +131,7 @@ class HarmonizedMessage(BaseModel):
 # =============================================================================
 
 
-def extract_reasoning_traces(content: list[dict[str, Any]] | None, provider: str) -> list[ReasoningTrace]:
+def extract_reasoning_traces(content: list[dict[str, Any]] | None, provider: Provider | str) -> list[ReasoningTrace]:
     """Extract reasoning traces from content blocks."""
     if not content:
         return []
@@ -146,7 +161,7 @@ def extract_reasoning_traces(content: list[dict[str, Any]] | None, provider: str
     return traces
 
 
-def extract_tool_calls(content: list[dict[str, Any]] | None, provider: str) -> list[ToolCall]:
+def extract_tool_calls(content: list[dict[str, Any]] | None, provider: Provider | str) -> list[ToolCall]:
     """Extract tool calls from content blocks."""
     if not content:
         return []
@@ -262,7 +277,8 @@ def extract_token_usage(usage: dict[str, Any] | None) -> TokenUsage | None:
 def extract_claude_code_text(content: list[dict[str, Any]] | None) -> str:
     """Extract text from Claude Code content blocks.
 
-    Handles: text blocks, thinking blocks (concatenated).
+    Only extracts ``type: "text"`` blocks. Thinking/reasoning traces are
+    surfaced via reasoning_traces, not mixed into the main text content.
     """
     if not content:
         return ""
@@ -271,11 +287,8 @@ def extract_claude_code_text(content: list[dict[str, Any]] | None) -> str:
     for block in content:
         if not isinstance(block, dict):
             continue
-        block_type = block.get("type")
-        if block_type == "text":
+        if block.get("type") == "text":
             parts.append(block.get("text", ""))
-        elif block_type == "thinking":
-            parts.append(block.get("thinking", ""))
 
     return "\n".join(filter(None, parts))
 
@@ -312,17 +325,17 @@ def extract_codex_text(content: list[dict[str, Any]] | None) -> str:
 # =============================================================================
 
 
-def extract_harmonized_message(provider: str, raw: dict[str, Any]) -> HarmonizedMessage:
+def extract_harmonized_message(provider: Provider | str, raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract HarmonizedMessage from raw provider data.
 
     Args:
-        provider: Provider name (claude-code, chatgpt, gemini, etc.)
+        provider: Provider enum (or string for backward compat)
         raw: Raw message data in provider's native format
 
     Returns:
         HarmonizedMessage with core fields and viewport extractions
     """
-    p = Provider.from_string(provider)
+    p = provider if isinstance(provider, Provider) else Provider.from_string(provider)
     if p == Provider.CLAUDE_CODE:
         return _extract_claude_code(raw)
     elif p == Provider.CLAUDE:
@@ -344,17 +357,17 @@ def _extract_claude_code(raw: dict[str, Any]) -> HarmonizedMessage:
 
     return HarmonizedMessage(
         id=raw.get("uuid"),
-        role=normalize_role((msg.get("role") if isinstance(msg, dict) else raw.get("type")) or _missing_role()),
+        role=Role.normalize((msg.get("role") if isinstance(msg, dict) else raw.get("type")) or _missing_role()),
         text=extract_claude_code_text(content),
         timestamp=parse_timestamp(raw.get("timestamp")),
-        reasoning_traces=extract_reasoning_traces(content, "claude-code"),
-        tool_calls=extract_tool_calls(content, "claude-code"),
+        reasoning_traces=extract_reasoning_traces(content, Provider.CLAUDE_CODE),
+        tool_calls=extract_tool_calls(content, Provider.CLAUDE_CODE),
         content_blocks=extract_content_blocks(content),
         model=msg.get("model") if isinstance(msg, dict) else None,
         tokens=extract_token_usage(msg.get("usage") if isinstance(msg, dict) else None),
         cost=CostInfo(total_usd=raw.get("costUSD")) if raw.get("costUSD") else None,
         duration_ms=raw.get("durationMs"),
-        provider="claude-code",
+        provider=Provider.CLAUDE_CODE,
         raw=raw,
     )
 
@@ -363,10 +376,10 @@ def _extract_claude_ai(raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract from Claude AI (web) format."""
     return HarmonizedMessage(
         id=raw.get("uuid"),
-        role=normalize_role(raw.get("sender") or _missing_role()),
+        role=Role.normalize(raw.get("sender") or _missing_role()),
         text=raw.get("text", ""),
         timestamp=parse_timestamp(raw.get("created_at")),
-        provider="claude-ai",
+        provider=Provider.CLAUDE,
         raw=raw,
     )
 
@@ -379,11 +392,11 @@ def _extract_chatgpt(raw: dict[str, Any]) -> HarmonizedMessage:
 
     return HarmonizedMessage(
         id=raw.get("id"),
-        role=normalize_role((author.get("role") if isinstance(author, dict) else None) or _missing_role()),
+        role=Role.normalize((author.get("role") if isinstance(author, dict) else None) or _missing_role()),
         text=extract_chatgpt_text(content) if isinstance(content, dict) else "",
         timestamp=parse_timestamp(raw.get("create_time")),
         model=metadata.get("model_slug") if isinstance(metadata, dict) else None,
-        provider="chatgpt",
+        provider=Provider.CHATGPT,
         raw=raw,
     )
 
@@ -394,21 +407,21 @@ def _extract_gemini(raw: dict[str, Any]) -> HarmonizedMessage:
 
     return HarmonizedMessage(
         id=None,  # Gemini doesn't have message IDs in export
-        role=normalize_role(raw.get("role") or _missing_role()),
+        role=Role.normalize(raw.get("role") or _missing_role()),
         text=raw.get("text", ""),
         timestamp=None,  # Gemini doesn't have timestamps in export
         reasoning_traces=[
             ReasoningTrace(
                 text=raw.get("text", ""),
                 token_count=raw.get("thinkingBudget"),
-                provider="gemini",
+                provider=Provider.GEMINI,
                 raw=raw,
             )
         ]
         if is_thinking
         else [],
         tokens=TokenUsage(output_tokens=raw.get("tokenCount")) if raw.get("tokenCount") else None,
-        provider="gemini",
+        provider=Provider.GEMINI,
         raw=raw,
     )
 
@@ -434,10 +447,10 @@ def _extract_codex(raw: dict[str, Any]) -> HarmonizedMessage:
 
     return HarmonizedMessage(
         id=raw.get("id"),
-        role=normalize_role(role),
+        role=Role.normalize(role),
         text="\n".join(text_parts),
         timestamp=parse_timestamp(raw.get("timestamp")),
-        provider="codex",
+        provider=Provider.CODEX,
         raw=raw,
     )
 
@@ -447,77 +460,20 @@ def _extract_codex(raw: dict[str, Any]) -> HarmonizedMessage:
 # =============================================================================
 
 
-def _harmonize_from_extracted_meta(provider_meta: dict[str, Any]) -> HarmonizedMessage:
-    """Build HarmonizedMessage from claude-code's extracted provider_meta.
-
-    When ``raw`` is absent (the original record lives in ``raw_conversations``),
-    we reconstruct from the fields the parser already extracted into
-    provider_meta: content_blocks, thinking_traces, tool_invocations, model,
-    token_usage, costUSD, durationMs, etc.
-    """
-    content_blocks = provider_meta.get("content_blocks", [])
-    thinking = provider_meta.get("thinking_traces", [])
-    tools = provider_meta.get("tool_invocations", [])
-
-    reasoning_traces = [
-        ReasoningTrace(text=t.get("text", ""), provider="claude-code")
-        for t in thinking
-    ] if thinking else []
-
-    tool_calls = [
-        ToolCall(
-            name=t.get("tool_name") or t.get("name", "unknown"),
-            tool_id=t.get("tool_id") or t.get("id"),
-            input_data=t.get("input") or t.get("input_data"),
-            provider="claude-code",
-        )
-        for t in tools
-    ] if tools else []
-
-    token_info = provider_meta.get("token_usage")
-    tokens = TokenUsage(
-        input_tokens=token_info.get("input_tokens"),
-        output_tokens=token_info.get("output_tokens"),
-        cache_creation_tokens=token_info.get("cache_creation_input_tokens"),
-        cache_read_tokens=token_info.get("cache_read_input_tokens"),
-    ) if isinstance(token_info, dict) else None
-
-    cost_usd = provider_meta.get("costUSD")
-    cost = CostInfo(total_usd=cost_usd) if cost_usd else None
-
-    blocks = []
-    for b in content_blocks:
-        btype = b.get("type", "text")
-        try:
-            ct = ContentType(btype)
-        except ValueError:
-            ct = ContentType.UNKNOWN
-        blocks.append(ContentBlock(type=ct, text=b.get("text"), name=b.get("name")))
-
-    return HarmonizedMessage(
-        id=None,
-        role="unknown",  # Role is in the Message model, not provider_meta
-        text="",  # Text is in the Message model, not provider_meta
-        timestamp=None,
-        reasoning_traces=reasoning_traces,
-        tool_calls=tool_calls,
-        content_blocks=blocks,
-        model=provider_meta.get("model"),
-        tokens=tokens,
-        cost=cost,
-        duration_ms=provider_meta.get("durationMs"),
-        provider="claude-code",
-        raw=provider_meta,
-    )
-
-
-def extract_from_provider_meta(provider: str, provider_meta: dict[str, Any]) -> HarmonizedMessage:
+def extract_from_provider_meta(
+    provider: Provider | str,
+    provider_meta: dict[str, Any],
+    *,
+    message_id: str | None = None,
+    role: str | None = None,
+    text: str | None = None,
+    timestamp: datetime | str | float | int | None = None,
+) -> HarmonizedMessage:
     """Extract HarmonizedMessage from polylogue database format.
 
-    Providers that store a ``raw`` key in provider_meta will use that for
-    full re-extraction.  Claude-code no longer stores ``raw`` (the original
-    record lives in ``raw_conversations``), so we build a HarmonizedMessage
-    from the already-extracted fields.
+    Providers store a ``raw`` key in provider_meta containing the original
+    record; this passes through to full re-extraction via the provider
+    dispatcher. Falls back to treating provider_meta itself as the raw record.
 
     Args:
         provider: Provider name
@@ -529,10 +485,6 @@ def extract_from_provider_meta(provider: str, provider_meta: dict[str, Any]) -> 
     raw = provider_meta.get("raw")
     if raw is not None:
         return extract_harmonized_message(provider, raw)
-    # No raw key — claude-code stores extracted fields directly
-    if provider in ("claude-code", "claude_code"):
-        return _harmonize_from_extracted_meta(provider_meta)
-    # Other providers: try extraction from provider_meta as fallback
     return extract_harmonized_message(provider, provider_meta)
 
 

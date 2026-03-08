@@ -148,12 +148,11 @@ def test_normalize_role_none_handling() -> None:
 
 
 @given(st.sampled_from(["user", "assistant", "system", "human", "model"]))
-def test_message_role_enum_cached(role: str) -> None:
-    """role_enum property returns same object on repeated access."""
+def test_message_role_is_enum(role: str) -> None:
+    """Message.role is always a typed Role enum after construction."""
+    from polylogue.lib.roles import Role
     msg = Message(id="1", role=role, text="test")
-    first = msg.role_enum
-    second = msg.role_enum
-    assert first is second  # Same object (cached)
+    assert isinstance(msg.role, Role)
 
 
 @given(st.text(min_size=1, max_size=1000), st.sampled_from(["user", "assistant"]))

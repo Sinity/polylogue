@@ -874,6 +874,57 @@ class TestUnifiedHarmonizeParsedMessage:
         result = harmonize_parsed_message("claude-ai", meta)
         assert isinstance(result, HarmonizedMessage)
 
+    def test_harmonize_parsed_message_claude_code_raw_preserves_tool_fields(self):
+        """Claude Code raw format should extract tool id/input/category correctly."""
+        raw_record = {
+            "type": "assistant",
+            "uuid": "msg-1",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need to read file"},
+                    {"type": "thinking", "thinking": "First inspect the repo"},
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Read",
+                        "input": {"file_path": "README.md"},
+                    },
+                ],
+            },
+        }
+        result = harmonize_parsed_message("claude-code", {"raw": raw_record})
+        assert result is not None
+        assert result.id == "msg-1"
+        assert result.role == "assistant"
+        assert result.text == "Need to read file"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].id == "tool-1"
+        assert result.tool_calls[0].input == {"file_path": "README.md"}
+        assert result.tool_calls[0].category.value == "file_read"
+        assert len(result.reasoning_traces) == 1
+        assert result.reasoning_traces[0].text == "First inspect the repo"
+
+    def test_extract_from_provider_meta_claude_code_raw_extracts_text(self):
+        """Raw format extraction should produce text from text-only blocks."""
+        raw_record = {
+            "type": "assistant",
+            "uuid": "msg-2",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "line one"},
+                    {"type": "text", "text": "line two"},
+                    {"type": "thinking", "thinking": "some reasoning"},
+                ],
+            },
+        }
+        result = extract_from_provider_meta("claude-code", {"raw": raw_record})
+        assert result.text == "line one\nline two"
+        assert result.role == "assistant"
+        assert len(result.reasoning_traces) == 1
+
 
 class TestUnifiedBulkHarmonize:
     """Test bulk_harmonize edge cases."""

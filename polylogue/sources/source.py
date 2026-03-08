@@ -109,39 +109,50 @@ def _decode_json_bytes(blob: bytes) -> str | None:
         return None
 
 
-def detect_provider(payload: Any, path: Path) -> str | None:
+def detect_provider(payload: Any, path: Path) -> Provider | None:
     if isinstance(payload, dict):
         if chatgpt.looks_like(payload):
-            return "chatgpt"
+            return Provider.CHATGPT
         if claude.looks_like_ai(payload):
-            return "claude"
+            return Provider.CLAUDE
         if claude.looks_like_code([payload]):
-            return "claude-code"
+            return Provider.CLAUDE_CODE
         if codex.looks_like([payload]):
-            return "codex"
+            return Provider.CODEX
         # Gemini content-based detection (chunkedPrompt or chunks list)
         if "chunkedPrompt" in payload or ("chunks" in payload and isinstance(payload.get("chunks"), list)):
-            return "gemini"
+            return Provider.GEMINI
     if isinstance(payload, list):
+        if payload and isinstance(payload[0], dict):
+            first = payload[0]
+            # ChatGPT bundle export: list[conversation]
+            if isinstance(first.get("mapping"), dict):
+                return Provider.CHATGPT
+            # Claude AI bundle export: list[conversation]
+            if isinstance(first.get("chat_messages"), list):
+                return Provider.CLAUDE
+            # Gemini/Drive grouped list of conversations/chunks
+            if "chunkedPrompt" in first or ("chunks" in first and isinstance(first.get("chunks"), list)):
+                return Provider.GEMINI
         if claude.looks_like_code(payload):
-            return "claude-code"
+            return Provider.CLAUDE_CODE
         if codex.looks_like(payload):
-            return "codex"
+            return Provider.CODEX
 
     # Check filename and parent directory for provider hints
     name = path.name.lower()
     path_str = str(path).lower()
 
     if "chatgpt" in name or "chatgpt" in path_str:
-        return "chatgpt"
+        return Provider.CHATGPT
     if "claude-code" in name or "claude_code" in name or "claude-code" in path_str or "claude_code" in path_str:
-        return "claude-code"
+        return Provider.CLAUDE_CODE
     if "claude" in name or "/claude/" in path_str:
-        return "claude"
+        return Provider.CLAUDE
     if "codex" in name or "codex" in path_str:
-        return "codex"
+        return Provider.CODEX
     if "gemini" in name or "gemini" in path_str:
-        return "gemini"
+        return Provider.GEMINI
     return None
 
 
@@ -413,14 +424,54 @@ def _build_session_indices(paths: list[Path]) -> dict[Path, dict[str, SessionInd
 # Parse context and conversation emitter
 # =============================================================================
 
-_GROUP_PROVIDERS = frozenset({"claude-code", "codex", "gemini", "drive"})
+_GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE})
+
+
+@dataclass
+class _SourceWalkSetup:
+    """Result of shared source-path setup used by both public iterators."""
+
+    paths: list[Path]
+    paths_to_process: list[tuple[Path, str | None]]
+    skipped_mtime: int
+    session_indices: dict[Path, dict[str, SessionIndexEntry]]
+
+
+def _setup_source_walk(
+    source: Source,
+    *,
+    cursor_state: dict[str, Any] | None,
+    include_mtime: bool,
+    known_mtimes: dict[str, str] | None,
+    build_session_indices: bool,
+) -> _SourceWalkSetup | None:
+    """Resolve source paths and prepare iteration state.
+
+    Returns None when the source yields no paths (callers should return early).
+    """
+    paths = _resolve_source_paths(source)
+    _initialize_cursor_state(cursor_state, paths)
+    if not paths:
+        return None
+    paths_to_process, skipped_mtime = _select_paths_for_processing(
+        paths,
+        include_file_mtime=include_mtime,
+        known_mtimes=known_mtimes,
+    )
+    session_indices = _build_session_indices(paths) if build_session_indices else {}
+    return _SourceWalkSetup(
+        paths=paths,
+        paths_to_process=paths_to_process,
+        skipped_mtime=skipped_mtime,
+        session_indices=session_indices,
+    )
 
 
 @dataclass
 class _ParseContext:
     """All context needed to parse a stream and yield conversations."""
 
-    provider_hint: str
+    provider_hint: Provider
     should_group: bool
     source_path_str: str  # For RawConversationData.source_path
     fallback_id: str  # path.stem, used as fallback conversation ID
@@ -709,46 +760,20 @@ def iter_source_conversations_with_raw(
         return
     base = source.path.expanduser()
 
-    # Phase 1: Resolve paths
-    if base.is_dir():
-        paths = _walk_source_paths(base)
-    elif base.is_file():
-        paths = [base]
-    else:
-        paths = []
+    walk = _setup_source_walk(
+        source,
+        cursor_state=cursor_state,
+        include_mtime=capture_raw,
+        known_mtimes=known_mtimes,
+        build_session_indices=True,
+    )
+    if walk is None:
+        return
 
-    session_indices = _build_session_indices(paths)
-
-    # Initialize cursor state
-    if cursor_state is not None:
-        cursor_state["file_count"] = len(paths)
-        cursor_state.setdefault("failed_files", [])
-        cursor_state.setdefault("failed_count", 0)
-        if paths:
-            try:
-                latest = max(paths, key=lambda p: p.stat().st_mtime)
-                cursor_state["latest_mtime"] = latest.stat().st_mtime
-                cursor_state["latest_path"] = str(latest)
-            except OSError:
-                pass
-
-    # Phase 2: Process each file
     failed_count = 0
-    skipped_mtime = 0
-    for path in paths:
-        # Compute file_mtime once (used for both skip check and raw capture)
-        file_mtime = _get_file_mtime(path) if capture_raw else None
-
-        # Mtime-based skip: if we've seen this file before and its mtime
-        # hasn't changed, skip the full read+hash entirely.
-        if known_mtimes and file_mtime:
-            path_str = str(path)
-            if path_str in known_mtimes and known_mtimes[path_str] == file_mtime:
-                skipped_mtime += 1
-                continue
-
+    for path, file_mtime in walk.paths_to_process:
         try:
-            provider_hint = detect_provider(None, path) or source.name
+            provider_hint = detect_provider(None, path) or Provider.from_string(source.name)
             should_group = provider_hint in _GROUP_PROVIDERS
 
             if path.suffix.lower() == ".zip":
@@ -768,7 +793,7 @@ def iter_source_conversations_with_raw(
                     fallback_id=path.stem,
                     file_mtime=file_mtime,
                     capture_raw=capture_raw,
-                    session_index=session_indices.get(path.parent, {}),
+                    session_index=walk.session_indices.get(path.parent, {}),
                     detect_path=path,
                 )
                 emitter = _ConversationEmitter(ctx)
@@ -794,23 +819,96 @@ def iter_source_conversations_with_raw(
             logger.error("Unexpected error processing %s: %s", path, exc)
             _record_cursor_failure(cursor_state, str(path), str(exc))
 
-    if skipped_mtime > 0:
-        logger.info(
-            "Skipped %d of %d files from source %r (unchanged mtime)",
-            skipped_mtime,
-            len(paths),
-            source.name,
-        )
+    _log_source_iteration_summary(
+        source_name=source.name,
+        total_paths=len(walk.paths),
+        skipped_mtime=walk.skipped_mtime,
+        failed_count=failed_count,
+        failure_kind="parse/read",
+    )
 
-    # Emit a prominent summary if any files were skipped
-    if failed_count > 0:
-        logger.warning(
-            "Skipped %d of %d files from source %r due to parse/read errors. "
-            "Run with --verbose for details.",
-            failed_count,
-            len(paths),
-            source.name,
-        )
+
+def iter_source_raw_data(
+    source: Source,
+    *,
+    cursor_state: dict[str, Any] | None = None,
+    known_mtimes: dict[str, str] | None = None,
+) -> Iterable[RawConversationData]:
+    """Iterate raw source payloads without parsing provider payload semantics.
+
+    This iterator is intended for acquisition-stage storage only. It yields one
+    RawConversationData item per file (or per ZIP JSON entry) and performs no
+    provider parser dispatching.
+
+    Args:
+        source: Source configuration to iterate
+        cursor_state: Optional state dict for tracking progress
+        known_mtimes: Optional dict of {source_path: file_mtime} from previous runs.
+            Files whose current mtime matches the known mtime are skipped entirely.
+
+    Yields:
+        RawConversationData blobs suitable for raw_conversations storage.
+    """
+    if not source.path:
+        return
+
+    walk = _setup_source_walk(
+        source,
+        cursor_state=cursor_state,
+        include_mtime=True,
+        known_mtimes=known_mtimes,
+        build_session_indices=False,
+    )
+    if walk is None:
+        return
+
+    failed_count = 0
+    for path, file_mtime in walk.paths_to_process:
+        try:
+            provider_hint = detect_provider(None, path) or Provider.from_string(source.name)
+
+            if path.suffix.lower() == ".zip":
+                validator = _ZipEntryValidator(provider_hint, cursor_state=cursor_state, zip_path=path)
+                with zipfile.ZipFile(path) as zf:
+                    for info in validator.filter_entries(zf.infolist()):
+                        entry_path = f"{path}:{info.filename}"
+                        with zf.open(info.filename) as handle:
+                            raw_bytes = handle.read()
+                        yield RawConversationData(
+                            raw_bytes=raw_bytes,
+                            source_path=entry_path,
+                            source_index=None,
+                            file_mtime=file_mtime,
+                            provider_hint=provider_hint,
+                        )
+            else:
+                yield RawConversationData(
+                    raw_bytes=path.read_bytes(),
+                    source_path=str(path),
+                    source_index=None,
+                    file_mtime=file_mtime,
+                    provider_hint=provider_hint,
+                )
+        except FileNotFoundError as exc:
+            failed_count += 1
+            logger.warning("File disappeared during processing (TOCTOU race): %s", path)
+            _record_cursor_failure(cursor_state, str(path), f"File not found (may have been deleted): {exc}")
+        except (UnicodeDecodeError, zipfile.BadZipFile, OSError) as exc:
+            failed_count += 1
+            logger.warning("Failed to read %s: %s", path, exc)
+            _record_cursor_failure(cursor_state, str(path), str(exc))
+        except Exception as exc:
+            failed_count += 1
+            logger.error("Unexpected error reading %s: %s", path, exc)
+            _record_cursor_failure(cursor_state, str(path), str(exc))
+
+    _log_source_iteration_summary(
+        source_name=source.name,
+        total_paths=len(walk.paths),
+        skipped_mtime=walk.skipped_mtime,
+        failed_count=failed_count,
+        failure_kind="read",
+    )
 
 
 __all__ = [

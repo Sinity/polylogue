@@ -11,7 +11,11 @@ from pydantic import ValidationError
 from polylogue.lib.log import get_logger
 from polylogue.sources.providers.codex import CodexRecord
 
-from .base import ParsedConversation, ParsedMessage, normalize_role
+from polylogue.lib.branch_type import BranchType
+from polylogue.lib.roles import Role
+from polylogue.types import Provider
+
+from .base import ParsedConversation, ParsedMessage
 
 logger = get_logger(__name__)
 
@@ -132,7 +136,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
 
             if not raw_role or raw_role == "unknown" or not text:
                 continue
-            role = normalize_role(raw_role)
+            role = Role.normalize(raw_role)
 
             # Get message ID from the record
             msg_id = record.id or f"msg-{idx}"
@@ -158,7 +162,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
 
     # Second session_meta ID (if present) is the parent session
     parent_id = session_metas_seen[1] if len(session_metas_seen) > 1 else None
-    branch_type = "continuation" if parent_id else None
+    branch_type = BranchType.CONTINUATION if parent_id else None
 
     # Build conversation-level provider_meta with session context
     conv_meta: dict[str, object] | None = None
@@ -170,7 +174,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             conv_meta["instructions"] = session_instructions
 
     return ParsedConversation(
-        provider_name="codex",
+        provider_name=Provider.CODEX,
         provider_conversation_id=session_id,
         title=session_id,
         created_at=session_timestamp,

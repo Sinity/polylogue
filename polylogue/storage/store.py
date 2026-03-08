@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
@@ -12,12 +11,10 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from polylogue.errors import DatabaseError
+from polylogue.lib.branch_type import BranchType
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
-from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId
-
-# Valid provider name pattern: starts with letter, contains only letters, numbers, hyphens, underscores
-_PROVIDER_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
 
 # Maximum reasonable file size (1TB)
 MAX_ATTACHMENT_SIZE = 1024 * 1024 * 1024 * 1024
@@ -40,22 +37,14 @@ class ConversationRecord(BaseModel):
     version: int = 1
     # Branching support: links conversations in session trees
     parent_conversation_id: ConversationId | None = None
-    branch_type: str | None = None  # "continuation", "sidechain", "fork"
+    branch_type: BranchType | None = None
     # Link to raw source data (FK to raw_conversations.raw_id)
     raw_id: str | None = None
 
-    @field_validator("provider_name")
-    @classmethod
-    def validate_provider_name(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("provider_name cannot be empty")
-        v = v.strip()
-        if not _PROVIDER_NAME_PATTERN.match(v):
-            raise ValueError(
-                f"provider_name '{v}' is invalid. Must start with a letter and "
-                "contain only letters, numbers, hyphens, and underscores."
-            )
-        return v
+    @property
+    def provider(self) -> Provider:
+        """Typed provider enum derived from provider_name string."""
+        return Provider.from_string(self.provider_name)
 
     @field_validator("conversation_id", "provider_conversation_id", "content_hash")
     @classmethod
@@ -79,6 +68,13 @@ class MessageRecord(BaseModel):
     # Branching support: links messages in conversation trees
     parent_message_id: MessageId | None = None
     branch_index: int = 0  # 0 = mainline, >0 = branch sibling position
+
+    @property
+    def role_typed(self):
+        """Typed Role enum derived from role string."""
+        from polylogue.lib.roles import Role
+        raw = (self.role or "").strip() or "unknown"
+        return Role.normalize(raw)
 
     @field_validator("message_id", "conversation_id", "content_hash")
     @classmethod

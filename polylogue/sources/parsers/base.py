@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+from polylogue.lib.branch_type import BranchType
 from polylogue.lib.hashing import hash_text
-from polylogue.lib.roles import normalize_role
+from polylogue.lib.roles import Role, normalize_role
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
+from polylogue.types import Provider
 
 __all__ = [
     "ParsedMessage",
@@ -21,12 +23,19 @@ __all__ = [
 
 class ParsedMessage(BaseModel):
     provider_message_id: str
-    role: str
+    role: Role
     text: str | None = None
     timestamp: str | None = None
     provider_meta: dict[str, object] | None = None
     parent_message_provider_id: str | None = None
     branch_index: int = 0
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def coerce_role(cls, v: object) -> Role:
+        if isinstance(v, Role):
+            return v
+        return Role.normalize(str(v) if v is not None else "unknown")
 
 
 class ParsedAttachment(BaseModel):
@@ -66,7 +75,7 @@ class ParsedAttachment(BaseModel):
 
 
 class ParsedConversation(BaseModel):
-    provider_name: str
+    provider_name: Provider
     provider_conversation_id: str
     title: str | None = None
     created_at: str | None = None
@@ -75,7 +84,14 @@ class ParsedConversation(BaseModel):
     attachments: list[ParsedAttachment] = Field(default_factory=list)
     provider_meta: dict[str, object] | None = None
     parent_conversation_provider_id: str | None = None
-    branch_type: str | None = None
+    branch_type: BranchType | None = None
+
+    @field_validator("provider_name", mode="before")
+    @classmethod
+    def coerce_provider(cls, v: object) -> Provider:
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v) if v is not None else "unknown")
 
 
 class RawConversationData(BaseModel):
@@ -133,7 +149,7 @@ def extract_messages_from_list(items: list[object]) -> list[ParsedMessage]:
         message_val = item.get("message")
         payload = message_val if isinstance(message_val, dict) else item
 
-        role = normalize_role(
+        role = Role.normalize(
             str(
                 payload.get("role")
                 or item.get("role")

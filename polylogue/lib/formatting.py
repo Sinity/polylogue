@@ -63,7 +63,7 @@ def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
     """
     full = {
         "id": str(conv.id),
-        "provider": conv.provider,
+        "provider": str(conv.provider),
         "title": conv.display_title,
         "date": conv.display_date.isoformat() if conv.display_date else None,
         "messages": len(conv.messages),
@@ -85,7 +85,7 @@ def _conv_to_json(conv: Conversation, fields: str | None) -> str:
         data["messages"] = [
             {
                 "id": str(msg.id),
-                "role": msg.role,
+                "role": str(msg.role),
                 "text": msg.text,
                 "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
             }
@@ -112,7 +112,7 @@ def _conv_to_yaml(conv: Conversation, fields: str | None) -> str:
         data["messages"] = [
             {
                 "id": str(msg.id),
-                "role": msg.role,
+                "role": str(msg.role),
                 "text": msg.text,
                 "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
             }

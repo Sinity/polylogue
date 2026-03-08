@@ -17,6 +17,9 @@ class Role(str, Enum):
     TOOL = "tool"
     UNKNOWN = "unknown"
 
+    def __str__(self) -> str:
+        return self.value
+
     @classmethod
     def normalize(cls, raw: str) -> Role:
         """Normalize a provider role string to a canonical Role.
@@ -74,8 +77,8 @@ ROLE_MAP = {
 def normalize_role(raw: str) -> str:
     """Normalize a provider role string to a canonical role string.
 
-    This is the primary function for role normalization throughout the codebase.
-    Returns string values compatible with database storage and API interfaces.
+    Thin shim — delegates to Role.normalize() and returns the string value.
+    Prefer Role.normalize() directly in new code.
 
     Args:
         raw: Provider-specific role string (e.g., "human", "model", "ai").
@@ -88,11 +91,7 @@ def normalize_role(raw: str) -> str:
     Raises:
         ValueError: If raw is empty or whitespace-only.
     """
-    lowered = raw.strip().lower()
-    if not lowered:
-        raise ValueError("Role cannot be empty. Handle missing roles at parse time.")
-
-    return ROLE_MAP.get(lowered, "unknown")
+    return Role.normalize(raw).value
 
 
 __all__ = ["Role", "ROLE_MAP", "normalize_role"]

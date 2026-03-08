@@ -13,15 +13,15 @@ from polylogue.lib.models import (
     ConversationSummary,
     DialoguePair,
     Message,
-    ToolInvocation,
 )
+from polylogue.lib.viewports import ToolCall, ToolCategory, classify_tool
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 # Test data for parametrized tests
-TOOLINV_FILE_OPS = [("Read", True), ("Write", True), ("Edit", True), ("NotebookEdit", True), ("Bash", False)]
-TOOLINV_SEARCH_OPS = [("Glob", True), ("Grep", True), ("WebSearch", True), ("Bash", False)]
-TOOLINV_SUBAGENTS = [("Task", True), ("Bash", False)]
-TOOLINV_GIT_OPS = [
+TOOL_FILE_OPS = [("Read", True), ("Write", True), ("Edit", True), ("NotebookEdit", True), ("Bash", False)]
+TOOL_SEARCH_OPS = [("Glob", True), ("Grep", True), ("WebSearch", True), ("Bash", False)]
+TOOL_SUBAGENTS = [("Task", True), ("Bash", False)]
+TOOL_GIT_OPS = [
     ("Bash", {"command": "git commit -m 'test'"}, True, "git_command"),
     ("Read", {"command": "git status"}, False, "not_bash"),
     ("Bash", {"command": "ls -la"}, False, "non_git_bash"),
@@ -29,7 +29,7 @@ TOOLINV_GIT_OPS = [
     ("Bash", {"command": "  git push  "}, True, "whitespace_git"),
     ("Bash", {}, False, "no_command"),
 ]
-TOOLINV_AFFECTED_PATHS = [
+TOOL_AFFECTED_PATHS = [
     ("Read", {"file_path": "/tmp/test.txt"}, ["/tmp/test.txt"], "read"),
     ("Write", {"file_path": "/tmp/output.txt"}, ["/tmp/output.txt"], "write"),
     ("Edit", {"file_path": "/tmp/code.py"}, ["/tmp/code.py"], "edit"),
@@ -159,59 +159,52 @@ DIALOGUE_PAIR_CASES = [
 # =============================================================================
 
 
-class TestToolInvocationProperties:
-    """Test ToolInvocation property methods."""
+def _make_tool(tool_name: str, input_data: dict | None = None) -> ToolCall:
+    """Build a ToolCall with its category derived from classify_tool."""
+    inp = input_data or {}
+    return ToolCall(name=tool_name, id="t1", input=inp, category=classify_tool(tool_name, inp))
 
-    @pytest.mark.parametrize("tool_name,expected", TOOLINV_FILE_OPS)
+
+class TestToolCallProperties:
+    """Test ToolCall property methods (replaces removed ToolInvocation)."""
+
+    @pytest.mark.parametrize("tool_name,expected", TOOL_FILE_OPS)
     def test_is_file_operation(self, tool_name, expected):
-        """Line 93: Check is_file_operation with various tools."""
-        tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input={})
+        tool = _make_tool(tool_name)
         assert tool.is_file_operation is expected
 
-    @pytest.mark.parametrize("tool_name,input_data,expected,test_id", TOOLINV_GIT_OPS)
+    @pytest.mark.parametrize("tool_name,input_data,expected,test_id", TOOL_GIT_OPS)
     def test_is_git_operation(self, tool_name, input_data, expected, test_id):
-        """Line 98-101: Test is_git_operation with various inputs."""
-        tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input=input_data)
+        tool = _make_tool(tool_name, input_data)
         assert tool.is_git_operation is expected
 
-    @pytest.mark.parametrize("tool_name,expected", TOOLINV_SEARCH_OPS)
-    def test_is_search_operation(self, tool_name, expected):
-        """Line 106: Test is_search_operation with various tools."""
-        tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input={})
-        assert tool.is_search_operation is expected
+    @pytest.mark.parametrize("tool_name,expected", TOOL_SEARCH_OPS)
+    def test_is_search_or_web(self, tool_name, expected):
+        """Search/web category covers Glob, Grep, WebSearch."""
+        tool = _make_tool(tool_name)
+        is_search = tool.category in (ToolCategory.SEARCH, ToolCategory.WEB)
+        assert is_search is expected
 
-    @pytest.mark.parametrize("tool_name,expected", TOOLINV_SUBAGENTS)
+    @pytest.mark.parametrize("tool_name,expected", TOOL_SUBAGENTS)
     def test_is_subagent(self, tool_name, expected):
-        """Line 111: Test is_subagent with various tools."""
-        tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input={})
+        tool = _make_tool(tool_name)
         assert tool.is_subagent is expected
 
-    @pytest.mark.parametrize("tool_name,input_data,expected,test_id", TOOLINV_AFFECTED_PATHS)
+    @pytest.mark.parametrize("tool_name,input_data,expected,test_id", TOOL_AFFECTED_PATHS)
     def test_affected_paths(self, tool_name, input_data, expected, test_id):
-        """Lines 116-137: Test affected_paths with various tools."""
-        tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input=input_data)
+        tool = _make_tool(tool_name, input_data)
         assert tool.affected_paths == expected
 
     def test_affected_paths_bash_extraction(self):
-        """Lines 128-135: Extract paths from Bash command."""
-        tool = ToolInvocation(
-            tool_name="Bash",
-            tool_id="bash-1",
-            input={"command": "ls /tmp/file1 /tmp/file2"},
-        )
-        # Extracted paths containing "/"
+        """Extract paths from Bash command via regex."""
+        tool = _make_tool("Bash", {"command": "ls /tmp/file1 /tmp/file2"})
         assert "/tmp/file1" in tool.affected_paths
         assert "/tmp/file2" in tool.affected_paths
 
     def test_affected_paths_bash_skip_flags(self):
-        """Lines 133-135: Skip tokens starting with '-'."""
-        tool = ToolInvocation(
-            tool_name="Bash",
-            tool_id="bash-1",
-            input={"command": "ls -la /tmp/file"},
-        )
+        """Path regex should not match -la style flags."""
+        tool = _make_tool("Bash", {"command": "ls -la /tmp/file"})
         paths = tool.affected_paths
-        # -la should not be included
         assert "-la" not in paths
         assert "/tmp/file" in paths
 
@@ -843,6 +836,54 @@ def test_is_tool_use_detection(role, provider_meta, expected, desc):
         provider_meta=provider_meta
     )
     assert msg.is_tool_use == expected, f"Wrong is_tool_use for {desc}"
+
+
+def test_is_tool_use_detection_raw_claude_code():
+    """Claude Code raw provider_meta marks tool usage via harmonized path."""
+    msg = Message(
+        id="m-tool",
+        role="assistant",
+        text="I will inspect the file",
+        provider="claude-code",
+        provider_meta={"raw": {
+            "type": "assistant",
+            "uuid": "m-tool",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will inspect the file"},
+                    {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"file_path": "README.md"}},
+                ],
+            },
+        }},
+    )
+    assert msg.is_tool_use is True
+    assert msg.harmonized is not None
+    assert msg.harmonized.tool_calls[0].id == "tool-1"
+    assert msg.harmonized.tool_calls[0].input == {"file_path": "README.md"}
+
+
+def test_is_thinking_detection_raw_claude_code():
+    """Claude Code raw provider_meta marks thinking via harmonized path."""
+    msg = Message(
+        id="m-think",
+        role="assistant",
+        text="",
+        provider="claude-code",
+        provider_meta={"raw": {
+            "type": "assistant",
+            "uuid": "m-think",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "step by step"},
+                ],
+            },
+        }},
+    )
+    assert msg.is_thinking is True
+    assert msg.harmonized is not None
+    assert msg.harmonized.reasoning_traces[0].text == "step by step"
 
 
 CONTEXT_DUMP_TEST_CASES = [

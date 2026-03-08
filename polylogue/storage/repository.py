@@ -32,12 +32,13 @@ if TYPE_CHECKING:
 
     from polylogue.lib import filters
     from polylogue.lib.stats import ArchiveStats
-    from polylogue.protocols import VectorProvider
+
+from polylogue.protocols import ConversationReader, SearchStore, TagStore, VectorProvider
 
 logger = get_logger(__name__)
 
 
-class ConversationRepository:
+class ConversationRepository(ConversationReader, SearchStore, TagStore):
     """Async repository for conversation storage operations.
 
     Wraps SQLiteBackend to provide high-level async storage interface with
