@@ -402,8 +402,8 @@ async def run_sources(
                 progress_callback=progress_callback,
             )
         except Exception as exc:
-            logger.error("Indexing failed", error=str(exc))
-            index_error = str(exc)
+            logger.error("Indexing failed", error=str(exc), exc_info=True)
+            index_error = f"{type(exc).__name__}: {exc}"
             indexed = False
         sm.stop(items=index_items)
         logger.info("Index stage complete", **sm.to_dict(), indexed=indexed)
