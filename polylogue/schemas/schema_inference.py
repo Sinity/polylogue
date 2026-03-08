@@ -299,6 +299,10 @@ class FieldStats:
     array_lengths: list[int] = field(default_factory=list)
     is_multiline: int = 0  # count of values containing newlines
     value_count: int = 0  # total non-null values seen
+    # Maps each observed string value → set of conversation IDs that contained it.
+    # Populated only when conversation_ids are supplied to _collect_field_stats.
+    # Used to enforce the cross-conversation privacy threshold in _annotate_schema.
+    value_conversation_ids: dict[str, set[str]] = field(default_factory=dict)
 
     @property
     def frequency(self) -> float:
@@ -352,6 +356,7 @@ def _detect_numeric_format(value: float | int) -> str | None:
 def _collect_field_stats(
     samples: list[dict[str, Any]],
     *,
+    conversation_ids: list[str | None] | None = None,
     max_depth: int = 15,
 ) -> dict[str, FieldStats]:
     """Walk all samples and collect per-JSON-path statistics.
@@ -361,6 +366,10 @@ def _collect_field_stats(
 
     Args:
         samples: Raw data dicts to analyze
+        conversation_ids: Optional parallel list of conversation IDs for each sample.
+            When provided, each string value is annotated with the conversation(s)
+            it appeared in, enabling the cross-conversation privacy threshold in
+            _annotate_schema (min_conversation_count).  Length must equal len(samples).
         max_depth: Maximum nesting depth to traverse
 
     Returns:
@@ -421,6 +430,15 @@ def _collect_field_stats(
             # Track observed values (capped for memory)
             if len(stats.observed_values) < _ENUM_VALUE_CAP:
                 stats.observed_values[value] += 1
+                # Track which conversation this value came from (for privacy threshold)
+                if conversation_ids is not None:
+                    conv_id = (
+                        conversation_ids[sample_idx]
+                        if sample_idx < len(conversation_ids)
+                        else None
+                    )
+                    if conv_id is not None:
+                        stats.value_conversation_ids.setdefault(value, set()).add(conv_id)
 
             # Detect format
             fmt = _detect_string_format(value)
@@ -479,7 +497,7 @@ _FILE_EXTENSIONS = frozenset({
     ".xls", ".xlsx", ".zip", ".gz", ".tar", ".py", ".js", ".ts",
 })
 
-_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]")
+_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}([T ]|$)")
 _HIGH_ENTROPY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
 
 _IDENTIFIER_FIELD_TOKENS = frozenset({
@@ -497,6 +515,8 @@ _IDENTIFIER_FIELD_TOKENS = frozenset({
 _CONTENT_FIELD_NAMES = frozenset({
     "title", "text", "url", "description", "address", "phone",
     "location", "query", "prompt", "summary", "instructions",
+    # Free-form message/IO content — never structural
+    "body", "message", "input", "output",
     "breadcrumbs", "display_title", "page_title", "leaf_description",
     "clicked_from_title", "clicked_from_url", "content_url", "image_url",
     "website_url", "provider_url", "request_query", "featured_tag",
@@ -600,14 +620,21 @@ def _is_safe_enum_value(value: str, *, path: str = "$") -> bool:
     # Likely personal-name token (e.g. "Alice", "JohnSmith") rather than structure.
     if re.match(r"^[A-Z][a-z]+(?:[A-Z][a-z]+)*$", value):
         return False
-    # Block domain-name-like values (contain dots with known TLDs)
-    return not ("." in value and re.search(r"\.(com|org|net|pl|io|de|uk|ru|fr|co)\b", lower))
+    # Block domain-name-like values (contain dots with known public TLDs)
+    if "." in value and re.search(r"\.(com|org|net|pl|io|de|uk|ru|fr|co)\b", lower):
+        return False
+    # Block internal/private network hostnames (.local, .lan, .corp, .internal, .home)
+    if "." in value and re.search(r"\.(local|lan|corp|internal|home)\b", lower):
+        return False
+    return True
 
 
 def _annotate_schema(
     schema: dict[str, Any],
     stats: dict[str, FieldStats],
     path: str = "$",
+    *,
+    min_conversation_count: int = 1,
 ) -> dict[str, Any]:
     """Apply x-polylogue-* annotations to a schema based on collected field stats.
 
@@ -661,6 +688,16 @@ def _annotate_schema(
                         continue
                     if min_freq and (count / total) < min_freq:
                         continue
+                    # Cross-conversation privacy threshold: suppress values seen in
+                    # fewer than min_conversation_count distinct conversations.
+                    # Only enforced when conversation tracking is available.
+                    if (
+                        min_conversation_count > 1
+                        and field_stats.value_conversation_ids
+                    ):
+                        n_convs = len(field_stats.value_conversation_ids.get(value, set()))
+                        if n_convs < min_conversation_count:
+                            continue
                 sorted_vals.append(value)
                 if len(sorted_vals) >= _ENUM_OUTPUT_CAP:
                     break
@@ -691,23 +728,31 @@ def _annotate_schema(
     if "properties" in schema:
         for prop_name, prop_schema in schema["properties"].items():
             schema["properties"][prop_name] = _annotate_schema(
-                prop_schema, stats, f"{path}.{prop_name}"
+                prop_schema, stats, f"{path}.{prop_name}",
+                min_conversation_count=min_conversation_count,
             )
 
     # Recurse into additionalProperties (dynamic keys)
     ap = schema.get("additionalProperties")
     if isinstance(ap, dict):
-        schema["additionalProperties"] = _annotate_schema(ap, stats, f"{path}.*")
+        schema["additionalProperties"] = _annotate_schema(
+            ap, stats, f"{path}.*",
+            min_conversation_count=min_conversation_count,
+        )
 
     # Recurse into items
     if "items" in schema and isinstance(schema["items"], dict):
-        schema["items"] = _annotate_schema(schema["items"], stats, f"{path}[*]")
+        schema["items"] = _annotate_schema(
+            schema["items"], stats, f"{path}[*]",
+            min_conversation_count=min_conversation_count,
+        )
 
     # Recurse into anyOf/oneOf/allOf
     for keyword in ("anyOf", "oneOf", "allOf"):
         if keyword in schema:
             schema[keyword] = [
-                _annotate_schema(s, stats, path) for s in schema[keyword]
+                _annotate_schema(s, stats, path, min_conversation_count=min_conversation_count)
+                for s in schema[keyword]
             ]
 
     return schema
@@ -859,7 +904,7 @@ def get_sample_count_from_db(
             SELECT COUNT(*)
             FROM messages m
             JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name = ? AND m.provider_meta IS NOT NULL
+            WHERE c.provider_name = ?
         """, (provider_name,)).fetchone()
         return row[0] if row else 0
     finally:

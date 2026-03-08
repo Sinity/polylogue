@@ -60,6 +60,12 @@ class ConversationQuerySpec:
     reverse: bool = False
     limit: int | None = None
     sample: int | None = None
+    # Stats-based SQL pushdown filters
+    filter_has_tool_use: bool = False
+    filter_has_thinking: bool = False
+    min_messages: int | None = None
+    max_messages: int | None = None
+    min_words: int | None = None
 
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> ConversationQuerySpec:
@@ -82,6 +88,11 @@ class ConversationQuerySpec:
             reverse=bool(params.get("reverse")),
             limit=int(params["limit"]) if params.get("limit") else None,
             sample=int(params["sample"]) if params.get("sample") else None,
+            filter_has_tool_use=bool(params.get("filter_has_tool_use")),
+            filter_has_thinking=bool(params.get("filter_has_thinking")),
+            min_messages=int(params["min_messages"]) if params.get("min_messages") else None,
+            max_messages=int(params["max_messages"]) if params.get("max_messages") else None,
+            min_words=int(params["min_words"]) if params.get("min_words") else None,
         )
 
     def describe(self) -> list[str]:
@@ -105,6 +116,16 @@ class ConversationQuerySpec:
             parts.append(f"title: {self.title}")
         if self.has_types:
             parts.append(f"has: {', '.join(self.has_types)}")
+        if self.filter_has_tool_use:
+            parts.append("has: tool_use (sql)")
+        if self.filter_has_thinking:
+            parts.append("has: thinking (sql)")
+        if self.min_messages is not None:
+            parts.append(f"min_messages: {self.min_messages}")
+        if self.max_messages is not None:
+            parts.append(f"max_messages: {self.max_messages}")
+        if self.min_words is not None:
+            parts.append(f"min_words: {self.min_words}")
         if self.since:
             parts.append(f"since: {self.since}")
         if self.until:
@@ -130,6 +151,11 @@ class ConversationQuerySpec:
                 self.since is not None,
                 self.until is not None,
                 self.latest,
+                self.filter_has_tool_use,
+                self.filter_has_thinking,
+                self.min_messages is not None,
+                self.max_messages is not None,
+                self.min_words is not None,
             )
         )
 
@@ -165,6 +191,16 @@ class ConversationQuerySpec:
             filter_chain = filter_chain.title(self.title)
         for content_type in self.has_types:
             filter_chain = filter_chain.has(content_type)
+        if self.filter_has_tool_use:
+            filter_chain = filter_chain.has_tool_use()
+        if self.filter_has_thinking:
+            filter_chain = filter_chain.has_thinking()
+        if self.min_messages is not None:
+            filter_chain = filter_chain.min_messages(self.min_messages)
+        if self.max_messages is not None:
+            filter_chain = filter_chain.max_messages(self.max_messages)
+        if self.min_words is not None:
+            filter_chain = filter_chain.min_words(self.min_words)
         if self.since:
             try:
                 filter_chain = filter_chain.since(self.since)

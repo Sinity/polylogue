@@ -101,6 +101,13 @@ def _normalize_markdown_timestamp(timestamp: Any) -> str | None:
         return None
     if isinstance(timestamp, datetime):
         return timestamp.isoformat()
+    if isinstance(timestamp, (int, float)):
+        # sort_key is an epoch float — convert to ISO string, using Z suffix for UTC
+        from datetime import timezone
+        try:
+            return datetime.fromtimestamp(float(timestamp), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        except (ValueError, OSError):
+            return None
     return str(timestamp)
 
 
@@ -193,7 +200,7 @@ class ConversationFormatter:
                 message_id=message.message_id,
                 role=message.role,
                 text=message.text,
-                timestamp=message.timestamp,
+                timestamp=message.sort_key,
                 default_role="message",
             )
             for message in projection.messages

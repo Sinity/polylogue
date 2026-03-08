@@ -92,6 +92,7 @@ class Message(BaseModel):
     provider: Provider | None = None
     attachments: list[Attachment] = Field(default_factory=list)
     provider_meta: dict[str, object] | None = None
+    content_blocks: list[dict[str, object]] = Field(default_factory=list)
     parent_id: str | None = None
     branch_index: int = 0
 
@@ -120,7 +121,19 @@ class Message(BaseModel):
         *,
         provider: Provider | str | None = None,
     ) -> Message:
-        ts = parse_timestamp(record.timestamp)
+        # Reconstruct timestamp from sort_key (numeric epoch seconds)
+        ts = None
+        if record.sort_key is not None:
+            from datetime import datetime, timezone
+            try:
+                ts = datetime.fromtimestamp(record.sort_key, tz=timezone.utc)
+            except (ValueError, OSError):
+                ts = None
+        # Build content_blocks dict list from ContentBlockRecord objects
+        blocks = [
+            {"type": b.type, "text": b.text, "tool_name": b.tool_name, "tool_id": b.tool_id}
+            for b in record.content_blocks
+        ]
         return cls(
             id=record.message_id,
             role=(record.role or "").strip() or "unknown",
@@ -128,7 +141,8 @@ class Message(BaseModel):
             timestamp=ts,
             provider=provider,
             attachments=[Attachment.from_record(a) for a in attachments],
-            provider_meta=record.provider_meta,
+            provider_meta=None,  # No longer stored in messages table
+            content_blocks=blocks,
             parent_id=record.parent_message_id,
             branch_index=record.branch_index,
         )
@@ -213,6 +227,11 @@ class Message(BaseModel):
     @property
     def is_tool_use(self) -> bool:
         """Message contains tool/function calls or results."""
+        # Primary: check content_blocks loaded from DB
+        if any(b.get("type") in ("tool_use", "tool_result") for b in self.content_blocks):
+            return True
+
+        # Fallback: harmonized viewports (for messages loaded with provider_meta + provider)
         harmonized = self.harmonized
         if harmonized is not None and (
             harmonized.has_tool_use
@@ -220,26 +239,33 @@ class Message(BaseModel):
         ):
             return True
 
-        # Check structured content_blocks (populated at parse time)
+        # Direct provider_meta checks (when provider is not set but meta is present)
         if self.provider_meta:
-            blocks = self.provider_meta.get("content_blocks", [])
-            if isinstance(blocks, list) and any(
-                isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result") for b in blocks
+            pm = self.provider_meta
+            # content_blocks embedded in provider_meta (pre-DB format)
+            if any(
+                isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result")
+                for b in pm.get("content_blocks") or []
             ):
                 return True
+            # Claude sidechain / meta markers
+            if pm.get("isSidechain") or pm.get("isMeta"):
+                return True
 
-        # ChatGPT role=tool: distinguish thinking from actual tools
+        # Legacy: ChatGPT role=tool
         if self.role == Role.TOOL:
             return not self._is_chatgpt_thinking()
 
-        # Claude-code sidechain/meta markers
-        meta = self.provider_meta or {}
-        raw = meta.get("raw", meta)
-        return bool(raw.get("isSidechain") or raw.get("isMeta"))
+        return False
 
     @property
     def is_thinking(self) -> bool:
         """Message contains reasoning/thinking traces."""
+        # Primary: check content_blocks loaded from DB
+        if any(b.get("type") == "thinking" for b in self.content_blocks):
+            return True
+
+        # Fallback: harmonized viewports (for messages loaded with provider_meta + provider)
         harmonized = self.harmonized
         if harmonized is not None and (
             harmonized.has_reasoning
@@ -247,21 +273,23 @@ class Message(BaseModel):
         ):
             return True
 
-        # Check structured content_blocks (populated at parse time)
+        # Direct provider_meta checks (when provider is not set but meta is present)
         if self.provider_meta:
-            blocks = self.provider_meta.get("content_blocks", [])
-            if isinstance(blocks, list) and any(isinstance(b, dict) and b.get("type") == "thinking" for b in blocks):
+            pm = self.provider_meta
+            # content_blocks embedded in provider_meta (pre-DB format)
+            if any(
+                isinstance(b, dict) and b.get("type") == "thinking"
+                for b in pm.get("content_blocks") or []
+            ):
                 return True
-
-        # Gemini isThought marker (from raw data)
-        if self.provider_meta:
-            if self.provider_meta.get("isThought"):
+            # Gemini isThought flag (direct or nested under raw)
+            if pm.get("isThought"):
                 return True
-            raw = self.provider_meta.get("raw", {})
+            raw = pm.get("raw")
             if isinstance(raw, dict) and raw.get("isThought"):
                 return True
 
-        # ChatGPT content_type check (from raw data)
+        # Legacy: ChatGPT content_type check
         return bool(self._is_chatgpt_thinking())
 
     @property

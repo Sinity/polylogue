@@ -197,6 +197,14 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         await _output_stats_sql(env, filter_chain, repo)
         return
 
+    # Fast path for --stats-by: use lightweight summaries + SQL message counts
+    # instead of loading all conversations with full message content.
+    if params.get("stats_by") and filter_chain.can_use_summaries():
+        summaries = await filter_chain.list_summaries()
+        msg_counts = await repo.get_message_counts_batch([str(s.id) for s in summaries])
+        _output_stats_by_summaries(env, summaries, msg_counts, params["stats_by"])
+        return
+
     results = await filter_chain.list()
 
     # Handle modifiers (write operations)
@@ -479,6 +487,74 @@ async def _output_stats_sql(
     out(f"Attachments: {stats['attachments']:,}")
     if date_range:
         out(f"Date range: {date_range}")
+
+
+def _output_stats_by_summaries(
+    env: AppEnv,
+    summaries: list,
+    msg_counts: dict[str, int],
+    dimension: str,
+) -> None:
+    """Fast stats-by using lightweight summaries and precomputed message counts.
+
+    Avoids loading full conversation+message data. Word counts are omitted
+    (would require reading all message text).
+    """
+    from collections import defaultdict
+
+    from rich.table import Table
+
+    from polylogue.lib.theme import provider_color
+
+    if not summaries:
+        env.ui.console.print("No conversations matched.")
+        return
+
+    groups: dict[str, list] = defaultdict(list)
+    for s in summaries:
+        if dimension == "provider":
+            key = str(s.provider) if s.provider else "unknown"
+        elif dimension == "month":
+            dt = s.updated_at or s.created_at
+            key = dt.strftime("%Y-%m") if dt else "unknown"
+        elif dimension == "year":
+            dt = s.updated_at or s.created_at
+            key = dt.strftime("%Y") if dt else "unknown"
+        elif dimension == "day":
+            dt = s.updated_at or s.created_at
+            key = dt.strftime("%Y-%m-%d") if dt else "unknown"
+        else:
+            key = "all"
+        groups[key].append(s)
+
+    if dimension in {"month", "year", "day"}:
+        sorted_keys = sorted(groups.keys(), reverse=True)
+    else:
+        sorted_keys = sorted(groups.keys())
+
+    env.ui.console.print(f"\nMatched: {len(summaries)} conversations (by {dimension})\n")
+
+    table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+    table.add_column("Group", style="bold", min_width=12)
+    table.add_column("Convs", justify="right")
+    table.add_column("Messages", justify="right")
+
+    total_convs = 0
+    total_msgs = 0
+
+    for key in sorted_keys:
+        group_summaries = groups[key]
+        n_convs = len(group_summaries)
+        n_msgs = sum(msg_counts.get(str(s.id), 0) for s in group_summaries)
+        label = f"[{provider_color(key).hex}]{key}[/]" if dimension == "provider" else key
+        table.add_row(label, f"{n_convs:,}", f"{n_msgs:,}")
+        total_convs += n_convs
+        total_msgs += n_msgs
+
+    table.add_section()
+    table.add_row("[bold]TOTAL[/]", f"[bold]{total_convs:,}[/]", f"[bold]{total_msgs:,}[/]")
+
+    env.ui.console.print(table)
 
 
 def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -> None:
