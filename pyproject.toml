@@ -192,11 +192,44 @@ ignore = [
 known-first-party = ["polylogue"]
 
 [tool.mutmut]
-paths_to_mutate = ["polylogue/lib/models.py"]
+paths_to_mutate = [
+    # Core domain models — most battle-tested
+    "polylogue/lib/models.py",
+    # Filtering logic — ConversationFilter predicate composition
+    "polylogue/lib/filters.py",
+    # Role normalization and enum coercion
+    "polylogue/lib/roles.py",
+    # Timestamp parsing (never-raises contract)
+    "polylogue/lib/timestamps.py",
+    # Hashing (determinism, collision resistance)
+    "polylogue/lib/hashing.py",
+    # JSON encode/decode with Decimal/datetime support
+    "polylogue/lib/json.py",
+    # FTS5 query escaping (correctness, no-crash contract)
+    "polylogue/storage/search_providers/fts5.py",
+    # RRF hybrid fusion (score monotonicity)
+    "polylogue/storage/search_providers/hybrid.py",
+]
 tests_dir = [
+    # models.py coverage
     "tests/unit/core/test_models.py",
     "tests/unit/core/test_message_laws.py",
     "tests/unit/core/test_properties.py",
     "tests/unit/core/test_json.py",
+    # filters.py coverage
+    "tests/unit/core/test_filters.py",
+    "tests/unit/core/test_filters_props.py",
+    "tests/unit/core/test_filters_adv.py",
+    # roles.py, timestamps.py, json.py coverage
+    "tests/unit/core/test_json_laws.py",
+    "tests/unit/core/test_timestamp_guards.py",
+    # hashing.py coverage
+    "tests/unit/core/test_hashing.py",
+    # fts5.py coverage
+    "tests/unit/storage/test_fts5.py",
+    "tests/unit/storage/test_fts5_laws.py",
+    # hybrid.py coverage
+    "tests/unit/storage/test_hybrid.py",
+    "tests/unit/storage/test_hybrid_laws.py",
 ]
 also_copy = ["polylogue", "README.md"]
