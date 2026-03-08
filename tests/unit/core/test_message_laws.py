@@ -98,7 +98,47 @@ def test_substantive_only_all_substantive(conv) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Law 9: without_noise is idempotent
+# Law 9: without_noise preserves all non-noise messages (count + identity)
+# ---------------------------------------------------------------------------
+
+@given(conversation_model_strategy())
+def test_without_noise_preserves_non_noise_count(conv) -> None:
+    """without_noise() keeps exactly the non-noise messages and nothing else.
+
+    Motivated by mutmut finding: all(... for m in []) is vacuously True, so
+    the emptiness law alone doesn't catch a filter that discards everything.
+    """
+    expected_ids = [m.id for m in conv.messages if not m.is_noise]
+    clean = conv.without_noise()
+    assert [m.id for m in clean.messages] == expected_ids
+
+
+# ---------------------------------------------------------------------------
+# Law 10: substantive_only preserves all substantive messages (count + identity)
+# ---------------------------------------------------------------------------
+
+@given(conversation_model_strategy())
+def test_substantive_only_preserves_count(conv) -> None:
+    """substantive_only() keeps exactly the substantive messages."""
+    expected_ids = [m.id for m in conv.messages if m.is_substantive]
+    filtered = conv.substantive_only()
+    assert [m.id for m in filtered.messages] == expected_ids
+
+
+# ---------------------------------------------------------------------------
+# Law 11: user_only preserves all user messages (count + identity)
+# ---------------------------------------------------------------------------
+
+@given(conversation_model_strategy())
+def test_user_only_preserves_count(conv) -> None:
+    """user_only() keeps exactly the user-role messages."""
+    expected_ids = [m.id for m in conv.messages if m.is_user]
+    filtered = conv.user_only()
+    assert [m.id for m in filtered.messages] == expected_ids
+
+
+# ---------------------------------------------------------------------------
+# Law 13: without_noise is idempotent (now verified sound by Laws 9+11)
 # ---------------------------------------------------------------------------
 
 @given(conversation_model_strategy())
@@ -110,7 +150,7 @@ def test_without_noise_idempotent(conv) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Law 10: extract_thinking is None or non-empty (never empty string)
+# Law 14: extract_thinking is None or non-empty (never empty string)
 # ---------------------------------------------------------------------------
 
 @given(message_model_strategy())
@@ -121,7 +161,7 @@ def test_extract_thinking_never_empty_string(msg) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Law 11: cost_usd is None or positive
+# Law 15: cost_usd is None or positive
 # ---------------------------------------------------------------------------
 
 @given(message_model_strategy())
@@ -132,7 +172,7 @@ def test_cost_usd_none_or_positive(msg) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Law 12: duration_ms is None or positive
+# Law 16: duration_ms is None or positive
 # ---------------------------------------------------------------------------
 
 @given(message_model_strategy())
