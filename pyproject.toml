@@ -216,10 +216,9 @@ tests_dir = [
     "tests/unit/core/test_message_laws.py",
     "tests/unit/core/test_properties.py",
     "tests/unit/core/test_json.py",
-    # filters.py coverage
-    "tests/unit/core/test_filters.py",
+    # filters.py coverage — DB-backed test_filters.py / test_filters_adv.py excluded
+    # (7.79s/run causes 259 false timeouts); test_filters_props.py is pure-logic Hypothesis
     "tests/unit/core/test_filters_props.py",
-    "tests/unit/core/test_filters_adv.py",
     # roles.py, timestamps.py, json.py coverage
     "tests/unit/core/test_json_laws.py",
     "tests/unit/core/test_timestamp_guards.py",
