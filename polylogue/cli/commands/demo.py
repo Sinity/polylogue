@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import click
@@ -11,10 +13,32 @@ import click
 from polylogue.cli.types import AppEnv
 
 
+@contextmanager
+def _temporary_env(updates: dict[str, str]) -> Iterator[None]:
+    """Temporarily set environment variables and restore previous values on exit."""
+    previous = {key: os.environ.get(key) for key in updates}
+    os.environ.update(updates)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 @click.command("demo")
 @click.option("--seed", "mode", flag_value="seed", help="Seed a demo database with synthetic data")
 @click.option("--corpus", "mode", flag_value="corpus", help="Generate raw fixture files for inspection")
 @click.option("--showcase", "mode", flag_value="showcase", help="Exercise all CLI commands and save outputs")
+@click.option(
+    "--showcase-data",
+    type=click.Choice(["fixtures", "synthetic"], case_sensitive=False),
+    default="fixtures",
+    show_default=True,
+    help="Showcase seed source (only with --showcase)",
+)
 @click.option(
     "--provider", "-p", "providers", multiple=True,
     help="Providers to include (default: all). Can be repeated.",
@@ -26,10 +50,15 @@ from polylogue.cli.types import AppEnv
 @click.option("--fail-fast", is_flag=True, help="Stop showcase on first failure")
 @click.option("--json", "json_output", is_flag=True, help="Output showcase results as JSON")
 @click.option("--verbose", "showcase_verbose", is_flag=True, help="Print each exercise output")
+@click.option(
+    "--tier", "tier_filter", default=None, type=int,
+    help="Only run exercises at this tier level (1=basic, 2=intermediate, 3=advanced)",
+)
 @click.pass_obj
 def demo_command(
     env: AppEnv,
     mode: str | None,
+    showcase_data: str,
     providers: tuple[str, ...],
     count: int,
     output_dir: Path | None,
@@ -38,6 +67,7 @@ def demo_command(
     fail_fast: bool,
     json_output: bool,
     showcase_verbose: bool,
+    tier_filter: int | None,
 ) -> None:
     """Generate synthetic conversations for demos, testing, and inspection.
 
@@ -54,14 +84,27 @@ def demo_command(
       polylogue demo --corpus -o /tmp/corpus    # Inspect raw wire formats
       polylogue demo --corpus -p chatgpt -n 5   # ChatGPT only, 5 conversations
       polylogue demo --showcase                 # Full surface-area validation
+      polylogue demo --showcase --showcase-data synthetic -n 5
       polylogue demo --showcase --live          # Exercise read-only against real data
       polylogue demo --showcase --json          # Machine-readable report
     """
     if live and mode != "showcase":
         raise click.UsageError("--live requires --showcase")
+    if showcase_data != "fixtures" and mode != "showcase":
+        raise click.UsageError("--showcase-data requires --showcase")
 
     if mode == "showcase":
-        _do_showcase(env, output_dir, live, fail_fast, json_output, showcase_verbose)
+        _do_showcase(
+            env,
+            output_dir,
+            live,
+            fail_fast,
+            json_output,
+            showcase_verbose,
+            showcase_data.lower(),
+            count,
+            tier_filter,
+        )
         return
 
     from polylogue.schemas.synthetic import SyntheticCorpus
@@ -95,6 +138,9 @@ def _do_showcase(
     fail_fast: bool,
     json_output: bool,
     verbose: bool,
+    showcase_data: str,
+    synthetic_count: int,
+    tier_filter: int | None = None,
 ) -> None:
     """Exercise all CLI commands and generate reports."""
     from polylogue.showcase.report import generate_json_report, generate_summary, save_reports
@@ -105,6 +151,9 @@ def _do_showcase(
         output_dir=output_dir,
         fail_fast=fail_fast,
         verbose=verbose,
+        showcase_data=showcase_data,
+        synthetic_count=synthetic_count,
+        tier_filter=tier_filter,
     )
 
     result = runner.run()
@@ -174,11 +223,13 @@ def _do_seed(
     for d in [data_home, state_home, archive_root, render_root]:
         d.mkdir(parents=True, exist_ok=True)
 
-    os.environ["XDG_DATA_HOME"] = str(data_home)
-    os.environ["XDG_STATE_HOME"] = str(state_home)
-    os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
-    os.environ["POLYLOGUE_RENDER_ROOT"] = str(render_root)
-    os.environ["POLYLOGUE_FORCE_PLAIN"] = "1"
+    env_vars = {
+        "XDG_DATA_HOME": str(data_home),
+        "XDG_STATE_HOME": str(state_home),
+        "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
+        "POLYLOGUE_RENDER_ROOT": str(render_root),
+        "POLYLOGUE_FORCE_PLAIN": "1",
+    }
 
     sources: list[Source] = []
     for provider in providers:
@@ -197,27 +248,20 @@ def _do_seed(
 
         sources.append(Source(name=provider, path=provider_dir))
 
-    config = Config(
-        archive_root=archive_root,
-        render_root=render_root,
-        sources=sources,
-    )
+    with _temporary_env(env_vars):
+        config = Config(
+            archive_root=archive_root,
+            render_root=render_root,
+            sources=sources,
+        )
 
-    result = asyncio.run(run_sources(
-        config=config,
-        stage="all",
-        plan=None,
-        ui=None,
-        source_names=None,
-    ))
-
-    env_vars = {
-        "XDG_DATA_HOME": str(data_home),
-        "XDG_STATE_HOME": str(state_home),
-        "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-        "POLYLOGUE_RENDER_ROOT": str(render_root),
-        "POLYLOGUE_FORCE_PLAIN": "1",
-    }
+        result = asyncio.run(run_sources(
+            config=config,
+            stage="all",
+            plan=None,
+            ui=None,
+            source_names=None,
+        ))
 
     if env_only:
         for key, value in env_vars.items():

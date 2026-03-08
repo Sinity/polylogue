@@ -16,8 +16,6 @@ from click.testing import CliRunner
 from polylogue.showcase.exercises import (
     EXERCISES,
     Exercise,
-    Validation,
-    exercises_by_group,
     topological_order,
 )
 
@@ -83,11 +81,19 @@ class ShowcaseRunner:
         output_dir: Path | None = None,
         fail_fast: bool = False,
         verbose: bool = False,
+        showcase_data: str = "fixtures",
+        synthetic_count: int = 3,
+        tier_filter: int | None = None,
     ) -> None:
+        if showcase_data not in {"fixtures", "synthetic"}:
+            raise ValueError(f"Unknown showcase_data: {showcase_data}")
         self.live = live
         self.output_dir = output_dir
         self.fail_fast = fail_fast
         self.verbose = verbose
+        self.showcase_data = showcase_data
+        self.synthetic_count = synthetic_count
+        self.tier_filter = tier_filter
         self._env_vars: dict[str, str] = {}
         self._workspace_dir: Path | None = None
         self._shared_state: dict[str, Any] = {}
@@ -154,13 +160,14 @@ class ShowcaseRunner:
         return result
 
     def _select_exercises(self) -> list[Exercise]:
-        """Filter exercises based on mode."""
+        """Filter exercises based on mode and tier."""
         selected: list[Exercise] = []
         for ex in EXERCISES:
-            if self.live:
+            if self.live and ex.writes:
                 # Live mode: skip writes and exercises that need seeded data
-                if ex.writes:
-                    continue
+                continue
+            if self.tier_filter is not None and ex.tier != self.tier_filter:
+                continue
             selected.append(ex)
         return selected
 
@@ -176,8 +183,11 @@ class ShowcaseRunner:
         for d in [data_home, state_home, archive_root, render_root, fake_home]:
             d.mkdir(parents=True, exist_ok=True)
 
-        # Copy static fixtures from package resources
-        self._copy_fixtures(fixture_dir)
+        # Seed fixture data for the workspace.
+        if self.showcase_data == "synthetic":
+            self._generate_synthetic_fixtures(fixture_dir, count=self.synthetic_count)
+        else:
+            self._copy_fixtures(fixture_dir)
 
         # Also copy fixtures into the inbox location so get_sources() finds them
         # inbox_root() = {XDG_DATA_HOME}/polylogue/inbox
@@ -211,12 +221,6 @@ class ShowcaseRunner:
             os.environ[key] = value
 
         try:
-            # Reset singletons so they pick up new env vars
-            from polylogue import services
-            services.reset()
-            services._backend = None
-            services._repository = None
-
             # Build config with fixture sources
             from polylogue.config import Config
             from polylogue.paths import Source
@@ -264,17 +268,30 @@ class ShowcaseRunner:
                     dest_file = dest_dir / file_entry.name
                     dest_file.write_bytes(file_entry.read_bytes())
 
+    def _generate_synthetic_fixtures(self, fixture_dir: Path, *, count: int) -> None:
+        """Generate schema-driven synthetic fixtures for all providers."""
+        from polylogue.schemas.synthetic import SyntheticCorpus
+
+        fixture_dir.mkdir(parents=True, exist_ok=True)
+        for provider in SyntheticCorpus.available_providers():
+            corpus = SyntheticCorpus.for_provider(provider)
+            provider_dir = fixture_dir / provider
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
+            raw_items = corpus.generate(
+                count=count,
+                messages_per_conversation=range(6, 20),
+                seed=42,
+                style="showcase",
+            )
+            for idx, raw_bytes in enumerate(raw_items):
+                (provider_dir / f"showcase-{idx:02d}{ext}").write_bytes(raw_bytes)
+
     def _run_exercise(self, exercise: Exercise) -> ExerciseResult:
         """Run a single exercise and validate the result."""
-        from polylogue import services
         from polylogue.cli.click_app import cli
 
         t0 = time.monotonic()
-
-        # Reset singletons between exercises to ensure clean state
-        services.reset()
-        services._backend = None
-        services._repository = None
 
         # Build env vars for CliRunner
         env = dict(self._env_vars) if self._env_vars else {}
