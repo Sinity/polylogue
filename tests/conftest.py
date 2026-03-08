@@ -12,7 +12,9 @@ from polylogue.lib.messages import MessageCollection
 # Hypothesis profiles: `--hypothesis-profile ci` uses fewer examples for speed
 # ---------------------------------------------------------------------------
 settings.register_profile("ci", max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-settings.register_profile("default", max_examples=100)
+# differing_executors fires when mutmut runs tests in threads — suppress globally since
+# it never indicates a real bug (only fires in threaded test runners, not normal pytest).
+settings.register_profile("default", max_examples=100, suppress_health_check=[HealthCheck.differing_executors])
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 
