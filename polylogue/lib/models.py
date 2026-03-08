@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from polylogue.lib.branch_type import BranchType
+from polylogue.lib.log import get_logger
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
@@ -50,6 +51,8 @@ from polylogue.types import ConversationId, MessageId, Provider
 
 if TYPE_CHECKING:
     from polylogue.lib.projections import ConversationProjection
+
+logger = get_logger(__name__)
 
 
 class Attachment(BaseModel):
@@ -176,6 +179,12 @@ class Message(BaseModel):
                 timestamp=self.timestamp,
             )
         except Exception:
+            logger.warning(
+                "Failed to extract harmonized viewports for message %s (provider=%s)",
+                self.id,
+                self.provider,
+                exc_info=True,
+            )
             return None
 
     def _is_chatgpt_thinking(self) -> bool:
