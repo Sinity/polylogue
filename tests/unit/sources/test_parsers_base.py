@@ -222,13 +222,12 @@ def test_parse_code_tool_result_content_preserved():
     result = parse_code(items, "fallback")
     assert result.messages, "Expected at least one message"
     meta = result.messages[0].provider_meta
-    blocks = meta.get("content_blocks", [])
-    tool_results = [b for b in blocks if b.get("type") == "tool_result"]
-    assert tool_results, "Expected tool_result in content_blocks"
+    assert "raw" in meta, "provider_meta must contain raw record"
+    content = meta["raw"]["message"]["content"]
+    tool_results = [b for b in content if b.get("type") == "tool_result"]
+    assert tool_results, "Expected tool_result in raw content"
     tr = tool_results[0]
-    assert "content" in tr, "tool_result must have content field"
     assert tr["content"] == "file contents here\nline 2"
-    assert "is_error" in tr, "tool_result must have is_error field"
     assert tr["is_error"] is False
 
 
@@ -255,8 +254,9 @@ def test_parse_code_tool_result_error_preserved():
     ]
     result = parse_code(items, "fallback")
     meta = result.messages[0].provider_meta
-    blocks = meta.get("content_blocks", [])
-    tool_results = [b for b in blocks if b.get("type") == "tool_result"]
+    assert "raw" in meta
+    content = meta["raw"]["message"]["content"]
+    tool_results = [b for b in content if b.get("type") == "tool_result"]
     assert tool_results[0]["is_error"] is True
     assert tool_results[0]["content"] == "Error: file not found"
 
@@ -282,14 +282,15 @@ def test_parse_code_mixed_content_blocks_all_preserved():
     ]
     result = parse_code(items, "fallback")
     meta = result.messages[0].provider_meta
-    blocks = meta.get("content_blocks", [])
-    types = [b["type"] for b in blocks]
+    assert "raw" in meta
+    content = meta["raw"]["message"]["content"]
+    types = [b["type"] for b in content]
     assert "thinking" in types
     assert "text" in types
     assert "tool_use" in types
     assert "tool_result" in types
-    # Verify tool_result has all fields
-    tr = next(b for b in blocks if b["type"] == "tool_result")
+    # Verify tool_result has all fields preserved in raw
+    tr = next(b for b in content if b["type"] == "tool_result")
     assert tr["content"] == "file data"
     assert tr["is_error"] is False
     assert tr["tool_use_id"] == "tu-1"

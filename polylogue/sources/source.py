@@ -109,50 +109,50 @@ def _decode_json_bytes(blob: bytes) -> str | None:
         return None
 
 
-def detect_provider(payload: Any, path: Path) -> str | None:
+def detect_provider(payload: Any, path: Path) -> Provider | None:
     if isinstance(payload, dict):
         if chatgpt.looks_like(payload):
-            return "chatgpt"
+            return Provider.CHATGPT
         if claude.looks_like_ai(payload):
-            return "claude"
+            return Provider.CLAUDE
         if claude.looks_like_code([payload]):
-            return "claude-code"
+            return Provider.CLAUDE_CODE
         if codex.looks_like([payload]):
-            return "codex"
+            return Provider.CODEX
         # Gemini content-based detection (chunkedPrompt or chunks list)
         if "chunkedPrompt" in payload or ("chunks" in payload and isinstance(payload.get("chunks"), list)):
-            return "gemini"
+            return Provider.GEMINI
     if isinstance(payload, list):
         if payload and isinstance(payload[0], dict):
             first = payload[0]
             # ChatGPT bundle export: list[conversation]
             if isinstance(first.get("mapping"), dict):
-                return "chatgpt"
+                return Provider.CHATGPT
             # Claude AI bundle export: list[conversation]
             if isinstance(first.get("chat_messages"), list):
-                return "claude"
+                return Provider.CLAUDE
             # Gemini/Drive grouped list of conversations/chunks
             if "chunkedPrompt" in first or ("chunks" in first and isinstance(first.get("chunks"), list)):
-                return "gemini"
+                return Provider.GEMINI
         if claude.looks_like_code(payload):
-            return "claude-code"
+            return Provider.CLAUDE_CODE
         if codex.looks_like(payload):
-            return "codex"
+            return Provider.CODEX
 
     # Check filename and parent directory for provider hints
     name = path.name.lower()
     path_str = str(path).lower()
 
     if "chatgpt" in name or "chatgpt" in path_str:
-        return "chatgpt"
+        return Provider.CHATGPT
     if "claude-code" in name or "claude_code" in name or "claude-code" in path_str or "claude_code" in path_str:
-        return "claude-code"
+        return Provider.CLAUDE_CODE
     if "claude" in name or "/claude/" in path_str:
-        return "claude"
+        return Provider.CLAUDE
     if "codex" in name or "codex" in path_str:
-        return "codex"
+        return Provider.CODEX
     if "gemini" in name or "gemini" in path_str:
-        return "gemini"
+        return Provider.GEMINI
     return None
 
 
@@ -526,14 +526,54 @@ def _log_source_iteration_summary(
 # Parse context and conversation emitter
 # =============================================================================
 
-_GROUP_PROVIDERS = frozenset({"claude-code", "codex", "gemini", "drive"})
+_GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE})
+
+
+@dataclass
+class _SourceWalkSetup:
+    """Result of shared source-path setup used by both public iterators."""
+
+    paths: list[Path]
+    paths_to_process: list[tuple[Path, str | None]]
+    skipped_mtime: int
+    session_indices: dict[Path, dict[str, SessionIndexEntry]]
+
+
+def _setup_source_walk(
+    source: Source,
+    *,
+    cursor_state: dict[str, Any] | None,
+    include_mtime: bool,
+    known_mtimes: dict[str, str] | None,
+    build_session_indices: bool,
+) -> _SourceWalkSetup | None:
+    """Resolve source paths and prepare iteration state.
+
+    Returns None when the source yields no paths (callers should return early).
+    """
+    paths = _resolve_source_paths(source)
+    _initialize_cursor_state(cursor_state, paths)
+    if not paths:
+        return None
+    paths_to_process, skipped_mtime = _select_paths_for_processing(
+        paths,
+        include_file_mtime=include_mtime,
+        known_mtimes=known_mtimes,
+    )
+    session_indices = _build_session_indices(paths) if build_session_indices else {}
+    return _SourceWalkSetup(
+        paths=paths,
+        paths_to_process=paths_to_process,
+        skipped_mtime=skipped_mtime,
+        session_indices=session_indices,
+    )
 
 
 @dataclass
 class _ParseContext:
     """All context needed to parse a stream and yield conversations."""
 
-    provider_hint: str
+    provider_hint: Provider
     should_group: bool
     source_path_str: str  # For RawConversationData.source_path
     fallback_id: str  # path.stem, used as fallback conversation ID
@@ -821,22 +861,20 @@ def iter_source_conversations_with_raw(
     if not source.path:
         return
 
-    paths = _resolve_source_paths(source)
-    _initialize_cursor_state(cursor_state, paths)
-    if not paths:
+    walk = _setup_source_walk(
+        source,
+        cursor_state=cursor_state,
+        include_mtime=capture_raw,
+        known_mtimes=known_mtimes,
+        build_session_indices=True,
+    )
+    if walk is None:
         return
 
-    session_indices = _build_session_indices(paths)
-    paths_to_process, skipped_mtime = _select_paths_for_processing(
-        paths,
-        include_file_mtime=capture_raw,
-        known_mtimes=known_mtimes,
-    )
-
     failed_count = 0
-    for path, file_mtime in paths_to_process:
+    for path, file_mtime in walk.paths_to_process:
         try:
-            provider_hint = detect_provider(None, path) or source.name
+            provider_hint = detect_provider(None, path) or Provider.from_string(source.name)
             should_group = provider_hint in _GROUP_PROVIDERS
 
             if path.suffix.lower() == ".zip":
@@ -856,7 +894,7 @@ def iter_source_conversations_with_raw(
                     fallback_id=path.stem,
                     file_mtime=file_mtime,
                     capture_raw=capture_raw,
-                    session_index=session_indices.get(path.parent, {}),
+                    session_index=walk.session_indices.get(path.parent, {}),
                     detect_path=path,
                 )
                 emitter = _ConversationEmitter(ctx)
@@ -884,8 +922,8 @@ def iter_source_conversations_with_raw(
 
     _log_source_iteration_summary(
         source_name=source.name,
-        total_paths=len(paths),
-        skipped_mtime=skipped_mtime,
+        total_paths=len(walk.paths),
+        skipped_mtime=walk.skipped_mtime,
         failed_count=failed_count,
         failure_kind="parse/read",
     )
@@ -915,20 +953,20 @@ def iter_source_raw_data(
     if not source.path:
         return
 
-    paths = _resolve_source_paths(source)
-    _initialize_cursor_state(cursor_state, paths)
-    if not paths:
-        return
-    paths_to_process, skipped_mtime = _select_paths_for_processing(
-        paths,
-        include_file_mtime=True,
+    walk = _setup_source_walk(
+        source,
+        cursor_state=cursor_state,
+        include_mtime=True,
         known_mtimes=known_mtimes,
+        build_session_indices=False,
     )
+    if walk is None:
+        return
 
     failed_count = 0
-    for path, file_mtime in paths_to_process:
+    for path, file_mtime in walk.paths_to_process:
         try:
-            provider_hint = detect_provider(None, path) or source.name
+            provider_hint = detect_provider(None, path) or Provider.from_string(source.name)
 
             if path.suffix.lower() == ".zip":
                 validator = _ZipEntryValidator(provider_hint, cursor_state=cursor_state, zip_path=path)
@@ -967,8 +1005,8 @@ def iter_source_raw_data(
 
     _log_source_iteration_summary(
         source_name=source.name,
-        total_paths=len(paths),
-        skipped_mtime=skipped_mtime,
+        total_paths=len(walk.paths),
+        skipped_mtime=walk.skipped_mtime,
         failed_count=failed_count,
         failure_kind="read",
     )

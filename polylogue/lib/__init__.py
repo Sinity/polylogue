@@ -34,6 +34,7 @@ Example usage:
         print(f"Words: {conv.word_count}")
 """
 
+from polylogue.lib.branch_type import BranchType
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
@@ -55,6 +56,7 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "ArchiveStats",
     "Attachment",
+    "BranchType",
     "Conversation",
     "ConversationFilter",
     "ConversationProjection",

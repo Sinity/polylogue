@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from .base import ParsedAttachment, ParsedConversation, ParsedMessage, normalize_role
+from polylogue.lib.roles import Role
+from polylogue.types import Provider
+
+from .base import ParsedAttachment, ParsedConversation, ParsedMessage
 
 
 def _coerce_float(value: object) -> float | None:
@@ -50,7 +53,7 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
         raw_role = author.get("role") if isinstance(author, dict) else None
         if not raw_role:
             continue
-        role = normalize_role(raw_role)
+        role = Role.normalize(raw_role)
         timestamp = msg.get("create_time")
         msg_id = msg.get("id") or node.get("id") or ""
         if not msg_id:
@@ -198,7 +201,7 @@ def parse(payload: dict[str, object], fallback_id: str) -> ParsedConversation:
         conv_meta["is_archived"] = True
 
     return ParsedConversation(
-        provider_name="chatgpt",
+        provider_name=Provider.CHATGPT,
         provider_conversation_id=str(conv_id or fallback_id),
         title=str(title),
         created_at=str(payload.get("create_time")) if payload.get("create_time") is not None else None,

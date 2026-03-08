@@ -6,6 +6,7 @@ and client-side search support.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime
@@ -740,7 +741,7 @@ class SiteBuilder:
         )
 
     def build(self, incremental: bool = True) -> dict[str, int]:
-        """Build complete static site.
+        """Build complete static site (sync entry point).
 
         Args:
             incremental: If True, skip conversation pages whose file is newer
@@ -749,15 +750,19 @@ class SiteBuilder:
         Returns:
             Dict with counts: {"conversations": N, "index_pages": N}
         """
+        return asyncio.run(self._build_async(incremental))
+
+    async def _build_async(self, incremental: bool = True) -> dict[str, int]:
+        """Async implementation of the site build."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Build conversation index
-        conversations = self._build_index()
+        conversations = await self._build_index()
 
         # Generate pages (index pages always rebuilt; conversation pages respect incremental)
         self._generate_root_index(conversations)
         provider_count = self._generate_provider_indexes(conversations)
-        conv_pages = self._generate_conversation_pages(conversations, incremental=incremental)
+        conv_pages = await self._generate_conversation_pages(conversations, incremental=incremental)
 
         if self.config.include_dashboard:
             self._generate_dashboard(conversations)
@@ -772,7 +777,7 @@ class SiteBuilder:
             "index_pages": 1 + provider_count + (1 if self.config.include_dashboard else 0),
         }
 
-    def _build_index(self) -> list[ConversationIndex]:
+    async def _build_index(self) -> list[ConversationIndex]:
         """Build index of all conversations.
 
         Uses lightweight summaries to avoid loading message content into memory.
@@ -785,11 +790,11 @@ class SiteBuilder:
         repo = ConversationRepository(backend=backend)
 
         # Use summaries (no message content) instead of full conversations
-        summaries = repo.list_summaries(limit=100_000)
+        summaries = await repo.list_summaries(limit=100_000)
 
         # Batch-fetch message counts
         all_ids = [str(s.id) for s in summaries]
-        msg_counts = backend.get_message_counts_batch(all_ids)
+        msg_counts = await backend.get_message_counts_batch(all_ids)
 
         conversations: list[ConversationIndex] = []
 
@@ -813,7 +818,7 @@ class SiteBuilder:
                     logger.debug("Timestamp format error for %s: %s", sid, exc)
                     updated_at_str = str(summary.updated_at)
 
-            provider = summary.provider or "unknown"
+            provider = summary.provider.value
             conversations.append(ConversationIndex(
                 id=sid,
                 title=summary.display_title or sid[:12],
@@ -834,7 +839,7 @@ class SiteBuilder:
 
         return conversations
 
-    def _generate_conversation_pages(
+    async def _generate_conversation_pages(
         self, conversations: list[ConversationIndex], *, incremental: bool = True
     ) -> int:
         """Generate individual HTML pages for each conversation.
@@ -887,7 +892,7 @@ class SiteBuilder:
             try:
                 # Stream messages without loading full conversation
                 messages = []
-                for msg in repo.iter_messages(conv_idx.id, limit=500):
+                async for msg in repo.iter_messages(conv_idx.id, limit=500):
                     if not msg.text:
                         continue
                     text = msg.text
