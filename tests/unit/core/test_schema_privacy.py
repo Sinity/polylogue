@@ -288,8 +288,10 @@ class TestPrivateTLDDenylist:
         assert _is_safe_enum_value("corp"), "Bare word 'corp' should not be rejected"
 
     def test_partial_tld_match_not_rejected(self) -> None:
-        """A word that merely *contains* a TLD substring but isn't a hostname passes."""
-        # "locally" ends in "ally", not ".local"
-        assert _is_safe_enum_value("locally-sourced") is False or True  # just must not crash
-        # "corporate" doesn't have a dot + tld pattern
-        assert _is_safe_enum_value("corporate")
+        """Words containing TLD substrings without a preceding dot are not rejected."""
+        # "locally-sourced" contains "local" but has no dot — TLD regex won't match
+        assert _is_safe_enum_value("locally-sourced"), "'locally-sourced' has no dot, should not be rejected"
+        # "corporate" contains "corp" but has no dot
+        assert _is_safe_enum_value("corporate"), "'corporate' has no dot, should not be rejected"
+        # "internal-api" contains "internal" as a substring, not a TLD
+        assert _is_safe_enum_value("internal-api"), "'internal-api' has no dot, should not be rejected"
