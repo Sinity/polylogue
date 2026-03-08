@@ -32,8 +32,9 @@ class Exercise:
     writes: bool = False  # Mutates state — skip in --live mode
     depends_on: str | None = None  # Exercise that must complete first
     output_ext: str = ".txt"  # .txt / .json / .md / .csv / .html / .org
-    tier: int = 1  # Complexity tier: 1=basic, 2=intermediate, 3=advanced
-    env: str = "any"  # Required environment: "any" | "seeded" | "live"
+    tier: int = 1  # Complexity tier: 0=fast/structural, 1=basic, 2=advanced
+    env: str = "any"  # "any" | "seeded" (skip in live mode) | "live" (skip in seeded mode)
+    timeout_s: float = 120.0  # Per-exercise timeout in seconds
 
 
 # =============================================================================
@@ -109,176 +110,182 @@ _E = Exercise
 
 EXERCISES: tuple[Exercise, ...] = (
     # =========================================================================
-    # structural (7) — no data needed, test CLI plumbing
+    # structural (7) — tier 0: no data, tests CLI plumbing, <1s each
     # =========================================================================
     _E("help-main", "structural", "Main help screen",
-       ["--help"], _V(stdout_contains=("polylogue",))),
+       ["--help"], _V(stdout_contains=("polylogue",)), tier=0),
     _E("help-run", "structural", "Run subcommand help",
-       ["run", "--help"], _V(stdout_contains=("--stage",))),
+       ["run", "--help"], _V(stdout_contains=("--stage",)), tier=0),
     _E("help-check", "structural", "Check subcommand help",
-       ["check", "--help"], _V(stdout_contains=("--repair",))),
+       ["check", "--help"], _V(stdout_contains=("--repair",)), tier=0),
     _E("help-demo", "structural", "Demo subcommand help",
-       ["demo", "--help"], _V(stdout_contains=("--seed",))),
+       ["demo", "--help"], _V(stdout_contains=("--seed",)), tier=0),
     _E("help-tags", "structural", "Tags subcommand help",
-       ["tags", "--help"], _V(stdout_contains=("--json",))),
+       ["tags", "--help"], _V(stdout_contains=("--json",)), tier=0),
     _E("help-embed", "structural", "Embed subcommand help",
-       ["embed", "--help"], _V(stdout_contains=("--stats",))),
+       ["embed", "--help"], _V(stdout_contains=("--stats",)), tier=0),
     _E("version", "structural", "Version output",
-       ["--version"], _V(stdout_contains=("polylogue",))),
+       ["--version"], _V(stdout_contains=("polylogue",)), tier=0),
 
     # =========================================================================
-    # sources (3) — no data needed
+    # sources (3) — tier 0: no data, list sources and completions
     # =========================================================================
     _E("sources-list", "sources", "List configured sources",
-       ["sources"]),
+       ["sources"], tier=0),
     _E("sources-json", "sources", "List sources as JSON",
-       ["sources", "--json"], _V(stdout_is_valid_json=True)),
+       ["sources", "--json"], _V(stdout_is_valid_json=True), tier=0),
     _E("completions-bash", "sources", "Bash shell completions",
-       ["completions", "--shell", "bash"], _V(stdout_contains=("complete",))),
+       ["completions", "--shell", "bash"], _V(stdout_contains=("complete",)), tier=0),
 
     # =========================================================================
-    # pipeline (3) — seeded only, writes data
+    # pipeline (4) — seeded exercises write, live preview is read-only
     # =========================================================================
-    _E("run-preview", "pipeline", "Preview pipeline plan",
-       ["run", "--preview", "--source", "inbox"], writes=True),
-    _E("run-all", "pipeline", "Run full pipeline",
-       ["run", "--source", "inbox"], writes=True),
+    # Preview is read-only (no DB mutations): runs in both seeded and live modes
+    _E("run-preview", "pipeline", "Preview pipeline plan (seeded fixtures)",
+       ["run", "--preview", "--source", "inbox"], writes=False, env="seeded", tier=1),
+    _E("run-preview-live", "pipeline", "Preview pipeline against live sources",
+       ["run", "--preview"], writes=False, env="live", tier=1,
+       timeout_s=600.0,  # preview of real data can take minutes
+       validation=_V(stdout_contains=("Preview",))),
+    _E("run-all", "pipeline", "Run full pipeline (seeded fixtures)",
+       ["run", "--source", "inbox"], writes=True, env="seeded", tier=2),
     _E("run-stage-index", "pipeline", "Run index stage only",
-       ["run", "--stage", "index", "--source", "inbox"], writes=True, depends_on="run-all"),
+       ["run", "--stage", "index", "--source", "inbox"], writes=True,
+       env="seeded", tier=2, depends_on="run-all"),
 
     # =========================================================================
-    # query-read (25) — needs data, read-only
+    # query-read — tier 1: basic queries requiring seeded/live data
     # =========================================================================
     _E("stats-default", "query-read", "Default archive statistics",
-       [], _V(stdout_contains=("Archive",)), needs_data=True),
+       [], _V(stdout_contains=("Archive",)), needs_data=True, tier=1),
     _E("stats-verbose", "query-read", "Verbose statistics",
-       ["-v"], needs_data=True),
+       ["-v"], needs_data=True, tier=1),
     _E("query-list", "query-read", "List conversations",
-       ["--list"], _V(stdout_min_lines=1), needs_data=True),
+       ["--list"], _V(stdout_min_lines=1), needs_data=True, tier=1),
     _E("query-list-json", "query-read", "List conversations as JSON",
        ["--list", "-f", "json"], _V(custom=_is_valid_json_array),
-       needs_data=True, output_ext=".json"),
+       needs_data=True, output_ext=".json", tier=1),
     _E("query-list-csv", "query-read", "List conversations as CSV",
        ["--list", "-f", "csv"], _V(stdout_contains=("id",)),
-       needs_data=True, output_ext=".csv"),
+       needs_data=True, output_ext=".csv", tier=1),
     _E("query-list-yaml", "query-read", "List conversations as YAML",
        ["--list", "-f", "yaml"], _V(stdout_contains=("provider:",)),
-       needs_data=True),
+       needs_data=True, tier=1),
     _E("query-count", "query-read", "Count conversations",
-       ["--count"], _V(custom=_is_integer), needs_data=True),
+       ["--count"], _V(custom=_is_integer), needs_data=True, tier=1),
     _E("query-latest", "query-read", "Show latest conversation",
-       ["--latest"], _V(stdout_min_lines=1), needs_data=True),
+       ["--latest"], _V(stdout_min_lines=1), needs_data=True, tier=1),
     _E("query-latest-json", "query-read", "Latest conversation as JSON",
        ["--latest", "-f", "json"], _V(stdout_is_valid_json=True),
-       needs_data=True, output_ext=".json"),
+       needs_data=True, output_ext=".json", tier=1),
     _E("query-latest-md", "query-read", "Latest conversation as Markdown",
        ["--latest", "-f", "markdown"], _V(stdout_contains=("#",)),
-       needs_data=True, output_ext=".md"),
+       needs_data=True, output_ext=".md", tier=1),
     _E("query-latest-html", "query-read", "Latest conversation as HTML",
        ["--latest", "-f", "html"], _V(stdout_contains=("<",)),
-       needs_data=True, output_ext=".html"),
+       needs_data=True, output_ext=".html", tier=1),
     _E("query-latest-plaintext", "query-read", "Latest conversation as plaintext",
        ["--latest", "-f", "plaintext"], _V(stdout_min_lines=1),
-       needs_data=True),
+       needs_data=True, tier=1),
     _E("query-latest-obsidian", "query-read", "Latest conversation as Obsidian note",
        ["--latest", "-f", "obsidian"], _V(stdout_contains=("---",)),
-       needs_data=True, output_ext=".md"),
+       needs_data=True, output_ext=".md", tier=1),
     _E("query-latest-org", "query-read", "Latest conversation as Org-mode",
        ["--latest", "-f", "org"], _V(stdout_contains=("#+TITLE",)),
-       needs_data=True, output_ext=".org"),
+       needs_data=True, output_ext=".org", tier=1),
     _E("query-latest-csv", "query-read", "Latest conversation as CSV",
        ["--latest", "-f", "csv"], _V(stdout_contains=("conversation_id",)),
-       needs_data=True, output_ext=".csv"),
+       needs_data=True, output_ext=".csv", tier=1),
     _E("query-filter-provider", "query-read", "Filter by provider",
-       ["-p", "chatgpt", "--list"], needs_data=True),
+       ["-p", "chatgpt", "--list"], needs_data=True, tier=1),
     _E("query-filter-since", "query-read", "Filter by date",
        ["--since", "2020-01-01", "--count"], _V(custom=_is_integer),
-       needs_data=True),
+       needs_data=True, tier=1),
     _E("query-sort-tokens", "query-read", "Sort by token count",
-       ["--sort", "tokens", "--list", "-n", "3"], needs_data=True),
+       ["--sort", "tokens", "--list", "-n", "3"], needs_data=True, tier=1),
     _E("query-sort-messages", "query-read", "Sort by message count",
-       ["--sort", "messages", "--list", "-n", "3"], needs_data=True),
+       ["--sort", "messages", "--list", "-n", "3"], needs_data=True, tier=1),
     _E("query-stats", "query-read", "Conversation statistics",
-       ["--stats"], needs_data=True),
+       ["--stats"], needs_data=True, tier=1),
     _E("query-stats-by-provider", "query-read", "Statistics by provider",
-       ["--stats-by", "provider"], needs_data=True),
+       ["--stats-by", "provider"], needs_data=True, tier=1),
     _E("query-stats-by-month", "query-read", "Statistics by month",
-       ["--stats-by", "month"], needs_data=True),
+       ["--stats-by", "month"], needs_data=True, tier=1),
     _E("query-stream-latest", "query-read", "Stream latest conversation",
-       ["--stream", "--latest"], _V(stdout_min_lines=1), needs_data=True),
+       ["--stream", "--latest"], _V(stdout_min_lines=1), needs_data=True, tier=1),
     _E("query-stream-json", "query-read", "Stream latest as JSON lines",
        ["--stream", "--latest", "-f", "json"], _V(custom=_each_line_valid_json),
-       needs_data=True, output_ext=".jsonl"),
+       needs_data=True, output_ext=".jsonl", tier=1),
     _E("query-dialogue-only", "query-read", "Latest with dialogue only",
-       ["--latest", "-d"], needs_data=True),
+       ["--latest", "-d"], needs_data=True, tier=1),
 
     # =========================================================================
-    # query-write (8) — seeded only, mutates state
+    # query-write (8) — tier 2: mutate state, seeded only
     # =========================================================================
     _E("count-baseline", "query-write", "Baseline count before mutations",
        ["--count"], _V(custom=_is_integer),
-       needs_data=True, writes=True),
+       needs_data=True, writes=True, env="seeded", tier=2),
     _E("tag-add", "query-write", "Add tag to latest conversation",
        ["--latest", "--add-tag", "showcase-test"],
-       needs_data=True, writes=True, depends_on="count-baseline"),
+       needs_data=True, writes=True, env="seeded", tier=2, depends_on="count-baseline"),
     _E("tag-verify", "query-write", "Verify tag was added",
        ["-t", "showcase-test", "--count"], _V(custom=_is_integer),
-       needs_data=True, writes=True, depends_on="tag-add"),
+       needs_data=True, writes=True, env="seeded", tier=2, depends_on="tag-add"),
     _E("tags-after-add", "query-write", "List tags after add",
        ["tags"],
-       needs_data=True, writes=True, depends_on="tag-add"),
+       needs_data=True, writes=True, env="seeded", tier=2, depends_on="tag-add"),
     _E("set-meta", "query-write", "Set metadata on conversation",
        ["--latest", "--set", "note", "exercise"],
-       needs_data=True, writes=True, depends_on="count-baseline"),
+       needs_data=True, writes=True, env="seeded", tier=2, depends_on="count-baseline"),
     _E("delete-dry-run", "query-write", "Dry-run delete",
        ["-p", "chatgpt", "--latest", "--delete", "--dry-run"],
-       needs_data=True, writes=True, depends_on="count-baseline"),
+       needs_data=True, writes=True, env="seeded", tier=2, depends_on="count-baseline"),
     _E("delete-one", "query-write", "Delete one conversation",
        ["-p", "chatgpt", "-n", "1", "--delete", "--force"],
-       needs_data=True, writes=True, depends_on="count-baseline"),
+       needs_data=True, writes=True, env="seeded", tier=2, depends_on="count-baseline"),
     _E("count-decreased", "query-write", "Verify count decreased after delete",
        ["--count"], _V(custom=_is_integer),
-       needs_data=True, writes=True, depends_on="delete-one"),
+       needs_data=True, writes=True, env="seeded", tier=2, depends_on="delete-one"),
 
     # =========================================================================
-    # subcommands (5) — needs data, read-only
+    # subcommands (5) — tier 1: read-only health/stats
     # =========================================================================
     _E("check-health", "subcommands", "Health check",
-       ["check"], _V(stdout_contains=("ok",)), needs_data=True),
+       ["check"], _V(stdout_contains=("ok",)), needs_data=True, tier=1),
     _E("check-json", "subcommands", "Health check as JSON",
        ["check", "--json"], _V(stdout_is_valid_json=True),
-       needs_data=True, output_ext=".json"),
+       needs_data=True, output_ext=".json", tier=1),
     _E("check-verbose", "subcommands", "Verbose health check",
-       ["check", "-v"], needs_data=True),
+       ["check", "-v"], needs_data=True, tier=1),
     _E("embed-stats", "subcommands", "Embedding statistics",
-       ["embed", "--stats"], needs_data=True),
+       ["embed", "--stats"], needs_data=True, tier=1),
     _E("tags-json", "subcommands", "Tags as JSON",
        ["tags", "--json"], _V(stdout_is_valid_json=True),
-       needs_data=True, output_ext=".json"),
+       needs_data=True, output_ext=".json", tier=1),
 
     # =========================================================================
-    # advanced (7)
+    # advanced (7) — tier 2: complex queries, multi-flag combinations
     # =========================================================================
     _E("combined-filters", "advanced", "Combined provider + date filter",
        ["-p", "chatgpt", "--since", "2020-01-01", "--list", "-f", "json"],
-       _V(custom=_is_valid_json_array), needs_data=True, output_ext=".json"),
+       _V(custom=_is_valid_json_array), needs_data=True, output_ext=".json", tier=2),
     _E("reverse-sort", "advanced", "Reverse sort by date",
        ["--sort", "date", "--reverse", "--list", "-n", "3"],
-       needs_data=True),
+       needs_data=True, tier=2),
     _E("exclude-provider", "advanced", "Exclude a provider",
        ["--exclude-provider", "gemini", "--count"], _V(custom=_is_integer),
-       needs_data=True),
+       needs_data=True, tier=2),
     _E("fields-selector", "advanced", "Select specific JSON fields",
        ["--list", "-f", "json", "--fields", "id,title,provider"],
        _V(custom=_json_only_fields("id", "title", "provider")),
-       needs_data=True, output_ext=".json"),
+       needs_data=True, output_ext=".json", tier=2),
     _E("transform-strip", "advanced", "Strip tool calls from output",
        ["--latest", "--transform", "strip-all"],
-       needs_data=True),
+       needs_data=True, tier=2),
     _E("sample-random", "advanced", "Random sample of conversations",
-       ["--sample", "2", "--list"], needs_data=True),
+       ["--sample", "2", "--list"], needs_data=True, tier=2),
     _E("query-search-term", "advanced", "Full-text search",
-       ["debug", "--list"], needs_data=True),
+       ["debug", "--list"], needs_data=True, tier=2),
 )
 
 EXERCISE_INDEX: dict[str, Exercise] = {e.name: e for e in EXERCISES}
