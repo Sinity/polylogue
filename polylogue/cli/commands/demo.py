@@ -50,6 +50,10 @@ def _temporary_env(updates: dict[str, str]) -> Iterator[None]:
 @click.option("--fail-fast", is_flag=True, help="Stop showcase on first failure")
 @click.option("--json", "json_output", is_flag=True, help="Output showcase results as JSON")
 @click.option("--verbose", "showcase_verbose", is_flag=True, help="Print each exercise output")
+@click.option(
+    "--tier", "tier_filter", default=None, type=int,
+    help="Only run exercises at this tier level (1=basic, 2=intermediate, 3=advanced)",
+)
 @click.pass_obj
 def demo_command(
     env: AppEnv,
@@ -63,6 +67,7 @@ def demo_command(
     fail_fast: bool,
     json_output: bool,
     showcase_verbose: bool,
+    tier_filter: int | None,
 ) -> None:
     """Generate synthetic conversations for demos, testing, and inspection.
 
@@ -98,6 +103,7 @@ def demo_command(
             showcase_verbose,
             showcase_data.lower(),
             count,
+            tier_filter,
         )
         return
 
@@ -134,6 +140,7 @@ def _do_showcase(
     verbose: bool,
     showcase_data: str,
     synthetic_count: int,
+    tier_filter: int | None = None,
 ) -> None:
     """Exercise all CLI commands and generate reports."""
     from polylogue.showcase.report import generate_json_report, generate_summary, save_reports
@@ -146,6 +153,7 @@ def _do_showcase(
         verbose=verbose,
         showcase_data=showcase_data,
         synthetic_count=synthetic_count,
+        tier_filter=tier_filter,
     )
 
     result = runner.run()
