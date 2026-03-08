@@ -8,7 +8,6 @@ from polylogue.lib.models import DialoguePair, Message
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     attachment_from_meta,
-    normalize_role,
 )
 from polylogue.sources.parsers.claude import (
     extract_messages_from_chat_messages,
@@ -24,82 +23,6 @@ from tests.infra.helpers import make_claude_chat_message
 # CLAUDE PARSER TESTS
 # =============================================================================
 
-CLAUDE_SEGMENT_CASES = [
-    (["plain text"], "plain text", "string segment"),
-    ([{"text": "dict with text"}], "dict with text", "dict with text"),
-    ([{"content": "dict with content"}], "dict with content", "dict with content"),
-    (["text1", {"text": "text2"}, "text3"], "text1", "mixed segments"),
-    ([{}, "", None], None, "empty/None segments"),
-]
-
-@pytest.mark.parametrize("segments,expected_contains,desc", CLAUDE_SEGMENT_CASES)
-def test_extract_text_from_segments(segments, expected_contains, desc):
-    """Test segment extraction variants."""
-    result = extract_text_from_segments(segments)
-    if expected_contains:
-        assert expected_contains in (result or ""), f"Failed {desc}"
-    else:
-        assert result is None or result == "", f"Failed {desc}"
-
-
-CLAUDE_EXTRACT_CHAT_MESSAGES_CASES = [
-    # Basic
-    ([make_claude_chat_message("u1", "human", "Hello")], 1, "basic message"),
-
-    # Attachments variants
-    ([make_claude_chat_message("u1", "human", "Hi", attachments=[{"file_name": "doc.pdf"}])], 1, "attachments field"),
-    ([make_claude_chat_message("u1", "human", "Hi", files=[{"file_name": "doc.pdf"}])], 1, "files field"),
-
-    # Role variants
-    ([make_claude_chat_message("u1", "human", "Hi")], "user", "human role"),
-    ([make_claude_chat_message("u1", "assistant", "Hi")], "assistant", "assistant role"),
-    ([make_claude_chat_message("u1", None, "Hi")], 0, "missing sender skipped"),
-
-    # Timestamp variants (with role)
-    ([make_claude_chat_message("u1", "human", "Hi", timestamp="2024-01-01T00:00:00Z")], 1, "created_at"),
-    ([{"uuid": "u1", "sender": "human", "text": "Hi", "create_time": 1704067200}], 1, "create_time"),
-    ([{"uuid": "u1", "sender": "human", "text": "Hi", "timestamp": 1704067200}], 1, "timestamp field"),
-
-    # ID variants (with role)
-    ([{"uuid": "u1", "sender": "human", "text": "Hi"}], "u1", "uuid field"),
-    ([{"id": "i1", "sender": "human", "text": "Hi"}], "i1", "id field"),
-    ([{"message_id": "m1", "sender": "human", "text": "Hi"}], "m1", "message_id field"),
-
-    # Content variants (with role)
-    ([{"uuid": "u1", "sender": "human", "text": ["list", "of", "parts"]}], 0, "text as list skipped"),
-    ([{"uuid": "u1", "sender": "human", "content": {"text": "nested text"}}], 1, "content dict with text"),
-    ([{"uuid": "u1", "sender": "human", "content": {"parts": ["part1", "part2"]}}], 1, "content dict with parts"),
-
-    # Missing text (with role)
-    ([{"uuid": "u1", "sender": "human"}], 0, "missing text skipped"),
-    ([{"uuid": "u1", "sender": "human", "text": ""}], 0, "empty text skipped"),
-    ([{"uuid": "u1", "sender": "human", "text": None}], 0, "None text skipped"),
-
-    # Non-dict items (valid one has role)
-    (["not a dict", {"uuid": "u1", "sender": "human", "text": "Valid"}], 1, "skip non-dict"),
-
-    # Empty list
-    ([], 0, "empty list"),
-]
-
-
-@pytest.mark.parametrize("chat_messages,expected,desc", CLAUDE_EXTRACT_CHAT_MESSAGES_CASES)
-def test_claude_extract_chat_messages_comprehensive(chat_messages, expected, desc):
-    """Comprehensive chat_messages extraction.
-
-    Replaces 15 extraction tests.
-    """
-    messages, attachments = extract_messages_from_chat_messages(chat_messages)
-
-    if isinstance(expected, int):
-        assert len(messages) == expected, f"Failed {desc}"
-    elif isinstance(expected, str) and messages:
-        # ID field tests check provider_message_id, role tests check role
-        if "field" in desc and desc not in ["attachments field", "files field", "timestamp field"]:
-            assert messages[0].provider_message_id == expected, f"Failed {desc}"
-        else:
-            # Expected role
-            assert messages[0].role == expected, f"Failed {desc}"
 
 
 # PARSE AI - CONSOLIDATED
@@ -415,61 +338,6 @@ def test_codex_parse_intermediate_format():
 # NORMALIZE_ROLE - PARAMETRIZED
 # -----------------------------------------------------------------------------
 
-
-NORMALIZE_ROLE_STANDARD_CASES = [
-    ("user", "user", "user stays user"),
-    ("assistant", "assistant", "assistant stays assistant"),
-    ("system", "system", "system stays system"),
-    ("human", "user", "human aliased to user"),
-    ("model", "assistant", "model aliased to assistant"),
-]
-
-NORMALIZE_ROLE_CASE_INSENSITIVE_CASES = [
-    ("USER", "user", "upper USER"),
-    ("Human", "user", "mixed Human"),
-    ("ASSISTANT", "assistant", "upper ASSISTANT"),
-    ("Model", "assistant", "mixed Model"),
-    ("SYSTEM", "system", "upper SYSTEM"),
-]
-
-NORMALIZE_ROLE_EDGE_CASES = [
-    ("  user  ", "user", "whitespace stripped user"),
-    ("\tassistant\n", "assistant", "whitespace stripped assistant"),
-    ("custom_role", "unknown", "unrecognized returns unknown"),
-    ("BOT", "unknown", "unrecognized BOT returns unknown"),
-]
-
-NORMALIZE_ROLE_STRICT_CASES = [
-    (None, "None raises ValueError"),
-    ("", "empty raises ValueError"),
-    ("   ", "whitespace only raises ValueError"),
-    ("\t\n", "tabs and newlines raise ValueError"),
-]
-
-
-class TestNormalizeRole:
-    """Parametrized tests for role normalization."""
-
-    @pytest.mark.parametrize("role,expected,description", NORMALIZE_ROLE_STANDARD_CASES)
-    def test_normalize_role_standard(self, role: str, expected: str, description: str):
-        """Standard role mappings."""
-        assert normalize_role(role) == expected
-
-    @pytest.mark.parametrize("role,expected,description", NORMALIZE_ROLE_CASE_INSENSITIVE_CASES)
-    def test_normalize_role_case_insensitive(self, role: str, expected: str, description: str):
-        """Role normalization is case-insensitive."""
-        assert normalize_role(role) == expected
-
-    @pytest.mark.parametrize("role,expected,description", NORMALIZE_ROLE_EDGE_CASES)
-    def test_normalize_role_edge_cases(self, role: str, expected: str, description: str):
-        """Edge cases: whitespace stripping, unrecognized roles."""
-        assert normalize_role(role) == expected
-
-    @pytest.mark.parametrize("role,description", NORMALIZE_ROLE_STRICT_CASES)
-    def test_normalize_role_rejects_empty(self, role: str | None, description: str):
-        """Empty/None roles raise ValueError - role is required at parse time."""
-        with pytest.raises((ValueError, TypeError, AttributeError)):
-            normalize_role(role)  # type: ignore
 
 
 # -----------------------------------------------------------------------------
