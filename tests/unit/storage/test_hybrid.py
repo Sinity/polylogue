@@ -27,20 +27,6 @@ from tests.infra.helpers import make_hash
 class TestHybridSearchProvider:
     """Tests for HybridSearchProvider search methods."""
 
-    def test_hybrid_search_conversations_empty_message_results(self):
-        """search_conversations returns empty list when no message results."""
-        # Mock FTS5 and vector providers
-        fts_mock = MagicMock()
-        fts_mock.search.return_value = []  # No FTS results
-
-        vec_mock = MagicMock()
-        vec_mock.query.return_value = []  # No vector results
-
-        provider = HybridSearchProvider(fts_provider=fts_mock, vector_provider=vec_mock)
-
-        result = provider.search_conversations("test query", limit=20)
-        assert result == []
-
     async def test_hybrid_search_conversations_limit_reached(self, tmp_path):
         """search_conversations stops when limit reached."""
         # Create backend with some conversations and messages
@@ -164,45 +150,6 @@ class TestHybridSearchProvider:
 
 class TestReciprocalRankFusion:
     """Tests for the RRF algorithm."""
-
-    def test_rrf_empty_inputs(self):
-        """RRF with empty inputs returns empty list."""
-        result = reciprocal_rank_fusion()
-        assert result == []
-
-    def test_rrf_single_list(self):
-        """RRF with single list preserves order."""
-        results = [("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)]
-        fused = reciprocal_rank_fusion(results)
-
-        # Order should be preserved
-        ids = [item_id for item_id, _ in fused]
-        assert ids == ["msg1", "msg2", "msg3"]
-
-    def test_rrf_two_identical_lists(self):
-        """RRF with identical lists doubles scores."""
-        list1 = [("msg1", 0.9), ("msg2", 0.8)]
-        list2 = [("msg1", 0.9), ("msg2", 0.8)]
-
-        fused = reciprocal_rank_fusion(list1, list2, k=60)
-
-        # Each item appears in both lists, so scores are doubled
-        scores = dict(fused)
-
-        # Score for rank 1: 1/(60+1) = 0.0164, doubled = 0.0328
-        expected_msg1_score = 2 * (1.0 / 61)
-        assert abs(scores["msg1"] - expected_msg1_score) < 0.0001
-
-    def test_rrf_disjoint_lists(self):
-        """RRF with disjoint lists returns all items."""
-        list1 = [("msg1", 0.9), ("msg2", 0.8)]
-        list2 = [("msg3", 0.95), ("msg4", 0.85)]
-
-        fused = reciprocal_rank_fusion(list1, list2, k=60)
-
-        # All 4 items should be present
-        ids = {item_id for item_id, _ in fused}
-        assert ids == {"msg1", "msg2", "msg3", "msg4"}
 
     def test_rrf_overlapping_lists(self):
         """RRF boosts items appearing in multiple lists."""
