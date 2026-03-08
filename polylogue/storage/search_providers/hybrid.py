@@ -51,7 +51,12 @@ def reciprocal_rank_fusion(
     scores: dict[str, float] = {}
 
     for result_list in result_lists:
+        seen_in_list: set[str] = set()
         for rank, (item_id, _original_score) in enumerate(result_list, start=1):
+            if item_id in seen_in_list:
+                # Duplicate within same list — score only the best (first) occurrence
+                continue
+            seen_in_list.add(item_id)
             rrf_score = 1.0 / (k + rank)
             scores[item_id] = scores.get(item_id, 0.0) + rrf_score
 
@@ -168,6 +173,9 @@ class HybridSearchProvider:
             List of conversation IDs, ordered by best-matching message score.
         """
         from polylogue.storage.backends.connection import open_connection
+
+        if limit <= 0:
+            return []
 
         # Get message-level results (scored for ranking)
         message_results = self.search_scored(query, limit=limit * 3)
