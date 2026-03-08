@@ -289,7 +289,7 @@ EXERCISES: tuple[Exercise, ...] = (
        needs_data=True, output_ext=".json", tier=2),
     _E("transform-strip", "advanced", "Strip tool calls from output",
        ["--latest", "--transform", "strip-all"],
-       needs_data=True, tier=2),
+       needs_data=True, tier=2, timeout_s=300.0),
     _E("sample-random", "advanced", "Random sample of conversations",
        ["--sample", "2", "--list"], needs_data=True, tier=2),
     _E("query-search-term", "advanced", "Full-text search",
