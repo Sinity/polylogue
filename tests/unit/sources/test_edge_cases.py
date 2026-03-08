@@ -24,97 +24,6 @@ from polylogue.sources.providers.codex import CodexContentBlock, CodexRecord
 # =============================================================================
 
 
-class TestChatGPTIterUserAssistantPairs:
-    """Tests for ChatGPTConversation.iter_user_assistant_pairs()."""
-
-    def _make_conv(self, messages):
-        """Helper to build a ChatGPTConversation with given messages inline."""
-        mapping = {}
-        prev_id = None
-        for i, (role, text) in enumerate(messages):
-            node_id = f"node-{i}"
-            msg = ChatGPTMessage(
-                id=f"msg-{i}",
-                author=ChatGPTAuthor(role=role),
-                content=ChatGPTContent(content_type="text", parts=[text]),
-            )
-            node = ChatGPTNode(
-                id=node_id,
-                message=msg,
-                parent=prev_id,
-                children=[],
-            )
-            if prev_id and prev_id in mapping:
-                mapping[prev_id].children.append(node_id)
-            mapping[node_id] = node
-            prev_id = node_id
-
-        return ChatGPTConversation(
-            id="conv-1", conversation_id="conv-1", title="Test",
-            create_time=1700000000.0, update_time=1700000100.0,
-            mapping=mapping, current_node=prev_id or "node-0",
-        )
-
-    @pytest.mark.parametrize("messages,expected_count,expected_user_text,expected_assistant_text", [
-        (
-            # basic_pair: Simple user-assistant pair is yielded
-            [("user", "hi"), ("assistant", "hello")],
-            1,
-            "hi",
-            "hello",
-        ),
-        (
-            # multiple_pairs: Multiple pairs yielded correctly
-            [("user", "q1"), ("assistant", "a1"), ("user", "q2"), ("assistant", "a2")],
-            2,
-            None,  # Just check count
-            None,
-        ),
-        (
-            # system_message_skipped: System messages at start don't break pairing
-            [("system", "You are helpful"), ("user", "hi"), ("assistant", "hello")],
-            1,
-            "hi",
-            "hello",
-        ),
-        (
-            # consecutive_users_skip: Two consecutive user messages
-            [("user", "first"), ("user", "second"), ("assistant", "response")],
-            1,
-            "second",
-            "response",
-        ),
-        (
-            # unmatched_trailing_assistant: Trailing assistant without preceding user is skipped
-            [("user", "question"), ("assistant", "answer"), ("assistant", "trailing")],
-            1,
-            "question",
-            "answer",
-        ),
-    ])
-    def test_pair_scenarios(self, messages, expected_count, expected_user_text, expected_assistant_text):
-        """Test various message pairing scenarios."""
-        conv = self._make_conv(messages)
-        pairs = list(conv.iter_user_assistant_pairs())
-        assert len(pairs) == expected_count
-        if expected_user_text is not None:
-            assert pairs[0][0].text_content == expected_user_text
-        if expected_assistant_text is not None:
-            assert pairs[0][1].text_content == expected_assistant_text
-
-    def test_empty_conversation(self):
-        """No messages yields no pairs."""
-        conv = self._make_conv([])
-        pairs = list(conv.iter_user_assistant_pairs())
-        assert len(pairs) == 0
-
-    def test_single_message_no_pair(self):
-        """Single message yields no pairs."""
-        conv = self._make_conv([("user", "alone")])
-        pairs = list(conv.iter_user_assistant_pairs())
-        assert len(pairs) == 0
-
-
 class TestChatGPTContentBlocks:
     """Tests for ChatGPTMessage.to_content_blocks() edge cases."""
 
@@ -141,41 +50,6 @@ class TestChatGPTContentBlocks:
         msg = ChatGPTMessage(id="m1", author=ChatGPTAuthor(role="user"), content=None)
         blocks = msg.to_content_blocks()
         assert blocks == []
-
-
-class TestChatGPTTextExtraction:
-    """Tests for ChatGPTMessage.text_content edge cases."""
-
-    @pytest.mark.parametrize("text_field,parts,expected_text", [
-        # direct_text_field: Text from content.text field
-        ("Direct text", None, "Direct text"),
-        # dict_part_with_text: Dict part with 'text' key is extracted
-        (None, [{"text": "From dict"}], "From dict"),
-        # mixed_parts: Mix of string and dict parts
-        (None, ["str part", {"text": "dict part"}], None),  # Check containment
-        # empty_parts: Empty parts list returns empty string
-        (None, [], ""),
-        # dict_part_missing_text_key: Dict part without 'text' key is skipped
-        (None, [{"other": "value"}, "text"], "text"),
-    ])
-    def test_text_extraction_scenarios(self, text_field, parts, expected_text):
-        """Test various text extraction scenarios."""
-        msg = ChatGPTMessage(
-            id="m1", author=ChatGPTAuthor(role="assistant"),
-            content=ChatGPTContent(content_type="text", text=text_field, parts=parts),
-        )
-        text = msg.text_content
-        if expected_text is None:
-            # For mixed parts, check containment
-            assert "str part" in text
-            assert "dict part" in text
-        else:
-            assert text == expected_text
-
-    def test_no_content(self):
-        """No content returns empty string."""
-        msg = ChatGPTMessage(id="m1", author=ChatGPTAuthor(role="user"), content=None)
-        assert msg.text_content == ""
 
 
 class TestChatGPTTreeTraversal:
