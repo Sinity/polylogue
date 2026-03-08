@@ -54,11 +54,14 @@ dev = [
   "pytest-cov>=4",
   "pytest-asyncio>=0.23.0",  # Async test support
   "pytest-xdist>=3.5.0",  # Parallel test execution
+  "pytest-randomly>=3.0",  # Detect order-dependent tests; adds --randomly-seed
   "coverage[toml]>=7.6",
   "hypothesis>=6.100",
   "hypothesis-jsonschema>=0.23.0",  # Generate test data from JSON schemas
   "genson>=1.2.0",  # Infer JSON schemas from samples
   "jsonschema>=4.0.0",  # Validate JSON against schemas
+  "syrupy>=4.0",  # Snapshot testing — pytest plugin, .ambr files
+  "mutmut>=3.0.0",  # Mutation testing for coverage verification
   "mypy>=1.11",
   "ruff>=0.1.0",
   "pre-commit>=3.5.0",
@@ -187,3 +190,13 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["polylogue"]
+
+[tool.mutmut]
+paths_to_mutate = ["polylogue/lib/models.py"]
+tests_dir = [
+    "tests/unit/core/test_models.py",
+    "tests/unit/core/test_message_laws.py",
+    "tests/unit/core/test_properties.py",
+    "tests/unit/core/test_json.py",
+]
+also_copy = ["polylogue", "README.md"]

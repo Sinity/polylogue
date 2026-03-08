@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from importlib import resources as importlib_resources
 from pathlib import Path
@@ -160,12 +161,19 @@ class ShowcaseRunner:
         return result
 
     def _select_exercises(self) -> list[Exercise]:
-        """Filter exercises based on mode and tier."""
+        """Filter exercises based on mode, env, and tier."""
         selected: list[Exercise] = []
         for ex in EXERCISES:
+            # Env-based filtering
+            if ex.env == "live" and not self.live:
+                continue  # live-only exercises require --live mode
+            if ex.env == "seeded" and self.live:
+                continue  # seeded-only exercises don't run against live data
+
+            # Skip writes in live mode (protect real data)
             if self.live and ex.writes:
-                # Live mode: skip writes and exercises that need seeded data
                 continue
+
             if self.tier_filter is not None and ex.tier != self.tier_filter:
                 continue
             selected.append(ex)
@@ -301,8 +309,25 @@ class ShowcaseRunner:
         args = ["--plain"] + list(exercise.args)
 
         runner = CliRunner()
+
+        def _invoke() -> tuple[str, int]:
+            res = runner.invoke(cli, args, env=env, catch_exceptions=True)
+            return res.output or "", res.exit_code
+
         try:
-            result = runner.invoke(cli, args, env=env, catch_exceptions=True)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(_invoke)
+                output, exit_code = future.result(timeout=exercise.timeout_s)
+        except FuturesTimeoutError:
+            duration = (time.monotonic() - t0) * 1000
+            return ExerciseResult(
+                exercise=exercise,
+                passed=False,
+                exit_code=-1,
+                output="",
+                error=f"timed out after {exercise.timeout_s:.0f}s",
+                duration_ms=duration,
+            )
         except Exception as e:
             duration = (time.monotonic() - t0) * 1000
             return ExerciseResult(
@@ -315,15 +340,14 @@ class ShowcaseRunner:
             )
 
         duration = (time.monotonic() - t0) * 1000
-        output = result.output or ""
 
         # Validate
-        error = self._validate(exercise, output, result.exit_code)
+        error = self._validate(exercise, output, exit_code)
 
         return ExerciseResult(
             exercise=exercise,
             passed=error is None,
-            exit_code=result.exit_code,
+            exit_code=exit_code,
             output=output,
             error=error,
             duration_ms=duration,
