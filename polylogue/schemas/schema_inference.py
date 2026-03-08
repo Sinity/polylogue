@@ -31,6 +31,11 @@ except ImportError:
     GENSON_AVAILABLE = False
 
 
+from polylogue.lib.raw_payload import (
+    build_raw_payload_envelope,
+    extract_payload_samples,
+    limit_samples,
+)
 from polylogue.storage.backends.connection import default_db_path
 
 # UUID pattern for detecting dynamic keys
@@ -38,6 +43,12 @@ UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+
+_HIGH_CARDINALITY_KEY_THRESHOLD = 128
+_PATHLIKE_KEY_RATIO_THRESHOLD = 0.35
+_STRUCTURE_EXEMPLARS_PER_FINGERPRINT = 8
+_FINGERPRINT_MAX_DEPTH = 8
+_FINGERPRINT_ARRAY_SAMPLE = 8
 
 
 @dataclass
@@ -49,6 +60,8 @@ class ProviderConfig:
     db_provider_name: str | None = None  # Provider name in polylogue DB
     session_dir: Path | None = None  # For JSONL session-based providers
     max_sessions: int | None = None
+    sample_granularity: str = "document"  # "document" | "record"
+    record_type_key: str | None = None  # best-effort stratification key
 
 
 # Provider configurations
@@ -57,27 +70,34 @@ PROVIDERS: dict[str, ProviderConfig] = {
         name="chatgpt",
         description="ChatGPT message format",
         db_provider_name="chatgpt",
+        sample_granularity="document",
     ),
     "claude-code": ProviderConfig(
         name="claude-code",
         description="Claude Code message format",
         db_provider_name="claude-code",
+        sample_granularity="record",
+        record_type_key="type",
     ),
     "claude-ai": ProviderConfig(
         name="claude-ai",
         description="Claude AI web message format",
         db_provider_name="claude",  # DB uses "claude"
+        sample_granularity="document",
     ),
     "gemini": ProviderConfig(
         name="gemini",
         description="Gemini AI Studio message format",
         db_provider_name="gemini",
+        sample_granularity="document",
     ),
     "codex": ProviderConfig(
         name="codex",
         description="OpenAI Codex CLI session format",
         session_dir=Path.home() / ".codex/sessions",
         max_sessions=100,
+        sample_granularity="record",
+        record_type_key="type",
     ),
 }
 
@@ -110,6 +130,25 @@ def is_dynamic_key(key: str) -> bool:
     return bool(re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE))
 
 
+def _looks_pathlike_key(key: str) -> bool:
+    """Heuristic for key names that likely encode file/user-specific paths."""
+    if "/" in key or "\\" in key:
+        return True
+    if key.count(".") >= 2:
+        return True
+    return ":" in key and len(key) > 2
+
+
+def _should_collapse_high_cardinality_keys(keys: list[str]) -> bool:
+    """Collapse key-heavy objects that are likely data maps, not fixed schemas."""
+    if len(keys) >= _HIGH_CARDINALITY_KEY_THRESHOLD:
+        return True
+    if len(keys) < 24:
+        return False
+    pathlike = sum(1 for key in keys if _looks_pathlike_key(key))
+    return (pathlike / len(keys)) >= _PATHLIKE_KEY_RATIO_THRESHOLD
+
+
 def collapse_dynamic_keys(schema: dict[str, Any]) -> dict[str, Any]:
     """Collapse dynamic key properties into additionalProperties.
 
@@ -122,6 +161,7 @@ def collapse_dynamic_keys(schema: dict[str, Any]) -> dict[str, Any]:
         props = schema["properties"]
         static_props = {}
         dynamic_schemas = []
+        key_names = list(props.keys())
 
         for key, value in props.items():
             collapsed_value = collapse_dynamic_keys(value)
@@ -130,10 +170,17 @@ def collapse_dynamic_keys(schema: dict[str, Any]) -> dict[str, Any]:
             else:
                 static_props[key] = collapsed_value
 
+        if _should_collapse_high_cardinality_keys(key_names):
+            dynamic_schemas.extend(static_props.values())
+            static_props = {}
+            schema["x-polylogue-high-cardinality-keys"] = True
+
         if dynamic_schemas:
             schema["properties"] = static_props
             merged = _merge_schemas(dynamic_schemas)
             schema["additionalProperties"] = merged
+            # Signals to drift detection that unknown keys here are expected IDs.
+            schema["x-polylogue-dynamic-keys"] = True
             if "required" in schema:
                 schema["required"] = [r for r in schema["required"] if r in static_props]
         else:
@@ -162,6 +209,53 @@ def _merge_schemas(schemas: list[dict[str, Any]]) -> dict[str, Any]:
     return dict(builder.to_schema())
 
 
+def _structure_fingerprint(
+    value: Any,
+    *,
+    depth: int = 0,
+    max_depth: int = _FINGERPRINT_MAX_DEPTH,
+) -> Any:
+    """Build a hashable structural fingerprint for schema-dedup heuristics.
+
+    The fingerprint intentionally ignores concrete scalar values and keeps only
+    structural/type shape so repeated record variants can be collapsed before
+    feeding Genson.
+    """
+    if depth >= max_depth:
+        return ("depth-limit", type(value).__name__)
+
+    if value is None:
+        return ("null",)
+    if isinstance(value, bool):
+        return ("bool",)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return ("number",)
+    if isinstance(value, str):
+        return ("string",)
+
+    if isinstance(value, list):
+        item_shapes = {
+            _structure_fingerprint(item, depth=depth + 1, max_depth=max_depth)
+            for item in value[:_FINGERPRINT_ARRAY_SAMPLE]
+        }
+        return ("array", tuple(sorted(item_shapes, key=repr)))
+
+    if isinstance(value, dict):
+        props: list[tuple[str, Any]] = []
+        for key in sorted(value):
+            child = value[key]
+            normalized_key = "*" if is_dynamic_key(key) else key
+            props.append(
+                (
+                    normalized_key,
+                    _structure_fingerprint(child, depth=depth + 1, max_depth=max_depth),
+                )
+            )
+        return ("object", tuple(props))
+
+    return ("other", type(value).__name__)
+
+
 # =============================================================================
 # Field Statistics & Schema Annotations
 # =============================================================================
@@ -186,8 +280,9 @@ _FORMAT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 _ENUM_MAX_CARDINALITY = 50  # max distinct values to count as enum-like
 _ENUM_VALUE_CAP = 200  # max values to track per field (memory bound during collection)
 _ENUM_OUTPUT_CAP = 20  # max values to emit in x-polylogue-values (schema size bound)
+_ENUM_MIN_COUNT = 2  # suppress one-off values on large corpora (privacy + stability)
+_ENUM_MIN_FREQ = 0.03  # suppress extremely rare enum values on large corpora
 _REF_MATCH_THRESHOLD = 0.7  # fraction of values that must match keys
-_MAX_GENSON_SAMPLES = 50_000  # cap genson input; structural inference stabilizes well before 50K
 
 
 @dataclass
@@ -204,6 +299,10 @@ class FieldStats:
     array_lengths: list[int] = field(default_factory=list)
     is_multiline: int = 0  # count of values containing newlines
     value_count: int = 0  # total non-null values seen
+    # Maps each observed string value → set of conversation IDs that contained it.
+    # Populated only when conversation_ids are supplied to _collect_field_stats.
+    # Used to enforce the cross-conversation privacy threshold in _annotate_schema.
+    value_conversation_ids: dict[str, set[str]] = field(default_factory=dict)
 
     @property
     def frequency(self) -> float:
@@ -257,6 +356,7 @@ def _detect_numeric_format(value: float | int) -> str | None:
 def _collect_field_stats(
     samples: list[dict[str, Any]],
     *,
+    conversation_ids: list[str | None] | None = None,
     max_depth: int = 15,
 ) -> dict[str, FieldStats]:
     """Walk all samples and collect per-JSON-path statistics.
@@ -266,6 +366,10 @@ def _collect_field_stats(
 
     Args:
         samples: Raw data dicts to analyze
+        conversation_ids: Optional parallel list of conversation IDs for each sample.
+            When provided, each string value is annotated with the conversation(s)
+            it appeared in, enabling the cross-conversation privacy threshold in
+            _annotate_schema (min_conversation_count).  Length must equal len(samples).
         max_depth: Maximum nesting depth to traverse
 
     Returns:
@@ -326,6 +430,15 @@ def _collect_field_stats(
             # Track observed values (capped for memory)
             if len(stats.observed_values) < _ENUM_VALUE_CAP:
                 stats.observed_values[value] += 1
+                # Track which conversation this value came from (for privacy threshold)
+                if conversation_ids is not None:
+                    conv_id = (
+                        conversation_ids[sample_idx]
+                        if sample_idx < len(conversation_ids)
+                        else None
+                    )
+                    if conv_id is not None:
+                        stats.value_conversation_ids.setdefault(value, set()).add(conv_id)
 
             # Detect format
             fmt = _detect_string_format(value)
@@ -384,7 +497,17 @@ _FILE_EXTENSIONS = frozenset({
     ".xls", ".xlsx", ".zip", ".gz", ".tar", ".py", ".js", ".ts",
 })
 
-_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]")
+_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}([T ]|$)")
+_HIGH_ENTROPY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
+
+_IDENTIFIER_FIELD_TOKENS = frozenset({
+    "id", "ids", "uuid", "guid", "key", "keys", "token", "tokens",
+    "hash", "checksum", "digest",
+    "resourceid", "fileid", "messageid", "conversationid", "sessionid",
+    "promptid", "parentid", "childid", "attachmentid",
+    "requestid", "responseid", "traceid", "runid",
+    "userid", "threadid", "clientid",
+})
 
 # Field names whose values are always user content, never structural enums.
 # This complements the value-level filter to catch content that *looks* like
@@ -392,6 +515,8 @@ _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]")
 _CONTENT_FIELD_NAMES = frozenset({
     "title", "text", "url", "description", "address", "phone",
     "location", "query", "prompt", "summary", "instructions",
+    # Free-form message/IO content — never structural
+    "body", "message", "input", "output",
     "breadcrumbs", "display_title", "page_title", "leaf_description",
     "clicked_from_title", "clicked_from_url", "content_url", "image_url",
     "website_url", "provider_url", "request_query", "featured_tag",
@@ -411,7 +536,52 @@ def _is_content_field(path: str) -> bool:
     return terminal in _CONTENT_FIELD_NAMES
 
 
-def _is_safe_enum_value(value: str) -> bool:
+def _path_field_names(path: str) -> list[str]:
+    """Extract concrete field-name segments from a schema path."""
+    names: list[str] = []
+    for segment in path.split("."):
+        if not segment or segment in {"$", "*"}:
+            continue
+        name = segment.split("[", 1)[0]
+        if not name or name == "*":
+            continue
+        names.append(name)
+    return names
+
+
+def _looks_identifier_field_name(name: str) -> bool:
+    """Return True when a field name is likely an identifier slot."""
+    if not name:
+        return False
+
+    normalized = re.sub(r"[^a-z0-9]", "", name.lower())
+    if normalized in _IDENTIFIER_FIELD_TOKENS:
+        return True
+
+    lowered = name.lower()
+    if lowered.endswith(("_id", "-id", "_ids", "-ids")):
+        return True
+    return bool(name.endswith(("Id", "ID", "Ids", "IDs")))
+
+
+def _is_identifier_field(path: str) -> bool:
+    """Return True if any field segment in path is identifier-like."""
+    return any(_looks_identifier_field_name(name) for name in _path_field_names(path))
+
+
+def _looks_high_entropy_token(value: str) -> bool:
+    """Detect opaque identifier-like tokens from value shape alone."""
+    if not _HIGH_ENTROPY_TOKEN_RE.match(value):
+        return False
+    has_alpha = any(ch.isalpha() for ch in value)
+    has_digit = any(ch.isdigit() for ch in value)
+    if not (has_alpha and has_digit):
+        return False
+    unique_ratio = len(set(value)) / len(value)
+    return unique_ratio >= 0.45
+
+
+def _is_safe_enum_value(value: str, *, path: str = "$") -> bool:
     """Return True if a string value is safe to include in schema annotations.
 
     Uses a conservative allowlist approach: only values that look like
@@ -422,6 +592,8 @@ def _is_safe_enum_value(value: str) -> bool:
     The goal is to preserve structural enum metadata in committed schemas
     without leaking personal data from conversations.
     """
+    if _is_identifier_field(path):
+        return False
     if not value or len(value) > _SAFE_ENUM_MAX_LEN:
         return False
     if not value.isascii():
@@ -434,13 +606,25 @@ def _is_safe_enum_value(value: str) -> bool:
         return False
     if value.startswith(("+", "/")):
         return False
+    if _looks_high_entropy_token(value):
+        return False
+    if "/" in value:
+        segments = [part for part in value.split("/") if part]
+        if segments and _looks_high_entropy_token(segments[-1]):
+            return False
     lower = value.lower()
     if any(lower.endswith(ext) for ext in _FILE_EXTENSIONS):
         return False
     if _TIMESTAMP_RE.match(value):
         return False
-    # Block domain-name-like values (contain dots with known TLDs)
+    # Likely personal-name token (e.g. "Alice", "JohnSmith") rather than structure.
+    if re.match(r"^[A-Z][a-z]+(?:[A-Z][a-z]+)*$", value):
+        return False
+    # Block domain-name-like values (contain dots with known public TLDs)
     if "." in value and re.search(r"\.(com|org|net|pl|io|de|uk|ru|fr|co)\b", lower):
+        return False
+    # Block internal/private network hostnames (.local, .lan, .corp, .internal, .home)
+    if "." in value and re.search(r"\.(local|lan|corp|internal|home)\b", lower):
         return False
     return True
 
@@ -449,6 +633,8 @@ def _annotate_schema(
     schema: dict[str, Any],
     stats: dict[str, FieldStats],
     path: str = "$",
+    *,
+    min_conversation_count: int = 1,
 ) -> dict[str, Any]:
     """Apply x-polylogue-* annotations to a schema based on collected field stats.
 
@@ -487,11 +673,34 @@ def _annotate_schema(
                 and field_stats.observed_values
                 and fmt not in _id_formats
                 and not _is_content_field(path)):
-            # Top values by frequency — cap output, filter out content/PII
-            sorted_vals = [
-                v for v, _ in field_stats.observed_values.most_common(_ENUM_OUTPUT_CAP)
-                if not isinstance(v, str) or _is_safe_enum_value(v)
-            ]
+            # Top values by frequency — cap output, filter out content/PII.
+            # On larger datasets, require repeat observations to avoid leaking
+            # one-off values while retaining structural enums.
+            total = max(field_stats.value_count, 1)
+            min_count = _ENUM_MIN_COUNT if total >= 20 else 1
+            min_freq = _ENUM_MIN_FREQ if total >= 50 else 0.0
+            sorted_vals: list[Any] = []
+            for value, count in field_stats.observed_values.most_common(_ENUM_VALUE_CAP):
+                if isinstance(value, str):
+                    if not _is_safe_enum_value(value, path=path):
+                        continue
+                    if count < min_count:
+                        continue
+                    if min_freq and (count / total) < min_freq:
+                        continue
+                    # Cross-conversation privacy threshold: suppress values seen in
+                    # fewer than min_conversation_count distinct conversations.
+                    # Only enforced when conversation tracking is available.
+                    if (
+                        min_conversation_count > 1
+                        and field_stats.value_conversation_ids
+                    ):
+                        n_convs = len(field_stats.value_conversation_ids.get(value, set()))
+                        if n_convs < min_conversation_count:
+                            continue
+                sorted_vals.append(value)
+                if len(sorted_vals) >= _ENUM_OUTPUT_CAP:
+                    break
             if sorted_vals:
                 schema["x-polylogue-values"] = sorted_vals
 
@@ -519,23 +728,31 @@ def _annotate_schema(
     if "properties" in schema:
         for prop_name, prop_schema in schema["properties"].items():
             schema["properties"][prop_name] = _annotate_schema(
-                prop_schema, stats, f"{path}.{prop_name}"
+                prop_schema, stats, f"{path}.{prop_name}",
+                min_conversation_count=min_conversation_count,
             )
 
     # Recurse into additionalProperties (dynamic keys)
     ap = schema.get("additionalProperties")
     if isinstance(ap, dict):
-        schema["additionalProperties"] = _annotate_schema(ap, stats, f"{path}.*")
+        schema["additionalProperties"] = _annotate_schema(
+            ap, stats, f"{path}.*",
+            min_conversation_count=min_conversation_count,
+        )
 
     # Recurse into items
     if "items" in schema and isinstance(schema["items"], dict):
-        schema["items"] = _annotate_schema(schema["items"], stats, f"{path}[*]")
+        schema["items"] = _annotate_schema(
+            schema["items"], stats, f"{path}[*]",
+            min_conversation_count=min_conversation_count,
+        )
 
     # Recurse into anyOf/oneOf/allOf
     for keyword in ("anyOf", "oneOf", "allOf"):
         if keyword in schema:
             schema[keyword] = [
-                _annotate_schema(s, stats, path) for s in schema[keyword]
+                _annotate_schema(s, stats, path, min_conversation_count=min_conversation_count)
+                for s in schema[keyword]
             ]
 
     return schema
@@ -546,112 +763,129 @@ def _annotate_schema(
 # =============================================================================
 
 
-def load_samples_from_db(
+def _resolve_provider_config(provider_name: str) -> ProviderConfig:
+    config = next((c for c in PROVIDERS.values() if c.db_provider_name == provider_name), None)
+    if config is not None:
+        return config
+    return ProviderConfig(
+        name=provider_name,
+        description=f"{provider_name} export format",
+        db_provider_name=provider_name,
+        sample_granularity="document",
+    )
+
+
+def _iter_samples_from_db(
     provider_name: str,
-    db_path: Path | None = None,
-    max_samples: int | None = None,
-) -> list[dict[str, Any]]:
-    """Load raw samples from polylogue database.
-
-    Args:
-        provider_name: Provider name in database
-        db_path: Path to polylogue.db
-        max_samples: Optional limit (None = all)
-
-    Returns:
-        List of raw message dicts
-    """
-    if db_path is None:
-        db_path = default_db_path()
-    if not db_path.exists():
-        return []
-
-    samples = []
+    *,
+    db_path: Path,
+    config: ProviderConfig,
+) -> Any:
     conn = sqlite3.connect(db_path)
-
     try:
-        limit_clause = f"LIMIT {max_samples}" if max_samples else ""
-
-        # Load from raw_conversations table (new approach)
-        rows = conn.execute(f"""
-            SELECT raw_content, provider_name
+        cursor = conn.execute(
+            """
+            SELECT raw_content, source_path, provider_name
             FROM raw_conversations
             WHERE provider_name = ?
-            {limit_clause}
-        """, (provider_name,)).fetchall()
-
-        for row in rows:
-            try:
-                content = row[0]
-                if isinstance(content, bytes):
-                    content = content.decode("utf-8")
-
-                provider = row[1]
-
-                # JSONL providers: load all records from each conversation
-                # to capture every structural variant (tool_use→tool_result
-                # pairs, position-specific record types, contiguous patterns)
-                if provider in ("claude-code", "codex", "gemini"):
-                    for line in content.strip().split("\n"):
-                        if line.strip():
-                            with contextlib.suppress(json.JSONDecodeError):
-                                samples.append(json.loads(line))
-                else:
-                    # JSON providers: parse whole content
-                    samples.append(json.loads(content))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                pass
-
-            # Early exit once we have ample records (2× genson cap)
-            if len(samples) >= _MAX_GENSON_SAMPLES * 2:
+            ORDER BY acquired_at DESC
+            """,
+            (provider_name,),
+        )
+        while True:
+            rows = cursor.fetchmany(250)
+            if not rows:
                 break
+            for row in rows:
+                try:
+                    envelope = build_raw_payload_envelope(
+                        row[0],
+                        source_path=row[1],
+                        fallback_provider=row[2],
+                        jsonl_dict_only=True,
+                    )
+                except Exception:
+                    continue
+                yield from extract_payload_samples(
+                    envelope.payload,
+                    sample_granularity=config.sample_granularity,
+                    max_samples=None,
+                    record_type_key=config.record_type_key,
+                )
     finally:
         conn.close()
 
-    return samples
 
-
-def load_samples_from_sessions(
+def _iter_samples_from_sessions(
     session_dir: Path,
-    max_sessions: int | None = None,
-) -> list[dict[str, Any]]:
-    """Load samples from JSONL session files.
-
-    Args:
-        session_dir: Directory containing .jsonl session files
-        max_sessions: Optional limit on sessions to process
-
-    Returns:
-        List of record dicts from all sessions
-    """
+    *,
+    max_sessions: int | None,
+) -> Any:
     if not session_dir.exists():
-        return []
+        return
 
-    samples = []
     jsonl_files = sorted(
         session_dir.rglob("*.jsonl"),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-
     if max_sessions and len(jsonl_files) > max_sessions:
         step = len(jsonl_files) // max_sessions
         jsonl_files = jsonl_files[::step][:max_sessions]
 
     for path in jsonl_files:
         try:
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        with contextlib.suppress(json.JSONDecodeError):
-                            samples.append(json.loads(line))
-            # Early exit once we have ample records
-            if len(samples) >= _MAX_GENSON_SAMPLES * 2:
-                break
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    with contextlib.suppress(json.JSONDecodeError):
+                        parsed = json.loads(line)
+                        if isinstance(parsed, dict):
+                            yield parsed
         except OSError:
-            pass
+            continue
 
-    return samples
+
+def load_samples_from_db(
+    provider_name: str,
+    db_path: Path | None = None,
+    max_samples: int | None = None,
+) -> list[dict[str, Any]]:
+    """Load raw samples from polylogue database."""
+    if db_path is None:
+        db_path = default_db_path()
+    if not db_path.exists():
+        return []
+
+    config = _resolve_provider_config(provider_name)
+    samples = list(_iter_samples_from_db(provider_name, db_path=db_path, config=config))
+    if max_samples is None:
+        return samples
+    return limit_samples(
+        samples,
+        limit=max_samples,
+        stratify=config.sample_granularity == "record",
+        record_type_key=config.record_type_key,
+    )
+
+
+def load_samples_from_sessions(
+    session_dir: Path,
+    max_sessions: int | None = None,
+    max_samples: int | None = None,
+    record_type_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load samples from JSONL session files."""
+    samples = list(_iter_samples_from_sessions(session_dir, max_sessions=max_sessions))
+    if max_samples is None:
+        return samples
+    return limit_samples(
+        samples,
+        limit=max_samples,
+        stratify=True,
+        record_type_key=record_type_key,
+    )
 
 
 def get_sample_count_from_db(
@@ -730,6 +964,7 @@ def generate_schema_from_samples(
     *,
     annotate: bool = True,
     max_stats_samples: int = 500,
+    max_genson_samples: int | None = None,
 ) -> dict[str, Any]:
     """Generate JSON schema from samples using genson, with optional annotations.
 
@@ -742,6 +977,8 @@ def generate_schema_from_samples(
         samples: List of data dicts to infer schema from
         annotate: Whether to add x-polylogue-* annotations from field stats
         max_stats_samples: Max samples for stats collection (0 = use all)
+        max_genson_samples: Optional cap for structural inference input.
+            Defaults to None (use complete dataset).
 
     Returns:
         JSON Schema dict with optional annotations
@@ -752,13 +989,12 @@ def generate_schema_from_samples(
     if not samples:
         return {"type": "object", "description": "No samples available"}
 
-    # Cap genson input for very large datasets — structural inference stabilizes
-    # well before 5K samples; extra samples only add rare variant noise
+    # Optional cap for faster debug iterations. Default path uses full dataset.
     genson_samples = samples
-    if len(samples) > _MAX_GENSON_SAMPLES:
+    if max_genson_samples and len(samples) > max_genson_samples:
         import random
         rng = random.Random(0)  # Deterministic, different seed from stats sampling
-        genson_samples = rng.sample(samples, _MAX_GENSON_SAMPLES)
+        genson_samples = rng.sample(samples, max_genson_samples)
 
     builder = SchemaBuilder()
     for sample in genson_samples:
@@ -820,31 +1056,97 @@ def generate_provider_schema(
             error=f"Unknown provider: {provider}. Known: {list(PROVIDERS.keys())}",
         )
 
-    # Load samples
-    samples: list[dict[str, Any]] = []
-
-    if config.db_provider_name:
-        samples = load_samples_from_db(
-            config.db_provider_name,
-            db_path=db_path,
-            max_samples=max_samples,
-        )
-    elif config.session_dir:
-        samples = load_samples_from_sessions(
-            config.session_dir,
-            max_sessions=config.max_sessions,
-        )
-
-    if not samples:
-        return GenerationResult(
-            provider=provider,
-            schema=None,
-            sample_count=0,
-            error="No samples found",
-        )
-
     try:
-        schema = generate_schema_from_samples(samples)
+        if max_samples is not None:
+            # Explicit sampling mode (debug/fast path).
+            if config.db_provider_name:
+                samples = load_samples_from_db(
+                    config.db_provider_name,
+                    db_path=db_path,
+                    max_samples=max_samples,
+                )
+            elif config.session_dir:
+                samples = load_samples_from_sessions(
+                    config.session_dir,
+                    max_sessions=config.max_sessions,
+                    max_samples=max_samples,
+                    record_type_key=config.record_type_key,
+                )
+            else:
+                samples = []
+
+            if not samples:
+                return GenerationResult(
+                    provider=provider,
+                    schema=None,
+                    sample_count=0,
+                    error="No samples found",
+                )
+
+            schema = generate_schema_from_samples(
+                samples,
+                max_genson_samples=max_samples,
+            )
+            sample_count = len(samples)
+        else:
+            # Full-dataset mode (default): stream samples into genson so we
+            # don't hold the entire corpus in memory.
+            import random
+
+            builder = SchemaBuilder()
+            reservoir: list[dict[str, Any]] = []
+            reservoir_size = 500
+            reservoir_rng = random.Random(42)
+            sample_count = 0
+            fingerprint_counts: dict[Any, int] = {}
+
+            if config.db_provider_name:
+                sample_iter = _iter_samples_from_db(
+                    config.db_provider_name,
+                    db_path=db_path,
+                    config=config,
+                )
+            elif config.session_dir:
+                sample_iter = _iter_samples_from_sessions(
+                    config.session_dir,
+                    max_sessions=config.max_sessions,
+                )
+            else:
+                sample_iter = iter(())
+
+            for sample in sample_iter:
+                sample_count += 1
+                fingerprint = _structure_fingerprint(sample)
+                seen = fingerprint_counts.get(fingerprint, 0)
+                if seen < _STRUCTURE_EXEMPLARS_PER_FINGERPRINT:
+                    builder.add_object(sample)
+                    fingerprint_counts[fingerprint] = seen + 1
+
+                if len(reservoir) < reservoir_size:
+                    reservoir.append(sample)
+                else:
+                    j = reservoir_rng.randint(0, sample_count - 1)
+                    if j < reservoir_size:
+                        reservoir[j] = sample
+
+            if sample_count == 0:
+                return GenerationResult(
+                    provider=provider,
+                    schema=None,
+                    sample_count=0,
+                    error="No samples found",
+                )
+
+            schema = builder.to_schema()
+            schema = collapse_dynamic_keys(schema)
+            schema = _remove_nested_required(schema)
+            if config.sample_granularity == "record":
+                schema.pop("required", None)
+            if reservoir:
+                field_stats = _collect_field_stats(reservoir)
+                schema = _annotate_schema(schema, field_stats)
+            schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+
         schema["title"] = f"{provider} export format"
         schema["description"] = config.description
 
@@ -852,19 +1154,20 @@ def generate_provider_schema(
         schema["$id"] = f"polylogue://schemas/{provider}/v1"
         schema["x-polylogue-version"] = 1
         schema["x-polylogue-generated-at"] = datetime.now(tz=timezone.utc).isoformat()
-        schema["x-polylogue-sample-count"] = len(samples)
+        schema["x-polylogue-sample-count"] = sample_count
         schema["x-polylogue-generator"] = "polylogue.schemas.schema_inference"
+        schema["x-polylogue-sample-granularity"] = config.sample_granularity
 
         return GenerationResult(
             provider=provider,
             schema=schema,
-            sample_count=len(samples),
+            sample_count=sample_count,
         )
     except Exception as e:
         return GenerationResult(
             provider=provider,
             schema=None,
-            sample_count=len(samples),
+            sample_count=0,
             error=str(e),
         )
 
@@ -873,6 +1176,7 @@ def generate_all_schemas(
     output_dir: Path,
     db_path: Path | None = None,
     providers: list[str] | None = None,
+    max_samples: int | None = None,
 ) -> list[GenerationResult]:
     """Generate schemas for all (or specified) providers.
 
@@ -880,6 +1184,8 @@ def generate_all_schemas(
         output_dir: Directory to write schema files
         db_path: Path to polylogue database
         providers: Optional list of providers (default: all)
+        max_samples: Optional sample cap for fast/debug generation.
+            None means full dataset.
 
     Returns:
         List of GenerationResults
@@ -892,7 +1198,11 @@ def generate_all_schemas(
     results = []
 
     for provider in provider_list:
-        result = generate_provider_schema(provider, db_path=db_path)
+        result = generate_provider_schema(
+            provider,
+            db_path=db_path,
+            max_samples=max_samples,
+        )
         results.append(result)
 
         if result.success and result.schema:
@@ -942,6 +1252,12 @@ def cli_main(args: list[str] | None = None) -> int:
         default=None,
         help="Path to polylogue database (default: XDG data home)",
     )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Optional sample cap for fast/debug generation (default: full dataset)",
+    )
 
     parsed = parser.parse_args(args)
 
@@ -950,6 +1266,7 @@ def cli_main(args: list[str] | None = None) -> int:
         output_dir=parsed.output_dir,
         db_path=parsed.db_path,
         providers=providers,
+        max_samples=parsed.max_samples,
     )
 
     # Report results
