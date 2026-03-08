@@ -54,6 +54,10 @@ def _temporary_env(updates: dict[str, str]) -> Iterator[None]:
     "--tier", "tier_filter", default=None, type=int,
     help="Only run exercises at this tier level (1=basic, 2=intermediate, 3=advanced)",
 )
+@click.option(
+    "--audit-dir", type=click.Path(path_type=Path), default=None,
+    help="Write a QA session JSON record to this directory (only with --showcase)",
+)
 @click.pass_obj
 def demo_command(
     env: AppEnv,
@@ -68,6 +72,7 @@ def demo_command(
     json_output: bool,
     showcase_verbose: bool,
     tier_filter: int | None,
+    audit_dir: Path | None,
 ) -> None:
     """Generate synthetic conversations for demos, testing, and inspection.
 
@@ -104,6 +109,7 @@ def demo_command(
             showcase_data.lower(),
             count,
             tier_filter,
+            audit_dir,
         )
         return
 
@@ -141,9 +147,15 @@ def _do_showcase(
     showcase_data: str,
     synthetic_count: int,
     tier_filter: int | None = None,
+    audit_dir: Path | None = None,
 ) -> None:
     """Exercise all CLI commands and generate reports."""
-    from polylogue.showcase.report import generate_json_report, generate_summary, save_reports
+    from polylogue.showcase.report import (
+        generate_json_report,
+        generate_summary,
+        save_reports,
+        write_qa_session,
+    )
     from polylogue.showcase.runner import ShowcaseRunner
 
     runner = ShowcaseRunner(
@@ -158,6 +170,11 @@ def _do_showcase(
 
     result = runner.run()
     save_reports(result)
+
+    if audit_dir is not None:
+        written = write_qa_session(result, audit_dir)
+        if not json_output:
+            env.ui.console.print(f"QA session written: {written}")
 
     if json_output:
         click.echo(generate_json_report(result))
