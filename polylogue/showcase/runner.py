@@ -83,6 +83,7 @@ class ShowcaseRunner:
         verbose: bool = False,
         showcase_data: str = "fixtures",
         synthetic_count: int = 3,
+        tier_filter: int | None = None,
     ) -> None:
         if showcase_data not in {"fixtures", "synthetic"}:
             raise ValueError(f"Unknown showcase_data: {showcase_data}")
@@ -92,6 +93,7 @@ class ShowcaseRunner:
         self.verbose = verbose
         self.showcase_data = showcase_data
         self.synthetic_count = synthetic_count
+        self.tier_filter = tier_filter
         self._env_vars: dict[str, str] = {}
         self._workspace_dir: Path | None = None
         self._shared_state: dict[str, Any] = {}
@@ -158,11 +160,13 @@ class ShowcaseRunner:
         return result
 
     def _select_exercises(self) -> list[Exercise]:
-        """Filter exercises based on mode."""
+        """Filter exercises based on mode and tier."""
         selected: list[Exercise] = []
         for ex in EXERCISES:
             if self.live and ex.writes:
                 # Live mode: skip writes and exercises that need seeded data
+                continue
+            if self.tier_filter is not None and ex.tier != self.tier_filter:
                 continue
             selected.append(ex)
         return selected
