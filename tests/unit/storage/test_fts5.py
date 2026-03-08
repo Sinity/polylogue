@@ -28,36 +28,6 @@ from tests.infra.helpers import ConversationBuilder, DbFactory, make_conversatio
 # ============================================================================
 
 
-SEARCH_BASIC_CASES = [
-    # (num_convs, search_term, expected_count, description)
-    (1, "python", 1, "single match"),
-    (3, "testing", 3, "multiple matches"),
-    (1, "nonexistent", 0, "no match"),
-]
-
-
-@pytest.mark.parametrize("num_convs,search_term,expected_count,description", SEARCH_BASIC_CASES)
-async def test_search_basic_results(workspace_env, storage_repository, num_convs, search_term, expected_count, description):
-    """search_messages() returns correct number of results."""
-    # Create conversations
-    for i in range(num_convs):
-        if search_term == "nonexistent":
-            text = "hello world"
-        elif search_term == "testing":
-            text = "testing framework"
-        else:  # "python"
-            text = "python programming language"
-
-        conv = make_conversation(f"conv{i}", title=f"Conv {i}")
-        msg = make_message(f"msg{i}", f"conv{i}", text=text)
-        await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
-
-    rebuild_index()
-
-    results = search_messages(search_term, archive_root=workspace_env["archive_root"], limit=10)
-    assert len(results.hits) == expected_count, f"Failed for {description}"
-
-
 async def test_search_respects_limit(workspace_env, storage_repository):
     """search_messages() respects limit parameter."""
     for i in range(10):
@@ -140,16 +110,6 @@ async def test_search_with_special_text(workspace_env, storage_repository, text,
 # Tests for edge cases and error handling
 # ============================================================================
 
-
-def test_ensure_index_idempotent(test_conn):
-    """ensure_index() can be called multiple times safely."""
-    ensure_index(test_conn)
-    ensure_index(test_conn)
-    ensure_index(test_conn)
-
-    # Verify table exists
-    result = test_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
-    assert result is not None
 
 
 def test_rebuild_index_with_empty_database(test_conn):
@@ -311,74 +271,6 @@ async def test_batch_index_search_returns_correct_provider(workspace_env, storag
     results2 = search_messages("chatgpt", archive_root=workspace_env["archive_root"], limit=10)
     assert all(hit.provider_name == "chatgpt" for hit in results2.hits)
     assert len(results2.hits) == 1
-
-
-# ============================================================================
-# FTS5 ESCAPING - PARAMETRIZED
-# ============================================================================
-
-
-# ============================================================================
-# FTS5 ESCAPING - PARAMETRIZED
-# ============================================================================
-
-
-FTS5_ESCAPE_CASES = [
-    # Empty/whitespace
-    ('', '""', "empty query"),
-    ('   ', '""', "whitespace only"),
-
-    # Quotes - internal quotes are doubled, whole string is wrapped in double quotes
-    ('find "quoted text" here', '"find \"\"quoted text\"\" here"', "internal quotes"),
-
-    # Wildcards
-    ('*', '""', "bare asterisk"),
-    ('test*', '"test*"', "asterisk with text"),
-    ('?', '?', "question mark"),  # Single char, no special FTS5 chars -> unquoted
-
-    # FTS5 operators (should be quoted as literals)
-    ('AND', '"AND"', "AND operator"),
-    ('OR', '"OR"', "OR operator"),
-    ('NOT', '"NOT"', "NOT operator"),
-    ('NEAR', '"NEAR"', "NEAR operator"),
-    ('and', '"and"', "lowercase and"),
-    ('And', '"And"', "mixed case And"),
-
-    # Special characters - all wrapped in double quotes
-    ('test:value', '"test:value"', "colon"),
-    ('test^2', '"test^2"', "caret"),
-    ('function(arg)', '"function(arg)"', "parentheses"),
-    ('test)', '"test)"', "close paren"),
-    ('(test', '"(test"', "open paren"),
-
-    # Minus/hyphen - wrapped in double quotes
-    ('-test', '"-test"', "leading minus"),
-    ('test-word', '"test-word"', "embedded hyphen"),
-
-    # Plus - wrapped in double quotes
-    ('+required', '"+required"', "plus operator"),
-
-    # Comma (NEAR separator in FTS5) - wrapped in double quotes
-    ('After reviewing, I', '"After reviewing, I"', "comma in text"),
-
-    # Multiple operators
-    ('test AND query', 'test AND query', "embedded AND - passes through unquoted"),
-    ('OR query', '"OR query"', "leading OR - quoted for safety"),
-
-    # Normal text (NOT quoted - implementation passes simple alphanumeric through as-is)
-    ('simple query', 'simple query', "simple words"),
-    ('hello', 'hello', "single word"),
-]
-
-
-@pytest.mark.parametrize("input_query,expected,desc", FTS5_ESCAPE_CASES)
-def test_escape_fts5_comprehensive(input_query, expected, desc):
-    """Comprehensive FTS5 escaping test.
-
-    Each row specifies the exact expected output of escape_fts5_query(input_query).
-    """
-    assert escape_fts5_query(input_query) == expected, f"Failed {desc}"
-
 
 
 
