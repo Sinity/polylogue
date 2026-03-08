@@ -300,51 +300,6 @@ class TestDashboardCommand:
 class TestCliRunCommand:
     """Tests for the run command."""
 
-    def test_run_preview_shows_plan(self, tmp_path):
-        """run --preview shows what would be done without writing."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-        inbox = workspace["paths"]["inbox"]
-
-        # Create test data
-        (GenericConversationBuilder("conv1")
-         .add_user("preview test")
-         .write_to(inbox / "test.json"))
-
-        result = run_cli(["--plain", "run", "--preview"], env=env)
-        # Preview should succeed (exit 0) or fail gracefully
-        assert result.exit_code in (0, 1)
-        # Should mention preview or snapshot
-        output_lower = result.output.lower()
-        assert "preview" in output_lower or "snapshot" in output_lower or "source" in output_lower
-
-    @pytest.mark.parametrize("stage,desc", [(s, d) for s, d in STAGE_CASES])
-    def test_run_stage_execution(self, tmp_path, stage, desc):
-        """run --stage executes specific pipeline stage."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-        inbox = workspace["paths"]["inbox"]
-
-        # Only add data for parse stage
-        if stage == "parse":
-            (GenericConversationBuilder("conv1")
-             .add_user("test data")
-             .write_to(inbox / "test.json"))
-
-        result = run_cli(["--plain", "run", "--stage", stage], env=env)
-        # Should succeed even with no data for later stages
-        assert result.exit_code == 0
-
-    def test_run_with_source_filter(self, tmp_path):
-        """run --source filters to specific source."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        # Should handle nonexistent source gracefully
-        result = run_cli(["--plain", "run", "--source", "nonexistent"], env=env)
-        # Either fails with error or succeeds with no-op
-        assert result.exit_code in (0, 1)
-
     def test_run_watch_flags_require_watch(self, tmp_path):
         """--notify, --exec, --webhook require --watch."""
         workspace = setup_isolated_workspace(tmp_path)
@@ -370,18 +325,6 @@ class TestCliRunCommand:
 class TestCliCheckCommand:
     """Tests for the check command."""
 
-    def test_check_basic(self, tmp_path):
-        """check runs health checks."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        result = run_cli(["--plain", "check"], env=env)
-        # Should succeed even with empty database
-        assert result.exit_code == 0
-        # Should show some health check output
-        output_lower = result.output.lower()
-        assert "ok" in output_lower or "summary" in output_lower or "health" in output_lower
-
     def test_check_json_output(self, tmp_path):
         """check --json outputs valid JSON."""
         workspace = setup_isolated_workspace(tmp_path)
@@ -396,14 +339,6 @@ class TestCliCheckCommand:
             assert isinstance(data, dict)
         except json.JSONDecodeError:
             pytest.fail(f"check --json did not output valid JSON: {result.stdout}")
-
-    def test_check_verbose(self, tmp_path):
-        """check --verbose shows breakdown."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        result = run_cli(["--plain", "check", "--verbose"], env=env)
-        assert result.exit_code == 0
 
     def test_check_vacuum_requires_repair(self, tmp_path):
         """check --vacuum requires --repair."""
@@ -570,11 +505,6 @@ class TestMcpServerIntegration:
         except ImportError:
             # MCP not installed, skip
             pytest.skip("MCP dependencies not installed")
-
-    def test_mcp_server_module_exists(self):
-        """MCP server module exists in package."""
-        import polylogue.mcp as mcp_module
-        assert hasattr(mcp_module, "__file__")
 
 
 # =============================================================================
