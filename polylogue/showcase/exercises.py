@@ -32,6 +32,8 @@ class Exercise:
     writes: bool = False  # Mutates state — skip in --live mode
     depends_on: str | None = None  # Exercise that must complete first
     output_ext: str = ".txt"  # .txt / .json / .md / .csv / .html / .org
+    tier: int = 1  # Complexity tier: 1=basic, 2=intermediate, 3=advanced
+    env: str = "any"  # Required environment: "any" | "seeded" | "live"
 
 
 # =============================================================================
