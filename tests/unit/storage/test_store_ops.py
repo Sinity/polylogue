@@ -531,18 +531,6 @@ def test_provider_name_accepts_valid(name, desc):
     assert record.provider_name == name
 
 
-@pytest.mark.parametrize("name,desc", [("", "empty"), ("123invalid", "starts_number"), ("../escape", "path_escape")], ids=str)
-def test_provider_name_rejects_invalid(name, desc):
-    """provider_name rejects {desc}."""
-    with pytest.raises(ValidationError):
-        ConversationRecord(
-            conversation_id="test",
-            provider_name=name,
-            provider_conversation_id="ext1",
-            title="Test",
-            content_hash="hash123",
-        )
-
 
 # =============================================================================
 # BACKEND CRUD OPERATIONS

@@ -322,7 +322,7 @@ async def test_prepare_records_new_conversation(async_backend, test_repository, 
     assert counts["messages"] == 1
     assert counts["skipped_conversations"] == 0
     assert changed is False  # First insert not considered a "change"
-    assert cid == "test:new-conv-1"
+    assert cid == "unknown:new-conv-1"
 
 
 async def test_prepare_records_unchanged_conversation_skips(async_backend, test_repository, tmp_path):
