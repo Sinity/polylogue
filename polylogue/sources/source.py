@@ -98,7 +98,7 @@ def _decode_json_bytes(blob: bytes) -> str | None:
             decoded = blob.decode(encoding)
         except UnicodeError:
             continue
-        cleaned = decoded.replace("\x00", "")
+        cleaned = decoded.replace("\x00", "").lstrip("\ufeff")
         if cleaned:
             return cleaned
     try:
