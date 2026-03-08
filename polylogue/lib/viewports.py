@@ -82,6 +82,7 @@ class ToolCategory(str, Enum):
     SEARCH = "search"
     WEB = "web"
     AGENT = "agent"
+    SUBAGENT = "subagent"
     OTHER = "other"
 
 
@@ -116,11 +117,7 @@ class ReasoningTrace(BaseModel):
 
 
 class ToolCall(BaseModel):
-    """Cross-provider harmonized tool invocation for rendering.
-
-    This is a viewport type for uniform display across providers.
-    For Claude Code-specific semantic analysis (is_file_operation,
-    affected_paths, etc.), use lib.models.ToolInvocation instead.
+    """Cross-provider harmonized tool invocation for rendering and analysis.
 
     Maps to:
     - Claude Code: tool_use blocks (Bash, Read, Write, Edit, etc.)
@@ -167,23 +164,26 @@ class ToolCall(BaseModel):
         return self.category == ToolCategory.GIT
 
     @property
+    def is_subagent(self) -> bool:
+        """Check if this spawns a subagent."""
+        return self.category == ToolCategory.SUBAGENT
+
+    @property
     def affected_paths(self) -> list[str]:
         """Extract file paths affected by this operation."""
-        paths = []
-
-        # Common field names for paths
-        for field in ("file_path", "path", "file", "filename", "command"):
+        # Primary path fields: first match wins (file_path takes priority over path)
+        for field in ("file_path", "path", "file", "filename", "pattern"):
             if field in self.input:
                 val = self.input[field]
                 if isinstance(val, str):
-                    # For commands, try to extract paths
-                    if field == "command":
-                        # Simple heuristic: look for path-like strings
-                        paths.extend(_PATH_PATTERN.findall(val)[:5])
-                    else:
-                        paths.append(val)
+                    return [val]
 
-        return paths
+        # Shell commands: extract path-like tokens as a fallback
+        cmd = self.input.get("command")
+        if isinstance(cmd, str):
+            return list(_PATH_PATTERN.findall(cmd)[:5])
+
+        return []
 
 
 class ContentBlock(BaseModel):
@@ -299,7 +299,7 @@ def classify_tool(name: str, input_data: dict[str, Any]) -> ToolCategory:
         return ToolCategory.FILE_READ
     if name_lower in ("write", "create"):
         return ToolCategory.FILE_WRITE
-    if name_lower in ("edit", "patch", "sed"):
+    if name_lower in ("edit", "patch", "sed", "notebookedit"):
         return ToolCategory.FILE_EDIT
 
     # Search operations
@@ -314,8 +314,12 @@ def classify_tool(name: str, input_data: dict[str, Any]) -> ToolCategory:
             return ToolCategory.GIT
         return ToolCategory.SHELL
 
-    # Agent operations
-    if name_lower in ("task", "agent", "subagent"):
+    # Subagent operations (task spawning)
+    if name_lower in ("task", "subagent"):
+        return ToolCategory.SUBAGENT
+
+    # General agent orchestration
+    if name_lower == "agent":
         return ToolCategory.AGENT
 
     # Web operations

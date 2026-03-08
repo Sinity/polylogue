@@ -874,27 +874,27 @@ class TestUnifiedHarmonizeParsedMessage:
         result = harmonize_parsed_message("claude-ai", meta)
         assert isinstance(result, HarmonizedMessage)
 
-    def test_harmonize_parsed_message_claude_code_no_raw_preserves_tool_fields(self):
-        """No-raw Claude Code path should preserve tool id/input/category with context."""
-        meta = {
-            "content_blocks": [{"type": "text", "text": "Need to read file"}],
-            "tool_invocations": [
-                {
-                    "tool_name": "Read",
-                    "id": "tool-1",
-                    "input": {"file_path": "README.md"},
-                }
-            ],
-            "thinking_traces": [{"text": "First inspect the repo"}],
+    def test_harmonize_parsed_message_claude_code_raw_preserves_tool_fields(self):
+        """Claude Code raw format should extract tool id/input/category correctly."""
+        raw_record = {
+            "type": "assistant",
+            "uuid": "msg-1",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need to read file"},
+                    {"type": "thinking", "thinking": "First inspect the repo"},
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Read",
+                        "input": {"file_path": "README.md"},
+                    },
+                ],
+            },
         }
-        result = harmonize_parsed_message(
-            "claude-code",
-            meta,
-            message_id="msg-1",
-            role="assistant",
-            text="Need to read file",
-            timestamp="2026-01-01T00:00:00Z",
-        )
+        result = harmonize_parsed_message("claude-code", {"raw": raw_record})
         assert result is not None
         assert result.id == "msg-1"
         assert result.role == "assistant"
@@ -903,18 +903,27 @@ class TestUnifiedHarmonizeParsedMessage:
         assert result.tool_calls[0].id == "tool-1"
         assert result.tool_calls[0].input == {"file_path": "README.md"}
         assert result.tool_calls[0].category.value == "file_read"
+        assert len(result.reasoning_traces) == 1
+        assert result.reasoning_traces[0].text == "First inspect the repo"
 
-    def test_extract_from_provider_meta_claude_code_no_raw_reconstructs_text(self):
-        """Direct no-raw extraction should infer text from content blocks."""
-        meta = {
-            "content_blocks": [
-                {"type": "text", "text": "line one"},
-                {"type": "text", "text": "line two"},
-            ],
+    def test_extract_from_provider_meta_claude_code_raw_extracts_text(self):
+        """Raw format extraction should produce text from text-only blocks."""
+        raw_record = {
+            "type": "assistant",
+            "uuid": "msg-2",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "line one"},
+                    {"type": "text", "text": "line two"},
+                    {"type": "thinking", "thinking": "some reasoning"},
+                ],
+            },
         }
-        result = extract_from_provider_meta("claude-code", meta)
+        result = extract_from_provider_meta("claude-code", {"raw": raw_record})
         assert result.text == "line one\nline two"
-        assert result.role == "unknown"
+        assert result.role == "assistant"
+        assert len(result.reasoning_traces) == 1
 
 
 class TestUnifiedBulkHarmonize:

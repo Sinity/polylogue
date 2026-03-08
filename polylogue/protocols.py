@@ -8,10 +8,15 @@ Only protocols with 2+ implementations earn their existence here:
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from polylogue.storage.store import MessageRecord
+
+if TYPE_CHECKING:
+    from polylogue.lib.models import Conversation, ConversationSummary, Message
+    from polylogue.types import ConversationId
 
 
 @runtime_checkable
@@ -72,9 +77,67 @@ class ProgressCallback(Protocol):
         ...
 
 
+@runtime_checkable
+class ConversationReader(Protocol):
+    """Read-only interface for conversation retrieval.
+
+    Subset of ConversationRepository used by filters and query specs that
+    only need to read conversations, not write or search them.
+    """
+
+    async def get(self, conversation_id: str) -> Conversation | None: ...
+
+    async def get_eager(self, conversation_id: str) -> Conversation | None: ...
+
+    async def list(self, **kwargs: object) -> list[Conversation]: ...
+
+    async def list_summaries(self, **kwargs: object) -> list[ConversationSummary]: ...
+
+    async def count(self, **kwargs: object) -> int: ...
+
+    async def get_summary(self, conversation_id: str) -> ConversationSummary | None: ...
+
+    async def resolve_id(self, id_prefix: str) -> ConversationId | None: ...
+
+    def iter_messages(
+        self,
+        conversation_id: str,
+        *,
+        dialogue_only: bool = False,
+        limit: int | None = None,
+    ) -> AsyncIterator[Message]: ...
+
+
+@runtime_checkable
+class SearchStore(Protocol):
+    """Search interface for conversation retrieval."""
+
+    async def search(self, query: str, **kwargs: object) -> list[Conversation]: ...
+
+    async def search_summaries(self, query: str, **kwargs: object) -> list[ConversationSummary]: ...
+
+    async def search_similar(self, text: str, **kwargs: object) -> list[Conversation]: ...
+
+
+@runtime_checkable
+class TagStore(Protocol):
+    """Tag and metadata management interface."""
+
+    async def list_tags(self, **kwargs: object) -> dict[str, int]: ...
+
+    async def get_metadata(self, conversation_id: str) -> dict[str, object]: ...
+
+    async def update_metadata(self, conversation_id: str, key: str, value: object) -> None: ...
+
+    async def delete_metadata(self, conversation_id: str, key: str) -> None: ...
+
+
 __all__ = [
     "SearchProvider",
     "VectorProvider",
     "OutputRenderer",
     "ProgressCallback",
+    "ConversationReader",
+    "SearchStore",
+    "TagStore",
 ]

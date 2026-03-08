@@ -5,7 +5,10 @@ from pydantic import ValidationError
 from polylogue.lib.log import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
 
-from .base import ParsedAttachment, ParsedConversation, ParsedMessage, normalize_role
+from polylogue.lib.roles import Role
+from polylogue.types import Provider
+
+from .base import ParsedAttachment, ParsedConversation, ParsedMessage
 
 _logger = get_logger(__name__)
 
@@ -76,7 +79,7 @@ def _attachment_from_doc(doc: dict[str, object] | str, message_id: str | None) -
     )
 
 
-def parse_chunked_prompt(provider: str, payload: dict[str, object], fallback_id: str) -> ParsedConversation:
+def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], fallback_id: str) -> ParsedConversation:
     prompt = payload.get("chunkedPrompt")
     chunks: list[str | dict[str, object]] = []
     if isinstance(prompt, dict):
@@ -107,7 +110,7 @@ def parse_chunked_prompt(provider: str, payload: dict[str, object], fallback_id:
         role_val = chunk_obj.get("role") or chunk_obj.get("author")
         if not isinstance(role_val, str) or not role_val:
             continue
-        role = normalize_role(role_val)
+        role = Role.normalize(role_val)
         msg_id = str(chunk_obj.get("id") or f"chunk-{idx}")
 
         # Try to parse via the rich GeminiMessage typed model for structured extraction

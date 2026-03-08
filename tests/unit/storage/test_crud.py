@@ -15,9 +15,7 @@ from polylogue.schemas.unified import (
     extract_harmonized_message,
     is_message_record,
 )
-from polylogue.schemas.unified import (
-    normalize_role as new_normalize_role,
-)
+from polylogue.lib.roles import normalize_role as new_normalize_role
 from polylogue.sources.parsers.base import normalize_role as old_normalize_role
 from polylogue.sources.parsers.claude import (
     extract_text_from_segments as old_extract_segments,

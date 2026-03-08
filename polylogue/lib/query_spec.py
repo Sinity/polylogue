@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from polylogue.types import Provider
+
 if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
     from polylogue.protocols import VectorProvider
@@ -44,8 +46,8 @@ class ConversationQuerySpec:
     query_terms: tuple[str, ...] = ()
     contains_terms: tuple[str, ...] = ()
     exclude_text_terms: tuple[str, ...] = ()
-    providers: tuple[str, ...] = ()
-    excluded_providers: tuple[str, ...] = ()
+    providers: tuple[Provider, ...] = ()
+    excluded_providers: tuple[Provider, ...] = ()
     tags: tuple[str, ...] = ()
     excluded_tags: tuple[str, ...] = ()
     has_types: tuple[str, ...] = ()
@@ -66,8 +68,8 @@ class ConversationQuerySpec:
             query_terms=_as_tuple(params.get("query")),
             contains_terms=_as_tuple(params.get("contains")),
             exclude_text_terms=_as_tuple(params.get("exclude_text")),
-            providers=_split_csv(params.get("provider")),
-            excluded_providers=_split_csv(params.get("exclude_provider")),
+            providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("provider"))),
+            excluded_providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("exclude_provider"))),
             tags=_split_csv(params.get("tag")),
             excluded_tags=_split_csv(params.get("exclude_tag")),
             has_types=_as_tuple(params.get("has_type")),
@@ -92,9 +94,9 @@ class ConversationQuerySpec:
         if self.exclude_text_terms:
             parts.append(f"exclude text: {', '.join(self.exclude_text_terms)}")
         if self.providers:
-            parts.append(f"provider: {', '.join(self.providers)}")
+            parts.append(f"provider: {', '.join(p.value for p in self.providers)}")
         if self.excluded_providers:
-            parts.append(f"exclude provider: {', '.join(self.excluded_providers)}")
+            parts.append(f"exclude provider: {', '.join(p.value for p in self.excluded_providers)}")
         if self.tags:
             parts.append(f"tag: {', '.join(self.tags)}")
         if self.excluded_tags:
