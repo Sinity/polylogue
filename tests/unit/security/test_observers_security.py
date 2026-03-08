@@ -1,11 +1,12 @@
-"""Security tests for pipeline event handlers."""
+"""Security tests for pipeline run observers."""
 from __future__ import annotations
+
+from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.pipeline.events import (
-    ExecHandler,
-    SyncEvent,
+from polylogue.pipeline.observers import (
+    ExecObserver,
     _validate_exec_command,
     _validate_webhook_url,
 )
@@ -106,21 +107,18 @@ class TestWebhookUrlValidation:
             _validate_webhook_url("http://169.254.169.254/latest/meta-data/")
 
 
-class TestExecHandler:
-    """Integration tests for ExecHandler."""
+class TestExecObserver:
+    """Integration tests for ExecObserver."""
 
     def test_construction_validates_command(self):
         with pytest.raises(ValueError):
-            ExecHandler("echo hello; evil")
+            ExecObserver("echo hello; evil")
 
     def test_valid_construction(self):
-        handler = ExecHandler("echo hello")
+        handler = ExecObserver("echo hello")
         assert handler._argv == ["echo", "hello"]
 
     def test_no_op_on_zero_conversations(self):
-        handler = ExecHandler("echo hello")
+        handler = ExecObserver("echo hello")
         # Should not raise even though command is valid
-        from unittest.mock import MagicMock
-
-        event = SyncEvent(new_conversations=0, run_result=MagicMock())
-        handler.on_sync(event)  # Should be a no-op
+        handler.on_completed(MagicMock(counts={"conversations": 0}))  # Should be a no-op

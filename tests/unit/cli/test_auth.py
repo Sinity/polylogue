@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.commands.auth import (
@@ -24,19 +23,15 @@ from polylogue.cli.commands.auth import (
 class TestAuthCommandInternal:
     """Tests for auth_command() and auth helper functions."""
 
-    @pytest.fixture
-    def runner(self):
-        return CliRunner()
-
-    def test_unknown_service_fails(self, runner):
+    def test_unknown_service_fails(self, cli_runner):
         """auth_command should fail for unknown service."""
-        result = runner.invoke(click_cli, ["auth", "--service", "unknown", "--plain"])
+        result = cli_runner.invoke(click_cli, ["auth", "--service", "unknown", "--plain"])
         assert result.exit_code != 0
 
-    def test_default_service_is_drive(self, runner):
+    def test_default_service_is_drive(self, cli_runner):
         """auth_command should default to 'drive' service."""
         with patch("polylogue.cli.commands.auth._drive_oauth_flow"):
-            result = runner.invoke(click_cli, ["auth", "--plain"])
+            result = cli_runner.invoke(click_cli, ["auth", "--plain"])
             # Will try to run oauth flow which will likely fail in test
             # but at least should not fail with "unknown service"
             assert "Unknown auth service" not in result.output

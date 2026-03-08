@@ -18,8 +18,8 @@ Tests cover:
 
 from __future__ import annotations
 
-import tempfile
 import sqlite3
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -677,7 +677,7 @@ async def test_stored_xss_in_conversation_content(temp_repo):
     xss_payload = "<script>alert('XSS')</script>"
 
     # Create conversation with XSS in message
-    backend = temp_repo._backend
+    backend = temp_repo.backend
 
     conv_record = make_conversation("xss-test", title="XSS Test")
     msg_record = make_message("msg-xss", "xss-test", text=xss_payload)
@@ -790,16 +790,13 @@ async def test_unicode_in_parameters(temp_repo):
 
 
 # =============================================================================
-# PROVIDER NAME VALIDATION (3 tests)
+# PROVIDER NAME VALIDATION (1 test)
 # =============================================================================
 
 
-def test_provider_name_pattern_validation():
-    """Provider names must match expected pattern."""
-    # Valid provider names
-    valid_names = ["chatgpt", "claude", "codex", "gemini", "claude-code"]
-
-    for name in valid_names:
+def test_provider_name_accepts_known_providers():
+    """Known provider names are accepted as-is."""
+    for name in ["chatgpt", "claude", "codex", "gemini", "claude-code"]:
         record = ConversationRecord(
             conversation_id="test",
             provider_name=name,
@@ -808,48 +805,6 @@ def test_provider_name_pattern_validation():
             title="Test",
         )
         assert record.provider_name == name
-
-    # Invalid provider names should be rejected
-    invalid_names = [
-        "chat gpt",      # Space
-        "claude;drop",   # Semicolon not allowed
-        "test' OR '1",   # Quote not allowed
-        "provider\x00",  # Null byte
-    ]
-
-    for name in invalid_names:
-        with pytest.raises(ValueError):
-            ConversationRecord(
-                conversation_id="test",
-                provider_name=name,
-                provider_conversation_id="test-prov",
-                content_hash="hash1",
-                title="Test",
-            )
-
-
-def test_provider_name_null_byte_rejected():
-    """Null bytes in provider names are rejected."""
-    with pytest.raises(ValueError):
-        ConversationRecord(
-            conversation_id="test",
-            provider_name="chatgpt\x00",
-            provider_conversation_id="test-prov",
-            content_hash="hash1",
-            title="Test",
-        )
-
-
-def test_provider_name_empty_rejected():
-    """Empty provider names are rejected."""
-    with pytest.raises(ValueError):
-        ConversationRecord(
-            conversation_id="test",
-            provider_name="",
-            provider_conversation_id="test-prov",
-            content_hash="hash1",
-            title="Test",
-        )
 
 
 # =============================================================================

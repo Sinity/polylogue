@@ -28,7 +28,7 @@ def mcp_command(env: AppEnv, transport: str) -> None:
         env.ui.console.print("Install with: pip install polylogue[mcp]")
         raise SystemExit(1) from None
 
-    serve_stdio()
+    serve_stdio(env.services)
 
 
 __all__ = ["mcp_command"]

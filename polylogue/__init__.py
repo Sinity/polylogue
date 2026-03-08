@@ -19,8 +19,8 @@ Example::
 
         # Search
         results = await archive.search("python error handling")
-        for conv in results:
-            print(conv.display_title)
+        for hit in results.hits:
+            print(hit.title)
 """
 
 # High-level API

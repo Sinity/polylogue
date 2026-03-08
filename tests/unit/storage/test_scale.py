@@ -12,11 +12,8 @@ patterns work correctly at moderate scale.
 
 from __future__ import annotations
 
-
-
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import ConversationRecord, MessageRecord
-
 
 # Number of conversations for scale tests.
 # 200 is enough to expose N+1 patterns while keeping tests fast (<2s).
@@ -61,10 +58,10 @@ async def _seed_conversations(
 
 
 class TestGetManyScale:
-    """Test repository._get_many() with 200+ conversations."""
+    """Test repository.get_many() with 200+ conversations."""
 
     async def test_get_many_returns_all_conversations(self, tmp_path):
-        """_get_many with 200 IDs returns all conversations with messages."""
+        """get_many with 200 IDs returns all conversations with messages."""
         from polylogue.storage.repository import ConversationRepository
 
         db_path = tmp_path / "scale.db"
@@ -72,7 +69,7 @@ class TestGetManyScale:
         ids = await _seed_conversations(backend, SCALE_COUNT)
 
         repo = ConversationRepository(backend=backend)
-        convos = await repo._get_many(ids)
+        convos = await repo.get_many(ids)
 
         assert len(convos) == SCALE_COUNT
         # Verify each conversation has its messages
@@ -82,7 +79,7 @@ class TestGetManyScale:
             ), f"Conv {convo.id} has {len(convo.messages)} messages, expected 3"
 
     async def test_get_many_preserves_order(self, tmp_path):
-        """_get_many returns conversations in input order."""
+        """get_many returns conversations in input order."""
         from polylogue.storage.repository import ConversationRepository
 
         db_path = tmp_path / "scale.db"
@@ -92,7 +89,7 @@ class TestGetManyScale:
         repo = ConversationRepository(backend=backend)
         # Request in reverse order
         reversed_ids = list(reversed(ids))
-        convos = await repo._get_many(reversed_ids)
+        convos = await repo.get_many(reversed_ids)
 
         assert [c.id for c in convos] == reversed_ids
 
@@ -105,7 +102,7 @@ class TestGetManyScale:
         ids = await _seed_conversations(backend, SCALE_COUNT)
 
         repo = ConversationRepository(backend=backend)
-        convos = await repo._get_many(ids)
+        convos = await repo.get_many(ids)
 
         for convo in convos:
             for msg in convo.messages:
@@ -123,7 +120,7 @@ class TestGetManyScale:
         # Create conversations with 1, 5, and 10 messages
         test_cases = [(1, 1), (5, 5), (10, 10)]
         all_ids = []
-        for count, msgs in test_cases:
+        for _count, msgs in test_cases:
             for i in range(20):
                 cid = f"var-{msgs}msg-{i:03d}"
                 all_ids.append(cid)
@@ -152,7 +149,7 @@ class TestGetManyScale:
                 await backend.save_messages(msg_records)
 
         repo = ConversationRepository(backend=backend)
-        convos = await repo._get_many(all_ids)
+        convos = await repo.get_many(all_ids)
         assert len(convos) == 60  # 20 * 3
 
         # Verify message counts

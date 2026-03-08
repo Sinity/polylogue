@@ -17,7 +17,11 @@ from polylogue.lib.log import get_logger
 from polylogue.sources.providers.claude_ai import ClaudeAIConversation
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
-from .base import ParsedAttachment, ParsedConversation, ParsedMessage, attachment_from_meta, normalize_role
+from polylogue.lib.branch_type import BranchType
+from polylogue.lib.roles import Role
+from polylogue.types import Provider
+
+from .base import ParsedAttachment, ParsedConversation, ParsedMessage, attachment_from_meta
 
 logger = get_logger(__name__)
 
@@ -210,7 +214,7 @@ def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[li
         raw_role = item.get("sender") or item.get("role")
         if not raw_role:
             continue
-        role = normalize_role(raw_role)
+        role = Role.normalize(raw_role)
 
         raw_ts = item.get("created_at") or item.get("create_time") or item.get("timestamp")
         timestamp = normalize_timestamp(raw_ts)
@@ -599,137 +603,13 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
             record.message.get("content") if isinstance(record.message, dict) else None
         )
 
-        # Build provider_meta with extracted fields (no raw record —
-        # raw data is already stored in raw_conversations.raw_content)
-        meta: dict[str, object] = {}
-        if record.costUSD:
-            meta["costUSD"] = record.costUSD
-        if record.durationMs:
-            meta["durationMs"] = record.durationMs
-        if record.isSidechain:
-            meta["isSidechain"] = True
-        if record.isMeta:
-            meta["isMeta"] = True
-        # Extract record-level metadata (cwd, gitBranch, version, model, token usage)
-        if record.cwd:
-            meta["cwd"] = record.cwd
-        if record.gitBranch:
-            meta["gitBranch"] = record.gitBranch
-        if record.version:
-            meta["version"] = record.version
-        # Extract model and token usage from message content
-        if isinstance(record.message, dict):
-            model = record.message.get("model")
-            if isinstance(model, str) and model:
-                meta["model"] = model
-            usage = record.message.get("usage")
-            if isinstance(usage, dict) and usage:
-                token_info: dict[str, object] = {}
-                for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
-                    v = usage.get(k)
-                    if isinstance(v, int) and v > 0:
-                        token_info[k] = v
-                if token_info:
-                    meta["token_usage"] = token_info
-            stop_reason = record.message.get("stop_reason")
-            if isinstance(stop_reason, str) and stop_reason:
-                meta["stop_reason"] = stop_reason
-        elif hasattr(record.message, "model") and record.message is not None:
-            if hasattr(record.message, "model") and record.message.model:
-                meta["model"] = record.message.model
-            if hasattr(record.message, "usage") and record.message.usage:
-                usage_obj = record.message.usage
-                token_info = {}
-                if hasattr(usage_obj, "input_tokens") and usage_obj.input_tokens:
-                    token_info["input_tokens"] = usage_obj.input_tokens
-                if hasattr(usage_obj, "output_tokens") and usage_obj.output_tokens:
-                    token_info["output_tokens"] = usage_obj.output_tokens
-                if hasattr(usage_obj, "cache_creation_input_tokens") and usage_obj.cache_creation_input_tokens:
-                    token_info["cache_creation_input_tokens"] = usage_obj.cache_creation_input_tokens
-                if hasattr(usage_obj, "cache_read_input_tokens") and usage_obj.cache_read_input_tokens:
-                    token_info["cache_read_input_tokens"] = usage_obj.cache_read_input_tokens
-                if token_info:
-                    meta["token_usage"] = token_info
-            if hasattr(record.message, "stop_reason") and record.message.stop_reason:
-                meta["stop_reason"] = record.message.stop_reason
-
-        # Extract content blocks using typed model
-        content_blocks_raw = record.content_blocks_raw
-        if content_blocks_raw:
-            # Build serializable content blocks for storage
-            content_blocks = []
-            for seg in content_blocks_raw:
-                if isinstance(seg, dict):
-                    block_type = seg.get("type")
-                    if block_type == "thinking":
-                        content_blocks.append({
-                            "type": "thinking",
-                            "text": seg.get("thinking"),
-                        })
-                    elif block_type == "tool_use":
-                        content_blocks.append({
-                            "type": "tool_use",
-                            "name": seg.get("name"),
-                            "id": seg.get("id"),
-                            "input": seg.get("input"),
-                        })
-                    elif block_type == "tool_result":
-                        content_blocks.append({
-                            "type": "tool_result",
-                            "tool_use_id": seg.get("tool_use_id"),
-                            "content": seg.get("content"),
-                            "is_error": seg.get("is_error", False),
-                        })
-                    elif block_type == "text":
-                        content_blocks.append({
-                            "type": "text",
-                            "text": seg.get("text"),
-                        })
-                    else:
-                        text_content = seg.get("text") or seg.get("content")
-                        if text_content:
-                            content_blocks.append({
-                                "type": "text",
-                                "text": text_content,
-                            })
-                elif isinstance(seg, str):
-                    content_blocks.append({
-                        "type": "text",
-                        "text": seg,
-                    })
-
-            if content_blocks:
-                meta["content_blocks"] = content_blocks
-
-                # Extract semantic data from content blocks
-                thinking_traces = extract_thinking_traces(content_blocks)
-                if thinking_traces:
-                    meta["thinking_traces"] = thinking_traces
-
-                tool_invocations = extract_tool_invocations(content_blocks)
-                if tool_invocations:
-                    meta["tool_invocations"] = tool_invocations
-
-                    # Extract derived semantics from tool invocations
-                    git_operations = extract_git_operations(tool_invocations)
-                    if git_operations:
-                        meta["git_operations"] = git_operations
-
-                    file_changes = extract_file_changes(tool_invocations)
-                    if file_changes:
-                        meta["file_changes"] = file_changes
-
-                    subagent_spawns = extract_subagent_spawns(tool_invocations)
-                    if subagent_spawns:
-                        meta["subagent_spawns"] = subagent_spawns
-
         messages.append(
             ParsedMessage(
                 provider_message_id=msg_id,
                 role=role,
                 text=text or "",
                 timestamp=timestamp,
-                provider_meta=meta,
+                provider_meta={"raw": item},
                 parent_message_provider_id=record.parentUuid,
             )
         )
@@ -768,30 +648,31 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         except (ValueError, TypeError):
             return 0
 
+    def _msg_raw(m: ParsedMessage) -> dict[str, Any]:
+        meta = m.provider_meta or {}
+        return meta.get("raw", meta)
+
     total_cost = sum(
-        _safe_float(m.provider_meta.get("costUSD", 0))
+        _safe_float(_msg_raw(m).get("costUSD", 0))
         for m in messages
-        if m.provider_meta and m.provider_meta.get("costUSD")
+        if _msg_raw(m).get("costUSD")
     )
     if total_cost > 0:
         conv_meta["total_cost_usd"] = total_cost
 
     total_duration = sum(
-        _safe_int(m.provider_meta.get("durationMs", 0))
+        _safe_int(_msg_raw(m).get("durationMs", 0))
         for m in messages
-        if m.provider_meta and m.provider_meta.get("durationMs")
+        if _msg_raw(m).get("durationMs")
     )
     if total_duration > 0:
         conv_meta["total_duration_ms"] = total_duration
 
     # Detect branch type: subagent (from file path) or sidechain (from content)
     if is_subagent:
-        branch_type = "subagent"
-    elif any(
-        m.provider_meta and m.provider_meta.get("isSidechain")
-        for m in messages
-    ):
-        branch_type = "sidechain"
+        branch_type: BranchType | None = BranchType.SUBAGENT
+    elif any(_msg_raw(m).get("isSidechain") for m in messages):
+        branch_type = BranchType.SIDECHAIN
     else:
         branch_type = None
 
@@ -799,11 +680,13 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     cwds = set()
     models = set()
     for m in messages:
-        if m.provider_meta:
-            cwd_val = m.provider_meta.get("cwd")
-            if isinstance(cwd_val, str):
-                cwds.add(cwd_val)
-            model_val = m.provider_meta.get("model")
+        raw = _msg_raw(m)
+        cwd_val = raw.get("cwd")
+        if isinstance(cwd_val, str):
+            cwds.add(cwd_val)
+        msg_content = raw.get("message", {})
+        if isinstance(msg_content, dict):
+            model_val = msg_content.get("model")
             if isinstance(model_val, str):
                 models.add(model_val)
     if cwds:
@@ -822,7 +705,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
             break
 
     return ParsedConversation(
-        provider_name="claude-code",
+        provider_name=Provider.CLAUDE_CODE,
         provider_conversation_id=str(conv_id),
         title=title,
         created_at=created_at,
@@ -846,7 +729,7 @@ def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation
         title = payload.get("title") or payload.get("name") or fallback_id
         conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
         return ParsedConversation(
-            provider_name="claude",
+            provider_name=Provider.CLAUDE,
             provider_conversation_id=str(conv_id or fallback_id),
             title=str(title),
             created_at=str(payload.get("created_at")) if payload.get("created_at") else None,
