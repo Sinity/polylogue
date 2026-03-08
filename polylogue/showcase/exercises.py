@@ -110,7 +110,7 @@ _E = Exercise
 
 EXERCISES: tuple[Exercise, ...] = (
     # =========================================================================
-    # structural (7) — tier 0: no data, tests CLI plumbing, <1s each
+    # structural (8) — tier 0: no data, tests CLI plumbing, <1s each
     # =========================================================================
     _E("help-main", "structural", "Main help screen",
        ["--help"], _V(stdout_contains=("polylogue",)), tier=0),
@@ -124,6 +124,8 @@ EXERCISES: tuple[Exercise, ...] = (
        ["tags", "--help"], _V(stdout_contains=("--json",)), tier=0),
     _E("help-embed", "structural", "Embed subcommand help",
        ["embed", "--help"], _V(stdout_contains=("--stats",)), tier=0),
+    _E("help-site", "structural", "Site subcommand help",
+       ["site", "--help"], _V(stdout_contains=("--output",)), tier=0),
     _E("version", "structural", "Version output",
        ["--version"], _V(stdout_contains=("polylogue",)), tier=0),
 
@@ -138,7 +140,7 @@ EXERCISES: tuple[Exercise, ...] = (
        ["completions", "--shell", "bash"], _V(stdout_contains=("complete",)), tier=0),
 
     # =========================================================================
-    # pipeline (4) — seeded exercises write, live preview is read-only
+    # pipeline (5 seeded + 1 live) — seeded exercises write, live preview is read-only
     # =========================================================================
     # Preview is read-only (no DB mutations): runs in both seeded and live modes
     _E("run-preview", "pipeline", "Preview pipeline plan (seeded fixtures)",
@@ -149,6 +151,9 @@ EXERCISES: tuple[Exercise, ...] = (
        validation=_V(stdout_contains=("Preview",))),
     _E("run-all", "pipeline", "Run full pipeline (seeded fixtures)",
        ["run", "--source", "inbox"], writes=True, env="seeded", tier=2),
+    _E("run-stage-render", "pipeline", "Run render stage only",
+       ["run", "--stage", "render", "--source", "inbox"], writes=True,
+       env="seeded", tier=2, depends_on="run-all"),
     _E("run-stage-index", "pipeline", "Run index stage only",
        ["run", "--stage", "index", "--source", "inbox"], writes=True,
        env="seeded", tier=2, depends_on="run-all"),
@@ -248,7 +253,7 @@ EXERCISES: tuple[Exercise, ...] = (
        needs_data=True, writes=True, env="seeded", tier=2, depends_on="delete-one"),
 
     # =========================================================================
-    # subcommands (5) — tier 1: read-only health/stats
+    # subcommands (6) — tier 1: read-only health/stats; tier 2: site generation
     # =========================================================================
     _E("check-health", "subcommands", "Health check",
        ["check"], _V(stdout_contains=("ok",)), needs_data=True, tier=1),
@@ -262,6 +267,9 @@ EXERCISES: tuple[Exercise, ...] = (
     _E("tags-json", "subcommands", "Tags as JSON",
        ["tags", "--json"], _V(stdout_is_valid_json=True),
        needs_data=True, output_ext=".json", tier=1),
+    _E("site-generate", "subcommands", "Generate static site",
+       ["site"], _V(stdout_contains=("Building site",)),
+       needs_data=True, writes=True, env="seeded", tier=2),
 
     # =========================================================================
     # advanced (7) — tier 2: complex queries, multi-flag combinations
