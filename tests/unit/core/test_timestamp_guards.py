@@ -16,7 +16,6 @@ from polylogue.lib.timestamps import format_timestamp, parse_timestamp
 from polylogue.schemas.schema_inference import _is_safe_enum_value
 from tests.infra.tables import FORMAT_TIMESTAMP_TABLE, PARSE_TIMESTAMP_FORMAT_TABLE
 
-
 # =============================================================================
 # parse_timestamp: epoch vs year string disambiguation (f33ef29)
 # =============================================================================

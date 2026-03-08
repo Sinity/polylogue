@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.storage.backends.connection import _build_source_scope_filter
+
 if TYPE_CHECKING:
     from polylogue.protocols import VectorProvider
     from polylogue.storage.search_providers.fts5 import FTS5Provider
@@ -189,12 +191,14 @@ class HybridSearchProvider:
         allowed_convs: set[str] | None = None
         if providers:
             with open_connection(self.fts_provider.db_path) as conn:
-                p_placeholders = ",".join("?" for _ in providers)
+                scope_sql, scope_params = _build_source_scope_filter(
+                    providers,
+                    provider_column="provider_name",
+                    source_column="source_name",
+                )
                 p_rows = conn.execute(
-                    f"""SELECT conversation_id FROM conversations
-                        WHERE provider_name IN ({p_placeholders})
-                           OR source_name IN ({p_placeholders})""",
-                    (*providers, *providers),
+                    f"SELECT conversation_id FROM conversations WHERE {scope_sql}",
+                    scope_params,
                 ).fetchall()
                 allowed_convs = {row["conversation_id"] for row in p_rows}
 

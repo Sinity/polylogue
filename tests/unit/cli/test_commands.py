@@ -22,7 +22,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from click.testing import CliRunner
 
 from polylogue.cli import helpers
 from polylogue.cli.click_app import cli as click_cli
@@ -240,56 +239,39 @@ class TestCliLatestRenderPath:
 class TestDashboardCommand:
     """Tests for dashboard_command()."""
 
-    @pytest.fixture
-    def runner(self):
-        return CliRunner()
-
-    def test_dashboard_launches_app(self, runner):
+    def test_dashboard_launches_app(self, cli_runner, cli_workspace):
         """dashboard_command should create and run PolylogueApp."""
-        with patch("polylogue.cli.commands.dashboard.get_config") as mock_get_config, patch(
-            "polylogue.ui.tui.app.PolylogueApp"
-        ) as mock_app_cls:
-            mock_config = MagicMock()
-            mock_get_config.return_value = mock_config
+        with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
 
-            result = runner.invoke(click_cli, ["dashboard", "--plain"])
-            # May fail or succeed depending on TUI init, but should run
-            # Just verify it doesn't error on our mocks
-            assert not isinstance(result.exception, AttributeError) or result.exit_code == 0
+            result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
+        assert result.exit_code == 0
+        mock_app.run.assert_called_once()
 
-    def test_dashboard_creates_app_with_config(self, runner):
+    def test_dashboard_creates_app_with_config(self, cli_runner, cli_workspace):
         """dashboard_command should pass config to PolylogueApp."""
-        with patch("polylogue.cli.commands.dashboard.get_config") as mock_get_config, patch(
-            "polylogue.ui.tui.app.PolylogueApp"
-        ) as mock_app_cls:
-            mock_config = MagicMock()
-            mock_config.archive_root = Path("/archive")
-            mock_get_config.return_value = mock_config
+        with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
-            mock_app.run.side_effect = Exception("Test exit")
 
-            runner.invoke(click_cli, ["dashboard", "--plain"])
-            # If we got to the exception, the command ran and created the app
-            # Verify app was created with config
-            if mock_app_cls.called:
-                mock_app_cls.assert_called_once_with(config=mock_config)
+            result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
 
-    def test_dashboard_with_cli_runner(self, runner):
+        assert result.exit_code == 0
+        mock_app_cls.assert_called_once()
+        kwargs = mock_app_cls.call_args.kwargs
+        assert kwargs["config"].archive_root == cli_workspace["archive_root"]
+        assert kwargs["repository"] is not None
+
+    def test_dashboard_with_cli_runner(self, cli_runner, cli_workspace):
         """dashboard_command via CLI runner."""
-        with patch("polylogue.cli.commands.dashboard.get_config") as mock_get_config, patch(
-            "polylogue.ui.tui.app.PolylogueApp"
-        ) as mock_app_cls:
-            mock_config = MagicMock()
-            mock_get_config.return_value = mock_config
+        with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
 
-            result = runner.invoke(click_cli, ["dashboard", "--plain"])
-            # Should invoke without unknown service error
-            assert "Unknown" not in result.output or result.exit_code == 0
+            result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
+        assert result.exit_code == 0
+        assert "Unknown" not in result.output
 
 # =============================================================================
 # SUBPROCESS INTEGRATION TESTS - RUN COMMAND

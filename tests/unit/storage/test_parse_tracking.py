@@ -27,7 +27,6 @@ from polylogue.storage.backends.schema import (
 )
 from polylogue.storage.store import RawConversationRecord
 
-
 # ─── Migration tests ───────────────────────────────────────────────────────
 
 
@@ -609,7 +608,7 @@ class TestMtimeSkip:
     def test_unchanged_file_skipped(self, tmp_path: Path) -> None:
         """Files with matching mtime in known_mtimes are skipped."""
         from polylogue.config import Source
-        from polylogue.sources.source import iter_source_conversations_with_raw, _get_file_mtime
+        from polylogue.sources.source import _get_file_mtime, iter_source_conversations_with_raw
 
         # Create a test JSON file
         test_file = tmp_path / "test.json"

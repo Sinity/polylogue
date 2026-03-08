@@ -8,14 +8,14 @@ from pathlib import Path
 from typing import NoReturn
 
 from polylogue.cli.formatting import format_sources_summary
-from polylogue.lib.log import get_logger
-
-logger = get_logger(__name__)
 from polylogue.cli.types import AppEnv
-from polylogue.config import Config, get_config
+from polylogue.config import Config
 from polylogue.health import cached_health_summary, get_health
+from polylogue.lib.log import get_logger
 from polylogue.lib.theme import provider_color
 from polylogue.pipeline.runner import latest_run
+
+logger = get_logger(__name__)
 
 
 def fail(command: str, message: str) -> NoReturn:
@@ -77,7 +77,7 @@ def maybe_prompt_sources(
 
 def load_effective_config(env: AppEnv) -> Config:
     """Return the hardcoded configuration (zero-config)."""
-    return get_config()
+    return env.config
 
 
 def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> list[str] | None:
@@ -104,7 +104,7 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     config = load_effective_config(env)
     import asyncio
 
-    last_run_data = asyncio.run(latest_run())
+    last_run_data = asyncio.run(latest_run(env.backend))
     last_line = "Last run: none"
     if last_run_data:
         last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"

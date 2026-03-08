@@ -6,7 +6,7 @@ from polylogue.lib.provider_identity import (
     canonical_runtime_provider,
     canonical_schema_provider,
 )
-from polylogue.lib.raw_payload import infer_payload_provider
+from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.types import Provider
 
 
@@ -35,7 +35,7 @@ def test_provider_enum_from_string_uses_shared_runtime_identity() -> None:
     assert Provider.from_string("nonexistent-provider") is Provider.UNKNOWN
 
 
-def test_infer_payload_provider_normalizes_fallback_identity() -> None:
-    payload = {"id": "x"}  # not enough for detect_provider
-    assert infer_payload_provider(payload, source_path=None, fallback_provider="claude-ai") == "claude"
-    assert infer_payload_provider(payload, source_path=None, fallback_provider="my-inbox") == "my-inbox"
+def test_build_raw_payload_envelope_normalizes_fallback_identity() -> None:
+    raw = b'{"id":"x"}'  # not enough for detect_provider
+    assert build_raw_payload_envelope(raw, source_path=None, fallback_provider="claude-ai").provider == "claude"
+    assert build_raw_payload_envelope(raw, source_path=None, fallback_provider="my-inbox").provider == "my-inbox"

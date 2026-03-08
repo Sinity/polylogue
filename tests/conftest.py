@@ -18,16 +18,6 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 @pytest.fixture(autouse=True)
 def _clear_polylogue_env(monkeypatch):
-    # Reset the container singleton to ensure clean state between tests
-    from polylogue import services
-
-    services.reset()
-
-    # Also clear async singletons (without awaiting close — test isolation
-    # is more important than graceful connection shutdown here)
-    services._backend = None
-    services._repository = None
-
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.
     from polylogue.storage.backends.connection import _clear_connection_cache
@@ -81,12 +71,6 @@ def workspace_env(tmp_path, monkeypatch):
     # Most tests using this fixture assert pipeline/query behavior, not schema
     # contract strictness. Keep validation deterministic and opt-in per test.
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
-
-    # No importlib.reload() needed — paths.py uses lazy evaluation (functions, not constants).
-    # Just reset the service singletons so they pick up fresh env vars.
-    from polylogue.services import reset
-
-    reset()
 
     return {
         "config_path": config_dir / "config.json",
@@ -181,17 +165,11 @@ def cli_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")  # Plain output for tests
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    # No importlib.reload() needed — paths.py uses lazy evaluation (functions, not constants).
-    # Just reset the service singletons so they pick up fresh env vars.
     from polylogue.storage.backends.connection import connection_context
     from polylogue.storage.backends.schema import _ensure_schema
 
     with connection_context(db_path) as conn:
         _ensure_schema(conn)
-
-    from polylogue.services import reset
-
-    reset()
 
     return {
         "config_path": config_path,

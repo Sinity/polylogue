@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from click.testing import CliRunner
 import pytest
+from click.testing import CliRunner
 
 from polylogue.cli import cli
 from tests.infra.helpers import DbFactory

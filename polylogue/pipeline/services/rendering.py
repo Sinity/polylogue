@@ -6,10 +6,10 @@ import asyncio
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
-from polylogue.protocols import OutputRenderer
+from polylogue.protocols import OutputRenderer, ProgressCallback
 
 if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -79,7 +79,7 @@ class RenderService:
         conversation_ids: list[str],
         *,
         max_workers: int | None = None,
-        progress_callback: Any | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> RenderResult:
         """Render multiple conversations with connection pooling and timeouts.
 

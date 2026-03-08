@@ -60,39 +60,10 @@ async def compute_provider_comparison(db_path: Path | None = None) -> list[Provi
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
     backend = SQLiteBackend(db_path=db_path)
-
-    async with backend._get_connection() as conn:
-        cursor = await conn.execute("""
-            SELECT
-                c.provider_name,
-                COUNT(DISTINCT c.conversation_id) AS conversation_count,
-                COUNT(m.message_id) AS message_count,
-                SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) AS user_message_count,
-                SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) AS assistant_message_count,
-                SUM(CASE WHEN m.role = 'user' AND m.text IS NOT NULL AND TRIM(m.text) != ''
-                    THEN LENGTH(TRIM(m.text)) - LENGTH(REPLACE(TRIM(m.text), ' ', '')) + 1
-                    ELSE 0 END) AS user_word_sum,
-                SUM(CASE WHEN m.role = 'assistant' AND m.text IS NOT NULL AND TRIM(m.text) != ''
-                    THEN LENGTH(TRIM(m.text)) - LENGTH(REPLACE(TRIM(m.text), ' ', '')) + 1
-                    ELSE 0 END) AS assistant_word_sum,
-                SUM(CASE WHEN m.provider_meta LIKE '%"type":"tool_use"%'
-                         OR m.role = 'tool'
-                    THEN 1 ELSE 0 END) AS tool_use_count,
-                SUM(CASE WHEN m.provider_meta LIKE '%"type":"thinking"%'
-                    THEN 1 ELSE 0 END) AS thinking_count,
-                COUNT(DISTINCT CASE
-                    WHEN m.provider_meta LIKE '%"type":"tool_use"%'
-                         OR m.role = 'tool'
-                    THEN c.conversation_id END) AS conversations_with_tools,
-                COUNT(DISTINCT CASE
-                    WHEN m.provider_meta LIKE '%"type":"thinking"%'
-                    THEN c.conversation_id END) AS conversations_with_thinking
-            FROM conversations c
-            LEFT JOIN messages m ON c.conversation_id = m.conversation_id
-            GROUP BY c.provider_name
-            ORDER BY conversation_count DESC
-        """)
-        rows = await cursor.fetchall()
+    try:
+        rows = await backend.get_provider_metrics_rows()
+    finally:
+        await backend.close()
 
     results: list[ProviderMetrics] = []
     for row in rows:

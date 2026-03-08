@@ -8,7 +8,6 @@ The CLI uses a hybrid structure:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import click
@@ -25,7 +24,7 @@ from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
 from polylogue.cli.commands.site import site_command
 from polylogue.cli.commands.tags import tags_command
-from polylogue.cli.formatting import announce_plain_mode, should_use_plain
+from polylogue.cli.formatting import announce_plain_mode, plain_forced_by_env, should_use_plain
 from polylogue.cli.types import AppEnv
 from polylogue.lib.log import configure_logging
 from polylogue.ui import create_ui
@@ -111,29 +110,17 @@ class QueryFirstGroup(click.Group):
 def _handle_query_mode(ctx: click.Context) -> None:
     """Handle query mode: display stats or perform search."""
     from polylogue.cli.query import execute_query
+    from polylogue.lib.query_spec import ConversationQuerySpec
 
     env: AppEnv = ctx.obj
     params = ctx.params
 
     # Extract query-related params
     query_terms = params.get("query_term", ())
-    has_filters = any(
-        params.get(k)
-        for k in (
-            "conv_id",
-            "contains",
-            "exclude_text",
-            "provider",
-            "exclude_provider",
-            "tag",
-            "exclude_tag",
-            "has_type",
-            "since",
-            "until",
-            "title",
-            "latest",
-        )
-    )
+    params_copy = dict(params)
+    params_copy["query"] = query_terms
+    query_spec = ConversationQuerySpec.from_params(params_copy)
+    has_filters = query_spec.has_filters()
 
     # Output mode flags that should trigger query execution
     has_output_mode = any(
@@ -164,9 +151,6 @@ def _handle_query_mode(ctx: click.Context) -> None:
         return
 
     # Query mode: execute search
-    # Convert query_term tuple to query for execute_query
-    params_copy = dict(params)
-    params_copy["query"] = query_terms
     execute_query(env, params_copy)
 
 
@@ -334,9 +318,7 @@ def cli(
     ctx.obj = env
 
     # Announce plain mode if auto-detected (not explicitly requested)
-    env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
-    forced_plain = bool(env_force and env_force.lower() not in {"0", "false", "no"})
-    if use_plain and not plain and not forced_plain:
+    if use_plain and not plain and not plain_forced_by_env():
         announce_plain_mode()
 
 

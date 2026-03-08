@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -80,6 +81,43 @@ QUERY_TOOL_CASES = [
         "test:conv-123",
     ),
 ]
+
+
+def _invoke_surface(fn, /, *args, **kwargs):
+    """Call an MCP surface whether it is sync or async."""
+    result = fn(*args, **kwargs)
+    if asyncio.iscoroutine(result):
+        return asyncio.run(result)
+    return result
+
+
+async def _invoke_surface_async(fn, /, *args, **kwargs):
+    """Await an MCP surface from async tests."""
+    result = fn(*args, **kwargs)
+    if asyncio.iscoroutine(result):
+        return await result
+    return result
+
+
+def _make_repo_mock() -> MagicMock:
+    """Create a repository mock with async methods for MCP handlers."""
+    repo = MagicMock()
+    repo.view = AsyncMock(return_value=None)
+    repo.get = AsyncMock(return_value=None)
+    repo.get_archive_stats = AsyncMock(return_value=MagicMock())
+    repo.add_tag = AsyncMock(return_value=None)
+    repo.remove_tag = AsyncMock(return_value=None)
+    repo.list_tags = AsyncMock(return_value={})
+    repo.get_metadata = AsyncMock(return_value={})
+    repo.update_metadata = AsyncMock(return_value=None)
+    repo.delete_metadata = AsyncMock(return_value=None)
+    repo.delete_conversation = AsyncMock(return_value=False)
+    repo.resolve_id = AsyncMock(return_value=None)
+    repo.get_summary = AsyncMock(return_value=None)
+    repo.get_conversation_stats = AsyncMock(return_value={})
+    repo.get_session_tree = AsyncMock(return_value=[])
+    repo.get_stats_by = AsyncMock(return_value={})
+    return repo
 
 # Prompt edge case test data
 PROMPT_EDGE_CASES = [
@@ -209,14 +247,14 @@ class TestRepositoryDataInsertion:
         backend.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
         backend.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        # Setup async context manager for _get_connection() — used by lightweight hash check
+        # Setup async context manager for connection() — used by lightweight hash check
         mock_cursor = AsyncMock()
         mock_cursor.fetchone = AsyncMock(return_value=None)  # No existing conversation
         mock_conn = AsyncMock()
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
-        backend._get_connection = MagicMock()
-        backend._get_connection.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        backend._get_connection.return_value.__aexit__ = AsyncMock(return_value=False)
+        backend.connection = MagicMock()
+        backend.connection.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        backend.connection.return_value.__aexit__ = AsyncMock(return_value=False)
 
         # Mock the async backend methods that save_via_backend calls
         backend.save_conversation_record = AsyncMock()
@@ -293,7 +331,6 @@ class TestRepositoryIntegration:
 
         # Repository should have reference to backend
         assert repo.backend == backend
-        assert hasattr(repo, "_backend")
 
     def test_repository_methods_exist(self):
         """Repository should have the documented methods."""
@@ -337,7 +374,7 @@ class TestQueryTools:
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
+            mock_repo = _make_repo_mock()
             mock_repo.search.return_value = [simple_conversation]
             mock_repo.list.return_value = [simple_conversation]
             mock_get_repo.return_value = mock_repo
@@ -366,12 +403,12 @@ class TestGetTool:
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
+            mock_repo = _make_repo_mock()
             mock_repo.view.return_value = simple_conversation
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._tool_manager._tools["get_conversation"].fn(id="test:conv-123")
+            result = _invoke_surface(server._tool_manager._tools["get_conversation"].fn, id="test:conv-123")
 
             conv = json.loads(result)
 
@@ -384,12 +421,12 @@ class TestGetTool:
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
+            mock_repo = _make_repo_mock()
             mock_repo.view.return_value = None
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._tool_manager._tools["get_conversation"].fn(id="nonexistent")
+            result = _invoke_surface(server._tool_manager._tools["get_conversation"].fn, id="nonexistent")
 
             result_dict = json.loads(result)
             assert "error" in result_dict
@@ -410,12 +447,12 @@ class TestGetTool:
         )
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
+            mock_repo = _make_repo_mock()
             mock_repo.view.return_value = conv
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._tool_manager._tools["get_conversation"].fn(id="test:long")
+            result = _invoke_surface(server._tool_manager._tools["get_conversation"].fn, id="test:long")
 
             result_dict = json.loads(result)
             msg_text = result_dict["messages"][0]["text"]
@@ -446,7 +483,7 @@ class TestStatsTool:
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
+            mock_repo = _make_repo_mock()
             mock_repo.get_archive_stats.return_value = ArchiveStats(
                 total_conversations=total_conversations,
                 total_messages=total_messages,
@@ -458,7 +495,7 @@ class TestStatsTool:
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._tool_manager._tools["stats"].fn()
+            result = _invoke_surface(server._tool_manager._tools["stats"].fn, )
 
             data = json.loads(result)
             assert data["total_conversations"] == total_conversations
@@ -475,7 +512,7 @@ class TestMCPToolValidation:
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
+            mock_repo = _make_repo_mock()
             mock_repo.search.return_value = []
             mock_get_repo.return_value = mock_repo
 
@@ -483,7 +520,7 @@ class TestMCPToolValidation:
                 MockFilter.return_value = make_mock_filter(results=[])
 
                 server = _build_server()
-                result = await server._tool_manager._tools["search"].fn(query="", limit=10)
+                result = await _invoke_surface_async(server._tool_manager._tools["search"].fn, query="", limit=10)
 
                 # Should return valid JSON result (empty list or error)
                 assert result is not None
@@ -516,7 +553,7 @@ class TestMCPToolValidation:
 
             with patch("polylogue.mcp.server._get_repo", return_value=repo):
                 server = _build_server()
-                result = await server._tool_manager._tools["list_conversations"].fn(limit=-1)
+                result = await _invoke_surface_async(server._tool_manager._tools["list_conversations"].fn, limit=-1)
                 parsed = json.loads(result)
                 assert isinstance(parsed, list)
                 assert len(parsed) == 1
@@ -529,12 +566,12 @@ class TestMCPToolValidation:
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
+            mock_repo = _make_repo_mock()
             mock_repo.view.return_value = None
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
-            result = server._tool_manager._tools["get_conversation"].fn(id="nonexistent-id-xyz")
+            result = await _invoke_surface_async(server._tool_manager._tools["get_conversation"].fn, id="nonexistent-id-xyz")
 
             assert result is not None
             parsed = json.loads(result)
@@ -571,7 +608,7 @@ class TestMCPRealRepositoryPaths:
 
             with patch("polylogue.mcp.server._get_repo", return_value=repo):
                 server = _build_server()
-                result = await server._tool_manager._tools["search"].fn(query="needle", limit=10)
+                result = await _invoke_surface_async(server._tool_manager._tools["search"].fn, query="needle", limit=10)
 
             parsed = json.loads(result)
             assert len(parsed) == 1
@@ -606,7 +643,7 @@ class TestMCPRealRepositoryPaths:
 
             with patch("polylogue.mcp.server._get_repo", return_value=repo):
                 server = _build_server()
-                result = await server._tool_manager._tools["list_conversations"].fn(provider="claude", limit=10)
+                result = await _invoke_surface_async(server._tool_manager._tools["list_conversations"].fn, provider="claude", limit=10)
 
             parsed = json.loads(result)
             assert len(parsed) == 1

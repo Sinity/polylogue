@@ -14,12 +14,12 @@ from polylogue.pipeline.services.parsing import ParsingService
 
 # ChatGPT imports
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 # Claude imports
 # Codex imports
 # Drive imports (for parse_chunked_prompt)
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import RawConversationRecord
 
@@ -52,7 +52,6 @@ class TestParseRawRecordJsonl:
 			repository=repository,
 			archive_root=tmp_path / "archive",
 			config=config,
-			drive_client_factory=None,
 		)
 
 	async def test_parse_raw_record_single_json(
@@ -275,7 +274,6 @@ This is not JSON at all, should be skipped
 			repository=repository,
 			archive_root=tmp_path / "archive",
 			config=config,
-			drive_client_factory=None,
 		)
 
 		# Store a raw record without a corresponding conversation
@@ -302,7 +300,7 @@ This is not JSON at all, should be skipped
 
 		# Query for orphaned raw records (without conversations)
 		# This is the pattern from parse_sources()
-		with open_connection(backend._db_path) as conn:
+		with open_connection(backend.db_path) as conn:
 			orphaned_rows = conn.execute(
 				"""
 				SELECT r.raw_id
@@ -323,7 +321,7 @@ This is not JSON at all, should be skipped
 		assert result.counts["conversations"] > 0 or result.counts["messages"] > 0
 		# Verify the conversation was created with raw_id link
 		# Query directly for conversations with raw_id
-		with open_connection(backend._db_path) as conn:
+		with open_connection(backend.db_path) as conn:
 			linked_convos = conn.execute(
 				"""
 				SELECT conversation_id, raw_id
