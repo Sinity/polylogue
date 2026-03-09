@@ -93,6 +93,11 @@ class MessageRecord(BaseModel):
     branch_index: int = 0  # 0 = mainline, >0 = branch sibling position
     # Content blocks loaded alongside the message (not stored in messages table)
     content_blocks: list[ContentBlockRecord] = Field(default_factory=list)
+    # Precomputed analytics fields (stored in messages table, computed at insert time)
+    provider_name: str = ''
+    word_count: int = 0
+    has_tool_use: int = 0   # 1 if any block.type in ('tool_use', 'tool_result')
+    has_thinking: int = 0   # 1 if any block.type == 'thinking'
 
     @property
     def role_typed(self):
@@ -308,6 +313,10 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         version=row["version"],
         parent_message_id=_row_get(row, "parent_message_id"),
         branch_index=_row_get(row, "branch_index", 0) or 0,
+        provider_name=_row_get(row, "provider_name", '') or '',
+        word_count=_row_get(row, "word_count", 0) or 0,
+        has_tool_use=_row_get(row, "has_tool_use", 0) or 0,
+        has_thinking=_row_get(row, "has_thinking", 0) or 0,
     )
 
 
