@@ -337,49 +337,57 @@ class TestExecuteQueryBasic:
             args = mock_output.call_args[0]
             assert args[1] == result_summaries
 
-    @pytest.mark.parametrize(
-        "stats_key,stats_value,mock_fn",
-        [
-            ("stats_only", True, "_output_stats_sql"),
-            ("stats_by", "provider", "_output_stats_by"),
-        ],
-    )
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
     @patch("polylogue.cli.query._output_stats_sql", new_callable=AsyncMock)
-    @patch("polylogue.cli.query._output_stats_by")
-    def test_stats_modes(
+    def test_stats_only_mode(
         self,
-        mock_stats_by,
         mock_stats_sql,
         MockFilter,
         mock_vector_provider,
         mock_load_config,
-        stats_key,
-        stats_value,
-        mock_fn,
     ) -> None:
-        """stats_only and stats_by trigger appropriate output functions."""
+        """--stats triggers _output_stats_sql fast path."""
         mock_load_config.return_value = MagicMock()
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
-
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
-        convs = [_make_conv()]
-        mock_filter.list = AsyncMock(return_value=convs)
+        env = _make_env(repo=mock_repo, config=mock_load_config.return_value)
+        params = _make_params(stats_only=True)
+        self._fn(env, params)
+        mock_stats_sql.assert_called_once()
+
+    @patch("polylogue.cli.helpers.load_effective_config")
+    @patch("polylogue.storage.search_providers.create_vector_provider")
+    @patch("polylogue.lib.filters.ConversationFilter")
+    @patch("polylogue.cli.query._output_stats_by_summaries")
+    def test_stats_by_uses_summary_fast_path(
+        self,
+        mock_stats_by_summaries,
+        MockFilter,
+        mock_vector_provider,
+        mock_load_config,
+    ) -> None:
+        """--stats-by uses the lightweight summaries fast path when possible."""
+        mock_load_config.return_value = MagicMock()
+        mock_vector_provider.return_value = None
+        mock_repo = MagicMock()
+        mock_repo.get_message_counts_batch = AsyncMock(return_value={})
+
+        mock_filter = MagicMock()
+        mock_filter.can_use_summaries.return_value = True
+        mock_filter.list_summaries = AsyncMock(return_value=[])
+        MockFilter.return_value = mock_filter
 
         env = _make_env(repo=mock_repo, config=mock_load_config.return_value)
-        params = _make_params(**{stats_key: stats_value})
+        params = _make_params(stats_by="provider")
 
         self._fn(env, params)
 
-        if mock_fn == "_output_stats_sql":
-            mock_stats_sql.assert_called_once()
-        else:
-            mock_stats_by.assert_called_once()
-            assert mock_stats_by.call_args[0][2] == "provider"
+        mock_stats_by_summaries.assert_called_once()
+        assert mock_stats_by_summaries.call_args[0][3] == "provider"
 
 
 
