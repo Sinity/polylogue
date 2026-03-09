@@ -184,11 +184,16 @@ def _build_conversation_filters(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
+    has_file_ops: bool = False,
+    has_git_ops: bool = False,
+    has_subagent: bool = False,
 ) -> tuple[str, list[str | int | float]]:
     """Build WHERE clause and params for conversation queries.
 
     Stats-based filters (has_tool_use, has_thinking, min_messages, max_messages,
     min_words) emit a LEFT JOIN on conversation_stats and filter on cs columns.
+    Semantic filters (has_file_ops, has_git_ops, has_subagent) emit EXISTS
+    subqueries against content_blocks.semantic_type.
     Callers must prefix conversation columns with 'c.' when using stats filters.
     """
     where_clauses: list[str] = []
@@ -237,6 +242,27 @@ def _build_conversation_filters(
     if min_words is not None:
         where_clauses.append("cs.word_count >= ?")
         params.append(min_words)
+
+    # Semantic filters via EXISTS subquery on content_blocks.semantic_type
+    # When using stats join, outer table is aliased as 'c'; otherwise use fully qualified
+    # table name to prevent ambiguity (unqualified 'conversation_id' inside the EXISTS
+    # subquery resolves to the subquery's own cb.conversation_id, not the outer table).
+    conv_id_col = "c.conversation_id" if needs_stats_join else "conversations.conversation_id"
+    if has_file_ops:
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+            " AND cb.semantic_type IN ('file_read', 'file_write', 'file_edit'))"
+        )
+    if has_git_ops:
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+            " AND cb.semantic_type = 'git')"
+        )
+    if has_subagent:
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+            " AND cb.semantic_type = 'subagent')"
+        )
 
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     return where_sql, params

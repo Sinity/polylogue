@@ -14,6 +14,8 @@ from polylogue.sources import (
     DriveNotFoundError,
 )
 from polylogue.sources.drive_client import (
+    DEFAULT_DRIVE_RETRIES,
+    DEFAULT_DRIVE_RETRY_BASE,
     _is_retryable_error,
     _looks_like_id,
     _parse_modified_time,
@@ -205,8 +207,7 @@ class TestResolveRetries:
         """Invalid env value should be ignored, falling back to default."""
         monkeypatch.setenv("POLYLOGUE_DRIVE_RETRIES", "not_a_number")
         result = _resolve_retries(value=None, config=None)
-        assert isinstance(result, int)
-        assert result >= 0
+        assert result == DEFAULT_DRIVE_RETRIES
 
     def test_priority_explicit_over_config(self):
         """Explicit value should have priority over config."""
@@ -241,17 +242,16 @@ class TestResolveRetryBase:
         assert _resolve_retry_base(value=None) == 2.5
 
     def test_invalid_env_variable_ignored(self, monkeypatch):
-        """Invalid env value should be ignored."""
+        """Invalid env value should be ignored, falling back to default."""
         monkeypatch.setenv("POLYLOGUE_DRIVE_RETRY_BASE", "not_a_float")
         result = _resolve_retry_base(value=None)
-        assert isinstance(result, float)
-        assert result >= 0
+        assert result == DEFAULT_DRIVE_RETRY_BASE
 
     def test_default_when_nothing_specified(self, monkeypatch):
         """Default should be used when nothing is specified."""
         monkeypatch.delenv("POLYLOGUE_DRIVE_RETRY_BASE", raising=False)
         result = _resolve_retry_base(value=None)
-        assert result >= 0
+        assert result == DEFAULT_DRIVE_RETRY_BASE
 
 
 # ============================================================================

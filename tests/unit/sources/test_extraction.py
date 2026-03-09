@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 
 import pytest
@@ -13,7 +12,6 @@ from polylogue.schemas.unified import (
     HarmonizedMessage,
     extract_chatgpt_text,
     extract_codex_text,
-    extract_from_provider_meta,
     extract_harmonized_message,
     is_message_record,
 )
@@ -278,129 +276,83 @@ class TestCodexExtraction:
 
 
 class TestDatabaseIntegration:
-    """Integration tests using seeded database with real fixture data."""
+    """Integration tests using seeded database with real fixture data (schema v3)."""
 
     @pytest.mark.parametrize("provider", ["claude-code", "chatgpt", "codex"])
-    def test_extract_real_messages(self, seeded_db, provider):
-        """Extract real messages and verify structure."""
+    def test_messages_have_content_blocks(self, seeded_db, provider):
+        """Messages in DB have content_blocks rows with valid types."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
-        try:
-            cur.execute(
-                """
-                SELECT m.provider_meta
-                FROM messages m
-                JOIN conversations c ON m.conversation_id = c.conversation_id
-                WHERE c.provider_name = ?
-                LIMIT 20
-                """,
-                (provider,)
-            )
-        except sqlite3.OperationalError:
-            conn.close()
-            pytest.skip("provider_meta column not present in this schema version")
+        cur.execute(
+            """
+            SELECT m.message_id, m.role, m.text
+            FROM messages m
+            JOIN conversations c ON m.conversation_id = c.conversation_id
+            WHERE c.provider_name = ?
+            LIMIT 20
+            """,
+            (provider,),
+        )
+        rows = cur.fetchall()
+        assert rows, f"No {provider} messages in seeded database"
 
+        for (msg_id, role, text) in rows:
+            assert role in ("user", "assistant", "system", "tool"), (
+                f"Unexpected role '{role}' in {provider} message {msg_id}"
+            )
+            # text is nullable for tool-only messages, but role must be valid
+            assert isinstance(text, (str, type(None)))
+
+        conn.close()
+
+    def test_claude_code_has_tool_use_blocks(self, seeded_db):
+        """Claude Code messages produce tool_use content_blocks in the DB."""
+        conn = sqlite3.connect(seeded_db)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT cb.type, cb.tool_name, cb.semantic_type
+            FROM content_blocks cb
+            JOIN messages m ON cb.message_id = m.message_id
+            JOIN conversations c ON m.conversation_id = c.conversation_id
+            WHERE c.provider_name = 'claude-code'
+              AND cb.type = 'tool_use'
+            LIMIT 100
+            """
+        )
         rows = cur.fetchall()
         conn.close()
 
-        extracted = 0
-        for (pm_json,) in rows:
-            # Skip if provider_meta is NULL
-            if pm_json is None:
-                continue
+        # Synthetic corpus generates tool_use blocks for claude-code
+        assert len(rows) > 0, "Expected tool_use blocks for claude-code in seeded DB"
+        for (block_type, tool_name, semantic_type) in rows:
+            assert block_type == "tool_use"
+            assert tool_name is not None
+            # semantic_type is classified or None (for unknown tool names)
+            assert semantic_type is None or isinstance(semantic_type, str)
 
-            pm = json.loads(pm_json)
-            raw = pm.get("raw", pm)
-
-            if not is_message_record(provider, raw):
-                continue
-
-            msg = extract_from_provider_meta(provider, pm)
-
-            assert isinstance(msg, HarmonizedMessage)
-            assert msg.provider in (provider, "claude-ai")  # claude -> claude-ai
-            assert msg.role in ("user", "assistant", "system", "tool", "unknown")
-            assert isinstance(msg.text, str)
-
-            extracted += 1
-
-        if extracted == 0:
-            pytest.skip(f"No {provider} messages with provider_meta in seeded database")
-
-    def test_claude_code_tool_extraction(self, seeded_db):
-        """Verify tool calls are extracted from Claude Code messages."""
+    def test_content_blocks_have_semantic_types(self, seeded_db):
+        """Tool_use blocks classified by semantic_type; thinking blocks tagged."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
-        try:
-            cur.execute(
-                """
-                SELECT m.provider_meta
-                FROM messages m
-                JOIN conversations c ON m.conversation_id = c.conversation_id
-                WHERE c.provider_name = 'claude-code'
-                LIMIT 100
-                """
-            )
-        except sqlite3.OperationalError:
-            conn.close()
-            pytest.skip("provider_meta column not present in this schema version")
-
+        cur.execute(
+            """
+            SELECT semantic_type, COUNT(*) as cnt
+            FROM content_blocks
+            WHERE semantic_type IS NOT NULL
+            GROUP BY semantic_type
+            ORDER BY cnt DESC
+            """
+        )
         rows = cur.fetchall()
         conn.close()
 
-        total_tools = 0
-        for (pm_json,) in rows:
-            pm = json.loads(pm_json)
-            raw = pm.get("raw", pm)
-
-            if not is_message_record("claude-code", raw):
-                continue
-
-            msg = extract_from_provider_meta("claude-code", pm)
-            total_tools += len(msg.tool_calls)
-
-        # May not find tool calls in all fixtures - just verify it doesn't crash
-        assert total_tools >= 0
-
-    def test_viewports_properties(self, seeded_db):
-        """Test viewport convenience properties."""
-        conn = sqlite3.connect(seeded_db)
-        cur = conn.cursor()
-        try:
-            cur.execute(
-                """
-                SELECT m.provider_meta
-                FROM messages m
-                JOIN conversations c ON m.conversation_id = c.conversation_id
-                WHERE c.provider_name = 'claude-code'
-                LIMIT 50
-                """
-            )
-        except sqlite3.OperationalError:
-            conn.close()
-            pytest.skip("provider_meta column not present in this schema version")
-
-        rows = cur.fetchall()
-        conn.close()
-
-        file_ops = 0
-        git_ops = 0
-
-        for (pm_json,) in rows:
-            pm = json.loads(pm_json)
-            raw = pm.get("raw", pm)
-
-            if not is_message_record("claude-code", raw):
-                continue
-
-            msg = extract_from_provider_meta("claude-code", pm)
-            file_ops += len(msg.file_operations)
-            git_ops += len(msg.git_operations)
-
-        # These are computed properties - just verify they don't crash
-        # and return reasonable values
-        assert file_ops >= 0
-        assert git_ops >= 0
+        # The seeded corpus includes tool_use blocks that should be classified
+        assert len(rows) > 0, "Expected at least one classified content_block"
+        known_types = {"file_read", "file_write", "file_edit", "shell", "git",
+                       "search", "web", "agent", "subagent", "thinking", "code", "other"}
+        for (sem_type, _count) in rows:
+            assert sem_type in known_types, f"Unknown semantic_type '{sem_type}'"
 
 
 # MERGED FROM test_unified_extraction_edge_cases.py

@@ -209,19 +209,20 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             """
             INSERT INTO content_blocks (
                 block_id, message_id, conversation_id, block_index,
-                type, text, tool_name, tool_id, tool_input, media_type, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                type, text, tool_name, tool_id, tool_input, media_type, metadata, semantic_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id, block_index) DO UPDATE SET
                 type = excluded.type,
                 text = excluded.text,
                 tool_name = excluded.tool_name,
                 tool_id = excluded.tool_id,
-                tool_input = excluded.tool_input
+                tool_input = excluded.tool_input,
+                semantic_type = excluded.semantic_type
             """,
             (
                 blk.block_id, blk.message_id, blk.conversation_id, blk.block_index,
                 blk.type, blk.text, blk.tool_name, blk.tool_id, blk.tool_input,
-                blk.media_type, blk.metadata,
+                blk.media_type, blk.metadata, blk.semantic_type,
             ),
         )
 
@@ -498,6 +499,7 @@ class ConversationBuilder:
                     else __import__("json").dumps(blk["input"]) if blk.get("input") is not None
                     else None
                 ),
+                semantic_type=blk.get("semantic_type"),
             ))
 
         # Merge with any content_blocks already in kwargs

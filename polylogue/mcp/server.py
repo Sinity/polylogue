@@ -170,6 +170,9 @@ def _build_server() -> FastMCP:
         has_thinking: bool = False,
         min_messages: int | None = None,
         min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> str:
         """Search conversations by text query. Returns matching conversations with metadata.
 
@@ -182,6 +185,9 @@ def _build_server() -> FastMCP:
             has_thinking: Only conversations with thinking blocks
             min_messages: Minimum message count
             min_words: Minimum total word count
+            has_file_ops: Only conversations with file read/write/edit operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations that spawned subagents
         """
         async def _run() -> str:
             repo = _get_repo()
@@ -194,6 +200,9 @@ def _build_server() -> FastMCP:
                 filter_has_thinking=has_thinking,
                 min_messages=min_messages,
                 min_words=min_words,
+                filter_has_file_ops=has_file_ops,
+                filter_has_git_ops=has_git_ops,
+                filter_has_subagent=has_subagent,
             )
             results = await spec.build_filter(repo).list()
             return _json_payload(
@@ -218,6 +227,9 @@ def _build_server() -> FastMCP:
         has_thinking: bool = False,
         min_messages: int | None = None,
         min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> str:
         """List recent conversations, optionally filtered by provider, date, tag, or title.
 
@@ -232,6 +244,9 @@ def _build_server() -> FastMCP:
             has_thinking: Only conversations with thinking blocks
             min_messages: Minimum message count
             min_words: Minimum total word count
+            has_file_ops: Only conversations with file read/write/edit operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations that spawned subagents
         """
         async def _run() -> str:
             repo = _get_repo()
@@ -246,6 +261,9 @@ def _build_server() -> FastMCP:
                 filter_has_thinking=has_thinking,
                 min_messages=min_messages,
                 min_words=min_words,
+                filter_has_file_ops=has_file_ops,
+                filter_has_git_ops=has_git_ops,
+                filter_has_subagent=has_subagent,
             )
             conversations = await spec.build_filter(repo).list()
             return _json_payload(

@@ -9,6 +9,7 @@ from textual.widgets import DataTable, Input
 from textual.widgets import Markdown as MarkdownWidget
 
 from polylogue.config import Config
+from polylogue.errors import DatabaseError
 
 if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
@@ -59,8 +60,8 @@ class Search(Container):
 
         try:
             summaries = await repo.search_summaries(query, limit=50)
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc):
+        except (sqlite3.OperationalError, DatabaseError) as exc:
+            if "no such table" in str(exc) or "Search index not built" in str(exc):
                 table.add_row("—", "—", "Search index not built. Run: polylogue run", "")
             else:
                 table.add_row("—", "—", f"Search error: {exc}", "")

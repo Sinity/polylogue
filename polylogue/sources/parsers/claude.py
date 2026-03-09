@@ -20,7 +20,6 @@ from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.roles import Role
 from polylogue.types import Provider
-
 from .base import ParsedAttachment, ParsedContentBlock, ParsedConversation, ParsedMessage, attachment_from_meta, content_blocks_from_segments
 
 logger = get_logger(__name__)
@@ -248,7 +247,6 @@ def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[li
                     text=text,
                     timestamp=timestamp,
                     content_blocks=content_blocks,
-                    provider_meta={"raw": item},
                 )
             )
         for att_idx, meta in enumerate(item.get("attachments") or item.get("files") or [], start=1):
@@ -300,258 +298,6 @@ def _extract_message_text(message_content: object) -> str | None:
     return None
 
 
-# =============================================================================
-# Claude Code Semantic Extractors
-# =============================================================================
-
-
-def extract_thinking_traces(content_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract structured thinking traces from content blocks.
-
-    Args:
-        content_blocks: List of content block dicts from Claude Code message
-
-    Returns:
-        List of thinking trace dicts with text and optional metadata
-    """
-    traces = []
-    for block in content_blocks:
-        if block.get("type") == "thinking":
-            text = block.get("thinking") or block.get("text") or ""
-            if text:
-                trace = {
-                    "text": text,
-                    "token_count": len(text.split()),  # Rough approximation
-                }
-                traces.append(trace)
-    return traces
-
-
-def extract_tool_invocations(content_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract structured tool invocations from content blocks.
-
-    Args:
-        content_blocks: List of content block dicts from Claude Code message
-
-    Returns:
-        List of tool invocation dicts with name, id, input, and derived semantics
-    """
-    invocations = []
-    for block in content_blocks:
-        if block.get("type") == "tool_use":
-            invocation = {
-                "tool_name": block.get("name"),
-                "tool_id": block.get("id"),
-                "input": block.get("input") or {},
-            }
-            # Add derived semantics
-            tool_name = invocation["tool_name"]
-            if tool_name:
-                invocation["is_file_operation"] = tool_name in {"Read", "Write", "Edit", "NotebookEdit"}
-                invocation["is_search_operation"] = tool_name in {"Glob", "Grep", "WebSearch"}
-                invocation["is_subagent"] = tool_name == "Task"
-
-                # Check for git operations in Bash
-                if tool_name == "Bash":
-                    cmd = (invocation.get("input") or {}).get("command", "")
-                    invocation["is_git_operation"] = isinstance(cmd, str) and cmd.strip().startswith("git ")
-
-            invocations.append(invocation)
-    return invocations
-
-
-def parse_git_operation(tool_invocation: dict[str, Any]) -> dict[str, Any] | None:
-    """Parse git operation details from a Bash tool invocation.
-
-    Args:
-        tool_invocation: Tool invocation dict with command in input
-
-    Returns:
-        Git operation dict or None if not a git command
-    """
-    if tool_invocation.get("tool_name") != "Bash":
-        return None
-
-    command = tool_invocation.get("input", {}).get("command", "")
-    if not isinstance(command, str) or not command.strip().startswith("git "):
-        return None
-
-    parts = command.strip().split()
-    if len(parts) < 2:
-        return None
-
-    git_cmd = parts[1]  # git <subcommand>
-
-    result: dict[str, Any] = {
-        "command": git_cmd,
-        "full_command": command,
-    }
-
-    # Parse specific git commands
-    if git_cmd == "commit":
-        # Look for -m "message"
-        for i, part in enumerate(parts):
-            if part == "-m" and i + 1 < len(parts):
-                # Get message (may be quoted)
-                msg_start = command.find('-m') + 2
-                if msg_start > 2:
-                    # Try to extract quoted message
-                    remaining = command[msg_start:].strip()
-                    if remaining.startswith('"'):
-                        end_quote = remaining.find('"', 1)
-                        if end_quote > 0:
-                            result["message"] = remaining[1:end_quote]
-                    elif remaining.startswith("'"):
-                        end_quote = remaining.find("'", 1)
-                        if end_quote > 0:
-                            result["message"] = remaining[1:end_quote]
-
-    elif git_cmd in ("checkout", "switch"):
-        # Look for branch name
-        for part in parts[2:]:
-            if not part.startswith("-"):
-                result["branch"] = part
-                break
-
-    elif git_cmd == "push":
-        # Extract remote and branch
-        non_flags = [p for p in parts[2:] if not p.startswith("-")]
-        if len(non_flags) >= 2:
-            result["remote"] = non_flags[0]
-            result["branch"] = non_flags[1]
-        elif len(non_flags) == 1:
-            result["remote"] = non_flags[0]
-
-    elif git_cmd in ("add", "rm"):
-        # Extract files
-        result["files"] = [p for p in parts[2:] if not p.startswith("-")]
-
-    return result
-
-
-def extract_file_changes(tool_invocations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract file change information from tool invocations.
-
-    Args:
-        tool_invocations: List of tool invocation dicts
-
-    Returns:
-        List of file change dicts with path, operation type, and content
-    """
-    changes = []
-    for invocation in tool_invocations:
-        tool_name = invocation.get("tool_name")
-        input_data = invocation.get("input", {})
-
-        if tool_name == "Read":
-            path = input_data.get("file_path") or input_data.get("path")
-            if path:
-                changes.append({
-                    "path": path,
-                    "operation": "read",
-                })
-
-        elif tool_name == "Write":
-            path = input_data.get("file_path") or input_data.get("path")
-            content = input_data.get("content")
-            if path:
-                changes.append({
-                    "path": path,
-                    "operation": "write",
-                    "new_content": content[:500] if isinstance(content, str) else None,  # Truncate
-                })
-
-        elif tool_name == "Edit":
-            path = input_data.get("file_path") or input_data.get("path")
-            old_string = input_data.get("old_string")
-            new_string = input_data.get("new_string")
-            if path:
-                changes.append({
-                    "path": path,
-                    "operation": "edit",
-                    "old_content": old_string[:200] if isinstance(old_string, str) else None,
-                    "new_content": new_string[:200] if isinstance(new_string, str) else None,
-                })
-
-    return changes
-
-
-def extract_subagent_spawns(tool_invocations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract subagent spawn information from Task tool invocations.
-
-    Args:
-        tool_invocations: List of tool invocation dicts
-
-    Returns:
-        List of subagent spawn dicts
-    """
-    spawns = []
-    for invocation in tool_invocations:
-        if invocation.get("tool_name") != "Task":
-            continue
-
-        input_data = invocation.get("input", {})
-        spawn = {
-            "agent_type": input_data.get("subagent_type", "general-purpose"),
-            "prompt": input_data.get("prompt", ""),
-            "description": input_data.get("description"),
-            "run_in_background": input_data.get("run_in_background", False),
-        }
-        spawns.append(spawn)
-
-    return spawns
-
-
-def detect_context_compaction(item: dict[str, Any]) -> dict[str, Any] | None:
-    """Detect if a message represents a context compaction event.
-
-    Args:
-        item: Raw message dict from Claude Code JSONL
-
-    Returns:
-        Context compaction dict or None if not a compaction
-    """
-    msg_type = item.get("type")
-
-    # Summary messages indicate context compaction
-    if msg_type == "summary":
-        message = item.get("message", {})
-        content = ""
-        if isinstance(message, dict):
-            content_raw = message.get("content")
-            if isinstance(content_raw, str):
-                content = content_raw
-            elif isinstance(content_raw, list):
-                for block in content_raw:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        content = block.get("text", "")
-                        break
-
-        return {
-            "summary": content,
-            "timestamp": item.get("timestamp"),
-        }
-
-    return None
-
-
-def extract_git_operations(tool_invocations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract all git operations from tool invocations.
-
-    Args:
-        tool_invocations: List of tool invocation dicts
-
-    Returns:
-        List of git operation dicts
-    """
-    operations = []
-    for invocation in tool_invocations:
-        git_op = parse_git_operation(invocation)
-        if git_op:
-            operations.append(git_op)
-    return operations
-
-
 def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     """Parse claude-code JSONL format using typed ClaudeCodeRecord model.
 
@@ -572,6 +318,27 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     timestamps: list[str] = []
     session_id: str | None = None
     context_compactions: list[dict[str, Any]] = []
+    # Deferred import avoids circular dependency via pipeline/__init__.py
+    from polylogue.pipeline.semantic import detect_context_compaction  # noqa: PLC0415
+
+    # Conversation-level stats accumulated from raw items (not from message provider_meta)
+    total_cost: float = 0.0
+    total_duration: int = 0
+    has_sidechain: bool = False
+    cwds: set[str] = set()
+    models: set[str] = set()
+
+    def _safe_float(val: object) -> float:
+        try:
+            return float(str(val))
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _safe_int(val: object) -> int:
+        try:
+            return int(float(str(val)))
+        except (ValueError, TypeError):
+            return 0
 
     for idx, item in enumerate(payload, start=1):
         if not isinstance(item, dict):
@@ -613,7 +380,11 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         )
 
         # Build content blocks from the raw message content
-        raw_msg_content = record.message.get("content") if isinstance(record.message, dict) else None
+        if isinstance(record.message, dict):
+            raw_msg_content = record.message.get("content")
+        else:
+            # ClaudeCodeMessageContent typed model — access .content directly
+            raw_msg_content = getattr(record.message, "content", None)
         content_blocks = content_blocks_from_segments(raw_msg_content) if raw_msg_content else []
         if not content_blocks and text:
             content_blocks = [ParsedContentBlock(type="text", text=text)]
@@ -625,10 +396,26 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
                 text=text or "",
                 timestamp=timestamp,
                 content_blocks=content_blocks,
-                provider_meta={"raw": item},
                 parent_message_provider_id=record.parentUuid,
             )
         )
+
+        # Accumulate conversation-level stats from the raw item
+        cost_val = item.get("costUSD")
+        if cost_val:
+            total_cost += _safe_float(cost_val)
+        dur_val = item.get("durationMs")
+        if dur_val:
+            total_duration += _safe_int(dur_val)
+        if item.get("isSidechain"):
+            has_sidechain = True
+        cwd_val = item.get("cwd")
+        if isinstance(cwd_val, str):
+            cwds.add(cwd_val)
+        msg_content = record.message if isinstance(record.message, dict) else {}
+        model_val = msg_content.get("model")
+        if isinstance(model_val, str):
+            models.add(model_val)
 
     # Derive conversation timestamps from messages
     created_at = min(timestamps) if timestamps else None
@@ -650,65 +437,22 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     conv_meta: dict[str, Any] = {}
     if context_compactions:
         conv_meta["context_compactions"] = context_compactions
-
-    # Aggregate statistics from messages
-    def _safe_float(val: object) -> float:
-        try:
-            return float(str(val))
-        except (ValueError, TypeError):
-            return 0.0
-
-    def _safe_int(val: object) -> int:
-        try:
-            return int(float(str(val)))
-        except (ValueError, TypeError):
-            return 0
-
-    def _msg_raw(m: ParsedMessage) -> dict[str, Any]:
-        meta = m.provider_meta or {}
-        return meta.get("raw", meta)
-
-    total_cost = sum(
-        _safe_float(_msg_raw(m).get("costUSD", 0))
-        for m in messages
-        if _msg_raw(m).get("costUSD")
-    )
     if total_cost > 0:
         conv_meta["total_cost_usd"] = total_cost
-
-    total_duration = sum(
-        _safe_int(_msg_raw(m).get("durationMs", 0))
-        for m in messages
-        if _msg_raw(m).get("durationMs")
-    )
     if total_duration > 0:
         conv_meta["total_duration_ms"] = total_duration
-
-    # Detect branch type: subagent (from file path) or sidechain (from content)
-    if is_subagent:
-        branch_type: BranchType | None = BranchType.SUBAGENT
-    elif any(_msg_raw(m).get("isSidechain") for m in messages):
-        branch_type = BranchType.SIDECHAIN
-    else:
-        branch_type = None
-
-    # Collect unique cwd paths and models across messages
-    cwds = set()
-    models = set()
-    for m in messages:
-        raw = _msg_raw(m)
-        cwd_val = raw.get("cwd")
-        if isinstance(cwd_val, str):
-            cwds.add(cwd_val)
-        msg_content = raw.get("message", {})
-        if isinstance(msg_content, dict):
-            model_val = msg_content.get("model")
-            if isinstance(model_val, str):
-                models.add(model_val)
     if cwds:
         conv_meta["working_directories"] = sorted(cwds)
     if models:
         conv_meta["models_used"] = sorted(models)
+
+    # Detect branch type: subagent (from file path) or sidechain (from content)
+    if is_subagent:
+        branch_type: BranchType | None = BranchType.SUBAGENT
+    elif has_sidechain:
+        branch_type = BranchType.SIDECHAIN
+    else:
+        branch_type = None
 
     # Infer title from first user message (fallback to session ID)
     title = str(conv_id)
@@ -772,7 +516,6 @@ def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation
                     text=msg.text,
                     timestamp=timestamp,
                     content_blocks=content_blocks,
-                    provider_meta={"raw": msg.model_dump()},
                 )
             )
         for att_idx, meta in enumerate(msg.attachments + msg.files, start=1):

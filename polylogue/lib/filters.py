@@ -93,6 +93,10 @@ class ConversationFilter:
         self._min_messages: int | None = None
         self._max_messages: int | None = None
         self._min_words: int | None = None
+        # SQL-pushable semantic filters (via EXISTS on content_blocks.semantic_type)
+        self._filter_has_file_ops: bool = False
+        self._filter_has_git_ops: bool = False
+        self._filter_has_subagent: bool = False
 
     # --- Filter methods (return self for chaining) ---
 
@@ -246,6 +250,21 @@ class ConversationFilter:
     def min_words(self, n: int) -> ConversationFilter:
         """Filter to conversations with at least n total words (SQL pushdown)."""
         self._min_words = n
+        return self
+
+    def has_file_operations(self) -> ConversationFilter:
+        """Filter to conversations containing file read/write/edit operations (SQL pushdown)."""
+        self._filter_has_file_ops = True
+        return self
+
+    def has_git_operations(self) -> ConversationFilter:
+        """Filter to conversations containing git operations (SQL pushdown)."""
+        self._filter_has_git_ops = True
+        return self
+
+    def has_subagent_spawns(self) -> ConversationFilter:
+        """Filter to conversations that spawned subagents via Task tool (SQL pushdown)."""
+        self._filter_has_subagent = True
         return self
 
     def parent(self, conversation_id: str) -> ConversationFilter:
@@ -411,6 +430,12 @@ class ConversationFilter:
             params["max_messages"] = self._max_messages
         if self._min_words is not None:
             params["min_words"] = self._min_words
+        if self._filter_has_file_ops:
+            params["has_file_ops"] = True
+        if self._filter_has_git_ops:
+            params["has_git_ops"] = True
+        if self._filter_has_subagent:
+            params["has_subagent"] = True
         return params
 
     def _describe_active_filters(self) -> list[str]:
@@ -432,6 +457,12 @@ class ConversationFilter:
             parts.append("has_tool_use")
         if self._filter_has_thinking:
             parts.append("has_thinking")
+        if self._filter_has_file_ops:
+            parts.append("has_file_ops")
+        if self._filter_has_git_ops:
+            parts.append("has_git_ops")
+        if self._filter_has_subagent:
+            parts.append("has_subagent")
         if self._min_messages is not None:
             parts.append(f"min_messages: {self._min_messages}")
         if self._max_messages is not None:
