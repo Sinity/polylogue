@@ -870,8 +870,6 @@ class TestBackendComparison:
             reasoning_found += len(new_msg.reasoning_traces)
 
         assert processed > 0
-        assert tool_calls_found >= 0
-        assert reasoning_found >= 0
         assert tool_calls_found > 0 or reasoning_found > 0, (
             "New extraction should find tool calls or reasoning traces"
         )
