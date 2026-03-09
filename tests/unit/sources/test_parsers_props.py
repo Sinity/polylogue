@@ -116,9 +116,10 @@ def test_chatgpt_extracts_messages_from_mapping(export: dict):
         and node["message"].get("content", {}).get("parts")
     )
 
-    # Parser might filter some messages, but should have at least some
+    # Parser may filter empty messages, but never creates more than input had
     if expected_min > 0:
-        assert len(result.messages) >= 0  # May filter empty messages
+        assert len(result.messages) > 0, "Parser should extract at least one message from valid input"
+    assert len(result.messages) <= expected_min, "Parser cannot create more messages than input had"
 
 
 @given(chatgpt_message_node_strategy())

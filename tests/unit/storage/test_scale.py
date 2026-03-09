@@ -12,6 +12,8 @@ patterns work correctly at moderate scale.
 
 from __future__ import annotations
 
+import asyncio
+
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import ConversationRecord, MessageRecord
 
@@ -25,35 +27,36 @@ async def _seed_conversations(
 ) -> list[str]:
     """Seed the database with conversations and messages.
 
+    Saves conversations concurrently, then all messages in one batch.
     Returns list of conversation IDs.
     """
-    ids = []
-    for i in range(count):
-        cid = f"scale-conv-{i:04d}"
-        ids.append(cid)
-        await backend.save_conversation_record(
-            ConversationRecord(
-                conversation_id=cid,
-                provider_name="chatgpt" if i % 2 == 0 else "claude",
-                provider_conversation_id=f"prov-{cid}",
-                title=f"Scale Test Conversation {i}",
-                created_at=f"2025-01-{(i % 28) + 1:02d}T00:00:00Z",
-                updated_at=f"2025-01-{(i % 28) + 1:02d}T00:00:00Z",
-                content_hash=f"hash-{cid}",
-            )
+    ids = [f"scale-conv-{i:04d}" for i in range(count)]
+    conv_records = [
+        ConversationRecord(
+            conversation_id=ids[i],
+            provider_name="chatgpt" if i % 2 == 0 else "claude",
+            provider_conversation_id=f"prov-{ids[i]}",
+            title=f"Scale Test Conversation {i}",
+            created_at=f"2025-01-{(i % 28) + 1:02d}T00:00:00Z",
+            updated_at=f"2025-01-{(i % 28) + 1:02d}T00:00:00Z",
+            content_hash=f"hash-{ids[i]}",
         )
-        msgs = [
-            MessageRecord(
-                message_id=f"{cid}-m{j}",
-                conversation_id=cid,
-                role="user" if j % 2 == 0 else "assistant",
-                text=f"Message {j} in conversation {i}",
-                timestamp=f"2025-01-01T00:{j:02d}:00Z",
-                content_hash=f"hash-{cid}-m{j}",
-            )
-            for j in range(msgs_per_conv)
-        ]
-        await backend.save_messages(msgs)
+        for i in range(count)
+    ]
+    await asyncio.gather(*(backend.save_conversation_record(r) for r in conv_records))
+    all_msgs = [
+        MessageRecord(
+            message_id=f"{ids[i]}-m{j}",
+            conversation_id=ids[i],
+            role="user" if j % 2 == 0 else "assistant",
+            text=f"Message {j} in conversation {i}",
+            timestamp=f"2025-01-01T00:{j:02d}:00Z",
+            content_hash=f"hash-{ids[i]}-m{j}",
+        )
+        for i in range(count)
+        for j in range(msgs_per_conv)
+    ]
+    await backend.save_messages(all_msgs)
     return ids
 
 
@@ -118,35 +121,36 @@ class TestGetManyScale:
         backend = SQLiteBackend(db_path=db_path)
 
         # Create conversations with 1, 5, and 10 messages
-        test_cases = [(1, 1), (5, 5), (10, 10)]
-        all_ids = []
-        for _count, msgs in test_cases:
-            for i in range(20):
-                cid = f"var-{msgs}msg-{i:03d}"
-                all_ids.append(cid)
-                await backend.save_conversation_record(
-                    ConversationRecord(
-                        conversation_id=cid,
-                        provider_name="test",
-                        provider_conversation_id=f"prov-{cid}",
-                        title=f"Var {msgs} msgs {i}",
-                        created_at="2025-01-01T00:00:00Z",
-                        updated_at="2025-01-01T00:00:00Z",
-                        content_hash=f"hash-{cid}",
-                    )
-                )
-                msg_records = [
-                    MessageRecord(
-                        message_id=f"{cid}-m{j}",
-                        conversation_id=cid,
-                        role="user",
-                        text=f"msg {j}",
-                        timestamp=f"2025-01-01T00:{j:02d}:00Z",
-                        content_hash=f"hash-{cid}-m{j}",
-                    )
-                    for j in range(msgs)
-                ]
-                await backend.save_messages(msg_records)
+        msg_counts = [1, 5, 10]
+        all_ids = [f"var-{msgs}msg-{i:03d}" for msgs in msg_counts for i in range(20)]
+        conv_records = [
+            ConversationRecord(
+                conversation_id=cid,
+                provider_name="test",
+                provider_conversation_id=f"prov-{cid}",
+                title=f"Var {cid.split('-')[1]} {cid.split('-')[2]}",
+                created_at="2025-01-01T00:00:00Z",
+                updated_at="2025-01-01T00:00:00Z",
+                content_hash=f"hash-{cid}",
+            )
+            for cid in all_ids
+        ]
+        await asyncio.gather(*(backend.save_conversation_record(r) for r in conv_records))
+        all_msg_records = [
+            MessageRecord(
+                message_id=f"{cid}-m{j}",
+                conversation_id=cid,
+                role="user",
+                text=f"msg {j}",
+                timestamp=f"2025-01-01T00:{j:02d}:00Z",
+                content_hash=f"hash-{cid}-m{j}",
+            )
+            for msgs in msg_counts
+            for i in range(20)
+            for cid in [f"var-{msgs}msg-{i:03d}"]
+            for j in range(msgs)
+        ]
+        await backend.save_messages(all_msg_records)
 
         repo = ConversationRepository(backend=backend)
         convos = await repo.get_many(all_ids)
