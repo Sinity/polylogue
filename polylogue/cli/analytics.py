@@ -43,6 +43,21 @@ class ProviderMetrics:
         return (self.total_conversations_with_thinking / self.conversation_count) * 100
 
 
+async def get_provider_counts(db_path: Path | None = None) -> list[tuple[str, int]]:
+    """Return (provider_name, conversation_count) pairs — fast, conversations-only query.
+
+    Use this for display that only needs the bar chart (no message-level data).
+    """
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+
+    backend = SQLiteBackend(db_path=db_path)
+    try:
+        rows = await backend.get_provider_conversation_counts()
+    finally:
+        await backend.close()
+    return [(row["provider_name"] or "unknown", row["conversation_count"]) for row in rows]
+
+
 async def compute_provider_comparison(db_path: Path | None = None) -> list[ProviderMetrics]:
     """Compute comparison metrics across all providers using SQL aggregation.
 

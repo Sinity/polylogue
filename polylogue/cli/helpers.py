@@ -144,38 +144,42 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     # Show analytics visualization (compatible with plain mode too)
     if ui:
         try:
-            from polylogue.cli.analytics import compute_provider_comparison
+            from polylogue.cli.analytics import compute_provider_comparison, get_provider_counts
 
-            metrics = asyncio.run(compute_provider_comparison())
-            if metrics:
+            if verbose:
+                # Full metrics (slow: ~29s) needed for Deep Dive section
+                metrics = asyncio.run(compute_provider_comparison())
+                counts: list[tuple[str, int]] = [(m.provider_name, m.conversation_count) for m in metrics]
+            else:
+                # Fast path: conversations-table-only query (~1ms)
+                counts = asyncio.run(get_provider_counts())
+                metrics = []
+
+            if counts:
                 ui.console.print()
-                total_convs = sum(m.conversation_count for m in metrics)
-
-                # Header with total
-                # Archive: 1,234 conversations (size not easily available without du call, skipping size)
+                total_convs = sum(c for _, c in counts)
                 ui.console.print(f"[bold]Archive:[/bold] {total_convs:,} conversations")
 
                 max_width = 30
-                for m in metrics:
+                for provider_name, conv_count in counts:
                     if total_convs > 0:
-                        pct = (m.conversation_count / total_convs) * 100
-                        bar_len = int((m.conversation_count / total_convs) * max_width)
+                        pct = (conv_count / total_convs) * 100
+                        bar_len = int((conv_count / total_convs) * max_width)
                     else:
                         pct = 0
                         bar_len = 0
 
                     bar = "█" * bar_len
-                    color = provider_color(m.provider_name).hex
+                    color = provider_color(provider_name).hex
 
-                    # Format:   claude-code:   512 (41%)  │  ████████████
-                    name_padded = f"{m.provider_name}:".ljust(14)
-                    count_padded = f"{m.conversation_count:,}".rjust(5)
+                    name_padded = f"{provider_name}:".ljust(14)
+                    count_padded = f"{conv_count:,}".rjust(5)
                     pct_padded = f"({pct:.0f}%)".rjust(5)
 
                     ui.console.print(f"  {name_padded} {count_padded} {pct_padded}  │  [{color}]{bar}[/{color}]")
 
-                # Additional stats if verbose
-                if verbose:
+                # Additional stats if verbose (metrics already loaded above)
+                if verbose and metrics:
                     ui.console.print()
                     ui.console.print("[bold]Deep Dive:[/bold]")
                     for m in metrics:

@@ -1679,6 +1679,24 @@ class SQLiteBackend:
             rows = await cursor.fetchall()
         return {row["period"]: row["count"] for row in rows}
 
+    async def get_provider_conversation_counts(self) -> list[dict[str, object]]:
+        """Return conversation counts per provider — fast, conversations-table-only query.
+
+        Used for the non-verbose stats bar chart which only needs conversation_count.
+        Avoids the 29s LEFT JOIN over 1.67M message rows.
+        """
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT provider_name, COUNT(*) AS conversation_count
+                FROM conversations
+                GROUP BY provider_name
+                ORDER BY conversation_count DESC
+                """
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
     async def get_provider_metrics_rows(self) -> list[dict[str, object]]:
         """Return raw provider aggregation rows for analytics reporting."""
         async with self._get_connection() as conn:
