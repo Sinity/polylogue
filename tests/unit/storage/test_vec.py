@@ -144,7 +144,7 @@ class TestGetEmbeddings:
             error_msg, request=MagicMock(), response=mock_response
         )
 
-        with patch("httpx.Client") as MockClient:
+        with patch("httpx.Client") as MockClient, patch("time.sleep"):
             mock_client = MagicMock()
             mock_client.post.side_effect = error
             mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -162,7 +162,7 @@ class TestGetEmbeddings:
 
         error = httpx.TimeoutException("Connection timed out")
 
-        with patch("httpx.Client") as MockClient:
+        with patch("httpx.Client") as MockClient, patch("time.sleep"):
             mock_client = MagicMock()
             mock_client.post.side_effect = error
             mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -186,7 +186,7 @@ class TestGetEmbeddings:
             response=mock_response,
         )
 
-        with patch("httpx.Client") as MockClient:
+        with patch("httpx.Client") as MockClient, patch("time.sleep"):
             mock_client = MagicMock()
             mock_client.post.side_effect = error
             mock_client.__enter__ = MagicMock(return_value=mock_client)

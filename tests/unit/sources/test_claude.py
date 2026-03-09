@@ -11,13 +11,13 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.sources.parsers.claude import (
+from polylogue.sources.parsers.claude import parse_code
+from polylogue.pipeline.semantic import (
     detect_context_compaction,
     extract_file_changes,
     extract_subagent_spawns,
     extract_thinking_traces,
     extract_tool_invocations,
-    parse_code,
     parse_git_operation,
 )
 
@@ -423,8 +423,8 @@ class TestContextCompaction:
 class TestParseCodeSemantic:
     """Integration tests for semantic extraction in parse_code."""
 
-    def test_extracts_semantic_data_to_provider_meta(self):
-        """parse_code extracts semantic data to message provider_meta."""
+    def test_extracts_semantic_data_to_content_blocks(self):
+        """parse_code parses semantic content blocks into ParsedContentBlock objects."""
         payload = [
             {
                 "type": "assistant",
@@ -449,19 +449,17 @@ class TestParseCodeSemantic:
         result = parse_code(payload, "test-session")
 
         assert len(result.messages) == 1
-        meta = result.messages[0].provider_meta
+        # provider_meta is no longer set on ParsedMessage (removed in schema v3 cleanup)
+        assert result.messages[0].provider_meta is None
 
-        # provider_meta is now {"raw": <original record>}; semantics are
-        # extracted at read time via extract_from_provider_meta / harmonized
-        assert "raw" in meta
-        raw = meta["raw"]
-        content = raw["message"]["content"]
-        types = [b["type"] for b in content]
-        assert "thinking" in types
-        assert "tool_use" in types
+        # Semantic data is now in content_blocks, classified at ingest time by prepare.py
+        blocks = result.messages[0].content_blocks
+        block_types = [b.type for b in blocks]
+        assert "thinking" in block_types
+        assert "tool_use" in block_types
 
     def test_extracts_git_operations(self):
-        """parse_code extracts git operations from Bash commands."""
+        """parse_code parses Bash git commands into tool_use content blocks."""
         payload = [
             {
                 "type": "assistant",
@@ -483,17 +481,14 @@ class TestParseCodeSemantic:
 
         result = parse_code(payload, "test-session")
 
-        meta = result.messages[0].provider_meta
-        # Derived semantics are now extracted at read time; raw is stored
-        assert "raw" in meta
-        from polylogue.schemas.unified import extract_from_provider_meta
-        harmonized = extract_from_provider_meta("claude-code", meta)
-        git_ops = harmonized.git_operations
-        assert len(git_ops) == 1
-        assert git_ops[0].name == "Bash"
+        blocks = result.messages[0].content_blocks
+        bash_blocks = [b for b in blocks if b.tool_name == "Bash"]
+        assert len(bash_blocks) == 1
+        assert bash_blocks[0].tool_input is not None
+        assert bash_blocks[0].tool_input.get("command") == "git commit -m 'Fix bug'"
 
     def test_extracts_subagent_spawns(self):
-        """parse_code extracts subagent spawns from Task tools."""
+        """parse_code parses Task tool calls into tool_use content blocks."""
         payload = [
             {
                 "type": "assistant",
@@ -518,14 +513,11 @@ class TestParseCodeSemantic:
 
         result = parse_code(payload, "test-session")
 
-        meta = result.messages[0].provider_meta
-        # Subagent spawns are now extracted at read time via harmonized
-        assert "raw" in meta
-        from polylogue.schemas.unified import extract_from_provider_meta
-        harmonized = extract_from_provider_meta("claude-code", meta)
-        task_calls = [t for t in harmonized.tool_calls if t.name == "Task"]
-        assert len(task_calls) == 1
-        assert task_calls[0].input["subagent_type"] == "Explore"
+        blocks = result.messages[0].content_blocks
+        task_blocks = [b for b in blocks if b.tool_name == "Task"]
+        assert len(task_blocks) == 1
+        assert task_blocks[0].tool_input is not None
+        assert task_blocks[0].tool_input.get("subagent_type") == "Explore"
 
     def test_tracks_context_compactions(self):
         """parse_code tracks context compaction events at conversation level."""
