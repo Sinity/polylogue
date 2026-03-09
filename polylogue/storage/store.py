@@ -73,6 +73,7 @@ class ContentBlockRecord(BaseModel):
     tool_input: str | None = None  # JSON-serialized dict
     media_type: str | None = None
     metadata: str | None = None  # JSON-serialized dict
+    semantic_type: str | None = None  # 'file_read'|'file_write'|'file_edit'|'shell'|'git'|'search'|'web'|'agent'|'subagent'|'thinking'|NULL
 
     @classmethod
     def make_id(cls, message_id: str, block_index: int) -> str:
@@ -334,6 +335,7 @@ def _row_to_content_block(row: sqlite3.Row) -> ContentBlockRecord:
         tool_input=_row_get(row, "tool_input"),
         media_type=_row_get(row, "media_type"),
         metadata=_row_get(row, "metadata"),
+        semantic_type=_row_get(row, "semantic_type"),
     )
 
 
