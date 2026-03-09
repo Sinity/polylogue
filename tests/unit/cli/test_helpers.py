@@ -339,11 +339,11 @@ class TestPrintSummaryAnalyticsBasic:
         return metric
 
     def test_print_summary_no_analytics(self, mock_env, mock_config):
-        """Test summary when analytics returns None."""
+        """Test summary when analytics returns empty list (no providers)."""
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[]):
 
             print_summary(mock_env, verbose=False)
 
@@ -358,7 +358,7 @@ class TestPrintSummaryAnalyticsBasic:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[]):
 
             print_summary(mock_env, verbose=False)
 
@@ -369,11 +369,10 @@ class TestPrintSummaryAnalyticsBasic:
 
     def test_print_summary_single_provider_analytics(self, mock_env, mock_config):
         """Test analytics visualization with single provider."""
-        metric = self._create_metric(provider_name="claude", conversation_count=100)
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[("claude", 100)]):
 
             print_summary(mock_env, verbose=False)
 
@@ -382,12 +381,10 @@ class TestPrintSummaryAnalyticsBasic:
 
     def test_print_summary_multiple_providers_analytics(self, mock_env, mock_config):
         """Test analytics with multiple providers."""
-        metric1 = self._create_metric(provider_name="claude", conversation_count=100)
-        metric2 = self._create_metric(provider_name="chatgpt", conversation_count=50)
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric1, metric2]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[("claude", 100), ("chatgpt", 50)]):
 
             print_summary(mock_env, verbose=False)
 
@@ -399,11 +396,10 @@ class TestPrintSummaryAnalyticsBasic:
         self, mock_env, mock_config, provider_name, expected_color
     ):
         """Test that providers use correct colors in analytics (parametrized)."""
-        metric = self._create_metric(provider_name=provider_name, conversation_count=100)
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[(provider_name, 100)]):
 
             print_summary(mock_env, verbose=False)
 
@@ -412,12 +408,10 @@ class TestPrintSummaryAnalyticsBasic:
 
     def test_print_summary_analytics_bar_chart_rendering(self, mock_env, mock_config):
         """Test that bar chart is rendered with correct proportions."""
-        metric1 = self._create_metric(provider_name="claude", conversation_count=100)
-        metric2 = self._create_metric(provider_name="chatgpt", conversation_count=50)
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric1, metric2]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[("claude", 100), ("chatgpt", 50)]):
 
             print_summary(mock_env, verbose=False)
 
@@ -427,11 +421,10 @@ class TestPrintSummaryAnalyticsBasic:
 
     def test_print_summary_analytics_percentage_calculation(self, mock_env, mock_config):
         """Test that percentages are calculated correctly."""
-        metric = self._create_metric(provider_name="claude", conversation_count=33)
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[("claude", 33)]):
 
             print_summary(mock_env, verbose=False)
 
@@ -439,12 +432,11 @@ class TestPrintSummaryAnalyticsBasic:
             assert any("(100%)" in str(c) for c in console_calls)
 
     def test_print_summary_analytics_zero_conversations(self, mock_env, mock_config):
-        """Test analytics with zero total conversations."""
-        metric = self._create_metric(provider_name="claude", conversation_count=0)
+        """Test analytics with zero total conversations (single provider, 0 count)."""
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[("claude", 0)]):
 
             print_summary(mock_env, verbose=False)
 
