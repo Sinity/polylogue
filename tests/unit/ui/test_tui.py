@@ -266,8 +266,8 @@ async def test_search_no_results(storage_repository, conversation_builder):
 
 @_skip
 @pytest.mark.asyncio
-async def test_search_no_index(storage_repository):
-    """No FTS table → error row shown, no crash."""
+async def test_search_empty_db(storage_repository):
+    """Empty DB with FTS table → 0 results, no crash (messages_fts always exists)."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
         tabs = pilot.app.query_one(TabbedContent)
@@ -281,8 +281,8 @@ async def test_search_no_index(storage_repository):
         await pilot.pause()
 
         table = pilot.app.query_one("#search-results", DataTable)
-        # Should have an error row instead of crashing
-        assert table.row_count >= 0  # Doesn't crash
+        # Empty DB has FTS table but no rows — should return 0 results gracefully
+        assert table.row_count == 0
 
 
 # ===========================================================================

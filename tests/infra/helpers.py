@@ -196,7 +196,32 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             record.branch_index,
         ),
     )
-    return bool(res.rowcount > 0)
+    updated = bool(res.rowcount > 0)
+
+    # Persist content blocks if any
+    for blk in record.content_blocks:
+        conn.execute(
+            """
+            INSERT INTO content_blocks (
+                block_id, message_id, conversation_id, block_index,
+                type, text, tool_name, tool_id, tool_input, media_type, metadata, semantic_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id, block_index) DO UPDATE SET
+                type = excluded.type,
+                text = excluded.text,
+                tool_name = excluded.tool_name,
+                tool_id = excluded.tool_id,
+                tool_input = excluded.tool_input,
+                semantic_type = excluded.semantic_type
+            """,
+            (
+                blk.block_id, blk.message_id, blk.conversation_id, blk.block_index,
+                blk.type, blk.text, blk.tool_name, blk.tool_id, blk.tool_input,
+                blk.media_type, blk.metadata, blk.semantic_type,
+            ),
+        )
+
+    return updated
 
 
 def upsert_attachment(conn: sqlite3.Connection, record: AttachmentRecord) -> bool:
@@ -449,6 +474,38 @@ class ConversationBuilder:
         ts = datetime.now(timezone.utc).isoformat() if timestamp is ... else timestamp
 
         from polylogue.pipeline.prepare import _timestamp_sort_key
+
+        # Extract content_blocks from provider_meta if provided (legacy test format)
+        provider_meta = kwargs.pop("provider_meta", None)
+        raw_blocks = (provider_meta or {}).get("content_blocks") or []
+        extra_blocks: list[ContentBlockRecord] = []
+        for idx, blk in enumerate(raw_blocks):
+            extra_blocks.append(ContentBlockRecord(
+                block_id=f"blk-{msg_id}-{idx}",
+                message_id=msg_id,
+                conversation_id=self.conv.conversation_id,
+                block_index=idx,
+                type=blk.get("type", "text"),
+                text=blk.get("text"),
+                tool_name=blk.get("tool_name"),
+                tool_id=blk.get("tool_id"),
+                tool_input=(
+                    blk["input"] if isinstance(blk.get("input"), str)
+                    else __import__("json").dumps(blk["input"]) if blk.get("input") is not None
+                    else None
+                ),
+                semantic_type=blk.get("semantic_type"),
+            ))
+
+        # Merge with any content_blocks already in kwargs
+        existing_blocks = kwargs.pop("content_blocks", [])
+        all_blocks = extra_blocks + list(existing_blocks)
+
+        # Compute analytics fields from content_blocks (same logic as prepare.py)
+        _block_types = {blk.type for blk in all_blocks}
+        _word_count = len(text.split()) if text and text.strip() else 0
+        _has_tool_use = 1 if (_block_types & {"tool_use", "tool_result"}) or role == "tool" else 0
+        _has_thinking = 1 if "thinking" in _block_types else 0
 
         msg = MessageRecord(
             message_id=msg_id,
