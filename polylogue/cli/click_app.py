@@ -180,6 +180,11 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option("--exclude-tag", help="Exclude tags")
 @click.option("--title", help="Title contains")
 @click.option("--has", "has_type", multiple=True, help="Filter by content: thinking (reasoning), tools (calls), summary, attachments")
+@click.option("--has-tool-use", "filter_has_tool_use", is_flag=True, help="Only conversations with tool use (SQL pushdown)")
+@click.option("--has-thinking", "filter_has_thinking", is_flag=True, help="Only conversations with thinking blocks (SQL pushdown)")
+@click.option("--min-messages", type=int, help="Minimum message count")
+@click.option("--max-messages", type=int, help="Maximum message count")
+@click.option("--min-words", type=int, help="Minimum total word count")
 @click.option("--since", help="After date (ISO, 'yesterday', 'last week')")
 @click.option("--until", help="Before date")
 @click.option("--limit", "-n", type=int, help="Max results")
@@ -248,6 +253,11 @@ def cli(
     exclude_tag: str | None,
     title: str | None,
     has_type: tuple[str, ...],
+    filter_has_tool_use: bool,
+    filter_has_thinking: bool,
+    min_messages: int | None,
+    max_messages: int | None,
+    min_words: int | None,
     since: str | None,
     until: str | None,
     limit: int | None,
