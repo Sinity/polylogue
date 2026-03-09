@@ -16,7 +16,7 @@ import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import ConversationRecord, MessageRecord
+from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 
 
 def _make_hash(s: str) -> str:
@@ -128,4 +128,57 @@ def test_bench_save_messages_batch(benchmark, tmp_path: Path, n: int) -> None:
 
     # Re-use same messages each iteration (upsert = idempotent)
     benchmark(lambda: loop.run_until_complete(backend.save_messages(msgs)))
+    loop.close()
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("n_msgs", [100, 500])
+def test_bench_save_content_blocks(benchmark, tmp_path: Path, n_msgs: int) -> None:
+    """save_content_blocks() — 5 blocks per message (tool_use + thinking mix)."""
+    loop = asyncio.new_event_loop()
+    db_path = tmp_path / f"blocks_bench_{n_msgs}.db"
+    backend = SQLiteBackend(db_path=db_path)
+    conv = ConversationRecord(
+        conversation_id="bench-blocks-conv",
+        provider_name="chatgpt",
+        provider_conversation_id="prov-blocks",
+        title="Blocks Bench",
+        created_at="2025-01-01T00:00:00Z",
+        updated_at="2025-01-01T00:00:00Z",
+        content_hash=_make_hash("blocks-conv"),
+    )
+    loop.run_until_complete(backend.save_conversation_record(conv))
+    msgs = [
+        MessageRecord(
+            message_id=f"bench-blocks-conv-m{j}",
+            conversation_id="bench-blocks-conv",
+            role="user" if j % 2 == 0 else "assistant",
+            text=f"Block bench message {j}",
+            timestamp=f"2025-01-01T00:00:{j % 60:02d}Z",
+            content_hash=_make_hash(f"blocks-msg-{j}"),
+            provider_name="chatgpt",
+            word_count=4,
+            has_tool_use=1,
+            has_thinking=1,
+        )
+        for j in range(n_msgs)
+    ]
+    loop.run_until_complete(backend.save_messages(msgs))
+
+    # 3 tool_use + 1 tool_result + 1 thinking per message = 5 blocks each
+    _BLOCK_TYPES = ["tool_use", "tool_use", "tool_use", "tool_result", "thinking"]
+    blocks = [
+        ContentBlockRecord(
+            block_id=ContentBlockRecord.make_id(f"bench-blocks-conv-m{j}", k),
+            message_id=f"bench-blocks-conv-m{j}",
+            conversation_id="bench-blocks-conv",
+            block_index=k,
+            type=_BLOCK_TYPES[k],
+        )
+        for j in range(n_msgs)
+        for k in range(5)
+    ]
+
+    # Upsert semantics — idempotent across benchmark iterations
+    benchmark(lambda: loop.run_until_complete(backend.save_content_blocks(blocks)))
     loop.close()

@@ -29,7 +29,6 @@ def _ensure_fts(db_path: Path) -> None:
 @pytest.mark.benchmark
 def test_bench_fts_search_common_term(benchmark, bench_db_5k: Path) -> None:
     """FTS5 search for common word — many results, measures BM25 scoring cost."""
-    _ensure_fts(bench_db_5k)
     loop = asyncio.new_event_loop()
     backend = SQLiteBackend(db_path=bench_db_5k)
     loop.run_until_complete(backend._ensure_schema_once())
@@ -42,7 +41,6 @@ def test_bench_fts_search_common_term(benchmark, bench_db_5k: Path) -> None:
 @pytest.mark.benchmark
 def test_bench_fts_search_rare_term(benchmark, bench_db_5k: Path) -> None:
     """FTS5 search for rare term — fast empty result path."""
-    _ensure_fts(bench_db_5k)
     loop = asyncio.new_event_loop()
     backend = SQLiteBackend(db_path=bench_db_5k)
     loop.run_until_complete(backend._ensure_schema_once())
@@ -55,7 +53,6 @@ def test_bench_fts_search_rare_term(benchmark, bench_db_5k: Path) -> None:
 @pytest.mark.benchmark
 def test_bench_fts_search_multi_word(benchmark, bench_db_5k: Path) -> None:
     """FTS5 multi-term AND search — intersection cost."""
-    _ensure_fts(bench_db_5k)
     loop = asyncio.new_event_loop()
     backend = SQLiteBackend(db_path=bench_db_5k)
     loop.run_until_complete(backend._ensure_schema_once())
@@ -103,6 +100,20 @@ def test_bench_filter_semantic_file_ops(benchmark, bench_db_5k: Path) -> None:
 
     benchmark(lambda: loop.run_until_complete(
         ConversationFilter(repo).has_file_operations().list_summaries()
+    ))
+    loop.close()
+
+
+@pytest.mark.benchmark
+def test_bench_filter_count(benchmark, bench_db_5k: Path) -> None:
+    """ConversationFilter.count() — single COUNT(*) query, no data fetch."""
+    loop = asyncio.new_event_loop()
+    backend = SQLiteBackend(db_path=bench_db_5k)
+    loop.run_until_complete(backend._ensure_schema_once())
+    repo = ConversationRepository(backend=backend)
+
+    benchmark(lambda: loop.run_until_complete(
+        ConversationFilter(repo).provider("chatgpt").count()
     ))
     loop.close()
 
