@@ -235,13 +235,14 @@ def test_claude_code_extracts_timestamps(session: list[dict]):
 @given(claude_code_session_strategy(min_messages=1, max_messages=5))
 @settings(max_examples=30)
 def test_claude_code_extracts_metadata(session: list[dict]):
-    """Claude Code parser stores raw record in provider_meta for read-time extraction."""
+    """Claude Code parser populates content_blocks instead of raw provider_meta."""
     result = claude.parse_code(session, "fallback")
 
     for parsed_msg in result.messages:
-        assert parsed_msg.provider_meta is not None
-        # raw IS stored so semantics can be extracted at read time
-        assert "raw" in parsed_msg.provider_meta
+        # provider_meta is no longer set on ParsedMessage (schema v3 cleanup)
+        assert parsed_msg.provider_meta is None
+        # Content blocks are parsed into typed ParsedContentBlock objects
+        assert isinstance(parsed_msg.content_blocks, list)
 
 
 # =============================================================================
