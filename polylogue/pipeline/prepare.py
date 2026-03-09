@@ -310,6 +310,12 @@ async def prepare_records(
         if msg.parent_message_provider_id:
             parent_message_id = message_ids.get(str(msg.parent_message_provider_id))
 
+        # Precompute analytics fields from parsed content blocks
+        _block_types = {blk.type for blk in msg.content_blocks}
+        _msg_word_count = len(msg.text.split()) if msg.text and msg.text.strip() else 0
+        _has_tool_use = 1 if (_block_types & {"tool_use", "tool_result"}) or msg.role == "tool" else 0
+        _has_thinking = 1 if "thinking" in _block_types else 0
+
         messages.append(
             MessageRecord(
                 message_id=mid,
@@ -321,6 +327,10 @@ async def prepare_records(
                 content_hash=message_hash,
                 parent_message_id=parent_message_id,
                 branch_index=msg.branch_index,
+                provider_name=convo.provider_name,
+                word_count=_msg_word_count,
+                has_tool_use=_has_tool_use,
+                has_thinking=_has_thinking,
             )
         )
 

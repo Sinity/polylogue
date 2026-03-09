@@ -218,6 +218,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
     ) -> builtins.list[ConversationSummary]:
         """List conversation summaries without loading messages.
 
@@ -230,6 +235,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             since: Filter to conversations updated on/after this ISO date
             until: Filter to conversations updated on/before this ISO date
             title_contains: Filter by title substring (case-insensitive)
+            has_tool_use: Only conversations with tool_use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            max_messages: Maximum message count
+            min_words: Minimum total word count
 
         Returns:
             List of ConversationSummary objects
@@ -243,6 +253,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             since=since,
             until=until,
             title_contains=title_contains,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
         )
         return [ConversationSummary.from_record(rec) for rec in conv_records]
 
@@ -255,6 +270,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
     ) -> builtins.list[Conversation]:
         """List conversations with eager-loaded messages and attachments.
 
@@ -266,6 +286,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             since: Filter to conversations updated on/after this ISO date
             until: Filter to conversations updated on/before this ISO date
             title_contains: Filter by title substring (case-insensitive)
+            has_tool_use: Only conversations with tool_use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            max_messages: Maximum message count
+            min_words: Minimum total word count
 
         Returns:
             List of Conversation objects with all data eager-loaded
@@ -278,6 +303,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             since=since,
             until=until,
             title_contains=title_contains,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
         )
 
         # Fetch messages and attachments for all conversations in parallel
@@ -293,6 +323,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
     ) -> int:
         """Count conversations matching filters.
 
@@ -302,6 +337,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             since: Filter to conversations updated on/after this ISO date
             until: Filter to conversations updated on/before this ISO date
             title_contains: Filter by title substring
+            has_tool_use: Only conversations with tool_use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            max_messages: Maximum message count
+            min_words: Minimum total word count
 
         Returns:
             Count of matching conversations
@@ -312,6 +352,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             since=since,
             until=until,
             title_contains=title_contains,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
         )
 
     async def aggregate_message_stats(
@@ -757,8 +802,23 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
                 counts["conversations"] = 1
 
                 if messages:
+                    # Ensure provider_name is always set on messages (may be empty
+                    # when messages are built outside the prepare pipeline).
+                    pname = conversation.provider_name
+                    if pname:
+                        messages = [
+                            m.model_copy(update={"provider_name": pname})
+                            if not m.provider_name
+                            else m
+                            for m in messages
+                        ]
                     await backend.save_messages(messages)
                     counts["messages"] = len(messages)
+                    await backend.upsert_conversation_stats(
+                        conversation.conversation_id,
+                        pname,
+                        messages,
+                    )
 
                 # Collect content blocks from messages if not supplied explicitly
                 all_blocks: builtins.list[ContentBlockRecord] = list(content_blocks or [])

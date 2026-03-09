@@ -160,15 +160,23 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             content_hash,
             version,
             parent_message_id,
-            branch_index
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            branch_index,
+            provider_name,
+            word_count,
+            has_tool_use,
+            has_thinking
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(message_id) DO UPDATE SET
             role = excluded.role,
             text = excluded.text,
             sort_key = excluded.sort_key,
             content_hash = excluded.content_hash,
             parent_message_id = excluded.parent_message_id,
-            branch_index = excluded.branch_index
+            branch_index = excluded.branch_index,
+            provider_name = excluded.provider_name,
+            word_count = excluded.word_count,
+            has_tool_use = excluded.has_tool_use,
+            has_thinking = excluded.has_thinking
         WHERE
             content_hash != excluded.content_hash
             OR IFNULL(role, '') != IFNULL(excluded.role, '')
@@ -187,6 +195,10 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             record.version,
             record.parent_message_id,
             record.branch_index,
+            record.provider_name,
+            record.word_count,
+            record.has_tool_use,
+            record.has_thinking,
         ),
     )
     updated = bool(res.rowcount > 0)
@@ -492,6 +504,12 @@ class ConversationBuilder:
         existing_blocks = kwargs.pop("content_blocks", [])
         all_blocks = extra_blocks + list(existing_blocks)
 
+        # Compute analytics fields from content_blocks (same logic as prepare.py)
+        _block_types = {blk.type for blk in all_blocks}
+        _word_count = len(text.split()) if text and text.strip() else 0
+        _has_tool_use = 1 if (_block_types & {"tool_use", "tool_result"}) or role == "tool" else 0
+        _has_thinking = 1 if "thinking" in _block_types else 0
+
         msg = MessageRecord(
             message_id=msg_id,
             conversation_id=self.conv.conversation_id,
@@ -500,6 +518,9 @@ class ConversationBuilder:
             sort_key=_timestamp_sort_key(ts) if ts is not None else None,
             content_hash=uuid4().hex[:16],
             content_blocks=all_blocks,
+            word_count=kwargs.pop("word_count", _word_count),
+            has_tool_use=kwargs.pop("has_tool_use", _has_tool_use),
+            has_thinking=kwargs.pop("has_thinking", _has_thinking),
             **kwargs,
         )
         self.messages.append(msg)
@@ -642,6 +663,12 @@ def make_message(
     existing_blocks = kwargs.pop("content_blocks", [])
     all_blocks = extra_blocks + list(existing_blocks)
 
+    # Compute analytics fields from content_blocks (same logic as prepare.py)
+    _block_types = {blk.type for blk in all_blocks}
+    _word_count = len(text.split()) if text and text.strip() else 0
+    _has_tool_use = 1 if (_block_types & {"tool_use", "tool_result"}) or role == "tool" else 0
+    _has_thinking = 1 if "thinking" in _block_types else 0
+
     return MessageRecord(
         message_id=message_id,
         conversation_id=conversation_id,
@@ -650,6 +677,9 @@ def make_message(
         sort_key=kwargs.pop("sort_key", _timestamp_sort_key(ts)),
         content_hash=kwargs.pop("content_hash", uuid4().hex[:16]),
         content_blocks=all_blocks,
+        word_count=kwargs.pop("word_count", _word_count),
+        has_tool_use=kwargs.pop("has_tool_use", _has_tool_use),
+        has_thinking=kwargs.pop("has_thinking", _has_thinking),
         **kwargs,
     )
 
