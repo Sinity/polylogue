@@ -19,44 +19,29 @@ import click
 
 from polylogue.lib.formatting import format_conversation
 from polylogue.lib.log import get_logger
+from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
+    from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary, Message
     from polylogue.storage.repository import ConversationRepository
 
 
-def _describe_filters(params: dict[str, Any]) -> list[str]:
-    """Build a human-readable list of active filters from params."""
-    parts: list[str] = []
-    if params.get("query"):
-        parts.append(f"search: {' '.join(params['query'])}")
-    if params.get("contains"):
-        parts.append(f"contains: {', '.join(params['contains'])}")
-    if params.get("provider"):
-        parts.append(f"provider: {params['provider']}")
-    if params.get("exclude_provider"):
-        parts.append(f"exclude provider: {params['exclude_provider']}")
-    if params.get("tag"):
-        parts.append(f"tag: {params['tag']}")
-    if params.get("exclude_tag"):
-        parts.append(f"exclude tag: {params['exclude_tag']}")
-    if params.get("title"):
-        parts.append(f"title: {params['title']}")
-    if params.get("has_type"):
-        parts.append(f"has: {', '.join(params['has_type'])}")
-    if params.get("since"):
-        parts.append(f"since: {params['since']}")
-    if params.get("until"):
-        parts.append(f"until: {params['until']}")
-    if params.get("conv_id"):
-        parts.append(f"id: {params['conv_id']}")
-    return parts
+def _coerce_query_spec(params: dict[str, Any] | ConversationQuerySpec) -> ConversationQuerySpec:
+    if isinstance(params, ConversationQuerySpec):
+        return params
+    return ConversationQuerySpec.from_params(params)
 
 
-def _no_results(env: AppEnv, params: dict[str, Any], *, exit_code: int = 2) -> None:
+def _describe_filters(params: dict[str, Any] | ConversationQuerySpec) -> list[str]:
+    """Build a human-readable list of active filters from params or spec."""
+    return _coerce_query_spec(params).describe()
+
+
+def _no_results(env: AppEnv, params: dict[str, Any] | ConversationQuerySpec, *, exit_code: int = 2) -> None:
     """Print a helpful no-results message and exit."""
     filters = _describe_filters(params)
     if filters:
@@ -90,7 +75,6 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     """
     from polylogue.cli.helpers import fail, load_effective_config
     from polylogue.config import ConfigError
-    from polylogue.services import get_repository
     from polylogue.storage.search_providers import create_vector_provider
 
     # Load config
@@ -99,7 +83,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     except ConfigError as exc:
         fail("query", str(exc))
 
-    repo = get_repository()
+    repo = env.repository
 
     # Get vector provider (may be None if not configured)
     vector_provider = None
@@ -110,93 +94,20 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     except Exception as exc:
         logger.warning("Vector search setup failed: %s", exc)
 
-    # Create filter chain
-    from polylogue.lib.filters import ConversationFilter
-
-    filter_chain = ConversationFilter(repo, vector_provider=vector_provider)
-
-    # Apply --id (exact conversation ID or prefix match)
-    if params.get("conv_id"):
-        filter_chain = filter_chain.id(params["conv_id"])
-
-    # Apply query terms (positional args)
-    query_terms = params.get("query", ())
-    for term in query_terms:
-        filter_chain = filter_chain.contains(term)
-
-    # Apply --contains
-    for term in params.get("contains", ()):
-        filter_chain = filter_chain.contains(term)
-
-    # Apply --exclude-text
-    for term in params.get("exclude_text", ()):
-        filter_chain = filter_chain.exclude_text(term)
-
-    # Apply --provider (comma-separated)
-    if params.get("provider"):
-        providers = [p.strip() for p in params["provider"].split(",")]
-        filter_chain = filter_chain.provider(*providers)
-
-    # Apply --exclude-provider (comma-separated)
-    if params.get("exclude_provider"):
-        excluded = [p.strip() for p in params["exclude_provider"].split(",")]
-        filter_chain = filter_chain.exclude_provider(*excluded)
-
-    # Apply --tag (comma-separated)
-    if params.get("tag"):
-        tags = [t.strip() for t in params["tag"].split(",")]
-        filter_chain = filter_chain.tag(*tags)
-
-    # Apply --exclude-tag (comma-separated)
-    if params.get("exclude_tag"):
-        excluded = [t.strip() for t in params["exclude_tag"].split(",")]
-        filter_chain = filter_chain.exclude_tag(*excluded)
-
-    # Apply --title
-    if params.get("title"):
-        filter_chain = filter_chain.title(params["title"])
-
-    # Apply --has
-    for content_type in params.get("has_type", ()):
-        filter_chain = filter_chain.has(content_type)
-
-    # Apply --since
-    if params.get("since"):
-        try:
-            filter_chain = filter_chain.since(params["since"])
-        except ValueError as exc:
-            click.echo(f"Error: Cannot parse date: '{params['since']}'", err=True)
-            click.echo("Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)", err=True)
-            raise SystemExit(1) from exc
-
-    # Apply --until
-    if params.get("until"):
-        try:
-            filter_chain = filter_chain.until(params["until"])
-        except ValueError as exc:
-            click.echo(f"Error: Cannot parse date: '{params['until']}'", err=True)
-            click.echo("Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)", err=True)
-            raise SystemExit(1) from exc
-
-    # Apply --latest (= --sort date --limit 1)
-    if params.get("latest"):
-        filter_chain = filter_chain.sort("date").limit(1)
-
-    # Apply --sort
-    if params.get("sort"):
-        filter_chain = filter_chain.sort(params["sort"])
-
-    # Apply --reverse
-    if params.get("reverse"):
-        filter_chain = filter_chain.reverse()
-
-    # Apply --limit
-    if params.get("limit"):
-        filter_chain = filter_chain.limit(params["limit"])
-
-    # Apply --sample
-    if params.get("sample"):
-        filter_chain = filter_chain.sample(params["sample"])
+    query_spec = ConversationQuerySpec.from_params(params)
+    query_terms = query_spec.query_terms
+    try:
+        filter_chain = query_spec.build_filter(
+            repo,
+            vector_provider=vector_provider,
+        )
+    except QuerySpecError as exc:
+        click.echo(f"Error: Cannot parse date: '{exc.value}'", err=True)
+        click.echo(
+            "Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)",
+            err=True,
+        )
+        raise SystemExit(1) from exc
 
     # Handle --count (uses SQL COUNT(*) fast path when possible)
     if params.get("count_only"):
@@ -228,23 +139,23 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if params.get("stream"):
         # Use the filter chain to resolve the conversation ID, so that filters
         # (--provider, --since, --tag, etc.) are respected even in streaming mode.
-        if params.get("conv_id"):
-            resolved = await repo.resolve_id(params["conv_id"])
+        if query_spec.conversation_id:
+            resolved = await repo.resolve_id(query_spec.conversation_id)
             if not resolved:
-                click.echo(f"No conversation found matching: {params['conv_id']}", err=True)
+                click.echo(f"No conversation found matching: {query_spec.conversation_id}", err=True)
                 raise SystemExit(2)
             full_id = str(resolved)
-        elif params.get("latest"):
+        elif query_spec.latest:
             # filter_chain already has .sort("date").limit(1) from line 172-173
             summaries = await filter_chain.list_summaries()
             if not summaries:
-                _no_results(env, params)
+                _no_results(env, query_spec)
             full_id = str(summaries[0].id)
-        elif _describe_filters(params):
+        elif query_spec.has_filters():
             # Filters active but no --latest: pick most recent match
             summaries = await filter_chain.sort("date").limit(1).list_summaries()
             if not summaries:
-                _no_results(env, params)
+                _no_results(env, query_spec)
             full_id = str(summaries[0].id)
         else:
             # Try to resolve first query term as ID
@@ -286,18 +197,26 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         await _output_stats_sql(env, filter_chain, repo)
         return
 
+    # Fast path for --stats-by: use lightweight summaries + SQL message counts
+    # instead of loading all conversations with full message content.
+    if params.get("stats_by") and filter_chain.can_use_summaries():
+        summaries = await filter_chain.list_summaries()
+        msg_counts = await repo.get_message_counts_batch([str(s.id) for s in summaries])
+        _output_stats_by_summaries(env, summaries, msg_counts, params["stats_by"])
+        return
+
     results = await filter_chain.list()
 
     # Handle modifiers (write operations)
     if params.get("set_meta") or params.get("add_tag"):
-        await _apply_modifiers(env, results, params)
+        await _apply_modifiers(env, results, params, repo)
         return
 
     if params.get("delete_matched"):
-        if not _describe_filters(params):
+        if not query_spec.has_filters():
             click.echo("Error: --delete requires at least one filter to prevent accidental deletion of the entire archive.", err=True)
             raise SystemExit(1)
-        await _delete_conversations(env, results, params)
+        await _delete_conversations(env, results, params, repo)
         return
 
     # Apply transforms
@@ -330,10 +249,10 @@ async def _apply_modifiers(
     env: AppEnv,
     results: list[Conversation],
     params: dict[str, Any],
+    repo: ConversationRepository | None = None,
 ) -> None:
     """Apply metadata modifiers to matched conversations."""
-    from polylogue.services import get_repository
-
+    repo = repo or env.repository
     if not results:
         env.ui.console.print("No conversations matched.")
         return
@@ -370,9 +289,6 @@ async def _apply_modifiers(
             env.ui.console.print("Aborted.")
             return
 
-    # Load repository
-    repo = get_repository()
-
     # Track counts for reporting
     tags_added = 0
     meta_set = 0
@@ -405,12 +321,12 @@ async def _delete_conversations(
     env: AppEnv,
     results: list[Conversation],
     params: dict[str, Any],
+    repo: ConversationRepository | None = None,
 ) -> None:
     """Delete matched conversations."""
     from collections import Counter
 
-    from polylogue.services import get_repository
-
+    repo = repo or env.repository
     if not results:
         env.ui.console.print("No conversations matched.")
         return
@@ -467,9 +383,6 @@ async def _delete_conversations(
         if not env.ui.confirm("Proceed?", default=False):
             env.ui.console.print("Aborted.")
             return
-
-    # Load repository
-    repo = get_repository()
 
     deleted_count = 0
     for conv in results:
@@ -576,49 +489,72 @@ async def _output_stats_sql(
         out(f"Date range: {date_range}")
 
 
-def _output_stats(env: AppEnv, results: list[Conversation]) -> None:
-    """Output statistics for matched conversations (legacy, loads all messages)."""
-    if not results:
+def _output_stats_by_summaries(
+    env: AppEnv,
+    summaries: list,
+    msg_counts: dict[str, int],
+    dimension: str,
+) -> None:
+    """Fast stats-by using lightweight summaries and precomputed message counts.
+
+    Avoids loading full conversation+message data. Word counts are omitted
+    (would require reading all message text).
+    """
+    from collections import defaultdict
+
+    from rich.table import Table
+
+    from polylogue.lib.theme import provider_color
+
+    if not summaries:
         env.ui.console.print("No conversations matched.")
         return
 
-    total_messages = 0
-    total_words = 0
-    user_messages = 0
-    assistant_messages = 0
-    thinking_traces = 0
-    tool_calls = 0
-    attachments = 0
+    groups: dict[str, list] = defaultdict(list)
+    for s in summaries:
+        if dimension == "provider":
+            key = str(s.provider) if s.provider else "unknown"
+        elif dimension == "month":
+            dt = s.updated_at or s.created_at
+            key = dt.strftime("%Y-%m") if dt else "unknown"
+        elif dimension == "year":
+            dt = s.updated_at or s.created_at
+            key = dt.strftime("%Y") if dt else "unknown"
+        elif dimension == "day":
+            dt = s.updated_at or s.created_at
+            key = dt.strftime("%Y-%m-%d") if dt else "unknown"
+        else:
+            key = "all"
+        groups[key].append(s)
 
-    for c in results:
-        for m in c.messages:
-            total_messages += 1
-            total_words += m.word_count
-            attachments += len(m.attachments)
-            if m.role == "user":
-                user_messages += 1
-            elif m.role == "assistant":
-                assistant_messages += 1
-            if m.is_thinking:
-                thinking_traces += 1
-            if m.is_tool_use:
-                tool_calls += 1
+    if dimension in {"month", "year", "day"}:
+        sorted_keys = sorted(groups.keys(), reverse=True)
+    else:
+        sorted_keys = sorted(groups.keys())
 
-    dates = [c.updated_at for c in results if c.updated_at]
-    date_range = ""
-    if dates:
-        min_date = min(dates).strftime("%Y-%m-%d")
-        max_date = max(dates).strftime("%Y-%m-%d")
-        date_range = f"{min_date} to {max_date}"
+    env.ui.console.print(f"\nMatched: {len(summaries)} conversations (by {dimension})\n")
 
-    env.ui.console.print(f"\nMatched: {len(results)} conversations\n")
-    env.ui.console.print(f"Messages: {total_messages} total ({user_messages} user, {assistant_messages} assistant)")
-    env.ui.console.print(f"Words: {total_words:,}")
-    env.ui.console.print(f"Thinking: {thinking_traces} traces")
-    env.ui.console.print(f"Tool use: {tool_calls} calls")
-    env.ui.console.print(f"Attachments: {attachments}")
-    if date_range:
-        env.ui.console.print(f"Date range: {date_range}")
+    table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+    table.add_column("Group", style="bold", min_width=12)
+    table.add_column("Convs", justify="right")
+    table.add_column("Messages", justify="right")
+
+    total_convs = 0
+    total_msgs = 0
+
+    for key in sorted_keys:
+        group_summaries = groups[key]
+        n_convs = len(group_summaries)
+        n_msgs = sum(msg_counts.get(str(s.id), 0) for s in group_summaries)
+        label = f"[{provider_color(key).hex}]{key}[/]" if dimension == "provider" else key
+        table.add_row(label, f"{n_convs:,}", f"{n_msgs:,}")
+        total_convs += n_convs
+        total_msgs += n_msgs
+
+    table.add_section()
+    table.add_row("[bold]TOTAL[/]", f"[bold]{total_convs:,}[/]", f"[bold]{total_msgs:,}[/]")
+
+    env.ui.console.print(table)
 
 
 def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -> None:
@@ -764,7 +700,7 @@ async def _output_summary_list(
     msg_counts: dict[str, int] = {}
     if repo:
         ids = [str(s.id) for s in summaries]
-        msg_counts = await repo.backend.get_message_counts_batch(ids)
+        msg_counts = await repo.get_message_counts_batch(ids)
 
     fields = params.get("fields")
     selected: set[str] | None = None
@@ -991,7 +927,7 @@ async def stream_conversation(
         Number of messages streamed
     """
     # Get conversation metadata for header
-    conv_record = await repo.backend.get_conversation(conversation_id)
+    conv_record = await repo.get_conversation(conversation_id)
     if not conv_record:
         click.echo(f"Conversation not found: {conversation_id}", err=True)
         raise SystemExit(1)

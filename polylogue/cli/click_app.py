@@ -141,6 +141,7 @@ def _handle_query_mode(ctx: click.Context) -> None:
             "list_mode",
             "limit",
             "stats_only",
+            "stats_by",
             "count_only",
             "stream",
             "dialogue_only",

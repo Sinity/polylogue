@@ -429,8 +429,10 @@ class ConversationFilter:
             # Sampling needs a full pool to draw from
             return max(self._sample_count * 3, 200)
 
-        # Simple case: limit is the only constraint, with small safety margin
-        return max(self._limit_count * 2, 50)
+        # Simple case: no post-filters and no sampling.
+        # SQL ORDER BY sort_key DESC is consistent with the Python date sort, so
+        # a factor-of-2 safety margin is enough — no arbitrary minimum needed.
+        return max(self._limit_count * 2, 2)
 
     async def _fetch_generic(
         self,
