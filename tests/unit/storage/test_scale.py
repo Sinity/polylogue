@@ -8,15 +8,24 @@ These tests verify correct behavior with 200+ conversations to catch:
 The original production failure was a connection storm with 3000+
 concurrent SQLite connections. These tests ensure batch query
 patterns work correctly at moderate scale.
+
+Performance budget tests (TestPerformanceBudget) assert that key
+operations finish within fixed timing budgets. They use @pytest.mark.slow
+and are excluded from the normal fast unit run.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
+
+import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
-
+from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.index import rebuild_index
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.store import ConversationRecord, MessageRecord
 
 # Number of conversations for scale tests.
 # 200 is enough to expose N+1 patterns while keeping tests fast (<2s).
@@ -256,3 +265,66 @@ class TestBatchQueryScale:
 
         records = await backend.get_conversations_batch(ids)
         assert len(records) == SCALE_COUNT
+
+
+async def _seed_budget_db(tmp_path, *, conv_count: int = 500, msgs_per_conv: int = 10):
+    """Seed a DB for performance budget tests. Returns (backend, ids)."""
+    db_path = tmp_path / "budget.db"
+    backend = SQLiteBackend(db_path=db_path)
+    ids = await _seed_conversations(backend, conv_count, msgs_per_conv=msgs_per_conv)
+    return backend, ids
+
+
+@pytest.mark.slow
+class TestPerformanceBudget:
+    """Performance budget tests — each asserts a timing SLA.
+
+    These catch query regressions that wouldn't surface as correctness failures.
+    Budgets are conservative (10–20× typical times on a modern workstation).
+    """
+
+    async def test_list_performance_budget(self, tmp_path):
+        """list_conversations(limit=50) on 5k-message DB must finish in <500ms."""
+        backend, _ = await _seed_budget_db(tmp_path)
+        t0 = time.monotonic()
+        results = await backend.list_conversations(limit=50)
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        assert len(results) == 50
+        assert elapsed_ms < 500, f"list_conversations took {elapsed_ms:.0f}ms (budget: 500ms)"
+
+    async def test_get_many_performance_budget(self, tmp_path):
+        """get_many(100 ids) on 5k DB must finish in <2000ms."""
+        backend, ids = await _seed_budget_db(tmp_path)
+        repo = ConversationRepository(backend=backend)
+        sample_ids = ids[:100]
+        t0 = time.monotonic()
+        results = await repo.get_many(sample_ids)
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        assert len(results) == 100
+        assert elapsed_ms < 2000, f"get_many(100) took {elapsed_ms:.0f}ms (budget: 2000ms)"
+
+    async def test_fts_search_budget(self, tmp_path):
+        """FTS5 search for common term on 5k-message DB must finish in <500ms."""
+        backend, _ = await _seed_budget_db(tmp_path)
+        # Rebuild index so FTS has content
+        with open_connection(backend.db_path) as conn:
+            rebuild_index(conn)
+        repo = ConversationRepository(backend=backend)
+        t0 = time.monotonic()
+        results = await repo.search_summaries("Message", limit=20)
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        # FTS on seeded data — results may be empty if text doesn't tokenize well, just check timing
+        assert elapsed_ms < 500, f"FTS search took {elapsed_ms:.0f}ms (budget: 500ms)"
+        _ = results  # exercised
+
+    async def test_has_tool_use_filter_budget(self, tmp_path):
+        """has_tool_use=True filter on 5k DB must finish in <500ms.
+
+        Validates that the stats LEFT JOIN covering index is effective.
+        """
+        backend, _ = await _seed_budget_db(tmp_path)
+        t0 = time.monotonic()
+        results = await backend.list_conversations(has_tool_use=True, limit=50)
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        assert elapsed_ms < 500, f"has_tool_use filter took {elapsed_ms:.0f}ms (budget: 500ms)"
+        _ = results  # exercised
