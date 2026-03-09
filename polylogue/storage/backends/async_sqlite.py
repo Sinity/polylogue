@@ -45,6 +45,52 @@ from polylogue.types import ConversationId
 logger = get_logger(__name__)
 
 
+def _dict_contains_type(obj: object, type_value: str) -> bool:
+    """Recursively search for any dict with 'type' == type_value.
+
+    This matches the LIKE '%"type":"<type_value>"%' SQL scan: format-agnostic,
+    works regardless of whether content blocks live under 'content', 'content_blocks',
+    or any other key.
+    """
+    if isinstance(obj, dict):
+        if obj.get("type") == type_value:
+            return True
+        return any(_dict_contains_type(v, type_value) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_dict_contains_type(item, type_value) for item in obj)
+    return False
+
+
+def _compute_has_tool_use(role: str | None, provider_meta: dict[str, object] | None) -> int:
+    """Return 1 if this message is a tool call or tool result, else 0."""
+    if role == "tool":
+        return 1
+    if not provider_meta:
+        return 0
+    return 1 if _dict_contains_type(provider_meta, "tool_use") else 0
+
+
+def _compute_has_thinking(provider_meta: dict[str, object] | None) -> int:
+    """Return 1 if this message contains an extended thinking block, else 0."""
+    if not provider_meta:
+        return 0
+    return 1 if _dict_contains_type(provider_meta, "thinking") else 0
+
+
+def _compute_word_count(text: str | None) -> int:
+    """Approximate word count as space-count + 1, matching the SQL formula in migrations.
+
+    Uses strip(' ') not strip() to match SQLite's TRIM() which only removes ASCII
+    space (0x20), not tabs or newlines.
+    """
+    if not text:
+        return 0
+    stripped = text.strip(" ")  # SQLite TRIM() only removes ASCII space 0x20
+    if not stripped:
+        return 0
+    return stripped.count(" ") + 1
+
+
 def default_db_path() -> Path:
     """Return the default database path (same as sync backend).
 
@@ -818,8 +864,11 @@ class SQLiteBackend:
                     provider_meta,
                     version,
                     parent_message_id,
-                    branch_index
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    branch_index,
+                    has_tool_use,
+                    has_thinking,
+                    word_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     role = excluded.role,
                     text = excluded.text,
@@ -828,7 +877,10 @@ class SQLiteBackend:
                     content_hash = excluded.content_hash,
                     provider_meta = excluded.provider_meta,
                     parent_message_id = excluded.parent_message_id,
-                    branch_index = excluded.branch_index
+                    branch_index = excluded.branch_index,
+                    has_tool_use = excluded.has_tool_use,
+                    has_thinking = excluded.has_thinking,
+                    word_count = excluded.word_count
                 WHERE
                     content_hash != excluded.content_hash
                     OR IFNULL(role, '') != IFNULL(excluded.role, '')
@@ -852,6 +904,9 @@ class SQLiteBackend:
                     r.version,
                     r.parent_message_id,
                     r.branch_index,
+                    _compute_has_tool_use(r.role, r.provider_meta),
+                    _compute_has_thinking(r.provider_meta),
+                    _compute_word_count(r.text),
                 )
                 for r in records
             ]
@@ -1635,24 +1690,12 @@ class SQLiteBackend:
                     COUNT(m.message_id) AS message_count,
                     SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) AS user_message_count,
                     SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) AS assistant_message_count,
-                    SUM(CASE WHEN m.role = 'user' AND m.text IS NOT NULL AND TRIM(m.text) != ''
-                        THEN LENGTH(TRIM(m.text)) - LENGTH(REPLACE(TRIM(m.text), ' ', '')) + 1
-                        ELSE 0 END) AS user_word_sum,
-                    SUM(CASE WHEN m.role = 'assistant' AND m.text IS NOT NULL AND TRIM(m.text) != ''
-                        THEN LENGTH(TRIM(m.text)) - LENGTH(REPLACE(TRIM(m.text), ' ', '')) + 1
-                        ELSE 0 END) AS assistant_word_sum,
-                    SUM(CASE WHEN m.provider_meta LIKE '%"type":"tool_use"%'
-                             OR m.role = 'tool'
-                        THEN 1 ELSE 0 END) AS tool_use_count,
-                    SUM(CASE WHEN m.provider_meta LIKE '%"type":"thinking"%'
-                        THEN 1 ELSE 0 END) AS thinking_count,
-                    COUNT(DISTINCT CASE
-                        WHEN m.provider_meta LIKE '%"type":"tool_use"%'
-                             OR m.role = 'tool'
-                        THEN c.conversation_id END) AS conversations_with_tools,
-                    COUNT(DISTINCT CASE
-                        WHEN m.provider_meta LIKE '%"type":"thinking"%'
-                        THEN c.conversation_id END) AS conversations_with_thinking
+                    SUM(CASE WHEN m.role = 'user' THEN COALESCE(m.word_count, 0) ELSE 0 END) AS user_word_sum,
+                    SUM(CASE WHEN m.role = 'assistant' THEN COALESCE(m.word_count, 0) ELSE 0 END) AS assistant_word_sum,
+                    SUM(COALESCE(m.has_tool_use, 0)) AS tool_use_count,
+                    SUM(COALESCE(m.has_thinking, 0)) AS thinking_count,
+                    COUNT(DISTINCT CASE WHEN m.has_tool_use = 1 THEN c.conversation_id END) AS conversations_with_tools,
+                    COUNT(DISTINCT CASE WHEN m.has_thinking = 1 THEN c.conversation_id END) AS conversations_with_thinking
                 FROM conversations c
                 LEFT JOIN messages m ON c.conversation_id = m.conversation_id
                 GROUP BY c.provider_name

@@ -8,7 +8,7 @@ from polylogue.lib.log import get_logger
 from polylogue.storage.store import _make_ref_id
 
 logger = get_logger(__name__)
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 
 _VEC0_DDL = """
@@ -109,6 +109,9 @@ SCHEMA_DDL = """
             version INTEGER NOT NULL,
             parent_message_id TEXT,
             branch_index INTEGER DEFAULT 0,
+            has_tool_use INTEGER NOT NULL DEFAULT 0,
+            has_thinking INTEGER NOT NULL DEFAULT 0,
+            word_count INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (conversation_id)
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
@@ -121,6 +124,12 @@ SCHEMA_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_messages_parent
         ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_messages_has_tool
+        ON messages(has_tool_use) WHERE has_tool_use = 1;
+
+        CREATE INDEX IF NOT EXISTS idx_messages_has_thinking
+        ON messages(has_thinking) WHERE has_thinking = 1;
 
         CREATE TABLE IF NOT EXISTS attachments (
             attachment_id TEXT PRIMARY KEY,
@@ -260,6 +269,12 @@ def _rename_table_preserving_fk_targets(
         conn.execute(f"ALTER TABLE {source_name} RENAME TO {target_name}")
     finally:
         conn.execute(f"PRAGMA legacy_alter_table = {previous_value}")
+
+
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    """Return whether a column exists in a table (PRAGMA table_info)."""
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row[1] == column_name for row in rows)
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -1029,6 +1044,62 @@ def _migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
+    """Migrate from v18 to v19: add precomputed has_tool_use, has_thinking, word_count columns.
+
+    These eliminate expensive LIKE scans on provider_meta at query time:
+    - has_tool_use: 1 when role='tool' or any content block has type='tool_use'
+    - has_thinking: 1 when any content block has type='thinking'
+    - word_count: space-count approximation of words in text
+
+    Backfill uses the same LIKE patterns the queries used, making this a one-time
+    migration cost rather than a per-query scan across 1.7M rows.
+    """
+    if not _column_exists(conn, "messages", "has_tool_use"):
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN has_tool_use INTEGER NOT NULL DEFAULT 0"
+        )
+    if not _column_exists(conn, "messages", "has_thinking"):
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN has_thinking INTEGER NOT NULL DEFAULT 0"
+        )
+    if not _column_exists(conn, "messages", "word_count"):
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN word_count INTEGER NOT NULL DEFAULT 0"
+        )
+
+    # Backfill has_tool_use: role='tool' (tool results) or content has tool_use block
+    conn.execute("""
+        UPDATE messages SET has_tool_use = 1
+        WHERE provider_meta LIKE '%"type":"tool_use"%'
+           OR role = 'tool'
+    """)
+
+    # Backfill has_thinking: content has thinking block
+    conn.execute("""
+        UPDATE messages SET has_thinking = 1
+        WHERE provider_meta LIKE '%"type":"thinking"%'
+    """)
+
+    # Backfill word_count: space-count + 1, same formula used in get_provider_metrics_rows
+    conn.execute("""
+        UPDATE messages SET word_count = CASE
+            WHEN text IS NOT NULL AND TRIM(text) != ''
+            THEN LENGTH(TRIM(text)) - LENGTH(REPLACE(TRIM(text), ' ', '')) + 1
+            ELSE 0
+        END
+    """)
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_has_tool "
+        "ON messages(has_tool_use) WHERE has_tool_use = 1"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_has_thinking "
+        "ON messages(has_thinking) WHERE has_thinking = 1"
+    )
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
@@ -1048,6 +1119,7 @@ _MIGRATIONS = {
     15: _migrate_v15_to_v16,
     16: _migrate_v16_to_v17,
     17: _migrate_v17_to_v18,
+    18: _migrate_v18_to_v19,
 }
 
 
