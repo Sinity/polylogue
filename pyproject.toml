@@ -54,6 +54,8 @@ dev = [
   "pytest-cov>=4",
   "pytest-asyncio>=0.23.0",  # Async test support
   "pytest-xdist>=3.5.0",  # Parallel test execution
+  "pytest-randomly>=3.0",  # Detect order-dependent tests; adds --randomly-seed
+  "pytest-benchmark>=5.0",  # Microbenchmark suite (run with --benchmark-enable -p no:xdist)
   "coverage[toml]>=7.6",
   "hypothesis>=6.100",
   "hypothesis-jsonschema>=0.23.0",  # Generate test data from JSON schemas
@@ -101,12 +103,13 @@ polylogue = "polylogue.cli:main"
 packages = ["polylogue"]
 
 [tool.pytest.ini_options]
-addopts = "-ra -n auto"
+addopts = "-ra -n auto --benchmark-disable"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests (pipeline, CLI end-to-end)",
+    "benchmark: marks benchmark tests (run with --benchmark-enable -p no:xdist -p no:randomly)",
 ]
 filterwarnings = [
     "ignore::ResourceWarning",           # Unclosed sqlite3 connections in thread-local backend
