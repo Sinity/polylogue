@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
-from polylogue.pipeline.enrichment import enrich_message_metadata
+from polylogue.lib.json import dumps as json_dumps
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
+    materialize_attachment_path,
     message_content_hash,
+    move_attachment_to_archive,
 )
 from polylogue.pipeline.ids import (
     conversation_id as make_conversation_id,
@@ -19,13 +21,13 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import (
     message_id as make_message_id,
 )
-from polylogue.sources.source import RecordBundle, SaveResult, save_bundle
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, ExistingConversation, MessageRecord
+from polylogue.sources.source import RecordBundle, save_bundle
+from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, ExistingConversation, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
 if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 
@@ -94,7 +96,7 @@ class PrepareCache:
         for chunk_start in range(0, len(cid_list), 500):
             chunk = cid_list[chunk_start : chunk_start + 500]
             placeholders = ", ".join("?" for _ in chunk)
-            async with backend._get_connection() as conn:
+            async with backend.connection() as conn:
                 cursor = await conn.execute(
                     f"SELECT conversation_id, content_hash FROM conversations "
                     f"WHERE conversation_id IN ({placeholders})",
@@ -113,7 +115,7 @@ class PrepareCache:
         for chunk_start in range(0, len(existing_cids), 500):
             chunk = existing_cids[chunk_start : chunk_start + 500]
             placeholders = ", ".join("?" for _ in chunk)
-            async with backend._get_connection() as conn:
+            async with backend.connection() as conn:
                 cursor = await conn.execute(
                     f"SELECT conversation_id, provider_message_id, message_id "
                     f"FROM messages WHERE conversation_id IN ({placeholders}) "
@@ -129,6 +131,31 @@ class PrepareCache:
                     cache.message_ids[cid][str(row["provider_message_id"])] = MessageId(row["message_id"])
 
         return cache
+
+
+@dataclass
+class AttachmentMaterializationPlan:
+    """Filesystem actions needed to align attachment paths with archive storage."""
+
+    move_before_save: list[tuple[Path, Path]] = field(default_factory=list)
+    delete_after_save: list[Path] = field(default_factory=list)
+
+
+def _plan_attachment_materialization(
+    source_path: str | None,
+    target_path: str | None,
+) -> AttachmentMaterializationPlan:
+    """Decide how an attachment path should be materialized, if at all."""
+    if not source_path or not target_path or source_path == target_path:
+        return AttachmentMaterializationPlan()
+
+    source = Path(source_path)
+    target = Path(target_path)
+    if not source.exists():
+        return AttachmentMaterializationPlan()
+    if target.exists():
+        return AttachmentMaterializationPlan(delete_after_save=[source])
+    return AttachmentMaterializationPlan(move_before_save=[(source, target)])
 
 
 async def prepare_records(
@@ -155,13 +182,14 @@ async def prepare_records(
     Returns:
         Tuple of (conversation_id, result_counts, content_changed)
     """
-    # Create default repository if none provided
+    if repository is None and backend is None:
+        raise ValueError("prepare_records requires a repository or backend")
     if repository is None:
         from polylogue.storage.repository import ConversationRepository
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
-        backend = SQLiteBackend()
         repository = ConversationRepository(backend=backend)
+    if backend is None:
+        backend = repository.backend
 
     # Skip conversations with no messages — these are empty shells from
     # parse filtering (e.g. JSONL files with only metadata records)
@@ -183,7 +211,7 @@ async def prepare_records(
     if cache is not None:
         existing = cache.existing.get(candidate_cid)
     elif backend:
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT conversation_id, content_hash
@@ -214,7 +242,7 @@ async def prepare_records(
             if candidate_parent in cache.known_ids:
                 parent_conversation_id = candidate_parent
         elif backend:
-            async with backend._get_connection() as conn:
+            async with backend.connection() as conn:
                 cursor = await conn.execute(
                     "SELECT 1 FROM conversations WHERE conversation_id = ?",
                     (candidate_parent,),
@@ -243,6 +271,7 @@ async def prepare_records(
     )
 
     messages: list[MessageRecord] = []
+    content_block_records: list[ContentBlockRecord] = []
     message_ids: dict[str, MessageId] = {}
 
     # Retrieve existing message ID mapping — use batch cache if available
@@ -250,7 +279,7 @@ async def prepare_records(
     if cache is not None:
         existing_message_ids = cache.message_ids.get(cid, {})
     elif backend:
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT provider_message_id, message_id
@@ -281,9 +310,6 @@ async def prepare_records(
         if msg.parent_message_provider_id:
             parent_message_id = message_ids.get(str(msg.parent_message_provider_id))
 
-        # Enrich provider_meta with code language detection
-        enriched_meta = enrich_message_metadata(msg.provider_meta)
-
         messages.append(
             MessageRecord(
                 message_id=mid,
@@ -291,22 +317,48 @@ async def prepare_records(
                 provider_message_id=provider_message_id,
                 role=msg.role,
                 text=msg.text,
-                timestamp=msg.timestamp,
                 sort_key=_timestamp_sort_key(msg.timestamp),
                 content_hash=message_hash,
-                provider_meta=enriched_meta,
                 parent_message_id=parent_message_id,
                 branch_index=msg.branch_index,
             )
         )
 
+        # Create ContentBlockRecords from structured content blocks
+        for block_idx, block in enumerate(msg.content_blocks):
+            tool_input_json = None
+            if block.tool_input is not None:
+                tool_input_json = json_dumps(block.tool_input)
+            metadata_json = None
+            if block.metadata is not None:
+                metadata_json = json_dumps(block.metadata)
+            content_block_records.append(
+                ContentBlockRecord(
+                    block_id=ContentBlockRecord.make_id(mid, block_idx),
+                    message_id=MessageId(mid),
+                    conversation_id=cid,
+                    block_index=block_idx,
+                    type=block.type,
+                    text=block.text,
+                    tool_name=block.tool_name,
+                    tool_id=block.tool_id,
+                    tool_input=tool_input_json,
+                    media_type=block.media_type,
+                    metadata=metadata_json,
+                )
+            )
+
     attachments: list[AttachmentRecord] = []
+    materialization_plan = AttachmentMaterializationPlan()
     for att in convo.attachments:
         aid, updated_meta, updated_path = attachment_content_id(convo.provider_name, att, archive_root=archive_root)
         # Merge updated metadata with provider_id if present
         meta: dict[str, object] = dict(updated_meta or {})
         if att.provider_attachment_id:
             meta.setdefault("provider_id", att.provider_attachment_id)
+        attachment_plan = _plan_attachment_materialization(att.path, updated_path)
+        materialization_plan.move_before_save.extend(attachment_plan.move_before_save)
+        materialization_plan.delete_after_save.extend(attachment_plan.delete_after_save)
         message_id_val: MessageId | None = (
             message_ids.get(att.message_provider_id or "") if att.message_provider_id else None
         )
@@ -322,14 +374,31 @@ async def prepare_records(
             )
         )
 
-    result = await save_bundle(
-        RecordBundle(
-            conversation=conversation_record,
-            messages=messages,
-            attachments=attachments,
-        ),
-        repository=repository,
-    )
+    applied_moves: list[tuple[Path, Path]] = []
+    try:
+        for source_path, target_path in materialization_plan.move_before_save:
+            materialize_attachment_path(source_path, target_path)
+            applied_moves.append((source_path, target_path))
+
+        result = await save_bundle(
+            RecordBundle(
+                conversation=conversation_record,
+                messages=messages,
+                attachments=attachments,
+                content_blocks=content_block_records,
+            ),
+            repository=repository,
+        )
+    except Exception:
+        for source_path, target_path in reversed(applied_moves):
+            if target_path.exists():
+                move_attachment_to_archive(target_path, source_path)
+        raise
+
+    for duplicate_source in materialization_plan.delete_after_save:
+        if duplicate_source.exists():
+            duplicate_source.unlink()
+
     return (
         cid,
         {

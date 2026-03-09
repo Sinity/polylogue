@@ -20,7 +20,7 @@ from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.log import get_logger
 from polylogue.types import Provider
 
-from ..storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from ..storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
 from .parsers import chatgpt, claude, codex, drive
 from .parsers.base import (
     ParsedAttachment,
@@ -45,6 +45,7 @@ class RecordBundle(BaseModel):
     conversation: ConversationRecord
     messages: list[MessageRecord]
     attachments: list[AttachmentRecord]
+    content_blocks: list[ContentBlockRecord] = []
 
 
 class SaveResult(BaseModel):
@@ -70,6 +71,7 @@ async def save_bundle(bundle: RecordBundle, repository: ConversationRepository) 
         conversation=bundle.conversation,
         messages=bundle.messages,
         attachments=bundle.attachments,
+        content_blocks=bundle.content_blocks,
     )
     return SaveResult(**counts)
 

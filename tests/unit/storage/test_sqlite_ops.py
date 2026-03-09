@@ -285,8 +285,8 @@ class TestSaveGetMessages:
         result = await backend.get_messages("nonexistent")
         assert result == []
 
-    async def test_save_messages_with_provider_meta(self, tmp_path):
-        """Test saving messages with provider metadata."""
+    async def test_save_messages_with_text_content(self, tmp_path):
+        """Test saving messages with text content is persisted and retrievable."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         conv = ConversationRecord(
             conversation_id="conv-1",
@@ -304,16 +304,16 @@ class TestSaveGetMessages:
             message_id="msg-1",
             conversation_id="conv-1",
             role="user",
-            text="Hello",
-            timestamp="2025-01-01T10:00:00Z",
+            text="Hello custom content",
+            sort_key=1735725600.0,
             content_hash="hash",
-            provider_meta={"custom": "data"},
             version=1,
         )
         await backend.save_messages([msg])
 
         retrieved = (await backend.get_messages("conv-1"))[0]
-        assert retrieved.provider_meta == {"custom": "data"}
+        assert retrieved.text == "Hello custom content"
+        assert retrieved.role == "user"
 
     async def test_save_messages_with_branching_info(self, tmp_path):
         """Test saving messages with parent_message_id and branch_index."""
@@ -330,12 +330,24 @@ class TestSaveGetMessages:
         )
         await backend.save_conversation_record(conv)
 
+        # Insert parent message first (FK constraint)
+        parent = MessageRecord(
+            message_id="msg-parent",
+            conversation_id="conv-1",
+            role="user",
+            text="Parent",
+            sort_key=1735725500.0,
+            content_hash="hash-parent",
+            version=1,
+        )
+        await backend.save_messages([parent])
+
         msg = MessageRecord(
             message_id="msg-1",
             conversation_id="conv-1",
             role="user",
             text="Hello",
-            timestamp="2025-01-01T10:00:00Z",
+            sort_key=1735725600.0,
             content_hash="hash",
             version=1,
             parent_message_id="msg-parent",
@@ -343,7 +355,8 @@ class TestSaveGetMessages:
         )
         await backend.save_messages([msg])
 
-        retrieved = (await backend.get_messages("conv-1"))[0]
+        all_msgs = await backend.get_messages("conv-1")
+        retrieved = next(m for m in all_msgs if m.message_id == "msg-1")
         assert retrieved.parent_message_id == "msg-parent"
         assert retrieved.branch_index == 2
 
@@ -850,14 +863,14 @@ class TestGetMessagesBatch:
             content_hash="hash-order",
             version=1,
         ))
-        # Insert in reverse timestamp order
+        # Insert in reverse sort_key order
         msgs = [
             MessageRecord(
                 message_id=f"m{i}",
                 conversation_id=cid,
                 role="user",
                 text=f"Message {i}",
-                timestamp=f"2025-01-01T00:0{i}:00Z",
+                sort_key=float(i * 60),  # epoch offsets: 0, 60, 120, 180
                 content_hash=f"hash-m{i}",
                 version=1,
             )
@@ -866,8 +879,8 @@ class TestGetMessagesBatch:
         await backend.save_messages(msgs)
 
         result = await backend.get_messages_batch([cid])
-        timestamps = [m.timestamp for m in result[cid]]
-        assert timestamps == sorted(timestamps), "Messages should be ordered by timestamp"
+        sort_keys = [m.sort_key for m in result[cid]]
+        assert sort_keys == sorted(sort_keys), "Messages should be ordered by sort_key"
 
     async def test_mixed_present_and_missing(self, tmp_path):
         """Batch with mix of present and missing IDs works correctly."""

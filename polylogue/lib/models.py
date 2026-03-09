@@ -38,103 +38,21 @@ from datetime import datetime
 from functools import cached_property
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from polylogue.lib.branch_type import BranchType
+from polylogue.lib.log import get_logger
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
+from polylogue.schemas.unified import extract_from_provider_meta
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
-from polylogue.types import ConversationId, MessageId
+from polylogue.types import ConversationId, MessageId, Provider
 
 if TYPE_CHECKING:
     from polylogue.lib.projections import ConversationProjection
 
-
-# =============================================================================
-# Claude Code Semantic Models
-#
-# NOTE: For cross-provider harmonized types, use polylogue.lib.viewports:
-#   - ReasoningTrace: Harmonized thinking/reasoning (replaces ThinkingTrace)
-#   - ToolCall: Harmonized tool invocations
-#
-# The types below are Claude Code-specific with semantic properties.
-# =============================================================================
-
-
-class ToolInvocation(BaseModel):
-    """Claude Code-specific tool invocation with semantic properties.
-
-    This is distinct from viewports.ToolCall:
-    - ToolCall (viewports.py): Cross-provider harmonized type for rendering
-    - ToolInvocation (this): Claude Code-specific with computed properties
-
-    Use ToolInvocation when you need semantic analysis (is_file_operation,
-    affected_paths, etc.). Use ToolCall for provider-agnostic rendering.
-    """
-
-    tool_name: str
-    """Tool name (e.g., Bash, Read, Write, Edit, Glob, Grep, Task)."""
-
-    tool_id: str
-    """Unique identifier for this tool invocation."""
-
-    input: dict[str, object]
-    """Input parameters passed to the tool."""
-
-    result: str | None = None
-    """Result returned by the tool (if captured)."""
-
-    success: bool | None = None
-    """Whether the tool invocation succeeded."""
-
-    @property
-    def is_file_operation(self) -> bool:
-        """True if this is a file read/write/edit operation."""
-        return self.tool_name in {"Read", "Write", "Edit", "NotebookEdit"}
-
-    @property
-    def is_git_operation(self) -> bool:
-        """True if this is a git command (Bash with git)."""
-        if self.tool_name != "Bash":
-            return False
-        command = self.input.get("command", "")
-        return isinstance(command, str) and command.strip().startswith("git ")
-
-    @property
-    def is_search_operation(self) -> bool:
-        """True if this is a search operation."""
-        return self.tool_name in {"Glob", "Grep", "WebSearch"}
-
-    @property
-    def is_subagent(self) -> bool:
-        """True if this spawns a subagent."""
-        return self.tool_name == "Task"
-
-    @property
-    def affected_paths(self) -> list[str]:
-        """Extract file paths affected by this operation."""
-        paths: list[str] = []
-
-        if self.tool_name in {"Read", "Write", "Edit"}:
-            path = self.input.get("file_path") or self.input.get("path")
-            if isinstance(path, str):
-                paths.append(path)
-
-        elif self.tool_name == "Glob":
-            pattern = self.input.get("pattern")
-            if isinstance(pattern, str):
-                paths.append(pattern)
-
-        elif self.tool_name == "Bash":
-            # Try to extract paths from common commands
-            command = self.input.get("command", "")
-            if isinstance(command, str):
-                # Very basic extraction - could be enhanced
-                for token in command.split():
-                    if "/" in token and not token.startswith("-"):
-                        paths.append(token)
-
-        return paths
+logger = get_logger(__name__)
 
 
 class Attachment(BaseModel):
@@ -168,24 +86,63 @@ _CONTEXT_PATTERNS = [
 
 class Message(BaseModel):
     id: str
-    role: str
+    role: Role
     text: str | None = None
     timestamp: datetime | None = None
+    provider: Provider | None = None
     attachments: list[Attachment] = Field(default_factory=list)
     provider_meta: dict[str, object] | None = None
+    content_blocks: list[dict[str, object]] = Field(default_factory=list)
     parent_id: str | None = None
     branch_index: int = 0
 
+    @field_validator("role", mode="before")
     @classmethod
-    def from_record(cls, record: MessageRecord, attachments: list[AttachmentRecord]) -> Message:
-        ts = parse_timestamp(record.timestamp)
+    def coerce_role(cls, v: object) -> Role:
+        if isinstance(v, Role):
+            return v
+        raw = (str(v) if v is not None else "").strip() or "unknown"
+        return Role.normalize(raw)
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def coerce_provider(cls, v: object) -> Provider | None:
+        if v is None:
+            return None
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v))
+
+    @classmethod
+    def from_record(
+        cls,
+        record: MessageRecord,
+        attachments: list[AttachmentRecord],
+        *,
+        provider: Provider | str | None = None,
+    ) -> Message:
+        # Reconstruct timestamp from sort_key (numeric epoch seconds)
+        ts = None
+        if record.sort_key is not None:
+            from datetime import datetime, timezone
+            try:
+                ts = datetime.fromtimestamp(record.sort_key, tz=timezone.utc)
+            except (ValueError, OSError):
+                ts = None
+        # Build content_blocks dict list from ContentBlockRecord objects
+        blocks = [
+            {"type": b.type, "text": b.text, "tool_name": b.tool_name, "tool_id": b.tool_id}
+            for b in record.content_blocks
+        ]
         return cls(
             id=record.message_id,
             role=(record.role or "").strip() or "unknown",
             text=record.text,
             timestamp=ts,
+            provider=provider,
             attachments=[Attachment.from_record(a) for a in attachments],
-            provider_meta=record.provider_meta,
+            provider_meta=None,  # No longer stored in messages table
+            content_blocks=blocks,
             parent_id=record.parent_message_id,
             branch_index=record.branch_index,
         )
@@ -199,25 +156,20 @@ class Message(BaseModel):
 
     # --- Role classification ---
 
-    @cached_property
-    def role_enum(self) -> Role:
-        """Get the normalized Role enum for this message."""
-        return Role.normalize(self.role)
-
     @property
     def is_user(self) -> bool:
         """Message is from the user."""
-        return self.role_enum == Role.USER
+        return self.role == Role.USER
 
     @property
     def is_assistant(self) -> bool:
         """Message is from the assistant."""
-        return self.role_enum == Role.ASSISTANT
+        return self.role == Role.ASSISTANT
 
     @property
     def is_system(self) -> bool:
         """Message is a system prompt."""
-        return self.role_enum == Role.SYSTEM
+        return self.role == Role.SYSTEM
 
     @property
     def is_dialogue(self) -> bool:
@@ -225,6 +177,29 @@ class Message(BaseModel):
         return self.is_user or self.is_assistant
 
     # --- Content classification (dynamic, heuristic-based) ---
+
+    @cached_property
+    def harmonized(self):
+        """Harmonized viewports extracted from provider_meta when provider is known."""
+        if not self.provider or not self.provider_meta:
+            return None
+        try:
+            return extract_from_provider_meta(
+                self.provider,
+                self.provider_meta,
+                message_id=self.id,
+                role=self.role,
+                text=self.text,
+                timestamp=self.timestamp,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to extract harmonized viewports for message %s (provider=%s)",
+                self.id,
+                self.provider,
+                exc_info=True,
+            )
+            return None
 
     def _is_chatgpt_thinking(self) -> bool:
         """Check if this is a ChatGPT reasoning model thinking trace."""
@@ -242,7 +217,7 @@ class Message(BaseModel):
                 return True
 
         # Legacy: role=tool with finished_text in metadata
-        if self.role.lower() == "tool":
+        if self.role == Role.TOOL:
             metadata = raw.get("metadata", {})
             if isinstance(metadata, dict) and "finished_text" in metadata:
                 return True
@@ -252,43 +227,69 @@ class Message(BaseModel):
     @property
     def is_tool_use(self) -> bool:
         """Message contains tool/function calls or results."""
-        # Check structured content_blocks (populated at parse time)
+        # Primary: check content_blocks loaded from DB
+        if any(b.get("type") in ("tool_use", "tool_result") for b in self.content_blocks):
+            return True
+
+        # Fallback: harmonized viewports (for messages loaded with provider_meta + provider)
+        harmonized = self.harmonized
+        if harmonized is not None and (
+            harmonized.has_tool_use
+            or any(block.type.value in {"tool_use", "tool_result"} for block in harmonized.content_blocks)
+        ):
+            return True
+
+        # Direct provider_meta checks (when provider is not set but meta is present)
         if self.provider_meta:
-            blocks = self.provider_meta.get("content_blocks", [])
-            if isinstance(blocks, list) and any(
-                isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result") for b in blocks
+            pm = self.provider_meta
+            # content_blocks embedded in provider_meta (pre-DB format)
+            if any(
+                isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result")
+                for b in pm.get("content_blocks") or []
             ):
                 return True
-
-        # ChatGPT role=tool: distinguish thinking from actual tools
-        if self.role.lower() == "tool":
-            return not self._is_chatgpt_thinking()
-
-        # Claude-code sidechain/meta markers
-        if self.provider_meta:
-            if self.provider_meta.get("isSidechain") or self.provider_meta.get("isMeta"):
+            # Claude sidechain / meta markers
+            if pm.get("isSidechain") or pm.get("isMeta"):
                 return True
+
+        # Legacy: ChatGPT role=tool
+        if self.role == Role.TOOL:
+            return not self._is_chatgpt_thinking()
 
         return False
 
     @property
     def is_thinking(self) -> bool:
         """Message contains reasoning/thinking traces."""
-        # Check structured content_blocks (populated at parse time)
-        if self.provider_meta:
-            blocks = self.provider_meta.get("content_blocks", [])
-            if isinstance(blocks, list) and any(isinstance(b, dict) and b.get("type") == "thinking" for b in blocks):
-                return True
+        # Primary: check content_blocks loaded from DB
+        if any(b.get("type") == "thinking" for b in self.content_blocks):
+            return True
 
-        # Gemini isThought marker (from raw data)
+        # Fallback: harmonized viewports (for messages loaded with provider_meta + provider)
+        harmonized = self.harmonized
+        if harmonized is not None and (
+            harmonized.has_reasoning
+            or any(block.type.value == "thinking" for block in harmonized.content_blocks)
+        ):
+            return True
+
+        # Direct provider_meta checks (when provider is not set but meta is present)
         if self.provider_meta:
-            if self.provider_meta.get("isThought"):
+            pm = self.provider_meta
+            # content_blocks embedded in provider_meta (pre-DB format)
+            if any(
+                isinstance(b, dict) and b.get("type") == "thinking"
+                for b in pm.get("content_blocks") or []
+            ):
                 return True
-            raw = self.provider_meta.get("raw", {})
+            # Gemini isThought flag (direct or nested under raw)
+            if pm.get("isThought"):
+                return True
+            raw = pm.get("raw")
             if isinstance(raw, dict) and raw.get("isThought"):
                 return True
 
-        # ChatGPT content_type check (from raw data)
+        # Legacy: ChatGPT content_type check
         return bool(self._is_chatgpt_thinking())
 
     @property
@@ -333,7 +334,8 @@ class Message(BaseModel):
         """Cost in USD (claude-code messages)."""
         if not self.provider_meta:
             return None
-        cost = self.provider_meta.get("costUSD")
+        raw = self.provider_meta.get("raw", self.provider_meta)
+        cost = raw.get("costUSD")
         return float(cost) if isinstance(cost, (int, float)) else None
 
     @property
@@ -341,18 +343,27 @@ class Message(BaseModel):
         """Response duration in milliseconds (claude-code messages)."""
         if not self.provider_meta:
             return None
-        duration = self.provider_meta.get("durationMs")
+        raw = self.provider_meta.get("raw", self.provider_meta)
+        duration = raw.get("durationMs")
         return int(duration) if isinstance(duration, (int, float)) else None
 
     def extract_thinking(self) -> str | None:
         """Extract thinking content if present.
 
         Checks (in order):
-        1. Structured content_blocks with type "thinking" (Claude API format)
-        2. XML <thinking> tags in message text (legacy/antml format)
-        3. Full message text for Gemini isThought or ChatGPT thinking messages
+        1. Harmonized reasoning traces (Claude Code raw format)
+        2. Structured content_blocks with type "thinking" (legacy format)
+        3. XML <thinking> tags in message text (legacy/antml format)
+        4. Full message text for Gemini isThought or ChatGPT thinking messages
         """
-        # 1. Structured content_blocks (Claude API format)
+        # 1. Harmonized reasoning traces (Claude Code with raw provider_meta)
+        harmonized = self.harmonized
+        if harmonized and harmonized.reasoning_traces:
+            texts = [t.text for t in harmonized.reasoning_traces if t.text]
+            if texts:
+                return "\n\n".join(texts).strip() or None
+
+        # 2. Structured content_blocks (legacy format)
         if self.provider_meta:
             blocks = self.provider_meta.get("content_blocks", [])
             if isinstance(blocks, list):
@@ -364,13 +375,13 @@ class Message(BaseModel):
                 if thinking_texts:
                     return "\n\n".join(thinking_texts).strip() or None
 
-        # 2. XML tags in text (legacy/antml format)
+        # 3. XML tags in text (legacy/antml format)
         if self.text:
             match = re.search(r"<(?:antml:)?thinking>(.*?)</(?:antml:)?thinking>", self.text, re.DOTALL)
             if match:
                 return match.group(1).strip()
 
-        # 3. Gemini/ChatGPT thinking: the message text IS the thinking content
+        # 4. Gemini/ChatGPT thinking: the message text IS the thinking content
         if self.text and (self._is_chatgpt_thinking() or (self.provider_meta and self.provider_meta.get("isThought"))):
             return self.text.strip() or None
 
@@ -405,14 +416,21 @@ class ConversationSummary(BaseModel):
     """
 
     id: ConversationId
-    provider: str
+    provider: Provider
     title: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     provider_meta: dict[str, object] | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
     parent_id: ConversationId | None = None
-    branch_type: str | None = None
+    branch_type: BranchType | None = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def coerce_provider(cls, v: object) -> Provider:
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v) if v is not None else "unknown")
     # Cached stats (populated from get_conversation_stats if available)
     message_count: int | None = None
     dialogue_count: int | None = None
@@ -463,11 +481,11 @@ class ConversationSummary(BaseModel):
 
     @property
     def is_continuation(self) -> bool:
-        return self.branch_type == "continuation"
+        return self.branch_type == BranchType.CONTINUATION
 
     @property
     def is_sidechain(self) -> bool:
-        return self.branch_type == "sidechain"
+        return self.branch_type == BranchType.SIDECHAIN
 
     @property
     def is_root(self) -> bool:
@@ -486,7 +504,7 @@ class Conversation(BaseModel):
     """
 
     id: ConversationId
-    provider: str
+    provider: Provider
     title: str | None = None
     messages: MessageCollection
     created_at: datetime | None = None
@@ -494,7 +512,14 @@ class Conversation(BaseModel):
     provider_meta: dict[str, object] | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
     parent_id: ConversationId | None = None
-    branch_type: str | None = None  # "continuation", "sidechain", "fork"
+    branch_type: BranchType | None = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def coerce_provider(cls, v: object) -> Provider:
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v) if v is not None else "unknown")
 
     # Allow MessageCollection which is not a standard Pydantic type
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -529,14 +554,19 @@ class Conversation(BaseModel):
             if att.message_id:
                 att_map.setdefault(att.message_id, []).append(att)
 
+        conv_provider = Provider.from_string(conversation.provider_name)
         rich_messages = [
-            Message.from_record(msg, att_map.get(msg.message_id, []))
+            Message.from_record(
+                msg,
+                att_map.get(msg.message_id, []),
+                provider=conv_provider,
+            )
             for msg in messages
         ]
 
         return cls(
             id=conversation.conversation_id,
-            provider=conversation.provider_name,
+            provider=conv_provider,
             title=conversation.title,
             messages=MessageCollection(messages=rich_messages),
             created_at=parse_timestamp(conversation.created_at),
@@ -552,12 +582,12 @@ class Conversation(BaseModel):
     @property
     def is_continuation(self) -> bool:
         """True if this is a continuation of another session."""
-        return self.branch_type == "continuation"
+        return self.branch_type == BranchType.CONTINUATION
 
     @property
     def is_sidechain(self) -> bool:
         """True if this is a sidechain conversation."""
-        return self.branch_type == "sidechain"
+        return self.branch_type == BranchType.SIDECHAIN
 
     @property
     def is_root(self) -> bool:
@@ -755,5 +785,4 @@ __all__ = [
     "ConversationSummary",
     "DialoguePair",
     "Message",
-    "ToolInvocation",
 ]

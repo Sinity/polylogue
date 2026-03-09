@@ -9,6 +9,9 @@ from .backends.connection import connection_context, open_connection
 def ensure_index(conn: sqlite3.Connection) -> None:
     """Create FTS5 index table if it doesn't exist.
 
+    The schema DDL already creates messages_fts as a standalone FTS5 table with
+    triggers. This function is a no-op if the table already exists.
+
     Args:
         conn: Active SQLite database connection
     """
@@ -17,7 +20,8 @@ def ensure_index(conn: sqlite3.Connection) -> None:
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
             message_id UNINDEXED,
             conversation_id UNINDEXED,
-            content
+            text,
+            tokenize='unicode61'
         );
         """
     )
@@ -35,7 +39,7 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
         db_conn.execute("DELETE FROM messages_fts")
         db_conn.execute(
             """
-            INSERT INTO messages_fts (message_id, conversation_id, content)
+            INSERT INTO messages_fts (message_id, conversation_id, text)
             SELECT messages.message_id, messages.conversation_id, messages.text
             FROM messages
             WHERE messages.text IS NOT NULL
@@ -75,8 +79,8 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
             )
             db_conn.execute(
                 f"""
-                INSERT INTO messages_fts (message_id, conversation_id, content)
-                SELECT message_id, conversation_id, text
+                INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
+                SELECT rowid, message_id, conversation_id, text
                 FROM messages
                 WHERE text IS NOT NULL AND conversation_id IN ({placeholders})
                 """,

@@ -1,18 +1,18 @@
-"""Tests for parse tracking and mtime-based acquisition skip (v12 schema).
+"""Tests for parse tracking, validation status, and mtime-based acquisition.
 
 Tests cover:
-- Schema migration v11 → v12 (columns, index, backfill)
 - mark_raw_parsed: success and failure marking
 - Parse skip: raw records with parsed_at are not re-parsed
 - Parse failure: error sets parse_error, leaves parsed_at NULL for retry
+- mark_raw_validated: validation status and error tracking
 - get_known_source_mtimes: returns {path: mtime} mapping
 - reset_parse_status: clears tracking for force-reparse
+- reset_validation_status: clears validation tracking
 """
 
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -21,249 +21,8 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
-    _migrate_v11_to_v12,
-    _migrate_v12_to_v13,
-    _run_migrations,
 )
 from polylogue.storage.store import RawConversationRecord
-
-
-# ─── Migration tests ───────────────────────────────────────────────────────
-
-
-class TestMigrationV11ToV12:
-    """Tests for the v11 → v12 schema migration."""
-
-    def _make_v11_db(self, tmp_path: Path) -> sqlite3.Connection:
-        """Create a database at schema v11 (pre-migration)."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-
-        # Apply schema at v11 by running _ensure_schema then rolling back to v11
-        # Simpler: just create the raw_conversations table at v11 schema
-        conn.executescript("""
-            CREATE TABLE raw_conversations (
-                raw_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                source_name TEXT,
-                source_path TEXT NOT NULL,
-                source_index INTEGER,
-                raw_content BLOB NOT NULL,
-                acquired_at TEXT NOT NULL,
-                file_mtime TEXT
-            );
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                provider_conversation_id TEXT NOT NULL,
-                title TEXT,
-                created_at TEXT,
-                updated_at TEXT,
-                content_hash TEXT NOT NULL,
-                provider_meta TEXT,
-                metadata TEXT DEFAULT '{}',
-                source_name TEXT,
-                version INTEGER NOT NULL,
-                parent_conversation_id TEXT,
-                branch_type TEXT,
-                raw_id TEXT REFERENCES raw_conversations(raw_id)
-            );
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
-                provider_message_id TEXT,
-                role TEXT,
-                text TEXT,
-                timestamp TEXT,
-                content_hash TEXT NOT NULL,
-                provider_meta TEXT,
-                version INTEGER NOT NULL,
-                parent_message_id TEXT,
-                branch_index INTEGER DEFAULT 0,
-                FOREIGN KEY (conversation_id)
-                    REFERENCES conversations(conversation_id) ON DELETE CASCADE
-            );
-        """)
-        conn.execute("PRAGMA user_version = 11")
-        conn.commit()
-        return conn
-
-    def test_migration_adds_columns(self, tmp_path: Path) -> None:
-        """Migration adds parsed_at and parse_error columns."""
-        conn = self._make_v11_db(tmp_path)
-        _migrate_v11_to_v12(conn)
-        conn.commit()
-
-        cursor = conn.execute("PRAGMA table_info(raw_conversations)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert "parsed_at" in columns
-        assert "parse_error" in columns
-        conn.close()
-
-    def test_migration_creates_mtime_index(self, tmp_path: Path) -> None:
-        """Migration creates the source_path+file_mtime composite index."""
-        conn = self._make_v11_db(tmp_path)
-        _migrate_v11_to_v12(conn)
-        conn.commit()
-
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_raw_conv_source_mtime'"
-        )
-        assert cursor.fetchone() is not None
-        conn.close()
-
-    def test_migration_backfills_parsed_at(self, tmp_path: Path) -> None:
-        """Migration backfills parsed_at for raw records that have linked conversations."""
-        conn = self._make_v11_db(tmp_path)
-
-        # Insert raw records
-        conn.execute(
-            "INSERT INTO raw_conversations (raw_id, provider_name, source_path, raw_content, acquired_at) "
-            "VALUES ('raw-linked', 'test', '/test.json', x'7b7d', '2026-01-01T00:00:00Z')"
-        )
-        conn.execute(
-            "INSERT INTO raw_conversations (raw_id, provider_name, source_path, raw_content, acquired_at) "
-            "VALUES ('raw-orphan', 'test', '/test2.json', x'7b7d', '2026-01-02T00:00:00Z')"
-        )
-        # Only link one of them
-        conn.execute(
-            "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, "
-            "content_hash, version, raw_id) VALUES ('conv-1', 'test', 'test-1', 'hash1', 1, 'raw-linked')"
-        )
-        conn.commit()
-
-        _migrate_v11_to_v12(conn)
-        conn.commit()
-
-        # Linked record should have parsed_at = acquired_at
-        row = conn.execute(
-            "SELECT parsed_at FROM raw_conversations WHERE raw_id = 'raw-linked'"
-        ).fetchone()
-        assert row["parsed_at"] == "2026-01-01T00:00:00Z"
-
-        # Orphan record should have parsed_at = NULL (will be re-parsed)
-        row = conn.execute(
-            "SELECT parsed_at FROM raw_conversations WHERE raw_id = 'raw-orphan'"
-        ).fetchone()
-        assert row["parsed_at"] is None
-
-        conn.close()
-
-    def test_full_migration_path_v11_to_v15(self, tmp_path: Path) -> None:
-        """Full migration from v11 through v12, v13, v14, and v15 via _run_migrations."""
-        conn = self._make_v11_db(tmp_path)
-        _run_migrations(conn, 11, 15)
-
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 15
-        conn.close()
-
-
-class TestMigrationV12ToV13:
-    """Tests for the v12 → v13 schema migration (performance indices)."""
-
-    def _make_v12_db(self, tmp_path: Path) -> sqlite3.Connection:
-        """Create a database at schema v12."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-
-        conn.executescript("""
-            CREATE TABLE raw_conversations (
-                raw_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                source_name TEXT,
-                source_path TEXT NOT NULL,
-                source_index INTEGER,
-                raw_content BLOB NOT NULL,
-                acquired_at TEXT NOT NULL,
-                file_mtime TEXT,
-                parsed_at TEXT,
-                parse_error TEXT
-            );
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                provider_conversation_id TEXT NOT NULL,
-                title TEXT,
-                created_at TEXT,
-                updated_at TEXT,
-                content_hash TEXT NOT NULL,
-                provider_meta TEXT,
-                metadata TEXT DEFAULT '{}',
-                source_name TEXT,
-                version INTEGER NOT NULL,
-                parent_conversation_id TEXT,
-                branch_type TEXT,
-                raw_id TEXT REFERENCES raw_conversations(raw_id)
-            );
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
-                provider_message_id TEXT,
-                role TEXT,
-                text TEXT,
-                timestamp TEXT,
-                content_hash TEXT NOT NULL,
-                provider_meta TEXT,
-                version INTEGER NOT NULL,
-                parent_message_id TEXT,
-                branch_index INTEGER DEFAULT 0,
-                FOREIGN KEY (conversation_id)
-                    REFERENCES conversations(conversation_id) ON DELETE CASCADE
-            );
-        """)
-        conn.execute("PRAGMA user_version = 12")
-        conn.commit()
-        return conn
-
-    def test_migration_creates_unparsed_partial_index(self, tmp_path: Path) -> None:
-        """Migration creates the partial index on unparsed raw records."""
-        conn = self._make_v12_db(tmp_path)
-        _migrate_v12_to_v13(conn)
-        conn.commit()
-
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_raw_conv_unparsed'"
-        )
-        assert cursor.fetchone() is not None
-        conn.close()
-
-    def test_migration_creates_content_hash_index(self, tmp_path: Path) -> None:
-        """Migration creates the content_hash index on conversations."""
-        conn = self._make_v12_db(tmp_path)
-        _migrate_v12_to_v13(conn)
-        conn.commit()
-
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_conversations_content_hash'"
-        )
-        assert cursor.fetchone() is not None
-        conn.close()
-
-    def test_migration_creates_messages_composite_index(self, tmp_path: Path) -> None:
-        """Migration creates the conversation_id+timestamp composite index on messages."""
-        conn = self._make_v12_db(tmp_path)
-        _migrate_v12_to_v13(conn)
-        conn.commit()
-
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_conversation_ts'"
-        )
-        assert cursor.fetchone() is not None
-        conn.close()
-
-    def test_migration_is_idempotent(self, tmp_path: Path) -> None:
-        """Running the migration twice doesn't error (IF NOT EXISTS)."""
-        conn = self._make_v12_db(tmp_path)
-        _migrate_v12_to_v13(conn)
-        conn.commit()
-        # Running again should be a no-op
-        _migrate_v12_to_v13(conn)
-        conn.commit()
-        conn.close()
-
 
 # ─── Backend method tests ──────────────────────────────────────────────────
 
@@ -326,6 +85,66 @@ class TestMarkRawParsed:
         rec = await backend.get_raw_conversation("test-raw")
         assert rec is not None
         assert len(rec.parse_error) == 2000  # type: ignore[arg-type]
+
+
+class TestMarkRawValidated:
+    """Tests for mark_raw_validated backend method."""
+
+    @pytest.fixture
+    def backend(self, tmp_path: Path) -> SQLiteBackend:
+        return SQLiteBackend(db_path=tmp_path / "test.db")
+
+    async def _save_raw(self, backend: SQLiteBackend, raw_id: str = "test-raw") -> None:
+        record = RawConversationRecord(
+            raw_id=raw_id,
+            provider_name="test",
+            source_path="/test.json",
+            raw_content=b'{"test": true}',
+            acquired_at="2026-01-01T00:00:00Z",
+            file_mtime="2026-01-01T00:00:00Z",
+        )
+        await backend.save_raw_conversation(record)
+
+    async def test_mark_passed(self, backend: SQLiteBackend) -> None:
+        await self._save_raw(backend)
+        await backend.mark_raw_validated(
+            "test-raw",
+            status="passed",
+            drift_count=2,
+            provider="chatgpt",
+            mode="strict",
+        )
+
+        rec = await backend.get_raw_conversation("test-raw")
+        assert rec is not None
+        assert rec.validated_at is not None
+        assert rec.validation_status == "passed"
+        assert rec.validation_error is None
+        assert rec.validation_drift_count == 2
+        assert rec.validation_provider == "chatgpt"
+        assert rec.validation_mode == "strict"
+
+    async def test_mark_failed_truncates_error(self, backend: SQLiteBackend) -> None:
+        await self._save_raw(backend)
+        long_error = "x" * 5000
+        await backend.mark_raw_validated(
+            "test-raw",
+            status="failed",
+            error=long_error,
+            provider="chatgpt",
+            mode="strict",
+        )
+
+        rec = await backend.get_raw_conversation("test-raw")
+        assert rec is not None
+        assert rec.validation_status == "failed"
+        assert rec.validation_error is not None
+        assert len(rec.validation_error) == 2000
+
+    async def test_invalid_status_raises(self, backend: SQLiteBackend) -> None:
+        await self._save_raw(backend)
+        with pytest.raises(ValueError, match="Invalid validation status"):
+            await backend.mark_raw_validated("test-raw", status="unknown")
 
 
 class TestGetKnownSourceMtimes:
@@ -443,6 +262,49 @@ class TestResetParseStatus:
         assert count == 0
 
 
+class TestResetValidationStatus:
+    """Tests for reset_validation_status backend method."""
+
+    @pytest.fixture
+    def backend(self, tmp_path: Path) -> SQLiteBackend:
+        return SQLiteBackend(db_path=tmp_path / "test.db")
+
+    async def _populate(self, backend: SQLiteBackend) -> None:
+        for i, provider in enumerate(["chatgpt", "chatgpt", "claude"]):
+            await backend.save_raw_conversation(RawConversationRecord(
+                raw_id=f"raw-{i}",
+                provider_name=provider,
+                source_path=f"/path/{i}.json",
+                raw_content=f'{{"i": {i}}}'.encode(),
+                acquired_at="2026-01-01T00:00:00Z",
+            ))
+        await backend.mark_raw_validated("raw-0", status="passed", provider="chatgpt", mode="strict")
+        await backend.mark_raw_validated("raw-2", status="failed", error="bad schema", provider="claude", mode="strict")
+
+    async def test_reset_all(self, backend: SQLiteBackend) -> None:
+        await self._populate(backend)
+        count = await backend.reset_validation_status()
+        assert count == 2
+
+        for i in range(3):
+            rec = await backend.get_raw_conversation(f"raw-{i}")
+            assert rec is not None
+            assert rec.validated_at is None
+            assert rec.validation_status is None
+            assert rec.validation_error is None
+
+    async def test_reset_by_provider(self, backend: SQLiteBackend) -> None:
+        await self._populate(backend)
+        count = await backend.reset_validation_status(provider="chatgpt")
+        assert count == 1
+
+        rec0 = await backend.get_raw_conversation("raw-0")
+        rec2 = await backend.get_raw_conversation("raw-2")
+        assert rec0 is not None and rec2 is not None
+        assert rec0.validation_status is None
+        assert rec2.validation_status == "failed"
+
+
 # ─── Mtime skip integration test ──────────────────────────────────────────
 
 
@@ -452,7 +314,7 @@ class TestMtimeSkip:
     def test_unchanged_file_skipped(self, tmp_path: Path) -> None:
         """Files with matching mtime in known_mtimes are skipped."""
         from polylogue.config import Source
-        from polylogue.sources.source import iter_source_conversations_with_raw, _get_file_mtime
+        from polylogue.sources.source import _get_file_mtime, iter_source_conversations_with_raw
 
         # Create a test JSON file
         test_file = tmp_path / "test.json"
@@ -515,7 +377,7 @@ class TestFreshSchema:
     """Test that fresh databases have all v12+v13+v14+v15 features."""
 
     def test_fresh_db_has_parse_tracking_columns(self, tmp_path: Path) -> None:
-        """A fresh database has parsed_at, parse_error, and sort_key columns."""
+        """A fresh database has parse+validation tracking and sort_key columns."""
         db_path = tmp_path / "fresh.db"
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -525,6 +387,9 @@ class TestFreshSchema:
         columns = {row[1] for row in cursor.fetchall()}
         assert "parsed_at" in columns
         assert "parse_error" in columns
+        assert "validated_at" in columns
+        assert "validation_status" in columns
+        assert "validation_error" in columns
 
         cursor = conn.execute("PRAGMA table_info(messages)")
         msg_columns = {row[1] for row in cursor.fetchall()}
@@ -540,7 +405,7 @@ class TestFreshSchema:
         conn.close()
 
     def test_fresh_db_has_all_indices(self, tmp_path: Path) -> None:
-        """A fresh database has all v12+v13+v14+v15 indices."""
+        """A fresh database has all expected indices from the v1 schema."""
         db_path = tmp_path / "fresh.db"
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -549,16 +414,20 @@ class TestFreshSchema:
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
         indices = {row[0] for row in cursor.fetchall()}
 
-        # v12 indices
+        # raw_conversations indices
         assert "idx_raw_conv_source_mtime" in indices
+        assert "idx_raw_conv_parse_ready" in indices
 
-        # v13 indices
-        assert "idx_raw_conv_unparsed" in indices
+        # conversations indices
         assert "idx_conversations_content_hash" in indices
+        assert "idx_conversations_sortkey" in indices
 
-        # v14 index (replaces idx_messages_conversation_ts)
+        # messages indices
         assert "idx_messages_conversation_sortkey" in indices
 
-        # v15 index
-        assert "idx_conversations_sortkey" in indices
+        # content_blocks indices
+        assert "idx_content_blocks_message" in indices
+        assert "idx_content_blocks_conversation" in indices
+        assert "idx_content_blocks_conv_type" in indices
+
         conn.close()

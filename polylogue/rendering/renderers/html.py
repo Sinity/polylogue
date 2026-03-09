@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from jinja2 import DictLoader, Environment, FileSystemLoader, select_autoescape
 from markdown_it import MarkdownIt
@@ -15,12 +14,13 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.util import ClassNotFound
 
-from polylogue.assets import asset_path
 from polylogue.render_paths import render_root
+from polylogue.rendering.core import ConversationFormatter, FormattedConversation
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.store import ConversationRenderProjection
 
 
 class PygmentsHighlighter:
@@ -222,6 +222,32 @@ def _attach_branches(messages: list[dict[str, object]]) -> list[dict[str, object
     return mainline
 
 
+def _html_message_entry(
+    *,
+    message_id: object,
+    role: object,
+    text: str,
+    timestamp: object,
+    parent_message_id: object,
+    branch_index: object,
+    md_renderer: MarkdownRenderer,
+) -> dict[str, object]:
+    normalized_role = role or "message"
+    if hasattr(normalized_role, "value"):
+        normalized_role = normalized_role.value
+    normalized_role = str(normalized_role)
+    return {
+        "id": message_id,
+        "role": normalized_role,
+        "role_class": _role_css_class(normalized_role),
+        "text": text[:120],
+        "html_content": md_renderer.render(text),
+        "timestamp": timestamp,
+        "parent_message_id": parent_message_id,
+        "branch_index": branch_index,
+    }
+
+
 class HTMLRenderer:
     """Enhanced HTML renderer with syntax highlighting and polished styling.
 
@@ -250,7 +276,7 @@ class HTMLRenderer:
         self.archive_root = archive_root
         self.template_path = template_path
         self.theme = theme
-        self._backend = backend
+        self._formatter = ConversationFormatter(archive_root, backend=backend)
 
         # Initialize Pygments highlighter
         style = "monokai" if theme == "dark" else "default"
@@ -258,17 +284,15 @@ class HTMLRenderer:
         self.md_renderer = MarkdownRenderer(self.highlighter)
 
         # Pre-compile Jinja2 template once (avoid per-render overhead)
-        loader: FileSystemLoader | DictLoader
         if self.template_path and self.template_path.exists():
-            loader = FileSystemLoader(self.template_path.parent)
-            template_name = self.template_path.name
+            self._jinja_env = Environment(
+                loader=FileSystemLoader(self.template_path.parent),
+                autoescape=select_autoescape(["html", "xml"]),
+            )
+            self._template = self._jinja_env.get_template(self.template_path.name)
         else:
-            loader = DictLoader({"conversation.html": DEFAULT_HTML_TEMPLATE})
-            template_name = "conversation.html"
-        self._jinja_env = Environment(
-            loader=loader, autoescape=select_autoescape(["html", "xml"])
-        )
-        self._template = self._jinja_env.get_template(template_name)
+            self._jinja_env = None
+            self._template = _get_cached_template()
         self._highlight_css = self.highlighter.get_css()
 
     def supports_format(self) -> str:
@@ -279,103 +303,10 @@ class HTMLRenderer:
         """
         return "html"
 
-    def _get_backend(self) -> SQLiteBackend:
-        """Get or create the backend instance."""
-        if self._backend is not None:
-            return self._backend
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend as _SQLiteBackend
-        return _SQLiteBackend()
-
-    async def _fetch_conversation_data(
-        self, conversation_id: str,
-    ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-        """Fetch all data for a conversation in a single DB connection.
-
-        Returns (metadata, messages, attachments) — plain dicts extracted
-        from sqlite3.Row objects so they're safely usable across threads.
-        """
-        backend = self._get_backend()
-
-        async with backend._get_connection() as conn:
-            # Conversation metadata
-            cursor = await conn.execute(
-                "SELECT conversation_id, title, provider_name, created_at, updated_at "
-                "FROM conversations WHERE conversation_id = ?",
-                (conversation_id,),
-            )
-            convo = await cursor.fetchone()
-            if not convo:
-                raise ValueError(f"Conversation not found: {conversation_id}")
-
-            metadata = {
-                "conversation_id": convo["conversation_id"],
-                "title": convo["title"] or conversation_id,
-                "provider": convo["provider_name"],
-                "created_at": convo["created_at"],
-                "updated_at": convo["updated_at"],
-            }
-
-            # Messages (all columns needed for both markdown and HTML)
-            cursor = await conn.execute(
-                """
-                SELECT message_id, role, text, timestamp,
-                       parent_message_id, branch_index
-                FROM messages
-                WHERE conversation_id = ?
-                ORDER BY (sort_key IS NULL), sort_key, message_id
-                """,
-                (conversation_id,),
-            )
-            messages: list[dict[str, Any]] = []
-            while True:
-                rows = await cursor.fetchmany(200)
-                if not rows:
-                    break
-                for row in rows:
-                    messages.append({
-                        "message_id": row["message_id"],
-                        "role": row["role"],
-                        "text": row["text"],
-                        "timestamp": row["timestamp"],
-                        "parent_message_id": row["parent_message_id"],
-                        "branch_index": row["branch_index"] or 0,
-                    })
-
-            # Attachments
-            cursor = await conn.execute(
-                """
-                SELECT
-                    attachment_refs.message_id,
-                    attachments.attachment_id,
-                    attachments.mime_type,
-                    attachments.size_bytes,
-                    attachments.path,
-                    attachments.provider_meta
-                FROM attachment_refs
-                JOIN attachments ON attachments.attachment_id = attachment_refs.attachment_id
-                WHERE attachment_refs.conversation_id = ?
-                """,
-                (conversation_id,),
-            )
-            attachments: list[dict[str, Any]] = []
-            att_rows = await cursor.fetchall()
-            for row in att_rows:
-                attachments.append({
-                    "message_id": row["message_id"],
-                    "attachment_id": row["attachment_id"],
-                    "mime_type": row["mime_type"],
-                    "size_bytes": row["size_bytes"],
-                    "path": row["path"],
-                    "provider_meta": row["provider_meta"],
-                })
-
-        return metadata, messages, attachments
-
     def _render_content_sync(
         self,
-        metadata: dict[str, Any],
-        messages: list[dict[str, Any]],
-        attachments: list[dict[str, Any]],
+        formatted: FormattedConversation,
+        projection: ConversationRenderProjection,
     ) -> tuple[str, str]:
         """All CPU-bound rendering work: markdown + Pygments + Jinja2.
 
@@ -385,39 +316,29 @@ class HTMLRenderer:
         Returns:
             (markdown_text, html_content) tuple
         """
-        title = metadata["title"]
-        provider = metadata["provider"]
-        conversation_id = metadata["conversation_id"]
-        created_at = metadata["created_at"]
-
-        # Build attachments mapping for markdown
-        attachments_by_message: dict[str | None, list[dict[str, Any]]] = {}
-        for att in attachments:
-            attachments_by_message.setdefault(att["message_id"], []).append(att)
-
-        # --- Generate markdown text ---
-        md_text = self._format_markdown(
-            title, provider, conversation_id, messages, attachments_by_message,
-        )
+        title = formatted.title
+        provider = formatted.provider
+        conversation_id = formatted.conversation_id
+        created_at = formatted.metadata["created_at"]
+        md_text = formatted.markdown_text
 
         # --- Generate HTML messages (Pygments + MarkdownIt) ---
         raw_html_messages: list[dict[str, object]] = []
-        for msg in messages:
-            text = msg["text"] or ""
+        for msg in projection.messages:
+            text = msg.text or ""
             if not text:
                 continue
-            role = msg["role"] or "message"
-            html_content = self.md_renderer.render(text)
-            raw_html_messages.append({
-                "id": msg["message_id"],
-                "role": role,
-                "role_class": _role_css_class(role),
-                "text": text[:120],
-                "html_content": html_content,
-                "timestamp": msg["timestamp"],
-                "parent_message_id": msg["parent_message_id"],
-                "branch_index": msg["branch_index"],
-            })
+            raw_html_messages.append(
+                _html_message_entry(
+                    message_id=msg.message_id,
+                    role=msg.role,
+                    text=text,
+                    timestamp=msg.sort_key,
+                    parent_message_id=msg.parent_message_id,
+                    branch_index=msg.branch_index,
+                    md_renderer=self.md_renderer,
+                )
+            )
 
         html_messages = _attach_branches(raw_html_messages)
 
@@ -435,103 +356,21 @@ class HTMLRenderer:
 
         return md_text, html_output
 
-    def _format_markdown(
-        self,
-        title: str,
-        provider: str,
-        conversation_id: str,
-        messages: list[dict[str, Any]],
-        attachments_by_message: dict[str | None, list[dict[str, Any]]],
-    ) -> str:
-        """Format conversation data to markdown text.
-
-        Inline implementation avoids depending on ConversationFormatter's
-        DB-coupled format() method, enabling fully-offline rendering in
-        thread pool workers.
-        """
-        def _format_text(text: str) -> str:
-            if not text:
-                return ""
-            stripped = text.strip()
-            if (stripped.startswith("{") and stripped.endswith("}")) or (
-                stripped.startswith("[") and stripped.endswith("]")
-            ):
-                try:
-                    parsed = json.loads(stripped)
-                    return f"```json\n{json.dumps(parsed, indent=2)}\n```"
-                except json.JSONDecodeError:
-                    pass
-            return text
-
-        def _append_attachment(att: dict[str, Any], lines: list[str]) -> None:
-            name = None
-            meta = att.get("provider_meta")
-            if meta:
-                try:
-                    meta_dict = json.loads(meta)
-                    name = meta_dict.get("name") or meta_dict.get("provider_id") or meta_dict.get("drive_id")
-                except (json.JSONDecodeError, TypeError):
-                    name = None
-            label = name or att["attachment_id"]
-            path_value = att.get("path") or str(asset_path(self.archive_root, att["attachment_id"]))
-            lines.append(f"- Attachment: {label} ({path_value})")
-
-        lines = [f"# {title}", "", f"Provider: {provider}", f"Conversation ID: {conversation_id}", ""]
-        message_ids = set()
-
-        for msg in messages:
-            message_ids.add(msg["message_id"])
-            role = msg["role"] or "message"
-            text = msg["text"] or ""
-            timestamp = msg["timestamp"]
-            msg_atts = attachments_by_message.get(msg["message_id"], [])
-
-            if not text.strip() and not msg_atts:
-                continue
-
-            lines.append(f"## {role}")
-            if timestamp:
-                lines.append(f"_Timestamp: {timestamp}_")
-            lines.append("")
-
-            formatted_text = _format_text(text)
-            if formatted_text:
-                lines.append(formatted_text)
-                lines.append("")
-
-            for att in msg_atts:
-                _append_attachment(att, lines)
-            lines.append("")
-
-        # Orphaned attachments
-        orphan_keys = [key for key in attachments_by_message if key not in message_ids]
-        if orphan_keys:
-            lines.append("## attachments")
-            lines.append("")
-            for key in sorted(orphan_keys, key=lambda item: (item is None, str(item) if item else "")):
-                for att in attachments_by_message.get(key, []):
-                    _append_attachment(att, lines)
-            lines.append("")
-
-        return "\n".join(lines).strip() + "\n"
-
     async def render(self, conversation_id: str, output_path: Path) -> Path:
         """Render a conversation to enhanced HTML format.
 
-        Pipeline: DB query (async) → CPU render (thread) → file write (thread).
-        The DB connection is released before CPU work begins, keeping pool
-        connections available for other workers.
+        Pipeline: repository projection (async) → CPU render (thread) → file write (thread).
         """
-        # Phase 1: Single DB query — borrows and returns connection quickly
-        metadata, messages, attachments = await self._fetch_conversation_data(conversation_id)
+        projection = await self._formatter.load_projection(conversation_id)
+        formatted = self._formatter.format_projection(projection)
 
         # Phase 2: CPU work in thread pool (Pygments, MarkdownIt, Jinja2)
         md_text, html_content = await asyncio.to_thread(
-            self._render_content_sync, metadata, messages, attachments,
+            self._render_content_sync, formatted, projection,
         )
 
         # Phase 3: File writes in thread pool
-        render_root_path = render_root(output_path, metadata["provider"], conversation_id)
+        render_root_path = render_root(output_path, formatted.provider, conversation_id)
 
         def _write_files() -> None:
             render_root_path.mkdir(parents=True, exist_ok=True)
@@ -565,18 +404,17 @@ def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
     for msg in conv.messages:
         if not msg.text:
             continue
-        role = msg.role or "message"
-        html_content = md_renderer.render(msg.text)
-        raw_messages.append({
-            "id": msg.id,
-            "role": role,
-            "role_class": _role_css_class(role),
-            "text": msg.text[:120],
-            "html_content": html_content,
-            "timestamp": str(msg.timestamp) if msg.timestamp else None,
-            "parent_message_id": msg.parent_id,
-            "branch_index": msg.branch_index,
-        })
+        raw_messages.append(
+            _html_message_entry(
+                message_id=msg.id,
+                role=msg.role,
+                text=msg.text,
+                timestamp=str(msg.timestamp) if msg.timestamp else None,
+                parent_message_id=msg.parent_id,
+                branch_index=msg.branch_index,
+                md_renderer=md_renderer,
+            )
+        )
 
     messages = _attach_branches(raw_messages)
     title = conv.display_title or str(conv.id)

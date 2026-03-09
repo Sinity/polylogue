@@ -11,7 +11,11 @@ from pydantic import ValidationError
 from polylogue.lib.log import get_logger
 from polylogue.sources.providers.codex import CodexRecord
 
-from .base import ParsedConversation, ParsedMessage, normalize_role
+from polylogue.lib.branch_type import BranchType
+from polylogue.lib.roles import Role
+from polylogue.types import Provider
+
+from .base import ParsedConversation, ParsedMessage, content_blocks_from_segments
 
 logger = get_logger(__name__)
 
@@ -132,7 +136,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
 
             if not raw_role or raw_role == "unknown" or not text:
                 continue
-            role = normalize_role(raw_role)
+            role = Role.normalize(raw_role)
 
             # Get message ID from the record
             msg_id = record.id or f"msg-{idx}"
@@ -146,19 +150,31 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             if record.instructions:
                 msg_meta["instructions"] = record.instructions
 
+            # Build content blocks from the raw content field
+            raw_content = None
+            if record.content:
+                raw_content = record.content
+            elif record.payload and isinstance(record.payload, dict):
+                raw_content = record.payload.get("content")
+            content_blocks = content_blocks_from_segments(raw_content) if raw_content else []
+            if not content_blocks and text:
+                from .base import ParsedContentBlock
+                content_blocks = [ParsedContentBlock(type="text", text=text)]
+
             messages.append(
                 ParsedMessage(
                     provider_message_id=msg_id,
                     role=role,
                     text=text,
                     timestamp=record.timestamp,
+                    content_blocks=content_blocks,
                     provider_meta=msg_meta,
                 )
             )
 
     # Second session_meta ID (if present) is the parent session
     parent_id = session_metas_seen[1] if len(session_metas_seen) > 1 else None
-    branch_type = "continuation" if parent_id else None
+    branch_type = BranchType.CONTINUATION if parent_id else None
 
     # Build conversation-level provider_meta with session context
     conv_meta: dict[str, object] | None = None
@@ -170,7 +186,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             conv_meta["instructions"] = session_instructions
 
     return ParsedConversation(
-        provider_name="codex",
+        provider_name=Provider.CODEX,
         provider_conversation_id=session_id,
         title=session_id,
         created_at=session_timestamp,

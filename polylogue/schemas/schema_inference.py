@@ -904,7 +904,7 @@ def get_sample_count_from_db(
             SELECT COUNT(*)
             FROM messages m
             JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name = ? AND m.provider_meta IS NOT NULL
+            WHERE c.provider_name = ?
         """, (provider_name,)).fetchone()
         return row[0] if row else 0
     finally:

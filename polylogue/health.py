@@ -607,7 +607,7 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
             # Insert missing entries into FTS
             inserted = conn.execute(
                 """
-                INSERT INTO messages_fts (rowid, message_id, conversation_id, content)
+                INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
                 SELECT m.rowid, m.message_id, m.conversation_id, m.text FROM messages m
                 WHERE NOT EXISTS (SELECT 1 FROM messages_fts f WHERE f.rowid = m.rowid)
                 """

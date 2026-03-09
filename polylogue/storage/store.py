@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import sqlite3
+from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from polylogue.errors import DatabaseError
+from polylogue.lib.branch_type import BranchType
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
-from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId
-
-# Valid provider name pattern: starts with letter, contains only letters, numbers, hyphens, underscores
-_PROVIDER_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+from polylogue.lib.hashing import hash_text
+from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
 
 # Maximum reasonable file size (1TB)
 MAX_ATTACHMENT_SIZE = 1024 * 1024 * 1024 * 1024
@@ -39,22 +38,14 @@ class ConversationRecord(BaseModel):
     version: int = 1
     # Branching support: links conversations in session trees
     parent_conversation_id: ConversationId | None = None
-    branch_type: str | None = None  # "continuation", "sidechain", "fork"
+    branch_type: BranchType | None = None
     # Link to raw source data (FK to raw_conversations.raw_id)
     raw_id: str | None = None
 
-    @field_validator("provider_name")
-    @classmethod
-    def validate_provider_name(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("provider_name cannot be empty")
-        v = v.strip()
-        if not _PROVIDER_NAME_PATTERN.match(v):
-            raise ValueError(
-                f"provider_name '{v}' is invalid. Must start with a letter and "
-                "contain only letters, numbers, hyphens, and underscores."
-            )
-        return v
+    @property
+    def provider(self) -> Provider:
+        """Typed provider enum derived from provider_name string."""
+        return Provider.from_string(self.provider_name)
 
     @field_validator("conversation_id", "provider_conversation_id", "content_hash")
     @classmethod
@@ -64,20 +55,51 @@ class ConversationRecord(BaseModel):
         return v
 
 
+class ContentBlockRecord(BaseModel):
+    """A single structured content block belonging to a message.
+
+    Content blocks are the canonical representation of message content.
+    Block types: text, thinking, tool_use, tool_result, image, code, document.
+    """
+
+    block_id: str
+    message_id: MessageId
+    conversation_id: ConversationId
+    block_index: int
+    type: str
+    text: str | None = None
+    tool_name: str | None = None
+    tool_id: str | None = None
+    tool_input: str | None = None  # JSON-serialized dict
+    media_type: str | None = None
+    metadata: str | None = None  # JSON-serialized dict
+
+    @classmethod
+    def make_id(cls, message_id: str, block_index: int) -> str:
+        return f"blk-{hash_text(f'{message_id}:{block_index}')[:16]}"
+
+
 class MessageRecord(BaseModel):
     message_id: MessageId
     conversation_id: ConversationId
     provider_message_id: str | None = None
     role: str | None = None
-    text: str | None = None
-    timestamp: str | None = None
+    text: str | None = None  # Concatenated text from text-type content blocks
     sort_key: float | None = None  # Pre-computed numeric timestamp for ORDER BY
     content_hash: ContentHash
-    provider_meta: dict[str, object] | None = None
     version: int = 1
     # Branching support: links messages in conversation trees
     parent_message_id: MessageId | None = None
     branch_index: int = 0  # 0 = mainline, >0 = branch sibling position
+    # Content blocks loaded alongside the message (not stored in messages table)
+    content_blocks: list[ContentBlockRecord] = Field(default_factory=list)
+
+    @property
+    def role_typed(self):
+        """Typed Role enum derived from role string."""
+        from polylogue.lib.roles import Role
+        raw = (self.role or "").strip() or "unknown"
+        return Role.normalize(raw)
 
     @field_validator("message_id", "conversation_id", "content_hash")
     @classmethod
@@ -151,6 +173,12 @@ class RawConversationRecord(BaseModel):
     file_mtime: str | None = None  # File modification time if available
     parsed_at: str | None = None  # ISO timestamp of last successful parse
     parse_error: str | None = None  # Error from last failed parse attempt
+    validated_at: str | None = None  # ISO timestamp of last validation attempt
+    validation_status: str | None = None  # "passed" | "failed" | "skipped"
+    validation_error: str | None = None  # Error from last failed validation attempt
+    validation_drift_count: int | None = None  # Drift warnings seen during last validation
+    validation_provider: str | None = None  # Canonical provider used for validation schema
+    validation_mode: str | None = None  # Validation mode used ("off" | "advisory" | "strict")
 
     @field_validator("raw_id", "provider_name", "source_path")
     @classmethod
@@ -169,9 +197,21 @@ class RawConversationRecord(BaseModel):
 
 class PlanResult(BaseModel):
     timestamp: int
+    stage: str = "all"
     counts: dict[str, int]
+    details: dict[str, int] = Field(default_factory=dict)
     sources: list[str]
     cursors: dict[str, dict[str, Any]]
+
+
+class RawConversationState(BaseModel):
+    raw_id: str
+    source_name: str | None = None
+    source_path: str | None = None
+    parsed_at: str | None = None
+    parse_error: str | None = None
+    validation_status: str | None = None
+    validation_provider: str | None = None
 
 
 class RunResult(BaseModel):
@@ -187,6 +227,15 @@ class RunResult(BaseModel):
 class ExistingConversation(BaseModel):
     conversation_id: str
     content_hash: str
+
+
+@dataclass(frozen=True)
+class ConversationRenderProjection:
+    """Repository-owned render projection preserving raw attachment layout."""
+
+    conversation: ConversationRecord
+    messages: list[MessageRecord]
+    attachments: list[AttachmentRecord]
 
 
 def _json_or_none(value: dict[str, object] | None) -> str | None:
@@ -251,16 +300,31 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
     return MessageRecord(
         message_id=row["message_id"],
         conversation_id=row["conversation_id"],
-        provider_message_id=row["provider_message_id"],
-        role=row["role"],
-        text=row["text"],
-        timestamp=row["timestamp"],
+        provider_message_id=_row_get(row, "provider_message_id"),
+        role=_row_get(row, "role"),
+        text=_row_get(row, "text"),
         sort_key=_row_get(row, "sort_key"),
         content_hash=row["content_hash"],
-        provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
         version=row["version"],
         parent_message_id=_row_get(row, "parent_message_id"),
         branch_index=_row_get(row, "branch_index", 0) or 0,
+    )
+
+
+def _row_to_content_block(row: sqlite3.Row) -> ContentBlockRecord:
+    """Map a SQLite row to a ContentBlockRecord."""
+    return ContentBlockRecord(
+        block_id=row["block_id"],
+        message_id=MessageId(row["message_id"]),
+        conversation_id=ConversationId(row["conversation_id"]),
+        block_index=row["block_index"],
+        type=row["type"],
+        text=_row_get(row, "text"),
+        tool_name=_row_get(row, "tool_name"),
+        tool_id=_row_get(row, "tool_id"),
+        tool_input=_row_get(row, "tool_input"),
+        media_type=_row_get(row, "media_type"),
+        metadata=_row_get(row, "metadata"),
     )
 
 
@@ -277,14 +341,22 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
         file_mtime=row["file_mtime"],
         parsed_at=_row_get(row, "parsed_at"),
         parse_error=_row_get(row, "parse_error"),
+        validated_at=_row_get(row, "validated_at"),
+        validation_status=_row_get(row, "validation_status"),
+        validation_error=_row_get(row, "validation_error"),
+        validation_drift_count=_row_get(row, "validation_drift_count"),
+        validation_provider=_row_get(row, "validation_provider"),
+        validation_mode=_row_get(row, "validation_mode"),
     )
 
 
 __all__ = [
     "AttachmentRecord",
+    "ContentBlockRecord",
     "ConversationRecord",
     "MAX_ATTACHMENT_SIZE",
     "MessageRecord",
     "RawConversationRecord",
     "RunRecord",
+    "_row_to_content_block",
 ]

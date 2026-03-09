@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from .base import ParsedAttachment, ParsedConversation, ParsedMessage, normalize_role
+from polylogue.lib.roles import Role
+from polylogue.types import Provider
+
+from .base import ParsedAttachment, ParsedContentBlock, ParsedConversation, ParsedMessage
 
 
 def _coerce_float(value: object) -> float | None:
@@ -50,7 +53,7 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
         raw_role = author.get("role") if isinstance(author, dict) else None
         if not raw_role:
             continue
-        role = normalize_role(raw_role)
+        role = Role.normalize(raw_role)
         timestamp = msg.get("create_time")
         msg_id = msg.get("id") or node.get("id") or ""
         if not msg_id:
@@ -125,38 +128,32 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
         if isinstance(end_turn, bool):
             meta["end_turn"] = end_turn
 
-        # Extract structured content blocks for semantic detection
+        # Build structured content blocks
+        content_blocks: list[ParsedContentBlock] = []
         content_type = content.get("content_type", "text")
         if content_type in ("thoughts", "reasoning_recap"):
             # ChatGPT thinking/reasoning blocks
-            meta["content_blocks"] = [{
-                "type": "thinking",
-                "content_type": content_type,
-                "text": text,
-            }]
+            content_blocks.append(ParsedContentBlock(
+                type="thinking",
+                text=text,
+                metadata={"content_type": content_type},
+            ))
         elif parts:
-            # Regular content - preserve as text blocks
-            content_blocks = []
             for part in parts:
                 if isinstance(part, str) and part:
-                    content_blocks.append({
-                        "type": "text",
-                        "text": part,
-                    })
+                    content_blocks.append(ParsedContentBlock(type="text", text=part))
                 elif isinstance(part, dict) and part.get("content_type") == "image_asset_pointer":
-                    # Preserve image attachment references
-                    content_blocks.append({
-                        "type": "image",
-                        "asset_pointer": str(part.get("asset_pointer", "")),
-                    })
-            if content_blocks:
-                meta["content_blocks"] = content_blocks
+                    content_blocks.append(ParsedContentBlock(
+                        type="image",
+                        metadata={"asset_pointer": str(part.get("asset_pointer", ""))},
+                    ))
 
         parsed = ParsedMessage(
             provider_message_id=str(msg_id),
             role=role,
             text=text,
             timestamp=str(timestamp) if timestamp is not None else None,
+            content_blocks=content_blocks,
             parent_message_provider_id=parent_message_provider_id,
             branch_index=branch_index,
             provider_meta=meta,
@@ -198,7 +195,7 @@ def parse(payload: dict[str, object], fallback_id: str) -> ParsedConversation:
         conv_meta["is_archived"] = True
 
     return ParsedConversation(
-        provider_name="chatgpt",
+        provider_name=Provider.CHATGPT,
         provider_conversation_id=str(conv_id or fallback_id),
         title=str(title),
         created_at=str(payload.get("create_time")) if payload.get("create_time") is not None else None,

@@ -23,7 +23,8 @@ async def ensure_index(backend: SQLiteBackend) -> None:
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 message_id UNINDEXED,
                 conversation_id UNINDEXED,
-                content
+                text,
+                tokenize='unicode61'
             );
             """
         )
@@ -40,7 +41,7 @@ async def rebuild_index(backend: SQLiteBackend) -> None:
         await conn.execute("DELETE FROM messages_fts")
         await conn.execute(
             """
-            INSERT INTO messages_fts (message_id, conversation_id, content)
+            INSERT INTO messages_fts (message_id, conversation_id, text)
             SELECT messages.message_id, messages.conversation_id, messages.text
             FROM messages
             WHERE messages.text IS NOT NULL
@@ -79,7 +80,7 @@ async def update_index_for_conversations(
             )
             await conn.execute(
                 f"""
-                INSERT INTO messages_fts (message_id, conversation_id, content)
+                INSERT INTO messages_fts (message_id, conversation_id, text)
                 SELECT message_id, conversation_id, text
                 FROM messages
                 WHERE text IS NOT NULL AND conversation_id IN ({placeholders})
