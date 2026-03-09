@@ -49,13 +49,28 @@ class PlainConsole:
         pass
 
     def print(self, *objects: object, **_: object) -> None:
-        raw = " ".join(str(obj) for obj in objects)
-        # Strip Rich markup (e.g. [bold], [green], [/#d97757]) for plain output
-        try:
-            text = Text.from_markup(raw).plain
-        except Exception:
-            text = raw
-        print(text)
+        import io
+
+        from rich.console import Console as RichConsole
+        from rich.table import Table
+
+        parts = []
+        for obj in objects:
+            if isinstance(obj, Table):
+                # Render Rich tables to plain text via an in-memory console
+                buf = io.StringIO()
+                tmp = RichConsole(file=buf, highlight=False, no_color=True)
+                tmp.print(obj)
+                parts.append(buf.getvalue().rstrip())
+            else:
+                raw = str(obj)
+                # Strip Rich markup (e.g. [bold], [green], [/#d97757]) for plain output
+                try:
+                    raw = Text.from_markup(raw).plain
+                except Exception:
+                    pass
+                parts.append(raw)
+        print(" ".join(parts))
 
 
 @dataclass
