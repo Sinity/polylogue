@@ -499,8 +499,10 @@ class TestPrintSummaryAnalyticsVerbose:
             metric_kwargs = {"avg_user_words": 20.0, "avg_assistant_words": 100.0}
 
         metric = self._create_metric(provider_name="claude", **metric_kwargs)
+        mock_report = MagicMock(cached=False, age_seconds=0, checks=[])
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
+             patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
              patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
 
@@ -519,8 +521,10 @@ class TestPrintSummaryAnalyticsVerbose:
             tool_use_count=tool_use_count,
             tool_use_percentage=tool_use_percentage,
         )
+        mock_report = MagicMock(cached=False, age_seconds=0, checks=[])
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
+             patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
              patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
 
@@ -540,8 +544,10 @@ class TestPrintSummaryAnalyticsVerbose:
             thinking_count=thinking_count,
             thinking_percentage=thinking_percentage,
         )
+        mock_report = MagicMock(cached=False, age_seconds=0, checks=[])
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
+             patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
              patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
 
@@ -555,8 +561,10 @@ class TestPrintSummaryAnalyticsVerbose:
         """Test deep dive with multiple providers."""
         metric1 = self._create_metric(provider_name="claude", conversation_count=100)
         metric2 = self._create_metric(provider_name="chatgpt", conversation_count=50)
+        mock_report = MagicMock(cached=False, age_seconds=0, checks=[])
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
+             patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
              patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric1, metric2]):
 
@@ -592,8 +600,10 @@ class TestPrintSummaryAnalyticsError:
 
     def test_print_summary_analytics_exception_verbose(self, mock_env, mock_config):
         """Test that analytics exception is logged at debug level."""
+        mock_report = MagicMock(cached=False, age_seconds=0, checks=[])
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
+             patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
              patch("polylogue.cli.analytics.compute_provider_comparison", side_effect=RuntimeError("DB error")):
 
