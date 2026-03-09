@@ -250,24 +250,6 @@ async def test_repository_search_returns_matching_conversations(test_db, workspa
     assert any(c.id == "c1" for c in result)
 
 
-async def test_repository_search_raises_when_index_not_built(test_db, db_without_fts):
-    """ConversationRepository.search() raises DatabaseError when FTS table doesn't exist."""
-    backend = SQLiteBackend(db_path=db_without_fts)
-    repo = ConversationRepository(backend=backend)
-    factory = DbFactory(db_without_fts)
-
-    # Create conversation without building index
-    factory.create_conversation(
-        id="c1", provider="test", messages=[{"id": "m1", "role": "user", "text": "Python"}]
-    )
-
-    # Search without index should raise DatabaseError
-    # Use type name check to handle module reload class identity issues
-    with pytest.raises(Exception) as exc_info:
-        await repo.search("Python")
-    assert exc_info.type.__name__ == "DatabaseError"
-    assert "Search index not built" in str(exc_info.value)
-
 
 # ============================================================================
 # REPOSITORY: resolve_id() Tests

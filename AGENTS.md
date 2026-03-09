@@ -4,13 +4,15 @@
 
 ## Project Structure & Modules
 
-- `polylogue/cli/`: CLI commands (run, check, dashboard, mcp, auth, reset, completions).
+- `polylogue/cli/`: CLI commands (run, check, dashboard, mcp, auth, reset, demo, completions).
 - `polylogue/sources/`: Source detection, provider parsers (ChatGPT, Claude, Codex, Gemini), Drive integration.
 - `polylogue/pipeline/`: Ingestion → rendering → indexing orchestration.
-- `polylogue/storage/`: SQLite backend, async repository, FTS5/sqlite-vec search providers.
-- `polylogue/schemas/`: Unified schema, provider-specific models, schema inference.
-- `polylogue/lib/`: Core domain models, filters, projections, hashing, dates.
+- `polylogue/storage/`: SQLite backend, async repository, FTS5/sqlite-vec/hybrid search providers.
+- `polylogue/schemas/`: Unified schema, provider-specific models, schema inference (with privacy guards).
+- `polylogue/lib/`: Core domain models, filters, projections, hashing, dates, roles (no ROLE_MAP — use `normalize_role()`).
+- `polylogue/showcase/`: QA exercise catalog (`exercises.py`), runner (`runner.py`), report generator (`report.py`).
 - `polylogue/rendering/`: Markdown/HTML output renderers.
+- `polylogue/site/`: Static site generation.
 - `polylogue/ui/`: Terminal UI (Rich-based plain + Textual TUI).
 - `polylogue/mcp/`: Model Context Protocol server.
 - `flake.nix`: Nix flake with package, devShell, checks, and NixOS modules.
@@ -19,9 +21,10 @@
 ## Development Workflow
 
 - Enter the dev environment with `direnv allow` (preferred) or `nix develop`; the shell wires PATH, PYTHONPATH, and the project’s Python dependencies.
-- Tests: `nix develop -c pytest -q` (uses in-tree PYTHONPATH). CI parity: `nix flake check` builds + runs the packaged test suite.
+- Tests: `nix develop -c pytest -q --ignore=tests/integration` (fast unit run). CI parity: `nix flake check` builds + runs the packaged test suite.
 - Package/build: `nix build .#polylogue` (produces the wrapped CLI; no external TUI binaries are required).
-- Quick smoke: `nix develop -c POLYLOGUE_FORCE_PLAIN=1 uv run polylogue run --preview`.
+- Quick smoke: `POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue run --preview --source inbox` (use `--source inbox` to limit to the small seeded fixture set).
+- Showcase QA tier 0 (11 exercises, <2s): `POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue demo --showcase --tier 0`
 - Run `uv run polylogue --help` (or a specific subcommand) directly; every workflow is exposed via the CLI with the built-in pure Python prompts, enabling identical behaviour on macOS/Linux/Windows without extra binaries.
 - The first Drive action requests a Google OAuth client JSON and stores credentials/tokens under `$XDG_CONFIG_HOME/polylogue/`.
 
@@ -32,13 +35,23 @@
 ## Automation & Testing
 
 - Non-interactive paths automatically drop into a plain UI when stdout/stderr aren’t TTYs. Set `POLYLOGUE_FORCE_PLAIN=1` when you need deterministic plain mode in CI, use `--plain` to force it, or pass `--interactive` to re-enable the interactive prompts even without a TTY.
-- Smoke test with `POLYLOGUE_FORCE_PLAIN=1 uv run polylogue run --preview --source inbox` (or any configured source).
-- Run `pytest` regularly; new tests should live under `tests/`.
+- Smoke test with `POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue run --preview --source inbox`.
+- Run `nix develop -c pytest -q --ignore=tests/integration` regularly; new tests should live under `tests/`.
+- Test helpers are in `tests/infra/helpers.py` (ConversationBuilder, MessageBuilder, db_setup) — not `tests/helpers.py`.
+- Property law tests use Hypothesis and are named `test_*_laws.py`. Snapshot tests use syrupy (update with `--snapshot-update`).
+- Mutation testing: `nix develop -c mutmut run` — scoped to 8 fast modules in `[tool.mutmut]` in pyproject.toml.
 - Use `polylogue run --preview` to confirm resolved sources and output paths while debugging CI or support issues.
+- **Showcase QA**: `polylogue demo --showcase --tier N` (N=0,1,2). `--live` runs against real data (read-only). Live showcase output only flushes at process completion — don’t kill early.
 - Avoid duplicate work paths: if two stages/modules do the same transformation, consolidate to one canonical path.
 - When fixing architectural issues, edit/replace existing code paths instead of accreting parallel workaround layers.
 - Before handoff, clean session-created scratch artifacts and check `git status --short`; explicitly call out any intentionally kept generated files.
 - For significant boundary/architecture changes, include targeted regression tests and a before/after timing sample on representative inputs.
+
+### Notable recent API changes (2026-03-08)
+- `polylogue/lib/roles.py`: `ROLE_MAP` removed — it was a dead export inconsistent with `Role.normalize()`. Use `normalize_role()` or `Role.normalize()` directly.
+- `polylogue/sources/source.py`: `_decode_json_bytes()` now strips BOM chars (`\ufeff`) after decoding.
+- `polylogue/schemas/schema_inference.py`: Three privacy guards added — cross-conversation enum threshold, key denylist (`body`/`message`/`input`/`output`), private TLD rejection (`.local`/`.lan`/`.corp`/`.internal`/`.home`).
+- `polylogue/storage/search_providers/hybrid.py`: `reciprocal_rank_fusion()` deduplicates within a list (first/best-rank wins). `search_conversations(limit=0)` returns `[]` correctly.
 
 ## Style & Naming
 

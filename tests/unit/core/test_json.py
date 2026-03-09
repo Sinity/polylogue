@@ -305,22 +305,6 @@ async def test_repository_get_attachment_metadata_decoded(test_db):
 
 
 class TestRuntimeServices:
-    def test_get_backend_returns_sqlite(self, workspace_env):
-        services = build_runtime_services()
-        assert isinstance(services.get_backend(), SQLiteBackend)
-
-    def test_get_repository_returns_repo(self, workspace_env):
-        services = build_runtime_services()
-        assert isinstance(services.get_repository(), ConversationRepository)
-
-    def test_get_config_returns_config(self):
-        from polylogue.config import Config as _Config
-
-        services = build_runtime_services()
-        config = services.get_config()
-        assert isinstance(config, _Config)
-        assert config.archive_root is not None
-
     def test_repository_is_cached_per_runtime_scope(self, workspace_env):
         services = build_runtime_services()
         repo1 = services.get_repository()

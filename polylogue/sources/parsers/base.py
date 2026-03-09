@@ -11,21 +11,47 @@ from polylogue.lib.security import sanitize_path as _sanitize_path_helper
 from polylogue.types import Provider
 
 __all__ = [
+    "ParsedContentBlock",
     "ParsedMessage",
     "ParsedAttachment",
     "ParsedConversation",
     "RawConversationData",
     "normalize_role",
+    "content_blocks_from_segments",
     "extract_messages_from_list",
     "attachment_from_meta",
 ]
 
 
+class ParsedContentBlock(BaseModel):
+    """A single structured content block within a parsed message.
+
+    Block types:
+    - text: regular text content
+    - thinking: extended reasoning traces
+    - tool_use: tool invocation (tool_name, tool_id, tool_input required)
+    - tool_result: tool response (tool_id, text required)
+    - image: image reference (media_type, metadata for asset pointer)
+    - code: code block, language-detected (text required)
+    - document: document reference
+    """
+
+    type: str
+    text: str | None = None
+    tool_name: str | None = None
+    tool_id: str | None = None
+    tool_input: dict[str, object] | None = None
+    media_type: str | None = None
+    metadata: dict[str, object] | None = None
+
+
 class ParsedMessage(BaseModel):
     provider_message_id: str
     role: Role
-    text: str | None = None
+    text: str | None = None  # Concatenated text from text-type blocks (for FTS5 and rendering)
     timestamp: str | None = None
+    content_blocks: list[ParsedContentBlock] = Field(default_factory=list)
+    # raw provider API data — stored in message_meta table, not messages
     provider_meta: dict[str, object] | None = None
     parent_message_provider_id: str | None = None
     branch_index: int = 0
@@ -105,6 +131,68 @@ class RawConversationData(BaseModel):
     source_index: int | None = None
     file_mtime: str | None = None
     provider_hint: str | None = None  # Provider detected from path/content
+
+
+def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
+    """Convert raw API content (str, list, dict) to ParsedContentBlock list.
+
+    Handles the common Claude/Codex content format:
+    - str: single text block
+    - list: typed segment dicts (text, thinking, tool_use, tool_result, image)
+    - other: returns empty list
+    """
+    if isinstance(content, str):
+        return [ParsedContentBlock(type="text", text=content)] if content else []
+    if not isinstance(content, list):
+        return []
+    blocks: list[ParsedContentBlock] = []
+    for seg in content:
+        if isinstance(seg, str):
+            if seg:
+                blocks.append(ParsedContentBlock(type="text", text=seg))
+            continue
+        if not isinstance(seg, dict):
+            continue
+        seg_type = seg.get("type", "text")
+        if seg_type == "thinking":
+            text = seg.get("thinking") or seg.get("text") or ""
+            if text:
+                blocks.append(ParsedContentBlock(type="thinking", text=text))
+        elif seg_type == "tool_use":
+            blocks.append(ParsedContentBlock(
+                type="tool_use",
+                tool_name=seg.get("name"),
+                tool_id=seg.get("id"),
+                tool_input=seg.get("input") if isinstance(seg.get("input"), dict) else None,
+            ))
+        elif seg_type == "tool_result":
+            result_content = seg.get("content")
+            result_text = None
+            if isinstance(result_content, str):
+                result_text = result_content
+            elif isinstance(result_content, list):
+                text_parts = [
+                    b.get("text", "") for b in result_content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                result_text = "\n".join(p for p in text_parts if p) or None
+            blocks.append(ParsedContentBlock(
+                type="tool_result",
+                tool_id=seg.get("tool_use_id"),
+                text=result_text,
+            ))
+        elif seg_type in ("image", "document"):
+            blocks.append(ParsedContentBlock(
+                type=seg_type,
+                media_type=seg.get("media_type"),
+                metadata={k: v for k, v in seg.items() if k not in ("type", "media_type")},
+            ))
+        else:
+            # Generic text block
+            text = seg.get("text") or seg.get("content") or ""
+            if text:
+                blocks.append(ParsedContentBlock(type="text", text=str(text)))
+    return blocks
 
 
 def _make_attachment_id(seed: str) -> str:

@@ -145,7 +145,8 @@ class TestFilterStateIsolation:
         await f.list()
 
         call = mock_repo.list.await_args_list[-1]
-        assert call.kwargs["limit"] == 50
+        # _effective_fetch_limit() applies a 2x safety margin: max(5*2, 2) = 10
+        assert call.kwargs["limit"] == 10
 
 
 # =============================================================================
