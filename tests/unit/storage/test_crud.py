@@ -811,11 +811,10 @@ class TestBackendComparison:
             tool_calls_found += len(new_msg.tool_calls)
             reasoning_found += len(new_msg.reasoning_traces)
 
-        assert tool_calls_found >= 0
-        assert reasoning_found >= 0
-        print(f"Reasoning traces extracted: {reasoning_found}")
-
-        assert tool_calls_found > 0 or reasoning_found >= 0, "New extraction should find viewports"
+        assert processed > 0
+        assert tool_calls_found > 0 or reasoning_found > 0, (
+            "New extraction should find tool calls or reasoning traces"
+        )
 
 
 class TestTransactionAtomicity:

@@ -324,8 +324,8 @@ def test_parse_json_payload_recursion_depth_limit():
     # The recursion limit prevents infinite loops but still returns an empty conversation
     result = _parse_json_payload("chatgpt", payload, "test-deep")
     assert isinstance(result, list)
-    # Should still return a result, but with no messages due to empty mapping
-    assert len(result) >= 0
+    # Deep nesting with empty mapping produces no conversations or empty conversations
+    assert all(len(c.messages) == 0 for c in result)
 
 
 def test_parse_json_payload_shallow_nesting_succeeds():

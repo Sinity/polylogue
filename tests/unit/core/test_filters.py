@@ -516,7 +516,7 @@ class TestFiltersApplyFiltersLogic:
         results = await (ConversationFilter(filter_repo_populated)
                    .sort(sort_key)
                    .list())
-        assert len(results) >= 0
+        assert len(results) == 3, f"Sort '{sort_key}' should return all 3 conversations"
 
 
 class TestFiltersIDPrefixResolution:

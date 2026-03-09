@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 from datetime import datetime
 
-from hypothesis import given
+from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from polylogue.lib.hashing import hash_payload, hash_text, hash_text_short
@@ -157,10 +157,10 @@ def test_message_role_enum_cached(role: str) -> None:
 
 
 @given(st.text(min_size=1, max_size=1000), st.sampled_from(["user", "assistant"]))
-def test_message_word_count_nonnegative(text: str, role: str) -> None:
-    """Word count is always non-negative."""
+def test_message_word_count_matches_split(text: str, role: str) -> None:
+    """Word count matches len(text.split())."""
     msg = Message(id="1", role=role, text=text)
-    assert msg.word_count >= 0
+    assert msg.word_count == len(text.split())
 
 
 @given(st.sampled_from(["user", "human"]))
@@ -257,9 +257,9 @@ def test_projection_filter_preserves_order(texts: list[str]) -> None:
     user_messages = conv.project().user_messages().to_list()
 
     # Verify order is preserved (ids should be increasing)
-    if len(user_messages) > 1:
-        ids = [int(m.id) for m in user_messages]
-        assert ids == sorted(ids)
+    assume(len(user_messages) > 1)
+    ids = [int(m.id) for m in user_messages]
+    assert ids == sorted(ids)
 
 
 @given(st.lists(st.text(min_size=1), min_size=0, max_size=20))
@@ -301,9 +301,8 @@ def test_projection_reverse_inverts_order(texts: list[str]) -> None:
     reversed_result = conv.project().reverse().to_list()
 
     assert len(normal) == len(reversed_result)
-    if len(normal) > 0:
-        assert normal[0].id == reversed_result[-1].id
-        assert normal[-1].id == reversed_result[0].id
+    assert normal[0].id == reversed_result[-1].id
+    assert normal[-1].id == reversed_result[0].id
 
 
 # =============================================================================

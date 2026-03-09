@@ -470,7 +470,7 @@ class TestIterSourceConversationsErrorHandling:
         source = Source(name="test", path=json_file)
         with patch("polylogue.sources.source._parse_json_payload", side_effect=RuntimeError("unexpected")):
             list(iter_source_conversations(source, cursor_state=cursor_state))
-            assert cursor_state.get("failed_count", 0) >= 0
+            assert cursor_state.get("failed_count", 0) == 1, "One file failed, failed_count should be 1"
 
 
 # =============================================================================
@@ -674,7 +674,8 @@ class TestCursorStateLatestMtimeOsError:
 
         with patch.object(Path, "stat", mock_stat_error):
             list(iter_source_conversations(source, cursor_state=cursor_state))
-            assert cursor_state.get("file_count", 0) >= 0
+            assert cursor_state.get("file_count") == 1, "file_count set before stat() is called"
+            assert "latest_mtime" not in cursor_state, "stat error should prevent latest_mtime from being set"
 
 
 # =============================================================================
