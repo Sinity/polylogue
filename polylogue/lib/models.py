@@ -252,12 +252,23 @@ class Message(BaseModel):
     @property
     def is_tool_use(self) -> bool:
         """Message contains tool/function calls or results."""
-        # Check structured content_blocks (populated at parse time)
+        # Primary: check content_blocks loaded from DB
+        if any(b.get("type") in ("tool_use", "tool_result") for b in self.content_blocks):
+            return True
+
+        # Direct provider_meta checks (for directly-constructed messages with provider_meta)
         if self.provider_meta:
-            blocks = self.provider_meta.get("content_blocks", [])
-            if isinstance(blocks, list) and any(
-                isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result") for b in blocks
+            pm = self.provider_meta
+            if any(
+                isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result")
+                for b in pm.get("content_blocks") or []
             ):
+                return True
+            if pm.get("isSidechain") or pm.get("isMeta"):
+                return True
+            # Harmonized view (for raw provider_meta with nested message.content)
+            harmonized = self.harmonized
+            if harmonized and harmonized.tool_calls:
                 return True
 
         # ChatGPT role=tool: distinguish thinking from actual tools
@@ -274,18 +285,26 @@ class Message(BaseModel):
     @property
     def is_thinking(self) -> bool:
         """Message contains reasoning/thinking traces."""
-        # Check structured content_blocks (populated at parse time)
-        if self.provider_meta:
-            blocks = self.provider_meta.get("content_blocks", [])
-            if isinstance(blocks, list) and any(isinstance(b, dict) and b.get("type") == "thinking" for b in blocks):
-                return True
+        # Primary: check content_blocks loaded from DB
+        if any(b.get("type") == "thinking" for b in self.content_blocks):
+            return True
 
-        # Gemini isThought marker (from raw data)
+        # Direct provider_meta checks (for directly-constructed messages with provider_meta)
         if self.provider_meta:
-            if self.provider_meta.get("isThought"):
+            pm = self.provider_meta
+            if any(
+                isinstance(b, dict) and b.get("type") == "thinking"
+                for b in pm.get("content_blocks") or []
+            ):
+                return True
+            if pm.get("isThought"):
                 return True
             raw = self.provider_meta.get("raw", {})
             if isinstance(raw, dict) and raw.get("isThought"):
+                return True
+            # Harmonized view (for raw provider_meta with nested message.content)
+            harmonized = self.harmonized
+            if harmonized and harmonized.reasoning_traces:
                 return True
 
         # ChatGPT content_type check (from raw data)
@@ -348,11 +367,29 @@ class Message(BaseModel):
         """Extract thinking content if present.
 
         Checks (in order):
-        1. Structured content_blocks with type "thinking" (Claude API format)
-        2. XML <thinking> tags in message text (legacy/antml format)
-        3. Full message text for Gemini isThought or ChatGPT thinking messages
+        1. content_blocks from DB (primary v3 path — type "thinking" rows)
+        2. Harmonized reasoning traces (Claude Code with raw provider_meta)
+        3. Structured content_blocks in provider_meta (for directly-constructed messages)
+        4. XML <thinking> tags in message text (legacy/antml format)
+        5. Full message text for Gemini isThought or ChatGPT thinking messages
         """
-        # 1. Structured content_blocks (Claude API format)
+        # 1. content_blocks from DB (primary path — populated at ingest time)
+        db_texts = [
+            b["text"]
+            for b in self.content_blocks
+            if b.get("type") == "thinking" and isinstance(b.get("text"), str)
+        ]
+        if db_texts:
+            return "\n\n".join(db_texts).strip() or None
+
+        # 2. Harmonized reasoning traces (Claude Code with raw provider_meta)
+        harmonized = self.harmonized
+        if harmonized and harmonized.reasoning_traces:
+            texts = [t.text for t in harmonized.reasoning_traces if t.text]
+            if texts:
+                return "\n\n".join(texts).strip() or None
+
+        # 3. Structured content_blocks in provider_meta (for directly-constructed messages)
         if self.provider_meta:
             blocks = self.provider_meta.get("content_blocks", [])
             if isinstance(blocks, list):
@@ -364,13 +401,13 @@ class Message(BaseModel):
                 if thinking_texts:
                     return "\n\n".join(thinking_texts).strip() or None
 
-        # 2. XML tags in text (legacy/antml format)
+        # 4. XML tags in text (legacy/antml format)
         if self.text:
             match = re.search(r"<(?:antml:)?thinking>(.*?)</(?:antml:)?thinking>", self.text, re.DOTALL)
             if match:
                 return match.group(1).strip()
 
-        # 3. Gemini/ChatGPT thinking: the message text IS the thinking content
+        # 5. Gemini/ChatGPT thinking: the message text IS the thinking content
         if self.text and (self._is_chatgpt_thinking() or (self.provider_meta and self.provider_meta.get("isThought"))):
             return self.text.strip() or None
 
