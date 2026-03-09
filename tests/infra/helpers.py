@@ -22,6 +22,7 @@ from uuid import uuid4
 from polylogue.storage.backends.connection import connection_context, open_connection
 from polylogue.storage.store import (
     AttachmentRecord,
+    ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
     RunRecord,
@@ -155,29 +156,23 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             provider_message_id,
             role,
             text,
-            timestamp,
             sort_key,
             content_hash,
-            provider_meta,
             version,
             parent_message_id,
             branch_index
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(message_id) DO UPDATE SET
             role = excluded.role,
             text = excluded.text,
-            timestamp = excluded.timestamp,
             sort_key = excluded.sort_key,
             content_hash = excluded.content_hash,
-            provider_meta = excluded.provider_meta,
             parent_message_id = excluded.parent_message_id,
             branch_index = excluded.branch_index
         WHERE
             content_hash != excluded.content_hash
             OR IFNULL(role, '') != IFNULL(excluded.role, '')
             OR IFNULL(text, '') != IFNULL(excluded.text, '')
-            OR IFNULL(timestamp, '') != IFNULL(excluded.timestamp, '')
-            OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
             OR IFNULL(parent_message_id, '') != IFNULL(excluded.parent_message_id, '')
             OR branch_index != excluded.branch_index
         """,
@@ -187,16 +182,38 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             record.provider_message_id,
             record.role,
             record.text,
-            record.timestamp,
             record.sort_key,
             record.content_hash,
-            _json_or_none(record.provider_meta),
             record.version,
             record.parent_message_id,
             record.branch_index,
         ),
     )
-    return bool(res.rowcount > 0)
+    updated = bool(res.rowcount > 0)
+
+    # Persist content blocks if any
+    for blk in record.content_blocks:
+        conn.execute(
+            """
+            INSERT INTO content_blocks (
+                block_id, message_id, conversation_id, block_index,
+                type, text, tool_name, tool_id, tool_input, media_type, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id, block_index) DO UPDATE SET
+                type = excluded.type,
+                text = excluded.text,
+                tool_name = excluded.tool_name,
+                tool_id = excluded.tool_id,
+                tool_input = excluded.tool_input
+            """,
+            (
+                blk.block_id, blk.message_id, blk.conversation_id, blk.block_index,
+                blk.type, blk.text, blk.tool_name, blk.tool_id, blk.tool_input,
+                blk.media_type, blk.metadata,
+            ),
+        )
+
+    return updated
 
 
 def upsert_attachment(conn: sqlite3.Connection, record: AttachmentRecord) -> bool:
@@ -450,14 +467,39 @@ class ConversationBuilder:
 
         from polylogue.pipeline.prepare import _timestamp_sort_key
 
+        # Extract content_blocks from provider_meta if provided (legacy test format)
+        provider_meta = kwargs.pop("provider_meta", None)
+        raw_blocks = (provider_meta or {}).get("content_blocks") or []
+        extra_blocks: list[ContentBlockRecord] = []
+        for idx, blk in enumerate(raw_blocks):
+            extra_blocks.append(ContentBlockRecord(
+                block_id=f"blk-{msg_id}-{idx}",
+                message_id=msg_id,
+                conversation_id=self.conv.conversation_id,
+                block_index=idx,
+                type=blk.get("type", "text"),
+                text=blk.get("text"),
+                tool_name=blk.get("tool_name"),
+                tool_id=blk.get("tool_id"),
+                tool_input=(
+                    blk["input"] if isinstance(blk.get("input"), str)
+                    else __import__("json").dumps(blk["input"]) if blk.get("input") is not None
+                    else None
+                ),
+            ))
+
+        # Merge with any content_blocks already in kwargs
+        existing_blocks = kwargs.pop("content_blocks", [])
+        all_blocks = extra_blocks + list(existing_blocks)
+
         msg = MessageRecord(
             message_id=msg_id,
             conversation_id=self.conv.conversation_id,
             role=role,
             text=text,
-            timestamp=ts,
             sort_key=_timestamp_sort_key(ts) if ts is not None else None,
             content_hash=uuid4().hex[:16],
+            content_blocks=all_blocks,
             **kwargs,
         )
         self.messages.append(msg)
@@ -565,18 +607,49 @@ def make_message(
     Usage:
         msg = make_message("m1", role="assistant", text="Reply")
         msg = make_message("m1", content_hash="explicit-hash")  # Override hash
+        msg = make_message("m1", provider_meta={"content_blocks": [{"type": "thinking"}]})
     """
+    import json as _json
+
     from polylogue.pipeline.prepare import _timestamp_sort_key
 
     ts = timestamp or datetime.now(timezone.utc).isoformat()
+
+    # Extract content_blocks from provider_meta if provided (legacy test format)
+    provider_meta = kwargs.pop("provider_meta", None)
+    raw_blocks = (provider_meta or {}).get("content_blocks") or []
+    extra_blocks: list[ContentBlockRecord] = []
+    for idx, blk in enumerate(raw_blocks or []):
+        if not isinstance(blk, dict):
+            continue
+        tool_input = blk.get("input")
+        extra_blocks.append(ContentBlockRecord(
+            block_id=f"blk-{message_id}-{idx}",
+            message_id=message_id,
+            conversation_id=conversation_id,
+            block_index=idx,
+            type=blk.get("type", "text"),
+            text=blk.get("text"),
+            tool_name=blk.get("tool_name") or blk.get("name"),
+            tool_id=blk.get("tool_id") or blk.get("id"),
+            tool_input=(
+                tool_input if isinstance(tool_input, str)
+                else _json.dumps(tool_input) if tool_input is not None
+                else None
+            ),
+        ))
+
+    existing_blocks = kwargs.pop("content_blocks", [])
+    all_blocks = extra_blocks + list(existing_blocks)
+
     return MessageRecord(
         message_id=message_id,
         conversation_id=conversation_id,
         role=role,
         text=text,
-        timestamp=ts,
         sort_key=kwargs.pop("sort_key", _timestamp_sort_key(ts)),
         content_hash=kwargs.pop("content_hash", uuid4().hex[:16]),
+        content_blocks=all_blocks,
         **kwargs,
     )
 
@@ -744,12 +817,14 @@ class DbFactory:
         if messages:
             for msg in messages:
                 mid = msg.get("id") or str(uuid4())
+                from polylogue.pipeline.prepare import _timestamp_sort_key
+                ts = msg.get("timestamp") or datetime.now(timezone.utc).isoformat()
                 m_rec = MessageRecord(
                     message_id=mid,
                     conversation_id=cid,
                     role=msg.get("role", "user"),
                     text=msg.get("text", "hello"),
-                    timestamp=msg.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                    sort_key=_timestamp_sort_key(ts),
                     content_hash=uuid4().hex,
                 )
                 msg_recs.append(m_rec)

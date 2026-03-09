@@ -121,14 +121,14 @@ async def test_export_includes_attachments(workspace_env, tmp_path, storage_repo
 async def test_ingest_updates_metadata(workspace_env, storage_repository):
     bundle = RecordBundle(
         conversation=make_conversation("conv-update", provider_name="codex", title="Old", content_hash="hash-old", provider_meta={"source": "inbox"}),
-        messages=[make_message("msg-update", "conv-update", text="hello", timestamp="1", content_hash="msg-old", provider_meta={"k": "v"})],
+        messages=[make_message("msg-update", "conv-update", text="hello", content_hash="msg-old")],
         attachments=[],
     )
     await save_bundle(bundle, repository=storage_repository)
 
     updated = RecordBundle(
         conversation=make_conversation("conv-update", provider_name="codex", title="New", updated_at="2", content_hash="hash-new", provider_meta={"source": "inbox", "updated": True}),
-        messages=[make_message("msg-update", "conv-update", role="assistant", text="hello", timestamp="2", content_hash="msg-new", provider_meta={"k": "v2"})],
+        messages=[make_message("msg-update", "conv-update", role="assistant", text="hello", content_hash="msg-new")],
         attachments=[],
     )
     await save_bundle(updated, repository=storage_repository)
@@ -139,14 +139,13 @@ async def test_ingest_updates_metadata(workspace_env, storage_repository):
             ("conv-update",),
         ).fetchone()
         msg = conn.execute(
-            "SELECT role, timestamp, content_hash, provider_meta FROM messages WHERE message_id = ?",
+            "SELECT role, content_hash FROM messages WHERE message_id = ?",
             ("msg-update",),
         ).fetchone()
     assert convo["title"] == "New"
     assert convo["updated_at"] == "2"
     assert convo["content_hash"] == "hash-new"
     assert msg["role"] == "assistant"
-    assert msg["timestamp"] == "2"
     assert msg["content_hash"] == "msg-new"
 
 
@@ -160,7 +159,7 @@ async def test_ingest_updates_fields_without_hash_changes(workspace_env, storage
     realistic behavior — content_hash includes message content.
     """
     base_conversation = make_conversation("conv-hash-stable", provider_name="codex", title="Original", updated_at="1", content_hash="hash-v1", provider_meta={"source": "inbox"})
-    base_message = make_message("msg-stable", "conv-hash-stable", text="hello", timestamp="1", content_hash="msg-v1", provider_meta={"k": "v1"})
+    base_message = make_message("msg-stable", "conv-hash-stable", text="hello", content_hash="msg-v1")
     await save_bundle(
         RecordBundle(conversation=base_conversation, messages=[base_message], attachments=[]),
         repository=storage_repository,
@@ -169,7 +168,7 @@ async def test_ingest_updates_fields_without_hash_changes(workspace_env, storage
     updated = RecordBundle(
         conversation=make_conversation("conv-hash-stable", provider_name="codex", title="Updated title", updated_at="2", content_hash="hash-v2", provider_meta={"source": "inbox", "updated": True}),
         messages=[
-            make_message("msg-stable", "conv-hash-stable", role="assistant", text="hello", timestamp="3", content_hash="msg-v2", provider_meta={"k": "v2"})
+            make_message("msg-stable", "conv-hash-stable", role="assistant", text="hello", content_hash="msg-v2")
         ],
         attachments=[],
     )
@@ -181,23 +180,21 @@ async def test_ingest_updates_fields_without_hash_changes(workspace_env, storage
             ("conv-hash-stable",),
         ).fetchone()
         msg = conn.execute(
-            "SELECT role, timestamp, provider_meta FROM messages WHERE message_id = ?",
+            "SELECT role, content_hash FROM messages WHERE message_id = ?",
             ("msg-stable",),
         ).fetchone()
     assert convo["title"] == "Updated title"
     assert convo["updated_at"] == "2"
     convo_meta = json.loads(convo["provider_meta"])
-    msg_meta = json.loads(msg["provider_meta"])
     assert convo_meta["updated"] is True
     assert msg["role"] == "assistant"
-    assert msg["timestamp"] == "3"
-    assert msg_meta["k"] == "v2"
+    assert msg["content_hash"] == "msg-v2"
 
 
 async def test_ingest_removes_missing_attachments(workspace_env, storage_repository):
     bundle = RecordBundle(
         conversation=_conversation_record(),
-        messages=[make_message("msg:att", "conv:hash", text="hello", timestamp="1", content_hash="msg:att")],
+        messages=[make_message("msg:att", "conv:hash", text="hello", content_hash="msg:att")],
         attachments=[make_attachment("att-old", "conv:hash", "msg:att", mime_type="text/plain", size_bytes=10)],
     )
     await save_bundle(bundle, repository=storage_repository)
@@ -205,7 +202,7 @@ async def test_ingest_removes_missing_attachments(workspace_env, storage_reposit
     await save_bundle(
         RecordBundle(
             conversation=_conversation_record(),
-            messages=[make_message("msg:att", "conv:hash", text="hello", timestamp="1", content_hash="msg:att")],
+            messages=[make_message("msg:att", "conv:hash", text="hello", content_hash="msg:att")],
             attachments=[],
         ),
         repository=storage_repository,

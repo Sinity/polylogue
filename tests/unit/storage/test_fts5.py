@@ -74,7 +74,7 @@ async def test_search_includes_conversation_metadata(workspace_env, storage_repo
     assert hit.provider_name == "claude"
     assert hit.title == "My Conversation"
     assert hit.message_id == "msg1"
-    assert hit.timestamp == "2024-01-01T10:30:00Z"
+    assert hit.timestamp is not None and "2024-01-01" in hit.timestamp
     assert hit.source_name == "my-source"
 
 
@@ -209,10 +209,10 @@ def test_update_index_deletes_old_entries_from_conversation(test_conn):
     test_conn.execute(
         """
         INSERT INTO messages
-        (message_id, conversation_id, role, text, timestamp, content_hash, version)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (message_id, conversation_id, role, text, content_hash, version)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        ("msg2", "conv1", "user", "new message", "2024-01-01T00:01:00Z", "hash-msg2", 1),
+        ("msg2", "conv1", "user", "new message", "hash-msg2", 1),
     )
 
     # Update index
@@ -248,7 +248,6 @@ def test_batch_index_10k_messages(test_conn):
                 f"conv{i}",
                 "user" if j % 2 == 0 else "assistant",
                 f"message content {i}-{j} with searchable text",
-                f"2024-01-01T{i:02d}:{j:02d}:00Z",
                 f"hash-{i}-{j}",
                 1,
             )
@@ -256,8 +255,8 @@ def test_batch_index_10k_messages(test_conn):
         ]
         test_conn.executemany(
             """INSERT INTO messages
-               (message_id, conversation_id, role, text, timestamp, content_hash, version)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (message_id, conversation_id, role, text, content_hash, version)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             messages_batch,
         )
 

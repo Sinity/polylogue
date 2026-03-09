@@ -15,7 +15,7 @@ from polylogue.lib.branch_type import BranchType
 from polylogue.lib.roles import Role
 from polylogue.types import Provider
 
-from .base import ParsedConversation, ParsedMessage
+from .base import ParsedConversation, ParsedMessage, content_blocks_from_segments
 
 logger = get_logger(__name__)
 
@@ -150,12 +150,24 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             if record.instructions:
                 msg_meta["instructions"] = record.instructions
 
+            # Build content blocks from the raw content field
+            raw_content = None
+            if record.content:
+                raw_content = record.content
+            elif record.payload and isinstance(record.payload, dict):
+                raw_content = record.payload.get("content")
+            content_blocks = content_blocks_from_segments(raw_content) if raw_content else []
+            if not content_blocks and text:
+                from .base import ParsedContentBlock
+                content_blocks = [ParsedContentBlock(type="text", text=text)]
+
             messages.append(
                 ParsedMessage(
                     provider_message_id=msg_id,
                     role=role,
                     text=text,
                     timestamp=record.timestamp,
+                    content_blocks=content_blocks,
                     provider_meta=msg_meta,
                 )
             )
