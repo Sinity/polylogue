@@ -20,6 +20,7 @@ from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import (
     AttachmentRecord,
+    ContentBlockRecord,
     ConversationRecord,
     ConversationRenderProjection,
     MessageRecord,
@@ -629,6 +630,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         conversation: Conversation | ConversationRecord,
         messages: builtins.list[MessageRecord],
         attachments: builtins.list[AttachmentRecord],
+        content_blocks: builtins.list[ContentBlockRecord] | None = None,
     ) -> dict[str, int]:
         """Save a conversation with its messages and attachments atomically.
 
@@ -652,7 +654,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         else:
             conv_record = conversation
 
-        return await self._save_via_backend(conv_record, messages, attachments)
+        return await self._save_via_backend(conv_record, messages, attachments, content_blocks or [])
 
     def _conversation_to_record(self, conversation: Conversation) -> ConversationRecord:
         """Convert a Conversation model to a ConversationRecord.
@@ -695,6 +697,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         conversation: ConversationRecord,
         messages: builtins.list[MessageRecord],
         attachments: builtins.list[AttachmentRecord],
+        content_blocks: builtins.list[ContentBlockRecord] | None = None,
     ) -> dict[str, int]:
         """Internal implementation of save_conversation via backend.
 
@@ -756,6 +759,13 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
                 if messages:
                     await backend.save_messages(messages)
                     counts["messages"] = len(messages)
+
+                # Collect content blocks from messages if not supplied explicitly
+                all_blocks: builtins.list[ContentBlockRecord] = list(content_blocks or [])
+                for msg in messages:
+                    all_blocks.extend(msg.content_blocks)
+                if all_blocks:
+                    await backend.save_content_blocks(all_blocks)
 
                 new_attachment_ids: set[str] = {str(att.attachment_id) for att in attachments}
                 await backend.prune_attachments(conversation.conversation_id, new_attachment_ids)

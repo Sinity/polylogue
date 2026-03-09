@@ -31,6 +31,17 @@ _ASTERISK_ONLY = re.compile(r"^\*+$")
 _OPERATOR_PATTERN = re.compile(r"\b(AND|OR|NOT|NEAR)\b", re.IGNORECASE)
 
 
+def _sort_key_to_iso(sort_key: object) -> str | None:
+    """Convert a sort_key (epoch float) to an ISO 8601 string, or None."""
+    if sort_key is None:
+        return None
+    try:
+        from datetime import timezone
+        return datetime.fromtimestamp(float(sort_key), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
 @dataclass
 class SearchHit:
     conversation_id: str
@@ -174,7 +185,6 @@ def build_ranked_conversation_search_query(
         "conversations.provider_name",
         "conversations.source_name",
         "conversations.title",
-        "messages.timestamp",
         "messages.sort_key",
         "bm25(messages_fts) AS relevance",
     ]
@@ -302,7 +312,7 @@ def _search_messages_impl(
                 source_name=source_name,
                 message_id=row["message_id"],
                 title=row["title"],
-                timestamp=row["timestamp"],
+                timestamp=_sort_key_to_iso(row["sort_key"]),
                 snippet=row["snippet"],
                 conversation_path=conversation_path,
             )

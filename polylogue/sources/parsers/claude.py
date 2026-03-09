@@ -21,7 +21,7 @@ from polylogue.lib.branch_type import BranchType
 from polylogue.lib.roles import Role
 from polylogue.types import Provider
 
-from .base import ParsedAttachment, ParsedConversation, ParsedMessage, attachment_from_meta
+from .base import ParsedAttachment, ParsedContentBlock, ParsedConversation, ParsedMessage, attachment_from_meta, content_blocks_from_segments
 
 logger = get_logger(__name__)
 
@@ -203,6 +203,7 @@ def normalize_timestamp(ts: int | float | str | None) -> str | None:
     return None
 
 
+
 def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
@@ -232,6 +233,13 @@ def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[li
                 text = content.get("text") if isinstance(content.get("text"), str) else None
                 if text is None and isinstance(content.get("parts"), list):
                     text = "\n".join(str(part) for part in content["parts"] if part)
+        # Build content blocks from structured content if available
+        raw_content = item.get("content")
+        content_blocks = content_blocks_from_segments(raw_content) if isinstance(raw_content, list) else []
+        # Fall back to single text block if no structured content
+        if not content_blocks and text:
+            content_blocks = [ParsedContentBlock(type="text", text=text)]
+
         if text:
             messages.append(
                 ParsedMessage(
@@ -239,6 +247,7 @@ def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[li
                     role=role,
                     text=text,
                     timestamp=timestamp,
+                    content_blocks=content_blocks,
                     provider_meta={"raw": item},
                 )
             )
@@ -603,12 +612,19 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
             record.message.get("content") if isinstance(record.message, dict) else None
         )
 
+        # Build content blocks from the raw message content
+        raw_msg_content = record.message.get("content") if isinstance(record.message, dict) else None
+        content_blocks = content_blocks_from_segments(raw_msg_content) if raw_msg_content else []
+        if not content_blocks and text:
+            content_blocks = [ParsedContentBlock(type="text", text=text)]
+
         messages.append(
             ParsedMessage(
                 provider_message_id=msg_id,
                 role=role,
                 text=text or "",
                 timestamp=timestamp,
+                content_blocks=content_blocks,
                 provider_meta={"raw": item},
                 parent_message_provider_id=record.parentUuid,
             )
@@ -744,12 +760,18 @@ def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation
     for msg in conv.chat_messages:
         timestamp = normalize_timestamp(msg.created_at)
         if msg.text:
+            # Build content blocks from structured content if available
+            raw_content = msg.model_dump().get("content")
+            content_blocks = content_blocks_from_segments(raw_content) if isinstance(raw_content, list) else []
+            if not content_blocks and msg.text:
+                content_blocks = [ParsedContentBlock(type="text", text=msg.text)]
             messages.append(
                 ParsedMessage(
                     provider_message_id=msg.uuid,
                     role=msg.role_normalized,
                     text=msg.text,
                     timestamp=timestamp,
+                    content_blocks=content_blocks,
                     provider_meta={"raw": msg.model_dump()},
                 )
             )
