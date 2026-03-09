@@ -66,6 +66,10 @@ class ConversationQuerySpec:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
+    # Semantic content filters (EXISTS subquery on content_blocks.semantic_type)
+    filter_has_file_ops: bool = False
+    filter_has_git_ops: bool = False
+    filter_has_subagent: bool = False
 
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> ConversationQuerySpec:
@@ -93,6 +97,9 @@ class ConversationQuerySpec:
             min_messages=int(params["min_messages"]) if params.get("min_messages") else None,
             max_messages=int(params["max_messages"]) if params.get("max_messages") else None,
             min_words=int(params["min_words"]) if params.get("min_words") else None,
+            filter_has_file_ops=bool(params.get("filter_has_file_ops")),
+            filter_has_git_ops=bool(params.get("filter_has_git_ops")),
+            filter_has_subagent=bool(params.get("filter_has_subagent")),
         )
 
     def describe(self) -> list[str]:
@@ -120,6 +127,12 @@ class ConversationQuerySpec:
             parts.append("has: tool_use (sql)")
         if self.filter_has_thinking:
             parts.append("has: thinking (sql)")
+        if self.filter_has_file_ops:
+            parts.append("has: file_ops (sql)")
+        if self.filter_has_git_ops:
+            parts.append("has: git_ops (sql)")
+        if self.filter_has_subagent:
+            parts.append("has: subagent (sql)")
         if self.min_messages is not None:
             parts.append(f"min_messages: {self.min_messages}")
         if self.max_messages is not None:
@@ -153,6 +166,9 @@ class ConversationQuerySpec:
                 self.latest,
                 self.filter_has_tool_use,
                 self.filter_has_thinking,
+                self.filter_has_file_ops,
+                self.filter_has_git_ops,
+                self.filter_has_subagent,
                 self.min_messages is not None,
                 self.max_messages is not None,
                 self.min_words is not None,
@@ -195,6 +211,12 @@ class ConversationQuerySpec:
             filter_chain = filter_chain.has_tool_use()
         if self.filter_has_thinking:
             filter_chain = filter_chain.has_thinking()
+        if self.filter_has_file_ops:
+            filter_chain = filter_chain.has_file_operations()
+        if self.filter_has_git_ops:
+            filter_chain = filter_chain.has_git_operations()
+        if self.filter_has_subagent:
+            filter_chain = filter_chain.has_subagent_spawns()
         if self.min_messages is not None:
             filter_chain = filter_chain.min_messages(self.min_messages)
         if self.max_messages is not None:

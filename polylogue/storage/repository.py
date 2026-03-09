@@ -223,6 +223,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> builtins.list[ConversationSummary]:
         """List conversation summaries without loading messages.
 
@@ -240,6 +243,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             min_messages: Minimum message count
             max_messages: Maximum message count
             min_words: Minimum total word count
+            has_file_ops: Only conversations with file operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations with subagent blocks
 
         Returns:
             List of ConversationSummary objects
@@ -258,6 +264,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            has_file_ops=has_file_ops,
+            has_git_ops=has_git_ops,
+            has_subagent=has_subagent,
         )
         return [ConversationSummary.from_record(rec) for rec in conv_records]
 
@@ -275,6 +284,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> builtins.list[Conversation]:
         """List conversations with eager-loaded messages and attachments.
 
@@ -291,6 +303,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             min_messages: Minimum message count
             max_messages: Maximum message count
             min_words: Minimum total word count
+            has_file_ops: Only conversations with file operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations with subagent blocks
 
         Returns:
             List of Conversation objects with all data eager-loaded
@@ -308,6 +323,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            has_file_ops=has_file_ops,
+            has_git_ops=has_git_ops,
+            has_subagent=has_subagent,
         )
 
         # Fetch messages and attachments for all conversations in parallel
@@ -328,6 +346,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> int:
         """Count conversations matching filters.
 
@@ -342,6 +363,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             min_messages: Minimum message count
             max_messages: Maximum message count
             min_words: Minimum total word count
+            has_file_ops: Only conversations with file operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations with subagent blocks
 
         Returns:
             Count of matching conversations
@@ -357,6 +381,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             min_messages=min_messages,
             max_messages=max_messages,
             min_words=min_words,
+            has_file_ops=has_file_ops,
+            has_git_ops=has_git_ops,
+            has_subagent=has_subagent,
         )
 
     async def aggregate_message_stats(

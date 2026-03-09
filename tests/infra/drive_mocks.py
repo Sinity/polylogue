@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from polylogue.sources.drive_client import DriveNotFoundError
+
 
 @dataclass
 class MockCredentials:
@@ -255,13 +257,13 @@ class MockFilesResource:
     def get(self, fileId: str, fields: str = "id,name,mimeType,modifiedTime,size") -> MockGetResponse:
         """Mock files().get() method."""
         if fileId not in self.files:
-            raise Exception(f"File not found: {fileId}")
+            raise DriveNotFoundError(f"File not found: {fileId}")
         return MockGetResponse(file=self.files[fileId])
 
     def get_media(self, fileId: str) -> MockGetMediaResponse:
         """Mock files().get_media() method."""
         if fileId not in self.file_content:
-            raise Exception(f"File content not found: {fileId}")
+            raise DriveNotFoundError(f"File content not found: {fileId}")
         return MockGetMediaResponse(content=self.file_content[fileId])
 
 

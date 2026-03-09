@@ -782,3 +782,172 @@ class TestDeleteCascade:
             # Attachment should be pruned (ref_count was 1, now 0)
             att = conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'att1'").fetchone()[0]
             assert att == 0
+
+
+# ============================================================================
+# Tests for semantic content_blocks filters (schema v3)
+# ============================================================================
+
+
+@pytest.fixture
+def filter_db_semantic(tmp_path):
+    """Database with conversations classified by semantic_type in content_blocks."""
+    db_path = tmp_path / "filter_semantic.db"
+
+    # Conv with file read/write operations
+    (ConversationBuilder(db_path, "conv-file-ops")
+     .provider("claude-code")
+     .title("File editing session")
+     .add_message("m1", role="user", text="Edit the config file")
+     .add_message(
+         "m2", role="assistant", text="Reading and updating config.",
+         provider_meta={"content_blocks": [
+             {"type": "tool_use", "tool_name": "Read", "semantic_type": "file_read"},
+             {"type": "tool_use", "tool_name": "Edit", "semantic_type": "file_edit"},
+         ]},
+     )
+     .save())
+
+    # Conv with git operations
+    (ConversationBuilder(db_path, "conv-git-ops")
+     .provider("claude-code")
+     .title("Git commit session")
+     .add_message("m3", role="user", text="Commit these changes")
+     .add_message(
+         "m4", role="assistant", text="Running git commit.",
+         provider_meta={"content_blocks": [
+             {"type": "tool_use", "tool_name": "Bash", "semantic_type": "git"},
+         ]},
+     )
+     .save())
+
+    # Conv with subagent spawn
+    (ConversationBuilder(db_path, "conv-subagent")
+     .provider("claude-code")
+     .title("Delegating to subagent")
+     .add_message("m5", role="user", text="Explore the codebase")
+     .add_message(
+         "m6", role="assistant", text="Spawning exploration agent.",
+         provider_meta={"content_blocks": [
+             {"type": "tool_use", "tool_name": "Task", "semantic_type": "subagent"},
+         ]},
+     )
+     .save())
+
+    # Conv with multiple semantic types (git + file_write)
+    (ConversationBuilder(db_path, "conv-mixed")
+     .provider("claude-code")
+     .title("Complex coding task")
+     .add_message("m7", role="user", text="Write and commit a new module")
+     .add_message(
+         "m8", role="assistant", text="Writing and committing.",
+         provider_meta={"content_blocks": [
+             {"type": "tool_use", "tool_name": "Write", "semantic_type": "file_write"},
+             {"type": "tool_use", "tool_name": "Bash", "semantic_type": "git"},
+         ]},
+     )
+     .save())
+
+    # Conv with no semantic operations (plain shell)
+    (ConversationBuilder(db_path, "conv-shell-only")
+     .provider("claude-code")
+     .title("Shell command")
+     .add_message("m9", role="user", text="Run tests")
+     .add_message(
+         "m10", role="assistant", text="Running pytest.",
+         provider_meta={"content_blocks": [
+             {"type": "tool_use", "tool_name": "Bash", "semantic_type": "shell"},
+         ]},
+     )
+     .save())
+
+    with open_connection(db_path) as conn:
+        rebuild_index(conn)
+
+    return db_path
+
+
+@pytest.fixture
+def filter_repo_semantic(filter_db_semantic):
+    backend = SQLiteBackend(db_path=filter_db_semantic)
+    return ConversationRepository(backend=backend)
+
+
+class TestSemanticFilters:
+    """Tests for has_file_operations(), has_git_operations(), has_subagent_spawns()."""
+
+    @pytest.mark.asyncio
+    async def test_has_file_operations_returns_file_convs(self, filter_repo_semantic):
+        """has_file_operations() selects conversations with file_read/write/edit blocks."""
+        results = await ConversationFilter(filter_repo_semantic).has_file_operations().list()
+        ids = {c.id for c in results}
+        assert "conv-file-ops" in ids   # has file_read + file_edit
+        assert "conv-mixed" in ids      # has file_write
+        assert "conv-git-ops" not in ids
+        assert "conv-subagent" not in ids
+        assert "conv-shell-only" not in ids
+
+    @pytest.mark.asyncio
+    async def test_has_git_operations_returns_git_convs(self, filter_repo_semantic):
+        """has_git_operations() selects conversations with git semantic_type blocks."""
+        results = await ConversationFilter(filter_repo_semantic).has_git_operations().list()
+        ids = {c.id for c in results}
+        assert "conv-git-ops" in ids
+        assert "conv-mixed" in ids      # has git + file_write
+        assert "conv-file-ops" not in ids
+        assert "conv-subagent" not in ids
+        assert "conv-shell-only" not in ids
+
+    @pytest.mark.asyncio
+    async def test_has_subagent_spawns_returns_subagent_convs(self, filter_repo_semantic):
+        """has_subagent_spawns() selects conversations with subagent semantic_type blocks."""
+        results = await ConversationFilter(filter_repo_semantic).has_subagent_spawns().list()
+        ids = {c.id for c in results}
+        assert "conv-subagent" in ids
+        assert "conv-file-ops" not in ids
+        assert "conv-git-ops" not in ids
+        assert "conv-mixed" not in ids
+        assert "conv-shell-only" not in ids
+
+    @pytest.mark.asyncio
+    async def test_combined_git_and_file_ops(self, filter_repo_semantic):
+        """Combining git + file_operations returns only conversations with both."""
+        results = await (ConversationFilter(filter_repo_semantic)
+                         .has_git_operations()
+                         .has_file_operations()
+                         .list())
+        ids = {c.id for c in results}
+        assert "conv-mixed" in ids      # has both git and file_write
+        assert "conv-git-ops" not in ids  # git only, no file ops
+        assert "conv-file-ops" not in ids  # file ops only, no git
+
+    @pytest.mark.asyncio
+    async def test_no_semantic_match_returns_empty(self, filter_repo_semantic):
+        """has_subagent_spawns() + has_git_operations() on exclusive data returns empty."""
+        # conv-subagent has no git; conv-git-ops has no subagent; conv-mixed has git but no subagent
+        results = await (ConversationFilter(filter_repo_semantic)
+                         .has_subagent_spawns()
+                         .has_git_operations()
+                         .list())
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_semantic_filter_with_provider_filter(self, filter_repo_semantic):
+        """Semantic filter composes correctly with provider filter."""
+        results = await (ConversationFilter(filter_repo_semantic)
+                         .provider("claude-code")
+                         .has_git_operations()
+                         .list())
+        ids = {c.id for c in results}
+        assert "conv-git-ops" in ids
+        assert "conv-mixed" in ids
+        assert len(ids) == 2
+
+    @pytest.mark.asyncio
+    async def test_shell_only_conv_not_matched_by_any_semantic_filter(self, filter_repo_semantic):
+        """conv-shell-only has shell blocks but no file/git/subagent classification."""
+        file_results = await ConversationFilter(filter_repo_semantic).has_file_operations().list()
+        git_results = await ConversationFilter(filter_repo_semantic).has_git_operations().list()
+        sub_results = await ConversationFilter(filter_repo_semantic).has_subagent_spawns().list()
+        for results in (file_results, git_results, sub_results):
+            assert all(c.id != "conv-shell-only" for c in results)
