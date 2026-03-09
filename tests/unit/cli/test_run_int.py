@@ -573,11 +573,8 @@ def test_sources_command_output(runner, cli_workspace, args, expect_json):
         obj=MagicMock(ui=MagicMock(plain=True, summary=MagicMock())),
     )
     if expect_json and result.exit_code == 0:
-        try:
-            data = json.loads(result.output)
-            assert isinstance(data, list)
-        except json.JSONDecodeError:
-            pass
+        data = json.loads(result.output)
+        assert isinstance(data, list)
 
 
 # =============================================================================
@@ -1043,10 +1040,10 @@ def test_concurrent_store_records_no_deadlock(workspace_env):
 		futures = [executor.submit(store_one, i) for i in range(iterations)]
 		results = [f.result(timeout=30) for f in futures]  # 30s timeout to detect deadlock
 
-	# All should succeed
+	# All should succeed — each thread inserted exactly 1 unique conversation
 	assert len(results) == iterations
 	for r in results:
-		assert r["conversations"] >= 0
+		assert r["conversations"] == 1
 
 
 def test_set_add_is_thread_safe():

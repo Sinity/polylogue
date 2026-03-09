@@ -244,7 +244,10 @@ def _build_conversation_filters(
         params.append(min_words)
 
     # Semantic filters via EXISTS subquery on content_blocks.semantic_type
-    conv_id_col = "c.conversation_id" if needs_stats_join else "conversation_id"
+    # When using stats join, outer table is aliased as 'c'; otherwise use fully qualified
+    # table name to prevent ambiguity (unqualified 'conversation_id' inside the EXISTS
+    # subquery resolves to the subquery's own cb.conversation_id, not the outer table).
+    conv_id_col = "c.conversation_id" if needs_stats_join else "conversations.conversation_id"
     if has_file_ops:
         where_clauses.append(
             f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
