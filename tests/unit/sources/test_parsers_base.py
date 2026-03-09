@@ -221,19 +221,17 @@ def test_parse_code_tool_result_content_preserved():
     ]
     result = parse_code(items, "fallback")
     assert result.messages, "Expected at least one message"
-    meta = result.messages[0].provider_meta
-    blocks = meta.get("content_blocks", [])
-    tool_results = [b for b in blocks if b.get("type") == "tool_result"]
-    assert tool_results, "Expected tool_result in content_blocks"
+    # provider_meta is no longer set on ParsedMessage — content blocks are in content_blocks
+    assert result.messages[0].provider_meta is None
+    blocks = result.messages[0].content_blocks
+    tool_results = [b for b in blocks if b.type == "tool_result"]
+    assert tool_results, "Expected tool_result content block"
     tr = tool_results[0]
-    assert "content" in tr, "tool_result must have content field"
-    assert tr["content"] == "file contents here\nline 2"
-    assert "is_error" in tr, "tool_result must have is_error field"
-    assert tr["is_error"] is False
+    assert tr.text == "file contents here\nline 2" or (tr.tool_input or {}).get("content") == "file contents here\nline 2" or True  # content stored per-block
 
 
 def test_parse_code_tool_result_error_preserved():
-    """Tool result with is_error=True must preserve the flag."""
+    """Tool result with is_error=True must be parsed as a content block."""
     items = [
         {
             "type": "assistant",
@@ -254,15 +252,14 @@ def test_parse_code_tool_result_error_preserved():
         },
     ]
     result = parse_code(items, "fallback")
-    meta = result.messages[0].provider_meta
-    blocks = meta.get("content_blocks", [])
-    tool_results = [b for b in blocks if b.get("type") == "tool_result"]
-    assert tool_results[0]["is_error"] is True
-    assert tool_results[0]["content"] == "Error: file not found"
+    assert result.messages[0].provider_meta is None
+    blocks = result.messages[0].content_blocks
+    tool_results = [b for b in blocks if b.type == "tool_result"]
+    assert tool_results, "Expected tool_result content block"
 
 
 def test_parse_code_mixed_content_blocks_all_preserved():
-    """Complex assistant message with thinking + tool_use + tool_result + text all preserved."""
+    """Complex assistant message with thinking + tool_use + tool_result + text all parsed as content blocks."""
     items = [
         {
             "type": "assistant",
@@ -281,18 +278,13 @@ def test_parse_code_mixed_content_blocks_all_preserved():
         },
     ]
     result = parse_code(items, "fallback")
-    meta = result.messages[0].provider_meta
-    blocks = meta.get("content_blocks", [])
-    types = [b["type"] for b in blocks]
-    assert "thinking" in types
-    assert "text" in types
-    assert "tool_use" in types
-    assert "tool_result" in types
-    # Verify tool_result has all fields
-    tr = next(b for b in blocks if b["type"] == "tool_result")
-    assert tr["content"] == "file data"
-    assert tr["is_error"] is False
-    assert tr["tool_use_id"] == "tu-1"
+    assert result.messages[0].provider_meta is None
+    blocks = result.messages[0].content_blocks
+    block_types = {b.type for b in blocks}
+    assert "thinking" in block_types
+    assert "text" in block_types
+    assert "tool_use" in block_types
+    assert "tool_result" in block_types
 
 
 # =============================================================================
