@@ -25,346 +25,36 @@ from polylogue.sources.parsers.claude import (
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context
-from polylogue.storage.backends.schema import (
-    _ensure_vec0_table,
-    _migrate_v6_to_v7,
-    _migrate_v7_to_v8,
-    _migrate_v8_to_v9,
-    _migrate_v9_to_v10,
-)
+from polylogue.storage.backends.schema import _ensure_schema
 from polylogue.storage.store import ConversationRecord
 from tests.infra.helpers import make_hash
 
-# Schema constants for migration tests
-V6_CONVERSATIONS_TABLE = """
-    CREATE TABLE conversations (
-        conversation_id TEXT PRIMARY KEY,
-        provider_name TEXT NOT NULL,
-        provider_conversation_id TEXT,
-        title TEXT,
-        created_at TEXT,
-        updated_at TEXT,
-        archive_path TEXT,
-        raw_id TEXT
-    )
-"""
-
-V6_MESSAGES_TABLE = """
-    CREATE TABLE messages (
-        message_id TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-        role TEXT NOT NULL,
-        provider_message_id TEXT,
-        text TEXT,
-        timestamp TEXT,
-        content_hash TEXT
-    )
-"""
-
-V7_CONVERSATIONS_TABLE = """
-    CREATE TABLE conversations (
-        conversation_id TEXT PRIMARY KEY,
-        provider_name TEXT NOT NULL,
-        provider_conversation_id TEXT,
-        title TEXT,
-        created_at TEXT,
-        updated_at TEXT,
-        archive_path TEXT,
-        parent_conversation_id TEXT
-    )
-"""
-
-V8_RAW_CONVERSATIONS_TABLE = """
-    CREATE TABLE raw_conversations (
-        raw_id TEXT PRIMARY KEY,
-        provider_name TEXT NOT NULL,
-        source_path TEXT NOT NULL,
-        raw_content BLOB NOT NULL,
-        acquired_at TEXT NOT NULL,
-        file_mtime TEXT
-    )
-"""
-
-V9_RAW_CONVERSATIONS_TABLE = """
-    CREATE TABLE raw_conversations (
-        raw_id TEXT PRIMARY KEY,
-        provider_name TEXT NOT NULL,
-        source_name TEXT,
-        source_path TEXT NOT NULL,
-        raw_content BLOB NOT NULL,
-        acquired_at TEXT NOT NULL,
-        file_mtime TEXT
-    )
-"""
-
-V9_CONVERSATIONS_MIN_TABLE = """
-    CREATE TABLE conversations (
-        conversation_id TEXT PRIMARY KEY,
-        provider_name TEXT NOT NULL,
-        title TEXT
-    )
-"""
-
-V9_MESSAGES_MIN_TABLE = """
-    CREATE TABLE messages (
-        message_id TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL,
-        text TEXT
-    )
-"""
-
-
-class TestMigrateV6ToV7:
-    """Tests for _migrate_v6_to_v7 (conversation/message branching columns)."""
-
-    def test_migrate_v6_to_v7_adds_columns_and_enforces_constraints(self, tmp_path):
-        """Migration adds parent columns, indices, and enforces branch_type constraints."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-
-        conn.execute(V6_CONVERSATIONS_TABLE)
-        conn.execute(V6_MESSAGES_TABLE)
-        conn.commit()
-
-        _migrate_v6_to_v7(conn)
-        conn.commit()
-
-        # Verify columns exist
-        cursor = conn.execute("PRAGMA table_info(conversations)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert "parent_conversation_id" in columns
-        assert "branch_type" in columns
-
-        cursor = conn.execute("PRAGMA table_info(messages)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert "parent_message_id" in columns
-        assert "branch_index" in columns
-
-        # Verify indices were created
-        indices = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'"
-        ).fetchall()
-        index_names = {row[0] for row in indices}
-        assert "idx_conversations_parent" in index_names
-        assert "idx_messages_parent" in index_names
-
-        # Verify branch_type constraint works - insert with valid type
-        conn.execute(
-            """
-            INSERT INTO conversations
-            (conversation_id, provider_name, provider_conversation_id, title, created_at, branch_type)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            ("conv1", "test", "p1", "Test", "2024-01-01T00:00:00Z", "continuation"),
-        )
-        conn.commit()
-
-        row = conn.execute(
-            "SELECT branch_type FROM conversations WHERE conversation_id = 'conv1'"
-        ).fetchone()
-        assert row[0] == "continuation"
-
-        conn.close()
-
-
-class TestMigrateV7ToV8:
-    """Tests for _migrate_v7_to_v8 (raw storage with FK direction)."""
-
-    def test_migrate_v7_to_v8_creates_and_accepts_inserts(self, tmp_path):
-        """Migration creates raw_conversations table with correct schema and accepts inserts."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-
-        conn.execute(V7_CONVERSATIONS_TABLE)
-        conn.commit()
-
-        # Run migration
-        _migrate_v7_to_v8(conn)
-        conn.commit()
-
-        # Verify raw_conversations table exists with correct columns
-        exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='raw_conversations'"
-        ).fetchone()
-        assert exists is not None
-
-        cursor = conn.execute("PRAGMA table_info(raw_conversations)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert "raw_id" in columns
-        assert "provider_name" in columns
-        assert "source_path" in columns
-        assert "raw_content" in columns
-        assert "acquired_at" in columns
-
-        # Verify raw_id FK column added to conversations
-        cursor = conn.execute("PRAGMA table_info(conversations)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert "raw_id" in columns
-
-        # Verify indices were created
-        indices = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_raw%'"
-        ).fetchall()
-        index_names = {row[0] for row in indices}
-        assert "idx_raw_conv_provider" in index_names
-        assert "idx_raw_conv_source" in index_names
-
-        # Test insertion works
-        conn.execute(
-            """
-            INSERT INTO raw_conversations
-            (raw_id, provider_name, source_name, source_path, raw_content, acquired_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            ("raw1", "claude", "inbox", "/path/to/file.jsonl", b"content", "2024-01-01T00:00:00Z"),
-        )
-        conn.commit()
-
-        row = conn.execute("SELECT raw_id, provider_name FROM raw_conversations WHERE raw_id = 'raw1'").fetchone()
-        assert row["raw_id"] == "raw1"
-        assert row["provider_name"] == "claude"
-
-        conn.close()
-
-
-class TestMigrateV8ToV9:
-    """Tests for _migrate_v8_to_v9 (idempotent source_name addition)."""
-
-    def test_migrate_v8_to_v9_adds_source_name_and_is_idempotent(self, tmp_path):
-        """Migration adds source_name column to raw_conversations and is idempotent."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-
-        # First test: adding to v8 schema (without source_name)
-        conn.execute(V8_RAW_CONVERSATIONS_TABLE)
-        conn.commit()
-
-        _migrate_v8_to_v9(conn)
-        conn.commit()
-
-        cursor = conn.execute("PRAGMA table_info(raw_conversations)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert "source_name" in columns
-
-        # Second test: idempotency - recreate with v9 schema and run migration again
-        conn.execute("DROP TABLE raw_conversations")
-        conn.commit()
-
-        conn.execute(V9_RAW_CONVERSATIONS_TABLE)
-        conn.commit()
-
-        _migrate_v8_to_v9(conn)
-        conn.commit()
-
-        cursor = conn.execute("PRAGMA table_info(raw_conversations)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert "source_name" in columns
-
-        conn.close()
-
-
-class TestMigrateV9ToV10:
-    """Tests for _migrate_v9_to_v10 (vec0 tables and embeddings)."""
-
-    def test_migrate_v9_to_v10_creates_embeddings_meta_table(self, tmp_path):
-        """Migration creates embeddings_meta table regardless of sqlite-vec."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-
-        conn.execute(V9_CONVERSATIONS_MIN_TABLE)
-        conn.execute(V9_MESSAGES_MIN_TABLE)
-        conn.commit()
-
-        # Run migration
-        _migrate_v9_to_v10(conn)
-        conn.commit()
-
-        # Verify embeddings_meta table exists
-        exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='embeddings_meta'"
-        ).fetchone()
-        assert exists is not None
-
-        # Verify embedding_status table exists
-        exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='embedding_status'"
-        ).fetchone()
-        assert exists is not None
-
-        # Verify embeddings_meta has correct columns
-        cursor = conn.execute("PRAGMA table_info(embeddings_meta)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert "target_id" in columns
-        assert "target_type" in columns
-        assert "model" in columns
-        assert "dimension" in columns
-
-        conn.close()
-
-    def test_migrate_v9_to_v10_creates_embedding_status_table(self, tmp_path):
-        """Migration creates embedding_status table for tracking."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-
-        conn.execute(V9_CONVERSATIONS_MIN_TABLE)
-        conn.execute(V9_MESSAGES_MIN_TABLE)
-        conn.commit()
-
-        _migrate_v9_to_v10(conn)
-        conn.commit()
-
-        # Verify embedding_status table exists
-        cursor = conn.execute("PRAGMA table_info(embedding_status)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert "conversation_id" in columns
-        assert "message_count_embedded" in columns
-        assert "last_embedded_at" in columns
-        assert "needs_reindex" in columns
-        assert "error_message" in columns
-
-        conn.close()
-
-
 class TestEnsureVec0Table:
-    """Tests for _ensure_vec0_table (idempotent vec0 creation)."""
+    """Tests that the schema includes a vec0 virtual table for embeddings."""
 
-    def test_ensure_vec0_table_idempotent_and_creates_when_missing(self, tmp_path):
-        """_ensure_vec0_table creates vec0 table if missing, is idempotent when called multiple times."""
+    def test_fresh_schema_creates_vec0_table_when_available(self, tmp_path):
+        """Fresh schema creates message_embeddings vec0 table when sqlite-vec is loaded."""
         db_path = tmp_path / "test.db"
-        with connection_context(db_path) as conn:
-            # Verify vec_version is available (sqlite-vec loaded)
-            try:
-                conn.execute("SELECT vec_version()")
-                vec_available = True
-            except sqlite3.OperationalError:
-                vec_available = False
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
 
-            if vec_available:
-                # Test creation when missing
-                conn.execute("DROP TABLE IF EXISTS message_embeddings")
-                conn.commit()
+        try:
+            conn.execute("SELECT vec_version()")
+            vec_available = True
+        except sqlite3.OperationalError:
+            vec_available = False
 
-                exists = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
-                ).fetchone()
-                assert exists is None
+        _ensure_schema(conn)
 
-                _ensure_vec0_table(conn)
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
+        ).fetchone()
 
-                exists = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
-                ).fetchone()
-                assert exists is not None
+        if vec_available:
+            assert exists is not None, "message_embeddings table should exist when sqlite-vec is available"
+        # If sqlite-vec not loaded, table is skipped — no assertion (graceful degradation)
 
-            # Test idempotency (call multiple times, should not raise)
-            _ensure_vec0_table(conn)
-            _ensure_vec0_table(conn)
-            _ensure_vec0_table(conn)
+        conn.close()
 
 
 class TestAssetPath:

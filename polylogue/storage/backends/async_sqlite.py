@@ -25,9 +25,11 @@ from polylogue.storage.backends.connection import (
     DB_TIMEOUT,
     _build_conversation_filters,
     _build_source_scope_filter,
+    _needs_stats_join,
 )
 from polylogue.storage.store import (
     AttachmentRecord,
+    ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
     RawConversationRecord,
@@ -36,6 +38,7 @@ from polylogue.storage.store import (
     _json_or_none,
     _make_ref_id,
     _parse_json,
+    _row_to_content_block,
     _row_to_conversation,
     _row_to_message,
     _row_to_raw_conversation,
@@ -43,6 +46,7 @@ from polylogue.storage.store import (
 from polylogue.types import ConversationId
 
 logger = get_logger(__name__)
+
 
 
 def default_db_path() -> Path:
@@ -253,66 +257,40 @@ class SQLiteBackend:
             yield conn
 
     async def _ensure_schema(self, conn: aiosqlite.Connection) -> None:
-        """Ensure database schema exists and is at current version.
+        """Ensure database schema exists and is at schema version 2.
 
-        For fresh databases (version 0), creates the schema directly.
-        For existing databases, runs migrations via the schema module's
-        synchronous DDL functions (wrapped in asyncio.to_thread since
-        DDL changes run once and cannot use async connections).
+        For fresh databases (version 0): apply DDL and set version to 2.
+        For version 2: nothing to do.
+        For any other version: raise — wipe DB and re-run.
         """
-        import sqlite3
-
-        from polylogue.storage.backends.connection import _load_sqlite_vec
         from polylogue.storage.backends.schema import (
             _VEC0_DDL,
             SCHEMA_DDL,
             SCHEMA_VERSION,
         )
-        from polylogue.storage.backends.schema import (
-            _ensure_schema as _sync_ensure_schema,
-        )
 
-        # Check current schema version
         cursor = await conn.execute("PRAGMA user_version")
         row = await cursor.fetchone()
         current_version = row[0] if row else 0
 
         if current_version == 0:
-            # Fresh database - apply schema directly via async
             await conn.execute("PRAGMA foreign_keys = ON")
             await conn.executescript(SCHEMA_DDL)
-
-            # Try to create vec0 table if sqlite-vec is available
             try:
                 await conn.execute("SELECT vec_version()")
                 await conn.execute(_VEC0_DDL)
             except Exception:
                 pass  # sqlite-vec not available
-
             await conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await conn.commit()
-        elif current_version < SCHEMA_VERSION:
-            # Existing database needs migration - use sync migration logic
-            # Migrations are synchronous, run once, and involve DDL changes
-            # that are best handled by the battle-tested sync path
-            def _run_sync_migration() -> None:
-                sync_conn = sqlite3.connect(self._db_path, timeout=DB_TIMEOUT)
-                sync_conn.row_factory = sqlite3.Row
-                try:
-                    sync_conn.execute("PRAGMA foreign_keys = ON")
-                    sync_conn.execute("PRAGMA journal_mode=WAL")
-                    sync_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
-                    _load_sqlite_vec(sync_conn)
-                    _sync_ensure_schema(sync_conn)
-                finally:
-                    sync_conn.close()
-
-            await asyncio.to_thread(_run_sync_migration)
-        elif current_version > SCHEMA_VERSION:
+        elif current_version == SCHEMA_VERSION:
+            pass  # Already at target version
+        else:
             from polylogue.errors import DatabaseError
 
             raise DatabaseError(
-                f"Unsupported DB schema version {current_version} (expected {SCHEMA_VERSION})"
+                f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
+                "Delete the database file and re-run polylogue to create a fresh v2 schema."
             )
 
     @asynccontextmanager
@@ -447,6 +425,11 @@ class SQLiteBackend:
         title_contains: str | None = None,
         limit: int | None = None,
         offset: int = 0,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
     ) -> list[ConversationRecord]:
         """List conversations with optional filtering and pagination.
 
@@ -460,7 +443,19 @@ class SQLiteBackend:
             title_contains: Filter to conversations whose title contains this text (case-insensitive)
             limit: Maximum number of records to return
             offset: Number of records to skip
+            has_tool_use: Only conversations with tool_use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            max_messages: Maximum message count
+            min_words: Minimum total word count
         """
+        use_stats_join = _needs_stats_join(
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+        )
         async with self._get_connection() as conn:
             # Build query with filters
             where_sql, params = _build_conversation_filters(
@@ -471,16 +466,27 @@ class SQLiteBackend:
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
             )
+
+            if use_stats_join:
+                from_clause = "FROM conversations c LEFT JOIN conversation_stats cs ON cs.conversation_id = c.conversation_id"
+                select_clause = "SELECT c.*"
+                order_clause = "ORDER BY (c.sort_key IS NULL) ASC, c.sort_key DESC, c.conversation_id DESC"
+            else:
+                from_clause = "FROM conversations"
+                select_clause = "SELECT *"
+                order_clause = "ORDER BY (sort_key IS NULL) ASC, sort_key DESC, conversation_id DESC"
 
             # Build full query with ordering and pagination
             query = f"""
-                SELECT * FROM conversations
+                {select_clause} {from_clause}
                 {where_sql}
-                ORDER BY
-                    (sort_key IS NULL) ASC,
-                    sort_key DESC,
-                    conversation_id DESC
+                {order_clause}
             """
 
             if limit is not None:
@@ -507,12 +513,24 @@ class SQLiteBackend:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
     ) -> int:
         """Count conversations matching filters without loading records.
 
         Accepts the same filter params as list_conversations but returns
         just the count via COUNT(*) for maximum efficiency.
         """
+        use_stats_join = _needs_stats_join(
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+        )
         async with self._get_connection() as conn:
             where_sql, params = _build_conversation_filters(
                 source=source,
@@ -521,11 +539,17 @@ class SQLiteBackend:
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
             )
-            cursor = await conn.execute(
-                f"SELECT COUNT(*) as cnt FROM conversations {where_sql}",
-                tuple(params),
-            )
+            if use_stats_join:
+                sql = f"SELECT COUNT(*) as cnt FROM conversations c LEFT JOIN conversation_stats cs ON cs.conversation_id = c.conversation_id {where_sql}"
+            else:
+                sql = f"SELECT COUNT(*) as cnt FROM conversations {where_sql}"
+            cursor = await conn.execute(sql, tuple(params))
             row = await cursor.fetchone()
             return int(row["cnt"])
 
@@ -762,17 +786,25 @@ class SQLiteBackend:
         return counts
 
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
-        """Get all messages for a conversation."""
+        """Get all messages for a conversation, with content_blocks attached."""
         async with self._get_connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM messages WHERE conversation_id = ? ORDER BY (sort_key IS NULL), sort_key, message_id",
                 (conversation_id,),
             )
             rows = await cursor.fetchall()
-            return [_row_to_message(row) for row in rows]
+        messages = [_row_to_message(row) for row in rows]
+        if messages:
+            msg_ids = [m.message_id for m in messages]
+            blocks_by_msg = await self.get_content_blocks(msg_ids)
+            messages = [
+                m.model_copy(update={"content_blocks": blocks_by_msg.get(m.message_id, [])})
+                for m in messages
+            ]
+        return messages
 
     async def get_messages_batch(self, conversation_ids: list[str]) -> dict[str, list[MessageRecord]]:
-        """Get messages for multiple conversations in a single query.
+        """Get messages for multiple conversations in a single query, with content_blocks.
 
         Returns a dict mapping conversation_id → list of MessageRecords.
         Missing conversations produce empty lists.
@@ -781,6 +813,7 @@ class SQLiteBackend:
             return {}
 
         result: dict[str, list[MessageRecord]] = {cid: [] for cid in conversation_ids}
+        all_messages: list[MessageRecord] = []
         async with self._get_connection() as conn:
             placeholders = ",".join("?" for _ in conversation_ids)
             cursor = await conn.execute(
@@ -791,17 +824,24 @@ class SQLiteBackend:
 
         for row in rows:
             cid = row["conversation_id"]
+            msg = _row_to_message(row)
             if cid in result:
-                result[cid].append(_row_to_message(row))
+                result[cid].append(msg)
+            all_messages.append(msg)
+
+        if all_messages:
+            msg_ids = [m.message_id for m in all_messages]
+            blocks_by_msg = await self.get_content_blocks(msg_ids)
+            for cid in result:
+                result[cid] = [
+                    m.model_copy(update={"content_blocks": blocks_by_msg.get(m.message_id, [])})
+                    for m in result[cid]
+                ]
 
         return result
 
     async def save_messages(self, records: list[MessageRecord]) -> None:
-        """Persist multiple message records using bulk insert.
-
-        Args:
-            records: List of message records to save
-        """
+        """Persist multiple message records using bulk insert."""
         if not records:
             return
         async with self._get_connection() as conn:
@@ -812,29 +852,31 @@ class SQLiteBackend:
                     provider_message_id,
                     role,
                     text,
-                    timestamp,
                     sort_key,
                     content_hash,
-                    provider_meta,
                     version,
                     parent_message_id,
-                    branch_index
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    branch_index,
+                    provider_name,
+                    word_count,
+                    has_tool_use,
+                    has_thinking
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     role = excluded.role,
                     text = excluded.text,
-                    timestamp = excluded.timestamp,
                     sort_key = excluded.sort_key,
                     content_hash = excluded.content_hash,
-                    provider_meta = excluded.provider_meta,
                     parent_message_id = excluded.parent_message_id,
-                    branch_index = excluded.branch_index
+                    branch_index = excluded.branch_index,
+                    provider_name = excluded.provider_name,
+                    word_count = excluded.word_count,
+                    has_tool_use = excluded.has_tool_use,
+                    has_thinking = excluded.has_thinking
                 WHERE
                     content_hash != excluded.content_hash
                     OR IFNULL(role, '') != IFNULL(excluded.role, '')
                     OR IFNULL(text, '') != IFNULL(excluded.text, '')
-                    OR IFNULL(timestamp, '') != IFNULL(excluded.timestamp, '')
-                    OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
                     OR IFNULL(parent_message_id, '') != IFNULL(excluded.parent_message_id, '')
                     OR branch_index != excluded.branch_index
             """
@@ -845,19 +887,122 @@ class SQLiteBackend:
                     r.provider_message_id,
                     r.role,
                     r.text,
-                    r.timestamp,
                     r.sort_key,
                     r.content_hash,
-                    _json_or_none(r.provider_meta),
                     r.version,
                     r.parent_message_id,
                     r.branch_index,
+                    r.provider_name,
+                    r.word_count,
+                    r.has_tool_use,
+                    r.has_thinking,
                 )
                 for r in records
             ]
             await conn.executemany(query, data)
             if self._transaction_depth == 0:
                 await conn.commit()
+
+    async def save_content_blocks(self, records: list[ContentBlockRecord]) -> None:
+        """Persist content block records using bulk insert."""
+        if not records:
+            return
+        async with self._get_connection() as conn:
+            query = """
+                INSERT INTO content_blocks (
+                    block_id,
+                    message_id,
+                    conversation_id,
+                    block_index,
+                    type,
+                    text,
+                    tool_name,
+                    tool_id,
+                    tool_input,
+                    media_type,
+                    metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id, block_index) DO UPDATE SET
+                    type = excluded.type,
+                    text = excluded.text,
+                    tool_name = excluded.tool_name,
+                    tool_id = excluded.tool_id,
+                    tool_input = excluded.tool_input,
+                    media_type = excluded.media_type,
+                    metadata = excluded.metadata
+            """
+            data = [
+                (
+                    r.block_id,
+                    r.message_id,
+                    r.conversation_id,
+                    r.block_index,
+                    r.type,
+                    r.text,
+                    r.tool_name,
+                    r.tool_id,
+                    r.tool_input,
+                    r.media_type,
+                    r.metadata,
+                )
+                for r in records
+            ]
+            await conn.executemany(query, data)
+            if self._transaction_depth == 0:
+                await conn.commit()
+
+    async def upsert_conversation_stats(
+        self,
+        conversation_id: str,
+        provider_name: str,
+        messages: list[MessageRecord],
+    ) -> None:
+        """Upsert precomputed per-conversation aggregate stats.
+
+        Called after save_messages to keep conversation_stats in sync.
+        """
+        message_count = len(messages)
+        word_count = sum(m.word_count for m in messages)
+        tool_use_count = sum(1 for m in messages if m.has_tool_use)
+        thinking_count = sum(1 for m in messages if m.has_thinking)
+        async with self._get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO conversation_stats
+                    (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                    provider_name  = excluded.provider_name,
+                    message_count  = excluded.message_count,
+                    word_count     = excluded.word_count,
+                    tool_use_count = excluded.tool_use_count,
+                    thinking_count = excluded.thinking_count
+                """,
+                (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count),
+            )
+            if self._transaction_depth == 0:
+                await conn.commit()
+
+    async def get_content_blocks(self, message_ids: list[str]) -> dict[str, list[ContentBlockRecord]]:
+        """Get content blocks for a list of message IDs.
+
+        Returns a dict mapping message_id → ordered list of ContentBlockRecords.
+        """
+        if not message_ids:
+            return {}
+        result: dict[str, list[ContentBlockRecord]] = {mid: [] for mid in message_ids}
+        async with self._get_connection() as conn:
+            placeholders = ",".join("?" for _ in message_ids)
+            cursor = await conn.execute(
+                f"SELECT * FROM content_blocks WHERE message_id IN ({placeholders}) ORDER BY message_id, block_index",
+                message_ids,
+            )
+            rows = await cursor.fetchall()
+        for row in rows:
+            mid = row["message_id"]
+            if mid in result:
+                result[mid].append(_row_to_content_block(row))
+        return result
 
     async def get_attachments(self, conversation_id: str) -> list[AttachmentRecord]:
         """Get all attachments for a conversation.
@@ -1624,42 +1769,52 @@ class SQLiteBackend:
             rows = await cursor.fetchall()
         return {row["period"]: row["count"] for row in rows}
 
-    async def get_provider_metrics_rows(self) -> list[dict[str, object]]:
-        """Return raw provider aggregation rows for analytics reporting."""
+    async def get_provider_conversation_counts(self) -> list[dict[str, object]]:
+        """Return conversation counts per provider — fast, conversations-table-only query.
+
+        Used for the non-verbose stats bar chart which only needs conversation_count.
+        Avoids the 29s LEFT JOIN over 1.67M message rows.
+        """
         async with self._get_connection() as conn:
             cursor = await conn.execute(
                 """
-                SELECT
-                    c.provider_name,
-                    COUNT(DISTINCT c.conversation_id) AS conversation_count,
-                    COUNT(m.message_id) AS message_count,
-                    SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) AS user_message_count,
-                    SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) AS assistant_message_count,
-                    SUM(CASE WHEN m.role = 'user' AND m.text IS NOT NULL AND TRIM(m.text) != ''
-                        THEN LENGTH(TRIM(m.text)) - LENGTH(REPLACE(TRIM(m.text), ' ', '')) + 1
-                        ELSE 0 END) AS user_word_sum,
-                    SUM(CASE WHEN m.role = 'assistant' AND m.text IS NOT NULL AND TRIM(m.text) != ''
-                        THEN LENGTH(TRIM(m.text)) - LENGTH(REPLACE(TRIM(m.text), ' ', '')) + 1
-                        ELSE 0 END) AS assistant_word_sum,
-                    SUM(CASE WHEN m.provider_meta LIKE '%"type":"tool_use"%'
-                             OR m.role = 'tool'
-                        THEN 1 ELSE 0 END) AS tool_use_count,
-                    SUM(CASE WHEN m.provider_meta LIKE '%"type":"thinking"%'
-                        THEN 1 ELSE 0 END) AS thinking_count,
-                    COUNT(DISTINCT CASE
-                        WHEN m.provider_meta LIKE '%"type":"tool_use"%'
-                             OR m.role = 'tool'
-                        THEN c.conversation_id END) AS conversations_with_tools,
-                    COUNT(DISTINCT CASE
-                        WHEN m.provider_meta LIKE '%"type":"thinking"%'
-                        THEN c.conversation_id END) AS conversations_with_thinking
-                FROM conversations c
-                LEFT JOIN messages m ON c.conversation_id = m.conversation_id
-                GROUP BY c.provider_name
+                SELECT provider_name, COUNT(*) AS conversation_count
+                FROM conversations
+                GROUP BY provider_name
                 ORDER BY conversation_count DESC
                 """
             )
             rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_provider_metrics_rows(self) -> list[dict[str, object]]:
+        """Return raw provider aggregation rows for analytics reporting.
+
+        Single-table GROUP BY on messages using the covering index
+        idx_messages_provider_stats — index-only scan, no JOINs needed.
+        """
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT
+                    provider_name,
+                    COUNT(DISTINCT conversation_id)                                                AS conversation_count,
+                    COUNT(*)                                                                       AS message_count,
+                    SUM(CASE WHEN role = 'user'      THEN 1 ELSE 0 END)                           AS user_message_count,
+                    SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END)                           AS assistant_message_count,
+                    SUM(CASE WHEN role = 'user'      THEN word_count ELSE 0 END)                  AS user_word_sum,
+                    SUM(CASE WHEN role = 'assistant' THEN word_count ELSE 0 END)                  AS assistant_word_sum,
+                    SUM(has_tool_use)                                                              AS tool_use_count,
+                    SUM(has_thinking)                                                              AS thinking_count,
+                    COUNT(DISTINCT CASE WHEN has_tool_use = 1 THEN conversation_id END)           AS conversations_with_tools,
+                    COUNT(DISTINCT CASE WHEN has_thinking = 1 THEN conversation_id END)           AS conversations_with_thinking
+                FROM messages
+                GROUP BY provider_name
+                ORDER BY conversation_count DESC
+                """
+            )
+            rows = await cursor.fetchall()
+
         return [dict(row) for row in rows]
 
     async def get_latest_run(self) -> RunRecord | None:

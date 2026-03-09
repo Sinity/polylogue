@@ -57,23 +57,6 @@ class Role(str, Enum):
         return cls.UNKNOWN
 
 
-# Canonical role mapping used by normalize_role()
-ROLE_MAP = {
-    "user": "user",
-    "human": "user",
-    "assistant": "assistant",
-    "model": "assistant",
-    "ai": "assistant",
-    "system": "system",
-    "tool": "tool",
-    "function": "tool",
-    "tool_use": "tool",
-    "tool_result": "tool",
-    "progress": "tool",
-    "result": "tool",
-}
-
-
 def normalize_role(raw: str) -> str:
     """Normalize a provider role string to a canonical role string.
 
@@ -94,4 +77,4 @@ def normalize_role(raw: str) -> str:
     return Role.normalize(raw).value
 
 
-__all__ = ["Role", "ROLE_MAP", "normalize_role"]
+__all__ = ["Role", "normalize_role"]

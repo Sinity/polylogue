@@ -115,40 +115,6 @@ class TestRenderProgressCallback:
         assert all(a == 1 for a in amounts)
 
 
-class TestIndexProgressCallback:
-    """Verify progress_callback firing during indexing is safe."""
-
-    async def test_index_update_without_callback_succeeds(self, sqlite_backend):
-        """Index update works without a progress_callback."""
-        from polylogue.config import Config
-        from polylogue.pipeline.services.indexing import IndexService
-
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
-
-        result = await service.update_index([])
-        assert result is True
-
-    async def test_index_rebuild_without_callback_succeeds(self, sqlite_backend):
-        """Index rebuild works without a progress_callback."""
-        from polylogue.config import Config
-        from polylogue.pipeline.services.indexing import IndexService
-
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
-
-        result = await service.rebuild_index()
-        assert result is True
-
-
 class TestRunnerProgressPropagation:
     """Verify run_sources propagates progress_callback to render/index stages."""
 

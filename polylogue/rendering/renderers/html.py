@@ -333,7 +333,7 @@ class HTMLRenderer:
                     message_id=msg.message_id,
                     role=msg.role,
                     text=text,
-                    timestamp=msg.timestamp,
+                    timestamp=msg.sort_key,
                     parent_message_id=msg.parent_message_id,
                     branch_index=msg.branch_index,
                     md_renderer=self.md_renderer,

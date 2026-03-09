@@ -334,20 +334,18 @@ class TestWordCountEdgeCases:
         assert len(results) == 1
         assert results[0].avg_user_words == 0.0
 
-    async def test_tabs_newlines_are_not_stripped(self, tmp_path):
-        """SQLite TRIM only strips spaces — tabs/newlines count as 1 word.
+    async def test_tabs_newlines_are_stripped(self, tmp_path):
+        """Python split() strips all whitespace including tabs/newlines.
 
-        This documents a known approximation: SQLite's TRIM() only removes
-        ASCII space (0x20), not tabs (0x09) or newlines (0x0A). In practice
-        this doesn't matter because real messages never contain only whitespace.
+        word_count is precomputed at insert time via len(text.split()).
+        Python's split() treats tabs/newlines as whitespace, so whitespace-only
+        text yields 0 words.
         """
         db = await _seed_db(tmp_path, [
             ("test", "user", "\t\t", None),
         ])
         results = await compute_provider_comparison(db_path=db)
-        # Tab-only text passes TRIM check (TRIM doesn't strip tabs)
-        # and the formula counts it as 1 "word"
-        assert results[0].avg_user_words == 1.0
+        assert results[0].avg_user_words == 0.0
 
     async def test_single_word_counts_one(self, tmp_path):
         """A single word with no spaces counts as 1."""
@@ -358,19 +356,16 @@ class TestWordCountEdgeCases:
         assert results[0].avg_user_words == 1.0
 
     async def test_multiple_spaces_between_words(self, tmp_path):
-        """Multiple spaces between words still count correctly.
+        """Multiple spaces between words count as expected.
 
-        The SQL formula counts spaces, so 'a  b' has 2 spaces = 3 words.
-        This is a known approximation - documenting the actual behavior.
+        word_count is precomputed via len(text.split()), which splits on any
+        whitespace run, so 'hello  world' → 2 words (not 3).
         """
         db = await _seed_db(tmp_path, [
             ("test", "user", "hello  world", None),  # 2 spaces
         ])
         results = await compute_provider_comparison(db_path=db)
-        # With double space: LENGTH("hello  world")=12, REPLACE removes spaces: "helloworld"=10
-        # 12 - 10 + 1 = 3 (overcounts by 1 due to double space)
-        # This documents the known approximation behavior
-        assert results[0].avg_user_words == 3.0
+        assert results[0].avg_user_words == 2.0
 
     async def test_empty_text_counts_zero(self, tmp_path):
         """Empty string text counts as 0 words."""

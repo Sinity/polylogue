@@ -459,9 +459,15 @@ class TestUpsertFlow:
         insert_calls = []
 
         def capture_execute(sql, params=None):
+            mock_cursor = MagicMock()
+            if "SELECT provider_name FROM conversations" in sql:
+                if provider_name is not None:
+                    mock_cursor.fetchone.return_value = (provider_name,)
+                else:
+                    mock_cursor.fetchone.return_value = None
             if "INSERT INTO message_embeddings" in sql:
                 insert_calls.append(params)
-            return MagicMock()
+            return mock_cursor
 
         mock_conn.execute = capture_execute
         mock_conn.commit = MagicMock()

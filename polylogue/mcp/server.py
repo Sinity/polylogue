@@ -166,6 +166,10 @@ def _build_server() -> FastMCP:
         limit: int = 10,
         provider: str | None = None,
         since: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        min_words: int | None = None,
     ) -> str:
         """Search conversations by text query. Returns matching conversations with metadata.
 
@@ -174,6 +178,10 @@ def _build_server() -> FastMCP:
             limit: Max results (default: 10)
             provider: Filter by provider (claude, chatgpt, claude-code, etc.)
             since: Only conversations updated after this date (ISO format or natural language like 'last week')
+            has_tool_use: Only conversations with tool use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            min_words: Minimum total word count
         """
         async def _run() -> str:
             repo = _get_repo()
@@ -182,6 +190,10 @@ def _build_server() -> FastMCP:
                 providers=(provider,) if provider else (),
                 since=since,
                 limit=_clamp_limit(limit),
+                filter_has_tool_use=has_tool_use,
+                filter_has_thinking=has_thinking,
+                min_messages=min_messages,
+                min_words=min_words,
             )
             results = await spec.build_filter(repo).list()
             return _json_payload(
@@ -202,6 +214,10 @@ def _build_server() -> FastMCP:
         tag: str | None = None,
         title: str | None = None,
         sort: str = "updated",
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        min_words: int | None = None,
     ) -> str:
         """List recent conversations, optionally filtered by provider, date, tag, or title.
 
@@ -212,6 +228,10 @@ def _build_server() -> FastMCP:
             tag: Filter by tag
             title: Filter by title substring
             sort: Sort order ('updated' or 'created', default: 'updated')
+            has_tool_use: Only conversations with tool use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            min_words: Minimum total word count
         """
         async def _run() -> str:
             repo = _get_repo()
@@ -222,6 +242,10 @@ def _build_server() -> FastMCP:
                 since=since,
                 sort=sort,
                 limit=_clamp_limit(limit),
+                filter_has_tool_use=has_tool_use,
+                filter_has_thinking=has_thinking,
+                min_messages=min_messages,
+                min_words=min_words,
             )
             conversations = await spec.build_filter(repo).list()
             return _json_payload(
