@@ -21,11 +21,13 @@ import time
 
 import pytest
 
+from collections import defaultdict
+
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import ConversationRecord, MessageRecord
+from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 
 # Number of conversations for scale tests.
 # 200 is enough to expose N+1 patterns while keeping tests fast (<2s).
@@ -284,16 +286,16 @@ class TestPerformanceBudget:
     """
 
     async def test_list_performance_budget(self, tmp_path):
-        """list_conversations(limit=50) on 5k-message DB must finish in <500ms."""
+        """list_conversations(limit=50) on 5k-message DB must finish in <100ms."""
         backend, _ = await _seed_budget_db(tmp_path)
         t0 = time.monotonic()
         results = await backend.list_conversations(limit=50)
         elapsed_ms = (time.monotonic() - t0) * 1000
         assert len(results) == 50
-        assert elapsed_ms < 500, f"list_conversations took {elapsed_ms:.0f}ms (budget: 500ms)"
+        assert elapsed_ms < 100, f"list_conversations took {elapsed_ms:.0f}ms (budget: 100ms)"
 
     async def test_get_many_performance_budget(self, tmp_path):
-        """get_many(100 ids) on 5k DB must finish in <2000ms."""
+        """get_many(100 ids) on 5k DB must finish in <500ms."""
         backend, ids = await _seed_budget_db(tmp_path)
         repo = ConversationRepository(backend=backend)
         sample_ids = ids[:100]
@@ -301,10 +303,10 @@ class TestPerformanceBudget:
         results = await repo.get_many(sample_ids)
         elapsed_ms = (time.monotonic() - t0) * 1000
         assert len(results) == 100
-        assert elapsed_ms < 2000, f"get_many(100) took {elapsed_ms:.0f}ms (budget: 2000ms)"
+        assert elapsed_ms < 500, f"get_many(100) took {elapsed_ms:.0f}ms (budget: 500ms)"
 
     async def test_fts_search_budget(self, tmp_path):
-        """FTS5 search for common term on 5k-message DB must finish in <500ms."""
+        """FTS5 search for common term on 5k-message DB must finish in <200ms."""
         backend, _ = await _seed_budget_db(tmp_path)
         # Rebuild index so FTS has content
         with open_connection(backend.db_path) as conn:
@@ -314,11 +316,11 @@ class TestPerformanceBudget:
         results = await repo.search_summaries("Message", limit=20)
         elapsed_ms = (time.monotonic() - t0) * 1000
         # FTS on seeded data — results may be empty if text doesn't tokenize well, just check timing
-        assert elapsed_ms < 500, f"FTS search took {elapsed_ms:.0f}ms (budget: 500ms)"
+        assert elapsed_ms < 200, f"FTS search took {elapsed_ms:.0f}ms (budget: 200ms)"
         _ = results  # exercised
 
     async def test_has_tool_use_filter_budget(self, tmp_path):
-        """has_tool_use=True filter on 5k DB must finish in <500ms.
+        """has_tool_use=True filter on 5k DB must finish in <100ms.
 
         Validates that the stats LEFT JOIN covering index is effective.
         """
@@ -326,5 +328,34 @@ class TestPerformanceBudget:
         t0 = time.monotonic()
         results = await backend.list_conversations(has_tool_use=True, limit=50)
         elapsed_ms = (time.monotonic() - t0) * 1000
-        assert elapsed_ms < 500, f"has_tool_use filter took {elapsed_ms:.0f}ms (budget: 500ms)"
+        assert elapsed_ms < 100, f"has_tool_use filter took {elapsed_ms:.0f}ms (budget: 100ms)"
         _ = results  # exercised
+
+    async def test_semantic_filter_budget(self, tmp_path):
+        """has_file_ops EXISTS filter on 5k DB must finish in <200ms.
+
+        Now that content_blocks are seeded, this validates the covering index
+        and ensures the filter returns real results.
+        """
+        backend, ids = await _seed_budget_db(tmp_path)
+
+        # Seed content_blocks: 1 file_read block per conversation for 20% of convs
+        blocks: list[ContentBlockRecord] = []
+        for i, cid in enumerate(ids):
+            if i % 5 == 0:  # 20% of conversations
+                mid = f"{cid}-m0"
+                blocks.append(ContentBlockRecord(
+                    block_id=ContentBlockRecord.make_id(mid, 0),
+                    message_id=mid,
+                    conversation_id=cid,
+                    block_index=0,
+                    type='tool_use',
+                    semantic_type='file_read',
+                ))
+        await backend.save_content_blocks(blocks)
+
+        t0 = time.monotonic()
+        results = await backend.list_conversations(has_file_ops=True, limit=50)
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        assert len(results) > 0, "Semantic filter should find results with seeded content_blocks"
+        assert elapsed_ms < 200, f"has_file_ops filter took {elapsed_ms:.0f}ms (budget: 200ms)"
