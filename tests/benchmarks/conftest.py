@@ -1,0 +1,105 @@
+"""Shared fixtures for benchmark tests.
+
+Session-scoped databases are seeded once per session to avoid
+fixture overhead dominating benchmark measurements.
+
+Usage:
+    pytest tests/benchmarks/ --benchmark-enable -p no:xdist -p no:randomly \\
+        --override-ini="addopts=-ra --benchmark-enable" -v
+
+    Save a baseline:
+    pytest tests/benchmarks/ --benchmark-enable -p no:xdist \\
+        --override-ini="addopts=-ra --benchmark-enable" \\
+        --benchmark-save=v3-baseline
+
+    Compare against baseline (fail if >20% regression):
+    pytest tests/benchmarks/ --benchmark-enable -p no:xdist \\
+        --override-ini="addopts=-ra --benchmark-enable" \\
+        --benchmark-compare=v3-baseline --benchmark-compare-fail=mean:20%
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from pathlib import Path
+
+import pytest
+
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.store import ConversationRecord, MessageRecord
+
+PROVIDERS = ["chatgpt", "claude", "claude-code", "gemini"]
+# Words used to make FTS5 searches meaningful
+_WORD_POOL = [
+    "python", "function", "error", "test", "data", "model", "training",
+    "async", "await", "database", "query", "result", "analysis", "code",
+    "git", "commit", "branch", "merge", "review", "performance",
+]
+
+
+def _make_content_hash(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()[:32]
+
+
+async def _seed_bench_db(db_path: Path, conv_count: int, msgs_per_conv: int) -> None:
+    """Seed benchmark DB with realistic mixed data."""
+    backend = SQLiteBackend(db_path=db_path)
+
+    conv_records = [
+        ConversationRecord(
+            conversation_id=f"bench-conv-{i:05d}",
+            provider_name=PROVIDERS[i % len(PROVIDERS)],
+            provider_conversation_id=f"prov-bench-{i:05d}",
+            title=f"Benchmark Conversation {i}: {_WORD_POOL[i % len(_WORD_POOL)]} {_WORD_POOL[(i + 3) % len(_WORD_POOL)]}",
+            created_at=f"2025-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}T00:00:00Z",
+            updated_at=f"2025-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}T00:00:00Z",
+            content_hash=_make_content_hash(f"conv-{i}"),
+        )
+        for i in range(conv_count)
+    ]
+    await asyncio.gather(*(backend.save_conversation_record(r) for r in conv_records))
+
+    all_msgs = []
+    for i in range(conv_count):
+        for j in range(msgs_per_conv):
+            # ~30% messages have tool_use, ~10% have thinking
+            has_tool = 1 if (i * msgs_per_conv + j) % 3 == 0 else 0
+            has_think = 1 if (i * msgs_per_conv + j) % 10 == 0 else 0
+            words = _WORD_POOL[(i + j) % len(_WORD_POOL)]
+            all_msgs.append(MessageRecord(
+                message_id=f"bench-conv-{i:05d}-m{j}",
+                conversation_id=f"bench-conv-{i:05d}",
+                role="user" if j % 2 == 0 else "assistant",
+                text=f"{words} analysis result for conversation {i} message {j} with data processing",
+                timestamp=f"2025-01-01T{j:02d}:00:00Z",
+                content_hash=_make_content_hash(f"msg-{i}-{j}"),
+                provider_name=PROVIDERS[i % len(PROVIDERS)],
+                word_count=10,
+                has_tool_use=has_tool,
+                has_thinking=has_think,
+            ))
+    await backend.save_messages(all_msgs)
+
+
+@pytest.fixture(scope="session")
+def bench_db_1k(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """1k-message DB: 100 convos × 10 msgs. Mixed providers, tool_use, thinking."""
+    db_path = tmp_path_factory.mktemp("bench") / "bench_1k.db"
+    asyncio.run(_seed_bench_db(db_path, conv_count=100, msgs_per_conv=10))
+    return db_path
+
+
+@pytest.fixture(scope="session")
+def bench_db_5k(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """5k-message DB: 500 convos × 10 msgs."""
+    db_path = tmp_path_factory.mktemp("bench") / "bench_5k.db"
+    asyncio.run(_seed_bench_db(db_path, conv_count=500, msgs_per_conv=10))
+    return db_path
+
+
+@pytest.fixture(scope="session")
+def bench_db_10k(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """10k-message DB: 2000 convos × 5 msgs. Wide distribution."""
+    db_path = tmp_path_factory.mktemp("bench") / "bench_10k.db"
+    asyncio.run(_seed_bench_db(db_path, conv_count=2000, msgs_per_conv=5))
+    return db_path
