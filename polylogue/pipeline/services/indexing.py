@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import AsyncIterable, Iterable
 from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
@@ -39,24 +40,18 @@ class IndexService:
         self.config = config
         self.backend = backend
 
-    async def update_index(self, conversation_ids: list[str]) -> bool:
+    async def update_index(
+        self,
+        conversation_ids: Iterable[str] | AsyncIterable[str],
+    ) -> bool:
         """Update the search index for specific conversations.
 
         Args:
-            conversation_ids: List of conversation IDs to index
+            conversation_ids: Conversation IDs to index
 
         Returns:
             True if indexing succeeded, False otherwise
         """
-        if not conversation_ids:
-            if self.backend is not None:
-                try:
-                    await ensure_index(self.backend)
-                except sqlite3.DatabaseError as exc:
-                    logger.error("Failed to ensure index", error=str(exc), exc_info=True)
-                    return False
-            return True
-
         if self.backend is None:
             logger.error("Cannot update index without a backend")
             return False

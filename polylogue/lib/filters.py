@@ -485,6 +485,10 @@ class ConversationFilter:
             parts.append(f"similar: {self._similar_text[:30]}")
         return parts
 
+    def describe(self) -> list[str]:
+        """Return human-readable descriptions of active filters."""
+        return self._describe_active_filters()
+
     def _has_post_filters(self) -> bool:
         """Check if any filters require in-memory post-processing."""
         return bool(
@@ -652,8 +656,10 @@ class ConversationFilter:
         Returns:
             Number of conversations deleted
         """
-        # Get all matching conversations
-        results = await self.list()
+        if self.can_use_summaries():
+            results: list[Conversation | ConversationSummary] = await self.list_summaries()
+        else:
+            results = await self.list()
         deleted_count = 0
 
         for conv in results:

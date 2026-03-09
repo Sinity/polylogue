@@ -120,6 +120,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
             checks.append(HealthCheck(path_name, VerifyStatus.WARNING, detail=f"Missing {path}"))
 
     # 2. Database Reachability (& optional Integrity)
+    db_error: str | None = None
     try:
         with open_connection(None) as conn:
             checks.append(HealthCheck("database", VerifyStatus.OK, detail="DB reachable"))
@@ -133,131 +134,136 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                     )
                 )
     except Exception as exc:
-        checks.append(HealthCheck("database", VerifyStatus.ERROR, detail=f"DB error: {exc}"))
+        db_error = str(exc)
+        checks.append(HealthCheck("database", VerifyStatus.ERROR, detail=f"DB error: {db_error}"))
 
     # 3. Search Index Status
-    idx = index_status()
-    if idx["exists"]:
-        checks.append(
-            HealthCheck(
-                "index", VerifyStatus.OK, count=int(cast(Any, idx["count"])), detail=f"messages indexed: {idx['count']}"
+    if db_error is None:
+        idx = index_status()
+        if idx["exists"]:
+            checks.append(
+                HealthCheck(
+                    "index", VerifyStatus.OK, count=int(cast(Any, idx["count"])), detail=f"messages indexed: {idx['count']}"
+                )
             )
-        )
+        else:
+            checks.append(HealthCheck("index", VerifyStatus.WARNING, detail="index not built"))
     else:
-        checks.append(HealthCheck("index", VerifyStatus.WARNING, detail="index not built"))
+        checks.append(HealthCheck("index", VerifyStatus.WARNING, detail=f"Skipped: database unavailable ({db_error})"))
 
     # 4. Data Quality (from former verify.py)
-    with connection_context(None) as conn:
+    if db_error is None:
+        with connection_context(None) as conn:
         # Orphaned messages — two-step approach for performance.
         # Step 1: find distinct orphan conversation_ids (fast via index on small conversations table).
         # Step 2: count messages only for those IDs (skipped entirely when no orphans exist).
-        orphan_cids = conn.execute(
+            orphan_cids = conn.execute(
+                """
+                SELECT DISTINCT m.conversation_id FROM messages m
+                WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = m.conversation_id)
             """
-            SELECT DISTINCT m.conversation_id FROM messages m
-            WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = m.conversation_id)
-        """
-        ).fetchall()
-        if orphan_cids:
-            placeholders = ",".join("?" for _ in orphan_cids)
-            orphan_count = conn.execute(
-                f"SELECT COUNT(*) FROM messages WHERE conversation_id IN ({placeholders})",
-                [row[0] for row in orphan_cids],
+            ).fetchall()
+            if orphan_cids:
+                placeholders = ",".join("?" for _ in orphan_cids)
+                orphan_count = conn.execute(
+                    f"SELECT COUNT(*) FROM messages WHERE conversation_id IN ({placeholders})",
+                    [row[0] for row in orphan_cids],
+                ).fetchone()[0]
+            else:
+                orphan_count = 0
+            checks.append(
+                HealthCheck(
+                    "orphaned_messages",
+                    VerifyStatus.OK if orphan_count == 0 else VerifyStatus.ERROR,
+                    count=orphan_count,
+                    detail="No orphaned messages" if orphan_count == 0 else f"{orphan_count:,} orphaned messages",
+                )
+            )
+
+            # Duplicate conversations
+            dup_conv = conn.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT conversation_id FROM conversations GROUP BY conversation_id HAVING COUNT(*) > 1
+                )
+            """
             ).fetchone()[0]
-        else:
-            orphan_count = 0
-        checks.append(
-            HealthCheck(
-                "orphaned_messages",
-                VerifyStatus.OK if orphan_count == 0 else VerifyStatus.ERROR,
-                count=orphan_count,
-                detail="No orphaned messages" if orphan_count == 0 else f"{orphan_count:,} orphaned messages",
+            checks.append(
+                HealthCheck(
+                    "duplicate_conversations",
+                    VerifyStatus.OK if dup_conv == 0 else VerifyStatus.ERROR,
+                    count=dup_conv,
+                    detail="No duplicates" if dup_conv == 0 else f"{dup_conv} duplicate conversation IDs",
+                )
             )
-        )
 
-        # Duplicate conversations
-        dup_conv = conn.execute(
+            # Empty conversations (conversations with no messages)
+            empty_conv = conn.execute(
+                """
+                SELECT COUNT(*) FROM conversations c
+                WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)
             """
-            SELECT COUNT(*) FROM (
-                SELECT conversation_id FROM conversations GROUP BY conversation_id HAVING COUNT(*) > 1
+            ).fetchone()[0]
+            checks.append(
+                HealthCheck(
+                    "empty_conversations",
+                    VerifyStatus.OK if empty_conv == 0 else VerifyStatus.WARNING,
+                    count=empty_conv,
+                    detail="No empty conversations" if empty_conv == 0 else f"{empty_conv} conversation(s) with no messages",
+                )
             )
-        """
-        ).fetchone()[0]
-        checks.append(
-            HealthCheck(
-                "duplicate_conversations",
-                VerifyStatus.OK if dup_conv == 0 else VerifyStatus.ERROR,
-                count=dup_conv,
-                detail="No duplicates" if dup_conv == 0 else f"{dup_conv} duplicate conversation IDs",
-            )
-        )
 
-        # Empty conversations (conversations with no messages)
-        empty_conv = conn.execute(
-            """
-            SELECT COUNT(*) FROM conversations c
-            WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)
-        """
-        ).fetchone()[0]
-        checks.append(
-            HealthCheck(
-                "empty_conversations",
-                VerifyStatus.OK if empty_conv == 0 else VerifyStatus.WARNING,
-                count=empty_conv,
-                detail="No empty conversations" if empty_conv == 0 else f"{empty_conv} conversation(s) with no messages",
-            )
-        )
+            # FTS sync check (verify messages_fts table exists and is in sync)
+            try:
+                # Check if messages_fts table exists
+                fts_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+                ).fetchone()
 
-        # FTS sync check (verify messages_fts table exists and is in sync)
-        try:
-            # Check if messages_fts table exists
-            fts_exists = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-            ).fetchone()
+                if fts_exists:
+                    # Count messages in both tables
+                    # Note: COUNT(*) on the FTS virtual table is extremely slow (15s+ on large DBs).
+                    # Use the backing docsize table instead, which has one row per indexed document.
+                    msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                    fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
 
-            if fts_exists:
-                # Count messages in both tables
-                # Note: COUNT(*) on the FTS virtual table is extremely slow (15s+ on large DBs).
-                # Use the backing docsize table instead, which has one row per indexed document.
-                msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-                fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
-
-                if msg_count == fts_count:
-                    checks.append(
-                        HealthCheck(
-                            "fts_sync",
-                            VerifyStatus.OK,
-                            count=fts_count,
-                            detail=f"FTS index in sync ({fts_count:,} messages indexed)",
+                    if msg_count == fts_count:
+                        checks.append(
+                            HealthCheck(
+                                "fts_sync",
+                                VerifyStatus.OK,
+                                count=fts_count,
+                                detail=f"FTS index in sync ({fts_count:,} messages indexed)",
+                            )
                         )
-                    )
+                    else:
+                        checks.append(
+                            HealthCheck(
+                                "fts_sync",
+                                VerifyStatus.WARNING,
+                                count=abs(msg_count - fts_count),
+                                detail=f"FTS out of sync: {msg_count:,} messages vs {fts_count:,} indexed",
+                            )
+                        )
                 else:
+                    # FTS table doesn't exist
+                    msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
                     checks.append(
                         HealthCheck(
                             "fts_sync",
                             VerifyStatus.WARNING,
-                            count=abs(msg_count - fts_count),
-                            detail=f"FTS out of sync: {msg_count:,} messages vs {fts_count:,} indexed",
+                            count=msg_count,
+                            detail=f"FTS index not built ({msg_count:,} messages not indexed)",
                         )
                     )
-            else:
-                # FTS table doesn't exist
-                msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            except Exception as exc:
                 checks.append(
                     HealthCheck(
                         "fts_sync",
-                        VerifyStatus.WARNING,
-                        count=msg_count,
-                        detail=f"FTS index not built ({msg_count:,} messages not indexed)",
+                        VerifyStatus.ERROR,
+                        detail=f"FTS check failed: {exc}",
                     )
                 )
-        except Exception as exc:
-            checks.append(
-                HealthCheck(
-                    "fts_sync",
-                    VerifyStatus.ERROR,
-                    detail=f"FTS check failed: {exc}",
-                )
-            )
 
     # 5. Source Accessibility
     for source in config.sources:
@@ -759,66 +765,6 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
         )
 
 
-def repair_unknown_roles(config: Config, dry_run: bool = False) -> RepairResult:
-    """Reclassify 'unknown' role messages for claude-code conversations.
-
-    Claude-code sessions had record types (progress, file-history-snapshot, etc.)
-    stored as role='unknown' before the parser was fixed. Uses json_extract on
-    provider_meta to map: progress/result → 'tool', system/summary/snapshot → 'system'.
-    """
-    try:
-        with connection_context(None) as conn:
-            count = conn.execute(
-                """SELECT COUNT(*) FROM messages m
-                   JOIN conversations c ON c.conversation_id = m.conversation_id
-                   WHERE m.role = 'unknown' AND c.provider_name = 'claude-code'"""
-            ).fetchone()[0]
-
-            if count == 0:
-                return RepairResult(
-                    name="unknown_roles",
-                    repaired_count=0,
-                    success=True,
-                    detail="No unknown-role messages found in claude-code conversations",
-                )
-
-            if dry_run:
-                return RepairResult(
-                    name="unknown_roles",
-                    repaired_count=count,
-                    success=True,
-                    detail=f"Would: Reclassify {count:,} unknown → tool/system in claude-code conversations",
-                )
-
-            # Use json_extract to map record type → correct role
-            result = conn.execute(
-                """UPDATE messages SET role = CASE
-                       WHEN json_extract(provider_meta, '$.raw.type')
-                           IN ('summary', 'system', 'file-history-snapshot', 'queue-operation')
-                           THEN 'system'
-                       ELSE 'tool'
-                   END
-                   WHERE role = 'unknown'
-                   AND conversation_id IN (
-                       SELECT conversation_id FROM conversations WHERE provider_name = 'claude-code'
-                   )"""
-            )
-            conn.commit()
-            return RepairResult(
-                name="unknown_roles",
-                repaired_count=result.rowcount,
-                success=True,
-                detail=f"Reclassified {result.rowcount:,} unknown → tool/system in claude-code conversations",
-            )
-    except Exception as exc:
-        return RepairResult(
-            name="unknown_roles",
-            repaired_count=0,
-            success=False,
-            detail=f"Failed to repair unknown roles: {exc}",
-        )
-
-
 def run_all_repairs(config: Config, dry_run: bool = False) -> list[RepairResult]:
     """Run all repair operations and return results.
 
@@ -831,7 +777,6 @@ def run_all_repairs(config: Config, dry_run: bool = False) -> list[RepairResult]
         repair_empty_conversations(config, dry_run=dry_run),
         repair_dangling_fts(config, dry_run=dry_run),
         repair_orphaned_attachments(config, dry_run=dry_run),
-        repair_unknown_roles(config, dry_run=dry_run),
         repair_wal_checkpoint(config, dry_run=dry_run),
     ]
 

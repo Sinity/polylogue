@@ -9,11 +9,10 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.store import RawConversationRecord
 
 

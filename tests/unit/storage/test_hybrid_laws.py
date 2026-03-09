@@ -7,7 +7,7 @@ from __future__ import annotations
 import sqlite3
 from unittest.mock import MagicMock, patch
 
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from polylogue.storage.search_providers.hybrid import (
@@ -15,7 +15,6 @@ from polylogue.storage.search_providers.hybrid import (
     create_hybrid_provider,
     reciprocal_rank_fusion,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,7 +44,7 @@ def _messages_db(msg_to_conv: dict[str, str]) -> sqlite3.Connection:
     )
     conn.executemany(
         "INSERT INTO messages VALUES (?, ?)",
-        [(msg_id, conv_id) for msg_id, conv_id in msg_to_conv.items()],
+        list(msg_to_conv.items()),
     )
     for conv_id in set(msg_to_conv.values()):
         conn.execute(

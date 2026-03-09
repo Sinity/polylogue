@@ -3,6 +3,7 @@
 > Dense implementation reference for developers working on the codebase.
 > For architecture overview, see [architecture.md](architecture.md).
 > For user-facing API docs, see [library-api.md](library-api.md).
+> For the current lint/test/mutation ledger, see [mutation-testing-baseline.md](mutation-testing-baseline.md).
 
 **Mission**: Local-first AI chat archive (ChatGPT, Claude, Codex, Gemini → SQLite + FTS5 + sqlite-vec)
 

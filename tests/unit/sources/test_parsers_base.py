@@ -10,8 +10,6 @@ from polylogue.sources.parsers.base import (
     attachment_from_meta,
 )
 from polylogue.sources.parsers.claude import (
-    extract_messages_from_chat_messages,
-    extract_text_from_segments,
     parse_ai,
     parse_code,
 )

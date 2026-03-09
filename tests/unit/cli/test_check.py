@@ -441,6 +441,21 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         assert "VACUUM" in result.output
 
+    def test_json_output_with_repair_and_vacuum_is_machine_safe(self, cli_workspace):
+        """`--json --repair --vacuum` should stay valid JSON."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--plain", "check", "--json", "--repair", "--preview", "--vacuum"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "repairs" in data
+        assert data["vacuum"]["ok"] is True
+        assert data["vacuum"]["preview"] is True
+
     def test_schema_provider_requires_schemas_flag(self, cli_workspace):
         """--schema-provider requires --schemas."""
         from click.testing import CliRunner
@@ -495,7 +510,7 @@ class TestCheckCommandSupplementary:
 
         fake_report = SchemaVerificationReport(
             providers={},
-            max_samples=16,
+            max_samples=None,
             total_records=0,
             record_limit=250,
             record_offset=500,
@@ -608,7 +623,7 @@ class TestCheckCommandSupplementary:
 
         fake_report = SchemaVerificationReport(
             providers={},
-            max_samples=16,
+            max_samples=None,
             total_records=0,
         )
 
@@ -625,7 +640,7 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         mock_verify.assert_called_once_with(
             providers=None,
-            max_samples=16,
+            max_samples=None,
             record_limit=None,
             record_offset=0,
             quarantine_malformed=True,

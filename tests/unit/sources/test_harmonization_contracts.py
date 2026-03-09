@@ -6,8 +6,7 @@ test_models.py (sources).
 """
 from __future__ import annotations
 
-import pytest
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from polylogue.schemas.unified import (
@@ -17,7 +16,6 @@ from polylogue.schemas.unified import (
     extract_tool_calls,
 )
 from polylogue.types import Provider
-
 
 # ---------------------------------------------------------------------------
 # Strategy helpers

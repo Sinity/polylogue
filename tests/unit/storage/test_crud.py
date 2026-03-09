@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.lib.roles import normalize_role as new_normalize_role
 from polylogue.schemas.unified import (
     extract_from_provider_meta,
     extract_harmonized_message,
     is_message_record,
 )
-from polylogue.lib.roles import normalize_role as new_normalize_role
 from polylogue.sources.parsers.base import normalize_role as old_normalize_role
 from polylogue.sources.parsers.claude import (
     extract_text_from_segments as old_extract_segments,
@@ -24,7 +24,6 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import (
     ContentBlockRecord,
     ConversationRecord,
-    MessageRecord,
 )
 from tests.infra.helpers import (
     make_attachment,

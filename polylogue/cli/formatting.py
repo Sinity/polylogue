@@ -62,14 +62,94 @@ def format_cursors(cursors: Mapping[str, object]) -> str | None:
 
 
 def format_counts(counts: Mapping[str, object]) -> str:
-    parts = [
-        f"{counts.get('conversations', 0)} conv",
-        f"{counts.get('messages', 0)} msg",
+    ordered_labels = [
+        ("acquired", "acquired"),
+        ("skipped", "skipped"),
+        ("acquire_errors", "acquire errors"),
+        ("validated", "validated"),
+        ("validation_invalid", "invalid"),
+        ("validation_drift", "drift"),
+        ("validation_skipped_no_schema", "no schema"),
+        ("validation_errors", "validation errors"),
+        ("conversations", "conv"),
+        ("messages", "msg"),
+        ("attachments", "att"),
+        ("rendered", "rendered"),
+        ("render_failures", "render failures"),
     ]
-    rendered = counts.get("rendered", 0)
-    if rendered:
-        parts.append(f"{rendered} rendered")
+    parts: list[str] = []
+    for key, label in ordered_labels:
+        value = counts.get(key)
+        if isinstance(value, int) and value:
+            parts.append(f"{value} {label}")
+    if not parts:
+        parts = [
+            f"{counts.get('conversations', 0)} conv",
+            f"{counts.get('messages', 0)} msg",
+        ]
     return ", ".join(parts)
+
+
+def format_run_details(counts: Mapping[str, object]) -> list[str]:
+    lines: list[str] = []
+
+    acquire_parts = [
+        (counts.get("acquired"), "acquired"),
+        (counts.get("skipped"), "skipped"),
+        (counts.get("acquire_errors"), "errors"),
+    ]
+    acquire_line = ", ".join(
+        f"{value} {label}"
+        for value, label in acquire_parts
+        if isinstance(value, int) and value
+    )
+    if acquire_line:
+        lines.append(f"Acquire: {acquire_line}")
+
+    validate_parts = [
+        (counts.get("validated"), "passed"),
+        (counts.get("validation_invalid"), "invalid"),
+        (counts.get("validation_drift"), "drift"),
+        (counts.get("validation_skipped_no_schema"), "no-schema"),
+        (counts.get("validation_errors"), "errors"),
+    ]
+    validate_line = ", ".join(
+        f"{value} {label}"
+        for value, label in validate_parts
+        if isinstance(value, int) and value
+    )
+    if validate_line:
+        lines.append(f"Validate: {validate_line}")
+
+    parse_failures = counts.get("parse_failures")
+    if isinstance(parse_failures, int) and parse_failures:
+        lines.append(f"Parse: {parse_failures} failures")
+
+    render_parts = [
+        (counts.get("rendered"), "rendered"),
+        (counts.get("render_failures"), "failures"),
+    ]
+    render_line = ", ".join(
+        f"{value} {label}"
+        for value, label in render_parts
+        if isinstance(value, int) and value
+    )
+    if render_line:
+        lines.append(f"Render: {render_line}")
+
+    schema_parts = [
+        (counts.get("schemas_generated"), "generated"),
+        (counts.get("schemas_failed"), "failed"),
+    ]
+    schema_line = ", ".join(
+        f"{value} {label}"
+        for value, label in schema_parts
+        if isinstance(value, int) and value
+    )
+    if schema_line:
+        lines.append(f"Schemas: {schema_line}")
+
+    return lines
 
 
 def format_plan_counts(counts: Mapping[str, object]) -> str:

@@ -21,12 +21,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.store import ConversationRecord, MessageRecord
+from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.index import rebuild_index
+from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 
 PROVIDERS = ["chatgpt", "claude", "claude-code", "gemini"]
 # Words used to make FTS5 searches meaningful
@@ -35,6 +38,9 @@ _WORD_POOL = [
     "async", "await", "database", "query", "result", "analysis", "code",
     "git", "commit", "branch", "merge", "review", "performance",
 ]
+# Semantic types cycling through values that semantic filters recognise.
+# None entries simulate "plain tool_use with no semantic classification" (~50%).
+SEMANTIC_CYCLE = ['file_read', 'file_write', 'git', 'shell', 'subagent', None, None, None]
 
 
 def _make_content_hash(s: str) -> str:
@@ -42,7 +48,15 @@ def _make_content_hash(s: str) -> str:
 
 
 async def _seed_bench_db(db_path: Path, conv_count: int, msgs_per_conv: int) -> None:
-    """Seed benchmark DB with realistic mixed data."""
+    """Seed benchmark DB with realistic mixed data.
+
+    Populates:
+    - conversations table
+    - messages table (with has_tool_use / has_thinking flags)
+    - content_blocks table (tool_use + thinking blocks, with semantic_type)
+    - conversation_stats table (via upsert_conversation_stats)
+    - FTS5 index (rebuild_index at end)
+    """
     backend = SQLiteBackend(db_path=db_path)
 
     conv_records = [
@@ -57,9 +71,7 @@ async def _seed_bench_db(db_path: Path, conv_count: int, msgs_per_conv: int) -> 
         )
         for i in range(conv_count)
     ]
-    await asyncio.gather(*(backend.save_conversation_record(r) for r in conv_records))
-
-    all_msgs = []
+    all_msgs: list[MessageRecord] = []
     for i in range(conv_count):
         for j in range(msgs_per_conv):
             # ~30% messages have tool_use, ~10% have thinking
@@ -78,7 +90,55 @@ async def _seed_bench_db(db_path: Path, conv_count: int, msgs_per_conv: int) -> 
                 has_tool_use=has_tool,
                 has_thinking=has_think,
             ))
-    await backend.save_messages(all_msgs)
+    # --- Seed content_blocks ---
+    # tool_use messages get a block with a cycling semantic_type;
+    # thinking messages get a 'thinking' type block.
+    all_blocks: list[ContentBlockRecord] = []
+    for idx, msg in enumerate(all_msgs):
+        if msg.has_tool_use:
+            sem = SEMANTIC_CYCLE[idx % len(SEMANTIC_CYCLE)]
+            block_id = ContentBlockRecord.make_id(msg.message_id, 0)
+            all_blocks.append(ContentBlockRecord(
+                block_id=block_id,
+                message_id=msg.message_id,
+                conversation_id=msg.conversation_id,
+                block_index=0,
+                type='tool_use',
+                semantic_type=sem,
+            ))
+        if msg.has_thinking:
+            block_id = ContentBlockRecord.make_id(msg.message_id, 1)
+            all_blocks.append(ContentBlockRecord(
+                block_id=block_id,
+                message_id=msg.message_id,
+                conversation_id=msg.conversation_id,
+                block_index=1,
+                type='thinking',
+            ))
+    # --- Populate conversation_stats ---
+    msgs_by_conv: dict[str, list[MessageRecord]] = defaultdict(list)
+    for msg in all_msgs:
+        msgs_by_conv[msg.conversation_id].append(msg)
+
+    provider_by_cid = {r.conversation_id: r.provider_name for r in conv_records}
+
+    async with backend.bulk_connection():
+        for index, record in enumerate(conv_records, start=1):
+            await backend.save_conversation_record(record)
+            if index % 500 == 0:
+                await backend.bulk_flush()
+
+        await backend.save_messages(all_msgs)
+        await backend.save_content_blocks(all_blocks)
+
+        for index, (cid, msgs) in enumerate(msgs_by_conv.items(), start=1):
+            await backend.upsert_conversation_stats(cid, provider_by_cid[cid], msgs)
+            if index % 500 == 0:
+                await backend.bulk_flush()
+
+    # --- Rebuild FTS5 index (session-level cost, not per-benchmark) ---
+    with open_connection(db_path) as conn:
+        rebuild_index(conn)
 
 
 @pytest.fixture(scope="session")

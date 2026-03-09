@@ -41,6 +41,15 @@ class ValidateResult:
         # Provider -> number of payloads with drift warnings.
         self.drift_counts: dict[str, int] = {}
 
+    def merge(self, other: ValidateResult) -> None:
+        """Accumulate another validation result into this one."""
+        for key, value in other.counts.items():
+            self.counts[key] += value
+        self.parseable_raw_ids.extend(other.parseable_raw_ids)
+        self.invalid_raw_ids.extend(other.invalid_raw_ids)
+        for provider, count in other.drift_counts.items():
+            self.drift_counts[provider] = self.drift_counts.get(provider, 0) + count
+
 
 class ValidationService:
     """Validate raw payloads against provider schemas."""
@@ -48,11 +57,9 @@ class ValidationService:
     SCHEMA_VALIDATION_MODE_ENV = "POLYLOGUE_SCHEMA_VALIDATION"
     SCHEMA_VALIDATION_DEFAULT = "strict"
     SCHEMA_VALIDATION_MODES = frozenset({"off", "advisory", "strict"})
-    SCHEMA_VALIDATION_MAX_SAMPLES_ENV = "POLYLOGUE_SCHEMA_VALIDATION_MAX_SAMPLES"
-    SCHEMA_VALIDATION_MAX_SAMPLES_DEFAULT = 16
 
     # Keep batches aligned with parse batching.
-    RAW_BATCH_SIZE = 200
+    RAW_BATCH_SIZE = 50
 
     def __init__(self, backend: SQLiteBackend):
         self.backend = backend
@@ -71,58 +78,38 @@ class ValidationService:
         )
         return self.SCHEMA_VALIDATION_DEFAULT
 
-    def _schema_validation_max_samples(self, payload: object) -> int:
-        """Return sample count for record-style payload validation."""
-        raw = os.environ.get(self.SCHEMA_VALIDATION_MAX_SAMPLES_ENV)
-        if raw is None:
-            return self.SCHEMA_VALIDATION_MAX_SAMPLES_DEFAULT
-
-        value = raw.strip().lower()
-        if value in {"all", "0"}:
-            if isinstance(payload, list):
-                return max(1, sum(1 for item in payload if isinstance(item, dict)))
-            return 1
-
-        try:
-            parsed = int(value)
-            if parsed > 0:
-                return parsed
-        except ValueError:
-            pass
-
-        logger.warning(
-            "Invalid %s=%r, falling back to %d",
-            self.SCHEMA_VALIDATION_MAX_SAMPLES_ENV,
-            raw,
-            self.SCHEMA_VALIDATION_MAX_SAMPLES_DEFAULT,
-        )
-        return self.SCHEMA_VALIDATION_MAX_SAMPLES_DEFAULT
+    def _validation_progress_desc(self, processed: int, total: int) -> str:
+        """Return a stable validation progress description."""
+        return f"Validating: {processed:,}/{total:,} raw"
 
     async def validate_raw_ids(
         self,
         *,
         raw_ids: list[str],
         progress_callback: ProgressCallback | None = None,
+        persist: bool = True,
     ) -> ValidateResult:
-        """Validate raw records and persist the resulting status."""
+        """Validate raw records, optionally persisting the resulting status."""
         if not raw_ids:
             return ValidateResult()
 
+        total_raw_ids = len(raw_ids)
         if progress_callback is not None:
-            progress_callback(0, desc=f"Validating ({len(raw_ids):,} raw)")
+            progress_callback(0, desc=self._validation_progress_desc(0, total_raw_ids))
 
         validation_mode = self._schema_validation_mode()
         if validation_mode == "off":
             result = ValidateResult()
-            for raw_id in raw_ids:
-                await self.backend.mark_raw_validated(
-                    raw_id,
-                    status="skipped",
-                    mode=validation_mode,
-                )
+            for index, raw_id in enumerate(raw_ids, start=1):
+                if persist:
+                    await self.backend.mark_raw_validated(
+                        raw_id,
+                        status="skipped",
+                        mode=validation_mode,
+                    )
                 result.parseable_raw_ids.append(raw_id)
                 if progress_callback is not None:
-                    progress_callback(1)
+                    progress_callback(1, desc=self._validation_progress_desc(index, total_raw_ids))
             return result
 
         result = ValidateResult()
@@ -132,17 +119,23 @@ class ValidationService:
             batch_result = await self.evaluate_raw_records(
                 raw_records=raw_records,
                 progress_callback=progress_callback,
-                persist=True,
+                persist=persist,
                 mode=validation_mode,
+                progress_total=total_raw_ids,
+                progress_offset=batch_start,
             )
-            self._merge_result(result, batch_result)
+            result.merge(batch_result)
 
             missing = [raw_id for raw_id in batch_ids if raw_id not in {record.raw_id for record in raw_records}]
-            for raw_id in missing:
+            processed = batch_start + len(raw_records)
+            for missing_index, raw_id in enumerate(missing, start=1):
                 result.counts["errors"] += 1
                 result.invalid_raw_ids.append(raw_id)
                 if progress_callback is not None:
-                    progress_callback(1)
+                    progress_callback(
+                        1,
+                        desc=self._validation_progress_desc(processed + missing_index, total_raw_ids),
+                    )
 
         return result
 
@@ -153,6 +146,8 @@ class ValidationService:
         progress_callback: ProgressCallback | None = None,
         persist: bool = False,
         mode: str | None = None,
+        progress_total: int | None = None,
+        progress_offset: int = 0,
     ) -> ValidateResult:
         """Evaluate raw records using the canonical validation logic."""
         from polylogue.schemas.validator import SchemaValidator
@@ -172,32 +167,43 @@ class ValidationService:
                     )
                 result.parseable_raw_ids.append(raw_record.raw_id)
                 if progress_callback is not None:
-                    progress_callback(1)
+                    total = progress_total or len(raw_records)
+                    progress_callback(
+                        1,
+                        desc=self._validation_progress_desc(progress_offset + len(result.parseable_raw_ids), total),
+                    )
             return result
 
-        for raw_record in raw_records:
+        total = progress_total or len(raw_records)
+        for index, raw_record in enumerate(raw_records, start=1):
             raw_id = raw_record.raw_id
             validation_status = "passed"
             validation_error: str | None = None
             parseable = True
+            stored_payload_provider = getattr(raw_record, "payload_provider", None)
+            if not isinstance(stored_payload_provider, str) or not stored_payload_provider.strip():
+                stored_payload_provider = None
             canonical_provider = canonical_runtime_provider(
-                raw_record.provider_name,
+                stored_payload_provider or raw_record.provider_name,
                 preserve_unknown=True,
-                default=raw_record.provider_name,
+                default=stored_payload_provider or raw_record.provider_name,
             )
             invalid_count = 0
             drift_count = 0
             collected_errors: list[str] = []
             collected_drift: list[str] = []
+            payload_provider = stored_payload_provider
 
             try:
                 envelope = build_raw_payload_envelope(
                     raw_record.raw_content,
                     source_path=raw_record.source_path,
                     fallback_provider=raw_record.provider_name,
+                    payload_provider=stored_payload_provider,
                 )
                 payload = envelope.payload
                 malformed_lines = envelope.malformed_jsonl_lines
+                payload_provider = envelope.provider
             except Exception as exc:
                 result.counts["errors"] += 1
                 result.invalid_raw_ids.append(raw_id)
@@ -230,8 +236,7 @@ class ValidationService:
                     result.counts["skipped_no_schema"] += 1
 
             if parseable and validator is not None and payload is not None:
-                max_samples = self._schema_validation_max_samples(payload)
-                samples = validator.validation_samples(payload, max_samples=max_samples)
+                samples = validator.validation_samples(payload)
 
                 if samples:
                     for sample in samples:
@@ -285,6 +290,7 @@ class ValidationService:
                     drift_count=drift_count,
                     provider=canonical_provider,
                     mode=validation_mode,
+                    payload_provider=payload_provider,
                 )
 
             if parseable:
@@ -292,17 +298,16 @@ class ValidationService:
             else:
                 result.invalid_raw_ids.append(raw_id)
                 if persist and validation_error is not None:
-                    await self.backend.mark_raw_parsed(raw_id, error=validation_error)
+                    await self.backend.mark_raw_parsed(
+                        raw_id,
+                        error=validation_error,
+                        payload_provider=payload_provider,
+                    )
 
             if progress_callback is not None:
-                progress_callback(1)
+                progress_callback(
+                    1,
+                    desc=self._validation_progress_desc(progress_offset + index, total),
+                )
 
         return result
-
-    def _merge_result(self, target: ValidateResult, source: ValidateResult) -> None:
-        for key, value in source.counts.items():
-            target.counts[key] += value
-        target.parseable_raw_ids.extend(source.parseable_raw_ids)
-        target.invalid_raw_ids.extend(source.invalid_raw_ids)
-        for provider, count in source.drift_counts.items():
-            target.drift_counts[provider] = target.drift_counts.get(provider, 0) + count

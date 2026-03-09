@@ -6,11 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.lib.log import get_logger
 from polylogue.lib.json import dumps as json_dumps
-from polylogue.lib.viewports import ToolCategory, classify_tool
-from polylogue.pipeline.semantic import extract_tool_metadata
-from polylogue.schemas.code_detection import detect_language
+from polylogue.lib.log import get_logger
+from polylogue.lib.viewports import classify_tool
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
@@ -24,8 +22,16 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import (
     message_id as make_message_id,
 )
+from polylogue.pipeline.semantic import extract_tool_metadata
+from polylogue.schemas.code_detection import detect_language
 from polylogue.sources.source import RecordBundle, save_bundle
-from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, ExistingConversation, MessageRecord
+from polylogue.storage.store import (
+    AttachmentRecord,
+    ContentBlockRecord,
+    ConversationRecord,
+    ExistingConversation,
+    MessageRecord,
+)
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
 if TYPE_CHECKING:

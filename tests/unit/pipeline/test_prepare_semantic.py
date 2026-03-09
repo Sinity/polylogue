@@ -11,18 +11,12 @@ Covers:
 
 from __future__ import annotations
 
-import json
-import pytest
-
-from polylogue.storage.store import ContentBlockRecord
-from polylogue.pipeline.prepare import prepare_records
+from polylogue.lib.viewports import ToolCategory, classify_tool
 from polylogue.pipeline.semantic import (
+    extract_subagent_spawns,
     extract_tool_metadata,
     parse_git_operation,
-    extract_subagent_spawns,
 )
-from polylogue.lib.viewports import classify_tool, ToolCategory
-
 
 # =============================================================================
 # Tests for classify_tool

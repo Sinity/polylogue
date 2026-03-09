@@ -13,10 +13,7 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from polylogue.sources.source import _decode_json_bytes
-
 
 # ---------------------------------------------------------------------------
 # BOM handling

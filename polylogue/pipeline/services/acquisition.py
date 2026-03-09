@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -76,6 +76,29 @@ class AcquisitionService:
         """
         self.backend = backend
 
+    async def _persist_record(
+        self,
+        record: RawConversationRecord,
+        *,
+        result: AcquireResult,
+    ) -> None:
+        """Persist one raw record and update acquisition counters."""
+        try:
+            inserted = await self.backend.save_raw_conversation(record)
+            if inserted:
+                result.counts["acquired"] += 1
+                result.raw_ids.append(record.raw_id)
+            else:
+                result.counts["skipped"] += 1
+        except Exception as exc:
+            logger.error(
+                "Failed to store raw conversation",
+                source=record.source_name,
+                path=record.source_path,
+                error=str(exc),
+            )
+            result.counts["errors"] += 1
+
     async def scan_sources(
         self,
         sources: list[Source],
@@ -87,7 +110,39 @@ class AcquisitionService:
     ) -> ScanResult:
         """Scan raw payloads from sources without writing them."""
         result = ScanResult()
+        async def _collect(record: RawConversationRecord) -> None:
+            result.records.append(record)
+
+        visited = await self.visit_sources(
+            sources,
+            progress_callback=progress_callback,
+            ui=ui,
+            drive_config=drive_config,
+            progress_label=progress_label,
+            on_record=_collect,
+        )
+        result.counts = visited.counts
+        result.cursors = visited.cursors
+        return result
+
+    async def visit_sources(
+        self,
+        sources: list[Source],
+        *,
+        progress_callback: ProgressCallback | None = None,
+        ui: object | None = None,
+        drive_config: DriveConfig | None = None,
+        progress_label: str = "Scanning",
+        on_record: Callable[[RawConversationRecord], Awaitable[None]] | None = None,
+    ) -> ScanResult:
+        """Visit source raw payloads incrementally without forcing list materialization."""
+        result = ScanResult()
         known_mtimes = await self.backend.get_known_source_mtimes()
+
+        async def _consume(record: RawConversationRecord) -> None:
+            if on_record is not None:
+                await on_record(record)
+            result.counts["scanned"] += 1
 
         for source in sources:
             logger.debug("Scanning source", source=source.name)
@@ -100,8 +155,7 @@ class AcquisitionService:
                     cursor_state=cursor_state,
                     drive_config=drive_config,
                 ):
-                    result.records.append(record)
-                    result.counts["scanned"] += 1
+                    await _consume(record)
                     if progress_callback:
                         progress_callback(1, desc=f"{progress_label} [{source.name}]")
             except Exception as exc:
@@ -129,8 +183,8 @@ class AcquisitionService:
     ) -> AcquireResult:
         """Acquire raw data from multiple sources.
 
-        Reads source files and stores raw bytes in raw_conversations.
-        Source iteration is performed in a thread pool to avoid blocking.
+        Reads source files and stores raw bytes in ``raw_conversations`` without
+        materializing the full corpus in memory first.
 
         Args:
             sources: List of sources to acquire from
@@ -140,15 +194,33 @@ class AcquisitionService:
             AcquireResult with counts and list of acquired raw_ids
         """
         result = AcquireResult()
-        scan_result = await self.scan_sources(
-            sources,
-            progress_callback=progress_callback,
-            ui=ui,
-            drive_config=drive_config,
-            progress_label="Acquiring",
-        )
-        result = await self.store_records(scan_result.records)
-        result.counts["errors"] += scan_result.counts["errors"]
+        flush_interval = 500
+        items_since_flush = 0
+        seen_raw_ids: set[str] = set()
+
+        async def _store(record: RawConversationRecord) -> None:
+            nonlocal items_since_flush
+            if record.raw_id in seen_raw_ids:
+                result.counts["skipped"] += 1
+                return
+            seen_raw_ids.add(record.raw_id)
+            await self._persist_record(record, result=result)
+            items_since_flush += 1
+            if items_since_flush >= flush_interval:
+                await self.backend.bulk_flush()
+                items_since_flush = 0
+
+        async with self.backend.bulk_connection():
+            visit_result = await self.visit_sources(
+                sources,
+                progress_callback=progress_callback,
+                ui=ui,
+                drive_config=drive_config,
+                progress_label="Acquiring",
+                on_record=_store,
+            )
+            result.counts["errors"] += visit_result.counts["errors"]
+
         return result
 
     async def store_records(
@@ -166,22 +238,7 @@ class AcquisitionService:
 
         async with self.backend.bulk_connection():
             for record in records:
-                try:
-                    inserted = await self.backend.save_raw_conversation(record)
-                    if inserted:
-                        result.counts["acquired"] += 1
-                        result.raw_ids.append(record.raw_id)
-                    else:
-                        result.counts["skipped"] += 1
-                except Exception as exc:
-                    logger.error(
-                        "Failed to store raw conversation",
-                        source=record.source_name,
-                        path=record.source_path,
-                        error=str(exc),
-                    )
-                    result.counts["errors"] += 1
-
+                await self._persist_record(record, result=result)
                 items_since_flush += 1
                 if items_since_flush >= flush_interval:
                     await self.backend.bulk_flush()
