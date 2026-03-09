@@ -1,7 +1,7 @@
 """SQLite schema management: DDL and version control.
 
-Schema version policy: v1 is the complete target schema. There are no migrations.
-If user_version != 0 and != 1, the database is incompatible — wipe and re-run.
+Schema version policy: v2 is the complete target schema. There are no migrations.
+If user_version != 0 and != 2, the database is incompatible — wipe and re-run.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from polylogue.lib.log import get_logger
 from polylogue.storage.store import _make_ref_id
 
 logger = get_logger(__name__)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 _VEC0_DDL = """
@@ -105,6 +105,10 @@ SCHEMA_DDL = """
             version INTEGER NOT NULL,
             parent_message_id TEXT REFERENCES messages(message_id),
             branch_index INTEGER NOT NULL DEFAULT 0,
+            provider_name TEXT NOT NULL DEFAULT '',
+            word_count INTEGER NOT NULL DEFAULT 0,
+            has_tool_use INTEGER NOT NULL DEFAULT 0,
+            has_thinking INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (conversation_id)
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
@@ -117,6 +121,12 @@ SCHEMA_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_messages_parent
         ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_messages_provider_role
+        ON messages(provider_name, role);
+
+        CREATE INDEX IF NOT EXISTS idx_messages_provider_stats
+        ON messages(provider_name, role, has_tool_use, has_thinking, word_count, conversation_id);
 
         CREATE TABLE IF NOT EXISTS content_blocks (
             block_id TEXT PRIMARY KEY,
@@ -149,6 +159,31 @@ SCHEMA_DDL = """
             message_id TEXT PRIMARY KEY REFERENCES messages(message_id) ON DELETE CASCADE,
             raw_json TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS conversation_stats (
+            conversation_id TEXT PRIMARY KEY
+                REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            provider_name   TEXT NOT NULL DEFAULT '',
+            message_count   INTEGER NOT NULL DEFAULT 0,
+            word_count      INTEGER NOT NULL DEFAULT 0,
+            tool_use_count  INTEGER NOT NULL DEFAULT 0,
+            thinking_count  INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_conv_stats_provider
+        ON conversation_stats(provider_name);
+
+        CREATE INDEX IF NOT EXISTS idx_conv_stats_messages
+        ON conversation_stats(message_count);
+
+        CREATE INDEX IF NOT EXISTS idx_conv_stats_words
+        ON conversation_stats(word_count);
+
+        CREATE INDEX IF NOT EXISTS idx_conv_stats_tool_use
+        ON conversation_stats(tool_use_count);
+
+        CREATE INDEX IF NOT EXISTS idx_conv_stats_thinking
+        ON conversation_stats(thinking_count);
 
         CREATE TABLE IF NOT EXISTS attachments (
             attachment_id TEXT PRIMARY KEY,
@@ -221,10 +256,10 @@ SCHEMA_DDL = """
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Ensure the database is at schema version 1.
+    """Ensure the database is at schema version 2.
 
-    For fresh databases (version 0): apply full DDL and set version to 1.
-    For version 1: nothing to do.
+    For fresh databases (version 0): apply full DDL and set version to 2.
+    For version 2: nothing to do.
     For any other version: raise — the DB is incompatible, wipe and re-run.
     """
     cursor = conn.execute("PRAGMA user_version")
@@ -235,7 +270,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(SCHEMA_DDL)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
-        logger.debug("Created fresh schema v1")
+        logger.debug("Created fresh schema v2")
         return
 
     if current_version == SCHEMA_VERSION:
@@ -246,5 +281,5 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     raise DatabaseError(
         f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
         "This database was created with a different schema. Delete the database file and re-run polylogue "
-        "to create a fresh v1 schema."
+        "to create a fresh v2 schema."
     )
