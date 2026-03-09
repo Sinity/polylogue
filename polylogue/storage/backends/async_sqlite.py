@@ -25,6 +25,7 @@ from polylogue.storage.backends.connection import (
     DB_TIMEOUT,
     _build_conversation_filters,
     _build_source_scope_filter,
+    _needs_stats_join,
 )
 from polylogue.storage.store import (
     AttachmentRecord,
@@ -256,10 +257,10 @@ class SQLiteBackend:
             yield conn
 
     async def _ensure_schema(self, conn: aiosqlite.Connection) -> None:
-        """Ensure database schema exists and is at schema version 1.
+        """Ensure database schema exists and is at schema version 2.
 
-        For fresh databases (version 0): apply DDL and set version to 1.
-        For version 1: nothing to do.
+        For fresh databases (version 0): apply DDL and set version to 2.
+        For version 2: nothing to do.
         For any other version: raise — wipe DB and re-run.
         """
         from polylogue.storage.backends.schema import (
@@ -289,7 +290,7 @@ class SQLiteBackend:
 
             raise DatabaseError(
                 f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
-                "Delete the database file and re-run polylogue to create a fresh v1 schema."
+                "Delete the database file and re-run polylogue to create a fresh v2 schema."
             )
 
     @asynccontextmanager
@@ -424,6 +425,11 @@ class SQLiteBackend:
         title_contains: str | None = None,
         limit: int | None = None,
         offset: int = 0,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
     ) -> list[ConversationRecord]:
         """List conversations with optional filtering and pagination.
 
@@ -437,7 +443,19 @@ class SQLiteBackend:
             title_contains: Filter to conversations whose title contains this text (case-insensitive)
             limit: Maximum number of records to return
             offset: Number of records to skip
+            has_tool_use: Only conversations with tool_use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            max_messages: Maximum message count
+            min_words: Minimum total word count
         """
+        use_stats_join = _needs_stats_join(
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+        )
         async with self._get_connection() as conn:
             # Build query with filters
             where_sql, params = _build_conversation_filters(
@@ -448,16 +466,27 @@ class SQLiteBackend:
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
             )
+
+            if use_stats_join:
+                from_clause = "FROM conversations c LEFT JOIN conversation_stats cs ON cs.conversation_id = c.conversation_id"
+                select_clause = "SELECT c.*"
+                order_clause = "ORDER BY (c.sort_key IS NULL) ASC, c.sort_key DESC, c.conversation_id DESC"
+            else:
+                from_clause = "FROM conversations"
+                select_clause = "SELECT *"
+                order_clause = "ORDER BY (sort_key IS NULL) ASC, sort_key DESC, conversation_id DESC"
 
             # Build full query with ordering and pagination
             query = f"""
-                SELECT * FROM conversations
+                {select_clause} {from_clause}
                 {where_sql}
-                ORDER BY
-                    (sort_key IS NULL) ASC,
-                    sort_key DESC,
-                    conversation_id DESC
+                {order_clause}
             """
 
             if limit is not None:
@@ -484,12 +513,24 @@ class SQLiteBackend:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
     ) -> int:
         """Count conversations matching filters without loading records.
 
         Accepts the same filter params as list_conversations but returns
         just the count via COUNT(*) for maximum efficiency.
         """
+        use_stats_join = _needs_stats_join(
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+        )
         async with self._get_connection() as conn:
             where_sql, params = _build_conversation_filters(
                 source=source,
@@ -498,11 +539,17 @@ class SQLiteBackend:
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
             )
-            cursor = await conn.execute(
-                f"SELECT COUNT(*) as cnt FROM conversations {where_sql}",
-                tuple(params),
-            )
+            if use_stats_join:
+                sql = f"SELECT COUNT(*) as cnt FROM conversations c LEFT JOIN conversation_stats cs ON cs.conversation_id = c.conversation_id {where_sql}"
+            else:
+                sql = f"SELECT COUNT(*) as cnt FROM conversations {where_sql}"
+            cursor = await conn.execute(sql, tuple(params))
             row = await cursor.fetchone()
             return int(row["cnt"])
 
@@ -809,15 +856,23 @@ class SQLiteBackend:
                     content_hash,
                     version,
                     parent_message_id,
-                    branch_index
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    branch_index,
+                    provider_name,
+                    word_count,
+                    has_tool_use,
+                    has_thinking
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     role = excluded.role,
                     text = excluded.text,
                     sort_key = excluded.sort_key,
                     content_hash = excluded.content_hash,
                     parent_message_id = excluded.parent_message_id,
-                    branch_index = excluded.branch_index
+                    branch_index = excluded.branch_index,
+                    provider_name = excluded.provider_name,
+                    word_count = excluded.word_count,
+                    has_tool_use = excluded.has_tool_use,
+                    has_thinking = excluded.has_thinking
                 WHERE
                     content_hash != excluded.content_hash
                     OR IFNULL(role, '') != IFNULL(excluded.role, '')
@@ -837,6 +892,10 @@ class SQLiteBackend:
                     r.version,
                     r.parent_message_id,
                     r.branch_index,
+                    r.provider_name,
+                    r.word_count,
+                    r.has_tool_use,
+                    r.has_thinking,
                 )
                 for r in records
             ]
@@ -889,6 +948,38 @@ class SQLiteBackend:
                 for r in records
             ]
             await conn.executemany(query, data)
+            if self._transaction_depth == 0:
+                await conn.commit()
+
+    async def upsert_conversation_stats(
+        self,
+        conversation_id: str,
+        provider_name: str,
+        messages: list[MessageRecord],
+    ) -> None:
+        """Upsert precomputed per-conversation aggregate stats.
+
+        Called after save_messages to keep conversation_stats in sync.
+        """
+        message_count = len(messages)
+        word_count = sum(m.word_count for m in messages)
+        tool_use_count = sum(1 for m in messages if m.has_tool_use)
+        thinking_count = sum(1 for m in messages if m.has_thinking)
+        async with self._get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO conversation_stats
+                    (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                    provider_name  = excluded.provider_name,
+                    message_count  = excluded.message_count,
+                    word_count     = excluded.word_count,
+                    tool_use_count = excluded.tool_use_count,
+                    thinking_count = excluded.thinking_count
+                """,
+                (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count),
+            )
             if self._transaction_depth == 0:
                 await conn.commit()
 
@@ -1699,45 +1790,31 @@ class SQLiteBackend:
     async def get_provider_metrics_rows(self) -> list[dict[str, object]]:
         """Return raw provider aggregation rows for analytics reporting.
 
-        Uses content_blocks table for tool_use/thinking counts — fast because
-        messages rows no longer carry 9GB of provider_meta blobs.
+        Single-table GROUP BY on messages using the covering index
+        idx_messages_provider_stats — index-only scan, no JOINs needed.
         """
         async with self._get_connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT
-                    c.provider_name,
-                    COUNT(DISTINCT c.conversation_id) AS conversation_count,
-                    COUNT(DISTINCT m.message_id) AS message_count,
-                    SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) AS user_message_count,
-                    SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) AS assistant_message_count,
-                    SUM(CASE WHEN m.role = 'user' AND m.text IS NOT NULL AND trim(m.text) != ''
-                        THEN length(trim(m.text)) - length(replace(trim(m.text), ' ', '')) + 1
-                        ELSE 0 END) AS user_word_sum,
-                    SUM(CASE WHEN m.role = 'assistant' AND m.text IS NOT NULL AND trim(m.text) != ''
-                        THEN length(trim(m.text)) - length(replace(trim(m.text), ' ', '')) + 1
-                        ELSE 0 END) AS assistant_word_sum,
-                    (SELECT COUNT(*) FROM content_blocks cb
-                     WHERE cb.conversation_id = c.conversation_id AND cb.type = 'tool_use')
-                    + (SELECT COUNT(*) FROM messages m2
-                       WHERE m2.conversation_id = c.conversation_id AND m2.role = 'tool') AS tool_use_count,
-                    (SELECT COUNT(*) FROM content_blocks cb
-                     WHERE cb.conversation_id = c.conversation_id AND cb.type = 'thinking') AS thinking_count,
-                    COUNT(DISTINCT CASE WHEN EXISTS (
-                        SELECT 1 FROM content_blocks cb
-                        WHERE cb.message_id = m.message_id AND cb.type = 'tool_use'
-                    ) THEN c.conversation_id END) AS conversations_with_tools,
-                    COUNT(DISTINCT CASE WHEN EXISTS (
-                        SELECT 1 FROM content_blocks cb
-                        WHERE cb.message_id = m.message_id AND cb.type = 'thinking'
-                    ) THEN c.conversation_id END) AS conversations_with_thinking
-                FROM conversations c
-                LEFT JOIN messages m ON c.conversation_id = m.conversation_id
-                GROUP BY c.provider_name
+                    provider_name,
+                    COUNT(DISTINCT conversation_id)                                                AS conversation_count,
+                    COUNT(*)                                                                       AS message_count,
+                    SUM(CASE WHEN role = 'user'      THEN 1 ELSE 0 END)                           AS user_message_count,
+                    SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END)                           AS assistant_message_count,
+                    SUM(CASE WHEN role = 'user'      THEN word_count ELSE 0 END)                  AS user_word_sum,
+                    SUM(CASE WHEN role = 'assistant' THEN word_count ELSE 0 END)                  AS assistant_word_sum,
+                    SUM(has_tool_use)                                                              AS tool_use_count,
+                    SUM(has_thinking)                                                              AS thinking_count,
+                    COUNT(DISTINCT CASE WHEN has_tool_use = 1 THEN conversation_id END)           AS conversations_with_tools,
+                    COUNT(DISTINCT CASE WHEN has_thinking = 1 THEN conversation_id END)           AS conversations_with_thinking
+                FROM messages
+                GROUP BY provider_name
                 ORDER BY conversation_count DESC
                 """
             )
             rows = await cursor.fetchall()
+
         return [dict(row) for row in rows]
 
     async def get_latest_run(self) -> RunRecord | None:
