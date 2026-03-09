@@ -22,10 +22,8 @@ import pytest
 
 from polylogue.lib.dates import parse_date
 from polylogue.lib.log import configure_logging, get_logger
-from polylogue.sources.parsers.claude import (
-    extract_subagent_spawns,
-    extract_text_from_segments,
-)
+from polylogue.sources.parsers.claude import extract_text_from_segments
+from polylogue.pipeline.semantic import extract_subagent_spawns
 from polylogue.sources.parsers.claude import (
     parse_ai as parse_claude_ai,
 )
