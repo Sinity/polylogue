@@ -429,8 +429,11 @@ class TestTokenRefreshErrorHandling:
         with pytest.raises(DriveAuthError, match="Drive dependencies"):
             client._service_handle()
 
-    def test_refresh_failure_raises_specific_error(self, monkeypatch):
+    def test_refresh_failure_raises_specific_error(self, monkeypatch, tmp_path):
         """Token refresh failure should raise DriveAuthError."""
+        token_file = tmp_path / "token.json"
+        token_file.write_text('{"valid": false, "expired": true}')
+
         mock_creds = MagicMock()
         mock_creds.valid = False
         mock_creds.expired = True
@@ -453,7 +456,7 @@ class TestTokenRefreshErrorHandling:
 
         monkeypatch.setattr(drive_client, "_import_module", mock_import)
 
-        client = DriveClient(ui=None)
+        client = DriveClient(ui=None, token_path=token_file)
         with pytest.raises(DriveAuthError, match="refresh|token"):
             client._load_credentials()
 

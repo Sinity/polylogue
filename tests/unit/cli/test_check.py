@@ -146,16 +146,15 @@ class TestCheckCommand:
                 """
                 INSERT INTO messages (
                     message_id, conversation_id, role, text,
-                    timestamp, content_hash, version
+                    content_hash, version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     "orphan-msg",
                     "non-existent-conv",
                     "user",
                     "orphaned text",
-                    "2024-01-01T00:00:00Z",
                     "abc123",
                     1,
                 ),

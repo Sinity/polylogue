@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
-from polylogue.pipeline.enrichment import enrich_message_metadata
+from polylogue.lib.json import dumps as json_dumps
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
@@ -22,7 +22,7 @@ from polylogue.pipeline.ids import (
     message_id as make_message_id,
 )
 from polylogue.sources.source import RecordBundle, save_bundle
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, ExistingConversation, MessageRecord
+from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, ExistingConversation, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
 if TYPE_CHECKING:
@@ -271,6 +271,7 @@ async def prepare_records(
     )
 
     messages: list[MessageRecord] = []
+    content_block_records: list[ContentBlockRecord] = []
     message_ids: dict[str, MessageId] = {}
 
     # Retrieve existing message ID mapping — use batch cache if available
@@ -309,9 +310,6 @@ async def prepare_records(
         if msg.parent_message_provider_id:
             parent_message_id = message_ids.get(str(msg.parent_message_provider_id))
 
-        # Enrich provider_meta with code language detection
-        enriched_meta = enrich_message_metadata(msg.provider_meta)
-
         messages.append(
             MessageRecord(
                 message_id=mid,
@@ -319,14 +317,36 @@ async def prepare_records(
                 provider_message_id=provider_message_id,
                 role=msg.role,
                 text=msg.text,
-                timestamp=msg.timestamp,
                 sort_key=_timestamp_sort_key(msg.timestamp),
                 content_hash=message_hash,
-                provider_meta=enriched_meta,
                 parent_message_id=parent_message_id,
                 branch_index=msg.branch_index,
             )
         )
+
+        # Create ContentBlockRecords from structured content blocks
+        for block_idx, block in enumerate(msg.content_blocks):
+            tool_input_json = None
+            if block.tool_input is not None:
+                tool_input_json = json_dumps(block.tool_input)
+            metadata_json = None
+            if block.metadata is not None:
+                metadata_json = json_dumps(block.metadata)
+            content_block_records.append(
+                ContentBlockRecord(
+                    block_id=ContentBlockRecord.make_id(mid, block_idx),
+                    message_id=MessageId(mid),
+                    conversation_id=cid,
+                    block_index=block_idx,
+                    type=block.type,
+                    text=block.text,
+                    tool_name=block.tool_name,
+                    tool_id=block.tool_id,
+                    tool_input=tool_input_json,
+                    media_type=block.media_type,
+                    metadata=metadata_json,
+                )
+            )
 
     attachments: list[AttachmentRecord] = []
     materialization_plan = AttachmentMaterializationPlan()
@@ -365,6 +385,7 @@ async def prepare_records(
                 conversation=conversation_record,
                 messages=messages,
                 attachments=attachments,
+                content_blocks=content_block_records,
             ),
             repository=repository,
         )

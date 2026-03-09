@@ -14,6 +14,7 @@ from polylogue.errors import DatabaseError
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
+from polylogue.lib.hashing import hash_text
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
 
 # Maximum reasonable file size (1TB)
@@ -54,20 +55,44 @@ class ConversationRecord(BaseModel):
         return v
 
 
+class ContentBlockRecord(BaseModel):
+    """A single structured content block belonging to a message.
+
+    Content blocks are the canonical representation of message content.
+    Block types: text, thinking, tool_use, tool_result, image, code, document.
+    """
+
+    block_id: str
+    message_id: MessageId
+    conversation_id: ConversationId
+    block_index: int
+    type: str
+    text: str | None = None
+    tool_name: str | None = None
+    tool_id: str | None = None
+    tool_input: str | None = None  # JSON-serialized dict
+    media_type: str | None = None
+    metadata: str | None = None  # JSON-serialized dict
+
+    @classmethod
+    def make_id(cls, message_id: str, block_index: int) -> str:
+        return f"blk-{hash_text(f'{message_id}:{block_index}')[:16]}"
+
+
 class MessageRecord(BaseModel):
     message_id: MessageId
     conversation_id: ConversationId
     provider_message_id: str | None = None
     role: str | None = None
-    text: str | None = None
-    timestamp: str | None = None
+    text: str | None = None  # Concatenated text from text-type content blocks
     sort_key: float | None = None  # Pre-computed numeric timestamp for ORDER BY
     content_hash: ContentHash
-    provider_meta: dict[str, object] | None = None
     version: int = 1
     # Branching support: links messages in conversation trees
     parent_message_id: MessageId | None = None
     branch_index: int = 0  # 0 = mainline, >0 = branch sibling position
+    # Content blocks loaded alongside the message (not stored in messages table)
+    content_blocks: list[ContentBlockRecord] = Field(default_factory=list)
 
     @property
     def role_typed(self):
@@ -275,16 +300,31 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
     return MessageRecord(
         message_id=row["message_id"],
         conversation_id=row["conversation_id"],
-        provider_message_id=row["provider_message_id"],
-        role=row["role"],
-        text=row["text"],
-        timestamp=row["timestamp"],
+        provider_message_id=_row_get(row, "provider_message_id"),
+        role=_row_get(row, "role"),
+        text=_row_get(row, "text"),
         sort_key=_row_get(row, "sort_key"),
         content_hash=row["content_hash"],
-        provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
         version=row["version"],
         parent_message_id=_row_get(row, "parent_message_id"),
         branch_index=_row_get(row, "branch_index", 0) or 0,
+    )
+
+
+def _row_to_content_block(row: sqlite3.Row) -> ContentBlockRecord:
+    """Map a SQLite row to a ContentBlockRecord."""
+    return ContentBlockRecord(
+        block_id=row["block_id"],
+        message_id=MessageId(row["message_id"]),
+        conversation_id=ConversationId(row["conversation_id"]),
+        block_index=row["block_index"],
+        type=row["type"],
+        text=_row_get(row, "text"),
+        tool_name=_row_get(row, "tool_name"),
+        tool_id=_row_get(row, "tool_id"),
+        tool_input=_row_get(row, "tool_input"),
+        media_type=_row_get(row, "media_type"),
+        metadata=_row_get(row, "metadata"),
     )
 
 
@@ -312,9 +352,11 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
 
 __all__ = [
     "AttachmentRecord",
+    "ContentBlockRecord",
     "ConversationRecord",
     "MAX_ATTACHMENT_SIZE",
     "MessageRecord",
     "RawConversationRecord",
     "RunRecord",
+    "_row_to_content_block",
 ]
