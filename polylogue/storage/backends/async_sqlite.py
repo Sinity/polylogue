@@ -290,7 +290,7 @@ class SQLiteBackend:
 
             raise DatabaseError(
                 f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
-                "Delete the database file and re-run polylogue to create a fresh v2 schema."
+                f"Delete the database file and re-run polylogue to create a fresh v{SCHEMA_VERSION} schema."
             )
 
     @asynccontextmanager
@@ -430,6 +430,9 @@ class SQLiteBackend:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> list[ConversationRecord]:
         """List conversations with optional filtering and pagination.
 
@@ -448,6 +451,9 @@ class SQLiteBackend:
             min_messages: Minimum message count
             max_messages: Maximum message count
             min_words: Minimum total word count
+            has_file_ops: Only conversations with file operations (read/write/edit)
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations that spawned subagents
         """
         use_stats_join = _needs_stats_join(
             has_tool_use=has_tool_use,
@@ -471,6 +477,9 @@ class SQLiteBackend:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
             )
 
             if use_stats_join:
@@ -518,6 +527,9 @@ class SQLiteBackend:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> int:
         """Count conversations matching filters without loading records.
 
@@ -544,6 +556,9 @@ class SQLiteBackend:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
             )
             if use_stats_join:
                 sql = f"SELECT COUNT(*) as cnt FROM conversations c LEFT JOIN conversation_stats cs ON cs.conversation_id = c.conversation_id {where_sql}"
@@ -840,10 +855,49 @@ class SQLiteBackend:
 
         return result
 
+    @staticmethod
+    def _topo_sort_messages(records: list[MessageRecord]) -> list[MessageRecord]:
+        """Sort messages so parents come before children (for FK constraint).
+
+        Cross-conversation parent references (parent outside this batch) are left
+        as-is — those FKs are never set by prepare.py anyway (only within-conversation
+        parent_message_id is resolved).
+        """
+        ids_in_batch = {r.message_id for r in records}
+        # Separate records with intra-batch parent from those without
+        no_parent: list[MessageRecord] = []
+        has_parent: list[MessageRecord] = []
+        for r in records:
+            if r.parent_message_id and r.parent_message_id in ids_in_batch:
+                has_parent.append(r)
+            else:
+                no_parent.append(r)
+        if not has_parent:
+            return records
+        # Build simple ordering: insert parents before children
+        ordered: list[MessageRecord] = list(no_parent)
+        inserted_ids = {r.message_id for r in ordered}
+        remaining = list(has_parent)
+        max_passes = len(remaining) + 1
+        for _ in range(max_passes):
+            if not remaining:
+                break
+            next_remaining: list[MessageRecord] = []
+            for r in remaining:
+                if r.parent_message_id in inserted_ids:
+                    ordered.append(r)
+                    inserted_ids.add(r.message_id)
+                else:
+                    next_remaining.append(r)
+            remaining = next_remaining
+        ordered.extend(remaining)  # Append anything still stuck (cycles)
+        return ordered
+
     async def save_messages(self, records: list[MessageRecord]) -> None:
         """Persist multiple message records using bulk insert."""
         if not records:
             return
+        records = self._topo_sort_messages(records)
         async with self._get_connection() as conn:
             query = """
                 INSERT INTO messages (
@@ -920,8 +974,9 @@ class SQLiteBackend:
                     tool_id,
                     tool_input,
                     media_type,
-                    metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata,
+                    semantic_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id, block_index) DO UPDATE SET
                     type = excluded.type,
                     text = excluded.text,
@@ -929,7 +984,8 @@ class SQLiteBackend:
                     tool_id = excluded.tool_id,
                     tool_input = excluded.tool_input,
                     media_type = excluded.media_type,
-                    metadata = excluded.metadata
+                    metadata = excluded.metadata,
+                    semantic_type = excluded.semantic_type
             """
             data = [
                 (
@@ -944,6 +1000,7 @@ class SQLiteBackend:
                     r.tool_input,
                     r.media_type,
                     r.metadata,
+                    r.semantic_type,
                 )
                 for r in records
             ]

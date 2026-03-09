@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
 from polylogue.lib.json import dumps as json_dumps
+from polylogue.lib.viewports import ToolCategory, classify_tool
+from polylogue.pipeline.semantic import extract_tool_metadata
+from polylogue.schemas.code_detection import detect_language
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
@@ -339,9 +342,33 @@ async def prepare_records(
             tool_input_json = None
             if block.tool_input is not None:
                 tool_input_json = json_dumps(block.tool_input)
+
+            # Compute semantic_type and enrich metadata at ingest time
+            semantic_type: str | None = None
+            semantic_metadata: dict | None = block.metadata  # start with existing block metadata
+
+            if block.type == "tool_use" and block.tool_name:
+                category = classify_tool(block.tool_name, block.tool_input or {})
+                semantic_type = category.value
+                # Extract structured metadata for semantically meaningful tool calls
+                tool_meta = extract_tool_metadata(block.tool_name, block.tool_input or {})
+                if tool_meta is not None:
+                    # Merge with existing block metadata (tool_meta takes precedence for semantic keys)
+                    base = dict(block.metadata) if isinstance(block.metadata, dict) else {}
+                    base.update(tool_meta)
+                    semantic_metadata = base
+            elif block.type == "thinking":
+                semantic_type = "thinking"
+            elif block.type == "code" and block.text and semantic_metadata is None:
+                # Detect programming language for code blocks that don't have metadata
+                detected_lang = detect_language(block.text)
+                if detected_lang:
+                    semantic_metadata = {"language": detected_lang}
+
             metadata_json = None
-            if block.metadata is not None:
-                metadata_json = json_dumps(block.metadata)
+            if semantic_metadata is not None:
+                metadata_json = json_dumps(semantic_metadata)
+
             content_block_records.append(
                 ContentBlockRecord(
                     block_id=ContentBlockRecord.make_id(mid, block_idx),
@@ -355,6 +382,7 @@ async def prepare_records(
                     tool_input=tool_input_json,
                     media_type=block.media_type,
                     metadata=metadata_json,
+                    semantic_type=semantic_type,
                 )
             )
 
