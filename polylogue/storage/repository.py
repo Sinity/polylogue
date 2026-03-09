@@ -197,6 +197,14 @@ class ConversationRepository:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> builtins.list[ConversationSummary]:
         """List conversation summaries without loading messages.
 
@@ -209,6 +217,14 @@ class ConversationRepository:
             since: Filter to conversations updated on/after this ISO date
             until: Filter to conversations updated on/before this ISO date
             title_contains: Filter by title substring (case-insensitive)
+            has_tool_use: Only conversations with tool_use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            max_messages: Maximum message count
+            min_words: Minimum total word count
+            has_file_ops: Only conversations with file operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations with subagent blocks
 
         Returns:
             List of ConversationSummary objects
@@ -222,6 +238,14 @@ class ConversationRepository:
             since=since,
             until=until,
             title_contains=title_contains,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            has_file_ops=has_file_ops,
+            has_git_ops=has_git_ops,
+            has_subagent=has_subagent,
         )
         return [ConversationSummary.from_record(rec) for rec in conv_records]
 
@@ -234,6 +258,14 @@ class ConversationRepository:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> builtins.list[Conversation]:
         """List conversations with eager-loaded messages and attachments.
 
@@ -245,6 +277,14 @@ class ConversationRepository:
             since: Filter to conversations updated on/after this ISO date
             until: Filter to conversations updated on/before this ISO date
             title_contains: Filter by title substring (case-insensitive)
+            has_tool_use: Only conversations with tool_use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            max_messages: Maximum message count
+            min_words: Minimum total word count
+            has_file_ops: Only conversations with file operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations with subagent blocks
 
         Returns:
             List of Conversation objects with all data eager-loaded
@@ -257,6 +297,14 @@ class ConversationRepository:
             since=since,
             until=until,
             title_contains=title_contains,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            has_file_ops=has_file_ops,
+            has_git_ops=has_git_ops,
+            has_subagent=has_subagent,
         )
 
         # Fetch messages and attachments for all conversations in parallel
@@ -272,6 +320,14 @@ class ConversationRepository:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> int:
         """Count conversations matching filters.
 
@@ -281,6 +337,14 @@ class ConversationRepository:
             since: Filter to conversations updated on/after this ISO date
             until: Filter to conversations updated on/before this ISO date
             title_contains: Filter by title substring
+            has_tool_use: Only conversations with tool_use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            max_messages: Maximum message count
+            min_words: Minimum total word count
+            has_file_ops: Only conversations with file operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations with subagent blocks
 
         Returns:
             Count of matching conversations
@@ -291,6 +355,14 @@ class ConversationRepository:
             since=since,
             until=until,
             title_contains=title_contains,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            has_file_ops=has_file_ops,
+            has_git_ops=has_git_ops,
+            has_subagent=has_subagent,
         )
 
     async def aggregate_message_stats(

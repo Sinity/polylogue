@@ -179,8 +179,23 @@ def _build_conversation_filters(
     since: str | None = None,
     until: str | None = None,
     title_contains: str | None = None,
+    has_tool_use: bool = False,
+    has_thinking: bool = False,
+    min_messages: int | None = None,
+    max_messages: int | None = None,
+    min_words: int | None = None,
+    has_file_ops: bool = False,
+    has_git_ops: bool = False,
+    has_subagent: bool = False,
 ) -> tuple[str, list[str | int | float]]:
-    """Build WHERE clause and params for conversation queries."""
+    """Build WHERE clause and params for conversation queries.
+
+    Stats-based filters (has_tool_use, has_thinking, min_messages, max_messages,
+    min_words) emit a LEFT JOIN on conversation_stats and filter on cs columns.
+    Semantic filters (has_file_ops, has_git_ops, has_subagent) emit EXISTS
+    subqueries against content_blocks.semantic_type.
+    Callers must prefix conversation columns with 'c.' when using stats filters.
+    """
     where_clauses: list[str] = []
     params: list[str | int | float] = []
 
@@ -210,6 +225,39 @@ def _build_conversation_filters(
         escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         where_clauses.append("title LIKE ? ESCAPE '\\'")
         params.append(f"%{escaped}%")
+
+    # Stats-based filters (require conversation_stats JOIN)
+    if has_tool_use:
+        where_clauses.append("cs.tool_use_count > 0")
+    if has_thinking:
+        where_clauses.append("cs.thinking_count > 0")
+    if min_messages is not None:
+        where_clauses.append("cs.message_count >= ?")
+        params.append(min_messages)
+    if max_messages is not None:
+        where_clauses.append("cs.message_count <= ?")
+        params.append(max_messages)
+    if min_words is not None:
+        where_clauses.append("cs.word_count >= ?")
+        params.append(min_words)
+
+    # Semantic filters via EXISTS subquery on content_blocks.semantic_type
+    conv_id_col = "c.conversation_id" if needs_stats_join else "conversation_id"
+    if has_file_ops:
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+            " AND cb.semantic_type IN ('file_read', 'file_write', 'file_edit'))"
+        )
+    if has_git_ops:
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+            " AND cb.semantic_type = 'git')"
+        )
+    if has_subagent:
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+            " AND cb.semantic_type = 'subagent')"
+        )
 
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     return where_sql, params

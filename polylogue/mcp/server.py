@@ -159,6 +159,13 @@ def _build_server() -> FastMCP:
         limit: int = 10,
         provider: str | None = None,
         since: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> str:
         """Search conversations by text query. Returns matching conversations with metadata.
 
@@ -167,21 +174,40 @@ def _build_server() -> FastMCP:
             limit: Max results (default: 10)
             provider: Filter by provider (claude, chatgpt, claude-code, etc.)
             since: Only conversations updated after this date (ISO format or natural language like 'last week')
+            has_tool_use: Only conversations with tool use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            min_words: Minimum total word count
+            has_file_ops: Only conversations with file read/write/edit operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations that spawned subagents
         """
         async def _run() -> str:
             from polylogue.lib.filters import ConversationFilter
 
             repo = _get_repo()
-            clamped = _clamp_limit(limit)
-
-            filter_chain = ConversationFilter(repo).contains(query).limit(clamped)
-            if provider:
-                filter_chain = filter_chain.provider(provider)
-            if since:
-                filter_chain = filter_chain.since(since)
-
-            results = await filter_chain.list()
-            return json.dumps([_conversation_to_dict(r) for r in results], indent=2)
+            spec = ConversationQuerySpec(
+                query_terms=(query,),
+                providers=(provider,) if provider else (),
+                since=since,
+                limit=_clamp_limit(limit),
+                filter_has_tool_use=has_tool_use,
+                filter_has_thinking=has_thinking,
+                min_messages=min_messages,
+                min_words=min_words,
+                filter_has_file_ops=has_file_ops,
+                filter_has_git_ops=has_git_ops,
+                filter_has_subagent=has_subagent,
+            )
+            results = await spec.build_filter(repo).list()
+            return _json_payload(
+                MCPConversationSummaryListPayload(
+                    root=[
+                        MCPConversationSummaryPayload.from_conversation(result)
+                        for result in results
+                    ]
+                )
+            )
         return await _async_safe_call("search", _run)
 
     @mcp.tool()
@@ -192,6 +218,13 @@ def _build_server() -> FastMCP:
         tag: str | None = None,
         title: str | None = None,
         sort: str = "updated",
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> str:
         """List recent conversations, optionally filtered by provider, date, tag, or title.
 
@@ -202,25 +235,42 @@ def _build_server() -> FastMCP:
             tag: Filter by tag
             title: Filter by title substring
             sort: Sort order ('updated' or 'created', default: 'updated')
+            has_tool_use: Only conversations with tool use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            min_words: Minimum total word count
+            has_file_ops: Only conversations with file read/write/edit operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations that spawned subagents
         """
         async def _run() -> str:
             from polylogue.lib.filters import ConversationFilter
 
             repo = _get_repo()
-            clamped = _clamp_limit(limit)
-
-            filter_chain = ConversationFilter(repo).limit(clamped)
-            if provider:
-                filter_chain = filter_chain.provider(provider)
-            if since:
-                filter_chain = filter_chain.since(since)
-            if tag:
-                filter_chain = filter_chain.tag(tag)
-            if title:
-                filter_chain = filter_chain.title(title)
-
-            conversations = await filter_chain.list()
-            return json.dumps([_conversation_to_dict(c) for c in conversations], indent=2)
+            spec = ConversationQuerySpec(
+                providers=(provider,) if provider else (),
+                tags=(tag,) if tag else (),
+                title=title,
+                since=since,
+                sort=sort,
+                limit=_clamp_limit(limit),
+                filter_has_tool_use=has_tool_use,
+                filter_has_thinking=has_thinking,
+                min_messages=min_messages,
+                min_words=min_words,
+                filter_has_file_ops=has_file_ops,
+                filter_has_git_ops=has_git_ops,
+                filter_has_subagent=has_subagent,
+            )
+            conversations = await spec.build_filter(repo).list()
+            return _json_payload(
+                MCPConversationSummaryListPayload(
+                    root=[
+                        MCPConversationSummaryPayload.from_conversation(conv)
+                        for conv in conversations
+                    ]
+                )
+            )
         return await _async_safe_call("list_conversations", _run)
 
     @mcp.tool()

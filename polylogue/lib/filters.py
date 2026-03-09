@@ -86,6 +86,16 @@ class ConversationFilter:
         self._limit_count: int | None = None
         self._sample_count: int | None = None
         self._similar_text: str | None = None
+        # SQL-pushable stats filters (via conversation_stats JOIN)
+        self._filter_has_tool_use: bool = False
+        self._filter_has_thinking: bool = False
+        self._min_messages: int | None = None
+        self._max_messages: int | None = None
+        self._min_words: int | None = None
+        # SQL-pushable semantic filters (via EXISTS on content_blocks.semantic_type)
+        self._filter_has_file_ops: bool = False
+        self._filter_has_git_ops: bool = False
+        self._filter_has_subagent: bool = False
 
     # --- Filter methods (return self for chaining) ---
 
@@ -210,6 +220,46 @@ class ConversationFilter:
             self._predicates.append(lambda c: c.is_root)
         else:
             self._predicates.append(lambda c: not c.is_root)
+        return self
+
+    def has_tool_use(self) -> ConversationFilter:
+        """Filter to conversations that contain tool_use or tool_result blocks (SQL pushdown)."""
+        self._filter_has_tool_use = True
+        return self
+
+    def has_thinking(self) -> ConversationFilter:
+        """Filter to conversations that contain thinking blocks (SQL pushdown)."""
+        self._filter_has_thinking = True
+        return self
+
+    def min_messages(self, n: int) -> ConversationFilter:
+        """Filter to conversations with at least n messages (SQL pushdown)."""
+        self._min_messages = n
+        return self
+
+    def max_messages(self, n: int) -> ConversationFilter:
+        """Filter to conversations with at most n messages (SQL pushdown)."""
+        self._max_messages = n
+        return self
+
+    def min_words(self, n: int) -> ConversationFilter:
+        """Filter to conversations with at least n total words (SQL pushdown)."""
+        self._min_words = n
+        return self
+
+    def has_file_operations(self) -> ConversationFilter:
+        """Filter to conversations containing file read/write/edit operations (SQL pushdown)."""
+        self._filter_has_file_ops = True
+        return self
+
+    def has_git_operations(self) -> ConversationFilter:
+        """Filter to conversations containing git operations (SQL pushdown)."""
+        self._filter_has_git_ops = True
+        return self
+
+    def has_subagent_spawns(self) -> ConversationFilter:
+        """Filter to conversations that spawned subagents via Task tool (SQL pushdown)."""
+        self._filter_has_subagent = True
         return self
 
     def parent(self, conversation_id: str) -> ConversationFilter:
@@ -365,6 +415,22 @@ class ConversationFilter:
             params["until"] = self._until_date.isoformat()
         if self._title_pattern:
             params["title_contains"] = self._title_pattern
+        if self._filter_has_tool_use:
+            params["has_tool_use"] = True
+        if self._filter_has_thinking:
+            params["has_thinking"] = True
+        if self._min_messages is not None:
+            params["min_messages"] = self._min_messages
+        if self._max_messages is not None:
+            params["max_messages"] = self._max_messages
+        if self._min_words is not None:
+            params["min_words"] = self._min_words
+        if self._filter_has_file_ops:
+            params["has_file_ops"] = True
+        if self._filter_has_git_ops:
+            params["has_git_ops"] = True
+        if self._filter_has_subagent:
+            params["has_subagent"] = True
         return params
 
     def _describe_active_filters(self) -> list[str]:
@@ -382,6 +448,22 @@ class ConversationFilter:
             parts.append(f"exclude tag: {', '.join(self._excluded_tags)}")
         if self._has_types:
             parts.append(f"has: {', '.join(self._has_types)}")
+        if self._filter_has_tool_use:
+            parts.append("has_tool_use")
+        if self._filter_has_thinking:
+            parts.append("has_thinking")
+        if self._filter_has_file_ops:
+            parts.append("has_file_ops")
+        if self._filter_has_git_ops:
+            parts.append("has_git_ops")
+        if self._filter_has_subagent:
+            parts.append("has_subagent")
+        if self._min_messages is not None:
+            parts.append(f"min_messages: {self._min_messages}")
+        if self._max_messages is not None:
+            parts.append(f"max_messages: {self._max_messages}")
+        if self._min_words is not None:
+            parts.append(f"min_words: {self._min_words}")
         if self._since_date:
             parts.append(f"since: {self._since_date.isoformat()}")
         if self._until_date:
