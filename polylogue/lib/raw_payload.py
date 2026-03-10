@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -215,6 +217,82 @@ def limit_samples(
     return _take_bucketed_samples(buckets, limit)
 
 
+def collect_limited_samples(
+    sample_factory: Callable[[], Iterable[dict[str, Any]]],
+    *,
+    limit: int,
+    stratify: bool,
+    record_type_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Collect bounded samples from a re-iterable source without full materialization."""
+    if limit <= 0:
+        return []
+    if not stratify:
+        selected: list[dict[str, Any]] = []
+        for sample in sample_factory():
+            selected.append(sample)
+            if len(selected) >= limit:
+                break
+        return selected
+
+    bucket_counts = Counter(
+        record_bucket_key(sample, record_type_key)
+        for sample in sample_factory()
+    )
+    if not bucket_counts:
+        return []
+
+    target_counts = _bucket_target_counts(bucket_counts, limit)
+    collected_counts = Counter()
+    selected: list[dict[str, Any]] = []
+
+    for sample in sample_factory():
+        bucket = record_bucket_key(sample, record_type_key)
+        target = target_counts.get(bucket, 0)
+        if target == 0 or collected_counts[bucket] >= target:
+            continue
+        selected.append(sample)
+        collected_counts[bucket] += 1
+        if len(selected) >= limit:
+            break
+
+    return selected
+
+
+def _bucket_target_counts(
+    bucket_counts: Counter[str],
+    limit: int,
+) -> Counter[str]:
+    """Compute per-bucket quotas matching the existing round-robin sampler."""
+    remaining = Counter(bucket_counts)
+    selected = Counter()
+    ordered_keys = sorted(bucket_counts, key=lambda key: bucket_counts[key], reverse=True)
+    selected_total = 0
+
+    for key in ordered_keys:
+        if selected_total >= limit or remaining[key] <= 0:
+            continue
+        selected[key] += 1
+        remaining[key] -= 1
+        selected_total += 1
+
+    while selected_total < limit:
+        progressed = False
+        for key in ordered_keys:
+            if selected_total >= limit:
+                break
+            if remaining[key] <= 0:
+                continue
+            selected[key] += 1
+            remaining[key] -= 1
+            selected_total += 1
+            progressed = True
+        if not progressed:
+            break
+
+    return selected
+
+
 def _take_bucketed_samples(
     buckets: dict[str, list[dict[str, Any]]],
     limit: int,
@@ -305,6 +383,7 @@ __all__ = [
     "RawPayloadEnvelope",
     "WireFormat",
     "build_raw_payload_envelope",
+    "collect_limited_samples",
     "extract_payload_samples",
     "is_record_candidate",
     "limit_samples",

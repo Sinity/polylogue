@@ -31,12 +31,12 @@ except ImportError:
     GENSON_AVAILABLE = False
 
 
+from polylogue.lib.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.lib.raw_payload import (
     build_raw_payload_envelope,
+    collect_limited_samples,
     extract_payload_samples,
-    limit_samples,
 )
-from polylogue.lib.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.storage.backends.connection import default_db_path
 
 # UUID pattern for detecting dynamic keys
@@ -625,9 +625,7 @@ def _is_safe_enum_value(value: str, *, path: str = "$") -> bool:
     if "." in value and re.search(r"\.(com|org|net|pl|io|de|uk|ru|fr|co)\b", lower):
         return False
     # Block internal/private network hostnames (.local, .lan, .corp, .internal, .home)
-    if "." in value and re.search(r"\.(local|lan|corp|internal|home)\b", lower):
-        return False
-    return True
+    return "." not in value or not re.search(r"\.(local|lan|corp|internal|home)\b", lower)
 
 
 def _annotate_schema(
@@ -879,11 +877,10 @@ def load_samples_from_db(
         return []
 
     config = _resolve_provider_config(provider_name)
-    samples = list(_iter_samples_from_db(provider_name, db_path=db_path, config=config))
     if max_samples is None:
-        return samples
-    return limit_samples(
-        samples,
+        return list(_iter_samples_from_db(provider_name, db_path=db_path, config=config))
+    return collect_limited_samples(
+        lambda: _iter_samples_from_db(provider_name, db_path=db_path, config=config),
         limit=max_samples,
         stratify=config.sample_granularity == "record",
         record_type_key=config.record_type_key,
@@ -897,11 +894,10 @@ def load_samples_from_sessions(
     record_type_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Load samples from JSONL session files."""
-    samples = list(_iter_samples_from_sessions(session_dir, max_sessions=max_sessions))
     if max_samples is None:
-        return samples
-    return limit_samples(
-        samples,
+        return list(_iter_samples_from_sessions(session_dir, max_sessions=max_sessions))
+    return collect_limited_samples(
+        lambda: _iter_samples_from_sessions(session_dir, max_sessions=max_sessions),
         limit=max_samples,
         stratify=True,
         record_type_key=record_type_key,
