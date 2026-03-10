@@ -495,7 +495,7 @@ class TestCheckCommandSupplementary:
 
         fake_report = SchemaVerificationReport(
             providers={},
-            max_samples=16,
+            max_samples=None,
             total_records=0,
             record_limit=250,
             record_offset=500,
@@ -608,7 +608,7 @@ class TestCheckCommandSupplementary:
 
         fake_report = SchemaVerificationReport(
             providers={},
-            max_samples=16,
+            max_samples=None,
             total_records=0,
         )
 
@@ -625,7 +625,7 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         mock_verify.assert_called_once_with(
             providers=None,
-            max_samples=16,
+            max_samples=None,
             record_limit=None,
             record_offset=0,
             quarantine_malformed=True,

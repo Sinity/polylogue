@@ -16,7 +16,7 @@ import pytest
 from polylogue.config import Config, IndexConfig
 from polylogue.sources import RecordBundle, save_bundle
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.index import ensure_index, rebuild_index, update_index_for_conversations
+from polylogue.storage.index import rebuild_index, update_index_for_conversations
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
@@ -605,6 +605,11 @@ class TestFTS5Provider:
         results = populated_fts.search("quicksort")
         assert len(results) == 2  # Both messages mention quicksort
         # Results should be in relevance order (checked implicitly by the stable BM25 ordering)
+
+    def test_search_applies_limit_in_sql(self, populated_fts):
+        """Search should honor LIMIT without materializing extra rows first."""
+        results = populated_fts.search("quicksort", limit=1)
+        assert len(results) == 1
 
     def test_search_escapes_fts5_special_chars(self, populated_fts):
         """Search query escapes FTS5 special characters."""

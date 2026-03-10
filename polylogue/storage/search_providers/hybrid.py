@@ -140,7 +140,7 @@ class HybridSearchProvider:
         # Get FTS5 results (returns message IDs)
         # Fetch more than limit to ensure good fusion
         fts_limit = limit * 3
-        fts_message_ids = self.fts_provider.search(query)[:fts_limit]
+        fts_message_ids = self.fts_provider.search(query, limit=fts_limit)
 
         # Convert to (id, rank_score) format - higher rank = higher score
         fts_results = [

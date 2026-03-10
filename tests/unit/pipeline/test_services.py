@@ -363,8 +363,8 @@ class TestValidationService:
         assert kwargs["status"] == "passed"
         backend.mark_raw_parsed.assert_not_called()
 
-    async def test_validation_max_samples_all_uses_all_record_samples(self, monkeypatch):
-        """`POLYLOGUE_SCHEMA_VALIDATION_MAX_SAMPLES=all` validates all JSONL dict records."""
+    async def test_validation_uses_all_record_samples_by_default(self, monkeypatch):
+        """Validation should inspect all JSONL dict records by default."""
         from polylogue.schemas import ValidationResult
 
         raw_record = MagicMock(
@@ -388,7 +388,7 @@ class TestValidationService:
             def __init__(self):
                 self.max_samples_seen = None
 
-            def validation_samples(self, payload, max_samples=16):
+            def validation_samples(self, payload, max_samples=None):
                 self.max_samples_seen = max_samples
                 return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else [payload]
 
@@ -396,7 +396,6 @@ class TestValidationService:
                 return ValidationResult(is_valid=True)
 
         capturing = _CapturingValidator()
-        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION_MAX_SAMPLES", "all")
         monkeypatch.setattr(
             "polylogue.schemas.validator.SchemaValidator.for_provider",
             lambda _provider: capturing,
@@ -405,7 +404,7 @@ class TestValidationService:
         result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
 
         assert result.parseable_raw_ids == ["raw-1"]
-        assert capturing.max_samples_seen == 3
+        assert capturing.max_samples_seen is None
 
     async def test_validation_strict_fails_on_malformed_jsonl_lines(self, monkeypatch):
         """Strict mode should fail payloads that contain malformed JSONL lines."""
