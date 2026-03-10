@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import click
 
@@ -100,15 +101,26 @@ def check_command(
     if repair:
         repair_results = run_all_repairs(config, dry_run=preview)
 
+    vacuum_result: dict[str, Any] | None = None
+    if repair and vacuum:
+        if preview:
+            vacuum_result = {
+                "ok": True,
+                "preview": True,
+                "detail": "Preview mode: VACUUM skipped.",
+            }
+        elif json_output:
+            vacuum_result = _vacuum_database(env)
+
     if json_output:
         out = report.to_dict()
         if schema_report is not None:
             out["schema_verification"] = schema_report.to_dict()
         if repair_results is not None:
             out["repairs"] = [r.to_dict() for r in repair_results]
+        if vacuum_result is not None:
+            out["vacuum"] = vacuum_result
         click.echo(json.dumps(out, indent=2))
-        if repair and vacuum:
-            _run_vacuum(env)
         return
 
     lines = []
@@ -178,23 +190,30 @@ def check_command(
     elif repair:
         env.ui.console.print("No issues to repair.")
 
-    if repair and vacuum:
+    if repair and vacuum and preview:
+        env.ui.console.print("")
+        env.ui.console.print("Preview mode: VACUUM skipped.")
+    elif repair and vacuum:
         _run_vacuum(env)
 
 
 def _run_vacuum(env: AppEnv) -> None:
     """Run VACUUM to reclaim unused space."""
+    result = _vacuum_database(env)
     env.ui.console.print("")
-    env.ui.console.print("Running VACUUM to reclaim space...")
-    try:
-        from polylogue.storage.backends.connection import default_db_path, open_connection
+    env.ui.console.print(result["detail"])
 
-        db_path = default_db_path()
-        with open_connection(db_path) as conn:
+
+def _vacuum_database(env: AppEnv) -> dict[str, Any]:
+    """Run VACUUM and return a machine-readable result."""
+    from polylogue.storage.backends.connection import open_connection
+
+    try:
+        with open_connection(env.config.db_path) as conn:
             conn.execute("VACUUM")
-        env.ui.console.print("  VACUUM complete.")
+        return {"ok": True, "detail": "Running VACUUM to reclaim space...\n  VACUUM complete."}
     except Exception as exc:
-        env.ui.console.print(f"  VACUUM failed: {exc}")
+        return {"ok": False, "detail": f"Running VACUUM to reclaim space...\n  VACUUM failed: {exc}"}
 
 
 def _parse_schema_samples(raw: str) -> int | None:

@@ -24,7 +24,7 @@ from polylogue.pipeline.runner import (
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import PlanResult
-from tests.infra.helpers import make_conversation, store_records
+from tests.infra.helpers import make_conversation, make_message, store_records
 
 
 class TestRenderFailureTracking:
@@ -155,6 +155,29 @@ class TestRenderFailureTracking:
             assert "render_failures" in result.counts
             assert result.counts["render_failures"] == 2
             assert result.counts["rendered"] == 1
+
+    def test_render_stage_uses_configured_render_root(self, workspace_env, tmp_path: Path):
+        """Render stage should write to config.render_root, not archive_root/render implicitly."""
+        archive_root = workspace_env["archive_root"]
+        custom_render_root = tmp_path / "custom-render-root"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with open_connection(db_path) as conn:
+            conv = make_conversation("test:custom-render-root", title="Render Root Test")
+            msg = make_message("msg-1", "test:custom-render-root", text="hello")
+            store_records(conversation=conv, messages=[msg], attachments=[], conn=conn)
+
+        config = Config(
+            sources=[],
+            archive_root=archive_root,
+            render_root=custom_render_root,
+        )
+
+        result = asyncio.run(run_sources(config=config, stage="render"))
+
+        assert result.counts["rendered"] == 1
+        assert custom_render_root.exists()
+        assert any(custom_render_root.rglob("conversation.html"))
 
 
 class TestSelectSources:
