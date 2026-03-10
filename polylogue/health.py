@@ -759,66 +759,6 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
         )
 
 
-def repair_unknown_roles(config: Config, dry_run: bool = False) -> RepairResult:
-    """Reclassify 'unknown' role messages for claude-code conversations.
-
-    Claude-code sessions had record types (progress, file-history-snapshot, etc.)
-    stored as role='unknown' before the parser was fixed. Uses json_extract on
-    provider_meta to map: progress/result → 'tool', system/summary/snapshot → 'system'.
-    """
-    try:
-        with connection_context(None) as conn:
-            count = conn.execute(
-                """SELECT COUNT(*) FROM messages m
-                   JOIN conversations c ON c.conversation_id = m.conversation_id
-                   WHERE m.role = 'unknown' AND c.provider_name = 'claude-code'"""
-            ).fetchone()[0]
-
-            if count == 0:
-                return RepairResult(
-                    name="unknown_roles",
-                    repaired_count=0,
-                    success=True,
-                    detail="No unknown-role messages found in claude-code conversations",
-                )
-
-            if dry_run:
-                return RepairResult(
-                    name="unknown_roles",
-                    repaired_count=count,
-                    success=True,
-                    detail=f"Would: Reclassify {count:,} unknown → tool/system in claude-code conversations",
-                )
-
-            # Use json_extract to map record type → correct role
-            result = conn.execute(
-                """UPDATE messages SET role = CASE
-                       WHEN json_extract(provider_meta, '$.raw.type')
-                           IN ('summary', 'system', 'file-history-snapshot', 'queue-operation')
-                           THEN 'system'
-                       ELSE 'tool'
-                   END
-                   WHERE role = 'unknown'
-                   AND conversation_id IN (
-                       SELECT conversation_id FROM conversations WHERE provider_name = 'claude-code'
-                   )"""
-            )
-            conn.commit()
-            return RepairResult(
-                name="unknown_roles",
-                repaired_count=result.rowcount,
-                success=True,
-                detail=f"Reclassified {result.rowcount:,} unknown → tool/system in claude-code conversations",
-            )
-    except Exception as exc:
-        return RepairResult(
-            name="unknown_roles",
-            repaired_count=0,
-            success=False,
-            detail=f"Failed to repair unknown roles: {exc}",
-        )
-
-
 def run_all_repairs(config: Config, dry_run: bool = False) -> list[RepairResult]:
     """Run all repair operations and return results.
 
@@ -831,7 +771,6 @@ def run_all_repairs(config: Config, dry_run: bool = False) -> list[RepairResult]
         repair_empty_conversations(config, dry_run=dry_run),
         repair_dangling_fts(config, dry_run=dry_run),
         repair_orphaned_attachments(config, dry_run=dry_run),
-        repair_unknown_roles(config, dry_run=dry_run),
         repair_wal_checkpoint(config, dry_run=dry_run),
     ]
 

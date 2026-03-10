@@ -71,8 +71,6 @@ async def _seed_bench_db(db_path: Path, conv_count: int, msgs_per_conv: int) -> 
         )
         for i in range(conv_count)
     ]
-    await asyncio.gather(*(backend.save_conversation_record(r) for r in conv_records))
-
     all_msgs: list[MessageRecord] = []
     for i in range(conv_count):
         for j in range(msgs_per_conv):
@@ -92,8 +90,6 @@ async def _seed_bench_db(db_path: Path, conv_count: int, msgs_per_conv: int) -> 
                 has_tool_use=has_tool,
                 has_thinking=has_think,
             ))
-    await backend.save_messages(all_msgs)
-
     # --- Seed content_blocks ---
     # tool_use messages get a block with a cycling semantic_type;
     # thinking messages get a 'thinking' type block.
@@ -119,8 +115,6 @@ async def _seed_bench_db(db_path: Path, conv_count: int, msgs_per_conv: int) -> 
                 block_index=1,
                 type='thinking',
             ))
-    await backend.save_content_blocks(all_blocks)
-
     # --- Populate conversation_stats ---
     msgs_by_conv: dict[str, list[MessageRecord]] = defaultdict(list)
     for msg in all_msgs:
@@ -128,10 +122,19 @@ async def _seed_bench_db(db_path: Path, conv_count: int, msgs_per_conv: int) -> 
 
     provider_by_cid = {r.conversation_id: r.provider_name for r in conv_records}
 
-    await asyncio.gather(*(
-        backend.upsert_conversation_stats(cid, provider_by_cid[cid], msgs)
-        for cid, msgs in msgs_by_conv.items()
-    ))
+    async with backend.bulk_connection():
+        for index, record in enumerate(conv_records, start=1):
+            await backend.save_conversation_record(record)
+            if index % 500 == 0:
+                await backend.bulk_flush()
+
+        await backend.save_messages(all_msgs)
+        await backend.save_content_blocks(all_blocks)
+
+        for index, (cid, msgs) in enumerate(msgs_by_conv.items(), start=1):
+            await backend.upsert_conversation_stats(cid, provider_by_cid[cid], msgs)
+            if index % 500 == 0:
+                await backend.bulk_flush()
 
     # --- Rebuild FTS5 index (session-level cost, not per-benchmark) ---
     with open_connection(db_path) as conn:

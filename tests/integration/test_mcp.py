@@ -259,18 +259,29 @@ class TestRepositoryDataInsertion:
         # Mock the async backend methods that save_via_backend calls
         backend.save_conversation_record = AsyncMock()
         backend.save_messages = AsyncMock()
+        backend.upsert_conversation_stats = AsyncMock()
         backend.prune_attachments = AsyncMock()
         backend.save_attachments = AsyncMock()
 
         repo = ConversationRepository(backend)
 
-        conv_record = Mock(spec=ConversationRecord)
-        conv_record.conversation_id = "conv-1"
-        conv_record.content_hash = "hash123"
+        conv_record = ConversationRecord(
+            conversation_id="conv-1",
+            provider_name="chatgpt",
+            provider_conversation_id="provider-conv-1",
+            title="Conversation",
+            content_hash="hash123",
+        )
 
-        msg_record = Mock(spec=MessageRecord)
-        msg_record.message_id = "msg-1"
-        msg_record.content_hash = "hash456"
+        msg_record = MessageRecord(
+            message_id="msg-1",
+            conversation_id="conv-1",
+            provider_message_id="provider-msg-1",
+            role="user",
+            text="hello",
+            content_hash="hash456",
+            provider_name="chatgpt",
+        )
 
         # Perform save operation
         result = await repo.save_conversation(

@@ -41,6 +41,15 @@ class ValidateResult:
         # Provider -> number of payloads with drift warnings.
         self.drift_counts: dict[str, int] = {}
 
+    def merge(self, other: ValidateResult) -> None:
+        """Accumulate another validation result into this one."""
+        for key, value in other.counts.items():
+            self.counts[key] += value
+        self.parseable_raw_ids.extend(other.parseable_raw_ids)
+        self.invalid_raw_ids.extend(other.invalid_raw_ids)
+        for provider, count in other.drift_counts.items():
+            self.drift_counts[provider] = self.drift_counts.get(provider, 0) + count
+
 
 class ValidationService:
     """Validate raw payloads against provider schemas."""
@@ -52,7 +61,7 @@ class ValidationService:
     SCHEMA_VALIDATION_MAX_SAMPLES_DEFAULT = 16
 
     # Keep batches aligned with parse batching.
-    RAW_BATCH_SIZE = 200
+    RAW_BATCH_SIZE = 50
 
     def __init__(self, backend: SQLiteBackend):
         self.backend = backend
@@ -98,31 +107,38 @@ class ValidationService:
         )
         return self.SCHEMA_VALIDATION_MAX_SAMPLES_DEFAULT
 
+    def _validation_progress_desc(self, processed: int, total: int) -> str:
+        """Return a stable validation progress description."""
+        return f"Validating: {processed:,}/{total:,} raw"
+
     async def validate_raw_ids(
         self,
         *,
         raw_ids: list[str],
         progress_callback: ProgressCallback | None = None,
+        persist: bool = True,
     ) -> ValidateResult:
-        """Validate raw records and persist the resulting status."""
+        """Validate raw records, optionally persisting the resulting status."""
         if not raw_ids:
             return ValidateResult()
 
+        total_raw_ids = len(raw_ids)
         if progress_callback is not None:
-            progress_callback(0, desc=f"Validating ({len(raw_ids):,} raw)")
+            progress_callback(0, desc=self._validation_progress_desc(0, total_raw_ids))
 
         validation_mode = self._schema_validation_mode()
         if validation_mode == "off":
             result = ValidateResult()
-            for raw_id in raw_ids:
-                await self.backend.mark_raw_validated(
-                    raw_id,
-                    status="skipped",
-                    mode=validation_mode,
-                )
+            for index, raw_id in enumerate(raw_ids, start=1):
+                if persist:
+                    await self.backend.mark_raw_validated(
+                        raw_id,
+                        status="skipped",
+                        mode=validation_mode,
+                    )
                 result.parseable_raw_ids.append(raw_id)
                 if progress_callback is not None:
-                    progress_callback(1)
+                    progress_callback(1, desc=self._validation_progress_desc(index, total_raw_ids))
             return result
 
         result = ValidateResult()
@@ -132,17 +148,23 @@ class ValidationService:
             batch_result = await self.evaluate_raw_records(
                 raw_records=raw_records,
                 progress_callback=progress_callback,
-                persist=True,
+                persist=persist,
                 mode=validation_mode,
+                progress_total=total_raw_ids,
+                progress_offset=batch_start,
             )
-            self._merge_result(result, batch_result)
+            result.merge(batch_result)
 
             missing = [raw_id for raw_id in batch_ids if raw_id not in {record.raw_id for record in raw_records}]
-            for raw_id in missing:
+            processed = batch_start + len(raw_records)
+            for missing_index, raw_id in enumerate(missing, start=1):
                 result.counts["errors"] += 1
                 result.invalid_raw_ids.append(raw_id)
                 if progress_callback is not None:
-                    progress_callback(1)
+                    progress_callback(
+                        1,
+                        desc=self._validation_progress_desc(processed + missing_index, total_raw_ids),
+                    )
 
         return result
 
@@ -153,6 +175,8 @@ class ValidationService:
         progress_callback: ProgressCallback | None = None,
         persist: bool = False,
         mode: str | None = None,
+        progress_total: int | None = None,
+        progress_offset: int = 0,
     ) -> ValidateResult:
         """Evaluate raw records using the canonical validation logic."""
         from polylogue.schemas.validator import SchemaValidator
@@ -172,10 +196,15 @@ class ValidationService:
                     )
                 result.parseable_raw_ids.append(raw_record.raw_id)
                 if progress_callback is not None:
-                    progress_callback(1)
+                    total = progress_total or len(raw_records)
+                    progress_callback(
+                        1,
+                        desc=self._validation_progress_desc(progress_offset + len(result.parseable_raw_ids), total),
+                    )
             return result
 
-        for raw_record in raw_records:
+        total = progress_total or len(raw_records)
+        for index, raw_record in enumerate(raw_records, start=1):
             raw_id = raw_record.raw_id
             validation_status = "passed"
             validation_error: str | None = None
@@ -295,14 +324,9 @@ class ValidationService:
                     await self.backend.mark_raw_parsed(raw_id, error=validation_error)
 
             if progress_callback is not None:
-                progress_callback(1)
+                progress_callback(
+                    1,
+                    desc=self._validation_progress_desc(progress_offset + index, total),
+                )
 
         return result
-
-    def _merge_result(self, target: ValidateResult, source: ValidateResult) -> None:
-        for key, value in source.counts.items():
-            target.counts[key] += value
-        target.parseable_raw_ids.extend(source.parseable_raw_ids)
-        target.invalid_raw_ids.extend(source.invalid_raw_ids)
-        for provider, count in source.drift_counts.items():
-            target.drift_counts[provider] = target.drift_counts.get(provider, 0) + count
