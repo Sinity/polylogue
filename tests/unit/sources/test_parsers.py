@@ -190,6 +190,7 @@ class TestParseRawRecordJsonl:
 		parsed = await parsing_service._parse_raw_record(raw_record)
 
 		assert len(parsed) == 1
+		assert raw_record.payload_provider == "chatgpt"
 		assert parsed[0].provider_name == "chatgpt"
 		assert parsed[0].provider_conversation_id == "conv-generic-1"
 
@@ -377,5 +378,4 @@ def test_context_dump_backtick_boundary(fence_markers, expected_context_dump):
 
 	assert msg.is_context_dump == expected_context_dump, \
 		f"Wrong is_context_dump for fence markers: {fence_markers}"
-
 

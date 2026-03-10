@@ -257,10 +257,10 @@ class SQLiteBackend:
             yield conn
 
     async def _ensure_schema(self, conn: aiosqlite.Connection) -> None:
-        """Ensure database schema exists and is at schema version 2.
+        """Ensure database schema exists and is at the current schema version.
 
-        For fresh databases (version 0): apply DDL and set version to 2.
-        For version 2: nothing to do.
+        For fresh databases (version 0): apply DDL and set the current version.
+        For the current version: nothing to do.
         For any other version: raise — wipe DB and re-run.
         """
         from polylogue.storage.backends.schema import (
@@ -1959,6 +1959,7 @@ class SQLiteBackend:
                 INSERT OR IGNORE INTO raw_conversations (
                     raw_id,
                     provider_name,
+                    payload_provider,
                     source_name,
                     source_path,
                     source_index,
@@ -1973,11 +1974,12 @@ class SQLiteBackend:
                     validation_drift_count,
                     validation_provider,
                     validation_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.raw_id,
                     record.provider_name,
+                    record.payload_provider,
                     record.source_name,
                     record.source_path,
                     record.source_index,
@@ -2032,7 +2034,13 @@ class SQLiteBackend:
 
             return _row_to_raw_conversation(row)
 
-    async def mark_raw_parsed(self, raw_id: str, *, error: str | None = None) -> None:
+    async def mark_raw_parsed(
+        self,
+        raw_id: str,
+        *,
+        error: str | None = None,
+        payload_provider: str | None = None,
+    ) -> None:
         """Mark a raw conversation as parsed (or record a parse error).
 
         On success (error=None): sets parsed_at, clears parse_error.
@@ -2042,19 +2050,24 @@ class SQLiteBackend:
         Args:
             raw_id: Raw conversation ID to update
             error: If not None, the parse error message
+            payload_provider: Durable provider classification derived from payload decoding
         """
         from datetime import datetime, timezone
 
         async with self._get_connection() as conn:
             if error is None:
                 await conn.execute(
-                    "UPDATE raw_conversations SET parsed_at = ?, parse_error = NULL WHERE raw_id = ?",
-                    (datetime.now(timezone.utc).isoformat(), raw_id),
+                    "UPDATE raw_conversations "
+                    "SET parsed_at = ?, parse_error = NULL, payload_provider = COALESCE(?, payload_provider) "
+                    "WHERE raw_id = ?",
+                    (datetime.now(timezone.utc).isoformat(), payload_provider, raw_id),
                 )
             else:
                 await conn.execute(
-                    "UPDATE raw_conversations SET parse_error = ? WHERE raw_id = ?",
-                    (error[:2000], raw_id),  # Truncate to avoid bloating the DB
+                    "UPDATE raw_conversations "
+                    "SET parse_error = ?, payload_provider = COALESCE(?, payload_provider) "
+                    "WHERE raw_id = ?",
+                    (error[:2000], payload_provider, raw_id),  # Truncate to avoid bloating the DB
                 )
             if self._transaction_depth == 0:
                 await conn.commit()
@@ -2068,6 +2081,7 @@ class SQLiteBackend:
         drift_count: int = 0,
         provider: str | None = None,
         mode: str | None = None,
+        payload_provider: str | None = None,
     ) -> None:
         """Persist validation status for a raw conversation record.
 
@@ -2078,6 +2092,7 @@ class SQLiteBackend:
             drift_count: Number of drift warnings observed for this payload
             provider: Canonical provider schema used during validation
             mode: Validation mode ("off", "advisory", "strict")
+            payload_provider: Durable provider classification derived from payload decoding
         """
         from datetime import datetime, timezone
 
@@ -2093,7 +2108,8 @@ class SQLiteBackend:
                     validation_error = ?,
                     validation_drift_count = ?,
                     validation_provider = ?,
-                    validation_mode = ?
+                    validation_mode = ?,
+                    payload_provider = COALESCE(?, payload_provider)
                 WHERE raw_id = ?
                 """,
                 (
@@ -2103,6 +2119,7 @@ class SQLiteBackend:
                     max(0, int(drift_count)),
                     provider,
                     mode,
+                    payload_provider,
                     raw_id,
                 ),
             )
@@ -2237,6 +2254,7 @@ class SQLiteBackend:
                     source_path,
                     parsed_at,
                     parse_error,
+                    payload_provider,
                     validation_status,
                     validation_provider
                 FROM raw_conversations
@@ -2253,6 +2271,7 @@ class SQLiteBackend:
                 source_path=row["source_path"],
                 parsed_at=row["parsed_at"],
                 parse_error=row["parse_error"],
+                payload_provider=row["payload_provider"],
                 validation_status=row["validation_status"],
                 validation_provider=row["validation_provider"],
             )

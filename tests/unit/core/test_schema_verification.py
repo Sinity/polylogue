@@ -14,6 +14,7 @@ def _insert_raw_record(
     db_path,
     raw_id: str,
     provider_name: str,
+    payload_provider: str | None = None,
     source_name: str,
     source_path: str,
     raw_content: bytes,
@@ -22,13 +23,14 @@ def _insert_raw_record(
         conn.execute(
             """
             INSERT INTO raw_conversations (
-                raw_id, provider_name, source_name, source_path, source_index,
+                raw_id, provider_name, payload_provider, source_name, source_path, source_index,
                 raw_content, acquired_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 raw_id,
                 provider_name,
+                payload_provider,
                 source_name,
                 source_path,
                 0,
@@ -95,6 +97,40 @@ def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path):
     assert stats.skipped_no_schema == 1
     assert stats.valid_records == 0
     assert stats.invalid_records == 0
+
+
+def test_verify_raw_corpus_uses_persisted_payload_provider_for_filters(db_path, monkeypatch):
+    from polylogue.schemas import ValidationResult
+
+    class _AlwaysValidValidator:
+        provider = "chatgpt"
+
+        def validation_samples(self, payload, max_samples=16):
+            return [payload] if isinstance(payload, dict) else []
+
+        def validate(self, _sample):
+            return ValidationResult(is_valid=True)
+
+    monkeypatch.setattr(
+        "polylogue.schemas.verification.SchemaValidator.for_provider",
+        lambda _provider: _AlwaysValidValidator(),
+    )
+
+    _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-generic-chatgpt",
+        provider_name="inbox",
+        payload_provider="chatgpt",
+        source_name="inbox",
+        source_path="/tmp/raw.json",
+        raw_content=b'{"id":"one"}',
+    )
+
+    report = verify_raw_corpus(db_path=db_path, providers=["chatgpt"], max_samples=16)
+
+    assert report.total_records == 1
+    assert report.providers["chatgpt"].total_records == 1
+    assert report.providers["chatgpt"].valid_records == 1
 
 
 def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path):
@@ -166,6 +202,7 @@ def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path
         row = conn.execute(
             """
             SELECT validation_status, validation_error, validation_mode, validation_provider,
+                   payload_provider,
                    validated_at, parse_error
             FROM raw_conversations
             WHERE raw_id = ?
@@ -177,8 +214,9 @@ def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path
     assert isinstance(row[1], str) and "Malformed JSONL lines" in row[1]
     assert row[2] == "strict"
     assert row[3] == "codex"
-    assert row[4] is not None
-    assert isinstance(row[5], str) and "Malformed JSONL lines" in row[5]
+    assert row[4] == "codex"
+    assert row[5] is not None
+    assert isinstance(row[6], str) and "Malformed JSONL lines" in row[6]
 
 
 def test_verify_raw_corpus_honors_record_limit_and_offset(db_path, monkeypatch):

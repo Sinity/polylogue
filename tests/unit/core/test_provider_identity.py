@@ -39,3 +39,35 @@ def test_build_raw_payload_envelope_normalizes_fallback_identity() -> None:
     raw = b'{"id":"x"}'  # not enough for detect_provider
     assert build_raw_payload_envelope(raw, source_path=None, fallback_provider="claude-ai").provider == "claude"
     assert build_raw_payload_envelope(raw, source_path=None, fallback_provider="my-inbox").provider == "my-inbox"
+
+
+def test_build_raw_payload_envelope_uses_zip_inner_path_for_detection() -> None:
+    raw = b'[{"id":"conv-1","mapping":{}}]'
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/export.zip:takeout/chatgpt/conversations.json",
+        fallback_provider="archive-source",
+    )
+    assert envelope.provider == "chatgpt"
+
+
+def test_build_raw_payload_envelope_reuses_persisted_payload_provider() -> None:
+    raw = b'{"id":"x"}'
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/unhelpful.json",
+        fallback_provider="my-inbox",
+        payload_provider="claude-ai",
+    )
+    assert envelope.provider == "claude"
+
+
+def test_build_raw_payload_envelope_keeps_gemini_json_documents_as_json() -> None:
+    raw = b'{"chunkedPrompt":{"chunks":[{"role":"user","text":"hello"}]}}'
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/gemini-export.json",
+        fallback_provider="gemini",
+    )
+    assert envelope.wire_format == "json"
+    assert isinstance(envelope.payload, dict)
