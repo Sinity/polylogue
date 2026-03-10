@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -76,8 +77,9 @@ class RenderService:
 
     async def render_conversations(
         self,
-        conversation_ids: list[str],
+        conversation_ids: Iterable[str] | AsyncIterable[str],
         *,
+        total: int | None = None,
         max_workers: int | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> RenderResult:
@@ -91,14 +93,16 @@ class RenderService:
         5. Slow renders (>10s) are logged for investigation
         """
         result = RenderResult()
-        total = len(conversation_ids)
-        if not total:
+        if total is None and isinstance(conversation_ids, Sequence):
+            total = len(conversation_ids)
+        if total == 0:
             return result
 
         # Scale workers to CPU count (capped at 8 to avoid fd pressure)
         if max_workers is None:
             max_workers = min(os.cpu_count() or 4, 8)
-        worker_count = max(1, min(max_workers, total))
+        worker_limit = total if total is not None else max_workers
+        worker_count = max(1, min(max_workers, worker_limit))
 
         queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=max(worker_count * 2, 1))
 
@@ -129,7 +133,8 @@ class RenderService:
 
             if progress_callback is not None:
                 done = result.rendered_count + len(result.failures)
-                progress_callback(1, desc=f"Rendering: {done}/{total}")
+                desc = f"Rendering: {done}/{total}" if total is not None else f"Rendering: {done}"
+                progress_callback(1, desc=desc)
 
         async def _worker() -> None:
             while True:
@@ -146,7 +151,7 @@ class RenderService:
         async def _run_workers() -> None:
             workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
 
-            for convo_id in conversation_ids:
+            async for convo_id in _iter_conversation_ids(conversation_ids):
                 await queue.put(convo_id)
 
             await queue.join()
@@ -163,3 +168,16 @@ class RenderService:
             await _run_workers()
 
         return result
+
+
+async def _iter_conversation_ids(
+    conversation_ids: Iterable[str] | AsyncIterable[str],
+) -> AsyncIterator[str]:
+    """Normalize sync and async conversation ID sources."""
+    if isinstance(conversation_ids, AsyncIterable):
+        async for convo_id in conversation_ids:
+            yield convo_id
+        return
+
+    for convo_id in conversation_ids:
+        yield convo_id
