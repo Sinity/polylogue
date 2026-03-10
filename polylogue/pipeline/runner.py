@@ -133,9 +133,12 @@ async def _all_conversation_ids(
     Returns:
         List of conversation IDs
     """
-    return await backend.list_conversation_ids(
+    ids: list[str] = []
+    async for conversation_id in backend.iter_conversation_ids(
         source_names=list(source_names) if source_names is not None else None
-    )
+    ):
+        ids.append(conversation_id)
+    return ids
 
 
 async def _run_index_stage(

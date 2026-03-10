@@ -1185,6 +1185,24 @@ class TestParsingServiceParseSources:
         assert plan.summary.details["backlog_parse"] == 2
         assert set(plan.parse_ready_raw_ids) == {"raw-passed", "raw-skipped"}
 
+    @pytest.mark.parametrize(("stage", "count_key"), [("render", "render"), ("index", "index")])
+    async def test_build_plan_uses_count_query_for_render_and_index(self, tmp_path: Path, stage: str, count_key: str):
+        backend = MagicMock(spec=SQLiteBackend)
+        backend.count_conversation_ids = AsyncMock(return_value=7)
+        backend.iter_conversation_ids.side_effect = AssertionError(
+            "build_plan should count render/index scope without materializing IDs"
+        )
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        planner = PlanningService(backend=backend, config=config)
+
+        plan = await planner.build_plan(
+            sources=[],
+            stage=stage,
+        )
+
+        assert plan.summary.counts == {count_key: 7}
+        backend.count_conversation_ids.assert_awaited_once_with(source_names=None)
+
 
 # ============================================================================
 # ParsingService Integration Tests
