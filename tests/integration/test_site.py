@@ -30,6 +30,12 @@ async def _empty_messages(*args, **kwargs):
     yield  # noqa: unreachable — makes this an async generator
 
 
+async def _iter_messages(payloads):
+    """Yield lightweight message-like objects for conversation-page tests."""
+    for index, (role, text) in enumerate(payloads, start=1):
+        yield MagicMock(id=f"msg-{index}", role=role, text=text)
+
+
 def _async_repo(summaries):
     """Build an AsyncMock ConversationRepository pre-configured with summaries."""
     repo = AsyncMock()
@@ -265,6 +271,31 @@ class TestSiteBuilderBuild:
 
             assert result["conversations"] == 0
             assert (output_dir / "index.html").exists()
+
+    def test_build_index_requests_all_summaries_without_silent_cap(self, tmp_path, mock_summary):
+        """Site index should not silently cap archive summaries."""
+        from polylogue.site.builder import SiteBuilder, SiteConfig
+
+        output_dir = tmp_path / "site"
+
+        with patch(
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
+        ) as mock_backend_class, patch(
+            "polylogue.storage.repository.ConversationRepository"
+        ) as mock_repo_class:
+            mock_backend = AsyncMock()
+            mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
+
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
+            mock_repo.list_summaries.return_value = [mock_summary]
+
+            builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test"))
+            asyncio.run(builder._build_index())
+
+            mock_repo.list_summaries.assert_awaited_once_with(limit=None)
 
     def test_build_multiple_providers(
         self, tmp_path, mock_summary, mock_summary_gemini
@@ -876,3 +907,74 @@ class TestSiteBuilderIntegration:
             assert search_data[0]["id"] == "conv-123"
             assert search_data[0]["title"] == "Test"
             assert search_data[0]["provider"] == "unknown"
+
+    def test_build_conversation_page_keeps_tail_messages(self, tmp_path):
+        """Conversation pages should include messages beyond the old 500-message cap."""
+        from polylogue.site.builder import SiteBuilder, SiteConfig
+
+        output_dir = tmp_path / "site"
+        summary = ConversationSummary(
+            id="conv-123",
+            provider="claude",
+            title="Long Conversation",
+            created_at=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2024, 1, 15, 10, 5, 0, tzinfo=timezone.utc),
+        )
+
+        payloads = [("user" if i % 2 == 0 else "assistant", f"message {i}") for i in range(501)]
+
+        with patch(
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
+        ) as mock_backend_class, patch(
+            "polylogue.storage.repository.ConversationRepository"
+        ) as mock_repo_class:
+            mock_backend = AsyncMock()
+            mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"conv-123": 501}
+
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = lambda *args, **kwargs: _iter_messages(payloads)
+            mock_repo.list_summaries.return_value = [summary]
+
+            builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test"))
+            builder.build()
+
+            conversation_html = next(output_dir.rglob("conversation.html")).read_text(encoding="utf-8")
+            assert "message 0" in conversation_html
+            assert "message 500" in conversation_html
+
+    def test_build_conversation_page_preserves_long_message_bodies(self, tmp_path):
+        """Conversation pages should not silently truncate long messages."""
+        from polylogue.site.builder import SiteBuilder, SiteConfig
+
+        output_dir = tmp_path / "site"
+        summary = ConversationSummary(
+            id="conv-456",
+            provider="claude",
+            title="Long Message Conversation",
+            created_at=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2024, 1, 15, 10, 5, 0, tzinfo=timezone.utc),
+        )
+        long_text = ("abcdef " * 900) + "tail-marker"
+
+        with patch(
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
+        ) as mock_backend_class, patch(
+            "polylogue.storage.repository.ConversationRepository"
+        ) as mock_repo_class:
+            mock_backend = AsyncMock()
+            mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"conv-456": 1}
+
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = lambda *args, **kwargs: _iter_messages([("assistant", long_text)])
+            mock_repo.list_summaries.return_value = [summary]
+
+            builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test"))
+            builder.build()
+
+            conversation_html = next(output_dir.rglob("conversation.html")).read_text(encoding="utf-8")
+            assert "tail-marker" in conversation_html
+            assert "[... truncated ...]" not in conversation_html
