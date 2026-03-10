@@ -18,6 +18,7 @@ from click.testing import CliRunner
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.services import build_runtime_services
 
 # =============================================================================
 # Async mock helpers
@@ -27,7 +28,7 @@ from polylogue.lib.models import Conversation, ConversationSummary, Message
 async def _empty_messages(*args, **kwargs):
     """Async generator that yields nothing — used to mock iter_messages."""
     return
-    yield  # noqa: unreachable — makes this an async generator
+    yield
 
 
 async def _iter_messages(payloads):
@@ -49,6 +50,16 @@ def _async_backend(counts):
     backend = AsyncMock()
     backend.get_message_counts_batch.return_value = counts
     return backend
+
+
+def _site_env(mock_ui, *, backend, repository):
+    from polylogue.cli.types import AppEnv
+
+    repository.backend = backend
+    return AppEnv(
+        ui=mock_ui,
+        services=build_runtime_services(backend=backend, repository=repository),
+    )
 
 
 # =============================================================================
@@ -595,14 +606,11 @@ class TestSiteCommand:
             mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = []
 
-            # Create a mock AppEnv object
             from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
-
-            from polylogue.cli.types import AppEnv
-            mock_env = AppEnv(ui=mock_ui)
+            mock_env = _site_env(mock_ui, backend=mock_backend, repository=mock_repo)
 
             result = runner.invoke(
                 site_command,
@@ -636,12 +644,11 @@ class TestSiteCommand:
             mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = []
 
-            from polylogue.cli.types import AppEnv
             from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
-            mock_env = AppEnv(ui=mock_ui)
+            mock_env = _site_env(mock_ui, backend=mock_backend, repository=mock_repo)
 
             result = runner.invoke(
                 site_command,
@@ -689,12 +696,11 @@ class TestSiteCommand:
             mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = []
 
-            from polylogue.cli.types import AppEnv
             from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
-            mock_env = AppEnv(ui=mock_ui)
+            mock_env = _site_env(mock_ui, backend=mock_backend, repository=mock_repo)
 
             result = runner.invoke(
                 site_command,
@@ -725,12 +731,11 @@ class TestSiteCommand:
             mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = []
 
-            from polylogue.cli.types import AppEnv
             from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
-            mock_env = AppEnv(ui=mock_ui)
+            mock_env = _site_env(mock_ui, backend=mock_backend, repository=mock_repo)
 
             result = runner.invoke(
                 site_command,
@@ -747,26 +752,22 @@ class TestSiteCommand:
         runner = CliRunner()
         output_dir = workspace_env["archive_root"] / "site"
 
-        with patch(
-            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
-        ) as mock_backend_class:
-            mock_backend_class.side_effect = RuntimeError("Database error")
+        from polylogue.cli.types import AppEnv
+        from polylogue.ui import UI
 
-            from polylogue.cli.types import AppEnv
-            from polylogue.ui import UI
+        mock_ui = MagicMock(spec=UI)
+        mock_ui.plain = True
+        mock_env = AppEnv(ui=mock_ui)
 
-            mock_ui = MagicMock(spec=UI)
-            mock_ui.plain = True
-            mock_env = AppEnv(ui=mock_ui)
-
+        with patch("polylogue.site.builder.SiteBuilder.build", side_effect=RuntimeError("Database error")):
             result = runner.invoke(
                 site_command,
                 ["--output", str(output_dir)],
                 obj=mock_env,
             )
 
-            # Should fail with error message
-            assert result.exit_code != 0
+        # Should fail with error message
+        assert result.exit_code != 0
 
     def test_site_command_generates_html_files(self, workspace_env):
         """site command generates HTML files in output directory."""
@@ -797,12 +798,11 @@ class TestSiteCommand:
             mock_repo.iter_messages = _empty_messages
             mock_repo.list_summaries.return_value = [test_summary]
 
-            from polylogue.cli.types import AppEnv
             from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
-            mock_env = AppEnv(ui=mock_ui)
+            mock_env = _site_env(mock_ui, backend=mock_backend, repository=mock_repo)
 
             result = runner.invoke(
                 site_command,
@@ -907,6 +907,37 @@ class TestSiteBuilderIntegration:
             assert search_data[0]["id"] == "conv-123"
             assert search_data[0]["title"] == "Test"
             assert search_data[0]["provider"] == "unknown"
+            index_html = (output_dir / "index.html").read_text()
+            assert "search-index.json" in index_html
+            assert "_pagefind/pagefind-ui.js" not in index_html
+
+    def test_build_without_search_omits_search_assets(self, tmp_path):
+        """Disabling search should omit client search assets and files entirely."""
+        from polylogue.site.builder import SiteBuilder, SiteConfig
+
+        output_dir = tmp_path / "site"
+
+        with patch(
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
+        ) as mock_backend_class, patch(
+            "polylogue.storage.repository.ConversationRepository"
+        ) as mock_repo_class:
+            mock_backend = AsyncMock()
+            mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {}
+
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
+            mock_repo.list_summaries.return_value = []
+
+            builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test", enable_search=False))
+            builder.build()
+
+        index_html = (output_dir / "index.html").read_text()
+        assert "_pagefind/pagefind-ui.js" not in index_html
+        assert "search-input" not in index_html
+        assert not (output_dir / "search-index.json").exists()
 
     def test_build_conversation_page_keeps_tail_messages(self, tmp_path):
         """Conversation pages should include messages beyond the old 500-message cap."""

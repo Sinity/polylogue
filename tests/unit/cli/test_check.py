@@ -441,6 +441,21 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         assert "VACUUM" in result.output
 
+    def test_json_output_with_repair_and_vacuum_is_machine_safe(self, cli_workspace):
+        """`--json --repair --vacuum` should stay valid JSON."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--plain", "check", "--json", "--repair", "--preview", "--vacuum"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "repairs" in data
+        assert data["vacuum"]["ok"] is True
+        assert data["vacuum"]["preview"] is True
+
     def test_schema_provider_requires_schemas_flag(self, cli_workspace):
         """--schema-provider requires --schemas."""
         from click.testing import CliRunner
