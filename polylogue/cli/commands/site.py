@@ -78,7 +78,12 @@ def site_command(
         include_dashboard=dashboard,
     )
 
-    builder = SiteBuilder(output_dir=output_path, config=config)
+    builder = SiteBuilder(
+        output_dir=output_path,
+        config=config,
+        backend=env.backend,
+        repository=env.repository,
+    )
 
     click.echo(f"Building site to {output_path}...")
 
