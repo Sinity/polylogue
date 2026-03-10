@@ -1332,12 +1332,12 @@ class SQLiteBackend:
             row = await cursor.fetchone()
             return row["last"] if row and row["last"] else None
 
-    async def list_conversation_ids(
+    def _conversation_id_query(
         self,
         *,
         source_names: list[str] | None = None,
-    ) -> list[str]:
-        """List conversation IDs, optionally scoped to source names or legacy provider names."""
+    ) -> tuple[str, tuple[str, ...]]:
+        """Build the canonical scoped conversation-ID query."""
         predicate, params = _build_source_scope_filter(
             source_names,
             provider_column="provider_name",
@@ -1346,22 +1346,56 @@ class SQLiteBackend:
         sql = "SELECT conversation_id FROM conversations"
         if predicate:
             sql += f" WHERE {predicate}"
+        sql += " ORDER BY sort_key DESC, conversation_id ASC"
+        return sql, tuple(params)
+
+    async def count_conversation_ids(
+        self,
+        *,
+        source_names: list[str] | None = None,
+    ) -> int:
+        """Count conversation IDs, optionally scoped to source names or legacy provider names."""
+        predicate, params = _build_source_scope_filter(
+            source_names,
+            provider_column="provider_name",
+            source_column="source_name",
+        )
+        sql = "SELECT COUNT(*) AS count FROM conversations"
+        if predicate:
+            sql += f" WHERE {predicate}"
 
         async with self._get_connection() as conn:
             cursor = await conn.execute(sql, tuple(params))
-            rows = await cursor.fetchall()
+            row = await cursor.fetchone()
 
-        return [str(row["conversation_id"]) for row in rows]
+        return int(row["count"]) if row is not None else 0
 
-    async def list_raw_ids(
+    async def iter_conversation_ids(
+        self,
+        *,
+        source_names: list[str] | None = None,
+        page_size: int = 1000,
+    ) -> AsyncIterator[str]:
+        """Iterate conversation IDs in bounded fetch batches."""
+        sql, params = self._conversation_id_query(source_names=source_names)
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(sql, params)
+            while True:
+                rows = await cursor.fetchmany(page_size)
+                if not rows:
+                    break
+                for row in rows:
+                    yield str(row["conversation_id"])
+
+    def _raw_id_query(
         self,
         *,
         source_names: list[str] | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
-    ) -> list[str]:
-        """List raw conversation IDs for a pipeline state slice."""
+    ) -> tuple[str, tuple[str, ...]]:
+        """Build the canonical scoped raw-ID query."""
         where_clauses: list[str] = []
         params: list[str] = []
 
@@ -1386,12 +1420,34 @@ class SQLiteBackend:
         sql = "SELECT raw_id FROM raw_conversations"
         if where_clauses:
             sql += f" WHERE {' AND '.join(where_clauses)}"
+        sql += " ORDER BY acquired_at DESC, raw_id ASC"
+        return sql, tuple(params)
+
+    async def iter_raw_ids(
+        self,
+        *,
+        source_names: list[str] | None = None,
+        require_unparsed: bool = False,
+        require_unvalidated: bool = False,
+        validation_statuses: list[str] | None = None,
+        page_size: int = 1000,
+    ) -> AsyncIterator[str]:
+        """Iterate raw conversation IDs for a pipeline state slice in bounded batches."""
+        sql, params = self._raw_id_query(
+            source_names=source_names,
+            require_unparsed=require_unparsed,
+            require_unvalidated=require_unvalidated,
+            validation_statuses=validation_statuses,
+        )
 
         async with self._get_connection() as conn:
-            cursor = await conn.execute(sql, tuple(params))
-            rows = await cursor.fetchall()
-
-        return [str(row["raw_id"]) for row in rows]
+            cursor = await conn.execute(sql, params)
+            while True:
+                rows = await cursor.fetchmany(page_size)
+                if not rows:
+                    break
+                for row in rows:
+                    yield str(row["raw_id"])
 
     async def search_conversations(
         self, query: str, limit: int = 100, providers: list[str] | None = None
