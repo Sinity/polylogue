@@ -174,8 +174,8 @@ class ParsingService:
         """Canonical ingestion orchestration for runtime callers.
 
         Flow:
-        1. Build a canonical plan from source scans + persisted raw state
-        2. Acquire any newly scanned raw payloads
+        1. Acquire raw payloads directly into ``raw_conversations`` (streaming)
+        2. Collect pending validation backlog scoped to the selected sources
         3. Validate pending raw payloads (new + backlog)
         4. Optionally parse validated raw payloads
         """
@@ -185,18 +185,12 @@ class ParsingService:
 
         backend = self._require_backend()
 
-        plan_stage = stage if stage in {"acquire", "validate", "parse", "all"} else ("all" if parse_records else "validate")
-        planning_service = PlanningService(backend=backend, config=self.config)
-        plan = await planning_service.build_plan(
-            sources=sources,
-            stage=plan_stage,
+        acquire_service = AcquisitionService(backend=backend)
+        acquire_result = await acquire_service.acquire_sources(
+            sources,
             ui=ui,
             progress_callback=progress_callback,
-        )
-
-        acquire_service = AcquisitionService(backend=backend)
-        acquire_result = await acquire_service.store_records(
-            plan.store_records,
+            drive_config=self.config.drive_config,
         )
         source_names = [source.name for source in sources]
         ingest_state = IngestState(
@@ -205,7 +199,15 @@ class ParsingService:
         )
         ingest_state.record_acquired(acquire_result.raw_ids)
 
-        validation_ids = [record.raw_id for record in plan.validate_records]
+        planning_service = PlanningService(backend=backend, config=self.config)
+        validation_ids = list(acquire_result.raw_ids)
+        if stage in {"validate", "parse", "all"}:
+            validation_ids.extend(
+                await planning_service.collect_validation_backlog(
+                    source_names=source_names or None,
+                    exclude_raw_ids=validation_ids,
+                )
+            )
         ingest_state.record_validation_candidates(validation_ids)
 
         validation_result = None
@@ -222,7 +224,10 @@ class ParsingService:
         parse_raw_ids: list[str] = []
         parse_result = ParseResult()
         if parse_records:
-            parse_raw_ids = list(plan.parse_ready_raw_ids)
+            parse_raw_ids = await planning_service.collect_parse_backlog(
+                source_names=source_names or None,
+                exclude_raw_ids=validation_ids,
+            )
             if validation_result is not None:
                 parse_raw_ids.extend(validation_result.parseable_raw_ids)
                 parse_raw_ids = list(dict.fromkeys(parse_raw_ids))
@@ -254,7 +259,9 @@ class ParsingService:
     # Batch size for processing raw records to limit memory usage.
     # Each raw record may contain multi-MB JSONL content; loading thousands
     # at once caused OOM kills on archives with >3000 conversations.
-    RAW_BATCH_SIZE = 200
+    # 50 records × ~2-5MB avg = 100-250MB peak per batch — sustainable on
+    # memory-constrained systems (200 caused OOM with a 14GB raw DB).
+    RAW_BATCH_SIZE = 50
 
     async def parse_from_raw(
         self,

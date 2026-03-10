@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, Literal
 
@@ -33,6 +34,7 @@ def _decode_raw_payload(
     raw_content: bytes | str | Any,
     *,
     jsonl_dict_only: bool = False,
+    prefer_jsonl: bool = False,
 ) -> tuple[Any, WireFormat, int]:
     """Decode JSON payload bytes, with JSONL fallback support.
 
@@ -40,29 +42,65 @@ def _decode_raw_payload(
         raw_content: Raw bytes/string from storage.
         jsonl_dict_only: When true, JSONL fallback keeps only dict records.
             Used by verification workflows that operate on object records only.
+        prefer_jsonl: Prefer streaming JSONL decode before attempting whole-file
+            JSON parsing. Used for known record-oriented providers and ``.jsonl``
+            payload paths so validation does not waste time on a doomed document
+            parse attempt first.
     """
     raw = raw_content if isinstance(raw_content, (bytes, str)) else str(raw_content)
+    if prefer_jsonl:
+        try:
+            payload, malformed_lines = _decode_jsonl_payload(
+                raw,
+                jsonl_dict_only=jsonl_dict_only,
+            )
+            return payload, "jsonl", malformed_lines
+        except (UnicodeDecodeError, ValueError):
+            pass
     try:
         return orjson.loads(raw), "json", 0
-    except (orjson.JSONDecodeError, ValueError):
-        text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-        lines: list[Any] = []
-        malformed_lines = 0
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                parsed = orjson.loads(line)
-            except (orjson.JSONDecodeError, ValueError):
-                malformed_lines += 1
-                continue
-            if jsonl_dict_only and not isinstance(parsed, dict):
-                continue
-            lines.append(parsed)
-        if not lines:
-            raise
-        return lines, "jsonl", malformed_lines
+    except (orjson.JSONDecodeError, ValueError) as exc:
+        try:
+            payload, malformed_lines = _decode_jsonl_payload(
+                raw,
+                jsonl_dict_only=jsonl_dict_only,
+            )
+        except ValueError:
+            raise exc from None
+        return payload, "jsonl", malformed_lines
+
+
+def _decode_jsonl_payload(
+    raw: bytes | str,
+    *,
+    jsonl_dict_only: bool = False,
+) -> tuple[list[Any], int]:
+    """Decode JSONL incrementally to avoid full-file line splitting."""
+    lines: list[Any] = []
+    malformed_lines = 0
+    first_line = True
+    stream = BytesIO(raw) if isinstance(raw, bytes) else StringIO(raw)
+
+    for raw_line in stream:
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+        if first_line:
+            line = line.lstrip("\ufeff")
+            first_line = False
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = orjson.loads(line)
+        except (orjson.JSONDecodeError, ValueError):
+            malformed_lines += 1
+            continue
+        if jsonl_dict_only and not isinstance(parsed, dict):
+            continue
+        lines.append(parsed)
+
+    if not lines:
+        raise ValueError("No valid JSONL records found")
+    return lines, malformed_lines
 
 
 def _infer_payload_provider(
@@ -98,9 +136,14 @@ def build_raw_payload_envelope(
     jsonl_dict_only: bool = False,
 ) -> RawPayloadEnvelope:
     """Decode raw payload and attach canonical provider/wire-format identity."""
+    normalized_path = str(source_path or "").lower()
+    prefer_jsonl = normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+    if not prefer_jsonl:
+        prefer_jsonl = fallback_provider in {"claude-code", "claude_code", "codex"}
     payload, wire_format, malformed_jsonl_lines = _decode_raw_payload(
         raw_content,
         jsonl_dict_only=jsonl_dict_only,
+        prefer_jsonl=prefer_jsonl,
     )
     provider = _infer_payload_provider(
         payload,

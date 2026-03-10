@@ -227,7 +227,7 @@ class TestPlanSources:
         assert result.sources == []
         assert result.cursors == {}
 
-    def test_plan_single_source(self, tmp_path: Path):
+    def test_plan_single_source(self, workspace_env, tmp_path: Path):
         """Single-source preview reports canonical pipeline actions."""
         # Create test conversations
         inbox = tmp_path / "inbox"
