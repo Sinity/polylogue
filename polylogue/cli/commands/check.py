@@ -22,7 +22,7 @@ from polylogue.health import VerifyStatus, get_health, run_all_repairs
 @click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)")
 @click.option(
     "--schema-samples",
-    default="16",
+    default="all",
     show_default=True,
     help="Validation samples per raw payload: positive integer or 'all'",
 )
@@ -67,7 +67,7 @@ def check_command(
         fail("check", "--preview requires --repair")
     if schema_providers and not check_schemas:
         fail("check", "--schema-provider requires --schemas")
-    if schema_samples != "16" and not check_schemas:
+    if schema_samples != "all" and not check_schemas:
         fail("check", "--schema-samples requires --schemas")
     if schema_record_limit is not None and not check_schemas:
         fail("check", "--schema-record-limit requires --schemas")

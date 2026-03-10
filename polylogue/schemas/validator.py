@@ -153,12 +153,13 @@ class SchemaValidator:
             drift_warnings=drift_warnings,
         )
 
-    def validation_samples(self, payload: Any, *, max_samples: int | None = 16) -> list[dict[str, Any]]:
+    def validation_samples(self, payload: Any, *, max_samples: int | None = None) -> list[dict[str, Any]]:
         """Extract representative objects from a payload for validation.
 
         For record-oriented providers (JSONL), this returns a stratified subset of
-        record dicts. For document-oriented providers, this returns the top-level
-        payload object.
+        record dicts when explicitly bounded. By default it validates all record
+        dicts. For document-oriented providers, this returns the top-level payload
+        object or all dict documents in a list payload.
         """
         granularity = self.schema.get("x-polylogue-sample-granularity")
         if not isinstance(granularity, str):

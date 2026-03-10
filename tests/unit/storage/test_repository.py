@@ -12,7 +12,7 @@ similarity search, and archive statistics.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -318,6 +318,10 @@ class TestCountAndList:
 
     async def test_list_operations(self, repo):
         """list() filters by title and returns lazy Conversation objects."""
+        repo.backend.get_conversations_batch = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("list() should not refetch conversation records by ID")
+        )
+
         # Title filter
         convs_filtered = await repo.list(title_contains="First")
         assert len(convs_filtered) == 1
@@ -327,6 +331,16 @@ class TestCountAndList:
         convs_all = await repo.list()
         assert len(convs_all) == 3
         assert all(hasattr(c, "id") for c in convs_all)
+
+    async def test_get_children_uses_loaded_child_records(self, repo):
+        """get_children() should hydrate from list_conversations() results directly."""
+        repo.backend.get_conversations_batch = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("get_children() should not refetch child conversation records by ID")
+        )
+
+        children = await repo.get_children("conv-1")
+
+        assert [str(child.id) for child in children] == ["conv-3"]
 
 
 # =============================================================================

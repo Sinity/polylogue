@@ -66,14 +66,6 @@ class SchemaVerificationReport:
         }
 
 
-def _max_samples_for_payload(payload: Any, configured_max_samples: int | None) -> int | None:
-    if configured_max_samples is None:
-        # ``None`` means "all representative dict records" and is handled by
-        # ``SchemaValidator.validation_samples`` without a pre-scan pass.
-        return None
-    return configured_max_samples
-
-
 def _verification_provider_clause(providers: list[str]) -> tuple[str, tuple[Any, ...]]:
     provider_placeholders = ",".join("?" for _ in providers)
     runtime_placeholders = ",".join("?" for _ in CORE_RUNTIME_PROVIDERS)
@@ -94,7 +86,7 @@ def verify_raw_corpus(
     *,
     db_path: Path | None = None,
     providers: list[str] | None = None,
-    max_samples: int | None = 16,
+    max_samples: int | None = None,
     record_limit: int | None = None,
     record_offset: int = 0,
     quarantine_malformed: bool = False,
@@ -205,7 +197,7 @@ def verify_raw_corpus(
 
                 samples = validator.validation_samples(
                     payload,
-                    max_samples=_max_samples_for_payload(payload, max_samples),
+                    max_samples=max_samples,
                 )
                 if not samples:
                     provider_stats.valid_records += 1
