@@ -51,3 +51,6 @@ AGENTS.override.md
 QA_SESSION.md
 qa_outputs/
 qa_archive/
+
+# Generated agent surface
+AGENTS.md
