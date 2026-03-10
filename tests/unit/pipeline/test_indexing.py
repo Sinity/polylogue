@@ -184,8 +184,8 @@ class TestIndexServiceErrors:
             assert result == {"exists": False, "count": 0}
 
     async def test_update_index_empty_ids_ensures_index(self):
-        """update_index with empty list should ensure index exists."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        """update_index always delegates to the canonical storage helper."""
+        from unittest.mock import MagicMock, patch
 
         from polylogue.pipeline.services.indexing import IndexService
 
@@ -193,8 +193,7 @@ class TestIndexServiceErrors:
         mock_backend = MagicMock()
         service = IndexService(config=config, backend=mock_backend)
 
-        with patch("polylogue.pipeline.services.indexing.ensure_index") as mock_ensure:
-            mock_ensure.return_value = AsyncMock()
+        with patch("polylogue.pipeline.services.indexing.update_index_for_conversations") as mock_update:
             result = await service.update_index([])
             assert result is True
-            mock_ensure.assert_called_once_with(mock_backend)
+            mock_update.assert_called_once_with([], mock_backend)

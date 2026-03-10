@@ -7,7 +7,7 @@ to ship (production failure: stages completing with zero user feedback).
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -156,27 +156,13 @@ class TestRunnerProgressPropagation:
 
         callback = track_callback if with_callback else None
 
-        if stage == "render":
-            with patch(
-                "polylogue.pipeline.runner._all_conversation_ids",
-                new_callable=AsyncMock,
-            ) as mock_ids:
-                mock_ids.return_value = []
-                result = asyncio.run(
-                    run_sources(
-                        config=config,
-                        stage=stage,
-                        progress_callback=callback,
-                    )
-                )
-        else:
-            result = asyncio.run(
-                run_sources(
-                    config=config,
-                    stage=stage,
-                    progress_callback=callback,
-                )
+        result = asyncio.run(
+            run_sources(
+                config=config,
+                stage=stage,
+                progress_callback=callback,
             )
+        )
 
         assert result.indexed is expected_indexed
         assert result.counts.get("rendered", 0) == expected_rendered
