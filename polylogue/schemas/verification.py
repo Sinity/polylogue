@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from polylogue.lib.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.backends.connection import default_db_path
@@ -73,6 +74,22 @@ def _max_samples_for_payload(payload: Any, configured_max_samples: int | None) -
     return configured_max_samples
 
 
+def _verification_provider_clause(providers: list[str]) -> tuple[str, tuple[Any, ...]]:
+    provider_placeholders = ",".join("?" for _ in providers)
+    runtime_placeholders = ",".join("?" for _ in CORE_RUNTIME_PROVIDERS)
+    clause = (
+        f"payload_provider IN ({provider_placeholders}) "
+        f"OR (payload_provider IS NULL AND provider_name IN ({provider_placeholders})) "
+        f"OR (payload_provider IS NULL AND provider_name NOT IN ({runtime_placeholders}))"
+    )
+    params: tuple[Any, ...] = (
+        *providers,
+        *providers,
+        *CORE_RUNTIME_PROVIDERS,
+    )
+    return clause, params
+
+
 def verify_raw_corpus(
     *,
     db_path: Path | None = None,
@@ -86,7 +103,7 @@ def verify_raw_corpus(
 
     Args:
         db_path: Optional SQLite path. Defaults to polylogue default DB.
-        providers: Optional filter by DB provider_name values.
+        providers: Optional filter by runtime payload provider values.
         max_samples: Per-record sample count. ``None`` means validate all dict
             records from list payloads (equivalent to ``all``).
         quarantine_malformed: When true, malformed/decode-failed raw rows are
@@ -106,67 +123,82 @@ def verify_raw_corpus(
     total_records = 0
     bounded_offset = max(0, int(record_offset))
     bounded_limit = max(1, int(record_limit)) if record_limit is not None else None
+    provider_filter = set(providers or [])
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
         params: list[Any] = []
         query = (
-            "SELECT raw_id, provider_name, source_path, raw_content "
+            "SELECT raw_id, provider_name, payload_provider, source_path, raw_content "
             "FROM raw_conversations "
         )
         if providers:
-            placeholders = ",".join("?" for _ in providers)
-            query += f"WHERE provider_name IN ({placeholders}) "
-            params.extend(providers)
+            where_clause, where_params = _verification_provider_clause(providers)
+            query += f"WHERE {where_clause} "
+            params.extend(where_params)
         query += "ORDER BY acquired_at DESC "
         if bounded_limit is not None:
             query += "LIMIT ? OFFSET ?"
             params.extend([bounded_limit, bounded_offset])
 
         cursor = conn.execute(query, tuple(params))
-        quarantine_updates: list[tuple[str, str, str]] = []
+        quarantine_updates: list[tuple[str, str, str, str | None]] = []
         while True:
             rows = cursor.fetchmany(250)
             if not rows:
                 break
             for row in rows:
-                total_records += 1
                 raw_provider = str(row["provider_name"])
-                provider_stats = stats_by_provider.setdefault(
-                    raw_provider,
-                    ProviderSchemaVerification(provider=raw_provider),
-                )
-                provider_stats.total_records += 1
+                stored_payload_provider = row["payload_provider"]
+                candidate_provider = str(stored_payload_provider or raw_provider)
 
                 try:
                     envelope = build_raw_payload_envelope(
                         row["raw_content"],
                         source_path=str(row["source_path"] or ""),
                         fallback_provider=raw_provider,
+                        payload_provider=stored_payload_provider,
                         jsonl_dict_only=True,
                     )
                     payload = envelope.payload
                     malformed_lines = envelope.malformed_jsonl_lines
                 except Exception as exc:
+                    if provider_filter and candidate_provider not in provider_filter:
+                        continue
+                    total_records += 1
+                    provider_stats = stats_by_provider.setdefault(
+                        candidate_provider,
+                        ProviderSchemaVerification(provider=candidate_provider),
+                    )
+                    provider_stats.total_records += 1
                     provider_stats.decode_errors += 1
                     if quarantine_malformed:
                         raw_id = str(row["raw_id"])
                         reason = f"Unable to decode payload: {type(exc).__name__}"
-                        quarantine_updates.append((raw_id, reason, raw_provider))
+                        quarantine_updates.append((raw_id, reason, candidate_provider, stored_payload_provider))
                         provider_stats.quarantined_records += 1
                     continue
+                actual_provider = envelope.provider
+                if provider_filter and actual_provider not in provider_filter:
+                    continue
+                total_records += 1
+                provider_stats = stats_by_provider.setdefault(
+                    actual_provider,
+                    ProviderSchemaVerification(provider=actual_provider),
+                )
+                provider_stats.total_records += 1
                 if malformed_lines:
                     provider_stats.decode_errors += 1
                     if quarantine_malformed:
                         raw_id = str(row["raw_id"])
                         reason = f"Malformed JSONL lines: {malformed_lines}"
-                        quarantine_updates.append((raw_id, reason, raw_provider))
+                        quarantine_updates.append((raw_id, reason, actual_provider, actual_provider))
                         provider_stats.quarantined_records += 1
                     continue
 
                 try:
-                    validator = SchemaValidator.for_provider(envelope.provider)
+                    validator = SchemaValidator.for_provider(actual_provider)
                 except (FileNotFoundError, ImportError):
                     provider_stats.skipped_no_schema += 1
                     continue
@@ -197,7 +229,7 @@ def verify_raw_corpus(
 
         if quarantine_updates:
             validated_at = datetime.now(tz=timezone.utc).isoformat()
-            for raw_id, reason, provider in quarantine_updates:
+            for raw_id, reason, provider, payload_provider in quarantine_updates:
                 conn.execute(
                     """
                     UPDATE raw_conversations
@@ -206,10 +238,11 @@ def verify_raw_corpus(
                         validation_drift_count = 0,
                         validation_provider = ?,
                         validation_mode = 'strict',
-                        validated_at = ?
+                        validated_at = ?,
+                        payload_provider = COALESCE(?, payload_provider)
                     WHERE raw_id = ?
                     """,
-                    (reason, provider, validated_at, raw_id),
+                    (reason, provider, validated_at, payload_provider, raw_id),
                 )
                 conn.execute(
                     """

@@ -355,10 +355,12 @@ class ParsingService:
         # Phase 1: Parse all raw records, collecting work items
         work_items: list[tuple[ParsedConversation, str, str]] = []  # (convo, source_name, raw_id)
         failed_raw_ids: dict[str, str] = {}  # raw_id -> error message
+        payload_providers: dict[str, str | None] = {}
 
         for raw_record in raw_records:
             try:
                 parsed_convos = await self._parse_raw_record(raw_record)
+                payload_providers[raw_record.raw_id] = raw_record.payload_provider
                 source_name = raw_record.source_name or raw_record.source_path
                 for convo in parsed_convos:
                     work_items.append((convo, source_name, raw_record.raw_id))
@@ -371,6 +373,7 @@ class ParsingService:
                 )
                 result.parse_failures += 1
                 failed_raw_ids[raw_record.raw_id] = str(exc)[:500]
+                payload_providers[raw_record.raw_id] = raw_record.payload_provider
 
         # Free raw records — parsed conversations are much smaller
         del raw_records
@@ -378,7 +381,11 @@ class ParsingService:
         if not work_items:
             # All records failed to parse — mark failures and return
             for rid, error in failed_raw_ids.items():
-                await backend.mark_raw_parsed(rid, error=error)
+                await backend.mark_raw_parsed(
+                    rid,
+                    error=error,
+                    payload_provider=payload_providers.get(rid),
+                )
             return
 
         # Phase 2: Pre-compute candidate CIDs and bulk-load cache
@@ -450,9 +457,13 @@ class ParsingService:
         #   can see what's wrong; record stays unparsed for retry
         for rid in succeeded_raw_ids:
             if rid not in failed_raw_ids:
-                await backend.mark_raw_parsed(rid)
+                await backend.mark_raw_parsed(rid, payload_provider=payload_providers.get(rid))
         for rid, error in failed_raw_ids.items():
-            await backend.mark_raw_parsed(rid, error=error)
+            await backend.mark_raw_parsed(
+                rid,
+                error=error,
+                payload_provider=payload_providers.get(rid),
+            )
 
     async def _parse_raw_record(
         self,
@@ -469,11 +480,16 @@ class ParsingService:
         Returns:
             List of parsed conversations (usually 1, but could be more for bundles)
         """
+        stored_payload_provider = raw_record.payload_provider
+        if not isinstance(stored_payload_provider, str) or not stored_payload_provider.strip():
+            stored_payload_provider = None
         envelope = build_raw_payload_envelope(
             raw_record.raw_content,
             source_path=raw_record.source_path,
             fallback_provider=raw_record.provider_name,
+            payload_provider=stored_payload_provider,
         )
+        raw_record.payload_provider = envelope.provider
 
         # Use the existing parser dispatcher
         return parse_payload(

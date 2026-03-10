@@ -36,6 +36,7 @@ from polylogue.lib.raw_payload import (
     extract_payload_samples,
     limit_samples,
 )
+from polylogue.lib.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.storage.backends.connection import default_db_path
 
 # UUID pattern for detecting dynamic keys
@@ -775,6 +776,21 @@ def _resolve_provider_config(provider_name: str) -> ProviderConfig:
     )
 
 
+def _sample_provider_where_clause(provider_name: str) -> tuple[str, tuple[Any, ...]]:
+    runtime_placeholders = ",".join("?" for _ in CORE_RUNTIME_PROVIDERS)
+    clause = (
+        "payload_provider = ? "
+        "OR (payload_provider IS NULL AND provider_name = ?) "
+        f"OR (payload_provider IS NULL AND provider_name NOT IN ({runtime_placeholders}))"
+    )
+    params: tuple[Any, ...] = (
+        provider_name,
+        provider_name,
+        *CORE_RUNTIME_PROVIDERS,
+    )
+    return clause, params
+
+
 def _iter_samples_from_db(
     provider_name: str,
     *,
@@ -783,14 +799,15 @@ def _iter_samples_from_db(
 ) -> Any:
     conn = sqlite3.connect(db_path)
     try:
+        where_clause, where_params = _sample_provider_where_clause(provider_name)
         cursor = conn.execute(
-            """
-            SELECT raw_content, source_path, provider_name
+            f"""
+            SELECT raw_content, source_path, provider_name, payload_provider
             FROM raw_conversations
-            WHERE provider_name = ?
+            WHERE {where_clause}
             ORDER BY acquired_at DESC
             """,
-            (provider_name,),
+            where_params,
         )
         while True:
             rows = cursor.fetchmany(250)
@@ -802,9 +819,12 @@ def _iter_samples_from_db(
                         row[0],
                         source_path=row[1],
                         fallback_provider=row[2],
+                        payload_provider=row[3],
                         jsonl_dict_only=True,
                     )
                 except Exception:
+                    continue
+                if envelope.provider != provider_name:
                     continue
                 yield from extract_payload_samples(
                     envelope.payload,

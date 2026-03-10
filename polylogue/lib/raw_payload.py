@@ -108,13 +108,18 @@ def _infer_payload_provider(
     *,
     source_path: str | Path | None,
     fallback_provider: str,
+    payload_provider: str | None = None,
 ) -> str:
     """Infer canonical provider from payload/path, with fallback."""
-    normalized = str(source_path or "")
-    if ".zip:" in normalized:
-        normalized = normalized.split(":", 1)[0]
-    if normalized:
-        inferred = detect_provider(payload, Path(normalized))
+    if payload_provider:
+        return canonical_runtime_provider(
+            payload_provider,
+            preserve_unknown=True,
+            default=payload_provider,
+        )
+    source_hint = str(source_path or "")
+    if source_hint:
+        inferred = detect_provider(payload, Path(source_hint))
         if inferred:
             return canonical_runtime_provider(
                 inferred,
@@ -133,13 +138,19 @@ def build_raw_payload_envelope(
     *,
     source_path: str | Path | None,
     fallback_provider: str,
+    payload_provider: str | None = None,
     jsonl_dict_only: bool = False,
 ) -> RawPayloadEnvelope:
     """Decode raw payload and attach canonical provider/wire-format identity."""
     normalized_path = str(source_path or "").lower()
     prefer_jsonl = normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+    preferred_provider = payload_provider or fallback_provider
     if not prefer_jsonl:
-        prefer_jsonl = fallback_provider in {"claude-code", "claude_code", "codex"}
+        prefer_jsonl = canonical_runtime_provider(
+            preferred_provider,
+            preserve_unknown=True,
+            default=preferred_provider,
+        ) in {"claude-code", "codex"}
     payload, wire_format, malformed_jsonl_lines = _decode_raw_payload(
         raw_content,
         jsonl_dict_only=jsonl_dict_only,
@@ -149,6 +160,7 @@ def build_raw_payload_envelope(
         payload,
         source_path=source_path,
         fallback_provider=fallback_provider,
+        payload_provider=payload_provider,
     )
     return RawPayloadEnvelope(
         payload=payload,

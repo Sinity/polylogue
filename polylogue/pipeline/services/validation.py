@@ -209,24 +209,30 @@ class ValidationService:
             validation_status = "passed"
             validation_error: str | None = None
             parseable = True
+            stored_payload_provider = getattr(raw_record, "payload_provider", None)
+            if not isinstance(stored_payload_provider, str) or not stored_payload_provider.strip():
+                stored_payload_provider = None
             canonical_provider = canonical_runtime_provider(
-                raw_record.provider_name,
+                stored_payload_provider or raw_record.provider_name,
                 preserve_unknown=True,
-                default=raw_record.provider_name,
+                default=stored_payload_provider or raw_record.provider_name,
             )
             invalid_count = 0
             drift_count = 0
             collected_errors: list[str] = []
             collected_drift: list[str] = []
+            payload_provider = stored_payload_provider
 
             try:
                 envelope = build_raw_payload_envelope(
                     raw_record.raw_content,
                     source_path=raw_record.source_path,
                     fallback_provider=raw_record.provider_name,
+                    payload_provider=stored_payload_provider,
                 )
                 payload = envelope.payload
                 malformed_lines = envelope.malformed_jsonl_lines
+                payload_provider = envelope.provider
             except Exception as exc:
                 result.counts["errors"] += 1
                 result.invalid_raw_ids.append(raw_id)
@@ -314,6 +320,7 @@ class ValidationService:
                     drift_count=drift_count,
                     provider=canonical_provider,
                     mode=validation_mode,
+                    payload_provider=payload_provider,
                 )
 
             if parseable:
@@ -321,7 +328,11 @@ class ValidationService:
             else:
                 result.invalid_raw_ids.append(raw_id)
                 if persist and validation_error is not None:
-                    await self.backend.mark_raw_parsed(raw_id, error=validation_error)
+                    await self.backend.mark_raw_parsed(
+                        raw_id,
+                        error=validation_error,
+                        payload_provider=payload_provider,
+                    )
 
             if progress_callback is not None:
                 progress_callback(
