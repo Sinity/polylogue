@@ -65,18 +65,8 @@ REPAIR_DRY_RUN_VARIANTS = [
     ("dangling_fts", True),
     ("orphaned_attachments", False),
     ("orphaned_attachments", True),
-    ("unknown_roles", False),
-    ("unknown_roles", True),
     ("wal_checkpoint", False),
     ("wal_checkpoint", True),
-]
-
-# Unknown role type mappings: (message_type, expected_role)
-UNKNOWN_ROLE_TYPE_MAPPINGS = [
-    ("progress", "tool"),
-    ("result", "tool"),
-    ("summary", "system"),
-    ("system", "system"),
 ]
 
 # Run all repairs expected names
@@ -85,7 +75,6 @@ RUN_ALL_REPAIRS_EXPECTED = {
     "empty_conversations",
     "dangling_fts",
     "orphaned_attachments",
-    "unknown_roles",
     "wal_checkpoint",
 }
 
@@ -653,24 +642,30 @@ def _insert_conversation(conn, conversation_id: str, provider_name: str = "test"
     )
 
 
-def _insert_message(conn, message_id: str, conversation_id: str, role: str = "user", text: str = "Text", provider_meta: dict | None = None, allow_orphaned: bool = False):
+def _insert_message(
+    conn,
+    message_id: str,
+    conversation_id: str,
+    role: str = "user",
+    text: str = "Text",
+    allow_orphaned: bool = False,
+):
     """Helper to insert a message with all required fields."""
     content_hash = hashlib.sha256(f"{message_id}:{text}".encode()).hexdigest()
-    meta = json.dumps(provider_meta) if provider_meta else None
     if allow_orphaned:
         # Temporarily disable foreign keys to insert orphaned message
         conn.execute("PRAGMA foreign_keys = OFF")
         try:
             conn.execute(
-                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, provider_meta) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (message_id, conversation_id, role, text, content_hash, 1, meta),
+                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version) VALUES (?, ?, ?, ?, ?, ?)",
+                (message_id, conversation_id, role, text, content_hash, 1),
             )
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
     else:
         conn.execute(
-            "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, provider_meta) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (message_id, conversation_id, role, text, content_hash, 1, meta),
+            "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version) VALUES (?, ?, ?, ?, ?, ?)",
+            (message_id, conversation_id, role, text, content_hash, 1),
         )
 
 
@@ -908,7 +903,7 @@ class TestRepairDanglingFts:
 
             # Manually insert a dangling FTS entry (rowid won't match any message)
             conn.execute(
-                "INSERT INTO messages_fts (rowid, message_id, conversation_id, content) VALUES (?, ?, ?, ?)",
+                "INSERT INTO messages_fts (rowid, message_id, conversation_id, text) VALUES (?, ?, ?, ?)",
                 (rowid + 999, "orphan-fts", "conv-1", "dangling entry"),
             )
             conn.commit()
@@ -1099,106 +1094,6 @@ class TestRepairOrphanedAttachments:
             assert remaining == 1
 
 
-class TestRepairUnknownRoles:
-    """Tests for repair_unknown_roles function."""
-
-    def test_clean_roles_state(self, cli_workspace):
-        """repair_unknown_roles should return 0 when no unknown roles in claude-code."""
-        from polylogue.config import get_config
-        from polylogue.health import repair_unknown_roles
-        from polylogue.storage.backends.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            # Create claude-code conversation with properly-typed messages
-            _insert_conversation(conn, "cc-conv-1", provider_name="claude-code")
-            _insert_message(conn, "cc-msg-1", "cc-conv-1", "user", "code", {"raw": {"type": "user"}})
-            conn.commit()
-
-        # Act
-        result = repair_unknown_roles(config, dry_run=False)
-
-        # Assert
-        assert result.name == "unknown_roles"
-        assert result.repaired_count == 0
-        assert result.success is True
-
-    @pytest.mark.parametrize("message_type,expected_role", UNKNOWN_ROLE_TYPE_MAPPINGS)
-    def test_unknown_roles_type_mapping(self, cli_workspace, message_type, expected_role):
-        """repair_unknown_roles should map message types to appropriate roles."""
-        from polylogue.config import get_config
-        from polylogue.health import repair_unknown_roles
-        from polylogue.storage.backends.connection import connection_context
-
-        config = get_config()
-        msg_id = f"cc-msg-{message_type}"
-        with connection_context(None) as conn:
-            _insert_conversation(conn, "cc-conv-1", provider_name="claude-code")
-            _insert_message(conn, msg_id, "cc-conv-1", "unknown", f"{message_type} text", {"raw": {"type": message_type}})
-            conn.commit()
-
-        # Act
-        result = repair_unknown_roles(config, dry_run=False)
-
-        # Assert
-        assert result.name == "unknown_roles"
-        assert result.repaired_count == 1
-        assert result.success is True
-
-        # Verify role was updated to expected
-        with connection_context(None) as conn:
-            role = conn.execute("SELECT role FROM messages WHERE message_id = ?", (msg_id,)).fetchone()[0]
-            assert role == expected_role
-
-    def test_unknown_roles_dry_run(self, cli_workspace):
-        """repair_unknown_roles with dry_run=True should count but not modify."""
-        from polylogue.config import get_config
-        from polylogue.health import repair_unknown_roles
-        from polylogue.storage.backends.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            _insert_conversation(conn, "cc-conv-1", provider_name="claude-code")
-            _insert_message(conn, "cc-msg-1", "cc-conv-1", "unknown", "progress", {"raw": {"type": "progress"}})
-            conn.commit()
-
-        # Act
-        result = repair_unknown_roles(config, dry_run=True)
-
-        # Assert
-        assert result.repaired_count == 1
-        assert "Would:" in result.detail
-
-        # Verify role was NOT changed
-        with connection_context(None) as conn:
-            role = conn.execute("SELECT role FROM messages WHERE message_id = ?", ("cc-msg-1",)).fetchone()[0]
-            assert role == "unknown"
-
-    def test_unknown_roles_non_claude_code_ignored(self, cli_workspace):
-        """repair_unknown_roles should only affect claude-code conversations."""
-        from polylogue.config import get_config
-        from polylogue.health import repair_unknown_roles
-        from polylogue.storage.backends.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            # Create non-claude-code conversation with unknown role
-            _insert_conversation(conn, "conv-1", provider_name="chatgpt")
-            _insert_message(conn, "msg-1", "conv-1", "unknown", "text", {"raw": {"type": "progress"}})
-            conn.commit()
-
-        # Act
-        result = repair_unknown_roles(config, dry_run=False)
-
-        # Assert
-        assert result.repaired_count == 0
-
-        # Verify role was NOT changed
-        with connection_context(None) as conn:
-            role = conn.execute("SELECT role FROM messages WHERE message_id = ?", ("msg-1",)).fetchone()[0]
-            assert role == "unknown"
-
-
 class TestRepairWalCheckpoint:
     """Tests for repair_wal_checkpoint function."""
 
@@ -1248,7 +1143,7 @@ class TestRunAllRepairs:
 
         # Assert
         assert isinstance(results, list)
-        assert len(results) == 6  # All 6 repair functions
+        assert len(results) == 5  # All current repair functions
 
         # Verify we got each repair type
         repair_names = {r.name for r in results}
