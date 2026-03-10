@@ -7,9 +7,10 @@ search (FTS5) with semantic vector search (sqlite-vec) using Reciprocal Rank Fus
 from __future__ import annotations
 
 from pathlib import Path
+from sqlite3 import Connection
 from typing import TYPE_CHECKING
 
-from polylogue.storage.backends.connection import _build_source_scope_filter
+from polylogue.storage.backends.connection import _build_source_scope_filter, open_connection
 
 if TYPE_CHECKING:
     from polylogue.protocols import VectorProvider
@@ -172,8 +173,6 @@ class HybridSearchProvider:
         Returns:
             List of conversation IDs, ordered by best-matching message score.
         """
-        from polylogue.storage.backends.connection import open_connection
-
         if limit <= 0:
             return []
 
@@ -183,48 +182,75 @@ class HybridSearchProvider:
         if not message_results:
             return []
 
-        message_ids = [msg_id for msg_id, _score in message_results]
-
-        # Look up conversation IDs for these messages
         with open_connection(self.fts_provider.db_path) as conn:
-            placeholders = ",".join("?" * len(message_ids))
-            rows = conn.execute(
-                f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})",
-                message_ids,
-            ).fetchall()
+            return _resolve_ranked_conversation_ids(
+                conn,
+                message_results=message_results,
+                limit=limit,
+                scope_names=providers,
+            )
 
-        msg_to_conv = {row["message_id"]: row["conversation_id"] for row in rows}
 
-        # If provider filter specified, look up which conversations match
-        allowed_convs: set[str] | None = None
-        if providers:
-            with open_connection(self.fts_provider.db_path) as conn:
-                scope_sql, scope_params = _build_source_scope_filter(
-                    providers,
-                    provider_column="provider_name",
-                    source_column="source_name",
-                )
-                p_rows = conn.execute(
-                    f"SELECT conversation_id FROM conversations WHERE {scope_sql}",
-                    scope_params,
-                ).fetchall()
-                allowed_convs = {row["conversation_id"] for row in p_rows}
+def _resolve_ranked_conversation_ids(
+    conn: Connection,
+    *,
+    message_results: list[tuple[str, float]],
+    limit: int,
+    scope_names: list[str] | None,
+) -> list[str]:
+    """Resolve ranked message hits into unique conversation IDs in SQL."""
+    if not message_results or limit <= 0:
+        return []
 
-        # Deduplicate while preserving order (first occurrence wins)
-        seen_convs: set[str] = set()
-        result_convs: list[str] = []
+    values_sql = ", ".join("(?, ?)" for _ in message_results)
+    params: list[object] = []
+    for rank, (message_id, _score) in enumerate(message_results, start=1):
+        params.extend((message_id, rank))
 
-        for msg_id, _score in message_results:
-            conv_id = msg_to_conv.get(msg_id)
-            if conv_id and conv_id not in seen_convs:
-                if allowed_convs is not None and conv_id not in allowed_convs:
-                    continue
-                seen_convs.add(conv_id)
-                result_convs.append(conv_id)
-                if len(result_convs) >= limit:
-                    break
+    scope_clause = ""
+    if scope_names:
+        scope_sql, scope_params = _build_source_scope_filter(
+            scope_names,
+            provider_column="conversations.provider_name",
+            source_column="conversations.source_name",
+        )
+        scope_clause = f"WHERE {scope_sql}"
+        params.extend(scope_params)
 
-        return result_convs
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        WITH ranked_messages(message_id, message_rank) AS (
+            VALUES {values_sql}
+        ),
+        candidate_hits AS (
+            SELECT
+                messages.conversation_id,
+                ranked_messages.message_rank
+            FROM ranked_messages
+            JOIN messages ON messages.message_id = ranked_messages.message_id
+            JOIN conversations ON conversations.conversation_id = messages.conversation_id
+            {scope_clause}
+        ),
+        ranked_conversations AS (
+            SELECT
+                conversation_id,
+                message_rank,
+                ROW_NUMBER() OVER (
+                    PARTITION BY conversation_id
+                    ORDER BY message_rank ASC, conversation_id ASC
+                ) AS conversation_rank
+            FROM candidate_hits
+        )
+        SELECT conversation_id
+        FROM ranked_conversations
+        WHERE conversation_rank = 1
+        ORDER BY message_rank ASC, conversation_id ASC
+        LIMIT ?
+        """,
+        tuple(params),
+    ).fetchall()
+    return [row["conversation_id"] for row in rows]
 
 
 def create_hybrid_provider(
