@@ -48,12 +48,13 @@ class TestMarkRawParsed:
     async def test_mark_success(self, backend: SQLiteBackend) -> None:
         """Marking as parsed sets parsed_at and clears parse_error."""
         await self._save_raw(backend)
-        await backend.mark_raw_parsed("test-raw")
+        await backend.mark_raw_parsed("test-raw", payload_provider="chatgpt")
 
         rec = await backend.get_raw_conversation("test-raw")
         assert rec is not None
         assert rec.parsed_at is not None
         assert rec.parse_error is None
+        assert rec.payload_provider == "chatgpt"
 
     async def test_mark_failure(self, backend: SQLiteBackend) -> None:
         """Marking with error sets parse_error, leaves parsed_at NULL."""
@@ -113,6 +114,7 @@ class TestMarkRawValidated:
             drift_count=2,
             provider="chatgpt",
             mode="strict",
+            payload_provider="chatgpt",
         )
 
         rec = await backend.get_raw_conversation("test-raw")
@@ -123,6 +125,7 @@ class TestMarkRawValidated:
         assert rec.validation_drift_count == 2
         assert rec.validation_provider == "chatgpt"
         assert rec.validation_mode == "strict"
+        assert rec.payload_provider == "chatgpt"
 
     async def test_mark_failed_truncates_error(self, backend: SQLiteBackend) -> None:
         await self._save_raw(backend)
@@ -278,8 +281,21 @@ class TestResetValidationStatus:
                 raw_content=f'{{"i": {i}}}'.encode(),
                 acquired_at="2026-01-01T00:00:00Z",
             ))
-        await backend.mark_raw_validated("raw-0", status="passed", provider="chatgpt", mode="strict")
-        await backend.mark_raw_validated("raw-2", status="failed", error="bad schema", provider="claude", mode="strict")
+        await backend.mark_raw_validated(
+            "raw-0",
+            status="passed",
+            provider="chatgpt",
+            mode="strict",
+            payload_provider="chatgpt",
+        )
+        await backend.mark_raw_validated(
+            "raw-2",
+            status="failed",
+            error="bad schema",
+            provider="claude",
+            mode="strict",
+            payload_provider="claude",
+        )
 
     async def test_reset_all(self, backend: SQLiteBackend) -> None:
         await self._populate(backend)
@@ -292,6 +308,11 @@ class TestResetValidationStatus:
             assert rec.validated_at is None
             assert rec.validation_status is None
             assert rec.validation_error is None
+        rec0 = await backend.get_raw_conversation("raw-0")
+        rec2 = await backend.get_raw_conversation("raw-2")
+        assert rec0 is not None and rec2 is not None
+        assert rec0.payload_provider == "chatgpt"
+        assert rec2.payload_provider == "claude"
 
     async def test_reset_by_provider(self, backend: SQLiteBackend) -> None:
         await self._populate(backend)
@@ -303,6 +324,8 @@ class TestResetValidationStatus:
         assert rec0 is not None and rec2 is not None
         assert rec0.validation_status is None
         assert rec2.validation_status == "failed"
+        assert rec0.payload_provider == "chatgpt"
+        assert rec2.payload_provider == "claude"
 
 
 # ─── Mtime skip integration test ──────────────────────────────────────────
@@ -390,6 +413,7 @@ class TestFreshSchema:
         assert "validated_at" in columns
         assert "validation_status" in columns
         assert "validation_error" in columns
+        assert "payload_provider" in columns
 
         cursor = conn.execute("PRAGMA table_info(messages)")
         msg_columns = {row[1] for row in cursor.fetchall()}
@@ -417,6 +441,7 @@ class TestFreshSchema:
         # raw_conversations indices
         assert "idx_raw_conv_source_mtime" in indices
         assert "idx_raw_conv_parse_ready" in indices
+        assert "idx_raw_conv_payload_provider" in indices
 
         # conversations indices
         assert "idx_conversations_content_hash" in indices
