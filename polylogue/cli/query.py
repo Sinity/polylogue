@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,44 @@ if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary, Message
     from polylogue.storage.repository import ConversationRepository
+
+
+def _result_id(result: Conversation | ConversationSummary) -> str:
+    return str(result.id)
+
+
+def _result_provider(result: Conversation | ConversationSummary) -> str:
+    return str(result.provider)
+
+
+def _result_title(result: Conversation | ConversationSummary) -> str:
+    title = result.display_title
+    return title if title else _result_id(result)[:20]
+
+
+def _result_date(result: Conversation | ConversationSummary) -> datetime | None:
+    display_date = getattr(result, "display_date", None)
+    if isinstance(display_date, datetime):
+        return display_date
+    updated_at = getattr(result, "updated_at", None)
+    if isinstance(updated_at, datetime):
+        return updated_at
+    created_at = getattr(result, "created_at", None)
+    if isinstance(created_at, datetime):
+        return created_at
+    return None
+
+
+def _summary_to_dict(summary: ConversationSummary, message_count: int) -> dict[str, object]:
+    return {
+        "id": str(summary.id),
+        "provider": str(summary.provider),
+        "title": summary.display_title,
+        "date": summary.display_date.isoformat() if summary.display_date else None,
+        "tags": summary.tags,
+        "summary": summary.summary,
+        "messages": message_count,
+    }
 
 
 def _coerce_query_spec(params: dict[str, Any] | ConversationQuerySpec) -> ConversationQuerySpec:
@@ -205,17 +244,21 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         _output_stats_by_summaries(env, summaries, msg_counts, params["stats_by"])
         return
 
-    results = await filter_chain.list()
+    if params.get("delete_matched") and not query_spec.has_filters():
+        click.echo("Error: --delete requires at least one filter to prevent accidental deletion of the entire archive.", err=True)
+        raise SystemExit(1)
 
     # Handle modifiers (write operations)
+    if (params.get("set_meta") or params.get("add_tag") or params.get("delete_matched")) and filter_chain.can_use_summaries():
+        results = await filter_chain.list_summaries()
+    else:
+        results = await filter_chain.list()
+
     if params.get("set_meta") or params.get("add_tag"):
         await _apply_modifiers(env, results, params, repo)
         return
 
     if params.get("delete_matched"):
-        if not query_spec.has_filters():
-            click.echo("Error: --delete requires at least one filter to prevent accidental deletion of the entire archive.", err=True)
-            raise SystemExit(1)
         await _delete_conversations(env, results, params, repo)
         return
 
@@ -247,7 +290,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
 async def _apply_modifiers(
     env: AppEnv,
-    results: list[Conversation],
+    results: list[Conversation | ConversationSummary],
     params: dict[str, Any],
     repo: ConversationRepository | None = None,
 ) -> None:
@@ -277,8 +320,8 @@ async def _apply_modifiers(
         click.echo(f"Operations: {op_desc}")
         env.ui.console.print("\nSample of affected conversations:")
         for conv in results[:5]:
-            title = conv.display_title[:40] if conv.display_title else conv.id[:20]
-            env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {title}")
+            title = _result_title(conv)[:40]
+            env.ui.console.print(f"  - {_result_id(conv)[:24]} [{_result_provider(conv)}] {title}")
         return
 
     # Confirmation for bulk operations (>10 items)
@@ -298,12 +341,12 @@ async def _apply_modifiers(
         if params.get("set_meta"):
             for kv in params["set_meta"]:
                 key, value = kv[0], kv[1]
-                await repo.update_metadata(str(conv.id), key, value)
+                await repo.update_metadata(_result_id(conv), key, value)
                 meta_set += 1
 
         if params.get("add_tag"):
             for tag in params["add_tag"]:
-                await repo.add_tag(str(conv.id), tag)
+                await repo.add_tag(_result_id(conv), tag)
                 tags_added += 1
 
     # Report results
@@ -319,7 +362,7 @@ async def _apply_modifiers(
 
 async def _delete_conversations(
     env: AppEnv,
-    results: list[Conversation],
+    results: list[Conversation | ConversationSummary],
     params: dict[str, Any],
     repo: ConversationRepository | None = None,
 ) -> None:
@@ -336,8 +379,8 @@ async def _delete_conversations(
     count = len(results)
 
     # Build breakdown summary for preview/confirmation
-    provider_counts = Counter(conv.provider for conv in results)
-    dates = [conv.created_at for conv in results if conv.created_at is not None]
+    provider_counts = Counter(_result_provider(conv) for conv in results)
+    dates = [dt for conv in results if (dt := _result_date(conv)) is not None]
     date_min = min(dates) if dates else None
     date_max = max(dates) if dates else None
 
@@ -357,8 +400,8 @@ async def _delete_conversations(
         # Sample
         click.echo("  Sample:")
         for conv in results[:5]:
-            title = conv.display_title[:40] if conv.display_title else conv.id[:20]
-            click.echo(f"    {conv.id[:24]} [{conv.provider}] {title}")
+            title = _result_title(conv)[:40]
+            click.echo(f"    {_result_id(conv)[:24]} [{_result_provider(conv)}] {title}")
         if count > 5:
             click.echo(f"    ... and {count - 5} more")
 
@@ -386,7 +429,7 @@ async def _delete_conversations(
 
     deleted_count = 0
     for conv in results:
-        if await repo.delete_conversation(str(conv.id)):
+        if await repo.delete_conversation(_result_id(conv)):
             deleted_count += 1
 
     click.echo(f"Deleted {deleted_count} conversation(s)")
@@ -432,7 +475,7 @@ async def _output_stats_sql(
     from datetime import datetime, timezone
 
     # Determine if we have active filters (not just "everything")
-    has_filters = bool(filter_chain._describe_active_filters())
+    has_filters = bool(filter_chain.describe())
 
     if has_filters:
         # Filtered path: resolve matching IDs, then aggregate their messages
@@ -708,35 +751,14 @@ async def _output_summary_list(
         selected = {f.strip() for f in fields.split(",")}
 
     if output_format == "json":
-        data = [
-            {
-                "id": str(s.id),
-                "provider": s.provider,
-                "title": s.display_title,
-                "date": s.display_date.isoformat() if s.display_date else None,
-                "tags": s.tags,
-                "summary": s.summary,
-                "messages": msg_counts.get(str(s.id), 0),
-            }
-            for s in summaries
-        ]
+        data = [_summary_to_dict(s, msg_counts.get(str(s.id), 0)) for s in summaries]
         if selected:
             data = [{k: v for k, v in d.items() if k in selected} for d in data]
         click.echo(json.dumps(data, indent=2))
     elif output_format == "yaml":
         import yaml
 
-        data = [
-            {
-                "id": str(s.id),
-                "provider": s.provider,
-                "title": s.display_title,
-                "date": s.display_date.isoformat() if s.display_date else None,
-                "tags": s.tags,
-                "messages": msg_counts.get(str(s.id), 0),
-            }
-            for s in summaries
-        ]
+        data = [_summary_to_dict(s, msg_counts.get(str(s.id), 0)) for s in summaries]
         if selected:
             data = [{k: v for k, v in d.items() if k in selected} for d in data]
         click.echo(yaml.dump(data, default_flow_style=False, allow_unicode=True))
@@ -1143,15 +1165,15 @@ def _open_result(
 
     # Search for rendered file matching this conversation ID
     conv_id_short = str(conv.id)[:8] if conv.id else ""
-    html_files = list(render_root.rglob(f"*{conv_id_short}*/conversation.html"))
-    md_files = list(render_root.rglob(f"*{conv_id_short}*/conversation.md"))
+    html_file = next(render_root.rglob(f"*{conv_id_short}*/conversation.html"), None)
+    md_file = next(render_root.rglob(f"*{conv_id_short}*/conversation.md"), None)
 
     # Prefer HTML, fallback to MD
     render_file = None
-    if html_files:
-        render_file = html_files[0]
-    elif md_files:
-        render_file = md_files[0]
+    if html_file:
+        render_file = html_file
+    elif md_file:
+        render_file = md_file
     else:
         # Fallback: find most recent render
         from polylogue.cli.helpers import latest_render_path

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import sys
 from collections.abc import Iterable
 from types import TracebackType
 
@@ -16,7 +15,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from .facade import ConsoleFacade, ConsoleLike, create_console_facade
+from .facade import ConsoleFacade, ConsoleLike, UIError, create_console_facade
 
 __all__ = [
     "UI",
@@ -67,52 +66,36 @@ class UI:
 
     # Prompting ------------------------------------------------------------
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
-        if self.plain:
-            if not sys.stdin.isatty():
-                self._abort_plain_prompt("confirmation prompts")
-            try:
-                response = input(f"{prompt} [{'Y/n' if default else 'y/N'}]: ").strip()
-            except EOFError:
-                return default
-            if not response:
-                return default
-            return response.lower() in {"y", "yes"}
-        return self._facade.confirm(prompt, default=default)
+        try:
+            return self._facade.confirm(prompt, default=default)
+        except UIError as exc:
+            if self.plain:
+                topic = exc.prompt_topic or str(exc).removeprefix("Plain mode cannot prompt for ").strip(".")
+                if topic:
+                    self._abort_plain_prompt(topic)
+            raise
 
     def choose(self, prompt: str, options: list[str]) -> str | None:
         if not options:
             return None
-        if self.plain:
-            if not sys.stdin.isatty():
-                self._abort_plain_prompt("menu selections")
-            for idx, option in enumerate(options, start=1):
-                self.console.print(f"{idx}. {option}")
-            while True:
-                try:
-                    response = input(f"{prompt} [1-{len(options)}]: ").strip()
-                except EOFError:
-                    return None
-                if not response:
-                    return None
-                if response.isdigit():
-                    value = int(response)
-                    if 1 <= value <= len(options):
-                        return options[value - 1]
-                self._print_notice("Enter a number corresponding to your choice.")
-            return None
-        return self._facade.choose(prompt, options)
+        try:
+            return self._facade.choose(prompt, options)
+        except UIError as exc:
+            if self.plain:
+                topic = exc.prompt_topic or str(exc).removeprefix("Plain mode cannot prompt for ").strip(".")
+                if topic:
+                    self._abort_plain_prompt(topic)
+            raise
 
     def input(self, prompt: str, *, default: str | None = None) -> str | None:
-        if self.plain:
-            if not sys.stdin.isatty():
-                self._abort_plain_prompt("text input")
-            suffix = f" [{default}]" if default else ""
-            try:
-                value = input(f"{prompt}{suffix}: ").strip()
-            except EOFError:
-                return default
-            return value or default
-        return self._facade.input(prompt, default=default)
+        try:
+            return self._facade.input(prompt, default=default)
+        except UIError as exc:
+            if self.plain:
+                topic = exc.prompt_topic or str(exc).removeprefix("Plain mode cannot prompt for ").strip(".")
+                if topic:
+                    self._abort_plain_prompt(topic)
+            raise
 
     # Progress -------------------------------------------------------------
     def progress(self, description: str, total: int | None = None) -> _PlainProgressTracker | _RichProgressTracker:
