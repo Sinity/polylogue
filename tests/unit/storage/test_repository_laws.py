@@ -202,6 +202,37 @@ def test_repository_tree_methods_preserve_root_and_closure(specs) -> None:
         tempdir.cleanup()
 
 
+def test_repository_get_children_hydrates_loaded_child_records() -> None:
+    """get_children() must hydrate directly from listed child records without refetching IDs."""
+    backend = MagicMock()
+    backend.list_conversations = AsyncMock(
+        return_value=[
+            ConversationRecord(
+                conversation_id="conv-child",
+                provider_name="claude",
+                provider_conversation_id="child",
+                title="Child",
+                content_hash="hash-child",
+                provider_meta={},
+                metadata={},
+            )
+        ]
+    )
+    backend.get_messages_batch = AsyncMock(return_value={"conv-child": []})
+    backend.get_attachments_batch = AsyncMock(return_value={"conv-child": []})
+    backend.get_conversations_batch = AsyncMock(
+        side_effect=AssertionError("get_children() should not refetch child records by ID")
+    )
+    repo = ConversationRepository(backend=backend)
+
+    children = asyncio.run(repo.get_children("conv-root"))
+
+    assert [str(child.id) for child in children] == ["conv-child"]
+    backend.list_conversations.assert_awaited_once_with(parent_id="conv-root")
+    backend.get_messages_batch.assert_awaited_once_with(["conv-child"])
+    backend.get_attachments_batch.assert_awaited_once_with(["conv-child"])
+
+
 @settings(
     deadline=None,
     max_examples=25,
@@ -1046,3 +1077,32 @@ def test_repository_conversation_to_record_only_strips_matching_provider_prefix(
 
     assert prefixed_record.provider_conversation_id == "thread-1"
     assert foreign_record.provider_conversation_id == "chatgpt:thread-2"
+    assert prefixed_record.updated_at is None
+    assert foreign_record.updated_at is None
+    assert prefixed_record.provider_meta == {}
+    assert foreign_record.provider_meta == {}
+
+
+def test_records_to_conversation_preserves_order_and_parent_contract() -> None:
+    """Record-to-model conversion must preserve IDs, ordering, and parent linkage."""
+    conversation = ConversationRecord(
+        conversation_id="conv-1",
+        provider_name="claude",
+        provider_conversation_id="conv-1",
+        parent_conversation_id="parent-conv",
+        title="Conversation",
+        content_hash="hash-1",
+        provider_meta={},
+        metadata={},
+    )
+    messages = [
+        MessageRecord(message_id="m1", conversation_id="conv-1", role="user", text="one", content_hash="hash-m1"),
+        MessageRecord(message_id="m2", conversation_id="conv-1", role="assistant", text="two", content_hash="hash-m2"),
+        MessageRecord(message_id="m3", conversation_id="conv-1", role="user", text="three", content_hash="hash-m3"),
+    ]
+
+    converted = Conversation.from_records(conversation, messages, [])
+
+    assert str(converted.id) == "conv-1"
+    assert str(converted.parent_id) == "parent-conv"
+    assert [message.id for message in converted.messages] == ["m1", "m2", "m3"]
