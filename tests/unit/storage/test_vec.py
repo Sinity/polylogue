@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue.storage.store import MessageRecord
+from tests.infra.mutmut import preserved_mutmut_env
 
 
 def make_message(
@@ -918,7 +919,7 @@ class TestVecProviderFactory:
         """Returns None when VOYAGE_API_KEY is not configured."""
         from polylogue.storage.search_providers import create_vector_provider
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", preserved_mutmut_env(), clear=True):
             provider = create_vector_provider()
             assert provider is None
 
