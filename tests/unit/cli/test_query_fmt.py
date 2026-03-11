@@ -73,9 +73,9 @@ def _make_conv(
 
 class TestDescribeFilters:
     def _fn(self, params: dict) -> list[str]:
-        from polylogue.cli.query import _describe_filters
+        from polylogue.cli.query_helpers import describe_query_filters
 
-        return _describe_filters(params)
+        return describe_query_filters(params)
 
     def test_empty_params(self) -> None:
         assert self._fn({}) == []
@@ -495,7 +495,7 @@ class TestConvToDict:
 
 class TestConvToCsv:
     def _fn(self, results: list[Conversation]) -> str:
-        from polylogue.cli.query import _conv_to_csv
+        from polylogue.cli.query_output import _conv_to_csv
 
         return _conv_to_csv(results)
 
@@ -610,7 +610,7 @@ class TestFormatConversation:
 
 class TestFormatList:
     def _fn(self, results: list[Conversation], fmt: str, fields: str | None = None) -> str:
-        from polylogue.cli.query import _format_list
+        from polylogue.cli.query_output import _format_list
 
         return _format_list(results, fmt, fields)
 
@@ -653,7 +653,7 @@ class TestFormatList:
 
 class TestWriteMessageStreaming:
     def _fn(self, msg: Message, fmt: str) -> None:
-        from polylogue.cli.query import _write_message_streaming
+        from polylogue.cli.query_output import _write_message_streaming
 
         _write_message_streaming(msg, fmt)
 
@@ -714,7 +714,7 @@ class TestWriteMessageStreaming:
 
 class TestApplyTransform:
     def _fn(self, results: list[Conversation], transform: str) -> list[Conversation]:
-        from polylogue.cli.query import _apply_transform
+        from polylogue.cli.query_actions import _apply_transform
 
         return _apply_transform(results, transform)
 
@@ -804,21 +804,21 @@ class TestOutputStatsBy:
     def test_stats_by_grouping(
         self, groupby: str, convs_setup: list[Conversation]
     ) -> None:
-        from polylogue.cli.query import _output_stats_by
+        from polylogue.cli.query_output import _output_stats_by
 
         env = MagicMock()
         _output_stats_by(env, convs_setup, groupby)
         env.ui.console.print.assert_called()
 
     def test_empty_results(self) -> None:
-        from polylogue.cli.query import _output_stats_by
+        from polylogue.cli.query_output import _output_stats_by
 
         env = MagicMock()
         _output_stats_by(env, [], "provider")
         env.ui.console.print.assert_called_once_with("No conversations matched.")
 
     def test_groups_correctly_by_provider(self) -> None:
-        from polylogue.cli.query import _output_stats_by
+        from polylogue.cli.query_output import _output_stats_by
 
         convs = [
             _make_conv(id="c1", provider="claude"),

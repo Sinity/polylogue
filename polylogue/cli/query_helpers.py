@@ -3,10 +3,45 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, NoReturn
+
+import click
 
 if TYPE_CHECKING:
+    from polylogue.cli.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.lib.query_spec import ConversationQuerySpec
+
+
+def coerce_query_spec(params: dict[str, Any] | ConversationQuerySpec) -> ConversationQuerySpec:
+    from polylogue.lib.query_spec import ConversationQuerySpec
+
+    if isinstance(params, ConversationQuerySpec):
+        return params
+    return ConversationQuerySpec.from_params(params)
+
+
+def describe_query_filters(params: dict[str, Any] | ConversationQuerySpec) -> list[str]:
+    """Build a human-readable list of active filters from params or spec."""
+    return coerce_query_spec(params).describe()
+
+
+def no_results(
+    env: AppEnv,
+    params: dict[str, Any] | ConversationQuerySpec,
+    *,
+    exit_code: int = 2,
+) -> NoReturn:
+    """Print a helpful no-results message and exit."""
+    filters = describe_query_filters(params)
+    if filters:
+        click.echo("No conversations matched filters:", err=True)
+        for item in filters:
+            click.echo(f"  {item}", err=True)
+        click.echo("Hint: try broadening your filters or use --list to browse", err=True)
+    else:
+        click.echo("No conversations matched.", err=True)
+    raise SystemExit(exit_code)
 
 
 def result_id(result: Conversation | ConversationSummary) -> str:
