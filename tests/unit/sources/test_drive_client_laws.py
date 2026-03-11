@@ -19,6 +19,7 @@ from polylogue.sources.drive_client import (
     DriveError,
     DriveFile,
     DriveNotFoundError,
+    _import_module,
     _is_supported_drive_payload,
     _needs_download,
     _parse_downloaded_json_payload,
@@ -228,6 +229,16 @@ def test_service_handle_rebuilds_expired_cached_service(monkeypatch: pytest.Monk
     build.assert_called_once_with("drive", "v3", credentials=creds, cache_discovery=False)
 
 
+def test_import_module_wraps_missing_drive_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_import(name: str):
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr("polylogue.sources.drive_client.importlib.import_module", fake_import)
+
+    with pytest.raises(DriveAuthError, match="Drive dependencies are not available"):
+        _import_module("googleapiclient.discovery")
+
+
 def test_download_to_path_skips_unchanged_redownload(tmp_path: Path) -> None:
     client = DriveClient()
     client.get_metadata = MagicMock(
@@ -379,6 +390,95 @@ def test_load_credentials_refreshes_expired_token_and_persists(monkeypatch: pyte
     client._token_store.save.assert_called_once_with("drive_token", '{"token":"fresh"}')
 
 
+def test_load_credentials_returns_valid_cached_token_without_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    token_file = tmp_path / "token.json"
+    token_file.write_text('{"token":"cached"}', encoding="utf-8")
+
+    cached_creds = MagicMock()
+    cached_creds.valid = True
+    cached_creds.expired = False
+    cached_creds.refresh_token = "refresh-token"
+    cached_creds.to_json.return_value = '{"token":"cached"}'
+    credentials_cls = MagicMock()
+    credentials_cls.from_authorized_user_file.return_value = cached_creds
+
+    def fake_import(name: str):
+        if name == "google.oauth2.credentials":
+            return MagicMock(Credentials=credentials_cls)
+        if name == "google_auth_oauthlib.flow":
+            return MagicMock(InstalledAppFlow=MagicMock())
+        raise AssertionError(name)
+
+    client = DriveClient(ui=None, token_path=token_file)
+    client._token_store = MagicMock()
+    client._token_store.load.return_value = None
+    monkeypatch.setattr("polylogue.sources.drive_client._import_module", fake_import)
+
+    result = client._load_credentials()
+
+    assert result is cached_creds
+    assert not cached_creds.refresh.called
+    client._token_store.save.assert_called_once_with("drive_token", '{"token":"cached"}')
+
+
+def test_load_credentials_raises_for_invalid_non_refreshable_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    token_file = tmp_path / "token.json"
+    token_file.write_text('{"token":"stale"}', encoding="utf-8")
+
+    invalid_creds = MagicMock()
+    invalid_creds.valid = False
+    invalid_creds.expired = True
+    invalid_creds.refresh_token = None
+    credentials_cls = MagicMock()
+    credentials_cls.from_authorized_user_file.return_value = invalid_creds
+
+    def fake_import(name: str):
+        if name == "google.oauth2.credentials":
+            return MagicMock(Credentials=credentials_cls)
+        if name == "google_auth_oauthlib.flow":
+            return MagicMock(InstalledAppFlow=MagicMock())
+        raise AssertionError(name)
+
+    client = DriveClient(ui=None, token_path=token_file)
+    client._token_store = MagicMock()
+    client._token_store.load.return_value = None
+    monkeypatch.setattr("polylogue.sources.drive_client._import_module", fake_import)
+
+    with pytest.raises(DriveAuthError, match="cannot be refreshed"):
+        client._load_credentials()
+
+
+def test_load_credentials_rejects_corrupt_plain_token_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    token_file = tmp_path / "token.json"
+    token_file.write_text("not json", encoding="utf-8")
+    credentials_cls = MagicMock()
+    credentials_cls.from_authorized_user_file.side_effect = ValueError("bad token json")
+
+    def fake_import(name: str):
+        if name == "google.oauth2.credentials":
+            return MagicMock(Credentials=credentials_cls)
+        if name == "google_auth_oauthlib.flow":
+            return MagicMock(InstalledAppFlow=MagicMock())
+        raise AssertionError(name)
+
+    client = DriveClient(ui=None, token_path=token_file)
+    client._token_store = MagicMock()
+    client._token_store.load.return_value = None
+    monkeypatch.setattr("polylogue.sources.drive_client._import_module", fake_import)
+
+    with pytest.raises(DriveAuthError, match="invalid or expired"):
+        client._load_credentials()
+
+
 def test_resolve_folder_id_falls_back_to_name_on_lookup_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeHttpError(Exception):
         def __init__(self, status: int) -> None:
@@ -465,6 +565,31 @@ def test_download_to_path_writes_content_and_sets_mtime(monkeypatch: pytest.Monk
     assert result.file_id == "file-1"
     assert dest.read_bytes() == b"12345"
     assert abs(dest.stat().st_mtime - 1735689600.0) <= 1
+
+
+def test_download_bytes_returns_media_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = DriveClient(retries=0, retry_base=0.0)
+    service = MockDriveService(file_content={"file-1": b'{"hello":"world"}'})
+    client._service = service
+
+    def fake_import(name: str):
+        if name == "googleapiclient.http":
+            return SimpleNamespace(MediaIoBaseDownload=MockMediaIoBaseDownload)
+        raise AssertionError(name)
+
+    monkeypatch.setattr("polylogue.sources.drive_client._import_module", fake_import)
+
+    assert client.download_bytes("file-1") == b'{"hello":"world"}'
+
+
+def test_download_json_payload_delegates_to_download_bytes() -> None:
+    client = DriveClient()
+    client.download_bytes = MagicMock(return_value=b'{"id":"payload"}')
+
+    result = client.download_json_payload("file-1", name="payload.json")
+
+    assert result == {"id": "payload"}
+    client.download_bytes.assert_called_once_with("file-1")
 
 
 def test_download_request_stops_after_chunk_limit() -> None:

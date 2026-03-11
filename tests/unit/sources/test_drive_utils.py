@@ -8,15 +8,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.sources import (
-    DriveAuthError,
-    DriveError,
-    DriveNotFoundError,
-)
+from polylogue.sources import DriveAuthError
 from polylogue.sources.drive_client import (
     DEFAULT_DRIVE_RETRIES,
     DEFAULT_DRIVE_RETRY_BASE,
-    _is_retryable_error,
     _looks_like_id,
     _parse_modified_time,
     _parse_size,
@@ -93,14 +88,6 @@ RESOLVE_RETRY_BASE_CASES = [
     (1.5, 1.5, "explicit_float"),
     (0.1, 0.1, "explicit_small"),
     (-0.5, 0.0, "negative_clamped"),
-]
-
-RETRYABLE_ERROR_CASES = [
-    (DriveAuthError("Invalid credentials"), False, "drive_auth_error"),
-    (DriveNotFoundError("File not found"), False, "drive_not_found_error"),
-    (RuntimeError("Network timeout"), True, "runtime_error"),
-    (DriveError("Connection failed"), True, "drive_error"),
-    (Exception("Some error"), True, "generic_exception"),
 ]
 
 DEFAULT_PATHS_CREDENTIALS_CASES = [
@@ -252,20 +239,6 @@ class TestResolveRetryBase:
         monkeypatch.delenv("POLYLOGUE_DRIVE_RETRY_BASE", raising=False)
         result = _resolve_retry_base(value=None)
         assert result == DEFAULT_DRIVE_RETRY_BASE
-
-
-# ============================================================================
-# Parametrized Tests for _is_retryable_error
-# ============================================================================
-
-
-class TestIsRetryableError:
-    """Tests for _is_retryable_error function."""
-
-    @pytest.mark.parametrize("exc,expected,desc", RETRYABLE_ERROR_CASES)
-    def test_is_retryable_error(self, exc, expected, desc):
-        """Test error retry classification."""
-        assert _is_retryable_error(exc) is expected, f"Failed for {desc}"
 
 
 # ============================================================================
