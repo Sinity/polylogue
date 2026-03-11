@@ -1,11 +1,11 @@
 {
   "campaign": "cli-query",
   "description": "Query command planning, action routing, and summary output contracts",
-  "commit": "7e7c310037f9f8cf89ba9c016d8eb4713d1b2f3d",
+  "commit": "e759af23458dfdc67e1a820513f09f3828460458",
   "worktree_dirty": false,
   "status_summary": [],
-  "created_at": "2026-03-11T17:57:49.901466+00:00",
-  "workspace": "/tmp/nix-shell.lglzyZ/mutmut-cli-query-ei8r_s_u/repo",
+  "created_at": "2026-03-11T19:26:25.486497+00:00",
+  "workspace": "/tmp/nix-shell.FVaDjB/mutmut-cli-query-_i3ag02m/repo",
   "command": [
     "mutmut",
     "run"
@@ -24,9 +24,9 @@
     "tests/unit/cli/test_query_plan.py"
   ],
   "counts": {
-    "killed": 965,
-    "survived": 1022,
-    "timeout": 10,
+    "killed": 963,
+    "survived": 1018,
+    "timeout": 16,
     "not_checked": 0,
     "suspicious": 0,
     "skipped": 0
@@ -75,23 +75,35 @@
   ],
   "dominant_timeouts": [
     [
+      "polylogue.cli.query_actions.x__apply_modifiers__mutmut_9",
+      1
+    ],
+    [
       "polylogue.cli.query_actions.x__apply_modifiers__mutmut_16",
       1
     ],
     [
-      "polylogue.cli.query_actions.x__apply_modifiers__mutmut_17",
+      "polylogue.cli.query_actions.x__apply_modifiers__mutmut_64",
       1
     ],
     [
-      "polylogue.cli.query_actions.x__apply_modifiers__mutmut_19",
+      "polylogue.cli.query_actions.x__apply_modifiers__mutmut_67",
       1
     ],
     [
-      "polylogue.cli.query_actions.x__apply_modifiers__mutmut_21",
+      "polylogue.cli.query_actions.x__apply_modifiers__mutmut_70",
       1
     ],
     [
-      "polylogue.cli.query_actions.x__apply_modifiers__mutmut_22",
+      "polylogue.cli.query_actions.x__apply_modifiers__mutmut_71",
+      1
+    ],
+    [
+      "polylogue.cli.query_actions.x__apply_modifiers__mutmut_72",
+      1
+    ],
+    [
+      "polylogue.cli.query_actions.x__apply_modifiers__mutmut_73",
       1
     ],
     [
@@ -100,18 +112,6 @@
     ],
     [
       "polylogue.cli.query_actions.x__delete_conversations__mutmut_69",
-      1
-    ],
-    [
-      "polylogue.cli.query_actions.x__delete_conversations__mutmut_72",
-      1
-    ],
-    [
-      "polylogue.cli.query_actions.x__delete_conversations__mutmut_73",
-      1
-    ],
-    [
-      "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_15",
       1
     ]
   ],
@@ -143,9 +143,7 @@
     "polylogue.cli.query.x__async_execute_query__mutmut_27",
     "polylogue.cli.query.x__async_execute_query__mutmut_28",
     "polylogue.cli.query.x__async_execute_query__mutmut_29",
-    "polylogue.cli.query.x__async_execute_query__mutmut_31",
     "polylogue.cli.query.x__async_execute_query__mutmut_32",
-    "polylogue.cli.query.x__async_execute_query__mutmut_34",
     "polylogue.cli.query.x__async_execute_query__mutmut_64",
     "polylogue.cli.query.x__async_execute_query__mutmut_65",
     "polylogue.cli.query.x__async_execute_query__mutmut_66",
@@ -169,9 +167,6 @@
     "polylogue.cli.query.x__async_execute_query__mutmut_119",
     "polylogue.cli.query.x__async_execute_query__mutmut_120",
     "polylogue.cli.query.x__async_execute_query__mutmut_121",
-    "polylogue.cli.query.x__async_execute_query__mutmut_124",
-    "polylogue.cli.query.x__async_execute_query__mutmut_125",
-    "polylogue.cli.query.x__async_execute_query__mutmut_126",
     "polylogue.cli.query.x__async_execute_query__mutmut_127",
     "polylogue.cli.query.x__async_execute_query__mutmut_128",
     "polylogue.cli.query.x__async_execute_query__mutmut_129",
@@ -183,7 +178,6 @@
     "polylogue.cli.query.x__async_execute_query__mutmut_135",
     "polylogue.cli.query.x__async_execute_query__mutmut_136",
     "polylogue.cli.query.x__async_execute_query__mutmut_137",
-    "polylogue.cli.query.x__async_execute_query__mutmut_139",
     "polylogue.cli.query.x__async_execute_query__mutmut_142",
     "polylogue.cli.query.x__async_execute_query__mutmut_143",
     "polylogue.cli.query.x__async_execute_query__mutmut_144",
@@ -293,8 +287,11 @@
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_10",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_12",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_15",
+    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_17",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_18",
+    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_19",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_20",
+    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_21",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_23",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_26",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_27",
@@ -318,14 +315,6 @@
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_63",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_65",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_66",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_67",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_68",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_69",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_70",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_71",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_72",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_73",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_74",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_75",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_76",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_77",
@@ -374,10 +363,16 @@
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_67",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_70",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_71",
+    "polylogue.cli.query_actions.x__delete_conversations__mutmut_73",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_74",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_75",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_76",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_77",
+    "polylogue.cli.query_actions.x__delete_conversations__mutmut_78",
+    "polylogue.cli.query_actions.x__delete_conversations__mutmut_79",
+    "polylogue.cli.query_actions.x__delete_conversations__mutmut_81",
+    "polylogue.cli.query_actions.x__delete_conversations__mutmut_82",
+    "polylogue.cli.query_actions.x__delete_conversations__mutmut_83",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_87",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_88",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_89",
@@ -415,22 +410,23 @@
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_5",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_13",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_14",
+    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_16",
+    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_17",
+    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_18",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_19",
+    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_20",
+    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_21",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_22",
+    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_23",
+    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_24",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_25",
+    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_26",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_31",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_34",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_36",
-    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_38",
-    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_39",
-    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_40",
-    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_41",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_42",
-    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_43",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_45",
-    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_46",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_48",
-    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_49",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_50",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_51",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_52",
@@ -486,7 +482,6 @@
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_127",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_128",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_129",
-    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_134",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_136",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_137",
     "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_139",
@@ -700,6 +695,7 @@
     "polylogue.cli.query_output.x__output_summary_list__mutmut_110",
     "polylogue.cli.query_output.x__output_summary_list__mutmut_114",
     "polylogue.cli.query_output.x__output_summary_list__mutmut_115",
+    "polylogue.cli.query_output.x__output_summary_list__mutmut_116",
     "polylogue.cli.query_output.x__output_summary_list__mutmut_119",
     "polylogue.cli.query_output.x__output_summary_list__mutmut_120",
     "polylogue.cli.query_output.x__output_summary_list__mutmut_121",
@@ -1141,19 +1137,25 @@
     "polylogue.cli.query_plan.x_build_query_execution_plan__mutmut_163"
   ],
   "timeout_keys": [
+    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_9",
     "polylogue.cli.query_actions.x__apply_modifiers__mutmut_16",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_17",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_19",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_21",
-    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_22",
+    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_64",
+    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_67",
+    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_70",
+    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_71",
+    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_72",
+    "polylogue.cli.query_actions.x__apply_modifiers__mutmut_73",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_3",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_69",
     "polylogue.cli.query_actions.x__delete_conversations__mutmut_72",
-    "polylogue.cli.query_actions.x__delete_conversations__mutmut_73",
-    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_15"
+    "polylogue.cli.query_actions.x__delete_conversations__mutmut_80",
+    "polylogue.cli.query_actions.x__delete_conversations__mutmut_84",
+    "polylogue.cli.query_actions.x__delete_conversations__mutmut_85",
+    "polylogue.cli.query_actions.x__delete_conversations__mutmut_86",
+    "polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_30"
   ],
   "not_checked_keys": [],
-  "runtime_seconds": 64.7904,
+  "runtime_seconds": 72.880585,
   "exit_code": 0,
   "notes": []
 }
