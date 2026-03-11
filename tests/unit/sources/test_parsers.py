@@ -11,7 +11,6 @@ import pytest
 # Additional imports for test_ingestion_jsonl
 from polylogue.config import Config
 from polylogue.pipeline.services.parsing import ParsingService
-
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 # Claude imports

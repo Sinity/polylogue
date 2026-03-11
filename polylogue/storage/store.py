@@ -12,9 +12,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.errors import DatabaseError
 from polylogue.lib.branch_type import BranchType
+from polylogue.lib.hashing import hash_text
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
-from polylogue.lib.hashing import hash_text
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
 
 # Maximum reasonable file size (1TB)

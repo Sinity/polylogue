@@ -11,7 +11,6 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.sources.parsers.claude import parse_code
 from polylogue.pipeline.semantic import (
     detect_context_compaction,
     extract_file_changes,
@@ -20,6 +19,7 @@ from polylogue.pipeline.semantic import (
     extract_tool_invocations,
     parse_git_operation,
 )
+from polylogue.sources.parsers.claude import parse_code
 
 # =============================================================================
 # Thinking Trace Extraction Tests

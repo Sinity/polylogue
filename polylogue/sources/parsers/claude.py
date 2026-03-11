@@ -13,14 +13,21 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from polylogue.lib.branch_type import BranchType
 from polylogue.lib.log import get_logger
+from polylogue.lib.roles import Role
 from polylogue.sources.providers.claude_ai import ClaudeAIConversation
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
-
-from polylogue.lib.branch_type import BranchType
-from polylogue.lib.roles import Role
 from polylogue.types import Provider
-from .base import ParsedAttachment, ParsedContentBlock, ParsedConversation, ParsedMessage, attachment_from_meta, content_blocks_from_segments
+
+from .base import (
+    ParsedAttachment,
+    ParsedContentBlock,
+    ParsedConversation,
+    ParsedMessage,
+    attachment_from_meta,
+    content_blocks_from_segments,
+)
 
 logger = get_logger(__name__)
 

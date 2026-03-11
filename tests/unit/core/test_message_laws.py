@@ -5,11 +5,9 @@ of input. They supersede specific example tests in test_models.py.
 """
 from __future__ import annotations
 
-from hypothesis import given, settings
-from hypothesis import strategies as st
+from hypothesis import given
 
 from tests.infra.strategies.messages import conversation_model_strategy, message_model_strategy
-
 
 # ---------------------------------------------------------------------------
 # Law 1: is_noise and is_substantive are mutually exclusive

@@ -6,15 +6,15 @@ example tests in test_json.py.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
+import orjson
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from polylogue.lib import json as core_json
 from polylogue.types import Provider
-
 
 # ---------------------------------------------------------------------------
 # Serializable value strategy
@@ -92,7 +92,7 @@ _INVALID_JSON_FRAGMENTS = [
 @pytest.mark.parametrize("fragment", _INVALID_JSON_FRAGMENTS)
 def test_loads_known_invalid_json_raises(fragment: str) -> None:
     """Invalid JSON fragments always raise an exception."""
-    with pytest.raises(Exception):
+    with pytest.raises(orjson.JSONDecodeError):
         core_json.loads(fragment)
 
 
