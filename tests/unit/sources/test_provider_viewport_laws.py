@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
 from hypothesis import assume, given, settings
 
 from polylogue.lib.provider_semantics import (
@@ -198,3 +199,69 @@ def test_gemini_message_viewports_are_consistent(raw: dict[str, object]) -> None
         assert not traces
     _assert_harmonized_matches_record("gemini", raw, message)
     _assert_structured_provider_meta_round_trip("gemini", message)
+
+
+@pytest.mark.parametrize(
+    ("content_type", "parts", "language", "expected_type", "expected_text"),
+    [
+        ("text", ["plain"], None, ContentType.TEXT, "plain"),
+        ("code", ["print('hi')"], "python", ContentType.CODE, "print('hi')"),
+        ("tether_browsing_display", ["search hit"], None, ContentType.TOOL_RESULT, "search hit"),
+        ("multimodal_image", ["opaque"], None, ContentType.UNKNOWN, "opaque"),
+    ],
+)
+def test_chatgpt_to_content_blocks_preserve_type_text_and_raw_contract(
+    content_type: str,
+    parts: list[str],
+    language: str | None,
+    expected_type: ContentType,
+    expected_text: str,
+) -> None:
+    message = ChatGPTMessage.model_validate(
+        {
+            "id": "chatgpt-blocks",
+            "author": {"role": "assistant"},
+            "content": {"content_type": content_type, "parts": parts, "language": language},
+            "create_time": 1700000000.0,
+        }
+    )
+
+    blocks = message.to_content_blocks()
+    meta = message.to_meta()
+
+    assert len(blocks) == 1
+    assert blocks[0].type == expected_type
+    assert blocks[0].text == expected_text
+    assert blocks[0].raw == message.content.model_dump()
+    assert blocks[0].language == language
+    assert meta.id == "chatgpt-blocks"
+    assert meta.role == "assistant"
+    assert meta.provider == "chatgpt"
+
+
+def test_codex_viewport_blocks_preserve_text_language_and_unknown_contract() -> None:
+    record = CodexRecord.model_validate(
+        {
+            "id": "codex-blocks",
+            "role": "assistant",
+            "timestamp": "2024-06-15T10:30:00Z",
+            "content": [
+                {"type": "output_text", "output_text": "result"},
+                {"type": "code_output", "code": "print('hi')", "language": "python"},
+                {"type": "image_data", "text": "opaque"},
+            ],
+        }
+    )
+
+    blocks = record.extract_content_blocks()
+    meta = record.to_meta()
+
+    assert [block.type for block in blocks] == [ContentType.TEXT, ContentType.CODE, ContentType.UNKNOWN]
+    assert blocks[0].text == "result"
+    assert blocks[1].text == "print('hi')"
+    assert blocks[1].language == "python"
+    assert blocks[2].text == "opaque"
+    assert [block.raw for block in blocks] == record.effective_content
+    assert meta.id == "codex-blocks"
+    assert meta.role == "assistant"
+    assert meta.provider == "codex"
