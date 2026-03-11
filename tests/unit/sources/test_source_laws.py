@@ -106,6 +106,35 @@ def test_detect_provider_prefers_payload_shape_over_conflicting_path_hint() -> N
     assert detect_provider(payload, Path("misleading/claude-code/session.jsonl")) == Provider.CHATGPT
 
 
+@pytest.mark.parametrize(
+    ("payload", "path", "expected"),
+    [
+        ({"mapping": {}}, Path("unknown.json"), Provider.CHATGPT),
+        ({"chat_messages": []}, Path("unknown.json"), Provider.CLAUDE),
+        ({"type": "assistant", "message": {"content": "hi"}}, Path("unknown.json"), Provider.CLAUDE_CODE),
+        ({"type": "message", "role": "user", "content": []}, Path("unknown.json"), Provider.CODEX),
+        ({"chunkedPrompt": {"chunks": []}}, Path("unknown.json"), Provider.GEMINI),
+        ([{"mapping": {}}], Path("unknown.json"), Provider.CHATGPT),
+        ([{"chat_messages": []}], Path("unknown.json"), Provider.CLAUDE),
+        ([{"chunks": []}], Path("unknown.json"), Provider.GEMINI),
+        ([{"type": "assistant", "message": {"content": "hi"}}], Path("unknown.json"), Provider.CLAUDE_CODE),
+        ([{"type": "message", "role": "user", "content": []}], Path("unknown.json"), Provider.CODEX),
+        ({"unrelated": True}, Path("folder/chatgpt-export.json"), Provider.CHATGPT),
+        ({"unrelated": True}, Path("folder/claude-code/session.jsonl"), Provider.CLAUDE_CODE),
+        ({"unrelated": True}, Path("folder/claude_code/session.jsonl"), Provider.CLAUDE_CODE),
+        ({"unrelated": True}, Path("/tmp/claude/history.json"), Provider.CLAUDE),
+        ({"unrelated": True}, Path("folder/codex-export.json"), Provider.CODEX),
+        ({"unrelated": True}, Path("folder/gemini-export.json"), Provider.GEMINI),
+    ],
+)
+def test_detect_provider_exact_heuristics_contract(
+    payload: object,
+    path: Path,
+    expected: Provider,
+) -> None:
+    assert detect_provider(payload, path) == expected
+
+
 @given(provider_payload_case_strategy(_CANONICAL_PROVIDERS))
 @settings(max_examples=35)
 def test_parse_payload_generated_exports_produce_provider_named_conversations(case: tuple[str, object]) -> None:
@@ -350,6 +379,24 @@ def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, obj
 
 
 @pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (json.dumps({"id": "utf16-le"}).encode("utf-16-le"), {"id": "utf16-le"}),
+        (json.dumps({"id": "utf16-be"}).encode("utf-16-be"), {"id": "utf16-be"}),
+        (json.dumps({"id": "utf32-le"}).encode("utf-32-le"), {"id": "utf32-le"}),
+        (b'{"name":"caf\xe9"}', {"name": "caf"}),
+    ],
+)
+def test_decode_json_bytes_exact_encoding_fallback_contract(
+    raw: bytes,
+    expected: dict[str, object],
+) -> None:
+    decoded = _decode_json_bytes(raw)
+    assert decoded is not None
+    assert json.loads(decoded) == expected
+
+
+@pytest.mark.parametrize(
     ("filename", "expected"),
     [
         ("CHATGPT.JSON", True),
@@ -491,6 +538,39 @@ def test_conversation_emitter_individual_raw_capture_contract() -> None:
     assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == [0, 1]
     assert all(raw_data is not None for raw_data, _ in emitted)
     assert all(raw_data.provider_hint == Provider.DRIVE for raw_data, _ in emitted if raw_data is not None)
+
+
+def test_conversation_emitter_individual_raw_provider_hint_tracks_detected_payload_contract() -> None:
+    payload = {
+        "mapping": {
+            "node-1": {
+                "message": {
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["hello"]},
+                }
+            }
+        }
+    }
+    raw = json.dumps([payload]).encode("utf-8")
+    ctx = _ParseContext(
+        provider_hint=Provider.DRIVE,
+        should_group=False,
+        source_path_str="/tmp/export.json",
+        fallback_id="export",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=True,
+        session_index={},
+        detect_path=Path("export.json"),
+    )
+
+    emitted = list(_ConversationEmitter(ctx).emit(BytesIO(raw), "export.json"))
+
+    assert len(emitted) == 1
+    raw_data, conversation = emitted[0]
+    assert raw_data is not None
+    assert raw_data.provider_hint == Provider.CHATGPT
+    assert raw_data.source_index == 0
+    assert conversation.provider_name == Provider.CHATGPT
 
 
 def test_conversation_emitter_grouped_jsonl_contract() -> None:
