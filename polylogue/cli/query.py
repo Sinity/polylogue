@@ -42,11 +42,23 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     asyncio.run(_async_execute_query(env, params))
 
 
+def _create_query_vector_provider(config: object) -> object | None:
+    """Best-effort vector provider setup for query execution."""
+    from polylogue.storage.search_providers import create_vector_provider
+
+    try:
+        return create_vector_provider(config)
+    except (ValueError, ImportError):
+        return None
+    except Exception as exc:
+        logger.warning("Vector search setup failed: %s", exc)
+        return None
+
+
 async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     """Async core of execute_query."""
     from polylogue.cli.helpers import fail, load_effective_config
     from polylogue.config import ConfigError
-    from polylogue.storage.search_providers import create_vector_provider
 
     try:
         config = load_effective_config(env)
@@ -55,13 +67,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     repo = env.repository
 
-    vector_provider = None
-    try:
-        vector_provider = create_vector_provider(config)
-    except (ValueError, ImportError):
-        pass
-    except Exception as exc:
-        logger.warning("Vector search setup failed: %s", exc)
+    vector_provider = _create_query_vector_provider(config)
 
     try:
         plan = build_query_execution_plan(params)
