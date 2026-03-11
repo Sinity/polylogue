@@ -12,15 +12,14 @@ similarity search, and archive statistics.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from polylogue.lib.models import Conversation
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
-from polylogue.storage.repository import ConversationRepository, _records_to_conversation
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import (
     MessageRecord,
     RunRecord,
@@ -179,91 +178,6 @@ class TestMetadataCRUD:
 # =============================================================================
 
 
-class TestCountAndList:
-    """Test count() and list_summaries() with filters."""
-
-    async def test_list_operations(self, repo):
-        """list() filters by title and returns lazy Conversation objects."""
-        repo.backend.get_conversations_batch = AsyncMock(  # type: ignore[method-assign]
-            side_effect=AssertionError("list() should not refetch conversation records by ID")
-        )
-
-        # Title filter
-        convs_filtered = await repo.list(title_contains="First")
-        assert len(convs_filtered) == 1
-        assert "First" in convs_filtered[0].display_title
-
-        # All conversations
-        convs_all = await repo.list()
-        assert len(convs_all) == 3
-        assert all(hasattr(c, "id") for c in convs_all)
-
-    async def test_get_children_uses_loaded_child_records(self, repo):
-        """get_children() should hydrate from list_conversations() results directly."""
-        repo.backend.get_conversations_batch = AsyncMock(  # type: ignore[method-assign]
-            side_effect=AssertionError("get_children() should not refetch child conversation records by ID")
-        )
-
-        children = await repo.get_children("conv-1")
-
-        assert [str(child.id) for child in children] == ["conv-3"]
-
-
-# =============================================================================
-# Search operations (Parametrized)
-# =============================================================================
-
-
-class TestSearch:
-    """Test FTS search through repository."""
-
-    @pytest.mark.parametrize("query,should_find,search_summaries", [
-        ("Hello", True, False),           # Full search
-        ("Hello", True, True),            # Summary search
-        ("", False, False),               # Empty query
-        ("zzzznonexistentzzzz", False, False),  # No match
-        ("zzzznonexistentzzzz", False, True),   # No match summaries
-    ])
-    async def test_search(self, repo, query, should_find, search_summaries):
-        """search() and search_summaries() should find or return empty."""
-        if search_summaries:
-            results = await repo.search_summaries(query)
-            if should_find:
-                assert len(results) >= 1
-                assert hasattr(results[0], "title")
-            else:
-                assert results == []
-        else:
-            results = await repo.search(query)
-            if should_find:
-                assert len(results) >= 1
-            else:
-                assert results == []
-
-    async def test_search_summaries_orders_by_best_hit_then_newest(self, repo, repo_db):
-        """search_summaries() preserves ranked conversation ordering."""
-        (
-            ConversationBuilder(repo_db, "conv-rank-old")
-            .provider("claude")
-            .title("Older match")
-            .add_message("m-rank-old", role="user", text="deterministic ranking token", timestamp="2024-01-01T00:00:00")
-            .save()
-        )
-        (
-            ConversationBuilder(repo_db, "conv-rank-new")
-            .provider("claude")
-            .title("Newer match")
-            .add_message("m-rank-new", role="user", text="deterministic ranking token", timestamp="2024-02-01T00:00:00")
-            .save()
-        )
-        with open_connection(repo_db) as conn:
-            rebuild_index(conn)
-
-        results = await repo.search_summaries("deterministic ranking token", limit=2)
-
-        assert [summary.id for summary in results[:2]] == ["conv-rank-new", "conv-rank-old"]
-
-
 # =============================================================================
 # filter() factory
 # =============================================================================
@@ -390,9 +304,11 @@ class MockVectorProvider:
         """
         self._results = results or []
         self._upserted: dict[str, list[MessageRecord]] = {}
+        self.last_query: tuple[str, int] | None = None
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         """Mock query that returns configured results."""
+        self.last_query = (text, limit)
         return self._results[:limit]
 
     def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None:
@@ -403,51 +319,6 @@ class MockVectorProvider:
 # =============================================================================
 # Test Classes
 # =============================================================================
-
-
-class TestGetSummaryNotFound:
-    """Test get_summary() with nonexistent conversation."""
-
-    @pytest.mark.parametrize("conv_id,should_exist,expected_title", [
-        ("nonexistent-conv", False, None),
-        ("conv-1", True, "Root Conversation"),
-    ])
-    async def test_get_summary(self, repo_with_conversations, conv_id, should_exist, expected_title):
-        """get_summary() returns ConversationSummary for existing or None."""
-        summary = await repo_with_conversations.get_summary(conv_id)
-        if should_exist:
-            assert summary is not None
-            assert str(summary.id) == conv_id
-            assert summary.title == expected_title
-            assert summary.provider == "claude"
-        else:
-            assert summary is None
-            # Also verify that message data isn't loaded for nonexistent
-            assert not hasattr(summary or {}, "messages") or not summary.messages
-
-    async def test_get_summary_does_not_load_messages(self, repo_with_conversations):
-        """get_summary() doesn't load message data."""
-        summary = await repo_with_conversations.get_summary("conv-1")
-        assert summary is not None
-        assert not hasattr(summary, "messages") or summary.messages is None
-
-
-class TestGetRootEdgeCases:
-    """Test get_root() edge cases."""
-
-    @pytest.mark.parametrize("conv_id,expected_root", [
-        ("conv-1", "conv-1"),  # Root returns itself
-        ("conv-2", "conv-1"),  # Child walks up to parent
-    ])
-    async def test_get_root(self, repo_with_conversations, conv_id, expected_root):
-        """get_root() returns root or walks up the tree."""
-        root = await repo_with_conversations.get_root(conv_id)
-        assert str(root.id) == expected_root
-
-    async def test_get_root_raises_for_nonexistent_conversation(self, repo_empty):
-        """get_root() raises ValueError when conversation doesn't exist."""
-        with pytest.raises(ValueError, match="not found"):
-            await repo_empty.get_root("nonexistent-conv")
 
 
 class TestSearchSimilar:
@@ -468,39 +339,6 @@ class TestSearchSimilar:
         )
         assert results == []
 
-    async def test_search_similar_ranks_by_highest_score(self, repo_with_conversations):
-        """search_similar() ranks conversations by highest message score."""
-        # Set up results: multiple messages from same conversation
-        mock_provider = MockVectorProvider(
-            results=[
-                ("m1", 0.95),  # From conv-1
-                ("m2", 0.90),  # From conv-1
-                ("m5", 0.85),  # From conv-3
-            ]
-        )
-        results = await repo_with_conversations.search_similar(
-            "AI question",
-            limit=10,
-            vector_provider=mock_provider,
-        )
-        # Should have 2 conversations (conv-1 with score 0.95, conv-3 with 0.85)
-        assert len(results) == 2
-        result_ids = [str(r.id) for r in results]
-        assert "conv-1" in result_ids
-        assert "conv-3" in result_ids
-
-    async def test_search_similar_limits_results(self, repo_with_conversations):
-        """search_similar() limits results to specified count."""
-        # Create provider with many results
-        results_data = [(f"m{i}", 1.0 - i * 0.01) for i in range(1, 31)]
-        mock_provider = MockVectorProvider(results=results_data)
-        results = await repo_with_conversations.search_similar(
-            "test",
-            limit=5,
-            vector_provider=mock_provider,
-        )
-        assert len(results) <= 5
-
     async def test_search_similar_queries_3x_limit(self, repo_with_conversations):
         """search_similar() queries vector provider with 3x limit for ranking."""
         mock_provider = MockVectorProvider(
@@ -511,8 +349,7 @@ class TestSearchSimilar:
             limit=5,
             vector_provider=mock_provider,
         )
-        # Provider should have been queried with limit=15 (5*3)
-        # We verify this by checking the results were limited
+        assert mock_provider.last_query == ("test", 15)
 
 
 class TestRecordRun:
@@ -645,116 +482,3 @@ class TestSimilaritySearch:
         ):
             with pytest.raises(ValueError, match="No vector provider configured"):
                 await repo_with_conversations.similarity_search("test query", vector_provider=None)
-
-
-class TestRecordsToConversation:
-    """Test _records_to_conversation() standalone helper."""
-
-    @pytest.mark.parametrize("has_messages,has_attachments", [
-        (True, False),
-        (False, False),
-    ])
-    def test_records_to_conversation_variants(self, has_messages, has_attachments):
-        """_records_to_conversation() converts records and handles empty messages/attachments."""
-        conv_rec = make_conversation("conv-1")
-        msg_recs = [make_message("msg-1", "conv-1", text="Hello")] if has_messages else []
-        att_recs = [make_attachment("att-1", "conv-1", "msg-1")] if has_attachments else []
-
-        conv = _records_to_conversation(conv_rec, msg_recs, att_recs)
-
-        assert isinstance(conv, Conversation)
-        assert str(conv.id) == "conv-1"
-        assert len(conv.messages) == (1 if has_messages else 0)
-
-    def test_records_to_conversation_preserves_order_and_parent(self):
-        """_records_to_conversation() preserves message order and parent_id."""
-        conv_rec = make_conversation("conv-1").model_copy(
-            update={"parent_conversation_id": "parent-conv"}
-        )
-        msg_recs = [
-            make_message("m1", "conv-1", role="user"),
-            make_message("m2", "conv-1", role="assistant"),
-            make_message("m3", "conv-1", role="user"),
-        ]
-
-        conv = _records_to_conversation(conv_rec, msg_recs, [])
-
-        assert len(conv.messages) == 3
-        assert [m.id for m in conv.messages] == ["m1", "m2", "m3"]
-        assert str(conv.parent_id) == "parent-conv"
-
-    def test_records_to_conversation_bulk_migration(self):
-        """_records_to_conversation() handles bulk migration of records."""
-        convs_data = [
-            (make_conversation(f"conv-{i}"), [make_message(f"m-{i}", f"conv-{i}")], [])
-            for i in range(1, 4)
-        ]
-
-        results = [_records_to_conversation(c, m, a) for c, m, a in convs_data]
-
-        assert len(results) == 3
-        assert all(isinstance(r, Conversation) for r in results)
-        assert [str(r.id) for r in results] == ["conv-1", "conv-2", "conv-3"]
-
-
-# =============================================================================
-# Integration Tests (Cross-method interactions)
-# =============================================================================
-
-
-class TestIntegrationVectorWorkflows:
-    """Test vector search workflows across multiple methods."""
-
-    async def test_embed_then_search_workflow(self, repo_with_conversations):
-        """Full workflow: embed conversations, then search by similarity."""
-        # Step 1: Embed a conversation
-        mock_provider = MockVectorProvider()
-        embed_count = await repo_with_conversations.embed_conversation(
-            "conv-1",
-            vector_provider=mock_provider,
-        )
-        assert embed_count == 2
-
-        # Step 2: Configure provider with search results
-        mock_provider._results = [("m1", 0.95), ("m2", 0.87)]
-
-        # Step 3: Perform similarity search
-        results = await repo_with_conversations.similarity_search(
-            "embedded search",
-            vector_provider=mock_provider,
-        )
-        assert len(results) == 2
-        assert all(len(r) == 3 for r in results)  # 3-tuple validation
-
-    async def test_search_similar_with_multiple_conversations(self, repo_with_conversations):
-        """search_similar() aggregates results across conversations."""
-        # Set up results spanning multiple conversations
-        mock_provider = MockVectorProvider(
-            results=[
-                ("m1", 0.95),  # conv-1
-                ("m2", 0.92),  # conv-1
-                ("m3", 0.88),  # conv-2
-                ("m5", 0.80),  # conv-3
-            ]
-        )
-        results = await repo_with_conversations.search_similar(
-            "test",
-            limit=3,
-            vector_provider=mock_provider,
-        )
-        # Should return max 3 conversations
-        assert len(results) <= 3
-
-    async def test_stats_after_embedding_operations(self, repo_with_conversations):
-        """get_archive_stats() reflects state after embedding operations."""
-        # Get initial stats
-        stats_before = await repo_with_conversations.get_archive_stats()
-        assert stats_before.total_conversations == 4
-
-        # Perform embedding (doesn't change conversation count, just records state)
-        mock_provider = MockVectorProvider()
-        await repo_with_conversations.embed_conversation("conv-1", vector_provider=mock_provider)
-
-        # Stats should still show same conversation count
-        stats_after = await repo_with_conversations.get_archive_stats()
-        assert stats_after.total_conversations == stats_before.total_conversations

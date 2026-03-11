@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import yaml
 
-from polylogue.cli import query
+from polylogue.cli.query_output import _format_list
 from polylogue.lib import formatting
 from polylogue.lib.models import Conversation, Message
 
@@ -191,7 +191,7 @@ class TestQueryFormatList:
     )
     def test_format_list(self, sample_conversations, format_type, parser, expected_type, first_id):
         """Tests _format_list with various formats."""
-        result = query._format_list(sample_conversations, format_type, None)
+        result = _format_list(sample_conversations, format_type, None)
         parsed = parser(result)
 
         assert isinstance(parsed, expected_type)
@@ -200,7 +200,7 @@ class TestQueryFormatList:
 
     def test_default_format(self, sample_conversations):
         """Default format returns text list."""
-        result = query._format_list(sample_conversations, "markdown", None)
+        result = _format_list(sample_conversations, "markdown", None)
 
         assert "conv1-abc123" in result
         assert "conv2-def456" in result

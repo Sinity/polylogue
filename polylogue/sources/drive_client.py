@@ -199,10 +199,6 @@ def _resolve_retry_base(value: float | None) -> float:
     return DEFAULT_DRIVE_RETRY_BASE
 
 
-def _is_retryable_error(exc: Exception) -> bool:
-    return not isinstance(exc, (DriveAuthError, DriveNotFoundError))
-
-
 def _is_newline_delimited_json_name(name: str) -> bool:
     name_lower = name.lower()
     return (

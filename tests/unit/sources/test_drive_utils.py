@@ -8,15 +8,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.sources import (
-    DriveAuthError,
-    DriveError,
-    DriveNotFoundError,
-)
+from polylogue.sources import DriveAuthError
 from polylogue.sources.drive_client import (
     DEFAULT_DRIVE_RETRIES,
     DEFAULT_DRIVE_RETRY_BASE,
-    _is_retryable_error,
     _looks_like_id,
     _parse_modified_time,
     _parse_size,
@@ -95,14 +90,6 @@ RESOLVE_RETRY_BASE_CASES = [
     (-0.5, 0.0, "negative_clamped"),
 ]
 
-RETRYABLE_ERROR_CASES = [
-    (DriveAuthError("Invalid credentials"), False, "drive_auth_error"),
-    (DriveNotFoundError("File not found"), False, "drive_not_found_error"),
-    (RuntimeError("Network timeout"), True, "runtime_error"),
-    (DriveError("Connection failed"), True, "drive_error"),
-    (Exception("Some error"), True, "generic_exception"),
-]
-
 DEFAULT_PATHS_CREDENTIALS_CASES = [
     (None, True, "no_config_returns_default"),
     (MagicMock(credentials_path="/custom/creds.json"), False, "config_with_path_uses_value"),
@@ -142,6 +129,14 @@ class TestParseModifiedTime:
         invalid_inputs = ["12345", "2024-13-45T99:99:99Z"]
         for inp in invalid_inputs:
             assert _parse_modified_time(inp) is None
+
+    def test_parse_modified_time_exact_timestamp_contract(self):
+        assert _parse_modified_time("2024-01-15T10:30:45Z") == datetime.fromisoformat(
+            "2024-01-15T10:30:45+00:00"
+        ).timestamp()
+        assert _parse_modified_time("2024-01-15T10:30:45+00:00") == datetime.fromisoformat(
+            "2024-01-15T10:30:45+00:00"
+        ).timestamp()
 
 
 # ============================================================================
@@ -255,20 +250,6 @@ class TestResolveRetryBase:
 
 
 # ============================================================================
-# Parametrized Tests for _is_retryable_error
-# ============================================================================
-
-
-class TestIsRetryableError:
-    """Tests for _is_retryable_error function."""
-
-    @pytest.mark.parametrize("exc,expected,desc", RETRYABLE_ERROR_CASES)
-    def test_is_retryable_error(self, exc, expected, desc):
-        """Test error retry classification."""
-        assert _is_retryable_error(exc) is expected, f"Failed for {desc}"
-
-
-# ============================================================================
 # Parametrized Tests for default_credentials_path and default_token_path
 # ============================================================================
 
@@ -291,6 +272,11 @@ class TestDefaultPaths:
             assert "credentials" in str(path)
         else:
             assert path == Path("/custom/creds.json")
+
+    def test_default_credentials_path_delegates_to_global_default(self, monkeypatch):
+        sentinel = Path("/tmp/sentinel-credentials.json")
+        monkeypatch.setattr("polylogue.sources.drive_client.drive_credentials_path", lambda: sentinel)
+        assert default_credentials_path() == sentinel
 
     def test_default_credentials_path_config_none_uses_default(self):
         """If config.credentials_path is None, use default."""
@@ -320,6 +306,11 @@ class TestDefaultPaths:
             assert "token" in str(path)
         else:
             assert path == Path("/custom/token.json")
+
+    def test_default_token_path_delegates_to_global_default(self, monkeypatch):
+        sentinel = Path("/tmp/sentinel-token.json")
+        monkeypatch.setattr("polylogue.sources.drive_client.drive_token_path", lambda: sentinel)
+        assert default_token_path() == sentinel
 
     def test_default_token_path_config_none_uses_default(self):
         """If config.token_path is None, use default."""
@@ -410,6 +401,11 @@ class TestResolveCredentialsPath:
         result = _resolve_credentials_path(ui=mock_ui, config=None)
         assert result == default_path
         assert default_path.exists()
+        assert default_path.read_text(encoding="utf-8") == '{"user": true}'
+        mock_ui.input.assert_called_once_with(
+            f"Path to Google OAuth client JSON (default {default_path}):",
+            default=str(default_path),
+        )
 
     def test_interactive_no_response_raises(self, tmp_path, monkeypatch):
         """No response from UI should raise error."""
@@ -463,6 +459,6 @@ class TestResolveTokenPath:
     def test_default_when_nothing_specified(self, monkeypatch):
         """Default should be used when config and env not set."""
         monkeypatch.delenv("POLYLOGUE_TOKEN_PATH", raising=False)
-        result = _resolve_token_path(config=None)
-        assert isinstance(result, Path)
-        assert "token" in str(result)
+        sentinel = Path("/tmp/default-token.json")
+        monkeypatch.setattr("polylogue.sources.drive_client.default_token_path", lambda config: sentinel)
+        assert _resolve_token_path(config=None) == sentinel

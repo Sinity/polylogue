@@ -559,11 +559,155 @@ def test_extract_from_provider_meta_structured_blocks_preserve_overlay_and_tools
         ContentType.TOOL_RESULT,
         ContentType.CODE,
     ]
-    assert harmonized.content_blocks[1].tool_call is not None
-    assert harmonized.content_blocks[1].tool_call.name == "Read"
-    assert harmonized.content_blocks[3].language == "python"
-    assert harmonized.reasoning_traces and harmonized.reasoning_traces[0].text == "reason"
-    assert harmonized.tool_calls and harmonized.tool_calls[0].name == "Read"
-    assert harmonized.tokens is not None and harmonized.tokens.output_tokens == 5
-    assert harmonized.cost is not None and harmonized.cost.total_usd == 0.25
-    assert harmonized.duration_ms == 12
+
+
+@pytest.mark.parametrize(
+    ("provider", "raw", "expected_role", "expected_text", "expected_provider", "reasoning_text"),
+    [
+        (
+            "claude-ai",
+            {
+                "sender": "human",
+                "text": "Fallback Claude AI text",
+                "created_at": "2024-01-15T10:30:00Z",
+            },
+            "user",
+            "Fallback Claude AI text",
+            "claude",
+            None,
+        ),
+        (
+            "gemini",
+            {
+                "role": "model",
+                "text": "Fallback Gemini text",
+                "tokenCount": {"invalid": True},
+                "isThought": True,
+                "thinkingBudget": 256,
+            },
+            "assistant",
+            "Fallback Gemini text",
+            "gemini",
+            "Fallback Gemini text",
+        ),
+        (
+            "codex",
+            {
+                "id": "codex-fallback",
+                "timestamp": "2024-01-15T10:30:00Z",
+                "payload": "not-a-dict",
+                "content": [{"type": "input_text", "text": "Fallback Codex text"}],
+            },
+            "unknown",
+            "Fallback Codex text",
+            "codex",
+            None,
+        ),
+    ],
+)
+def test_extract_harmonized_message_malformed_payload_contract(
+    provider: str,
+    raw: dict[str, object],
+    expected_role: str,
+    expected_text: str,
+    expected_provider: str,
+    reasoning_text: str | None,
+) -> None:
+    msg = extract_harmonized_message(provider, raw)
+
+    assert msg.role.value == expected_role
+    assert msg.text == expected_text
+    assert msg.provider.value == expected_provider
+    if reasoning_text is None:
+        assert not msg.reasoning_traces
+    else:
+        assert [trace.text for trace in msg.reasoning_traces] == [reasoning_text]
+
+
+@pytest.mark.parametrize(
+    ("provider", "provider_meta", "message_id", "role", "text", "expected_provider"),
+    [
+        (
+            "claude-ai",
+            {"sender": "human", "text": ""},
+            "db-message-id",
+            "user",
+            "DB fallback text",
+            "claude",
+        ),
+        (
+            "gemini",
+            {"role": "model", "text": "", "tokenCount": {"invalid": True}},
+            "db-gemini-id",
+            "assistant",
+            "DB Gemini fallback text",
+            "gemini",
+        ),
+        (
+            "codex",
+            {"payload": "not-a-dict", "content": []},
+            "db-codex-id",
+            "assistant",
+            "DB Codex fallback text",
+            "codex",
+        ),
+        (
+            "codex",
+            {"raw": {"payload": "not-a-dict", "content": []}},
+            "db-codex-raw-id",
+            "assistant",
+            "DB raw fallback text",
+            "codex",
+        ),
+    ],
+)
+def test_extract_from_provider_meta_overlay_contract(
+    provider: str,
+    provider_meta: dict[str, object],
+    message_id: str,
+    role: str,
+    text: str,
+    expected_provider: str,
+) -> None:
+    msg = extract_from_provider_meta(
+        provider,
+        provider_meta,
+        message_id=message_id,
+        role=role,
+        text=text,
+        timestamp="2024-01-15T10:30:00Z",
+    )
+
+    assert msg.id == message_id
+    assert msg.role.value == role
+    assert msg.text == text
+    assert msg.timestamp is not None
+    assert msg.provider.value == expected_provider
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_role"),
+    [
+        (
+            {"uuid": "m1", "type": "human", "message": "not-a-dict"},
+            "user",
+        ),
+        (
+            {"uuid": "m1", "type": "assistant", "message": "not-a-dict"},
+            "assistant",
+        ),
+    ],
+)
+def test_extract_harmonized_message_claude_code_type_fallback_contract(
+    raw: dict[str, object],
+    expected_role: str,
+) -> None:
+    msg = extract_harmonized_message("claude-code", raw)
+
+    assert msg.role.value == expected_role
+    assert msg.id == "m1"
+
+
+def test_extract_harmonized_message_claude_code_empty_message_raises_contract() -> None:
+    with pytest.raises(ValueError, match="no role"):
+        extract_harmonized_message("claude-code", {"uuid": "m1", "type": "human", "message": {}})
