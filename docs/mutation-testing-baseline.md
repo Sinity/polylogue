@@ -116,7 +116,7 @@ the follow-up source/helper/query pass.
 | `repository` | `b1f1d35bee28` | 568 | 74 | 66 | 0 | The concentrated read-model laws fixed the helper blind spot and cut survivor density sharply; the main remaining issue is timeout-heavy hydration/archive-stat coverage, not reach. |
 | `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
 | `source-detection` | `844d52ee925d` | 825 | 324 | 2 | 0 | Clean post-concentration rerun after collapsing scattered source-iteration examples into `test_source_laws.py`; reach stayed complete, kill count improved, and timeout noise dropped while survivor mass remained concentrated in ZIP filtering, emit paths, and provider sniffing. |
-| `providers-semantics` | `25ba6d7196f4` | 860 | 449 | 2 | 0 | Clean post-concentration rerun after collapsing duplicated provider viewport laws into unified helper contracts; reach stays clean and survivor mass is now more sharply concentrated in `schemas.unified` fallback harmonization plus adapter `extract_content_blocks`/`to_meta`. |
+| `providers-semantics` | `315beb0f19f1` | 819 | 455 | 2 | 0 | Clean rerun after consolidating semantic-law ownership and refactoring `schemas.unified` dispatch into explicit adapter/fallback maps. Reach stayed complete, but kill count regressed, which means the suite is more concentrated yet still underspecified around `extract_content_blocks`, `to_meta`, fallback Claude Code extraction, and harmonization edge cases. |
 | `sources-parse` | `47a9b1cff33f` | 3597 | 2319 | 31 | 0 | Clean post-drive-parser concentration rerun improved kill and survivor counts again while keeping reach complete; the remaining debt is now more sharply concentrated in `schemas.unified`, Drive auth/filter helpers, and timeout-heavy `content_blocks_from_segments` coverage. |
 
 ### Readiness Call
@@ -126,8 +126,8 @@ the follow-up source/helper/query pass.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
   1. `sources-parse`
-  2. `providers-semantics`
-  3. `cli-query`
+  2. `cli-query`
+  3. `providers-semantics`
   4. `source-detection`
   5. `drive-client`
   6. `repository`
@@ -135,6 +135,7 @@ the follow-up source/helper/query pass.
   The reruns removed reach failures, but they did not saturate the semantic space.
 - The dominant structural issues are now:
   - survivor concentration in `polylogue.schemas.unified` and provider viewport shaping,
+  - `providers-semantics` concentration reduced duplication but also revealed lost mutation signal around adapter content-block/meta extraction,
   - high survivor density in source parsing and query orchestration,
   - source parsing now carrying a clearer timeout cluster in `content_blocks_from_segments`,
   - source detection still carrying a narrower but still meaningful survivor cluster around ZIP filtering, emit paths, and provider sniffing,
