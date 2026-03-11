@@ -6,8 +6,8 @@ import sqlite3
 
 import pytest
 
-from polylogue.lib.viewports import ContentType, ToolCategory
 from polylogue.lib.roles import normalize_role
+from polylogue.lib.viewports import ContentType, ToolCategory
 from polylogue.schemas.unified import (
     HarmonizedMessage,
     extract_chatgpt_text,

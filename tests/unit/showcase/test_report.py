@@ -10,7 +10,6 @@ Laws that hold regardless of exercise content:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock
 
 from hypothesis import given, settings
@@ -18,7 +17,6 @@ from hypothesis import strategies as st
 
 from polylogue.showcase.report import generate_json_report, generate_qa_session, write_qa_session
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
-
 
 # ---------------------------------------------------------------------------
 # Builders
