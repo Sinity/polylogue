@@ -64,9 +64,11 @@ Recorded on `2026-03-11`.
 ## Broad Campaign Wave: `2026-03-11`
 
 The latest recorded artifact for each campaign is indexed in
-[`docs/mutation-campaigns/README.md`](mutation-campaigns/README.md). These
-numbers are from a clean rerun on commit `147e689d15ca`, not from the earlier
-dirty-tree exploratory pass.
+[`docs/mutation-campaigns/README.md`](mutation-campaigns/README.md). This
+ledger now mixes two clean baselines:
+
+- the earlier broad campaign wave on commit `147e689d15ca`
+- the schema/pipeline follow-up reruns on commit `d1e704d7a2ba`
 
 The wave was run to answer one question: are we ready to execute the next
 law-based test generalization wave in
@@ -84,32 +86,36 @@ These are already mutation-usable. They still have residue, but not blindness.
 | `hybrid` | 112 | 21 | 0 | 3 | Good enough to use as feedback during later law work. |
 | `models` | 129 | 20 | 3 | 14 | Reasonable signal with bounded semantic weak spots. |
 
-### Not Ready / Major Remediation Targets
+### Major Remediation Targets
 
 These are the domains the next law-wave should attack first.
 
 | Campaign | Killed | Survived | Timeout | Not checked | Primary issue |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `schema-validation` | 229 | 167 | 0 | 0 | Validator/verification behavior is still too weakly constrained. |
-| `schema-inference` | 536 | 759 | 3 | 0 | Large survivor surface across inference/privacy heuristics. |
-| `schema-core` | 765 | 900 | 29 | 0 | Schema domain overall is still heavily under-specified. |
+| `schema-validation` | 235 | 161 | 0 | 0 | Improved after the schema law wave, but validator/verification behavior is still too weakly constrained. |
+| `schema-inference` | 534 | 317 | 447 | 0 | Survivor mass dropped sharply, but timeout-heavy inference/privacy heuristics still dominate. |
+| `schema-core` | 792 | 895 | 7 | 0 | Core schema contracts improved, but drift/sample/privacy surfaces are still materially under-specified. |
 | `repository` | 343 | 250 | 6 | 81 | Read/query/projection contracts are not strong enough. |
-| `pipeline-services` | 725 | 687 | 3 | 246 | Planning/validation/parse orchestration still has large blind spots. |
+| `pipeline-services` | 736 | 595 | 84 | 246 | The new pipeline laws improved kills and survivors, but acquisition/streaming helpers still produce heavy timeout and not-checked clusters. |
 | `source-detection` | 41 | 197 | 0 | 910 | Detection/dispatch is still mostly unexercised under mutation. |
 | `providers-semantics` | 162 | 588 | 0 | 432 | Harmonization/provider semantic extraction is not ready for saturation claims. |
 | `sources-parse` | 1353 | 2307 | 0 | 2094 | Broad parse/harmonization surface confirms the next law-wave should start in sources. |
 
 ### Readiness Call
 
-- We are **ready to start** the next law-wave.
-- We are **not ready to skip it**.
-- The mutation results say the next wave should begin with:
-  1. source detection + parser dispatch,
-  2. provider semantics + harmonization,
-  3. broad sources/parse contracts,
-  4. schema validator/inference contracts,
-  5. pipeline service contracts,
-  6. repository query/projection laws.
+- We are **ready to continue** the law-wave now.
+- We are **not ready to declare the schema/pipeline domains finished**.
+- The schema/pipeline branch of the wave materially improved signal:
+  - `schema-validation`: the new clean baseline is `235 killed / 161 survived / 0 timeout / 0 not_checked`.
+  - `schema-inference`: survivors dropped from the old pre-wave `759` class of weakness to `317`, but `447` timeouts remain the main problem.
+  - `schema-core`: kills improved and timeouts collapsed to `7`, but survivor mass remains high.
+  - `pipeline-services`: kills improved and survivors dropped relative to the pre-wave baseline, but `246` not-checked mutants and `84` timeouts still show orchestration blind spots.
+- The remaining `004` wave should now continue with:
+  1. mixed CLI/site contract cleanup,
+  2. then source detection + parser dispatch,
+  3. provider semantics + harmonization,
+  4. broad sources/parse contracts,
+  5. repository query/projection laws.
 
 ### Comparison Rule For Future Waves
 

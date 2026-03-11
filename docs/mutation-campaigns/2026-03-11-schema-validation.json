@@ -1,11 +1,11 @@
 {
   "campaign": "schema-validation",
   "description": "Schema validator and verification contracts",
-  "commit": "147e689d15caf23fc4036c3af6211af4f71bbaad",
+  "commit": "d1e704d7a2ba9f3ab5bd2357487c6d5c967eddb5",
   "worktree_dirty": false,
   "status_summary": [],
-  "created_at": "2026-03-11T06:30:59.405898+00:00",
-  "workspace": "/tmp/nix-shell.Eeo0pD/mutmut-schema-validation-e207mncj/repo",
+  "created_at": "2026-03-11T07:32:42.298458+00:00",
+  "workspace": "/tmp/nix-shell.QLNA20/mutmut-schema-validation-_qcbr7ln/repo",
   "command": [
     "mutmut",
     "run"
@@ -16,12 +16,13 @@
   ],
   "tests": [
     "tests/unit/core/test_schema.py",
+    "tests/unit/core/test_schema_laws.py",
     "tests/unit/core/test_schema_verification.py",
     "tests/unit/storage/test_schema_safety.py"
   ],
   "counts": {
-    "survived": 167,
-    "killed": 229,
+    "survived": 161,
+    "killed": 235,
     "timeout": 0,
     "not_checked": 0,
     "suspicious": 0,
@@ -34,7 +35,7 @@
     ],
     [
       "validation_samples",
-      12
+      6
     ],
     [
       "__init__",
@@ -83,14 +84,8 @@
     "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1validation_samples__mutmut_2",
     "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1validation_samples__mutmut_3",
     "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1validation_samples__mutmut_4",
-    "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1validation_samples__mutmut_5",
-    "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1validation_samples__mutmut_6",
     "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1validation_samples__mutmut_7",
     "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1validation_samples__mutmut_8",
-    "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1validation_samples__mutmut_9",
-    "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1validation_samples__mutmut_10",
-    "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1validation_samples__mutmut_11",
-    "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1validation_samples__mutmut_13",
     "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1_format_error__mutmut_6",
     "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1_format_error__mutmut_7",
     "polylogue.schemas.validator.x\u01c1SchemaValidator\u01c1_detect_drift__mutmut_12",
@@ -242,7 +237,7 @@
   ],
   "timeout_keys": [],
   "not_checked_keys": [],
-  "runtime_seconds": 25.912877,
+  "runtime_seconds": 43.363401,
   "exit_code": 0,
   "notes": []
 }
