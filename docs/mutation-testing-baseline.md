@@ -57,16 +57,19 @@ Recorded on `2026-03-11`.
 ### Full Test Suite
 
 - Command: `nix develop -c pytest -q -n 0`
-- Result: `4235 passed in 258.02s (0:04:18)`
+- Result: `4304 passed in 63.35s`
 - Note: repo-wide pytest defaults still enable `-n auto`; use `-n 0` here for
   stable mutation-comparison timing.
 
 ## Broad Campaign Wave: `2026-03-11`
 
 The latest recorded artifact for each campaign is indexed in
-[`docs/mutation-campaigns/README.md`](mutation-campaigns/README.md). The wave
-was run to answer one question: are we ready to execute the next law-based test
-generalization wave in
+[`docs/mutation-campaigns/README.md`](mutation-campaigns/README.md). These
+numbers are from a clean rerun on commit `147e689d15ca`, not from the earlier
+dirty-tree exploratory pass.
+
+The wave was run to answer one question: are we ready to execute the next
+law-based test generalization wave in
 [`004-law-test-wave-iteration-plan-2026-03-11.md`](../.claude/scratch/004-law-test-wave-iteration-plan-2026-03-11.md)?
 
 ### High-Signal Campaigns
@@ -75,11 +78,11 @@ These are already mutation-usable. They still have residue, but not blindness.
 
 | Campaign | Killed | Survived | Timeout | Not checked | Interpretation |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `filters` | 486 | 11 | 100 | 0 | Historically blind spot removed; remaining work is mostly timeout-heavy helper paths. |
+| `filters` | 475 | 5 | 117 | 0 | Mutation-usable; remaining work is mostly timeout-heavy filter pipeline paths rather than blind spots. |
 | `json` | 24 | 2 | 0 | 0 | Nearly saturated after the latest exact contract additions. |
 | `fts5` | 41 | 7 | 0 | 0 | Good signal; some ranking/search semantics still survive. |
 | `hybrid` | 112 | 21 | 0 | 3 | Good enough to use as feedback during later law work. |
-| `models` | 130 | 19 | 3 | 14 | Reasonable signal with bounded semantic weak spots. |
+| `models` | 129 | 20 | 3 | 14 | Reasonable signal with bounded semantic weak spots. |
 
 ### Not Ready / Major Remediation Targets
 
@@ -88,12 +91,12 @@ These are the domains the next law-wave should attack first.
 | Campaign | Killed | Survived | Timeout | Not checked | Primary issue |
 | --- | ---: | ---: | ---: | ---: | --- |
 | `schema-validation` | 229 | 167 | 0 | 0 | Validator/verification behavior is still too weakly constrained. |
-| `schema-inference` | 536 | 732 | 30 | 0 | Large survivor surface across inference/privacy heuristics. |
-| `schema-core` | 765 | 924 | 5 | 0 | Schema domain overall is still heavily under-specified. |
+| `schema-inference` | 536 | 759 | 3 | 0 | Large survivor surface across inference/privacy heuristics. |
+| `schema-core` | 765 | 900 | 29 | 0 | Schema domain overall is still heavily under-specified. |
 | `repository` | 343 | 250 | 6 | 81 | Read/query/projection contracts are not strong enough. |
 | `pipeline-services` | 725 | 687 | 3 | 246 | Planning/validation/parse orchestration still has large blind spots. |
 | `source-detection` | 41 | 197 | 0 | 910 | Detection/dispatch is still mostly unexercised under mutation. |
-| `providers-semantics` | 164 | 586 | 0 | 432 | Harmonization/provider semantic extraction is not ready for saturation claims. |
+| `providers-semantics` | 162 | 588 | 0 | 432 | Harmonization/provider semantic extraction is not ready for saturation claims. |
 | `sources-parse` | 1353 | 2307 | 0 | 2094 | Broad parse/harmonization surface confirms the next law-wave should start in sources. |
 
 ### Readiness Call
