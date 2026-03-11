@@ -203,6 +203,35 @@ def _is_retryable_error(exc: Exception) -> bool:
     return not isinstance(exc, (DriveAuthError, DriveNotFoundError))
 
 
+def _is_newline_delimited_json_name(name: str) -> bool:
+    name_lower = name.lower()
+    return (
+        name_lower.endswith(".jsonl")
+        or name_lower.endswith(".jsonl.txt")
+        or name_lower.endswith(".ndjson")
+    )
+
+
+def _parse_downloaded_json_payload(raw: bytes, *, name: str) -> object:
+    if _is_newline_delimited_json_name(name):
+        items = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                logger.warning("Skipping invalid JSON line in Drive file %s: %s", name, exc)
+                continue
+        return items
+
+    try:
+        return json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return json.loads(raw.decode("utf-8", errors="replace"))
+
+
 class DriveClient:
     def __init__(
         self,
@@ -304,38 +333,29 @@ class DriveClient:
         except OSError as exc:
             # Local server auth failed - try manual flow
             logger.info("Local server auth unavailable (%s). Using manual flow.", exc)
-            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-            console = getattr(self._ui, "console", None)
-            if console:
-                getattr(console, "print", print)("Open this URL in your browser to authorize Drive access:")
-                getattr(console, "print", print)(auth_url)
-            code = getattr(self._ui, "input", lambda x: None)("Paste the authorization code")
-            if not code:
-                raise DriveAuthError("Drive authorization cancelled.") from None
-            try:
-                flow.fetch_token(code=code)
-            except Exception as exc:
-                raise DriveAuthError(f"Drive authorization failed: {exc}") from exc
-            creds = flow.credentials
+            creds = self._run_manual_auth_flow(flow)
         except Exception as exc:
             # Other unexpected errors - try manual flow
             # Keep broad exception here as google-auth can raise various errors
             logger.warning("Unexpected auth error: %s. Falling back to manual flow.", exc)
-            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-            console = getattr(self._ui, "console", None)
-            if console:
-                getattr(console, "print", print)("Open this URL in your browser to authorize Drive access:")
-                getattr(console, "print", print)(auth_url)
-            code = getattr(self._ui, "input", lambda x: None)("Paste the authorization code")
-            if not code:
-                raise DriveAuthError("Drive authorization cancelled.") from None
-            try:
-                flow.fetch_token(code=code)
-            except Exception as exc:
-                raise DriveAuthError(f"Drive authorization failed: {exc}") from exc
-            creds = flow.credentials
+            creds = self._run_manual_auth_flow(flow)
         self._persist_token(creds, token_path)
         return creds
+
+    def _run_manual_auth_flow(self, flow: Any) -> Any:
+        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+        console = getattr(self._ui, "console", None)
+        if console:
+            getattr(console, "print", print)("Open this URL in your browser to authorize Drive access:")
+            getattr(console, "print", print)(auth_url)
+        code = getattr(self._ui, "input", lambda x: None)("Paste the authorization code")
+        if not code:
+            raise DriveAuthError("Drive authorization cancelled.") from None
+        try:
+            flow.fetch_token(code=code)
+        except Exception as exc:
+            raise DriveAuthError(f"Drive authorization failed: {exc}") from exc
+        return flow.credentials
 
     def _persist_token(self, creds: Any, token_path: Path) -> None:
         # Save to token store (keyring or file)
@@ -428,18 +448,28 @@ class DriveClient:
             service = self._service_handle()
             request = service.files().get_media(fileId=file_id)
             buffer = io.BytesIO()
-            downloader = media_io_base_download_cls(buffer, request)
-            done = False
-            max_chunks = 10_000  # Safety limit to prevent infinite hangs
-            chunks = 0
-            while not done:
-                _, done = downloader.next_chunk()
-                chunks += 1
-                if chunks >= max_chunks:
-                    raise DriveError(f"Download exceeded {max_chunks} chunks for file {file_id}")
+            self._download_request(request, buffer, media_io_base_download_cls, file_id=file_id)
             return buffer.getvalue()
 
         return self._call_with_retry(_download)
+
+    def _download_request(
+        self,
+        request: Any,
+        handle: Any,
+        downloader_cls: Any,
+        *,
+        file_id: str,
+    ) -> None:
+        downloader = downloader_cls(handle, request)
+        done = False
+        max_chunks = 10_000
+        chunks = 0
+        while not done:
+            _, done = downloader.next_chunk()
+            chunks += 1
+            if chunks >= max_chunks:
+                raise DriveError(f"Download exceeded {max_chunks} chunks for file {file_id}")
 
     def get_metadata(self, file_id: str) -> DriveFile:
         if file_id in self._meta_cache:
@@ -485,15 +515,7 @@ class DriveClient:
                     request = service.files().get_media(fileId=file_id)
                     with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as handle:
                         tmp_path = Path(handle.name)
-                        downloader = media_io_base_download_cls(handle, request)
-                        done = False
-                        max_chunks = 10_000
-                        chunks = 0
-                        while not done:
-                            _, done = downloader.next_chunk()
-                            chunks += 1
-                            if chunks >= max_chunks:
-                                raise DriveError(f"Download exceeded {max_chunks} chunks for file {file_id}")
+                        self._download_request(request, handle, media_io_base_download_cls, file_id=file_id)
                     tmp_path.replace(dest)
                 except Exception:
                     if tmp_path is not None:
@@ -509,37 +531,7 @@ class DriveClient:
 
     def download_json_payload(self, file_id: str, *, name: str) -> object:
         raw = self.download_bytes(file_id)
-        handle = io.BytesIO(raw)
-
-        # Treat all newline-delimited JSON formats consistently
-        name_lower = name.lower()
-        is_ndjson = (
-            name_lower.endswith(".jsonl")
-            or name_lower.endswith(".jsonl.txt")
-            or name_lower.endswith(".ndjson")
-        )
-        if is_ndjson:
-            items = []
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    items.append(json.loads(line))
-                except json.JSONDecodeError as exc:
-                    logger.warning("Skipping invalid JSON line in Drive file %s: %s", name, exc)
-                    continue
-            return items
-
-        # Return the whole object but use ijson for potentially better memory handling
-        # (though for standard json.load it won't matter much unless we refactor
-        # higher up to handle generators, which we will do in source_parsing).
-        try:
-            return json.load(handle)
-        except json.JSONDecodeError:
-            handle.seek(0)
-            text = handle.read().decode("utf-8", errors="replace")
-            return json.loads(text)
+        return _parse_downloaded_json_payload(raw, name=name)
 
 
 __all__ = [
