@@ -3,22 +3,34 @@
 from __future__ import annotations
 
 import json
+import tempfile
+import zipfile
 from io import BytesIO
 from pathlib import Path
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from polylogue.sources.source import _decode_json_bytes, _iter_json_stream, detect_provider, parse_payload
+from polylogue.config import Source
+from polylogue.sources.source import (
+    _decode_json_bytes,
+    _iter_json_stream,
+    detect_provider,
+    iter_source_conversations,
+    iter_source_conversations_with_raw,
+    parse_payload,
+)
 from polylogue.types import Provider
 from tests.infra.strategies import (
     conversations_wrapper_bytes_strategy,
     json_array_bytes_strategy,
     json_document_strategy,
     jsonl_bytes_strategy,
+    provider_export_strategy,
     provider_hint_path_strategy,
     provider_payload_case_strategy,
     provider_payload_strategy,
+    provider_source_case_strategy,
 )
 
 _CANONICAL_PROVIDERS = (
@@ -145,3 +157,106 @@ def test_iter_json_stream_jsonl_preserves_valid_records_with_blank_lines(case: t
     """JSONL parsing ignores blank lines but preserves valid record order exactly."""
     documents, raw = case
     assert list(_iter_json_stream(BytesIO(raw), "test.jsonl")) == documents
+
+
+def _materialize_generated_source(root: Path, *, hint_path: Path, raw: bytes, use_zip: bool) -> Source:
+    """Write generated provider bytes either directly or inside a ZIP archive."""
+    if use_zip:
+        archive_path = root / "generated.zip"
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            zf.writestr(hint_path.as_posix(), raw)
+        return Source(name="generated", path=archive_path)
+
+    payload_path = root / hint_path
+    payload_path.parent.mkdir(parents=True, exist_ok=True)
+    payload_path.write_bytes(raw)
+    return Source(name="generated", path=payload_path)
+
+
+@given(
+    provider_source_case_strategy(
+        providers=(
+            Provider.CHATGPT.value,
+            Provider.CLAUDE.value,
+            Provider.CLAUDE_CODE.value,
+            Provider.CODEX.value,
+            Provider.GEMINI.value,
+        )
+    ),
+    st.booleans(),
+)
+@settings(max_examples=30, deadline=None)
+def test_iter_source_conversations_round_trips_generated_exports(case: dict[str, object], use_zip: bool) -> None:
+    """Generated provider exports should stay discoverable through file and ZIP iteration."""
+    with tempfile.TemporaryDirectory() as tmp:
+        source = _materialize_generated_source(
+            Path(tmp),
+            hint_path=case["path"],
+            raw=case["raw"],
+            use_zip=use_zip,
+        )
+        conversations = list(iter_source_conversations(source))
+
+    assert conversations
+    assert all(str(conversation.provider_name) == case["provider"] for conversation in conversations)
+
+
+@given(
+    provider_source_case_strategy(
+        providers=(
+            Provider.CHATGPT.value,
+            Provider.CLAUDE.value,
+            Provider.CLAUDE_CODE.value,
+            Provider.CODEX.value,
+            Provider.GEMINI.value,
+        )
+    ),
+    st.booleans(),
+    st.booleans(),
+)
+@settings(max_examples=30, deadline=None)
+def test_iter_source_conversations_with_raw_capture_contract(
+    case: dict[str, object],
+    use_zip: bool,
+    capture_raw: bool,
+) -> None:
+    """Raw iteration must preserve provider parsing while toggling raw payload capture cleanly."""
+    with tempfile.TemporaryDirectory() as tmp:
+        source = _materialize_generated_source(
+            Path(tmp),
+            hint_path=case["path"],
+            raw=case["raw"],
+            use_zip=use_zip,
+        )
+        items = list(iter_source_conversations_with_raw(source, capture_raw=capture_raw))
+
+    assert items
+    assert all(str(conversation.provider_name) == case["provider"] for _, conversation in items)
+    if capture_raw:
+        assert all(raw_data is not None for raw_data, _ in items)
+        assert all(raw_data.raw_bytes for raw_data, _ in items if raw_data is not None)
+        assert all(raw_data.file_mtime is not None for raw_data, _ in items if raw_data is not None)
+    else:
+        assert all(raw_data is None for raw_data, _ in items)
+
+
+@given(
+    st.sampled_from((Provider.CLAUDE_CODE.value, Provider.CODEX.value)).flatmap(
+        lambda provider: st.tuples(
+            st.just(provider),
+            provider_export_strategy(provider),
+            st.sampled_from(("session.jsonl", "session.ndjson", "session.jsonl.txt")),
+        )
+    )
+)
+@settings(max_examples=20, deadline=None)
+def test_iter_source_conversations_accepts_grouped_json_extensions(case: tuple[str, bytes, str]) -> None:
+    """Grouped JSONL providers must remain discoverable through all supported session suffixes."""
+    provider, raw, filename = case
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / filename
+        path.write_bytes(raw)
+        conversations = list(iter_source_conversations(Source(name=provider, path=path)))
+
+    assert conversations
+    assert all(str(conversation.provider_name) == provider for conversation in conversations)

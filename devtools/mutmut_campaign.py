@@ -183,6 +183,43 @@ CAMPAIGNS: dict[str, Campaign] = {
         ),
         notes=("Likely to need more helper-level laws to reduce timeout noise.",),
     ),
+    "cli-query": Campaign(
+        name="cli-query",
+        description="Query command planning, action routing, and summary output contracts",
+        paths_to_mutate=(
+            "polylogue/cli/query.py",
+            "polylogue/cli/query_plan.py",
+            "polylogue/cli/query_actions.py",
+            "polylogue/cli/query_output.py",
+        ),
+        tests=(
+            "tests/unit/cli/test_query.py",
+            "tests/unit/cli/test_query_exec.py",
+            "tests/unit/cli/test_query_exec_laws.py",
+        ),
+    ),
+    "cli-run": Campaign(
+        name="cli-run",
+        description="Run command execution, display, and watch contracts",
+        paths_to_mutate=("polylogue/cli/commands/run.py",),
+        tests=(
+            "tests/unit/cli/test_run.py",
+            "tests/unit/cli/test_run_int.py",
+            "tests/unit/cli/test_run_laws.py",
+        ),
+    ),
+    "site-builder": Campaign(
+        name="site-builder",
+        description="Static-site builder and CLI archive contracts",
+        paths_to_mutate=(
+            "polylogue/site/builder.py",
+            "polylogue/cli/commands/site.py",
+        ),
+        tests=(
+            "tests/integration/test_site.py",
+            "tests/integration/test_site_laws.py",
+        ),
+    ),
     "repository": Campaign(
         name="repository",
         description="Repository query, projection, and CRUD contracts",
