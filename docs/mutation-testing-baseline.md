@@ -57,7 +57,7 @@ Recorded on `2026-03-11`.
 ### Full Test Suite
 
 - Command: `nix develop -c pytest -q -n 0`
-- Result: `4259 passed, 1 warning in 296.38s`
+- Result: `4273 passed, 1 warning in 298.07s`
 - Note: repo-wide pytest defaults still enable `-n auto`; use `-n 0` here for
   stable mutation-comparison timing.
 
@@ -72,9 +72,11 @@ ledger now mixes four clean baselines:
 - the post-`004` law-wave baselines on commit `2bdb267e93b7`
 - the follow-up source/query/repository reruns on commits `7e7c310037f9` and
   `a27de694650d`
+- the clean post-`005` rerun wave on commit `e759af23458d`
 
-`004` and its immediate follow-up reruns are now complete. The tables below are
-the current durable mutation baselines for the next law/property wave.
+`004`, its follow-up reruns, and the first post-`005` source/provider
+consolidation reruns are now complete. The tables below are the current durable
+mutation baselines for the next law/property wave.
 
 ### Already-Healthy Campaigns
 
@@ -109,30 +111,31 @@ the follow-up source/helper/query pass.
 
 | Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| `cli-query` | `7e7c310037f9` | 965 | 1022 | 10 | 0 | Query execution/output is no longer blind, but survivor mass in broader query behavior is still high enough to justify another law wave. |
+| `cli-query` | `e759af23458d` | 963 | 1018 | 16 | 0 | Query execution/output still has very high survivor density; the next wave needs stronger route/error/mutation laws, not more infrastructure. |
 | `drive-client` | `7e7c310037f9` | 553 | 327 | 4 | 0 | Drive transport/auth seams are mutation-usable now; remaining residue clusters around credential loading, folder resolution, and retry/download paths. |
-| `repository` | `7e7c310037f9` | 527 | 130 | 51 | 0 | Read/query contracts are much stronger and blind spots are gone; the remaining issue is survivor/timeout concentration, not reach. |
+| `repository` | `e759af23458d` | 569 | 104 | 35 | 0 | Repository laws improved materially; the main remaining issue is timeout-heavy hydration/read-path coverage, not blind spots. |
 | `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
-| `source-detection` | `2bdb267e93b7` | 563 | 455 | 3 | 127 | Detection/dispatch is no longer mostly blind, but it still leaves a meaningful `not_checked` seam in source-path handling. |
-| `providers-semantics` | `a27de694650d` | 1009 | 620 | 2 | 0 | The latest rerun removed `not_checked` entirely; `polylogue.schemas.unified` semantic extraction remains the dominant survivor cluster. |
-| `sources-parse` | `a27de694650d` | 3644 | 2608 | 12 | 0 | The broadest source surface now also has zero `not_checked`; the remaining frontier is sheer survivor mass rather than blind spots. |
+| `source-detection` | `e759af23458d` | 713 | 435 | 3 | 0 | Detection/dispatch now has zero `not_checked`; remaining survivors cluster in ZIP filtering, emit paths, and provider sniffing. |
+| `providers-semantics` | `e759af23458d` | 847 | 487 | 2 | 0 | Provider/viewpoint coverage is now cleanly reachable; `extract_content_blocks`, `to_meta`, and fallback Claude Code harmonization still dominate. |
+| `sources-parse` | `e759af23458d` | 3494 | 2467 | 11 | 0 | The broad source surface is fully reachable now; remaining work is concentrated in drive-client seams and provider semantic survivor mass. |
 
 ### Readiness Call
 
 - `004` is complete, and the immediate follow-up reruns are complete.
+- The first post-`005` rerun wave is also complete on a clean SHA.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
-  1. `providers-semantics`
-  2. `sources-parse`
-  3. `source-detection` plus the adjacent `drive-client` seam
-  4. `cli-query`
+  1. `sources-parse`
+  2. `cli-query`
+  3. `providers-semantics`
+  4. `drive-client` plus the adjacent `source-detection` seam
   5. `repository`
-- We are not ready to claim source/provider/harmonization semantics are
-  exhaustively specified. The reruns removed blind spots, but they did not
-  saturate the semantic space.
-- The dominant structural issue is still survivor concentration in
-  `polylogue.schemas.unified`, adjacent provider extraction paths, and the
-  broader source parsing surface.
+- We are not ready to claim source/provider/harmonization semantics are exhaustively specified.
+  The reruns removed reach failures, but they did not saturate the semantic space.
+- The dominant structural issues are now:
+  - survivor concentration in `polylogue.schemas.unified` and provider viewport shaping,
+  - high survivor/timeout mass in query orchestration,
+  - drive-client transport/auth behavior still carrying a large untouched surface.
 - Additional mutmut infrastructure work is not the bottleneck now. The next
   gains come from stronger laws, better generators/oracles, and code
   refactors that collapse duplicated semantic authority.
