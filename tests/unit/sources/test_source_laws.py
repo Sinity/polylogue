@@ -48,6 +48,7 @@ from polylogue.sources.source import (
     parse_payload,
 )
 from polylogue.types import Provider
+from tests.infra.helpers import GenericConversationBuilder, make_claude_chat_message
 from tests.infra.strategies import (
     conversations_wrapper_bytes_strategy,
     json_array_bytes_strategy,
@@ -280,6 +281,15 @@ def _materialize_generated_source(root: Path, *, hint_path: Path, raw: bytes, us
     return Source(name="generated", path=payload_path)
 
 
+def _write_generic_conversation(path: Path, conversation_id: str, text: str = "hello") -> Path:
+    GenericConversationBuilder(conversation_id).title(conversation_id).add_message(
+        "user",
+        f"{conversation_id}-message",
+        text=text,
+    ).write_to(path)
+    return path
+
+
 @given(
     provider_source_case_strategy(
         providers=(
@@ -367,6 +377,226 @@ def test_iter_source_conversations_accepts_grouped_json_extensions(case: tuple[s
 
     assert conversations
     assert all(str(conversation.provider_name) == provider for conversation in conversations)
+
+
+def test_parse_payload_depth_guard_contract() -> None:
+    assert parse_payload(Provider.CHATGPT.value, {}, "test", _depth=11) == []
+
+
+def test_source_iteration_preserves_claude_attachment_metadata_contract(tmp_path: Path) -> None:
+    payload = {
+        "chat_messages": [
+            make_claude_chat_message(
+                "msg-1",
+                "assistant",
+                "Files",
+                attachments=[{"id": "file-1", "name": "notes.txt", "size": 12, "mimeType": "text/plain"}],
+            )
+        ]
+    }
+    source_file = tmp_path / "claude.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    conversations = list(iter_source_conversations(Source(name="inbox", path=source_file)))
+
+    assert len(conversations) == 1
+    attachment = conversations[0].attachments[0]
+    assert attachment.provider_attachment_id == "file-1"
+    assert attachment.name == "notes.txt"
+
+
+def test_iter_source_conversations_handles_empty_directories_contract(tmp_path: Path) -> None:
+    cursor_state: dict[str, object] = {}
+
+    assert list(iter_source_conversations(Source(name="test", path=tmp_path), cursor_state=cursor_state)) == []
+    assert cursor_state["file_count"] == 0
+    assert cursor_state["failed_count"] == 0
+
+
+@pytest.mark.parametrize("iterator", ["parsed", "raw"], ids=["parsed", "raw"])
+def test_source_iteration_continues_after_invalid_json_contract(tmp_path: Path, iterator: str) -> None:
+    _write_generic_conversation(tmp_path / "valid1.json", "valid1", "hi")
+    (tmp_path / "invalid.json").write_text("{ broken json", encoding="utf-8")
+    _write_generic_conversation(tmp_path / "valid2.json", "valid2", "bye")
+
+    cursor_state: dict[str, object] = {}
+    if iterator == "parsed":
+        results = list(iter_source_conversations(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+        conversation_ids = [conversation.provider_conversation_id for conversation in results]
+        raw_items = []
+    else:
+        raw_items = list(iter_source_conversations_with_raw(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+        results = [conversation for _, conversation in raw_items]
+        conversation_ids = [conversation.provider_conversation_id for conversation in results]
+
+    assert conversation_ids == ["valid1", "valid2"]
+    assert cursor_state["file_count"] == 3
+    assert cursor_state["failed_count"] == 1
+    assert any("invalid.json" in item["path"] for item in cursor_state["failed_files"])
+    if iterator == "raw":
+        assert all(raw_data is not None for raw_data, _ in raw_items)
+
+
+def test_iter_source_conversations_tracks_file_disappearance_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    first = _write_generic_conversation(tmp_path / "first.json", "first")
+    second = _write_generic_conversation(tmp_path / "second.json", "second")
+    cursor_state: dict[str, object] = {}
+    original_open = Path.open
+
+    def flaky_open(path: Path, *args: object, **kwargs: object):
+        if path == second:
+            raise FileNotFoundError("deleted")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+
+    conversations = list(iter_source_conversations(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+
+    assert [conversation.provider_conversation_id for conversation in conversations] == ["first"]
+    assert cursor_state["failed_count"] == 1
+    assert any("second.json" in item["path"] for item in cursor_state["failed_files"])
+    assert first.exists()
+
+
+@pytest.mark.parametrize("skip_dir_name", ["analysis", "__pycache__"])
+def test_source_iteration_prunes_skip_dirs_contract(tmp_path: Path, skip_dir_name: str) -> None:
+    skip_dir = tmp_path / skip_dir_name
+    skip_dir.mkdir()
+    _write_generic_conversation(skip_dir / "skipped.json", "skipped")
+
+    assert list(iter_source_conversations(Source(name="test", path=tmp_path))) == []
+    assert list(iter_source_conversations_with_raw(Source(name="test", path=tmp_path))) == []
+
+
+def test_source_iteration_follows_symlinked_directories_contract(tmp_path: Path) -> None:
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    _write_generic_conversation(subdir / "linked.json", "linked")
+
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(subdir)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks not supported on this system")
+
+    parsed = list(iter_source_conversations(Source(name="test", path=link)))
+    raw = list(iter_source_conversations_with_raw(Source(name="test", path=link)))
+
+    assert [conversation.provider_conversation_id for conversation in parsed] == ["linked"]
+    assert [conversation.provider_conversation_id for _, conversation in raw] == ["linked"]
+
+
+def test_iter_source_conversations_with_raw_accepts_single_file_sources_contract(tmp_path: Path) -> None:
+    source_file = _write_generic_conversation(tmp_path / "single.json", "single")
+
+    items = list(iter_source_conversations_with_raw(Source(name="test", path=source_file)))
+
+    assert len(items) == 1
+    raw_data, conversation = items[0]
+    assert raw_data is not None
+    assert raw_data.source_path == str(source_file)
+    assert conversation.provider_conversation_id == "single"
+
+
+@pytest.mark.parametrize(
+    ("source_name", "filename", "use_zip", "needle"),
+    [
+        ("claude-code", "session.jsonl", False, b"Hello"),
+        ("claude-code", "session.jsonl", True, b"From zip"),
+    ],
+    ids=["plain-jsonl", "zip-jsonl"],
+)
+def test_iter_source_conversations_with_raw_preserves_grouped_bytes_contract(
+    tmp_path: Path,
+    source_name: str,
+    filename: str,
+    use_zip: bool,
+    needle: bytes,
+) -> None:
+    records = [
+        {"type": "user", "uuid": "u1", "sessionId": "s1", "message": {"content": needle.decode("utf-8")}},
+        {"type": "assistant", "uuid": "a1", "sessionId": "s1", "message": {"content": "Hi"}},
+    ]
+    content = "\n".join(json.dumps(record) for record in records) + "\n"
+
+    if use_zip:
+        source_path = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(source_path, "w") as zf:
+            zf.writestr(filename, content)
+    else:
+        source_path = tmp_path / filename
+        source_path.write_text(content, encoding="utf-8")
+
+    items = list(iter_source_conversations_with_raw(Source(name=source_name, path=source_path)))
+
+    assert len(items) == 1
+    raw_data, conversation = items[0]
+    assert raw_data is not None
+    assert raw_data.source_index is None
+    assert needle in raw_data.raw_bytes
+    assert conversation.provider_name == Provider.CLAUDE_CODE
+
+
+def test_iter_source_conversations_with_raw_assigns_source_indexes_for_multi_conversation_zip_contract(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "multi.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr(
+            "data.json",
+            json.dumps(
+                [
+                    {"id": "c1", "messages": [{"id": "m1", "role": "user", "text": "Q1"}]},
+                    {"id": "c2", "messages": [{"id": "m2", "role": "user", "text": "Q2"}]},
+                ]
+            ),
+        )
+
+    results = list(iter_source_conversations_with_raw(Source(name="test", path=archive_path)))
+
+    assert len(results) == 2
+    assert [raw_data.source_index for raw_data, _ in results if raw_data is not None] == [0, 1]
+
+
+def test_iter_source_conversations_with_raw_tracks_unicode_decode_failures_contract(
+    tmp_path: Path,
+) -> None:
+    bad_file = tmp_path / "bad_encoding.json"
+    bad_file.write_bytes(b"\xff\xfe invalid utf-8 { bad json")
+
+    cursor_state: dict[str, object] = {}
+    results = list(iter_source_conversations_with_raw(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+
+    assert results == []
+    assert cursor_state["failed_count"] == 1
+    assert any("bad_encoding.json" in item["path"] for item in cursor_state["failed_files"])
+
+
+def test_source_iteration_ignores_stat_failures_for_optional_mtime_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_file = _write_generic_conversation(source_dir / "conv.json", "conv")
+    original_stat = Path.stat
+
+    def flaky_stat(path: Path, *args: object, **kwargs: object):
+        if path == source_file:
+            raise OSError("no stat")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+
+    parsed_cursor: dict[str, object] = {}
+    raw_items = list(iter_source_conversations_with_raw(Source(name="test", path=source_dir), capture_raw=True))
+    parsed_items = list(iter_source_conversations(Source(name="test", path=source_dir), cursor_state=parsed_cursor))
+
+    assert len(raw_items) == 1
+    assert raw_items[0][0] is not None and raw_items[0][0].file_mtime is None
+    assert [conversation.provider_conversation_id for conversation in parsed_items] == ["conv"]
+    assert parsed_cursor["file_count"] == 1
+    assert "latest_mtime" not in parsed_cursor
 
 
 @pytest.mark.parametrize(
