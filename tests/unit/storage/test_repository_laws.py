@@ -7,12 +7,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository, _records_to_conversation
@@ -21,6 +22,7 @@ from polylogue.storage.store import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    RunRecord,
 )
 from tests.infra.helpers import make_message
 from tests.infra.strategies import (
@@ -231,6 +233,17 @@ def test_repository_get_children_hydrates_loaded_child_records() -> None:
     backend.list_conversations.assert_awaited_once_with(parent_id="conv-root")
     backend.get_messages_batch.assert_awaited_once_with(["conv-child"])
     backend.get_attachments_batch.assert_awaited_once_with(["conv-child"])
+
+
+def test_repository_get_root_missing_raises_value_error() -> None:
+    """Missing conversations must still fail explicitly on get_root()."""
+    tempdir, repo = _empty_repo()
+    try:
+        with pytest.raises(ValueError, match="not found"):
+            asyncio.run(repo.get_root("missing"))
+    finally:
+        asyncio.run(repo.close())
+        tempdir.cleanup()
 
 
 @settings(
@@ -584,6 +597,128 @@ def test_repository_save_conversation_model_contract() -> None:
     finally:
         asyncio.run(repo.close())
         tempdir.cleanup()
+
+
+def test_repository_record_run_forwards_to_backend() -> None:
+    backend = MagicMock()
+    backend.record_run = AsyncMock()
+    repo = ConversationRepository(backend=backend)
+    record = RunRecord(
+        run_id="run-1",
+        timestamp="2024-01-01T00:00:00+00:00",
+        counts={"conversations": 1, "messages": 2},
+    )
+
+    asyncio.run(repo.record_run(record))
+
+    backend.record_run.assert_awaited_once_with(record)
+
+
+def test_repository_metadata_and_filter_forwarders() -> None:
+    backend = MagicMock()
+    backend.get_metadata = AsyncMock(return_value={"status": "reviewed"})
+    backend.update_metadata = AsyncMock()
+    backend.delete_metadata = AsyncMock()
+    backend.add_tag = AsyncMock()
+    backend.remove_tag = AsyncMock()
+    backend.list_tags = AsyncMock(return_value={"important": 2})
+    backend.set_metadata = AsyncMock()
+    backend.delete_conversation = AsyncMock(return_value=True)
+    repo = ConversationRepository(backend=backend)
+
+    assert asyncio.run(repo.get_metadata("conv-1")) == {"status": "reviewed"}
+    asyncio.run(repo.update_metadata("conv-1", "status", "done"))
+    asyncio.run(repo.delete_metadata("conv-1", "status"))
+    asyncio.run(repo.add_tag("conv-1", "important"))
+    asyncio.run(repo.remove_tag("conv-1", "important"))
+    assert asyncio.run(repo.list_tags(provider="claude")) == {"important": 2}
+    asyncio.run(repo.set_metadata("conv-1", {"status": "done"}))
+    assert asyncio.run(repo.delete_conversation("conv-1")) is True
+    assert isinstance(repo.filter(), ConversationFilter)
+
+    backend.get_metadata.assert_awaited_once_with("conv-1")
+    backend.update_metadata.assert_awaited_once_with("conv-1", "status", "done")
+    backend.delete_metadata.assert_awaited_once_with("conv-1", "status")
+    backend.add_tag.assert_awaited_once_with("conv-1", "important")
+    backend.remove_tag.assert_awaited_once_with("conv-1", "important")
+    backend.list_tags.assert_awaited_once_with(provider="claude")
+    backend.set_metadata.assert_awaited_once_with("conv-1", {"status": "done"})
+    backend.delete_conversation.assert_awaited_once_with("conv-1")
+
+
+def test_repository_embed_conversation_uses_supplied_provider_and_counts_messages() -> None:
+    backend = MagicMock()
+    messages = [
+        MessageRecord(
+            message_id="msg-1",
+            conversation_id="conv-1",
+            role="user",
+            text="hello",
+            content_hash="hash-1",
+        ),
+        MessageRecord(
+            message_id="msg-2",
+            conversation_id="conv-1",
+            role="assistant",
+            text="world",
+            content_hash="hash-2",
+        ),
+    ]
+    backend.get_messages = AsyncMock(return_value=messages)
+    repo = ConversationRepository(backend=backend)
+    vector_provider = MagicMock()
+
+    result = asyncio.run(repo.embed_conversation("conv-1", vector_provider=vector_provider))
+
+    assert result == 2
+    vector_provider.upsert.assert_called_once_with("conv-1", messages)
+
+
+def test_repository_embed_conversation_resolves_default_provider_and_errors_without_one() -> None:
+    backend = MagicMock()
+    backend.get_messages = AsyncMock(
+        return_value=[
+            MessageRecord(
+                message_id="msg-1",
+                conversation_id="conv-1",
+                role="user",
+                text="hello",
+                content_hash="hash-1",
+            )
+        ]
+    )
+    repo = ConversationRepository(backend=backend)
+    resolved_provider = MagicMock()
+
+    with patch(
+        "polylogue.storage.search_providers.create_vector_provider",
+        return_value=resolved_provider,
+    ):
+        result = asyncio.run(repo.embed_conversation("conv-1", vector_provider=None))
+
+    assert result == 1
+    resolved_provider.upsert.assert_called_once()
+
+    with patch(
+        "polylogue.storage.search_providers.create_vector_provider",
+        return_value=None,
+    ):
+        with pytest.raises(ValueError, match="No vector provider available"):
+            asyncio.run(repo.embed_conversation("conv-1", vector_provider=None))
+
+
+def test_repository_similarity_methods_require_provider_when_unavailable() -> None:
+    repo = ConversationRepository(backend=MagicMock())
+
+    with pytest.raises(ValueError, match="Semantic search requires a vector provider"):
+        asyncio.run(repo.search_similar("needle", vector_provider=None))
+
+    with patch(
+        "polylogue.storage.search_providers.create_vector_provider",
+        return_value=None,
+    ):
+        with pytest.raises(ValueError, match="No vector provider configured"):
+            asyncio.run(repo.similarity_search("needle", vector_provider=None))
 
 
 def test_repository_list_count_and_summary_filters_forward_canonically() -> None:
@@ -962,6 +1097,32 @@ def test_repository_search_and_similarity_contracts() -> None:
         ("conv-a", "m2", 0.8),
         ("conv-a", "m1", 0.2),
         ("conv-b", "m3", 0.5),
+    ]
+
+
+def test_repository_message_conversation_mapping_queries_backend_connection() -> None:
+    connection = _Connection(
+        [
+            _Cursor(
+                rows=[
+                    {"message_id": "msg-1", "conversation_id": "conv-1"},
+                    {"message_id": "msg-2", "conversation_id": "conv-2"},
+                ]
+            )
+        ]
+    )
+    backend = MagicMock()
+    backend.connection = MagicMock(return_value=_context(connection))
+    repo = ConversationRepository(backend=backend)
+
+    mapping = asyncio.run(repo._get_message_conversation_mapping(["msg-1", "msg-2"]))
+
+    assert mapping == {"msg-1": "conv-1", "msg-2": "conv-2"}
+    assert connection.calls == [
+        (
+            "SELECT message_id, conversation_id FROM messages WHERE message_id IN (?,?)",
+            ["msg-1", "msg-2"],
+        )
     ]
 
 
