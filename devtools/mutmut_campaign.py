@@ -305,7 +305,6 @@ CAMPAIGNS: dict[str, Campaign] = {
             "tests/unit/sources/test_parsers_drive.py",
             "tests/unit/sources/test_drive_client_laws.py",
             "tests/unit/sources/test_drive_ops.py",
-            "tests/unit/sources/test_drive_resilience.py",
             "tests/unit/sources/test_drive_utils.py",
             "tests/unit/sources/test_source_ops.py",
             "tests/unit/sources/test_raw_capture.py",
