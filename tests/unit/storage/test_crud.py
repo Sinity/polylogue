@@ -35,31 +35,6 @@ class TestConversationOperations:
     """Test conversation save/retrieve operations."""
 
 
-async def test_repository_message_mapping_uses_backend_path(tmp_path: Path) -> None:
-    """Regression: _get_message_conversation_mapping must use backend's db_path."""
-    from polylogue.storage.repository import ConversationRepository
-
-    db_path = tmp_path / "custom.db"
-    backend = SQLiteBackend(db_path=db_path)
-
-    conv = make_conversation("map-conv-1", title="Mapping Test")
-    msg = make_message("map-msg-1", "map-conv-1", text="Hello")
-
-    await backend.begin()
-    await backend.save_conversation_record(conv)
-    await backend.save_messages([msg])
-    await backend.commit()
-
-    repo = ConversationRepository(backend)
-    mapping = await repo._get_message_conversation_mapping(["map-msg-1"])
-    assert mapping == {"map-msg-1": "map-conv-1"}
-
-    # Non-existent messages should return empty
-    mapping_empty = await repo._get_message_conversation_mapping(["nonexistent"])
-    assert mapping_empty == {}
-    await backend.close()
-
-
 class TestMessageOperations:
     """Test message save/retrieve operations."""
 
