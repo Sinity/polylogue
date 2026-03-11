@@ -29,6 +29,7 @@ from tests.infra.strategies.filters import (
     filter_type_strategy,
 )
 from tests.infra.strategies.messages import (
+    code_block_strategy,
     content_block_strategy,
     conversation_strategy,
     message_strategy,
@@ -44,13 +45,37 @@ from tests.infra.strategies.providers import (
     chatgpt_export_strategy,
     chatgpt_message_node_strategy,
     claude_ai_export_strategy,
+    claude_ai_message_strategy,
     claude_code_message_strategy,
     codex_message_strategy,
+    decode_provider_payload,
+    gemini_export_strategy,
+    gemini_message_strategy,
     provider_export_strategy,
+    provider_hint_path_strategy,
+    provider_payload_case_strategy,
+    provider_payload_strategy,
+    provider_source_case_strategy,
+)
+from tests.infra.strategies.sources import (
+    conversations_wrapper_bytes_strategy,
+    json_array_bytes_strategy,
+    json_document_strategy,
+    jsonl_bytes_strategy,
+)
+from tests.infra.strategies.storage import (
+    ConversationSpec,
+    MessageSpec,
+    conversation_graph_strategy,
+    expected_sorted_ids,
+    expected_tree_ids,
+    root_index,
+    seed_conversation_graph,
 )
 
 __all__ = [
     # Messages
+    "code_block_strategy",
     "content_block_strategy",
     "conversation_strategy",
     "message_strategy",
@@ -65,9 +90,30 @@ __all__ = [
     "chatgpt_export_strategy",
     "chatgpt_message_node_strategy",
     "claude_ai_export_strategy",
+    "claude_ai_message_strategy",
     "claude_code_message_strategy",
     "codex_message_strategy",
+    "decode_provider_payload",
+    "gemini_export_strategy",
+    "gemini_message_strategy",
+    "provider_hint_path_strategy",
+    "provider_payload_case_strategy",
+    "provider_payload_strategy",
     "provider_export_strategy",
+    "provider_source_case_strategy",
+    # Source/json wire contracts
+    "conversations_wrapper_bytes_strategy",
+    "json_array_bytes_strategy",
+    "json_document_strategy",
+    "jsonl_bytes_strategy",
+    # Storage
+    "ConversationSpec",
+    "MessageSpec",
+    "conversation_graph_strategy",
+    "expected_sorted_ids",
+    "expected_tree_ids",
+    "root_index",
+    "seed_conversation_graph",
     # Filters
     "filter_arg_strategy",
     "filter_chain_strategy",

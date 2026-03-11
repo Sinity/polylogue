@@ -1,0 +1,49 @@
+{
+  "campaign": "json",
+  "description": "JSON serialization and parser laws",
+  "commit": "147e689d15caf23fc4036c3af6211af4f71bbaad",
+  "worktree_dirty": false,
+  "status_summary": [],
+  "created_at": "2026-03-11T06:24:41.072016+00:00",
+  "workspace": "/tmp/nix-shell.QRi2vu/mutmut-json-_vew7_c4/repo",
+  "command": [
+    "mutmut",
+    "run"
+  ],
+  "paths_to_mutate": [
+    "polylogue/lib/json.py"
+  ],
+  "tests": [
+    "tests/unit/core/test_json.py",
+    "tests/unit/core/test_json_laws.py"
+  ],
+  "counts": {
+    "killed": 24,
+    "survived": 2,
+    "timeout": 0,
+    "not_checked": 0,
+    "suspicious": 0,
+    "skipped": 0
+  },
+  "dominant_survivors": [
+    [
+      "polylogue.lib.json.x__default_encoder__mutmut_4",
+      1
+    ],
+    [
+      "polylogue.lib.json.x_dumps__mutmut_16",
+      1
+    ]
+  ],
+  "dominant_timeouts": [],
+  "dominant_not_checked": [],
+  "survivor_keys": [
+    "polylogue.lib.json.x__default_encoder__mutmut_4",
+    "polylogue.lib.json.x_dumps__mutmut_16"
+  ],
+  "timeout_keys": [],
+  "not_checked_keys": [],
+  "runtime_seconds": 6.92913,
+  "exit_code": 0,
+  "notes": []
+}
