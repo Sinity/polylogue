@@ -57,7 +57,7 @@ Recorded on `2026-03-11`.
 ### Full Test Suite
 
 - Command: `nix develop -c pytest -q -n 0`
-- Result: `4304 passed in 63.35s`
+- Result: `4259 passed, 1 warning in 296.38s`
 - Note: repo-wide pytest defaults still enable `-n auto`; use `-n 0` here for
   stable mutation-comparison timing.
 
@@ -65,14 +65,16 @@ Recorded on `2026-03-11`.
 
 The latest recorded artifact for each campaign is indexed in
 [`docs/mutation-campaigns/README.md`](mutation-campaigns/README.md). This
-ledger now mixes three clean baselines:
+ledger now mixes four clean baselines:
 
 - the broad core baseline on commit `147e689d15ca`
 - the schema/pipeline rerun wave on commit `d1e704d7a2ba`
-- the post-`004` law-wave reruns on commit `2bdb267e93b7`
+- the post-`004` law-wave baselines on commit `2bdb267e93b7`
+- the follow-up source/query/repository reruns on commits `7e7c310037f9` and
+  `a27de694650d`
 
-The `004` law/property wave has now been executed. Its main runtime evidence is
-captured in the fresh reruns for CLI, repository, site, and sources.
+`004` and its immediate follow-up reruns are now complete. The tables below are
+the current durable mutation baselines for the next law/property wave.
 
 ### Already-Healthy Campaigns
 
@@ -100,33 +102,40 @@ the reference point for those domains.
 | `schema-core` | `d1e704d7a2ba` | 792 | 895 | 7 | 0 | Core schema behavior still has heavy survivor mass. |
 | `pipeline-services` | `d1e704d7a2ba` | 736 | 595 | 84 | 246 | Acquisition/streaming/state-machine helpers still leave large timeout and not-checked clusters. |
 
-### Post-`004` Rerun Results
+### Current Campaign Baselines
 
-This is the current evidence for the domains that the executed law-wave
-targeted directly.
+These are the current durable baselines for the domains touched by `004` and
+the follow-up source/helper/query pass.
 
-| Campaign | Killed | Survived | Timeout | Not checked | Delta vs previous baseline | Interpretation |
-| --- | ---: | ---: | ---: | ---: | --- | --- |
-| `cli-query` | 580 | 844 | 21 | 532 | `+112 killed`, `-15 survived`, `+13 timeout`, `-110 not_checked` | Better coverage of query/output contracts, but `_output_stats_by_summaries` and mutation-heavy query execution still need another pass. |
-| `repository` | 370 | 181 | 124 | 5 | `+45 killed`, `+41 survived`, `-21 timeout`, `-65 not_checked` | Big reduction in blind spots; remaining issue is now timeout/survivor quality in read/query paths, not lack of reach. |
-| `site-builder` | 245 | 228 | 1 | 0 | `+23 killed`, `-22 survived`, `-1 timeout` | Streaming/site generation laws materially improved this area. |
-| `source-detection` | 563 | 455 | 3 | 127 | `+88 killed`, `-20 survived`, `-68 not_checked` | Detection/dispatch is no longer mostly blind, but still has meaningful survivor mass. |
-| `providers-semantics` | 415 | 652 | 3 | 112 | `+80 killed`, `0 survived`, `+3 timeout`, `-83 not_checked` | Law-wave improved reach, but `schemas.unified` semantic extraction remains the dominant weak spot. |
-| `sources-parse` | 1651 | 2390 | 7 | 1706 | `+158 killed`, `-11 survived`, `+4 timeout`, `-151 not_checked` | Broadest source surface improved meaningfully, but still confirms sources/parsing as the next major law-wave frontier. |
+| Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `cli-query` | `7e7c310037f9` | 965 | 1022 | 10 | 0 | Query execution/output is no longer blind, but survivor mass in broader query behavior is still high enough to justify another law wave. |
+| `drive-client` | `7e7c310037f9` | 553 | 327 | 4 | 0 | Drive transport/auth seams are mutation-usable now; remaining residue clusters around credential loading, folder resolution, and retry/download paths. |
+| `repository` | `7e7c310037f9` | 527 | 130 | 51 | 0 | Read/query contracts are much stronger and blind spots are gone; the remaining issue is survivor/timeout concentration, not reach. |
+| `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
+| `source-detection` | `2bdb267e93b7` | 563 | 455 | 3 | 127 | Detection/dispatch is no longer mostly blind, but it still leaves a meaningful `not_checked` seam in source-path handling. |
+| `providers-semantics` | `a27de694650d` | 1009 | 620 | 2 | 0 | The latest rerun removed `not_checked` entirely; `polylogue.schemas.unified` semantic extraction remains the dominant survivor cluster. |
+| `sources-parse` | `a27de694650d` | 3644 | 2608 | 12 | 0 | The broadest source surface now also has zero `not_checked`; the remaining frontier is sheer survivor mass rather than blind spots. |
 
 ### Readiness Call
 
-- `004` is complete.
-- We are ready for another targeted law/property wave.
+- `004` is complete, and the immediate follow-up reruns are complete.
+- We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
-  1. `sources-parse`
-  2. `providers-semantics`
-  3. `repository`
+  1. `providers-semantics`
+  2. `sources-parse`
+  3. `source-detection` plus the adjacent `drive-client` seam
   4. `cli-query`
-- We are not ready to claim source/harmonization semantics are exhaustively
-  specified. The reruns made those domains mutation-usable, but not saturated.
-- The dominant remaining structural issue is still survivor concentration in
-  `polylogue.schemas.unified` and adjacent source/provider semantic extraction.
+  5. `repository`
+- We are not ready to claim source/provider/harmonization semantics are
+  exhaustively specified. The reruns removed blind spots, but they did not
+  saturate the semantic space.
+- The dominant structural issue is still survivor concentration in
+  `polylogue.schemas.unified`, adjacent provider extraction paths, and the
+  broader source parsing surface.
+- Additional mutmut infrastructure work is not the bottleneck now. The next
+  gains come from stronger laws, better generators/oracles, and code
+  refactors that collapse duplicated semantic authority.
 
 ### Comparison Rule For Future Waves
 
