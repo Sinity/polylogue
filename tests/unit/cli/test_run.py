@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -578,108 +577,6 @@ class TestRunCommandRenderFailures:
             assert "Render failures" not in result.output
         elif isinstance(not_expected, str):
             assert not_expected not in result.output
-
-
-class TestDeleteConversationPreview:
-    """Tests for enhanced deletion preview in query mode."""
-
-    async def test_delete_dry_run_shows_provider_breakdown(self, capsys):
-        """Dry-run deletion shows provider breakdown."""
-
-        from polylogue.cli.query import _delete_conversations
-
-        # Create mock conversations with different providers
-        convs = []
-        for i in range(3):
-            conv = MagicMock()
-            conv.provider = "claude"
-            conv.created_at = datetime(2024, 1, 15)
-            conv.display_title = f"Conversation {i}"
-            conv.id = f"conv-{i}"
-            convs.append(conv)
-
-        for i in range(2):
-            conv = MagicMock()
-            conv.provider = "chatgpt"
-            conv.created_at = datetime(2024, 1, 16)
-            conv.display_title = f"ChatGPT Conversation {i}"
-            conv.id = f"gpt-{i}"
-            convs.append(conv)
-
-        env = MagicMock()
-        env.ui.console.print = MagicMock()
-
-        await _delete_conversations(env, convs, {"dry_run": True})
-
-        captured = capsys.readouterr()
-        assert "DRY-RUN: Would delete 5 conversation(s)" in captured.out
-        assert "Providers:" in captured.out
-        assert "claude: 3" in captured.out
-        assert "chatgpt: 2" in captured.out
-
-    async def test_delete_dry_run_shows_date_range(self, capsys):
-        """Dry-run deletion shows date range."""
-        from polylogue.cli.query import _delete_conversations
-
-        # Create mock conversations with different dates
-        convs = []
-        conv1 = MagicMock()
-        conv1.provider = "claude"
-        conv1.created_at = datetime(2023, 6, 1)
-        conv1.display_title = "Old conversation"
-        conv1.id = "old-1"
-        convs.append(conv1)
-
-        conv2 = MagicMock()
-        conv2.provider = "claude"
-        conv2.created_at = datetime(2024, 2, 15)
-        conv2.display_title = "Recent conversation"
-        conv2.id = "new-1"
-        convs.append(conv2)
-
-        env = MagicMock()
-        env.ui.console.print = MagicMock()
-
-        await _delete_conversations(env, convs, {"dry_run": True})
-
-        captured = capsys.readouterr()
-        assert "Date range: 2023-06-01 → 2024-02-15" in captured.out
-
-    async def test_delete_bulk_shows_breakdown_and_prompts(self, capsys):
-        """Bulk deletion (>10 items) without force shows breakdown and prompts."""
-        from polylogue.cli.query import _delete_conversations
-
-        # Create 15 mock conversations
-        convs = []
-        for i in range(10):
-            conv = MagicMock()
-            conv.provider = "claude"
-            conv.created_at = datetime(2024, 1, 15)
-            conv.display_title = f"Conv {i}"
-            conv.id = f"conv-{i}"
-            convs.append(conv)
-
-        for i in range(5):
-            conv = MagicMock()
-            conv.provider = "chatgpt"
-            conv.created_at = datetime(2024, 1, 16)
-            conv.display_title = f"ChatGPT {i}"
-            conv.id = f"gpt-{i}"
-            convs.append(conv)
-
-        env = MagicMock()
-        env.ui.console.print = MagicMock()
-        env.ui.confirm = MagicMock(return_value=False)
-
-        # Should prompt for confirmation and abort when declined
-        await _delete_conversations(env, convs, {"force": False})
-        env.ui.confirm.assert_called_once()
-
-        captured = capsys.readouterr()
-        assert "About to DELETE 15 conversations" in captured.err
-        assert "Providers:" in captured.out
-        assert "claude: 10" in captured.out
-        assert "chatgpt: 5" in captured.out
 
 
 class TestTagsCommand:

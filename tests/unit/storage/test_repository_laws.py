@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -17,6 +18,7 @@ from tests.infra.strategies import (
     expected_tree_ids,
     root_index,
     seed_conversation_graph,
+    shortest_unique_prefix,
 )
 
 
@@ -31,6 +33,15 @@ def _seed_repo(specs) -> tuple[TemporaryDirectory[str], ConversationRepository]:
 async def _collect_summary_pages(repo: ConversationRepository, page_size: int) -> list[str]:
     pages = [page async for page in repo.iter_summary_pages(page_size=page_size)]
     return [summary.id for page in pages for summary in page]
+
+
+def _expected_archive_stats(specs) -> tuple[int, int, dict[str, int]]:
+    provider_counts: dict[str, int] = {}
+    total_messages = 0
+    for spec in specs:
+        provider_counts[spec.provider] = provider_counts.get(spec.provider, 0) + 1
+        total_messages += len(spec.messages)
+    return len(specs), total_messages, provider_counts
 
 
 @settings(
@@ -121,6 +132,119 @@ def test_repository_tree_methods_preserve_root_and_closure(specs) -> None:
             expected_root = specs[root_index(specs, index)].conversation_id
             assert str(root.id) == expected_root
             assert {str(conversation.id) for conversation in tree} == expected_tree_ids(specs, index)
+    finally:
+        asyncio.run(repo.close())
+        tempdir.cleanup()
+
+
+@settings(
+    deadline=None,
+    max_examples=25,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+@given(conversation_graph_strategy(), st.integers(min_value=0, max_value=5))
+def test_repository_lookup_views_and_projection_agree_on_generated_id(specs, candidate_index: int) -> None:
+    """All read-model entry points must agree on IDs, message counts, and projection shape."""
+    tempdir, repo = _seed_repo(specs)
+    try:
+        index = candidate_index % len(specs)
+        target = specs[index]
+        ids = tuple(spec.conversation_id for spec in specs)
+        prefix = shortest_unique_prefix(ids, target.conversation_id)
+
+        summary = asyncio.run(repo.get_summary(target.conversation_id))
+        conversation = asyncio.run(repo.get(target.conversation_id))
+        eager = asyncio.run(repo.get_eager(target.conversation_id))
+        viewed = asyncio.run(repo.view(prefix))
+        projection = asyncio.run(repo.get_render_projection(target.conversation_id))
+
+        assert summary is not None
+        assert conversation is not None
+        assert eager is not None
+        assert viewed is not None
+        assert projection is not None
+
+        assert summary.id == target.conversation_id
+        assert str(conversation.id) == target.conversation_id
+        assert str(eager.id) == target.conversation_id
+        assert str(viewed.id) == target.conversation_id
+        assert projection.conversation.conversation_id == target.conversation_id
+        assert len(conversation.messages) == len(target.messages)
+        assert len(eager.messages) == len(target.messages)
+        assert len(viewed.messages) == len(target.messages)
+        assert len(projection.messages) == len(target.messages)
+        assert projection.attachments == []
+    finally:
+        asyncio.run(repo.close())
+        tempdir.cleanup()
+
+
+@settings(
+    deadline=None,
+    max_examples=25,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+@given(
+    conversation_graph_strategy(),
+    st.integers(min_value=0, max_value=5),
+    st.integers(min_value=1, max_value=4),
+)
+def test_repository_iter_messages_and_stats_match_generated_conversation(
+    specs,
+    candidate_index: int,
+    limit: int,
+) -> None:
+    """iter_messages() windows and conversation stats must agree with the generated source graph."""
+    tempdir, repo = _seed_repo(specs)
+    try:
+        index = candidate_index % len(specs)
+        target = specs[index]
+
+        all_messages = asyncio.run(
+            _collect_messages(repo.iter_messages(target.conversation_id))
+        )
+        limited_messages = asyncio.run(
+            _collect_messages(repo.iter_messages(target.conversation_id, limit=limit))
+        )
+        stats = asyncio.run(repo.get_conversation_stats(target.conversation_id))
+
+        assert len(all_messages) == len(target.messages)
+        assert len(limited_messages) == min(limit, len(target.messages))
+        assert stats is not None
+        assert stats["total_messages"] == len(target.messages)
+    finally:
+        asyncio.run(repo.close())
+        tempdir.cleanup()
+
+
+async def _collect_messages(iterator) -> list:
+    return [message async for message in iterator]
+
+
+@settings(
+    deadline=None,
+    max_examples=20,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+@given(conversation_graph_strategy())
+def test_repository_archive_stats_match_generated_graph(specs) -> None:
+    """Archive statistics must match the generated graph exactly."""
+    tempdir, repo = _seed_repo(specs)
+    try:
+        stats = asyncio.run(repo.get_archive_stats())
+        expected_conversations, expected_messages, expected_providers = _expected_archive_stats(specs)
+
+        assert stats.total_conversations == expected_conversations
+        assert stats.total_messages == expected_messages
+        assert stats.provider_count == len(expected_providers)
+        assert stats.providers == expected_providers
+        assert stats.embedded_conversations == 0
+        assert stats.embedded_messages == 0
+        assert stats.embedding_coverage == 0.0
+        assert stats.avg_messages_per_conversation == pytest.approx(
+            expected_messages / expected_conversations
+        )
+        assert stats.db_size_bytes >= 0
     finally:
         asyncio.run(repo.close())
         tempdir.cleanup()
