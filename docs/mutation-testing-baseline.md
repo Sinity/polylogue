@@ -1,22 +1,51 @@
-# Quality Baselines
+# Mutation Testing Baseline
 
-This file is the durable baseline ledger for test-quality work. Refresh it after meaningful law/property/mutation waves so later passes can compare against a concrete, versioned reference instead of memory.
+This file is the durable ledger for mutation-testability work. Refresh it after
+meaningful mutmut, law, or property-testing waves so later passes compare
+against versioned evidence instead of session memory.
 
-## Commands
+## Canonical Workflow
+
+### Verification Baseline
 
 ```bash
-# Repo-wide lint
 nix develop -c ruff check .
-
-# Full test suite baseline
 nix develop -c pytest -q -n 0
-
-# Mutation testing baseline
-nix develop -c mutmut run
-nix develop -c mutmut results
 ```
 
-## Latest Baseline
+### Broad Mutation Surface
+
+Mutmut configuration lives in [`pyproject.toml`](../pyproject.toml):
+
+- `paths_to_mutate = ["polylogue"]`
+- excludes only thin package markers and entrypoints
+- forces stable pytest runtime flags with xdist disabled
+
+Do not narrow the committed config back to a tiny hand-picked module list. Run
+focused campaigns with the isolated runner instead.
+
+### Isolated Campaign Runner
+
+Use [`devtools/mutmut_campaign.py`](../devtools/mutmut_campaign.py) for focused
+campaigns. It copies the worktree into an isolated temporary workspace, patches
+only that workspace's `[tool.mutmut]` scope/test selection, runs `mutmut` there,
+then writes durable JSON/Markdown artifacts under
+[`docs/mutation-campaigns/`](mutation-campaigns/README.md).
+
+```bash
+# List available campaigns
+nix develop -c python -m devtools.mutmut_campaign list
+
+# Run one isolated campaign and write durable artifacts
+nix develop -c python -m devtools.mutmut_campaign run filters \
+  --json-out docs/mutation-campaigns/$(date +%F)-filters.json \
+  --markdown-out docs/mutation-campaigns/$(date +%F)-filters.md
+
+# Rebuild the artifact index
+nix develop -c python -m devtools.mutmut_campaign index
+```
+
+## Latest Non-Mutation Baseline
 
 Recorded on `2026-03-11`.
 
@@ -29,170 +58,62 @@ Recorded on `2026-03-11`.
 
 - Command: `nix develop -c pytest -q -n 0`
 - Result: `4235 passed in 258.02s (0:04:18)`
-- Note: the repo-wide pytest default still includes `-n auto --benchmark-disable` in `pyproject.toml`; this ledger uses `-n 0` as the stable comparison baseline.
+- Note: repo-wide pytest defaults still enable `-n auto`; use `-n 0` here for
+  stable mutation-comparison timing.
 
-### Mutation Testing Harness
+## Broad Campaign Wave: `2026-03-11`
 
-- Command: `nix develop -c mutmut run`
-- Scope source of truth: [`pyproject.toml`](../pyproject.toml)
-- Configured mutation target root: `polylogue`
-- Configured default exclusions:
-  - `polylogue/**/__init__.py`
-  - `polylogue/**/__main__.py`
-- Harness note: mutmut now forces `pytest_add_cli_args = ["-n", "0", "-p", "no:randomly", "-p", "no:random-order", "--benchmark-disable", "-m", "not benchmark"]` so it does not inherit repo-wide `pytest -n auto` and so benchmark-only tests do not distort the campaign.
-- Execution rule: chunk broad mutation campaigns with CLI globs, for example:
-  - `nix develop -c mutmut run "polylogue.lib.*" "polylogue.storage.*"`
-  - `nix develop -c mutmut run "polylogue.pipeline.*" "polylogue.facade.*" "polylogue.rendering.*" "polylogue.site.*"`
-  - `nix develop -c mutmut run "polylogue.cli.*" "polylogue.sources.*"`
+The latest recorded artifact for each campaign is indexed in
+[`docs/mutation-campaigns/README.md`](mutation-campaigns/README.md). The wave
+was run to answer one question: are we ready to execute the next law-based test
+generalization wave in
+[`004-law-test-wave-iteration-plan-2026-03-11.md`](../.claude/scratch/004-law-test-wave-iteration-plan-2026-03-11.md)?
 
-## Focused Mutation Wave: `polylogue.lib.filters`
+### High-Signal Campaigns
 
-- Recorded on `2026-03-11`
-- Targeted verification before the mutation run:
-  - `nix develop -c ruff check tests/unit/core/test_filters.py tests/unit/core/test_filters_props.py tests/unit/core/test_filters_adv.py`
-  - `nix develop -c pytest -q tests/unit/core/test_filters.py tests/unit/core/test_filters_props.py tests/unit/core/test_filters_adv.py`
-  - Result: `252 passed in 23.38s`
-- Mutation command: `nix develop -c mutmut run "polylogue.lib.filters*"`
-- Result: `597` filter mutants checked at `4.27 mutations/second`
+These are already mutation-usable. They still have residue, but not blindness.
 
-| Status | Count |
-| --- | ---: |
-| Killed | 457 |
-| Survived | 35 |
-| Timeout | 105 |
-| No tests | 0 |
+| Campaign | Killed | Survived | Timeout | Not checked | Interpretation |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `filters` | 486 | 11 | 100 | 0 | Historically blind spot removed; remaining work is mostly timeout-heavy helper paths. |
+| `json` | 24 | 2 | 0 | 0 | Nearly saturated after the latest exact contract additions. |
+| `fts5` | 41 | 7 | 0 | 0 | Good signal; some ranking/search semantics still survive. |
+| `hybrid` | 112 | 21 | 0 | 3 | Good enough to use as feedback during later law work. |
+| `models` | 130 | 19 | 3 | 14 | Reasonable signal with bounded semantic weak spots. |
 
-### Key Improvement
+### Not Ready / Major Remediation Targets
 
-- Relative to the earlier narrow historical baseline for `polylogue.lib.filters` (`0 killed / 0 survived / 597 no tests / 0 timeout`), this wave eliminated the `no tests` blind spot entirely and converted most of the module into real signal.
+These are the domains the next law-wave should attack first.
 
-### Dominant Survivor Clusters
+| Campaign | Killed | Survived | Timeout | Not checked | Primary issue |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `schema-validation` | 229 | 167 | 0 | 0 | Validator/verification behavior is still too weakly constrained. |
+| `schema-inference` | 536 | 732 | 30 | 0 | Large survivor surface across inference/privacy heuristics. |
+| `schema-core` | 765 | 924 | 5 | 0 | Schema domain overall is still heavily under-specified. |
+| `repository` | 343 | 250 | 6 | 81 | Read/query/projection contracts are not strong enough. |
+| `pipeline-services` | 725 | 687 | 3 | 246 | Planning/validation/parse orchestration still has large blind spots. |
+| `source-detection` | 41 | 197 | 0 | 910 | Detection/dispatch is still mostly unexercised under mutation. |
+| `providers-semantics` | 164 | 586 | 0 | 432 | Harmonization/provider semantic extraction is not ready for saturation claims. |
+| `sources-parse` | 1353 | 2307 | 0 | 2094 | Broad parse/harmonization surface confirms the next law-wave should start in sources. |
 
-| Function cluster | Surviving mutants |
-| --- | ---: |
-| `ConversationFilter.pick` | 10 |
-| `ConversationFilter._describe_active_filters` | 6 |
-| `ConversationFilter.list_summaries` | 6 |
-| `ConversationFilter._apply_summary_filters` | 3 |
-| `ConversationFilter.is_continuation` | 3 |
-| `ConversationFilter.is_sidechain` | 3 |
-| `ConversationFilter._has_post_filters` | 1 |
-| `ConversationFilter.delete` | 1 |
-| `ConversationFilter.has_branches` | 1 |
-| `ConversationFilter.is_root` | 1 |
+### Readiness Call
 
-### Dominant Timeout Clusters
+- We are **ready to start** the next law-wave.
+- We are **not ready to skip it**.
+- The mutation results say the next wave should begin with:
+  1. source detection + parser dispatch,
+  2. provider semantics + harmonization,
+  3. broad sources/parse contracts,
+  4. schema validator/inference contracts,
+  5. pipeline service contracts,
+  6. repository query/projection laws.
 
-| Function cluster | Timeout mutants |
-| --- | ---: |
-| `ConversationFilter._apply_filters` | 28 |
-| `ConversationFilter._apply_sort` | 20 |
-| `ConversationFilter.__init__` | 15 |
-| `ConversationFilter._fetch_generic` | 10 |
-| `ConversationFilter._apply_common_filters` | 8 |
-| `ConversationFilter._execute_pipeline` | 6 |
-| `ConversationFilter._apply_sort_generic` | 5 |
-| `ConversationFilter._effective_fetch_limit` | 5 |
-| `ConversationFilter._needs_content_loading` | 4 |
-| `ConversationFilter.list` | 4 |
+### Comparison Rule For Future Waves
 
-### Interpretation
+When the next law/property wave lands, compare against this ledger and the
+per-campaign artifacts. Expect at least one of these to improve:
 
-- The high-value structural wins from this wave are already realized:
-  - `count()` is fully killed across its fast/summary/full paths.
-  - `_fetch_summary_candidates()` is fully killed.
-  - `first()`, `parent()`, and `count()` are fully killed.
-  - `pick()` is materially improved but still the largest real survivor pocket.
-- The remaining timeout mass is concentrated in larger pipeline-style helpers. Further progress there likely requires cheaper fixtures or smaller helper-level contracts, not just more end-to-end examples.
-- The remaining survivors are no longer a broad blindness problem. They are a bounded residue in formatting/summary/branch-control behavior, which is the right point to pause and reassess instead of blindly accreting tests.
-
-### Follow-up Hardening Pass
-
-- After this baseline was recorded, a second narrow hardening pass added exact contracts for:
-  - picker numbering, truncation, unknown-date rendering, and selection bounds
-  - exact `list_summaries()` guidance text and summary-filter post-processing
-  - negative branch predicate semantics
-  - multi-delete counting
-  - multi-value `describe()` joins and similarity truncation
-- Those follow-up tests are verified by targeted pytest runs, but the exact post-pass focused mutation count is not recorded here yet because current broad mutmut configuration re-enters full-tree stats/clean-test phases after the test inventory changes, even for explicit survivor-key reruns.
-
-## Scoped Historical Mutation Baseline
-
-- Command: `nix develop -c mutmut run`
-- Scope note: this was the earlier narrow baseline before the switch to broad chunked mutation campaigns.
-- Result: `1062` mutants checked at `18.83 mutations/second`
-- Totals:
-
-| Status | Count |
-| --- | ---: |
-| Killed | 339 |
-| Survived | 106 |
-| No tests | 613 |
-| Timeout | 4 |
-
-### Module Breakdown
-
-| Module | Killed | Survived | No tests | Timeout |
-| --- | ---: | ---: | ---: | ---: |
-| `polylogue.lib.models` | 117 | 34 | 13 | 2 |
-| `polylogue.lib.filters` | 0 | 0 | 597 | 0 |
-| `polylogue.lib.roles` | 1 | 0 | 0 | 0 |
-| `polylogue.lib.timestamps` | 44 | 2 | 0 | 0 |
-| `polylogue.lib.hashing` | 31 | 9 | 0 | 2 |
-| `polylogue.lib.json` | 11 | 15 | 0 | 0 |
-| `polylogue.storage.search_providers.fts5` | 43 | 5 | 0 | 0 |
-| `polylogue.storage.search_providers.hybrid` | 92 | 41 | 3 | 0 |
-| **Total** | **339** | **106** | **613** | **4** |
-
-## Dominant Survivor Clusters
-
-These are the biggest current signals where tests execute code but do not constrain behavior strongly enough.
-
-| Function cluster | Surviving mutants |
-| --- | ---: |
-| `polylogue.lib.models.Message.extract_thinking` | 20 |
-| `polylogue.storage.search_providers.hybrid.HybridSearchProvider.search_scored` | 16 |
-| `polylogue.lib.json.dumps` | 14 |
-| `polylogue.lib.models.Message._is_chatgpt_thinking` | 10 |
-| `polylogue.storage.search_providers.hybrid._resolve_ranked_conversation_ids` | 10 |
-| `polylogue.storage.search_providers.hybrid.create_hybrid_provider` | 6 |
-| `polylogue.storage.search_providers.hybrid.HybridSearchProvider.search_conversations` | 6 |
-| `polylogue.lib.hashing.hash_payload` | 5 |
-
-## Dominant No-Test Clusters
-
-Almost all current `no tests` results are concentrated in `polylogue.lib.filters`, which means the configured mutmut scope still does not drive that module through enough executable paths.
-
-| Function cluster | No-test mutants |
-| --- | ---: |
-| `polylogue.lib.filters.ConversationFilter._sql_pushdown_params` | 51 |
-| `polylogue.lib.filters.ConversationFilter._describe_active_filters` | 50 |
-| `polylogue.lib.filters.ConversationFilter.pick` | 40 |
-| `polylogue.lib.filters.ConversationFilter._apply_common_filters` | 38 |
-| `polylogue.lib.filters.ConversationFilter._fetch_generic` | 37 |
-| `polylogue.lib.filters.ConversationFilter.__init__` | 35 |
-| `polylogue.lib.filters.ConversationFilter._apply_filters` | 35 |
-| `polylogue.lib.filters.ConversationFilter._apply_sort` | 32 |
-
-## Timeout Clusters
-
-| Function cluster | Timeout mutants |
-| --- | ---: |
-| `polylogue.lib.models.Conversation.iter_pairs` | 2 |
-| `polylogue.lib.hashing.hash_file` | 2 |
-
-## Interpretation
-
-- The `filters` module is the largest blind spot by far. The current mutmut test selection avoids the slower DB-backed filter suites, but the remaining law/property tests are not enough to exercise the core filter pipeline.
-- `models`, `json`, and `hybrid` are the strongest next candidates for law-strengthening. They already execute under mutmut, but too many semantic mutations still survive.
-- `roles` is effectively saturated under the current scope.
-- `timestamps` is close, but not complete.
-
-## Comparison Rule For Future Waves
-
-When the next law/property wave lands, compare against this file and expect at least one of these to improve:
-
-1. Fewer total survivors.
-2. Fewer total `no tests`, especially in `polylogue.lib.filters`.
-3. No regression in killed count for already-strong modules.
-4. Fewer timeout mutants in `hash_file` and `iter_pairs`.
+1. Fewer total survivors in the targeted campaign.
+2. Fewer total `not_checked` mutants in source/pipeline/repository domains.
+3. No regression in killed counts for already-healthy campaigns.
+4. No new timeout mass introduced by broader law/property generation.

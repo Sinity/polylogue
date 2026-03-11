@@ -183,6 +183,34 @@ def test_validation_samples_document_lists_validate_all_dicts_up_to_limit():
     assert validator.validation_samples(payload, max_samples=None) == payload
 
 
+def test_validation_samples_document_mode_wraps_single_document():
+    """Document-mode dict payloads validate the top-level document once."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+        },
+        provider="chatgpt",
+    )
+
+    payload = {"id": "doc-1"}
+    assert validator.validation_samples(payload, max_samples=1) == [payload]
+
+
+def test_validation_samples_provider_default_record_granularity():
+    """Record-oriented providers default to record sampling without schema hints."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {"type": {"type": "string"}},
+        },
+        provider="codex",
+    )
+
+    payload = [{"type": "alpha"}, {"type": "beta"}]
+    assert validator.validation_samples(payload, max_samples=None) == payload
+
+
 def test_schema_validator_prefers_registry_latest(monkeypatch):
     """Validator should use latest versioned schema when available."""
     fake_schema = {
@@ -230,6 +258,122 @@ def test_dynamic_key_maps_do_not_emit_drift_warnings():
     result = validator.validate(data)
     assert result.is_valid
     assert not result.has_drift
+
+
+def test_dynamic_identifier_keys_are_suppressed_in_additional_properties_maps():
+    """Dynamic-looking keys do not emit drift warnings even without explicit marker."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {
+                "mapping": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {"role": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "additionalProperties": False,
+        },
+        strict=True,
+    )
+
+    result = validator.validate(
+        {
+            "mapping": {
+                "msg-550e8400-e29b-41d4-a716-446655440000": {"role": "assistant"}
+            }
+        }
+    )
+    assert result.is_valid
+    assert not result.has_drift
+
+
+def test_additional_properties_schema_still_detects_nested_drift():
+    """additionalProperties schemas recurse to catch nested unexpected fields."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {
+                "mapping": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {"name": {"type": "string"}},
+                        "additionalProperties": {"type": "string"},
+                    },
+                }
+            },
+            "additionalProperties": False,
+        },
+        strict=True,
+    )
+
+    result = validator.validate(
+        {
+            "mapping": {
+                "static-key": {"name": "node", "extra": "drift"},
+            }
+        }
+    )
+    assert result.is_valid
+    assert result.has_drift
+    assert any("mapping.static-key.extra" in warning for warning in result.drift_warnings)
+
+
+def test_validate_non_strict_mode_skips_drift_detection():
+    """Non-strict validation reports schema errors only."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "additionalProperties": {"type": "string"},
+        },
+        strict=False,
+    )
+
+    result = validator.validate({"id": "ok", "extra": "allowed"})
+    assert result.is_valid
+    assert not result.has_drift
+
+
+def test_format_error_includes_nested_array_path():
+    """Validation errors retain nested array/object paths."""
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}},
+                        "required": ["id"],
+                    },
+                }
+            },
+        },
+        strict=False,
+    )
+
+    result = validator.validate({"items": [{}]})
+    assert not result.is_valid
+    assert any(error.startswith("items.0:") for error in result.errors)
+
+
+def test_looks_dynamic_key_matches_expected_identifier_patterns():
+    """Dynamic-key heuristic should match the supported identifier families."""
+    validator = SchemaValidator({"type": "object"})
+
+    assert validator._looks_dynamic_key("550e8400-e29b-41d4-a716-446655440000")
+    assert validator._looks_dynamic_key("abcdef0123456789abcdef01")
+    assert validator._looks_dynamic_key("msg-550e8400-e29b-41d4-a716-446655440000")
+    assert not validator._looks_dynamic_key("title")
+    assert not validator._looks_dynamic_key("message_text")
 
 
 def test_available_providers(mock_schema_dir):
