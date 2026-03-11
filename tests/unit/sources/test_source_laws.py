@@ -31,6 +31,7 @@ from polylogue.sources.source import (
     _decode_json_bytes,
     _iter_json_stream,
     _ParseContext,
+    _zip_entry_provider_hint,
     _ZipEntryValidator,
     detect_provider,
     iter_source_conversations,
@@ -539,6 +540,12 @@ def test_zip_entry_validator_rejects_suspicious_entries_contract() -> None:
     assert cursor_state["failed_files"][0]["path"] == "/tmp/archive.zip:nested/conversations.jsonl"
 
 
+def test_zip_entry_provider_hint_prefers_entry_name_contract() -> None:
+    assert _zip_entry_provider_hint("nested/chatgpt-export.json", Provider.CLAUDE) == Provider.CHATGPT
+    assert _zip_entry_provider_hint("nested/gemini/session.json", Provider.CHATGPT) == Provider.GEMINI
+    assert _zip_entry_provider_hint("nested/session.jsonl", Provider.CLAUDE_CODE) == Provider.CLAUDE_CODE
+
+
 class _StubDriveRawClient:
     def __init__(self, files: list[DriveFile], *, raw_bytes: dict[str, bytes], failures: dict[str, Exception] | None = None) -> None:
         self.files = files
@@ -665,3 +672,18 @@ def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Pat
     assert zip_items[0].provider_hint == Provider.CLAUDE_CODE
     assert b'"type":"user"' in zip_items[0].raw_bytes
     assert zip_items[0].file_mtime is not None
+
+
+def test_iter_source_raw_data_uses_per_entry_provider_hints_for_mixed_zip_sources(tmp_path: Path) -> None:
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("nested/chatgpt-export.json", b'{"mapping": {}, "id": "chatgpt-1"}')
+        zf.writestr("nested/gemini-export.json", b'{"chunkedPrompt": {"chunks": []}}')
+
+    items = list(iter_source_raw_data(Source(name="chatgpt", path=archive_path)))
+
+    assert [item.source_path for item in items] == [
+        f"{archive_path}:nested/chatgpt-export.json",
+        f"{archive_path}:nested/gemini-export.json",
+    ]
+    assert [item.provider_hint for item in items] == [Provider.CHATGPT, Provider.GEMINI]

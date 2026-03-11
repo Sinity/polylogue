@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
@@ -172,6 +172,14 @@ def _looks_like_chunked_conversation_list(payload: list[Any]) -> bool:
     return bool(payload) and all(_looks_like_chunked_conversation(item) for item in payload)
 
 
+def _parse_bundle_items(
+    payload: list[Any],
+    fallback_id: str,
+    parser: Callable[[dict[str, Any], str], ParsedConversation],
+) -> list[ParsedConversation]:
+    return [parser(item, f"{fallback_id}-{i}") for i, item in enumerate(payload) if isinstance(item, dict)]
+
+
 def parse_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
     """Dispatch parsed payload to the appropriate provider parser.
 
@@ -203,30 +211,15 @@ def parse_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0
         results: list[ParsedConversation] = []
         for i, item in enumerate(payload["conversations"]):
             if isinstance(item, dict):
-                    results.extend(parse_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
+                results.extend(parse_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
         return results
     if provider == Provider.CHATGPT:
         if isinstance(payload, list):
-            results: list[ParsedConversation] = []
-            for i, item in enumerate(payload):
-                if isinstance(item, dict):
-                    results.append(chatgpt.parse(item, f"{fallback_id}-{i}"))
-            return results
+            return _parse_bundle_items(payload, fallback_id, chatgpt.parse)
         return [chatgpt.parse(payload, fallback_id)]
     if provider == Provider.CLAUDE:
         if isinstance(payload, list):
-            results: list[ParsedConversation] = []
-            for i, item in enumerate(payload):
-                if isinstance(item, dict):
-                    results.append(claude.parse_ai(item, f"{fallback_id}-{i}"))
-            return results
-        if isinstance(payload, dict) and isinstance(payload.get("conversations"), list):
-            results: list[ParsedConversation] = []
-            for i, item in enumerate(payload["conversations"]):
-                if isinstance(item, dict):
-                    results.append(claude.parse_ai(item, f"{fallback_id}-{i}"))
-            if results:
-                return results
+            return _parse_bundle_items(payload, fallback_id, claude.parse_ai)
         return [claude.parse_ai(payload, fallback_id)]
     if provider == Provider.CLAUDE_CODE:
         if isinstance(payload, list):
@@ -798,7 +791,7 @@ def _process_zip(
     with zipfile.ZipFile(zip_path) as zf:
         for info in validator.filter_entries(zf.infolist()):
             name = info.filename
-            entry_provider_hint = detect_provider(None, Path(name)) or provider_hint
+            entry_provider_hint = _zip_entry_provider_hint(name, provider_hint)
             entry_should_group = entry_provider_hint in _GROUP_PROVIDERS
             ctx = _ParseContext(
                 provider_hint=entry_provider_hint,
@@ -813,6 +806,10 @@ def _process_zip(
             emitter = _ConversationEmitter(ctx)
             with zf.open(name) as handle:
                 yield from emitter.emit(handle, name)
+
+
+def _zip_entry_provider_hint(entry_name: str, fallback_provider: str | Provider) -> Provider:
+    return detect_provider(None, Path(entry_name)) or Provider.from_string(fallback_provider)
 
 
 # =============================================================================
@@ -975,6 +972,7 @@ def iter_source_raw_data(
                 with zipfile.ZipFile(path) as zf:
                     for info in validator.filter_entries(zf.infolist()):
                         entry_path = f"{path}:{info.filename}"
+                        entry_provider_hint = _zip_entry_provider_hint(info.filename, provider_hint)
                         with zf.open(info.filename) as handle:
                             raw_bytes = handle.read()
                         yield RawConversationData(
@@ -982,7 +980,7 @@ def iter_source_raw_data(
                             source_path=entry_path,
                             source_index=None,
                             file_mtime=file_mtime,
-                            provider_hint=provider_hint,
+                            provider_hint=entry_provider_hint,
                         )
             else:
                 yield RawConversationData(

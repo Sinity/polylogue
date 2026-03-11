@@ -709,6 +709,48 @@ def test_repository_iter_summary_pages_stops_after_short_page() -> None:
     assert repo.list_summaries.await_args_list[1].kwargs["offset"] == 2
 
 
+def test_repository_iter_summary_pages_forwards_filters_and_advances_by_page_length() -> None:
+    repo = ConversationRepository(backend=MagicMock())
+    repo.list_summaries = AsyncMock(
+        side_effect=[
+            [MagicMock(id="conv-1"), MagicMock(id="conv-2")],
+            [MagicMock(id="conv-3"), MagicMock(id="conv-4")],
+            [],
+        ]
+    )
+
+    async def _collect() -> list[str]:
+        pages = [
+            page
+            async for page in repo.iter_summary_pages(
+                page_size=2,
+                provider="claude",
+                providers=["claude", "codex"],
+                source="archive",
+                since="2024-01-01",
+                until="2024-01-31",
+                title_contains="needle",
+                has_tool_use=True,
+                has_thinking=True,
+                min_messages=2,
+                max_messages=5,
+                min_words=10,
+                has_file_ops=True,
+                has_git_ops=True,
+                has_subagent=True,
+            )
+        ]
+        return [summary.id for page in pages for summary in page]
+
+    assert asyncio.run(_collect()) == ["conv-1", "conv-2", "conv-3", "conv-4"]
+    kwargs0 = repo.list_summaries.await_args_list[0].kwargs
+    kwargs1 = repo.list_summaries.await_args_list[1].kwargs
+    kwargs2 = repo.list_summaries.await_args_list[2].kwargs
+    assert kwargs0 == {"limit": 2, "offset": 0, "provider": "claude", "providers": ["claude", "codex"], "source": "archive", "since": "2024-01-01", "until": "2024-01-31", "title_contains": "needle", "has_tool_use": True, "has_thinking": True, "min_messages": 2, "max_messages": 5, "min_words": 10, "has_file_ops": True, "has_git_ops": True, "has_subagent": True}
+    assert kwargs1["offset"] == 2
+    assert kwargs2["offset"] == 4
+
+
 def test_repository_save_via_backend_skips_message_writes_when_hash_matches() -> None:
     """Unchanged content still upserts the conversation row but skips child writes."""
     connection = _Connection([_Cursor(one={"content_hash": "same-hash"})])
@@ -924,6 +966,39 @@ def test_repository_get_archive_stats_aggregates_sql_results_and_db_size(tmp_pat
     assert stats.db_size_bytes == 128
 
 
+def test_repository_get_archive_stats_tolerates_embedding_query_failure(tmp_path: Path) -> None:
+    db_path = tmp_path / "repo.db"
+    db_path.write_bytes(b"x" * 64)
+
+    class _FailingConnection(_Connection):
+        async def execute(self, query: str, params=()):
+            if "embedding_status" in query:
+                raise RuntimeError("embedding table missing")
+            return await super().execute(query, params)
+
+    connection = _FailingConnection(
+        [
+            _Cursor(one=(2,)),
+            _Cursor(one=(5,)),
+            _Cursor(one=(1,)),
+            _Cursor(rows=[{"provider_name": "claude", "count": 2}]),
+        ]
+    )
+    backend = MagicMock()
+    backend.db_path = db_path
+    backend.connection = MagicMock(return_value=_context(connection))
+    repo = ConversationRepository(backend=backend)
+
+    stats = asyncio.run(repo.get_archive_stats())
+
+    assert stats.total_conversations == 2
+    assert stats.total_messages == 5
+    assert stats.total_attachments == 1
+    assert stats.providers == {"claude": 2}
+    assert stats.embedded_conversations == 0
+    assert stats.embedded_messages == 0
+
+
 def test_repository_save_conversation_unprefixed_provider_id_contract() -> None:
     """Saving a non-prefixed conversation ID preserves provider_conversation_id verbatim."""
     tempdir, repo = _empty_repo()
@@ -947,3 +1022,27 @@ def test_repository_save_conversation_unprefixed_provider_id_contract() -> None:
     finally:
         asyncio.run(repo.close())
         tempdir.cleanup()
+
+
+def test_repository_conversation_to_record_only_strips_matching_provider_prefix() -> None:
+    repo = ConversationRepository(backend=MagicMock())
+    prefixed = Conversation(
+        id="claude:thread-1",
+        provider="claude",
+        title="Prefixed",
+        metadata={"content_hash": "hash-1"},
+        messages=[],
+    )
+    foreign = Conversation(
+        id="chatgpt:thread-2",
+        provider="claude",
+        title="Foreign Prefix",
+        metadata={"content_hash": "hash-2"},
+        messages=[],
+    )
+
+    prefixed_record = repo._conversation_to_record(prefixed)
+    foreign_record = repo._conversation_to_record(foreign)
+
+    assert prefixed_record.provider_conversation_id == "thread-1"
+    assert foreign_record.provider_conversation_id == "chatgpt:thread-2"
