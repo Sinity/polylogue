@@ -57,7 +57,7 @@ Recorded on `2026-03-11`.
 ### Full Test Suite
 
 - Command: `nix develop -c pytest -q -n 0`
-- Result: `4273 passed, 1 warning in 298.07s`
+- Result: `4018 passed, 1 warning in 304.64s`
 - Note: repo-wide pytest defaults still enable `-n auto`; use `-n 0` here for
   stable mutation-comparison timing.
 
@@ -111,7 +111,7 @@ the follow-up source/helper/query pass.
 
 | Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| `cli-query` | `e058c8240959` | 935 | 1007 | 20 | 0 | Clean post-concentration rerun: helper ownership is cleaner and survivors are still concentrated in `_async_execute_query` routing plus mutation-heavy modifier/delete paths. |
+| `cli-query` | `a3440a0f1a4b` | 961 | 989 | 12 | 0 | Clean post-entrypoint concentration rerun: duplicate formatting noise is gone, kill count improved, and the remaining survivor mass is now even more concentrated in `_async_execute_query` routing and the new `_create_query_vector_provider` seam. |
 | `drive-client` | `37e26aba2d3d` | 581 | 299 | 3 | 0 | Clean post-tightening rerun improved kill rate again; the remaining residue is now mostly concentrated in credential loading, folder resolution, and metadata/download helpers rather than broad reach gaps. |
 | `repository` | `b1f1d35bee28` | 568 | 74 | 66 | 0 | The concentrated read-model laws fixed the helper blind spot and cut survivor density sharply; the main remaining issue is timeout-heavy hydration/archive-stat coverage, not reach. |
 | `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
