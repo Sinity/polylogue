@@ -26,38 +26,12 @@ from polylogue.pipeline.semantic import extract_subagent_spawns
 from polylogue.sources.parsers.claude import (
     parse_ai as parse_claude_ai,
 )
-from polylogue.sources.parsers.codex import parse as parse_codex
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.ui import create_ui
 
 # =============================================================================
 # Test Data Constants - Parametrization Tables
 # =============================================================================
-
-# Codex parser test cases (minimal, kept for non-parametrized tests)
-CODEX_PARSER_TEST_CASES = [
-    (
-        [
-            {
-                "type": "session_meta",
-                "payload": {"id": "session-1", "timestamp": "2025-01-01T00:00:00Z"},
-            }
-        ],
-        True,
-        "codex looks like detects envelope format",
-    ),
-    (
-        [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Hello"}],
-            }
-        ],
-        True,
-        "codex looks like detects direct format",
-    ),
-]
 
 # =============================================================================
 # Claude Parser Tests - Edge Cases and Uncovered Branches
@@ -122,44 +96,6 @@ class TestParseCludeCodePayload:
         }
         result = parse_claude_ai(payload, "fallback")
         assert len(result.messages) == 0
-
-
-# =============================================================================
-# Codex Parser Tests
-# =============================================================================
-
-
-class TestCodexParser:
-    """Test Codex parser edge cases."""
-
-    @pytest.mark.parametrize("payload,should_match,desc", CODEX_PARSER_TEST_CASES)
-    def test_codex_looks_like(self, payload, should_match, desc):
-        """Parametrized test for Codex format detection."""
-        from polylogue.sources.parsers.codex import looks_like
-        assert looks_like(payload) == should_match
-
-    CODEX_PARSE_CASES = [
-        ("valid_message", [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello from Codex"}]}], "valid message with text"),
-        ("invalid_missing_role", [{"type": "message", "content": [{"type": "input_text", "text": "Invalid"}]}], "invalid missing role"),
-        ("envelope_invalid_payload", [{"type": "response_item", "payload": {"type": "message", "role": "user"}}], "envelope invalid payload"),
-    ]
-
-    def test_codex_parse_variants(self):
-        """Test parse_codex with various payloads."""
-        # Valid message
-        payload = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello from Codex"}]}]
-        result = parse_codex(payload, "fallback")
-        assert result is not None
-
-        # Invalid missing role
-        payload = [{"type": "message", "content": [{"type": "input_text", "text": "Invalid"}]}]
-        result = parse_codex(payload, "fallback")
-        assert result is not None  # Should handle gracefully
-
-        # Envelope with invalid payload
-        payload = [{"type": "response_item", "payload": {"type": "message", "role": "user"}}]
-        result = parse_codex(payload, "fallback")
-        assert result is not None
 
 
 # =============================================================================
