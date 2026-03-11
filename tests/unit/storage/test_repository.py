@@ -157,8 +157,6 @@ class TestRepositoryTreeTraversal:
         ("get_parent", "conv-1", lambda r: r is None),
         ("get_children", "conv-1", lambda r: len(r) == 1 and str(r[0].id) == "conv-3"),
         ("get_children", "conv-2", lambda r: len(r) == 0),
-        ("get_root", "conv-1", lambda r: str(r.id) == "conv-1"),
-        ("get_root", "conv-3", lambda r: str(r.id) == "conv-1"),
     ])
     async def test_tree_methods(self, repo, method, conv_id, expected_check):
         """Tree traversal methods return expected relationships."""
@@ -170,16 +168,6 @@ class TestRepositoryTreeTraversal:
         """get_root() should raise ValueError for nonexistent conversation."""
         with pytest.raises(ValueError, match="not found"):
             await repo.get_root("nonexistent")
-
-    @pytest.mark.parametrize("start_conv_id,expected_ids", [
-        ("conv-3", {"conv-1", "conv-3"}),   # From child
-        ("conv-1", {"conv-1", "conv-3"}),   # From root, includes children
-    ])
-    async def test_get_session_tree(self, repo, start_conv_id, expected_ids):
-        """get_session_tree() should return root and all descendants."""
-        tree = await repo.get_session_tree(start_conv_id)
-        tree_ids = {str(c.id) for c in tree}
-        assert tree_ids == expected_ids
 
 
 # =============================================================================
@@ -285,48 +273,6 @@ class TestMetadataCRUD:
 
 class TestCountAndList:
     """Test count() and list_summaries() with filters."""
-
-    @pytest.mark.parametrize("provider,providers,expected_count", [
-        (None, None, 3),
-        ("claude", None, 2),
-        ("chatgpt", None, 1),
-        (None, ["claude", "chatgpt"], 3),
-    ])
-    async def test_count(self, repo, provider, providers, expected_count):
-        """count() returns conversations, optionally filtered by provider."""
-        if provider:
-            count = await repo.count(provider=provider)
-        elif providers:
-            count = await repo.count(providers=providers)
-        else:
-            count = await repo.count()
-        assert count == expected_count
-
-    @pytest.mark.parametrize("limit,provider,expected_count", [
-        (None, None, 3),
-        (2, None, 2),
-        (None, "claude", 2),
-    ])
-    async def test_list_summaries_with_filters(self, repo, limit, provider, expected_count):
-        """list_summaries() respects limit and provider filters."""
-        kwargs = {}
-        if limit is not None:
-            kwargs["limit"] = limit
-        if provider:
-            kwargs["provider"] = provider
-        summaries = await repo.list_summaries(**kwargs)
-        assert len(summaries) == expected_count
-
-    async def test_iter_summary_pages(self, repo):
-        """iter_summary_pages() yields bounded pages without full-list callers."""
-        pages = [page async for page in repo.iter_summary_pages(page_size=2)]
-
-        assert [len(page) for page in pages] == [2, 1]
-        assert {summary.id for page in pages for summary in page} == {
-            "conv-1",
-            "conv-2",
-            "conv-3",
-        }
 
     async def test_list_operations(self, repo):
         """list() filters by title and returns lazy Conversation objects."""

@@ -65,6 +65,16 @@ def tool_result_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
+def code_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
+    """Generate a code content block."""
+    return {
+        "type": "code",
+        "text": draw(st.text(min_size=1, max_size=500)),
+        "language": draw(st.one_of(st.none(), st.sampled_from(["python", "bash", "json"]))),
+    }
+
+
+@st.composite
 def content_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
     """Generate any type of content block."""
     return draw(st.one_of(
@@ -72,6 +82,7 @@ def content_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
         thinking_block_strategy(),
         tool_use_block_strategy(),
         tool_result_block_strategy(),
+        code_block_strategy(),
     ))
 
 

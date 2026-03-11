@@ -11,11 +11,13 @@ from hypothesis import strategies as st
 
 from polylogue.schemas.unified import (
     HarmonizedMessage,
+    extract_content_blocks,
     extract_harmonized_message,
     extract_reasoning_traces,
     extract_tool_calls,
 )
 from polylogue.types import Provider
+from tests.infra.strategies import content_block_strategy
 
 # ---------------------------------------------------------------------------
 # Strategy helpers
@@ -92,6 +94,47 @@ _PROVIDER_STRATEGIES = {
 }
 
 
+def _expected_reasoning_texts(content: list[object]) -> list[str]:
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "thinking":
+            text = block.get("thinking") or block.get("text")
+            if text:
+                texts.append(text)
+        elif block.get("isThought") and block.get("text"):
+            texts.append(block["text"])
+    return texts
+
+
+def _expected_tool_blocks(content: list[object]) -> list[dict[str, object]]:
+    return [
+        block
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+
+
+def _expected_content_types(content: list[object]) -> list[str]:
+    expected: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type", "text")
+        if block_type == "text":
+            expected.append("text")
+        elif block_type == "thinking":
+            expected.append("thinking")
+        elif block_type == "tool_use":
+            expected.append("tool_use")
+        elif block_type == "tool_result":
+            expected.append("tool_result")
+        elif block_type == "code":
+            expected.append("code")
+    return expected
+
+
 # ---------------------------------------------------------------------------
 # Law 1: HarmonizedMessage.role is always a canonical role value
 # ---------------------------------------------------------------------------
@@ -147,14 +190,14 @@ def test_harmonized_message_role_coercion(role_str: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Law 5: extract_reasoning_traces never crashes on arbitrary content
+# Law 5: extract_reasoning_traces returns every reasoning block in order
 # ---------------------------------------------------------------------------
 
 @given(
     st.lists(
         st.one_of(
-            st.just({"type": "thinking", "thinking": "thought"}),
-            st.just({"type": "text", "text": "text"}),
+            content_block_strategy(),
+            st.fixed_dictionaries({"isThought": st.just(True), "text": st.text(min_size=1, max_size=100)}),
             st.just("not a dict"),
             st.just(42),
         ),
@@ -162,21 +205,22 @@ def test_harmonized_message_role_coercion(role_str: str) -> None:
     ),
     st.sampled_from(list(_PROVIDER_STRATEGIES.keys())),
 )
-def test_extract_reasoning_traces_never_crashes(content: list, provider: Provider) -> None:
-    """extract_reasoning_traces never crashes on arbitrary content."""
+def test_extract_reasoning_traces_preserve_reasoning_blocks(content: list, provider: Provider) -> None:
+    """extract_reasoning_traces preserves every reasoning block in order."""
     traces = extract_reasoning_traces(content, provider)
-    assert isinstance(traces, list)
+    expected_texts = _expected_reasoning_texts(content)
+    assert [trace.text for trace in traces] == expected_texts
+    assert all(trace.provider == provider for trace in traces)
 
 
 # ---------------------------------------------------------------------------
-# Law 6: extract_tool_calls never crashes on arbitrary content
+# Law 6: extract_tool_calls returns every tool_use block in order
 # ---------------------------------------------------------------------------
 
 @given(
     st.lists(
         st.one_of(
-            st.just({"type": "tool_use", "name": "Read", "input": {}}),
-            st.just({"type": "text", "text": "text"}),
+            content_block_strategy(),
             st.just("not a dict"),
             st.just(None),
         ),
@@ -184,10 +228,17 @@ def test_extract_reasoning_traces_never_crashes(content: list, provider: Provide
     ),
     st.sampled_from(list(_PROVIDER_STRATEGIES.keys())),
 )
-def test_extract_tool_calls_never_crashes(content: list, provider: Provider) -> None:
-    """extract_tool_calls never crashes on arbitrary content."""
+def test_extract_tool_calls_preserve_tool_use_blocks(content: list, provider: Provider) -> None:
+    """extract_tool_calls preserves every tool_use block in order."""
     calls = extract_tool_calls(content, provider)
-    assert isinstance(calls, list)
+    expected = _expected_tool_blocks(content)
+    assert [call.name for call in calls] == [str(block.get("name", "")) for block in expected]
+    assert [call.id for call in calls] == [block.get("id") for block in expected]
+    assert [call.input for call in calls] == [
+        block.get("input", {}) if isinstance(block.get("input"), dict) else {}
+        for block in expected
+    ]
+    assert all(call.provider == provider for call in calls)
 
 
 # ---------------------------------------------------------------------------
@@ -202,35 +253,23 @@ def test_harmonized_provider_coercion(provider_str: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Law 8: extract_reasoning_traces returns traces only for thinking blocks
+# Law 8: extract_content_blocks classifies every recognized block in order
 # ---------------------------------------------------------------------------
 
-def test_extract_reasoning_traces_only_for_thinking() -> None:
-    """extract_reasoning_traces only extracts thinking blocks, not text."""
-    content = [
-        {"type": "thinking", "thinking": "deep thought"},
-        {"type": "text", "text": "response"},
-        {"type": "tool_use", "name": "Read", "input": {}},
-    ]
-    traces = extract_reasoning_traces(content, Provider.CLAUDE_CODE)
-    assert len(traces) == 1
-    assert "deep thought" in traces[0].text
-
-
-# ---------------------------------------------------------------------------
-# Law 9: extract_tool_calls returns calls only for tool_use blocks
-# ---------------------------------------------------------------------------
-
-def test_extract_tool_calls_only_for_tool_use() -> None:
-    """extract_tool_calls only extracts tool_use blocks, not other types."""
-    content = [
-        {"type": "thinking", "thinking": "thought"},
-        {"type": "text", "text": "response"},
-        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}},
-    ]
-    calls = extract_tool_calls(content, Provider.CLAUDE_CODE)
-    assert len(calls) == 1
-    assert calls[0].name == "Bash"
+@given(
+    st.lists(
+        st.one_of(
+            content_block_strategy(),
+            st.fixed_dictionaries({"type": st.just("unknown"), "text": st.text(max_size=50)}),
+            st.just("not a dict"),
+        ),
+        max_size=10,
+    )
+)
+def test_extract_content_blocks_preserve_recognized_block_order(content: list[object]) -> None:
+    """extract_content_blocks preserves recognized block order and classification."""
+    blocks = extract_content_blocks(content)
+    assert [block.type.value for block in blocks] == _expected_content_types(content)
 
 
 # ---------------------------------------------------------------------------
