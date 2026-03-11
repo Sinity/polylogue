@@ -306,7 +306,7 @@ class TestSiteBuilderBuild:
             builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test"))
             asyncio.run(builder._build_index())
 
-            mock_repo.list_summaries.assert_awaited_once_with(limit=None)
+            mock_repo.list_summaries.assert_awaited_once_with(limit=500, offset=0)
 
     def test_build_multiple_providers(
         self, tmp_path, mock_summary, mock_summary_gemini
