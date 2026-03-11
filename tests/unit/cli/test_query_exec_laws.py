@@ -14,12 +14,14 @@ import pytest
 import yaml
 from hypothesis import HealthCheck, given, settings
 
-from polylogue.cli.query import _async_execute_query
-from polylogue.cli.query_actions import _apply_modifiers, _delete_conversations
+from polylogue.cli.query import _async_execute_query, _no_results
+from polylogue.cli.query_actions import _apply_modifiers, _apply_transform, _delete_conversations
 from polylogue.cli.query_helpers import summary_to_dict
-from polylogue.cli.query_output import _output_summary_list, _send_output
+from polylogue.cli.query_output import _output_stats_sql, _output_summary_list, _send_output
 from polylogue.cli.query_plan import QueryAction, QueryExecutionPlan, QueryMutationSpec, QueryOutputSpec
 from polylogue.cli.types import AppEnv
+from polylogue.lib.models import Conversation, Message
+from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.services import build_runtime_services
 from tests.infra.strategies import (
     ConversationSummarySpec,
@@ -117,6 +119,25 @@ def _build_plan(case: str) -> QueryExecutionPlan:
         output=output,
         mutation=mutation,
         stats_dimension=stats_dimension,
+    )
+
+
+def _sample_conversation() -> Conversation:
+    return Conversation(
+        id="conv-transform",
+        provider="claude",
+        title="Transform Contract",
+        messages=[
+            Message(id="m-user", role="user", text="hello"),
+            Message(
+                id="m-thinking",
+                role="assistant",
+                text="chain",
+                content_blocks=[{"type": "thinking", "text": "chain"}],
+            ),
+            Message(id="m-tool", role="tool", text="tool output"),
+            Message(id="m-assistant", role="assistant", text="answer"),
+        ],
     )
 
 
@@ -362,3 +383,138 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         mock_output_summary_list.assert_awaited_once()
     else:
         mock_output_results.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_lines"),
+    [
+        (
+            {"provider": "claude", "limit": 5},
+            [
+                "No conversations matched filters:",
+                "  provider: claude",
+                "Hint: try broadening your filters or use --list to browse",
+            ],
+        ),
+        (
+            ConversationQuerySpec(),
+            ["No conversations matched."],
+        ),
+    ],
+)
+def test_no_results_contract(params, expected_lines) -> None:
+    env = _make_env()
+
+    with patch("click.echo") as mock_echo, pytest.raises(SystemExit) as exc_info:
+        _no_results(env, params)
+
+    assert exc_info.value.code == 2
+    observed_lines = [call.args[0] for call in mock_echo.call_args_list if call.args]
+    assert observed_lines == expected_lines
+    assert all(call.kwargs.get("err") is True for call in mock_echo.call_args_list)
+
+
+@pytest.mark.parametrize(
+    ("transform", "expected_ids"),
+    [
+        ("strip-tools", ["m-user", "m-thinking", "m-assistant"]),
+        ("strip-thinking", ["m-user", "m-tool", "m-assistant"]),
+        ("strip-all", ["m-user", "m-assistant"]),
+    ],
+)
+def test_apply_transform_contract(transform: str, expected_ids: list[str]) -> None:
+    conversation = _sample_conversation()
+
+    transformed = _apply_transform([conversation], transform)
+
+    assert [message.id for message in transformed[0].messages] == expected_ids
+    assert [message.id for message in conversation.messages] == [
+        "m-user",
+        "m-thinking",
+        "m-tool",
+        "m-assistant",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
+    env = _make_env()
+    repo = MagicMock()
+    repo.aggregate_message_stats = AsyncMock(
+        return_value={
+            "total": 9,
+            "user": 4,
+            "assistant": 5,
+            "words_approx": 42,
+            "attachments": 2,
+            "min_sort_key": 1704067200,
+            "max_sort_key": 1704153600,
+            "providers": {"claude": 2, "chatgpt": 1},
+        }
+    )
+    summary_specs = (
+        ConversationSummarySpec(
+            conversation_id="conv-a",
+            provider="claude",
+            title="A",
+            summary="",
+            tags=(),
+            created_at=None,
+            updated_at=None,
+            message_count=3,
+        ),
+        ConversationSummarySpec(
+            conversation_id="conv-b",
+            provider="chatgpt",
+            title="B",
+            summary="",
+            tags=(),
+            created_at=None,
+            updated_at=None,
+            message_count=4,
+        ),
+    )
+    summaries = [build_conversation_summary(spec) for spec in summary_specs]
+    filter_chain = MagicMock()
+    filter_chain.describe.return_value = ["provider=claude", "tag=law"]
+    filter_chain.can_use_summaries.return_value = True
+    filter_chain.list_summaries = AsyncMock(return_value=summaries)
+
+    await _output_stats_sql(env, filter_chain, repo)
+
+    filter_chain.list_summaries.assert_awaited_once()
+    filter_chain.count.assert_not_called()
+    repo.aggregate_message_stats.assert_awaited_once_with(["conv-a", "conv-b"])
+    printed = [call.args[0] for call in env.ui.console.print.call_args_list if call.args]
+    assert printed == [
+        "\nConversations: 2\n",
+        "Messages: 9 total (4 user, 5 assistant)",
+        "Words: ~42",
+        "Providers: claude (2), chatgpt (1)",
+        "Attachments: 2",
+        "Date range: 2024-01-01 to 2024-01-02",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_output_stats_sql_empty_paths_contract() -> None:
+    env = _make_env()
+    repo = MagicMock()
+    repo.aggregate_message_stats = AsyncMock()
+
+    filtered = MagicMock()
+    filtered.describe.return_value = ["provider=claude"]
+    filtered.can_use_summaries.return_value = True
+    filtered.list_summaries = AsyncMock(return_value=[])
+    await _output_stats_sql(env, filtered, repo)
+    env.ui.console.print.assert_called_once_with("No conversations matched.")
+    repo.aggregate_message_stats.assert_not_called()
+
+    env = _make_env()
+    unfiltered = MagicMock()
+    unfiltered.describe.return_value = []
+    unfiltered.count = AsyncMock(return_value=0)
+    unfiltered.can_use_summaries.return_value = False
+    await _output_stats_sql(env, unfiltered, repo)
+    env.ui.console.print.assert_called_once_with("No conversations in archive.")
+    repo.aggregate_message_stats.assert_not_called()
