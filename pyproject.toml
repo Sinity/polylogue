@@ -235,3 +235,6 @@ tests_dir = [
     "tests/unit/storage/test_hybrid_laws.py",
 ]
 also_copy = ["polylogue", "README.md"]
+# Mutmut runs inside one process; inheriting repo-wide `pytest -n auto`
+# breaks trampoline bookkeeping inside xdist workers.
+pytest_add_cli_args = ["-n", "0", "-p", "no:randomly", "-p", "no:random-order", "--benchmark-disable"]
