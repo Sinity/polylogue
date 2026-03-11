@@ -1,10 +1,10 @@
 # Mutmut Campaign: `providers-semantics`
 
-- Recorded on `2026-03-11T19:19:47.469627+00:00`
-- Commit: `e759af23458dfdc67e1a820513f09f3828460458`
+- Recorded on `2026-03-11T20:12:38.428888+00:00`
+- Commit: `c0596770631e91333026afbe4414d4249a934e72`
 - Worktree dirty: `no`
 - Description: Provider semantic extraction, harmonization, and viewport contracts
-- Workspace: `/tmp/nix-shell.kYSGmF/mutmut-providers-semantics-zrjhhjtf/repo`
+- Workspace: `/tmp/nix-shell.honHyV/mutmut-providers-semantics-zwhxu__s/repo`
 - Command: `mutmut run`
 
 ## Scope
@@ -16,14 +16,14 @@
 
 | Status | Count |
 | --- | ---: |
-| Killed | 847 |
-| Survived | 487 |
+| Killed | 805 |
+| Survived | 504 |
 | Timeout | 2 |
 | Not checked | 0 |
 | Suspicious | 0 |
 | Skipped | 0 |
 
-- Runtime: `49.62s`
+- Runtime: `48.27s`
 - Exit code: `0`
 
 ## Dominant Survivors
@@ -32,14 +32,14 @@
 | --- | ---: |
 | `extract_content_blocks` | 99 |
 | `to_meta` | 39 |
-| `extract_reasoning_traces` | 21 |
+| `extract_reasoning_traces` | 23 |
 | `to_content_blocks` | 7 |
+| `extract_tool_calls` | 3 |
 | `polylogue.schemas.unified.x__missing_role__mutmut_2` | 1 |
 | `polylogue.schemas.unified.x__harmonize_viewport_message__mutmut_27` | 1 |
 | `polylogue.schemas.unified.x__extract_with_adapter__mutmut_6` | 1 |
 | `polylogue.schemas.unified.x__extract_with_adapter__mutmut_7` | 1 |
 | `polylogue.schemas.unified.x__extract_with_adapter__mutmut_8` | 1 |
-| `polylogue.schemas.unified.x__extract_with_adapter__mutmut_9` | 1 |
 
 ## Dominant Timeouts
 
@@ -70,17 +70,17 @@
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_12`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_13`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_14`
-- `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_15`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_18`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_22`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_23`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_24`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_25`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_26`
-- `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_28`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_31`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_32`
-- ... 462 more
+- `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_33`
+- `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_34`
+- ... 479 more
 
 ## Timeout Keys
 

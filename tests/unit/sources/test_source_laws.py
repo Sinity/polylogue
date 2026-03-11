@@ -29,6 +29,7 @@ from polylogue.sources.parsers.claude import (
 from polylogue.sources.source import (
     _ConversationEmitter,
     _decode_json_bytes,
+    _has_supported_extension,
     _iter_json_stream,
     _ParseContext,
     _zip_entry_provider_hint,
@@ -88,6 +89,21 @@ def test_detect_provider_uses_path_hints_for_unknown_payload(case: tuple[str, Pa
     """Filename/path hints still classify unknown payload shapes."""
     provider, path = case
     assert detect_provider({"unrelated": True}, path) == provider
+
+
+def test_detect_provider_prefers_payload_shape_over_conflicting_path_hint() -> None:
+    payload = {
+        "mapping": {
+            "node-1": {
+                "message": {
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["hello"]},
+                }
+            }
+        }
+    }
+
+    assert detect_provider(payload, Path("misleading/claude-code/session.jsonl")) == Provider.CHATGPT
 
 
 @given(provider_payload_case_strategy(_CANONICAL_PROVIDERS))
@@ -333,6 +349,20 @@ def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, obj
         assert json.loads(decoded) == expected
 
 
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("CHATGPT.JSON", True),
+        ("Export.JSONL", True),
+        ("data.jsonl.txt", True),
+        ("conversation.ndjson", True),
+        ("notes.txt", False),
+    ],
+)
+def test_has_supported_extension_contract(filename: str, expected: bool) -> None:
+    assert _has_supported_extension(Path(filename)) is expected
+
+
 def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
     """Claude session-index lookup and enrichment must stay source-local and deterministic."""
     session_dir = tmp_path / "claude"
@@ -489,6 +519,93 @@ def test_conversation_emitter_grouped_jsonl_contract() -> None:
     assert len(conversation.messages) == 2
 
 
+def test_conversation_emitter_grouped_json_whole_file_raw_contract() -> None:
+    raw = json.dumps(
+        [
+            {
+                "type": "session_meta",
+                "payload": {"id": "session-1", "timestamp": "2025-01-01T00:00:00Z"},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "msg-1",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            },
+        ]
+    ).encode("utf-8")
+    ctx = _ParseContext(
+        provider_hint=Provider.CODEX,
+        should_group=True,
+        source_path_str="/tmp/session.json",
+        fallback_id="session",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=True,
+        session_index={},
+        detect_path=Path("session.json"),
+    )
+
+    emitted = list(_ConversationEmitter(ctx).emit(BytesIO(raw), "session.json", pre_read_bytes=raw))
+
+    assert len(emitted) == 1
+    raw_data, conversation = emitted[0]
+    assert raw_data is not None
+    assert raw_data.raw_bytes == raw
+    assert raw_data.source_index is None
+    assert conversation.provider_name == Provider.CODEX
+
+
+def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contract() -> None:
+    entry = SessionIndexEntry(
+        session_id="session-1",
+        full_path="/tmp/session.jsonl",
+        first_prompt="Summarize this repo",
+        summary="Indexed summary",
+        message_count=12,
+        created="2025-01-02T00:00:00Z",
+        modified="2025-01-03T00:00:00Z",
+        git_branch="main",
+        project_path="/tmp/project",
+        is_sidechain=False,
+    )
+    ctx = _ParseContext(
+        provider_hint=Provider.CLAUDE_CODE,
+        should_group=True,
+        source_path_str="/tmp/session.jsonl",
+        fallback_id="session",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=False,
+        session_index={"session-1": entry},
+        detect_path=Path("session.jsonl"),
+    )
+    emitter = _ConversationEmitter(ctx)
+    matching = ParsedConversation(
+        provider_name="claude-code",
+        provider_conversation_id="session-1",
+        title="session-1",
+        created_at=None,
+        updated_at=None,
+        messages=[ParsedMessage(provider_message_id="m1", role="user", text="hello")],
+    )
+    other = ParsedConversation(
+        provider_name="chatgpt",
+        provider_conversation_id="session-2",
+        title="untouched",
+        created_at=None,
+        updated_at=None,
+        messages=[ParsedMessage(provider_message_id="m2", role="user", text="hello")],
+    )
+
+    enriched = emitter._maybe_enrich(matching)
+    untouched = emitter._maybe_enrich(other, Provider.CHATGPT)
+
+    assert enriched.title == "Indexed summary"
+    assert untouched.title == "untouched"
+
+
 def test_zip_entry_validator_filters_claude_bundle_entries_contract() -> None:
     validator = _ZipEntryValidator(
         "claude",
@@ -538,6 +655,68 @@ def test_zip_entry_validator_rejects_suspicious_entries_contract() -> None:
     assert [entry.filename for entry in kept] == ["nested/conversations.json", "nested/other.json"]
     assert cursor_state["failed_count"] == 1
     assert cursor_state["failed_files"][0]["path"] == "/tmp/archive.zip:nested/conversations.jsonl"
+
+
+@pytest.mark.parametrize(
+    "entry_name",
+    [
+        "nested/conversations.json",
+        "nested/conversations.jsonl",
+        "nested/conversations.ndjson",
+        "nested/conversations.jsonl.txt",
+    ],
+)
+def test_zip_entry_validator_keeps_supported_json_extensions_contract(entry_name: str) -> None:
+    validator = _ZipEntryValidator(
+        "chatgpt",
+        cursor_state={"failed_files": [], "failed_count": 0},
+        zip_path=Path("/tmp/archive.zip"),
+    )
+    entry = zipfile.ZipInfo(entry_name)
+    entry.file_size = 100
+    entry.compress_size = 50
+
+    kept = list(validator.filter_entries([entry]))
+
+    assert [item.filename for item in kept] == [entry_name]
+
+
+def test_zip_entry_validator_skips_directories_and_unsupported_entries_without_recording_failures() -> None:
+    cursor_state = {"failed_files": [], "failed_count": 0}
+    validator = _ZipEntryValidator(
+        "chatgpt",
+        cursor_state=cursor_state,
+        zip_path=Path("/tmp/archive.zip"),
+    )
+    directory = zipfile.ZipInfo("nested/")
+    unsupported = zipfile.ZipInfo("nested/readme.txt")
+    unsupported.file_size = 100
+    unsupported.compress_size = 50
+
+    kept = list(validator.filter_entries([directory, unsupported]))
+
+    assert kept == []
+    assert cursor_state["failed_count"] == 0
+    assert cursor_state["failed_files"] == []
+
+
+def test_zip_entry_validator_rejects_oversized_entries_contract() -> None:
+    cursor_state = {"failed_files": [], "failed_count": 0}
+    validator = _ZipEntryValidator(
+        "chatgpt",
+        cursor_state=cursor_state,
+        zip_path=Path("/tmp/archive.zip"),
+    )
+
+    oversized = zipfile.ZipInfo("nested/huge.json")
+    oversized.file_size = 11 * 1024 * 1024 * 1024
+    oversized.compress_size = 1024
+
+    kept = list(validator.filter_entries([oversized]))
+
+    assert kept == []
+    assert cursor_state["failed_count"] == 1
+    assert "huge.json" in cursor_state["failed_files"][0]["path"]
 
 
 def test_zip_entry_provider_hint_prefers_entry_name_contract() -> None:

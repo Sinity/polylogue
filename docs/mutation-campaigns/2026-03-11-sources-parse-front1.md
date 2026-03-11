@@ -1,10 +1,10 @@
 # Mutmut Campaign: `sources-parse`
 
-- Recorded on `2026-03-11T19:22:10.711397+00:00`
-- Commit: `e759af23458dfdc67e1a820513f09f3828460458`
+- Recorded on `2026-03-11T20:13:35.535528+00:00`
+- Commit: `c0596770631e91333026afbe4414d4249a934e72`
 - Worktree dirty: `no`
 - Description: Provider detection, parsing, harmonization, and parser laws
-- Workspace: `/tmp/nix-shell.cEiqVv/mutmut-sources-parse-_9gaegv4/repo`
+- Workspace: `/tmp/nix-shell.muxbiy/mutmut-sources-parse-3phg4thc/repo`
 - Command: `mutmut run`
 
 ## Scope
@@ -16,14 +16,14 @@
 
 | Status | Count |
 | --- | ---: |
-| Killed | 3494 |
-| Survived | 2467 |
-| Timeout | 11 |
+| Killed | 3455 |
+| Survived | 2482 |
+| Timeout | 10 |
 | Not checked | 0 |
 | Suspicious | 0 |
 | Skipped | 0 |
 
-- Runtime: `241.31s`
+- Runtime: `234.45s`
 - Exit code: `0`
 
 ## Dominant Survivors
@@ -38,8 +38,8 @@
 | `resolve_folder_id` | 30 |
 | `save` | 19 |
 | `load` | 18 |
+| `extract_reasoning_traces` | 17 |
 | `get_metadata` | 16 |
-| `_emit_individual` | 16 |
 
 ## Dominant Timeouts
 
@@ -53,7 +53,6 @@
 | `iter_json_files` | 1 |
 | `polylogue.sources.source.x_parse_payload__mutmut_42` | 1 |
 | `polylogue.sources.source.x_parse_payload__mutmut_43` | 1 |
-| `polylogue.sources.source.x_parse_payload__mutmut_45` | 1 |
 
 ## Dominant Not-Checked Clusters
 
@@ -78,17 +77,17 @@
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_12`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_13`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_14`
-- `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_15`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_18`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_22`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_23`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_24`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_25`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_26`
-- `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_28`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_31`
 - `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_32`
-- ... 2442 more
+- `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_33`
+- `polylogue.schemas.unified.x__fallback_extract_claude_code__mutmut_34`
+- ... 2457 more
 
 ## Timeout Keys
 
@@ -102,7 +101,6 @@
 - `polylogue.sources.providers.chatgpt.xǁChatGPTConversationǁiter_user_assistant_pairs__mutmut_21`
 - `polylogue.sources.source.x_parse_payload__mutmut_42`
 - `polylogue.sources.source.x_parse_payload__mutmut_43`
-- `polylogue.sources.source.x_parse_payload__mutmut_45`
 
 ## Notes
 

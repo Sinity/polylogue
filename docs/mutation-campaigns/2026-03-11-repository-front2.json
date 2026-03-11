@@ -1,11 +1,11 @@
 {
   "campaign": "repository",
   "description": "Repository query, projection, and CRUD contracts",
-  "commit": "e759af23458dfdc67e1a820513f09f3828460458",
+  "commit": "b1f1d35bee28cb78714a7ba5e10a86fa06c176f2",
   "worktree_dirty": false,
   "status_summary": [],
-  "created_at": "2026-03-11T19:27:44.024440+00:00",
-  "workspace": "/tmp/nix-shell.HZq1Dj/mutmut-repository-tm3goviv/repo",
+  "created_at": "2026-03-11T20:44:32.418308+00:00",
+  "workspace": "/tmp/nix-shell.q2QMWP/mutmut-repository-1mtm744e/repo",
   "command": [
     "mutmut",
     "run"
@@ -21,9 +21,9 @@
     "tests/unit/storage/test_crud_laws.py"
   ],
   "counts": {
-    "killed": 569,
-    "timeout": 35,
-    "survived": 104,
+    "killed": 568,
+    "timeout": 66,
+    "survived": 74,
     "not_checked": 0,
     "suspicious": 0,
     "skipped": 0
@@ -31,23 +31,19 @@
   "dominant_survivors": [
     [
       "get_archive_stats",
-      28
+      19
     ],
     [
       "_conversation_to_record",
-      17
-    ],
-    [
-      "search_similar",
-      10
+      15
     ],
     [
       "_save_via_backend",
       9
     ],
     [
-      "iter_messages",
-      7
+      "search_similar",
+      8
     ],
     [
       "similarity_search",
@@ -62,89 +58,74 @@
       3
     ],
     [
-      "iter_summary_pages",
+      "search_summaries",
       2
     ],
     [
-      "get_session_tree",
+      "get_stats_by",
+      2
+    ],
+    [
+      "_get_message_conversation_mapping",
       2
     ]
   ],
   "dominant_timeouts": [
     [
-      "_hydrate_conversations",
-      8
-    ],
-    [
-      "get_session_tree",
-      5
-    ],
-    [
-      "get_render_projection",
-      4
-    ],
-    [
-      "get_parent",
-      4
-    ],
-    [
-      "get_conversation_stats",
-      4
+      "get_archive_stats",
+      12
     ],
     [
       "iter_messages",
-      4
+      10
     ],
     [
-      "get",
-      2
+      "get_render_projection",
+      9
     ],
     [
-      "list_summaries",
-      1
+      "_hydrate_conversations",
+      6
+    ],
+    [
+      "_get_root_record",
+      6
+    ],
+    [
+      "get_session_tree",
+      6
+    ],
+    [
+      "get_parent",
+      5
     ],
     [
       "iter_summary_pages",
-      1
+      3
     ],
     [
       "list",
-      1
+      2
+    ],
+    [
+      "get_conversation_stats",
+      2
     ]
   ],
   "dominant_not_checked": [],
   "survivor_keys": [
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_summary_pages__mutmut_44",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_summary_pages__mutmut_46",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1aggregate_message_stats__mutmut_1",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_parent__mutmut_3",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_get_root_record__mutmut_9",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_root__mutmut_6",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_13",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_15",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_summaries__mutmut_1",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_summaries__mutmut_5",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search__mutmut_1",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search__mutmut_5",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search__mutmut_10",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search__mutmut_12",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_many__mutmut_5",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_many__mutmut_7",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_stats_by__mutmut_1",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_stats_by__mutmut_2",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_2",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_3",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_4",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_6",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_9",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_13",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_16",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_similar__mutmut_1",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_similar__mutmut_4",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_similar__mutmut_8",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_similar__mutmut_9",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_similar__mutmut_11",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_similar__mutmut_13",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_similar__mutmut_15",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_similar__mutmut_17",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_similar__mutmut_26",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_similar__mutmut_32",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1search_similar__mutmut_35",
@@ -169,8 +150,6 @@
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_conversation_to_record__mutmut_44",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_conversation_to_record__mutmut_47",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_conversation_to_record__mutmut_48",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_conversation_to_record__mutmut_53",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_conversation_to_record__mutmut_55",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_save_via_backend__mutmut_22",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_save_via_backend__mutmut_23",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_save_via_backend__mutmut_24",
@@ -208,7 +187,66 @@
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_50",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_51",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_52",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_53",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_53"
+  ],
+  "timeout_keys": [
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get__mutmut_10",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_1",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_2",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_3",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_4",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_5",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_6",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_7",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_8",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_10",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_21",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_22",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_24",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_25",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_26",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_28",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1list_summaries__mutmut_1",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_summary_pages__mutmut_1",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_summary_pages__mutmut_44",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_summary_pages__mutmut_46",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1list__mutmut_1",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1list__mutmut_2",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1aggregate_message_stats__mutmut_1",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_parent__mutmut_1",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_parent__mutmut_2",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_parent__mutmut_3",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_parent__mutmut_4",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_parent__mutmut_5",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_get_root_record__mutmut_5",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_get_root_record__mutmut_6",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_get_root_record__mutmut_7",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_get_root_record__mutmut_8",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_get_root_record__mutmut_9",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_get_root_record__mutmut_10",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_root__mutmut_6",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_1",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_2",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_10",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_13",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_14",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_15",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_conversation_stats__mutmut_1",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_conversation_stats__mutmut_4",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_message_counts_batch__mutmut_1",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_1",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_2",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_3",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_4",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_6",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_7",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_9",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_10",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_13",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_16",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_3",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_10",
+    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_17",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_55",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_56",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_58",
@@ -219,45 +257,8 @@
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_63",
     "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_archive_stats__mutmut_64"
   ],
-  "timeout_keys": [
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get__mutmut_9",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get__mutmut_10",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_1",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_2",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_3",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_render_projection__mutmut_10",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_13",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_14",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_21",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_22",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_24",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_25",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_26",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1_hydrate_conversations__mutmut_28",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1list_summaries__mutmut_1",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_summary_pages__mutmut_1",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1list__mutmut_1",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_parent__mutmut_1",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_parent__mutmut_2",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_parent__mutmut_4",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_parent__mutmut_5",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_1",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_2",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_3",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_4",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_session_tree__mutmut_10",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_conversation_stats__mutmut_1",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_conversation_stats__mutmut_2",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_conversation_stats__mutmut_3",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_conversation_stats__mutmut_4",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1get_message_counts_batch__mutmut_1",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_1",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_5",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_7",
-    "polylogue.storage.repository.x\u01c1ConversationRepository\u01c1iter_messages__mutmut_10"
-  ],
   "not_checked_keys": [],
-  "runtime_seconds": 231.950192,
+  "runtime_seconds": 197.550918,
   "exit_code": 0,
   "notes": [
     "Large surface; use to gauge storage law readiness before repository-law work."

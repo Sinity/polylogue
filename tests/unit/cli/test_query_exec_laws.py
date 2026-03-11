@@ -15,9 +15,9 @@ import yaml
 from hypothesis import HealthCheck, given, settings
 from rich.console import Console
 
-from polylogue.cli.query import _async_execute_query, _no_results, _project_query_results
+from polylogue.cli.query import _async_execute_query, _project_query_results
 from polylogue.cli.query_actions import _apply_modifiers, _apply_transform, _delete_conversations
-from polylogue.cli.query_helpers import summary_to_dict
+from polylogue.cli.query_helpers import no_results, summary_to_dict
 from polylogue.cli.query_output import (
     _output_results,
     _output_stats_by_summaries,
@@ -432,7 +432,7 @@ def test_output_results_no_results_contract() -> None:
     env = _make_env()
 
     with (
-        patch("polylogue.cli.query._no_results", side_effect=SystemExit(2)) as mock_no_results,
+        patch("polylogue.cli.query_output.no_results", side_effect=SystemExit(2)) as mock_no_results,
         patch("polylogue.cli.query_output._render_conversation_rich") as mock_render,
         patch("polylogue.cli.query_output._send_output") as mock_send,
         patch("polylogue.cli.query_output.format_conversation") as mock_format,
@@ -593,16 +593,16 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("click.echo") as mock_echo,
-        patch("polylogue.cli.query._output_summary_list", new_callable=AsyncMock) as mock_output_summary_list,
-        patch("polylogue.cli.query._output_stats_sql", new_callable=AsyncMock) as mock_output_stats_sql,
-        patch("polylogue.cli.query._output_stats_by_summaries") as mock_output_stats_by_summaries,
-        patch("polylogue.cli.query._output_stats_by") as mock_output_stats_by,
-        patch("polylogue.cli.query._apply_modifiers", new_callable=AsyncMock) as mock_apply_modifiers,
-        patch("polylogue.cli.query._delete_conversations", new_callable=AsyncMock) as mock_delete_conversations,
-        patch("polylogue.cli.query._open_result") as mock_open_result,
-        patch("polylogue.cli.query._output_results") as mock_output_results,
-        patch("polylogue.cli.query.resolve_stream_target", new_callable=AsyncMock, return_value="conv-stream") as mock_stream_target,
-        patch("polylogue.cli.query.stream_conversation", new_callable=AsyncMock) as mock_stream_conversation,
+        patch("polylogue.cli.query_output._output_summary_list", new_callable=AsyncMock) as mock_output_summary_list,
+        patch("polylogue.cli.query_output._output_stats_sql", new_callable=AsyncMock) as mock_output_stats_sql,
+        patch("polylogue.cli.query_output._output_stats_by_summaries") as mock_output_stats_by_summaries,
+        patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
+        patch("polylogue.cli.query_actions._apply_modifiers", new_callable=AsyncMock) as mock_apply_modifiers,
+        patch("polylogue.cli.query_actions._delete_conversations", new_callable=AsyncMock) as mock_delete_conversations,
+        patch("polylogue.cli.query_output._open_result") as mock_open_result,
+        patch("polylogue.cli.query_output._output_results") as mock_output_results,
+        patch("polylogue.cli.query_actions.resolve_stream_target", new_callable=AsyncMock, return_value="conv-stream") as mock_stream_target,
+        patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock) as mock_stream_conversation,
     ):
         repo.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
         asyncio.run(_async_execute_query(env, {"limit": 7}))
@@ -674,8 +674,8 @@ def test_async_execute_query_stats_by_falls_back_to_full_results_without_summari
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query._output_stats_by") as mock_output_stats_by,
-        patch("polylogue.cli.query._output_stats_by_summaries") as mock_output_stats_by_summaries,
+        patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
+        patch("polylogue.cli.query_output._output_stats_by_summaries") as mock_output_stats_by_summaries,
     ):
         asyncio.run(_async_execute_query(env, {}))
 
@@ -697,7 +697,7 @@ def test_async_execute_query_summary_list_no_results_contract() -> None:
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query._no_results", side_effect=SystemExit(2)) as mock_no_results,
+        patch("polylogue.cli.query.no_results", side_effect=SystemExit(2)) as mock_no_results,
         pytest.raises(SystemExit) as exc_info,
     ):
         asyncio.run(_async_execute_query(env, {}))
@@ -746,7 +746,7 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query._output_results") as mock_output_results,
+        patch("polylogue.cli.query_output._output_results") as mock_output_results,
     ):
         asyncio.run(_async_execute_query(env, {}))
 
@@ -775,7 +775,7 @@ def test_no_results_contract(params, expected_lines) -> None:
     env = _make_env()
 
     with patch("click.echo") as mock_echo, pytest.raises(SystemExit) as exc_info:
-        _no_results(env, params)
+        no_results(env, params)
 
     assert exc_info.value.code == 2
     observed_lines = [call.args[0] for call in mock_echo.call_args_list if call.args]
