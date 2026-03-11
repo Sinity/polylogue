@@ -18,6 +18,7 @@ from jinja2 import DictLoader, Environment, select_autoescape
 
 from polylogue.lib.log import get_logger
 from polylogue.paths import safe_path_component
+from polylogue.rendering.core import build_rendered_message_payload
 from polylogue.rendering.renderers.html import MarkdownRenderer, PygmentsHighlighter
 
 if TYPE_CHECKING:
@@ -25,6 +26,16 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
+
+
+def _format_summary_date(value: object, fmt: str, summary_id: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        return value.strftime(fmt)
+    except (AttributeError, ValueError) as exc:
+        logger.debug("Timestamp format error for %s: %s", summary_id, exc)
+        return str(value)[:10] if fmt == "%Y-%m-%d" else str(value)
 
 # Default index page template
 INDEX_TEMPLATE = """<!DOCTYPE html>
@@ -694,6 +705,22 @@ class ConversationIndex:
     preview: str
     path: str
 
+    @classmethod
+    def from_summary(cls, summary: object, message_count: int) -> ConversationIndex:
+        sid = str(summary.id)
+        provider = summary.provider.value
+        return cls(
+            id=sid,
+            title=summary.display_title or sid[:12],
+            provider=provider,
+            source=None,
+            created_at=_format_summary_date(summary.created_at, "%Y-%m-%d", sid),
+            updated_at=_format_summary_date(summary.updated_at, "%Y-%m-%d %H:%M", sid),
+            message_count=message_count,
+            preview=summary.summary or "",
+            path=f"{safe_path_component(provider, fallback='provider')}/{sid[:12]}/conversation.html",
+        )
+
 
 class SiteBuilder:
     """Build a static HTML site from a polylogue archive.
@@ -705,6 +732,8 @@ class SiteBuilder:
     - dashboard.html: Archive statistics
     - search-index.json: For client-side search (lunr.js / pagefind)
     """
+
+    SUMMARY_PAGE_SIZE = 500
 
     def __init__(
         self,
@@ -811,53 +840,27 @@ class SiteBuilder:
         """Build index of all conversations.
 
         Uses lightweight summaries to avoid loading message content into memory.
-        For a 4800+ conversation archive this reduces memory from ~9GB to ~100MB.
+        Builds the final index incrementally so we do not also keep a second
+        full archive summary list and full archive ID list in memory.
         """
         backend, repo = self._open_storage()
-
-        # Use summaries (no message content) instead of full conversations
-        summaries = await repo.list_summaries(limit=None)
-        if not summaries:
-            return []
-
-        # Batch-fetch message counts
-        all_ids = [str(s.id) for s in summaries]
-        msg_counts = await backend.get_message_counts_batch(all_ids)
-
         conversations: list[ConversationIndex] = []
-
-        for summary in summaries:
-            sid = str(summary.id)
-
-            # Format created_at
-            created_at_str = None
-            if summary.created_at:
-                try:
-                    created_at_str = summary.created_at.strftime("%Y-%m-%d")
-                except (AttributeError, ValueError) as exc:
-                    logger.debug("Timestamp format error for %s: %s", sid, exc)
-                    created_at_str = str(summary.created_at)[:10]
-
-            updated_at_str = None
-            if summary.updated_at:
-                try:
-                    updated_at_str = summary.updated_at.strftime("%Y-%m-%d %H:%M")
-                except (AttributeError, ValueError) as exc:
-                    logger.debug("Timestamp format error for %s: %s", sid, exc)
-                    updated_at_str = str(summary.updated_at)
-
-            provider = summary.provider.value
-            conversations.append(ConversationIndex(
-                id=sid,
-                title=summary.display_title or sid[:12],
-                provider=provider,
-                source=None,
-                created_at=created_at_str,
-                updated_at=updated_at_str,
-                message_count=msg_counts.get(sid, 0),
-                preview=summary.summary or "",
-                path=f"{safe_path_component(provider, fallback='provider')}/{sid[:12]}/conversation.html",
-            ))
+        offset = 0
+        while True:
+            summaries = await repo.list_summaries(
+                limit=self.SUMMARY_PAGE_SIZE,
+                offset=offset,
+            )
+            if not summaries:
+                break
+            msg_counts = await backend.get_message_counts_batch([str(summary.id) for summary in summaries])
+            conversations.extend(
+                ConversationIndex.from_summary(summary, msg_counts.get(str(summary.id), 0))
+                for summary in summaries
+            )
+            if len(summaries) < self.SUMMARY_PAGE_SIZE:
+                break
+            offset += len(summaries)
 
         # Sort by updated_at descending
         conversations.sort(
@@ -871,16 +874,18 @@ class SiteBuilder:
         self,
         repo,
         conversation_id: str,
-    ) -> AsyncIterator[dict[str, str]]:
+    ) -> AsyncIterator[dict[str, object]]:
         """Yield site message payloads lazily for a conversation page."""
         async for msg in repo.iter_messages(conversation_id):
             if not msg.text:
                 continue
-            yield {
-                "role": msg.role or "unknown",
-                "text": msg.text,
-                "html_content": self._md_renderer.render(msg.text),
-            }
+            yield build_rendered_message_payload(
+                message_id=msg.message_id,
+                role=msg.role or "unknown",
+                text=msg.text,
+                timestamp=msg.sort_key,
+                render_html=self._md_renderer.render,
+            )
 
     async def _generate_conversation_pages(
         self, conversations: list[ConversationIndex], *, incremental: bool = True
@@ -1038,7 +1043,7 @@ class SiteBuilder:
         if self.config.search_provider == "pagefind":
             self._generate_pagefind_config()
         else:
-            self._generate_lunr_index(conversations)
+            self._generate_json_search_index(conversations)
 
     def _search_markup(self) -> str:
         """Render the search UI snippet for index pages."""
@@ -1158,22 +1163,24 @@ class SiteBuilder:
                 self.output_dir,
             )
 
-    def _generate_lunr_index(self, conversations: list[ConversationIndex]) -> None:
-        """Generate lunr.js search index."""
-        documents = []
-        for conv in conversations:
-            documents.append({
-                "id": conv.id,
-                "title": conv.title,
-                "provider": conv.provider,
-                "preview": conv.preview,
-                "path": conv.path,
-            })
-
-        (self.output_dir / "search-index.json").write_text(
-            json.dumps(documents),
-            encoding="utf-8",
-        )
+    def _generate_json_search_index(self, conversations: list[ConversationIndex]) -> None:
+        """Generate the JSON search index consumed by the client-side search UI."""
+        with (self.output_dir / "search-index.json").open("w", encoding="utf-8") as handle:
+            handle.write("[")
+            for index, conv in enumerate(conversations):
+                if index:
+                    handle.write(",")
+                json.dump(
+                    {
+                        "id": conv.id,
+                        "title": conv.title,
+                        "provider": conv.provider,
+                        "preview": conv.preview,
+                        "path": conv.path,
+                    },
+                    handle,
+                )
+            handle.write("]")
 
 
 __all__ = ["SiteBuilder", "SiteConfig", "ConversationIndex"]

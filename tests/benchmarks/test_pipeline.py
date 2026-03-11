@@ -8,19 +8,18 @@ Run with:
 """
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from polylogue.lib.hashing import hash_payload, hash_text
-from polylogue.lib.viewports import ToolCategory, classify_tool
+from polylogue.lib.viewports import classify_tool
 from polylogue.pipeline.prepare import PrepareCache
 from polylogue.pipeline.semantic import extract_tool_metadata
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index, update_index_for_conversations
+from tests.benchmarks.helpers import open_bench_store
 
 
 def _make_diverse_tool_inputs(n: int) -> list[tuple[str, dict[str, Any]]]:
@@ -115,10 +114,6 @@ def test_bench_hash_payload(benchmark, depth: int) -> None:
 @pytest.mark.parametrize("n", [100, 500])
 def test_bench_prepare_cache_load(benchmark, bench_db_5k: Path, n: int) -> None:
     """PrepareCache.load() — bulk-loads N existing conversations in 2 queries."""
-    loop = asyncio.new_event_loop()
-    backend = SQLiteBackend(db_path=bench_db_5k)
-    loop.run_until_complete(backend._ensure_schema_once())
     cids = {f"bench-conv-{i:05d}" for i in range(n)}
-
-    benchmark(lambda: loop.run_until_complete(PrepareCache.load(backend, cids)))
-    loop.close()
+    with open_bench_store(bench_db_5k) as store:
+        benchmark(lambda: store.run(PrepareCache.load(store.backend, cids)))
