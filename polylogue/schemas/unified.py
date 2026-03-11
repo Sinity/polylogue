@@ -20,6 +20,7 @@ from polylogue.lib.provider_semantics import (
     extract_chatgpt_text,
     extract_claude_code_text,
     extract_content_blocks,
+    extract_display_text_from_content_blocks,
     extract_reasoning_traces,
     extract_tool_calls,
 )
@@ -433,21 +434,6 @@ def _extract_generic_cost(provider_meta: dict[str, Any]) -> CostInfo | None:
     return None
 
 
-def _fallback_text_from_content_blocks(content_blocks: object) -> str:
-    if not isinstance(content_blocks, list):
-        return ""
-    parts: list[str] = []
-    for block in content_blocks:
-        if not isinstance(block, dict):
-            continue
-        if block.get("type") not in {"text", "code", "tool_result", "thinking"}:
-            continue
-        text = block.get("text")
-        if isinstance(text, str) and text:
-            parts.append(text)
-    return "\n".join(parts)
-
-
 def _harmonize_extracted_provider_meta(
     provider: Provider,
     provider_meta: dict[str, Any],
@@ -494,7 +480,10 @@ def _harmonize_extracted_provider_meta(
         if isinstance(provider_meta.get("text"), str):
             resolved_text = str(provider_meta["text"])
         else:
-            resolved_text = _fallback_text_from_content_blocks(provider_meta.get("content_blocks"))
+            raw_content_blocks = provider_meta.get("content_blocks")
+            resolved_text = extract_display_text_from_content_blocks(
+                raw_content_blocks if isinstance(raw_content_blocks, list) else None
+            )
 
     resolved_timestamp = timestamp
     if resolved_timestamp is None:

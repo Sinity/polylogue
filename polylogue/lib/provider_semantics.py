@@ -139,6 +139,23 @@ def extract_content_blocks(content: list[dict[str, Any]] | None) -> list[Content
     return blocks
 
 
+def extract_display_text_from_content_blocks(content: list[dict[str, Any]] | None) -> str:
+    """Rebuild human-readable text from stored structured content blocks."""
+    if not content:
+        return ""
+
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") not in {"text", "code", "tool_result", "thinking"}:
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
 def extract_claude_code_text(content: list[dict[str, Any]] | None) -> str:
     """Extract text from Claude Code content blocks, excluding non-text blocks."""
     if not content:
