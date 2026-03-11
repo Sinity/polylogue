@@ -13,13 +13,18 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.config import Source
-from polylogue.sources.drive import download_drive_files, iter_drive_raw_data
+from polylogue.sources.drive import (
+    download_drive_files,
+    drive_cache_file_path,
+    iter_drive_raw_data,
+)
 from polylogue.sources.drive_client import DriveFile
 from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 from polylogue.sources.parsers.claude import (
     SessionIndexEntry,
     enrich_conversation_from_index,
     find_sessions_index,
+    parse_sessions_index,
 )
 from polylogue.sources.source import (
     _ConversationEmitter,
@@ -30,6 +35,7 @@ from polylogue.sources.source import (
     detect_provider,
     iter_source_conversations,
     iter_source_conversations_with_raw,
+    iter_source_raw_data,
     parse_drive_payload,
     parse_payload,
 )
@@ -374,6 +380,63 @@ def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
     }
 
 
+def test_parse_sessions_index_contract(tmp_path: Path) -> None:
+    """Claude session index parsing keeps only valid entries and preserves fields."""
+    index_path = tmp_path / "sessions-index.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "sessionId": "session-1",
+                        "fullPath": "/tmp/session-1.jsonl",
+                        "firstPrompt": "hello",
+                        "summary": "summary",
+                        "messageCount": 7,
+                        "created": "2025-01-01T00:00:00Z",
+                        "modified": "2025-01-01T00:01:00Z",
+                        "gitBranch": "main",
+                        "projectPath": "/tmp/project",
+                        "isSidechain": True,
+                        "fileMtime": 123,
+                    },
+                    {"summary": "missing id should be ignored"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    entries = parse_sessions_index(index_path)
+
+    assert set(entries) == {"session-1"}
+    assert entries["session-1"] == SessionIndexEntry(
+        session_id="session-1",
+        full_path="/tmp/session-1.jsonl",
+        first_prompt="hello",
+        summary="summary",
+        message_count=7,
+        created="2025-01-01T00:00:00Z",
+        modified="2025-01-01T00:01:00Z",
+        git_branch="main",
+        project_path="/tmp/project",
+        is_sidechain=True,
+        file_mtime=123,
+    )
+
+
+def test_drive_cache_file_path_sanitizes_and_normalizes_suffix_contract(tmp_path: Path) -> None:
+    """Drive cache naming must sanitize names and append a supported JSON suffix."""
+    sanitized = drive_cache_file_path(tmp_path, "../Prompt Export")
+
+    assert sanitized.parent == tmp_path
+    assert sanitized.suffix == ".json"
+    assert ".." not in sanitized.name
+    assert "Prompt" in sanitized.stem
+    assert drive_cache_file_path(tmp_path, "session.jsonl") == tmp_path / "session.jsonl"
+    assert drive_cache_file_path(tmp_path, "trace.ndjson") == tmp_path / "trace.ndjson"
+
+
 def test_conversation_emitter_individual_raw_capture_contract() -> None:
     payloads = [
         {"id": "conv-1", "messages": [{"id": "m1", "role": "user", "text": "first"}]},
@@ -574,3 +637,31 @@ def test_download_drive_files_contract() -> None:
         assert result.downloaded_files[0].name == "session.json"
         assert result.downloaded_files[0].read_bytes() == b'{"id":"ok"}'
         assert result.failed_files == [{"file_id": "two", "name": "bad.jsonl", "error": "boom"}]
+
+
+def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Path) -> None:
+    """Raw source iteration yields one blob per file or ZIP entry without parsing."""
+    plain_path = tmp_path / "chatgpt-export.json"
+    plain_path.write_text('{"mapping": {}, "id": "chatgpt-1"}', encoding="utf-8")
+
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr(
+            "nested/session.jsonl",
+            b'{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}\n',
+        )
+
+    plain_items = list(iter_source_raw_data(Source(name="chatgpt", path=plain_path)))
+    zip_items = list(iter_source_raw_data(Source(name="claude-code", path=archive_path)))
+
+    assert len(plain_items) == 1
+    assert plain_items[0].source_path == str(plain_path)
+    assert plain_items[0].provider_hint == Provider.CHATGPT
+    assert plain_items[0].raw_bytes == plain_path.read_bytes()
+    assert plain_items[0].file_mtime is not None
+
+    assert len(zip_items) == 1
+    assert zip_items[0].source_path == f"{archive_path}:nested/session.jsonl"
+    assert zip_items[0].provider_hint == Provider.CLAUDE_CODE
+    assert b'"type":"user"' in zip_items[0].raw_bytes
+    assert zip_items[0].file_mtime is not None

@@ -11,10 +11,12 @@ from polylogue.lib.viewports import ContentType
 from polylogue.schemas.unified import (
     _missing_role,
     bulk_harmonize,
+    extract_claude_code_text,
     extract_content_blocks,
     extract_from_provider_meta,
     extract_harmonized_message,
     extract_reasoning_traces,
+    extract_token_usage,
     extract_tool_calls,
     harmonize_parsed_message,
     is_message_record,
@@ -386,6 +388,37 @@ def test_generic_unified_extractors_preserve_nested_text_and_tool_metadata() -> 
     assert len(calls) == 1
     assert calls[0].name == "Read"
     assert calls[0].input == {"path": "README.md"}
+
+
+def test_extract_claude_code_text_excludes_non_text_blocks_contract() -> None:
+    content = [
+        {"type": "text", "text": "hello"},
+        {"type": "thinking", "thinking": "reason"},
+        {"type": "tool_result", "content": "done"},
+        {"type": "text", "text": "world"},
+        "ignored",
+    ]
+
+    assert extract_claude_code_text(content) == "hello\nworld"
+
+
+def test_extract_token_usage_maps_cache_fields_contract() -> None:
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 12,
+        "cache_read_input_tokens": 3,
+        "cache_creation_input_tokens": 4,
+        "total_tokens": 29,
+    }
+
+    tokens = extract_token_usage(usage)
+
+    assert tokens is not None
+    assert tokens.input_tokens == 10
+    assert tokens.output_tokens == 12
+    assert tokens.cache_read_tokens == 3
+    assert tokens.cache_write_tokens == 4
+    assert tokens.total_tokens == 29
 
 
 def test_extract_from_provider_meta_rebuilds_text_and_overlay_metadata_contract() -> None:
