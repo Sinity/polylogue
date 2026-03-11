@@ -14,6 +14,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.provider_semantics import (
+    extract_claude_code_text,
+    extract_content_blocks,
+    extract_reasoning_traces,
+    extract_tool_calls,
+)
 from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
@@ -24,15 +30,6 @@ from polylogue.lib.viewports import (
     TokenUsage,
     ToolCall,
     classify_tool,
-)
-from polylogue.schemas.unified import (
-    extract_content_blocks as _extract_content_blocks,
-)
-from polylogue.schemas.unified import (
-    extract_reasoning_traces as _extract_reasoning_traces,
-)
-from polylogue.schemas.unified import (
-    extract_tool_calls as _extract_tool_calls,
 )
 
 
@@ -247,19 +244,6 @@ class ClaudeCodeRecord(BaseModel):
         """Normalize role to standard viewport values (delegates to role)."""
         return self.role
 
-    @staticmethod
-    def _text_from_blocks(content: list[Any]) -> str:
-        """Extract text from a list of content block dicts.
-
-        Only extracts ``type: "text"`` blocks.  Thinking/reasoning traces are
-        intentionally excluded — they are surfaced via Message.extract_thinking().
-        """
-        return "\n".join(
-            block.get("text") or ""
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-
     @property
     def text_content(self) -> str:
         """Extract plain text content.
@@ -280,7 +264,7 @@ class ClaudeCodeRecord(BaseModel):
         if isinstance(content, str):
             return content
         if isinstance(content, list):
-            return self._text_from_blocks(content)
+            return extract_claude_code_text(content)
         return ""
 
     @property
@@ -304,15 +288,15 @@ class ClaudeCodeRecord(BaseModel):
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
         """Extract all thinking/reasoning traces from this record."""
-        return _extract_reasoning_traces(self.content_blocks_raw, "claude-code")
+        return extract_reasoning_traces(self.content_blocks_raw, "claude-code")
 
     def extract_tool_calls(self) -> list[ToolCall]:
         """Extract all tool invocations from this record."""
-        return _extract_tool_calls(self.content_blocks_raw, "claude-code")
+        return extract_tool_calls(self.content_blocks_raw, "claude-code")
 
     def extract_content_blocks(self) -> list[ContentBlock]:
         """Extract harmonized content blocks."""
-        return _extract_content_blocks(self.content_blocks_raw)
+        return extract_content_blocks(self.content_blocks_raw)
 
     def to_meta(self) -> MessageMeta:
         """Convert to harmonized MessageMeta."""
