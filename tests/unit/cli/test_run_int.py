@@ -192,7 +192,10 @@ async def test_run_index_filters_selected_sources(workspace_env, tmp_path, monke
     from polylogue.pipeline.services.indexing import IndexService
 
     async def fake_update_method(self, ids):
-        update_calls.append(list(ids))
+        if hasattr(ids, "__aiter__"):
+            update_calls.append([conversation_id async for conversation_id in ids])
+        else:
+            update_calls.append(list(ids))
         return True
 
     monkeypatch.setattr(IndexService, "update_index", fake_update_method)
@@ -596,12 +599,12 @@ class TestParsingService:
                 await service.parse_from_raw(raw_ids=["raw-1"])
         else:
             async def async_iter():
-                for i, p in enumerate(["claude", "chatgpt"]):
-                    yield MagicMock(raw_id=f"raw-{i}", provider_name=p)
-            mock_backend.iter_raw_conversations.return_value = async_iter()
+                for i in range(2):
+                    yield f"raw-{i}"
+            mock_backend.iter_raw_ids.return_value = async_iter()
             with patch.object(service, "_process_raw_batch", new_callable=AsyncMock):
                 await service.parse_from_raw(provider=provider)
-                assert mock_backend.iter_raw_conversations.call_args[1]["provider"] == provider
+                assert mock_backend.iter_raw_ids.call_args[1]["provider_name"] == provider
 
     @pytest.mark.parametrize(
         "format_type,content,provider,is_bytes",
