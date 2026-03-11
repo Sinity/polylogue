@@ -313,6 +313,7 @@ CAMPAIGNS: dict[str, Campaign] = {
             "tests/unit/sources/test_raw_capture.py",
             "tests/unit/sources/test_null_guard_properties.py",
             "tests/unit/sources/test_models.py",
+            "tests/unit/sources/test_token_store.py",
         ),
         notes=("Broadest campaign here; best run after law-wave work lands.",),
     ),

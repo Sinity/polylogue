@@ -19,9 +19,11 @@ from polylogue.cli.query import _async_execute_query, _no_results
 from polylogue.cli.query_actions import _apply_modifiers, _apply_transform, _delete_conversations
 from polylogue.cli.query_helpers import summary_to_dict
 from polylogue.cli.query_output import (
+    _output_results,
     _output_stats_by_summaries,
     _output_stats_sql,
     _output_summary_list,
+    _render_conversation_rich,
     _send_output,
 )
 from polylogue.cli.query_plan import (
@@ -151,6 +153,18 @@ def _sample_conversation() -> Conversation:
             ),
             Message(id="m-tool", role="tool", text="tool output"),
             Message(id="m-assistant", role="assistant", text="answer"),
+        ],
+    )
+
+
+def _sample_output_conversation(conversation_id: str = "conv-output") -> Conversation:
+    return Conversation(
+        id=conversation_id,
+        provider="claude",
+        title="Output Contract",
+        messages=[
+            Message(id=f"{conversation_id}-user", role="user", text="hello"),
+            Message(id=f"{conversation_id}-assistant", role="assistant", text="world"),
         ],
     )
 
@@ -409,6 +423,120 @@ def test_output_stats_by_summaries_contract(case) -> None:
     assert "TOTAL" in rendered
     assert f"{len(case.summaries):,}" in rendered
     assert f"{sum(spec.message_count for spec in case.summaries):,}" in rendered
+
+
+def test_output_results_no_results_contract() -> None:
+    env = _make_env()
+
+    with (
+        patch("polylogue.cli.query._no_results", side_effect=SystemExit(2)) as mock_no_results,
+        patch("polylogue.cli.query_output._render_conversation_rich") as mock_render,
+        patch("polylogue.cli.query_output._send_output") as mock_send,
+        patch("polylogue.cli.query_output.format_conversation") as mock_format,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        _output_results(env, [], {})
+
+    assert exc_info.value.code == 2
+    mock_no_results.assert_called_once_with(env, {})
+    mock_render.assert_not_called()
+    mock_send.assert_not_called()
+    mock_format.assert_not_called()
+
+
+def test_output_results_single_markdown_stdout_rich_contract() -> None:
+    env = _make_env()
+    env.ui.plain = False
+    conversation = _sample_output_conversation()
+
+    with (
+        patch("polylogue.cli.query_output._render_conversation_rich") as mock_render,
+        patch("polylogue.cli.query_output._send_output") as mock_send,
+        patch("polylogue.cli.query_output.format_conversation") as mock_format,
+    ):
+        _output_results(
+            env,
+            [conversation],
+            {"output_format": "markdown", "output": "stdout", "list_mode": False},
+        )
+
+    mock_render.assert_called_once_with(env, conversation)
+    mock_send.assert_not_called()
+    mock_format.assert_not_called()
+
+
+def test_output_results_single_nonrich_contract() -> None:
+    env = _make_env()
+    conversation = _sample_output_conversation()
+
+    with (
+        patch("polylogue.cli.query_output.format_conversation", return_value="<html>ok</html>") as mock_format,
+        patch("polylogue.cli.query_output._send_output") as mock_send,
+    ):
+        _output_results(
+            env,
+            [conversation],
+            {"output_format": "html", "output": "stdout,browser", "fields": "id,title"},
+        )
+
+    mock_format.assert_called_once_with(conversation, "html", "id,title")
+    mock_send.assert_called_once_with(
+        env,
+        "<html>ok</html>",
+        ["stdout", "browser"],
+        "html",
+        conversation,
+    )
+
+
+def test_output_results_multi_list_contract() -> None:
+    env = _make_env()
+    conversations = [
+        _sample_output_conversation("conv-output-1"),
+        _sample_output_conversation("conv-output-2"),
+    ]
+
+    with (
+        patch("polylogue.cli.query_output._format_list", return_value="formatted-list") as mock_format_list,
+        patch("polylogue.cli.query_output._send_output") as mock_send,
+    ):
+        _output_results(
+            env,
+            conversations,
+            {"output_format": "json", "output": "stdout", "fields": "id,provider"},
+        )
+
+    mock_format_list.assert_called_once_with(conversations, "json", "id,provider")
+    mock_send.assert_called_once_with(env, "formatted-list", ["stdout"], "json", None)
+
+
+def test_render_conversation_rich_contract() -> None:
+    env, buffer = _make_recording_env()
+    conversation = Conversation(
+        id="conv-rich",
+        provider="claude",
+        title="Rich Contract",
+        messages=[
+            Message(id="m-user", role="user", text="**Hello** world"),
+            Message(
+                id="m-thinking",
+                role="assistant",
+                text="x" * 620,
+                content_blocks=[{"type": "thinking"}],
+            ),
+            Message(id="m-empty", role="assistant", text=""),
+        ],
+    )
+
+    _render_conversation_rich(env, conversation)
+
+    rendered = buffer.getvalue()
+    assert "Rich Contract" in rendered
+    assert "claude" in rendered
+    assert "User" in rendered
+    assert "Hello" in rendered
+    assert "Thinking" in rendered
+    assert "... (620 chars)" in rendered
 
 
 @pytest.mark.parametrize(
