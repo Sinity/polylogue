@@ -965,8 +965,8 @@ class TestSendOutput:
         SEND_OUTPUT_DESTINATIONS,
     )
     @patch("click.echo")
-    @patch("polylogue.cli.query._open_in_browser")
-    @patch("polylogue.cli.query._copy_to_clipboard")
+    @patch("polylogue.cli.query_output._open_in_browser")
+    @patch("polylogue.cli.query_output._copy_to_clipboard")
     def test_send_to_destinations(
         self,
         mock_clipboard,
