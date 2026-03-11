@@ -115,7 +115,7 @@ the follow-up source/helper/query pass.
 | `drive-client` | `37e26aba2d3d` | 581 | 299 | 3 | 0 | Clean post-tightening rerun improved kill rate again; the remaining residue is now mostly concentrated in credential loading, folder resolution, and metadata/download helpers rather than broad reach gaps. |
 | `repository` | `b1f1d35bee28` | 568 | 74 | 66 | 0 | The concentrated read-model laws fixed the helper blind spot and cut survivor density sharply; the main remaining issue is timeout-heavy hydration/archive-stat coverage, not reach. |
 | `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
-| `source-detection` | `e058c8240959` | 702 | 445 | 4 | 0 | Clean post-concentration rerun after pruning edge-test duplication; reach is still complete, but survivors remain concentrated in ZIP filtering, emit paths, and provider sniffing. |
+| `source-detection` | `38d65c004a2a` | 816 | 330 | 5 | 0 | Clean post-helper-contract rerun sharply improved kill rate while keeping reach complete; survivor mass is now much narrower and still concentrated in ZIP filtering, emit paths, and provider sniffing. |
 | `providers-semantics` | `c0596770631e` | 805 | 504 | 2 | 0 | First focused concentration rerun after source semantic test collapse; reach is still clean and survivor mass remains concentrated in `extract_content_blocks`, `to_meta`, and fallback Claude Code harmonization. |
 | `sources-parse` | `c0596770631e` | 3455 | 2482 | 10 | 0 | First focused concentration rerun after source semantic test collapse; the broad source surface remains fully reachable, with remaining work concentrated in drive-client seams and provider semantic survivor mass. |
 
@@ -136,7 +136,7 @@ the follow-up source/helper/query pass.
 - The dominant structural issues are now:
   - survivor concentration in `polylogue.schemas.unified` and provider viewport shaping,
   - high survivor density in source parsing/detection and query orchestration,
-  - source detection still carrying a broad survivor cluster around ZIP filtering, emit paths, and provider sniffing,
+  - source detection still carrying a narrower but still meaningful survivor cluster around ZIP filtering, emit paths, and provider sniffing,
   - drive-client transport/auth behavior still carrying a narrower but meaningful survivor cluster in auth/load/download helpers.
 - Additional mutmut infrastructure work is not the bottleneck now. The next
   gains come from stronger laws, better generators/oracles, and code
