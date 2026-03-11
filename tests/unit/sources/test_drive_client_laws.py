@@ -197,6 +197,20 @@ def test_call_with_retry_does_not_retry_terminal_errors(error_type: type[Excepti
     assert attempts["count"] == 1
 
 
+def test_call_with_retry_stops_after_retry_budget() -> None:
+    client = DriveClient(retries=2, retry_base=0.0)
+    attempts = {"count": 0}
+
+    def fail() -> None:
+        attempts["count"] += 1
+        raise RuntimeError("still failing")
+
+    with pytest.raises(RuntimeError, match="still failing"):
+        client._call_with_retry(fail)
+
+    assert attempts["count"] == 3
+
+
 def test_service_handle_reuses_cached_service_when_not_expired() -> None:
     client = DriveClient()
     service = MagicMock()
@@ -351,6 +365,40 @@ def test_load_credentials_prefers_token_store_before_token_file(monkeypatch: pyt
     client._token_store.save.assert_called_once_with("drive_token", '{"token":"fresh"}')
 
 
+def test_load_credentials_falls_back_from_invalid_token_store_to_token_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    token_file = tmp_path / "token.json"
+    token_file.write_text('{"token":"from-file"}', encoding="utf-8")
+
+    file_creds = MagicMock()
+    file_creds.valid = True
+    file_creds.expired = False
+    file_creds.refresh_token = "refresh-token"
+    file_creds.to_json.return_value = '{"token":"from-file"}'
+    credentials_cls = MagicMock()
+    credentials_cls.from_authorized_user_info.side_effect = json.JSONDecodeError("bad", "x", 0)
+    credentials_cls.from_authorized_user_file.return_value = file_creds
+
+    def fake_import(name: str):
+        if name == "google.oauth2.credentials":
+            return MagicMock(Credentials=credentials_cls)
+        if name == "google_auth_oauthlib.flow":
+            return MagicMock(InstalledAppFlow=MagicMock())
+        raise AssertionError(name)
+
+    client = DriveClient(ui=None, token_path=token_file)
+    client._token_store = MagicMock()
+    client._token_store.load.return_value = "not-json"
+    monkeypatch.setattr("polylogue.sources.drive_client._import_module", fake_import)
+
+    result = client._load_credentials()
+
+    assert result is file_creds
+    credentials_cls.from_authorized_user_file.assert_called_once_with(str(token_file), ["https://www.googleapis.com/auth/drive.readonly"])
+
+
 def test_load_credentials_refreshes_expired_token_and_persists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     token_file = tmp_path / "token.json"
     token_file.write_text('{"token":"stale"}', encoding="utf-8")
@@ -479,6 +527,43 @@ def test_load_credentials_rejects_corrupt_plain_token_file(
         client._load_credentials()
 
 
+def test_load_credentials_uses_manual_flow_when_local_server_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    credentials_path = tmp_path / "client.json"
+    credentials_path.write_text('{"installed":{}}', encoding="utf-8")
+    token_path = tmp_path / "token.json"
+    issued_creds = MagicMock()
+    issued_creds.to_json.return_value = '{"token":"issued"}'
+    flow = MagicMock()
+    flow.run_local_server.side_effect = OSError("port unavailable")
+    flow.credentials = issued_creds
+    installed_app_flow_cls = MagicMock()
+    installed_app_flow_cls.from_client_secrets_file.return_value = flow
+    manual_creds = MagicMock()
+    manual_creds.to_json.return_value = '{"token":"manual"}'
+
+    def fake_import(name: str):
+        if name == "google.oauth2.credentials":
+            return MagicMock(Credentials=MagicMock())
+        if name == "google_auth_oauthlib.flow":
+            return MagicMock(InstalledAppFlow=installed_app_flow_cls)
+        raise AssertionError(name)
+
+    client = DriveClient(ui=MagicMock(plain=False), credentials_path=credentials_path, token_path=token_path)
+    client._token_store = MagicMock()
+    client._token_store.load.return_value = None
+    client._run_manual_auth_flow = MagicMock(return_value=manual_creds)
+    monkeypatch.setattr("polylogue.sources.drive_client._import_module", fake_import)
+
+    result = client._load_credentials()
+
+    assert result is manual_creds
+    client._run_manual_auth_flow.assert_called_once_with(flow)
+    client._token_store.save.assert_called_once_with("drive_token", '{"token":"manual"}')
+
+
 def test_resolve_folder_id_falls_back_to_name_on_lookup_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeHttpError(Exception):
         def __init__(self, status: int) -> None:
@@ -519,6 +604,29 @@ def test_resolve_folder_id_raises_not_found_when_lookup_and_search_fail(monkeypa
         client.resolve_folder_id("Missing")
 
 
+def test_resolve_folder_id_escapes_names_and_skips_id_lookup_for_spaced_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeHttpError(Exception):
+        def __init__(self, status: int) -> None:
+            super().__init__(f"http {status}")
+            self.resp = SimpleNamespace(status=status)
+
+    client = DriveClient(retries=0, retry_base=0.0)
+    service = MockDriveService()
+    resource = service._files_resource
+    resource.get = MagicMock(side_effect=AssertionError("id lookup should not run"))
+    resource.list = MagicMock(return_value=SimpleNamespace(execute=lambda: {"files": [{"id": "folder-id", "name": "O'Hare"}]}))
+    service._http = None
+    client._service = service
+    monkeypatch.setattr("polylogue.sources.drive_client._import_module", lambda name: SimpleNamespace(HttpError=_FakeHttpError))
+
+    resolved = client.resolve_folder_id("O'Hare Folder")
+
+    assert resolved == "folder-id"
+    assert resource.list.call_args.kwargs["q"] == (
+        "name = 'O\\'Hare Folder' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    )
+
+
 def test_get_metadata_uses_cache_and_falls_back_to_file_id_name() -> None:
     client = DriveClient()
     service = MockDriveService(
@@ -526,6 +634,7 @@ def test_get_metadata_uses_cache_and_falls_back_to_file_id_name() -> None:
             "file-1": mock_drive_file(file_id="file-1", name="", mime_type="application/json", size=0),
         }
     )
+    service._files_resource.get = MagicMock(wraps=service._files_resource.get)
     service._http = None
     client._service = service
 
@@ -534,6 +643,43 @@ def test_get_metadata_uses_cache_and_falls_back_to_file_id_name() -> None:
 
     assert first.name == "file-1"
     assert second is first
+    service._files_resource.get.assert_called_once_with(
+        fileId="file-1",
+        fields="id,name,mimeType,modifiedTime,size",
+    )
+
+
+def test_iter_json_files_paginates_and_caches_all_supported_entries() -> None:
+    client = DriveClient(retries=0, retry_base=0.0)
+    service = MockDriveService()
+    resource = service._files_resource
+    first_page = {
+        "nextPageToken": "page-2",
+        "files": [
+            {"id": "f1", "name": "one.json", "mimeType": "application/json", "modifiedTime": None, "size": "1"},
+            {"id": "skip", "name": "readme.txt", "mimeType": "text/plain", "modifiedTime": None, "size": "1"},
+        ],
+    }
+    second_page = {
+        "files": [
+            {"id": "f2", "name": "two.ndjson", "mimeType": "application/octet-stream", "modifiedTime": None, "size": "2"},
+            {"id": "f3", "name": "prompt.bin", "mimeType": GEMINI_PROMPT_MIME_TYPE, "modifiedTime": None, "size": "3"},
+        ],
+    }
+    resource.list = MagicMock(
+        side_effect=[
+            SimpleNamespace(execute=lambda: first_page),
+            SimpleNamespace(execute=lambda: second_page),
+        ]
+    )
+    service._http = None
+    client._service = service
+
+    files = list(client.iter_json_files("folder-1"))
+
+    assert [file.file_id for file in files] == ["f1", "f2", "f3"]
+    assert list(client._meta_cache) == ["f1", "f2", "f3"]
+    assert resource.list.call_args_list[1].kwargs["pageToken"] == "page-2"
 
 
 def test_download_to_path_writes_content_and_sets_mtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -567,6 +713,42 @@ def test_download_to_path_writes_content_and_sets_mtime(monkeypatch: pytest.Monk
     assert abs(dest.stat().st_mtime - 1735689600.0) <= 1
 
 
+def test_download_to_path_cleans_up_temp_file_when_download_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = DriveClient(retries=0, retry_base=0.0)
+    client.get_metadata = MagicMock(
+        return_value=DriveFile(
+            file_id="file-1",
+            name="payload.json",
+            mime_type="application/json",
+            modified_time=None,
+            size_bytes=5,
+        ),
+    )
+    service = MockDriveService(file_content={"file-1": b"12345"})
+    client._service = service
+
+    class _BrokenDownloader(MockMediaIoBaseDownload):
+        def next_chunk(self):
+            raise OSError("download blew up")
+
+    def fake_import(name: str):
+        if name == "googleapiclient.http":
+            return SimpleNamespace(MediaIoBaseDownload=_BrokenDownloader)
+        raise AssertionError(name)
+
+    monkeypatch.setattr("polylogue.sources.drive_client._import_module", fake_import)
+    dest = tmp_path / "payload.json"
+
+    with pytest.raises(OSError, match="download blew up"):
+        client.download_to_path("file-1", dest)
+
+    assert not list(tmp_path.glob("tmp*"))
+    assert not dest.exists()
+
+
 def test_download_bytes_returns_media_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     client = DriveClient(retries=0, retry_base=0.0)
     service = MockDriveService(file_content={"file-1": b'{"hello":"world"}'})
@@ -590,6 +772,20 @@ def test_download_json_payload_delegates_to_download_bytes() -> None:
 
     assert result == {"id": "payload"}
     client.download_bytes.assert_called_once_with("file-1")
+
+
+def test_persist_token_saves_store_and_writes_private_file(tmp_path: Path) -> None:
+    client = DriveClient(token_path=tmp_path / "token.json")
+    client._token_store = MagicMock()
+    creds = MagicMock()
+    creds.to_json.return_value = '{"token":"persisted"}'
+    token_path = tmp_path / "token.json"
+
+    client._persist_token(creds, token_path)
+
+    client._token_store.save.assert_called_once_with("drive_token", '{"token":"persisted"}')
+    assert token_path.read_text(encoding="utf-8") == '{"token":"persisted"}'
+    assert oct(token_path.stat().st_mode & 0o777) == "0o600"
 
 
 def test_download_request_stops_after_chunk_limit() -> None:
