@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta, ReasoningTrace
+from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta, ReasoningTrace, ToolCall
 
 
 class ClaudeAIChatMessage(BaseModel):
@@ -83,6 +83,10 @@ class ClaudeAIChatMessage(BaseModel):
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
         """Extract reasoning traces (Claude AI web does not expose reasoning; returns empty list)."""
+        return []
+
+    def extract_tool_calls(self) -> list[ToolCall]:
+        """Extract tool calls (Claude AI web export does not expose them here)."""
         return []
 
 
