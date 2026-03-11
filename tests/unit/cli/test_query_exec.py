@@ -1,17 +1,12 @@
-"""Tests for CLI query execution and output functions.
+"""Concrete CLI query execution side-effect tests.
 
-Covers uncovered areas of polylogue/cli/query.py:
-- _no_results(): Error reporting with/without filters
-- execute_query(): Main orchestration path, all flow branches
-- _apply_modifiers(): Metadata and tag operations with dry-run/force
-- _delete_conversations(): Conversation deletion with confirmation
-- _output_summary_list(): JSON/YAML/CSV/text format output
-- stream_conversation(): Memory-efficient streaming output
-- _write_message_streaming(): Per-message streaming format
-- _send_output(): Destination routing (stdout, file, browser, clipboard)
-- _open_in_browser(): Browser opening with temp files
-- _copy_to_clipboard(): Clipboard tool invocation
-- _open_result(): Rendered file discovery and opening
+Law/contract coverage for query routing, no-results handling, output helpers,
+summary output, mutations, and stats lives in `test_query_exec_laws.py`.
+This file keeps only concrete seams that are better expressed as direct,
+example-driven side-effect tests:
+- execute_query stream target resolution/warnings
+- stream_conversation I/O behavior
+- browser/clipboard/result opening side effects
 """
 
 from __future__ import annotations
@@ -167,49 +162,6 @@ STREAM_TARGET_TEST_CASES = (
 )
 
 
-# =============================================================================
-# Tests for _no_results()
-# =============================================================================
-
-
-class TestNoResults:
-    def _fn(self, env: AppEnv, params: dict, **kwargs):
-        from polylogue.cli.query import _no_results
-
-        return _no_results(env, params, **kwargs)
-
-    @pytest.mark.parametrize(
-        "has_filters,has_custom_exit_code,expected_code",
-        [
-            (True, False, 2),  # With filters: exit code 2
-            (False, False, 2),  # Without filters: exit code 2
-            (False, True, 1),  # Custom exit code
-        ],
-    )
-    def test_no_results_behavior(
-        self, has_filters, has_custom_exit_code, expected_code
-    ) -> None:
-        """Test _no_results with and without filters, custom exit codes."""
-        import io
-        from contextlib import redirect_stderr
-
-        env = _make_env()
-        params = _make_params(provider="claude", tag="important", query=("error",)) if has_filters else _make_params()
-
-        kwargs = {"exit_code": 1} if has_custom_exit_code else {}
-
-        stderr = io.StringIO()
-        with pytest.raises(SystemExit) as exc_info:
-            with redirect_stderr(stderr):
-                self._fn(env, params, **kwargs)
-
-        assert exc_info.value.code == expected_code
-
-        if has_filters:
-            output = stderr.getvalue()
-            assert "filter" in output.lower()
-
-
 class TestExecuteQueryStream:
     """Test execute_query with --stream flag."""
 
@@ -225,7 +177,7 @@ class TestExecuteQueryStream:
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query.stream_conversation", new_callable=AsyncMock)
+    @patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock)
     @patch("click.echo")
     def test_stream_target_resolution(
         self,
@@ -275,7 +227,7 @@ class TestExecuteQueryStream:
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query.stream_conversation", new_callable=AsyncMock)
+    @patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock)
     @patch("click.echo")
     def test_stream_warns_on_conflict(
         self,
@@ -304,82 +256,6 @@ class TestExecuteQueryStream:
         warning_calls = [call for call in mock_echo.call_args_list if "Warning" in str(call)]
         assert len(warning_calls) > 0
 
-
-class TestExecuteQueryFlags:
-    """Test execute_query with various flags (dialogue-only, transform)."""
-
-    def _fn(self, env: AppEnv, params: dict):
-        from polylogue.cli.query import execute_query
-
-        return execute_query(env, params)
-
-    @pytest.mark.parametrize(
-        "flag_param,flag_value",
-        [
-            ("dialogue_only", True),
-        ],
-    )
-    @patch("polylogue.cli.helpers.load_effective_config")
-    @patch("polylogue.storage.search_providers.create_vector_provider")
-    @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query._output_results")
-    def test_output_flags(
-        self,
-        mock_output,
-        MockFilter,
-        mock_vector_provider,
-        mock_load_config,
-        flag_param,
-        flag_value,
-    ) -> None:
-        """dialogue_only and other output flags apply transformations."""
-        mock_load_config.return_value = MagicMock()
-        mock_vector_provider.return_value = None
-
-        mock_filter = MagicMock()
-        MockFilter.return_value = mock_filter
-        conv = _make_conv()
-        mock_filter.list = AsyncMock(return_value=[conv])
-
-        env = _make_env(config=mock_load_config.return_value)
-        params = _make_params(**{flag_param: flag_value})
-
-        self._fn(env, params)
-
-        mock_output.assert_called_once()
-
-    @patch("polylogue.cli.helpers.load_effective_config")
-    @patch("polylogue.storage.search_providers.create_vector_provider")
-    @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query._output_results")
-    @patch("polylogue.cli.query._apply_transform")
-    def test_transform_applied(
-        self,
-        mock_transform,
-        mock_output,
-        MockFilter,
-        mock_vector_provider,
-        mock_load_config,
-    ) -> None:
-        """transform flag applies transformation."""
-        mock_load_config.return_value = MagicMock()
-        mock_vector_provider.return_value = None
-
-        mock_filter = MagicMock()
-        MockFilter.return_value = mock_filter
-        convs = [_make_conv()]
-        mock_filter.list = AsyncMock(return_value=convs)
-        mock_transform.return_value = convs
-
-        env = _make_env(config=mock_load_config.return_value)
-        params = _make_params(transform="strip-tools")
-
-        self._fn(env, params)
-
-        mock_transform.assert_called_once()
-        assert mock_transform.call_args[0][1] == "strip-tools"
-
-
 # =============================================================================
 # Tests for stream_conversation()
 # =============================================================================
@@ -387,7 +263,7 @@ class TestExecuteQueryFlags:
 
 class TestStreamConversation:
     async def _fn(self, env: AppEnv, repo, conv_id: str, **kwargs):
-        from polylogue.cli.query import stream_conversation
+        from polylogue.cli.query_output import stream_conversation
 
         return await stream_conversation(env, repo, conv_id, **kwargs)
 
@@ -481,7 +357,7 @@ class TestStreamConversation:
 
 class TestQueryOpenInBrowser:
     def _fn(self, env: AppEnv, content: str, output_format: str, conv=None):
-        from polylogue.cli.query import _open_in_browser
+        from polylogue.cli.query_output import _open_in_browser
 
         return _open_in_browser(env, content, output_format, conv)
 
@@ -525,7 +401,7 @@ class TestQueryOpenInBrowser:
 
 class TestCopyToClipboard:
     def _fn(self, env: AppEnv, content: str):
-        from polylogue.cli.query import _copy_to_clipboard
+        from polylogue.cli.query_output import _copy_to_clipboard
 
         return _copy_to_clipboard(env, content)
 
@@ -559,7 +435,7 @@ class TestCopyToClipboard:
 
 class TestOpenResult:
     def _fn(self, env: AppEnv, results: list, params: dict):
-        from polylogue.cli.query import _open_result
+        from polylogue.cli.query_output import _open_result
 
         return _open_result(env, results, params)
 
