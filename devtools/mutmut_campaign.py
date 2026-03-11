@@ -183,7 +183,9 @@ CAMPAIGNS: dict[str, Campaign] = {
         paths_to_mutate=("polylogue/storage/repository.py",),
         tests=(
             "tests/unit/storage/test_repository.py",
+            "tests/unit/storage/test_repository_laws.py",
             "tests/unit/storage/test_crud.py",
+            "tests/unit/storage/test_crud_laws.py",
         ),
         notes=("Large surface; use to gauge storage law readiness before repository-law work.",),
     ),
@@ -192,6 +194,8 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="Source detection, sniffing, and parser dispatch",
         paths_to_mutate=("polylogue/sources/source.py",),
         tests=(
+            "tests/unit/sources/test_source_laws.py",
+            "tests/unit/sources/test_providers.py",
             "tests/unit/sources/test_parsers.py",
             "tests/unit/sources/test_parsers_base.py",
             "tests/unit/sources/test_parser_misc.py",
@@ -210,6 +214,7 @@ CAMPAIGNS: dict[str, Campaign] = {
         tests=(
             "tests/unit/sources/test_parse_laws.py",
             "tests/unit/sources/test_harmonization_contracts.py",
+            "tests/unit/sources/test_provider_viewport_laws.py",
             "tests/unit/sources/test_providers.py",
             "tests/unit/sources/test_null_guard_properties.py",
             "tests/unit/sources/test_models.py",
@@ -227,6 +232,8 @@ CAMPAIGNS: dict[str, Campaign] = {
             "tests/unit/sources/test_parse_laws.py",
             "tests/unit/sources/test_parsers_props.py",
             "tests/unit/sources/test_harmonization_contracts.py",
+            "tests/unit/sources/test_provider_viewport_laws.py",
+            "tests/unit/sources/test_source_laws.py",
             "tests/unit/sources/test_providers.py",
             "tests/unit/sources/test_parsers.py",
             "tests/unit/sources/test_parsers_base.py",
