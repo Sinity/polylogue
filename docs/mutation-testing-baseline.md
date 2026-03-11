@@ -45,6 +45,77 @@ Recorded on `2026-03-11`.
   - `nix develop -c mutmut run "polylogue.pipeline.*" "polylogue.facade.*" "polylogue.rendering.*" "polylogue.site.*"`
   - `nix develop -c mutmut run "polylogue.cli.*" "polylogue.sources.*"`
 
+## Focused Mutation Wave: `polylogue.lib.filters`
+
+- Recorded on `2026-03-11`
+- Targeted verification before the mutation run:
+  - `nix develop -c ruff check tests/unit/core/test_filters.py tests/unit/core/test_filters_props.py tests/unit/core/test_filters_adv.py`
+  - `nix develop -c pytest -q tests/unit/core/test_filters.py tests/unit/core/test_filters_props.py tests/unit/core/test_filters_adv.py`
+  - Result: `252 passed in 23.38s`
+- Mutation command: `nix develop -c mutmut run "polylogue.lib.filters*"`
+- Result: `597` filter mutants checked at `4.27 mutations/second`
+
+| Status | Count |
+| --- | ---: |
+| Killed | 457 |
+| Survived | 35 |
+| Timeout | 105 |
+| No tests | 0 |
+
+### Key Improvement
+
+- Relative to the earlier narrow historical baseline for `polylogue.lib.filters` (`0 killed / 0 survived / 597 no tests / 0 timeout`), this wave eliminated the `no tests` blind spot entirely and converted most of the module into real signal.
+
+### Dominant Survivor Clusters
+
+| Function cluster | Surviving mutants |
+| --- | ---: |
+| `ConversationFilter.pick` | 10 |
+| `ConversationFilter._describe_active_filters` | 6 |
+| `ConversationFilter.list_summaries` | 6 |
+| `ConversationFilter._apply_summary_filters` | 3 |
+| `ConversationFilter.is_continuation` | 3 |
+| `ConversationFilter.is_sidechain` | 3 |
+| `ConversationFilter._has_post_filters` | 1 |
+| `ConversationFilter.delete` | 1 |
+| `ConversationFilter.has_branches` | 1 |
+| `ConversationFilter.is_root` | 1 |
+
+### Dominant Timeout Clusters
+
+| Function cluster | Timeout mutants |
+| --- | ---: |
+| `ConversationFilter._apply_filters` | 28 |
+| `ConversationFilter._apply_sort` | 20 |
+| `ConversationFilter.__init__` | 15 |
+| `ConversationFilter._fetch_generic` | 10 |
+| `ConversationFilter._apply_common_filters` | 8 |
+| `ConversationFilter._execute_pipeline` | 6 |
+| `ConversationFilter._apply_sort_generic` | 5 |
+| `ConversationFilter._effective_fetch_limit` | 5 |
+| `ConversationFilter._needs_content_loading` | 4 |
+| `ConversationFilter.list` | 4 |
+
+### Interpretation
+
+- The high-value structural wins from this wave are already realized:
+  - `count()` is fully killed across its fast/summary/full paths.
+  - `_fetch_summary_candidates()` is fully killed.
+  - `first()`, `parent()`, and `count()` are fully killed.
+  - `pick()` is materially improved but still the largest real survivor pocket.
+- The remaining timeout mass is concentrated in larger pipeline-style helpers. Further progress there likely requires cheaper fixtures or smaller helper-level contracts, not just more end-to-end examples.
+- The remaining survivors are no longer a broad blindness problem. They are a bounded residue in formatting/summary/branch-control behavior, which is the right point to pause and reassess instead of blindly accreting tests.
+
+### Follow-up Hardening Pass
+
+- After this baseline was recorded, a second narrow hardening pass added exact contracts for:
+  - picker numbering, truncation, unknown-date rendering, and selection bounds
+  - exact `list_summaries()` guidance text and summary-filter post-processing
+  - negative branch predicate semantics
+  - multi-delete counting
+  - multi-value `describe()` joins and similarity truncation
+- Those follow-up tests are verified by targeted pytest runs, but the exact post-pass focused mutation count is not recorded here yet because current broad mutmut configuration re-enters full-tree stats/clean-test phases after the test inventory changes, even for explicit survivor-key reruns.
+
 ## Scoped Historical Mutation Baseline
 
 - Command: `nix develop -c mutmut run`
