@@ -212,6 +212,11 @@ def _is_newline_delimited_json_name(name: str) -> bool:
     )
 
 
+def _is_supported_drive_payload(name: str, mime_type: str) -> bool:
+    """Return whether a Drive file should be treated as a JSON payload export."""
+    return name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")) or mime_type == GEMINI_PROMPT_MIME_TYPE
+
+
 def _parse_downloaded_json_payload(raw: bytes, *, name: str) -> object:
     if _is_newline_delimited_json_name(name):
         items = []
@@ -230,6 +235,23 @@ def _parse_downloaded_json_payload(raw: bytes, *, name: str) -> object:
         return json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return json.loads(raw.decode("utf-8", errors="replace"))
+
+
+def _needs_download(meta: DriveFile, dest: Path) -> bool:
+    """Return whether a Drive file should be downloaded to the destination path."""
+    if not dest.exists():
+        return True
+
+    try:
+        stat = dest.stat()
+    except OSError:
+        return True
+
+    if meta.size_bytes is not None and stat.st_size != meta.size_bytes:
+        return True
+
+    modified_timestamp = _parse_modified_time(meta.modified_time)
+    return modified_timestamp is not None and abs(stat.st_mtime - modified_timestamp) > 1
 
 
 class DriveClient:
@@ -422,10 +444,7 @@ class DriveClient:
             for item in response.get("files", []):
                 name = item.get("name") or ""
                 mime_type = item.get("mimeType") or ""
-                # Include .json/.jsonl files OR Gemini AI Studio prompt files
-                is_json_file = name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson"))
-                is_gemini_prompt = mime_type == GEMINI_PROMPT_MIME_TYPE
-                if not (is_json_file or is_gemini_prompt):
+                if not _is_supported_drive_payload(name, mime_type):
                     continue
                 file_obj = DriveFile(
                     file_id=item.get("id", ""),
@@ -493,19 +512,7 @@ class DriveClient:
 
         meta = self.get_metadata(file_id)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        needs_download = True
-        if dest.exists():
-            needs_download = False
-            try:
-                stat = dest.stat()
-            except OSError:
-                needs_download = True
-            else:
-                if meta.size_bytes is not None and stat.st_size != meta.size_bytes:
-                    needs_download = True
-                modified_timestamp = _parse_modified_time(meta.modified_time)
-                if modified_timestamp is not None and abs(stat.st_mtime - modified_timestamp) > 1:
-                    needs_download = True
+        needs_download = _needs_download(meta, dest)
         if needs_download:
 
             def _download_once() -> None:
