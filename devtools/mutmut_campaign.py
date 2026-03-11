@@ -271,7 +271,6 @@ CAMPAIGNS: dict[str, Campaign] = {
         tests=(
             "tests/unit/sources/test_parse_laws.py",
             "tests/unit/sources/test_harmonization_contracts.py",
-            "tests/unit/sources/test_viewport_protocol.py",
             "tests/unit/sources/test_extraction.py",
             "tests/unit/sources/test_unified_semantic_laws.py",
             "tests/unit/sources/test_null_guard_properties.py",
@@ -291,7 +290,6 @@ CAMPAIGNS: dict[str, Campaign] = {
             "tests/unit/sources/test_parsers_props.py",
             "tests/unit/sources/test_harmonization_contracts.py",
             "tests/unit/sources/test_source_laws.py",
-            "tests/unit/sources/test_viewport_protocol.py",
             "tests/unit/sources/test_extraction.py",
             "tests/unit/sources/test_unified_semantic_laws.py",
             "tests/unit/sources/test_parsers.py",

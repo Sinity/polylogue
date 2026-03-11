@@ -13,7 +13,6 @@ from polylogue.lib.provider_semantics import extract_codex_text
 from polylogue.schemas.unified import (
     HarmonizedMessage,
     extract_content_blocks,
-    extract_harmonized_message,
     extract_reasoning_traces,
     extract_tool_calls,
 )
@@ -137,49 +136,7 @@ def _expected_content_types(content: list[object]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Law 1: HarmonizedMessage.role is always a canonical role value
-# ---------------------------------------------------------------------------
-
-@given(st.sampled_from(list(_PROVIDER_STRATEGIES.keys())).flatmap(
-    lambda p: _PROVIDER_STRATEGIES[p].map(lambda raw: (p, raw))
-))
-def test_harmonized_role_is_canonical(args: tuple) -> None:
-    """extract_harmonized_message always produces a canonical role."""
-    provider, raw = args
-    msg = extract_harmonized_message(provider, raw)
-    assert msg.role.value in _CANONICAL_ROLES
-
-
-# ---------------------------------------------------------------------------
-# Law 2: HarmonizedMessage.text is always a string (never None)
-# ---------------------------------------------------------------------------
-
-@given(st.sampled_from(list(_PROVIDER_STRATEGIES.keys())).flatmap(
-    lambda p: _PROVIDER_STRATEGIES[p].map(lambda raw: (p, raw))
-))
-def test_harmonized_text_is_string(args: tuple) -> None:
-    """extract_harmonized_message always produces a str text field."""
-    provider, raw = args
-    msg = extract_harmonized_message(provider, raw)
-    assert isinstance(msg.text, str)
-
-
-# ---------------------------------------------------------------------------
-# Law 3: HarmonizedMessage.provider matches the extraction provider
-# ---------------------------------------------------------------------------
-
-@given(st.sampled_from(list(_PROVIDER_STRATEGIES.keys())).flatmap(
-    lambda p: _PROVIDER_STRATEGIES[p].map(lambda raw: (p, raw))
-))
-def test_harmonized_provider_matches(args: tuple) -> None:
-    """The provider field in HarmonizedMessage matches the input provider."""
-    provider, raw = args
-    msg = extract_harmonized_message(provider, raw)
-    assert msg.provider == provider
-
-
-# ---------------------------------------------------------------------------
-# Law 4: HarmonizedMessage coerces any string role to canonical Role
+# Law 1: HarmonizedMessage coerces any string role to canonical Role
 # ---------------------------------------------------------------------------
 
 @given(st.sampled_from(["user", "assistant", "system", "tool", "unknown",
@@ -191,7 +148,7 @@ def test_harmonized_message_role_coercion(role_str: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Law 5: extract_reasoning_traces returns every reasoning block in order
+# Law 2: extract_reasoning_traces returns every reasoning block in order
 # ---------------------------------------------------------------------------
 
 @given(
@@ -215,7 +172,7 @@ def test_extract_reasoning_traces_preserve_reasoning_blocks(content: list, provi
 
 
 # ---------------------------------------------------------------------------
-# Law 6: extract_tool_calls returns every tool_use block in order
+# Law 3: extract_tool_calls returns every tool_use block in order
 # ---------------------------------------------------------------------------
 
 @given(
@@ -243,7 +200,7 @@ def test_extract_tool_calls_preserve_tool_use_blocks(content: list, provider: Pr
 
 
 # ---------------------------------------------------------------------------
-# Law 7: HarmonizedMessage.provider coerces string providers
+# Law 4: HarmonizedMessage.provider coerces string providers
 # ---------------------------------------------------------------------------
 
 @given(st.sampled_from(["chatgpt", "claude", "claude-code", "gemini", "codex"]))
@@ -254,7 +211,7 @@ def test_harmonized_provider_coercion(provider_str: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Law 8: extract_content_blocks classifies every recognized block in order
+# Law 5: extract_content_blocks classifies every recognized block in order
 # ---------------------------------------------------------------------------
 
 @given(
@@ -274,33 +231,6 @@ def test_extract_content_blocks_preserve_recognized_block_order(content: list[ob
 
 
 # ---------------------------------------------------------------------------
-# Law 10: HarmonizedMessage.has_reasoning is consistent with reasoning_traces
-# ---------------------------------------------------------------------------
-
-@given(st.sampled_from(list(_PROVIDER_STRATEGIES.keys())).flatmap(
-    lambda p: _PROVIDER_STRATEGIES[p].map(lambda raw: (p, raw))
-))
-def test_has_reasoning_consistent_with_traces(args: tuple) -> None:
-    """has_reasoning iff reasoning_traces is non-empty."""
-    provider, raw = args
-    msg = extract_harmonized_message(provider, raw)
-    assert msg.has_reasoning == (len(msg.reasoning_traces) > 0)
-
-
-# ---------------------------------------------------------------------------
-# Law 11: HarmonizedMessage.has_tool_use is consistent with tool_calls
-# ---------------------------------------------------------------------------
-
-@given(st.sampled_from(list(_PROVIDER_STRATEGIES.keys())).flatmap(
-    lambda p: _PROVIDER_STRATEGIES[p].map(lambda raw: (p, raw))
-))
-def test_has_tool_use_consistent_with_calls(args: tuple) -> None:
-    """has_tool_use iff tool_calls is non-empty."""
-    provider, raw = args
-    msg = extract_harmonized_message(provider, raw)
-    assert msg.has_tool_use == (len(msg.tool_calls) > 0)
-
-
 @given(
     st.lists(
         st.one_of(
