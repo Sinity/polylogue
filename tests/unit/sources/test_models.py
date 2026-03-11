@@ -1,8 +1,8 @@
 """Pinned provider-model regressions that remain worth keeping as examples.
 
-Broad viewport/meta/content laws now live in test_provider_viewport_laws.py.
-This file keeps only exact timestamp/conversation regressions that benefit from
-explicit examples.
+Broad viewport/meta/content laws now live in the unified semantic and viewport
+contract suites. This file keeps only exact timestamp/conversation regressions
+that benefit from explicit examples.
 """
 
 from __future__ import annotations
