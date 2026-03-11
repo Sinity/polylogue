@@ -13,12 +13,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 from hypothesis import HealthCheck, given, settings
+from rich.console import Console
 
 from polylogue.cli.query import _async_execute_query, _no_results
 from polylogue.cli.query_actions import _apply_modifiers, _apply_transform, _delete_conversations
 from polylogue.cli.query_helpers import summary_to_dict
-from polylogue.cli.query_output import _output_stats_sql, _output_summary_list, _send_output
-from polylogue.cli.query_plan import QueryAction, QueryExecutionPlan, QueryMutationSpec, QueryOutputSpec
+from polylogue.cli.query_output import (
+    _output_stats_by_summaries,
+    _output_stats_sql,
+    _output_summary_list,
+    _send_output,
+)
+from polylogue.cli.query_plan import (
+    QueryAction,
+    QueryExecutionPlan,
+    QueryMutationSpec,
+    QueryOutputSpec,
+    QueryRoute,
+    resolve_query_route,
+)
 from polylogue.cli.types import AppEnv
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.query_spec import ConversationQuerySpec
@@ -31,6 +44,7 @@ from tests.infra.strategies import (
     query_mutation_case_strategy,
     send_output_case_strategy,
     summary_output_case_strategy,
+    summary_stats_case_strategy,
 )
 
 
@@ -139,6 +153,28 @@ def _sample_conversation() -> Conversation:
             Message(id="m-assistant", role="assistant", text="answer"),
         ],
     )
+
+
+def _make_recording_env() -> tuple[AppEnv, io.StringIO]:
+    buffer = io.StringIO()
+    env = _make_env()
+    env.ui.console = Console(file=buffer, width=120, force_terminal=False, color_system=None)
+    return env, buffer
+
+
+def _summary_group_key(spec: ConversationSummarySpec, dimension: str) -> str:
+    if dimension == "provider":
+        return spec.provider or "unknown"
+    if dimension == "month":
+        dt = spec.updated_at or spec.created_at
+        return dt.strftime("%Y-%m") if dt else "unknown"
+    if dimension == "year":
+        dt = spec.updated_at or spec.created_at
+        return dt.strftime("%Y") if dt else "unknown"
+    if dimension == "day":
+        dt = spec.updated_at or spec.created_at
+        return dt.strftime("%Y-%m-%d") if dt else "unknown"
+    return "all"
 
 
 @settings(max_examples=60, deadline=None)
@@ -326,6 +362,56 @@ def test_send_output_routes_destination_contract(case) -> None:
 
 
 @pytest.mark.parametrize(
+    ("case", "can_use_summaries", "expected_route"),
+    [
+        ("count", False, QueryRoute.COUNT),
+        ("stats_sql", True, QueryRoute.STATS_SQL),
+        ("stats_by_summaries", True, QueryRoute.SUMMARY_STATS),
+        ("stats_by_summaries", False, QueryRoute.STATS_BY),
+        ("modify", True, QueryRoute.SUMMARY_MODIFY),
+        ("modify", False, QueryRoute.MODIFY),
+        ("delete", True, QueryRoute.SUMMARY_DELETE),
+        ("delete", False, QueryRoute.DELETE),
+        ("open", False, QueryRoute.OPEN),
+        ("summary_list", True, QueryRoute.SUMMARY_LIST),
+        ("summary_list", False, QueryRoute.SHOW),
+        ("show", False, QueryRoute.SHOW),
+    ],
+)
+def test_resolve_query_route_contract(case: str, can_use_summaries: bool, expected_route: QueryRoute) -> None:
+    plan = _build_plan(case)
+    assert resolve_query_route(plan, can_use_summaries=can_use_summaries) == expected_route
+
+
+@settings(max_examples=40, deadline=None)
+@given(case=summary_stats_case_strategy())
+def test_output_stats_by_summaries_contract(case) -> None:
+    env, buffer = _make_recording_env()
+    summaries = [build_conversation_summary(spec) for spec in case.summaries]
+    msg_counts = build_message_counts(case.summaries)
+
+    _output_stats_by_summaries(env, summaries, msg_counts, case.dimension)
+
+    rendered = buffer.getvalue()
+    assert f"Matched: {len(case.summaries)} conversations (by {case.dimension})" in rendered
+
+    grouped_counts: dict[str, tuple[int, int]] = {}
+    for spec in case.summaries:
+        key = _summary_group_key(spec, case.dimension)
+        convs, messages = grouped_counts.get(key, (0, 0))
+        grouped_counts[key] = (convs + 1, messages + spec.message_count)
+
+    for key, (convs, messages) in grouped_counts.items():
+        assert key in rendered
+        assert f"{convs:,}" in rendered
+        assert f"{messages:,}" in rendered
+
+    assert "TOTAL" in rendered
+    assert f"{len(case.summaries):,}" in rendered
+    assert f"{sum(spec.message_count for spec in case.summaries):,}" in rendered
+
+
+@pytest.mark.parametrize(
     ("case", "expected_helper"),
     [
         ("count", "count"),
@@ -358,7 +444,7 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         patch("polylogue.cli.query._output_summary_list", new_callable=AsyncMock) as mock_output_summary_list,
         patch("polylogue.cli.query._output_stats_sql", new_callable=AsyncMock) as mock_output_stats_sql,
         patch("polylogue.cli.query._output_stats_by_summaries") as mock_output_stats_by_summaries,
-        patch("polylogue.cli.query._output_stats_by"),
+        patch("polylogue.cli.query._output_stats_by") as mock_output_stats_by,
         patch("polylogue.cli.query._apply_modifiers", new_callable=AsyncMock) as mock_apply_modifiers,
         patch("polylogue.cli.query._delete_conversations", new_callable=AsyncMock) as mock_delete_conversations,
         patch("polylogue.cli.query._open_result") as mock_open_result,
@@ -373,6 +459,7 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         mock_output_stats_sql.assert_awaited_once()
     elif expected_helper == "stats_by_summaries":
         mock_output_stats_by_summaries.assert_called_once()
+        mock_output_stats_by.assert_not_called()
     elif expected_helper == "modify":
         mock_apply_modifiers.assert_awaited_once()
     elif expected_helper == "delete":
