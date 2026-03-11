@@ -159,31 +159,54 @@ def _harmonize_viewport_message(
     )
 
 
+def _validate_claude_code_record(raw: dict[str, Any]) -> Any:
+    from polylogue.sources.providers.claude_code import ClaudeCodeRecord
+
+    if raw.get("message") == {}:
+        raise ValueError("Message has no role. Data should be validated at import time.")
+    return ClaudeCodeRecord.model_validate(raw)
+
+
+def _validate_claude_ai_message(raw: dict[str, Any]) -> Any:
+    from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage
+
+    return ClaudeAIChatMessage.model_validate(raw)
+
+
+def _validate_chatgpt_message(raw: dict[str, Any]) -> Any:
+    from polylogue.sources.providers.chatgpt import ChatGPTMessage
+
+    return ChatGPTMessage.model_validate(raw)
+
+
+def _validate_gemini_message(raw: dict[str, Any]) -> Any:
+    from polylogue.sources.providers.gemini import GeminiMessage
+
+    return GeminiMessage.model_validate(raw)
+
+
+def _validate_codex_record(raw: dict[str, Any]) -> Any:
+    from polylogue.sources.providers.codex import CodexRecord
+
+    return CodexRecord.model_validate(raw)
+
+
+_ADAPTER_BUILDERS = {
+    Provider.CLAUDE_CODE: _validate_claude_code_record,
+    Provider.CLAUDE: _validate_claude_ai_message,
+    Provider.CHATGPT: _validate_chatgpt_message,
+    Provider.GEMINI: _validate_gemini_message,
+    Provider.CODEX: _validate_codex_record,
+}
+
+
 def _extract_with_adapter(provider: Provider, raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract via the canonical typed provider adapter for valid raw records."""
-    if provider == Provider.CLAUDE_CODE:
-        from polylogue.sources.providers.claude_code import ClaudeCodeRecord
-
-        if raw.get("message") == {}:
-            raise ValueError("Message has no role. Data should be validated at import time.")
-        return _harmonize_viewport_message(provider, raw, ClaudeCodeRecord.model_validate(raw))
-    if provider == Provider.CLAUDE:
-        from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage
-
-        return _harmonize_viewport_message(provider, raw, ClaudeAIChatMessage.model_validate(raw))
-    if provider == Provider.CHATGPT:
-        from polylogue.sources.providers.chatgpt import ChatGPTMessage
-
-        return _harmonize_viewport_message(provider, raw, ChatGPTMessage.model_validate(raw))
-    if provider == Provider.GEMINI:
-        from polylogue.sources.providers.gemini import GeminiMessage
-
-        return _harmonize_viewport_message(provider, raw, GeminiMessage.model_validate(raw))
-    if provider == Provider.CODEX:
-        from polylogue.sources.providers.codex import CodexRecord
-
-        return _harmonize_viewport_message(provider, raw, CodexRecord.model_validate(raw))
-    raise ValueError(f"Unknown provider: {provider}")
+    try:
+        builder = _ADAPTER_BUILDERS[provider]
+    except KeyError as exc:
+        raise ValueError(f"Unknown provider: {provider}") from exc
+    return _harmonize_viewport_message(provider, raw, builder(raw))
 
 
 def extract_harmonized_message(provider: Provider | str, raw: dict[str, Any]) -> HarmonizedMessage:
@@ -311,19 +334,22 @@ def _fallback_extract_codex(raw: dict[str, Any]) -> HarmonizedMessage:
     )
 
 
+_FALLBACK_EXTRACTORS = {
+    Provider.CLAUDE_CODE: _fallback_extract_claude_code,
+    Provider.CLAUDE: _fallback_extract_claude_ai,
+    Provider.CHATGPT: _fallback_extract_chatgpt,
+    Provider.GEMINI: _fallback_extract_gemini,
+    Provider.CODEX: _fallback_extract_codex,
+}
+
+
 def _extract_fallback_message(provider: Provider, raw: dict[str, Any]) -> HarmonizedMessage:
     """Fallback harmonization for malformed raw provider payloads."""
-    if provider == Provider.CLAUDE_CODE:
-        return _fallback_extract_claude_code(raw)
-    if provider == Provider.CLAUDE:
-        return _fallback_extract_claude_ai(raw)
-    if provider == Provider.CHATGPT:
-        return _fallback_extract_chatgpt(raw)
-    if provider == Provider.GEMINI:
-        return _fallback_extract_gemini(raw)
-    if provider == Provider.CODEX:
-        return _fallback_extract_codex(raw)
-    raise ValueError(f"Unknown provider: {provider}")
+    try:
+        extractor = _FALLBACK_EXTRACTORS[provider]
+    except KeyError as exc:
+        raise ValueError(f"Unknown provider: {provider}") from exc
+    return extractor(raw)
 
 
 # =============================================================================

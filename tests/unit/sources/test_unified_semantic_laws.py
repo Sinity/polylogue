@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,15 @@ from polylogue.lib.provider_semantics import (
     extract_claude_code_text,
     extract_codex_text,
 )
-from polylogue.lib.viewports import ContentBlock, ContentType, CostInfo, ReasoningTrace, TokenUsage, ToolCall
+from polylogue.lib.viewports import (
+    ContentBlock,
+    ContentType,
+    CostInfo,
+    MessageMeta,
+    ReasoningTrace,
+    TokenUsage,
+    ToolCall,
+)
 from polylogue.schemas.unified import (
     _coerce_content_blocks,
     _coerce_reasoning_traces,
@@ -46,6 +55,8 @@ from tests.infra.strategies import (
     gemini_semantic_message_strategy,
     provider_semantic_case_strategy,
 )
+
+_VALID_VIEWPORT_ROLES = {"user", "assistant", "system", "tool", "unknown", "model"}
 
 
 def _build_viewport_record(provider: str, raw: dict[str, object]) -> object:
@@ -426,18 +437,25 @@ def test_provider_adapter_viewport_contract(case: tuple[str, dict[str, object]])
     traces = record.extract_reasoning_traces()
     calls = record.extract_tool_calls()
 
+    assert isinstance(record.text_content, str)
+    assert isinstance(record.role_normalized, str)
+    assert record.role_normalized in _VALID_VIEWPORT_ROLES
+    assert record.parsed_timestamp is None or isinstance(record.parsed_timestamp, datetime)
+    assert isinstance(meta, MessageMeta)
+    assert isinstance(blocks, list)
+    assert isinstance(traces, list)
+    assert isinstance(calls, list)
     assert meta.provider == provider
+    assert meta.role == record.role_normalized
     assert all(block.raw is not None for block in blocks)
 
     if provider == "chatgpt":
-        assert meta.role == record.role_normalized
         assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
         assert record.text_content == extract_chatgpt_text(record.content.model_dump(mode="python"))
         assert blocks == record.to_content_blocks()
         assert not traces
         assert not calls
     elif provider == "claude-ai":
-        assert meta.role == record.role_normalized
         assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
         assert len(blocks) == 1
         assert blocks[0].type == ContentType.TEXT
@@ -453,14 +471,12 @@ def test_provider_adapter_viewport_contract(case: tuple[str, dict[str, object]])
         assert traces == extract_reasoning_traces(record.content_blocks_raw, "claude-code")
         assert calls == extract_tool_calls(record.content_blocks_raw, "claude-code")
     elif provider == "codex":
-        assert meta.role == record.role_normalized
         assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
         assert record.text_content == extract_codex_text(record.effective_content)
         assert len(blocks) == len(record.effective_content)
         assert not traces
         assert not calls
     elif provider == "gemini":
-        assert meta.role == record.role_normalized
         assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
         if record.tokenCount is None:
             assert meta.tokens is None
