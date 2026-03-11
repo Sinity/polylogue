@@ -5,7 +5,7 @@ or test_edge_cases.py. Originally 39 tests; redundant tests were removed during
 consolidation — canonical provider model tests live in test_models.py.
 
 Unique coverage:
-- _text_from_blocks static method (direct call, not via property)
+- Claude Code text-block extraction helper (direct call, not via property)
 - ChatGPT: parts=None (not empty list), None within parts list
 - Gemini: fileData parts, code execution blocks
 - Multi-provider integration: complex multi-block scenarios
@@ -15,6 +15,7 @@ Unique coverage:
 
 from __future__ import annotations
 
+from polylogue.lib.provider_semantics import extract_claude_code_text
 from polylogue.sources.providers.chatgpt import (
     ChatGPTAuthor,
     ChatGPTContent,
@@ -27,19 +28,19 @@ from polylogue.sources.providers.gemini import (
 )
 
 # =============================================================================
-# ClaudeCodeRecord: direct _text_from_blocks call (not via text_content property)
+# Claude Code: direct text-block extraction helper call
 # =============================================================================
 
 
 class TestClaudeCodeTextFromBlocks:
-    """Test the static method directly — bypasses text_content dispatch logic."""
+    """Test the shared helper directly — bypasses record dispatch logic."""
 
     def test_text_from_blocks_excludes_thinking(self):
         blocks = [
             {"type": "thinking", "thinking": "Let me reason about this..."},
             {"type": "text", "text": "Here is my answer."},
         ]
-        text = ClaudeCodeRecord._text_from_blocks(blocks)
+        text = extract_claude_code_text(blocks)
         assert "Let me reason" not in text
         assert "Here is my answer." in text
 
