@@ -8,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from tests.infra.helpers import DbFactory
+from tests.infra.storage_records import DbFactory
 
 # =============================================================================
 # TEST DATA TABLES (module-level constants)

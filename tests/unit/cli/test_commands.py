@@ -27,7 +27,7 @@ from polylogue.cli import helpers
 from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.commands.mcp import mcp_command
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
-from tests.infra.helpers import GenericConversationBuilder
+from tests.infra.source_builders import GenericConversationBuilder
 
 # =============================================================================
 # TEST DATA TABLES (module-level constants)
