@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -10,8 +11,10 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from polylogue.lib.models import Conversation
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from tests.infra.helpers import make_message
 from tests.infra.strategies import (
     conversation_graph_strategy,
     expected_sorted_ids,
@@ -26,6 +29,13 @@ def _seed_repo(specs) -> tuple[TemporaryDirectory[str], ConversationRepository]:
     tempdir = TemporaryDirectory()
     db_path = Path(tempdir.name) / "repo.db"
     seed_conversation_graph(db_path, specs)
+    backend = SQLiteBackend(db_path=db_path)
+    return tempdir, ConversationRepository(backend=backend)
+
+
+def _empty_repo() -> tuple[TemporaryDirectory[str], ConversationRepository]:
+    tempdir = TemporaryDirectory()
+    db_path = Path(tempdir.name) / "repo.db"
     backend = SQLiteBackend(db_path=db_path)
     return tempdir, ConversationRepository(backend=backend)
 
@@ -245,6 +255,91 @@ def test_repository_archive_stats_match_generated_graph(specs) -> None:
             expected_messages / expected_conversations
         )
         assert stats.db_size_bytes >= 0
+    finally:
+        asyncio.run(repo.close())
+        tempdir.cleanup()
+
+
+@settings(
+    deadline=None,
+    max_examples=20,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+@given(conversation_graph_strategy())
+def test_repository_get_parent_matches_generated_graph(specs) -> None:
+    """get_parent() must return the direct generated parent or None."""
+    tempdir, repo = _seed_repo(specs)
+    try:
+        for _index, spec in enumerate(specs):
+            parent = asyncio.run(repo.get_parent(spec.conversation_id))
+            expected_parent = None if spec.parent_index is None else specs[spec.parent_index].conversation_id
+            if expected_parent is None:
+                assert parent is None
+            else:
+                assert parent is not None
+                assert str(parent.id) == expected_parent
+    finally:
+        asyncio.run(repo.close())
+        tempdir.cleanup()
+
+
+@settings(
+    deadline=None,
+    max_examples=20,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+@given(conversation_graph_strategy())
+def test_repository_stats_by_provider_match_generated_graph(specs) -> None:
+    """get_stats_by(provider) must equal the provider histogram of the graph."""
+    tempdir, repo = _seed_repo(specs)
+    try:
+        expected: dict[str, int] = {}
+        for spec in specs:
+            expected[spec.provider] = expected.get(spec.provider, 0) + 1
+
+        assert asyncio.run(repo.get_stats_by("provider")) == expected
+    finally:
+        asyncio.run(repo.close())
+        tempdir.cleanup()
+
+
+def test_repository_save_conversation_model_contract() -> None:
+    """Saving a Conversation model strips provider prefixes and is idempotent on hashes."""
+    tempdir, repo = _empty_repo()
+    try:
+        conversation = Conversation(
+            id="claude:thread-1",
+            provider="claude",
+            title="Saved Conversation",
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            metadata={
+                "content_hash": "conv-hash",
+                "provider_meta": {"source": "law"},
+                "custom": "value",
+            },
+            messages=[],
+        )
+        message = make_message(
+            "msg-thread-1",
+            "claude:thread-1",
+            role="user",
+            text="hello",
+            content_hash="msg-hash",
+        )
+
+        first = asyncio.run(repo.save_conversation(conversation, [message], []))
+        second = asyncio.run(repo.save_conversation(conversation, [message], []))
+        stored = asyncio.run(repo.backend.get_conversation("claude:thread-1"))
+
+        assert first["conversations"] == 1
+        assert first["messages"] == 1
+        assert second["skipped_conversations"] == 1
+        assert second["skipped_messages"] == 1
+        assert stored is not None
+        assert stored.provider_conversation_id == "thread-1"
+        assert stored.provider_meta == {"source": "law"}
+        assert stored.metadata["custom"] == "value"
     finally:
         asyncio.run(repo.close())
         tempdir.cleanup()
