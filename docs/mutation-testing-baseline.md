@@ -35,33 +35,20 @@ Recorded on `2026-03-11`.
 
 - Command: `nix develop -c mutmut run`
 - Scope source of truth: [`pyproject.toml`](../pyproject.toml)
-- Configured mutation targets:
-  - `polylogue/lib/models.py`
-  - `polylogue/lib/filters.py`
-  - `polylogue/lib/roles.py`
-  - `polylogue/lib/timestamps.py`
-  - `polylogue/lib/hashing.py`
-  - `polylogue/lib/json.py`
-  - `polylogue/storage/search_providers/fts5.py`
-  - `polylogue/storage/search_providers/hybrid.py`
-- Configured test selection:
-  - `tests/unit/core/test_models.py`
-  - `tests/unit/core/test_message_laws.py`
-  - `tests/unit/core/test_properties.py`
-  - `tests/unit/core/test_json.py`
-  - `tests/unit/core/test_filters_props.py`
-  - `tests/unit/core/test_json_laws.py`
-  - `tests/unit/core/test_timestamp_guards.py`
-  - `tests/unit/core/test_hashing.py`
-  - `tests/unit/storage/test_fts5.py`
-  - `tests/unit/storage/test_fts5_laws.py`
-  - `tests/unit/storage/test_hybrid.py`
-  - `tests/unit/storage/test_hybrid_laws.py`
-- Harness note: mutmut now forces `pytest_add_cli_args = ["-n", "0", "-p", "no:randomly", "-p", "no:random-order", "--benchmark-disable"]` so it does not inherit repo-wide `pytest -n auto` and break inside xdist workers.
+- Configured mutation target root: `polylogue`
+- Configured default exclusions:
+  - `polylogue/**/__init__.py`
+  - `polylogue/**/__main__.py`
+- Harness note: mutmut now forces `pytest_add_cli_args = ["-n", "0", "-p", "no:randomly", "-p", "no:random-order", "--benchmark-disable", "-m", "not benchmark"]` so it does not inherit repo-wide `pytest -n auto` and so benchmark-only tests do not distort the campaign.
+- Execution rule: chunk broad mutation campaigns with CLI globs, for example:
+  - `nix develop -c mutmut run "polylogue.lib.*" "polylogue.storage.*"`
+  - `nix develop -c mutmut run "polylogue.pipeline.*" "polylogue.facade.*" "polylogue.rendering.*" "polylogue.site.*"`
+  - `nix develop -c mutmut run "polylogue.cli.*" "polylogue.sources.*"`
 
-## Latest Mutation Results
+## Scoped Historical Mutation Baseline
 
 - Command: `nix develop -c mutmut run`
+- Scope note: this was the earlier narrow baseline before the switch to broad chunked mutation campaigns.
 - Result: `1062` mutants checked at `18.83 mutations/second`
 - Totals:
 

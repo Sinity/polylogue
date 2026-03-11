@@ -53,7 +53,7 @@ class TestRenderFailureTracking:
                 conv = make_conversation(conversation_id, title=conversation_id)
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
+        with patch("polylogue.rendering.renderers.html.HTMLRenderer.render", new_callable=AsyncMock) as mock_render:
 
             def render_side_effect(conversation_id, output_path):
                 if "fail-conv" in conversation_id:
@@ -98,7 +98,7 @@ class TestRenderFailureTracking:
 
         render_attempts = []
 
-        with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
+        with patch("polylogue.rendering.renderers.html.HTMLRenderer.render", new_callable=AsyncMock) as mock_render:
 
             def render_side_effect(conversation_id, output_path):
                 render_attempts.append(conversation_id)
@@ -136,7 +136,7 @@ class TestRenderFailureTracking:
                 conv = make_conversation(conversation_id, title=conversation_id)
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
+        with patch("polylogue.rendering.renderers.html.HTMLRenderer.render", new_callable=AsyncMock) as mock_render:
 
             def render_side_effect(conversation_id, output_path):
                 if conversation_id in ["test:fail1", "test:fail2"]:
