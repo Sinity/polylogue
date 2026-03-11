@@ -607,20 +607,38 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         repo.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
         asyncio.run(_async_execute_query(env, {"limit": 7}))
 
+    plan.selection.build_filter.assert_called_once_with(repo, vector_provider=None)
+
     if expected_helper == "count":
+        filter_chain.count.assert_awaited_once()
+        filter_chain.list.assert_not_called()
+        filter_chain.list_summaries.assert_not_called()
         mock_echo.assert_called_with(3)
     elif expected_helper == "stats_sql":
+        filter_chain.list.assert_not_called()
+        filter_chain.list_summaries.assert_not_called()
         mock_output_stats_sql.assert_awaited_once()
     elif expected_helper == "stats_by_summaries":
+        filter_chain.list.assert_not_called()
+        filter_chain.list_summaries.assert_awaited_once()
+        repo.get_message_counts_batch.assert_awaited_once_with([str(summary.id)])
         mock_output_stats_by_summaries.assert_called_once()
         mock_output_stats_by.assert_not_called()
     elif expected_helper == "modify":
+        filter_chain.list.assert_not_called()
+        filter_chain.list_summaries.assert_awaited_once()
         mock_apply_modifiers.assert_awaited_once()
     elif expected_helper == "delete":
+        filter_chain.list.assert_not_called()
+        filter_chain.list_summaries.assert_awaited_once()
         mock_delete_conversations.assert_awaited_once()
     elif expected_helper == "open":
+        filter_chain.list.assert_awaited_once()
+        filter_chain.list_summaries.assert_not_called()
         mock_open_result.assert_called_once()
     elif expected_helper == "stream":
+        filter_chain.list.assert_not_called()
+        filter_chain.list_summaries.assert_not_called()
         mock_stream_target.assert_awaited_once()
         mock_stream_conversation.assert_awaited_once_with(
             env,
@@ -634,9 +652,37 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         assert any("--transform is ignored in --stream mode" in line for line in warnings)
         assert any("--output stdout,browser is ignored in --stream mode" in line for line in warnings)
     elif expected_helper == "summary_list":
+        filter_chain.list.assert_not_called()
+        filter_chain.list_summaries.assert_awaited_once()
         mock_output_summary_list.assert_awaited_once()
     else:
+        filter_chain.list.assert_awaited_once()
+        filter_chain.list_summaries.assert_not_called()
         mock_output_results.assert_called_once()
+
+
+def test_async_execute_query_stats_by_falls_back_to_full_results_without_summaries_contract() -> None:
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    plan = _build_plan("stats_by_summaries")
+    filter_chain = MagicMock()
+    filter_chain.can_use_summaries.return_value = False
+    filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
+    filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
+    plan.selection.build_filter.return_value = filter_chain
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("polylogue.cli.query._output_stats_by") as mock_output_stats_by,
+        patch("polylogue.cli.query._output_stats_by_summaries") as mock_output_stats_by_summaries,
+    ):
+        asyncio.run(_async_execute_query(env, {}))
+
+    filter_chain.list.assert_awaited_once()
+    filter_chain.list_summaries.assert_not_called()
+    mock_output_stats_by.assert_called_once()
+    mock_output_stats_by_summaries.assert_not_called()
 
 
 def test_async_execute_query_summary_list_no_results_contract() -> None:
