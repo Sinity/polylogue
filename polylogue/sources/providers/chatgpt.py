@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.provider_semantics import extract_chatgpt_text
 from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
@@ -19,6 +20,7 @@ from polylogue.lib.viewports import (
     ContentType,
     MessageMeta,
     ReasoningTrace,
+    ToolCall,
 )
 
 
@@ -99,20 +101,7 @@ class ChatGPTMessage(BaseModel):
         """Extract plain text content."""
         if not self.content:
             return ""
-
-        if self.content.text:
-            return self.content.text
-
-        if self.content.parts:
-            texts = []
-            for part in self.content.parts:
-                if isinstance(part, str):
-                    texts.append(part)
-                elif isinstance(part, dict) and part.get("text"):
-                    texts.append(part["text"])
-            return "\n".join(texts)
-
-        return ""
+        return extract_chatgpt_text(self.content.model_dump(mode="python"))
 
     @property
     def timestamp(self) -> datetime | None:
@@ -186,6 +175,10 @@ class ChatGPTMessage(BaseModel):
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
         """Extract reasoning traces (ChatGPT does not expose reasoning; returns empty list)."""
+        return []
+
+    def extract_tool_calls(self) -> list[ToolCall]:
+        """Extract tool calls (ChatGPT export message model does not expose them here)."""
         return []
 
 

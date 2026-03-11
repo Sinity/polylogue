@@ -1,0 +1,219 @@
+{
+  "campaign": "filters",
+  "description": "ConversationFilter semantics and summary/picker contracts",
+  "commit": "147e689d15caf23fc4036c3af6211af4f71bbaad",
+  "worktree_dirty": false,
+  "status_summary": [],
+  "created_at": "2026-03-11T06:21:10.783620+00:00",
+  "workspace": "/tmp/nix-shell.blQEPK/mutmut-filters-qkfkwx4e/repo",
+  "command": [
+    "mutmut",
+    "run"
+  ],
+  "paths_to_mutate": [
+    "polylogue/lib/filters.py"
+  ],
+  "tests": [
+    "tests/unit/core/test_filters.py",
+    "tests/unit/core/test_filters_adv.py",
+    "tests/unit/core/test_filters_props.py"
+  ],
+  "counts": {
+    "killed": 475,
+    "timeout": 117,
+    "survived": 5,
+    "not_checked": 0,
+    "suspicious": 0,
+    "skipped": 0
+  },
+  "dominant_survivors": [
+    [
+      "pick",
+      2
+    ],
+    [
+      "_apply_summary_filters",
+      2
+    ],
+    [
+      "has_branches",
+      1
+    ]
+  ],
+  "dominant_timeouts": [
+    [
+      "_apply_filters",
+      28
+    ],
+    [
+      "_apply_sort",
+      23
+    ],
+    [
+      "__init__",
+      15
+    ],
+    [
+      "_fetch_generic",
+      9
+    ],
+    [
+      "_apply_common_filters",
+      8
+    ],
+    [
+      "_fetch_candidates",
+      7
+    ],
+    [
+      "_execute_pipeline",
+      6
+    ],
+    [
+      "_effective_fetch_limit",
+      5
+    ],
+    [
+      "list",
+      4
+    ],
+    [
+      "_needs_content_loading",
+      4
+    ]
+  ],
+  "dominant_not_checked": [],
+  "survivor_keys": [
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1has_branches__mutmut_11",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1pick__mutmut_22",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1pick__mutmut_23",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_summary_filters__mutmut_3",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_summary_filters__mutmut_5"
+  ],
+  "timeout_keys": [
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_2",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_11",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_12",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_13",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_14",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_15",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_16",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_17",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_18",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_22",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_23",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_25",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_30",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_32",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1__init____mutmut_34",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_common_filters__mutmut_1",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_common_filters__mutmut_8",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_common_filters__mutmut_9",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_common_filters__mutmut_11",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_common_filters__mutmut_12",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_common_filters__mutmut_16",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_common_filters__mutmut_35",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_common_filters__mutmut_36",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_4",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_6",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_7",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_8",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_9",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_11",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_12",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_13",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_14",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_15",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_16",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_17",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_18",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_19",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_20",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_21",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_22",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_23",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_24",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_25",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_26",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_27",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_28",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_29",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_30",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_31",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_32",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_filters__mutmut_33",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort_generic__mutmut_1",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort_generic__mutmut_2",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort_generic__mutmut_3",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_1",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_2",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_3",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_4",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_5",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_6",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_7",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_8",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_9",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_10",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_11",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_12",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_14",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_15",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_16",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_21",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_22",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_23",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_24",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_25",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_26",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_27",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_apply_sort__mutmut_28",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_sql_pushdown_params__mutmut_8",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_sql_pushdown_params__mutmut_9",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_sql_pushdown_params__mutmut_10",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_effective_fetch_limit__mutmut_6",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_effective_fetch_limit__mutmut_7",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_effective_fetch_limit__mutmut_14",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_effective_fetch_limit__mutmut_15",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_effective_fetch_limit__mutmut_23",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_generic__mutmut_1",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_generic__mutmut_4",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_generic__mutmut_11",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_generic__mutmut_28",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_generic__mutmut_29",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_generic__mutmut_30",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_generic__mutmut_31",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_generic__mutmut_32",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_generic__mutmut_35",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_candidates__mutmut_2",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_candidates__mutmut_7",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_candidates__mutmut_9",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_candidates__mutmut_10",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_candidates__mutmut_11",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_candidates__mutmut_12",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_fetch_candidates__mutmut_13",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_execute_pipeline__mutmut_1",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_execute_pipeline__mutmut_2",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_execute_pipeline__mutmut_3",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_execute_pipeline__mutmut_4",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_execute_pipeline__mutmut_7",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_execute_pipeline__mutmut_14",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1list__mutmut_4",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1list__mutmut_9",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1list__mutmut_20",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1list__mutmut_22",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_needs_content_loading__mutmut_6",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_needs_content_loading__mutmut_7",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_needs_content_loading__mutmut_8",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1_needs_content_loading__mutmut_9",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1list_summaries__mutmut_17",
+    "polylogue.lib.filters.x\u01c1ConversationFilter\u01c1list_summaries__mutmut_19"
+  ],
+  "not_checked_keys": [],
+  "runtime_seconds": 175.175298,
+  "exit_code": 0,
+  "notes": [
+    "Targets the historical largest no-test blind spot.",
+    "Timeout tail is expected in filter pipeline helpers."
+  ]
+}

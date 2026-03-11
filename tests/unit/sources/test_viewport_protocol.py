@@ -7,6 +7,7 @@ Every provider record type must implement the viewport interface:
   to_meta() → MessageMeta
   extract_content_blocks() → list
   extract_reasoning_traces() → list
+  extract_tool_calls() → list
 
 These tests verify the contract across all providers using minimal valid instances.
 """
@@ -119,6 +120,12 @@ class TestViewportProtocol:
         result = record.extract_reasoning_traces()
         assert isinstance(result, list), (
             f"{provider}.extract_reasoning_traces() must return list, got {type(result).__name__}"
+        )
+
+    def test_extract_tool_calls_returns_list(self, provider, record):
+        result = record.extract_tool_calls()
+        assert isinstance(result, list), (
+            f"{provider}.extract_tool_calls() must return list, got {type(result).__name__}"
         )
 
     def test_to_meta_role_matches_role_normalized(self, provider, record):

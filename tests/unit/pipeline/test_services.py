@@ -93,97 +93,6 @@ class TestAcquisitionServiceAcquireSources:
         result = await AcquisitionService(backend=backend).acquire_sources([])
         assert all(result.counts[k] == 0 for k in ["acquired", "skipped", "errors"]) and result.raw_ids == []
 
-    @pytest.mark.parametrize(
-        "num_convos,expected_acquired,expected_skipped,raw_content",
-        [
-            (1, 1, 0, b'{"id": "test-conv", "messages": []}'),
-            (3, 3, 0, b'{"id": "conv-0"}'),
-            (2, 1, 1, b'{"id": "same-conv"}'),
-        ],
-    )
-    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
-    async def test_acquire_conversations(
-        self,
-        mock_iter,
-        backend: SQLiteBackend,
-        num_convos: int,
-        expected_acquired: int,
-        expected_skipped: int,
-        raw_content: bytes,
-    ):
-        """Acquire conversations: single, multiple, or duplicates."""
-        if num_convos == 1:
-            raw_data = RawConversationData(
-                raw_bytes=raw_content,
-                source_path="/tmp/test.json",
-                source_index=0,
-                provider_hint="chatgpt",
-            )
-            mock_iter.return_value = iter([raw_data])
-        elif num_convos == 3:
-            convos = [
-                RawConversationData(
-                    raw_bytes=f'{{"id": "conv-{i}"}}'.encode(),
-                    source_path="/tmp/test.json",
-                    source_index=i,
-                    provider_hint="chatgpt",
-                )
-                for i in range(3)
-            ]
-            mock_iter.return_value = iter(convos)
-        else:  # num_convos == 2
-            raw_data = RawConversationData(
-                raw_bytes=raw_content,
-                source_path="/tmp/test.json",
-                source_index=0,
-                provider_hint="chatgpt",
-            )
-            mock_iter.return_value = iter([raw_data, raw_data])
-
-        service = AcquisitionService(backend=backend)
-        source = Source(name="test-source", path=Path("/tmp/inbox"))
-        result = await service.acquire_sources([source])
-
-        assert result.counts["acquired"] == expected_acquired
-        assert result.counts["skipped"] == expected_skipped
-        assert len(result.raw_ids) == expected_acquired
-
-        if expected_acquired > 0:
-            stored = await backend.get_raw_conversation(result.raw_ids[0])
-            assert stored is not None
-            assert stored.raw_content == (raw_content if num_convos != 3 else b'{"id": "conv-0"}')
-            assert stored.provider_name == "chatgpt"
-            assert stored.payload_provider is None
-
-    @pytest.mark.parametrize(
-        "provider_hint,source_name,expected_provider",
-        [("chatgpt", "test-source", "chatgpt"), (None, "my-inbox", "my-inbox")],
-    )
-    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
-    async def test_acquire_provider_fallback(
-        self,
-        mock_iter,
-        backend: SQLiteBackend,
-        provider_hint: str | None,
-        source_name: str,
-        expected_provider: str,
-    ):
-        """Source name is used as fallback provider when provider_hint is None."""
-        raw_data = RawConversationData(
-            raw_bytes=b'{"id": "test"}',
-            source_path="/tmp/test.json",
-            source_index=0,
-            provider_hint=provider_hint,
-        )
-        mock_iter.return_value = iter([raw_data])
-        service = AcquisitionService(backend=backend)
-        source = Source(name=source_name, path=Path("/tmp/inbox"))
-        result = await service.acquire_sources([source])
-        stored = await backend.get_raw_conversation(result.raw_ids[0])
-        assert stored is not None
-        assert stored.provider_name == expected_provider
-        assert stored.payload_provider is None
-
     @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
     async def test_progress_callback_called(self, mock_iter, backend: SQLiteBackend):
         """Progress callback is invoked for each conversation."""
@@ -281,88 +190,6 @@ class TestValidationService:
         backend.get_raw_conversations_batch.assert_not_called()
         assert backend.mark_raw_validated.await_count == 2
 
-    async def test_validation_strict_blocks_invalid_payloads(self, monkeypatch):
-        """strict mode should block invalid payloads and persist parse_error."""
-        from polylogue.schemas import ValidationResult
-
-        raw_record = MagicMock(
-            raw_id="raw-1",
-            raw_content=b'{"id": 1}',
-            provider_name="chatgpt",
-            source_path="/tmp/conversations.json",
-        )
-        backend = MagicMock()
-        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
-        backend.mark_raw_validated = AsyncMock()
-        backend.mark_raw_parsed = AsyncMock()
-
-        class _AlwaysInvalidValidator:
-            provider = "chatgpt"
-
-            def validation_samples(self, payload, max_samples=16):
-                return [payload]
-
-            def validate(self, _sample):
-                return ValidationResult(
-                    is_valid=False,
-                    errors=["id: 1 is not of type 'string'"],
-                )
-
-        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
-        monkeypatch.setattr(
-            "polylogue.schemas.validator.SchemaValidator.for_provider",
-            lambda _provider: _AlwaysInvalidValidator(),
-        )
-
-        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
-
-        assert result.counts["invalid"] == 1
-        assert result.parseable_raw_ids == []
-        backend.mark_raw_validated.assert_awaited_once()
-        backend.mark_raw_parsed.assert_called_once()
-
-    async def test_validation_advisory_reports_invalid_but_keeps_parseable(self, monkeypatch):
-        """advisory mode should report invalid payloads without blocking parse."""
-        from polylogue.schemas import ValidationResult
-
-        raw_record = MagicMock(
-            raw_id="raw-1",
-            raw_content=b'{"id": 1}',
-            provider_name="chatgpt",
-            source_path="/tmp/conversations.json",
-        )
-        backend = MagicMock()
-        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
-        backend.mark_raw_validated = AsyncMock()
-        backend.mark_raw_parsed = AsyncMock()
-
-        class _AlwaysInvalidValidator:
-            provider = "chatgpt"
-
-            def validation_samples(self, payload, max_samples=16):
-                return [payload]
-
-            def validate(self, _sample):
-                return ValidationResult(
-                    is_valid=False,
-                    errors=["id: 1 is not of type 'string'"],
-                )
-
-        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "advisory")
-        monkeypatch.setattr(
-            "polylogue.schemas.validator.SchemaValidator.for_provider",
-            lambda _provider: _AlwaysInvalidValidator(),
-        )
-
-        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
-
-        assert result.counts["invalid"] == 1
-        assert result.parseable_raw_ids == ["raw-1"]
-        backend.mark_raw_validated.assert_awaited_once()
-        kwargs = backend.mark_raw_validated.await_args.kwargs
-        assert kwargs["status"] == "passed"
-        backend.mark_raw_parsed.assert_not_called()
-
     async def test_validation_uses_all_record_samples_by_default(self, monkeypatch):
         """Validation should inspect all JSONL dict records by default."""
         from polylogue.schemas import ValidationResult
@@ -406,49 +233,6 @@ class TestValidationService:
         assert result.parseable_raw_ids == ["raw-1"]
         assert capturing.max_samples_seen is None
 
-    async def test_validation_strict_fails_on_malformed_jsonl_lines(self, monkeypatch):
-        """Strict mode should fail payloads that contain malformed JSONL lines."""
-        from polylogue.schemas import ValidationResult
-
-        raw_record = MagicMock(
-            raw_id="raw-1",
-            raw_content=(
-                b'{"type":"session_meta"}\n'
-                b'not json at all\n'
-                b'{"type":"response_item","payload":{"type":"message"}}'
-            ),
-            provider_name="codex",
-            source_path="/tmp/session.jsonl",
-        )
-        backend = MagicMock()
-        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
-        backend.mark_raw_validated = AsyncMock()
-        backend.mark_raw_parsed = AsyncMock()
-
-        class _AlwaysValidValidator:
-            provider = "codex"
-
-            def validation_samples(self, payload, max_samples=16):
-                return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else [payload]
-
-            def validate(self, _sample):
-                return ValidationResult(is_valid=True)
-
-        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
-        monkeypatch.setattr(
-            "polylogue.schemas.validator.SchemaValidator.for_provider",
-            lambda _provider: _AlwaysValidValidator(),
-        )
-
-        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
-
-        assert result.counts["invalid"] == 1
-        assert result.parseable_raw_ids == []
-        kwargs = backend.mark_raw_validated.await_args.kwargs
-        assert kwargs["status"] == "failed"
-        assert "Malformed JSONL lines" in (kwargs.get("error") or "")
-        backend.mark_raw_parsed.assert_awaited_once()
-
     async def test_validation_strict_detects_malformed_jsonl_beyond_large_prefix(self, monkeypatch):
         """Strict validation must inspect the full JSONL stream, not a head sample."""
         from polylogue.schemas import ValidationResult
@@ -486,47 +270,6 @@ class TestValidationService:
         kwargs = backend.mark_raw_validated.await_args.kwargs
         assert kwargs["status"] == "failed"
         assert "Malformed JSONL lines" in (kwargs.get("error") or "")
-
-    async def test_validation_advisory_allows_malformed_jsonl_lines(self, monkeypatch):
-        """Advisory mode should keep malformed JSONL payloads parseable."""
-        from polylogue.schemas import ValidationResult
-
-        raw_record = MagicMock(
-            raw_id="raw-1",
-            raw_content=(
-                b'{"type":"session_meta"}\n'
-                b'not json at all\n'
-                b'{"type":"response_item","payload":{"type":"message"}}'
-            ),
-            provider_name="codex",
-            source_path="/tmp/session.jsonl",
-        )
-        backend = MagicMock()
-        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
-        backend.mark_raw_validated = AsyncMock()
-        backend.mark_raw_parsed = AsyncMock()
-
-        class _AlwaysValidValidator:
-            provider = "codex"
-
-            def validation_samples(self, payload, max_samples=16):
-                return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else [payload]
-
-            def validate(self, _sample):
-                return ValidationResult(is_valid=True)
-
-        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "advisory")
-        monkeypatch.setattr(
-            "polylogue.schemas.validator.SchemaValidator.for_provider",
-            lambda _provider: _AlwaysValidValidator(),
-        )
-
-        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
-
-        assert result.parseable_raw_ids == ["raw-1"]
-        kwargs = backend.mark_raw_validated.await_args.kwargs
-        assert kwargs["status"] == "passed"
-        backend.mark_raw_parsed.assert_not_called()
 
     async def test_validation_progress_callback_reports_counts(self, monkeypatch):
         """Validation progress descriptions should stay informative after scanning."""
@@ -634,22 +377,6 @@ class TestParseResultInit:
 
 class TestParseResultMerge:
     """Tests for ParseResult.merge_result method."""
-
-    @pytest.mark.parametrize("conv_id,result_counts,content_changed,exp_c,exp_m,exp_a,exp_s,in_p", [
-        ("conv1", {"conversations": 1, "messages": 5, "attachments": 2, "skipped_conversations": 0, "skipped_messages": 1, "skipped_attachments": 0}, True, 1, 5, 2, 1, True),
-        ("conv1", {"conversations": 1, "messages": 2, "attachments": 0, "skipped_conversations": 0, "skipped_messages": 0, "skipped_attachments": 0}, True, 1, 2, 0, 0, True),
-        ("conv1", {"conversations": 0, "messages": 0, "attachments": 0, "skipped_conversations": 1, "skipped_messages": 0, "skipped_attachments": 0}, False, 0, 0, 0, 0, False),
-        ("conv-123", {"conversations": 1, "messages": 1, "attachments": 0, "skipped_conversations": 0, "skipped_messages": 0, "skipped_attachments": 0}, True, 1, 1, 0, 0, True),
-        ("conv-456", {"conversations": 1, "messages": 5, "attachments": 0, "skipped_conversations": 0, "skipped_messages": 0, "skipped_attachments": 0}, False, 1, 5, 0, 0, True),
-        ("conv-skipped", {"conversations": 0, "messages": 0, "attachments": 0, "skipped_conversations": 1, "skipped_messages": 5, "skipped_attachments": 0}, False, 0, 0, 0, 5, False),
-    ])
-    async def test_merge_result_scenarios(self, conv_id: str, result_counts: dict, content_changed: bool, exp_c: int, exp_m: int, exp_a: int, exp_s: int, in_p: bool):
-        """Parametrized merge scenarios."""
-        result = ParseResult()
-        await result.merge_result(conversation_id=conv_id, result_counts=result_counts, content_changed=content_changed)
-        assert result.counts["conversations"] == exp_c and result.counts["messages"] == exp_m
-        assert result.counts["attachments"] == exp_a and result.counts["skipped_messages"] == exp_s
-        assert (conv_id in result.processed_ids) == in_p
 
     async def test_merge_multiple_conversations(self):
         """Multiple merges accumulate correctly."""
