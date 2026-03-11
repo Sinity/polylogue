@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from unittest.mock import patch
+
 import pytest
 
 from polylogue.lib.models import DialoguePair, Message
@@ -10,6 +13,7 @@ from polylogue.sources.parsers.base import (
     attachment_from_meta,
 )
 from polylogue.sources.parsers.claude import (
+    extract_text_from_segments,
     parse_ai,
     parse_code,
 )
@@ -20,6 +24,42 @@ from tests.infra.helpers import make_claude_chat_message
 # =============================================================================
 # CLAUDE PARSER TESTS
 # =============================================================================
+
+
+def test_extract_text_from_segments_serializes_structured_segments() -> None:
+    """Claude segment flattening must preserve semantic block distinctions."""
+    segments = [
+        "prefix",
+        {"type": "text", "text": "plain text"},
+        {"type": "thinking", "thinking": "reason about this"},
+        {"type": "tool_use", "name": "Read", "input": {"path": "README.md"}, "id": "tool-1"},
+        {"type": "tool_result", "tool_use_id": "tool-1", "content": "done", "is_error": False},
+        {"content": "fallback text"},
+        42,
+        {"type": "text"},
+    ]
+
+    assert extract_text_from_segments(segments) == "\n".join(
+        [
+            "prefix",
+            "plain text",
+            "<thinking>reason about this</thinking>",
+            json.dumps(
+                {"type": "tool_use", "name": "Read", "input": {"path": "README.md"}, "id": "tool-1"},
+                sort_keys=True,
+            ),
+            json.dumps(
+                {"type": "tool_result", "tool_use_id": "tool-1", "content": "done", "is_error": False},
+                sort_keys=True,
+            ),
+            "fallback text",
+        ]
+    )
+
+
+def test_extract_text_from_segments_ignores_empty_and_unknown_segments() -> None:
+    """Claude segment flattening should return None when no usable text exists."""
+    assert extract_text_from_segments(["", {"text": None}, {"content": None}, {}, 0, None]) is None
 
 
 
@@ -442,6 +482,28 @@ class TestAttachmentFromMeta:
         meta3 = {"id": "att", "name": "file", "content_type": "application/json"}
         result3 = attachment_from_meta(meta3, "msg", 0)
         assert result3.mime_type == "application/json"
+
+    def test_parsed_attachment_sanitizes_edge_case_name_and_path(self):
+        """ParsedAttachment keeps parser-surface sanitization out of CLI tests."""
+        with patch("pathlib.Path.is_symlink", return_value=True):
+            blocked = ParsedAttachment(
+                provider_attachment_id="att-symlink",
+                message_provider_id="msg-1",
+                name="...",
+                path="/tmp/link",
+            )
+
+        assert blocked.name == "file"
+        assert blocked.path is not None
+        assert blocked.path.startswith("_blocked_")
+
+        empty = ParsedAttachment(
+            provider_attachment_id="att-empty",
+            message_provider_id="msg-2",
+            name="report.txt",
+            path="",
+        )
+        assert empty.path is None
 
 
 # =============================================================================
