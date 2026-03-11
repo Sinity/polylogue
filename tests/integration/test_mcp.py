@@ -184,11 +184,11 @@ class TestRepositoryViewMethod:
         backend = Mock(spec=SQLiteBackend)
 
         # Mock ID resolution - returns full ID
-        backend.resolve_id.return_value = "full-conv-id-12345"
+        backend.resolve_id = AsyncMock(return_value="full-conv-id-12345")
 
         # view() will call resolve_id and then get()
         # Return None to test just the ID resolution call
-        backend.get_conversation.return_value = None
+        backend.get_conversation = AsyncMock(return_value=None)
 
         repo = ConversationRepository(backend)
 
@@ -205,9 +205,9 @@ class TestRepositoryViewMethod:
         backend = Mock(spec=SQLiteBackend)
 
         # Resolve returns None (no match found)
-        backend.resolve_id.return_value = None
+        backend.resolve_id = AsyncMock(return_value=None)
         # get_conversation also returns None
-        backend.get_conversation.return_value = None
+        backend.get_conversation = AsyncMock(return_value=None)
 
         repo = ConversationRepository(backend)
 
@@ -222,8 +222,8 @@ class TestRepositoryViewMethod:
     async def test_view_returns_none_if_not_found(self):
         """view() should return None if conversation not found."""
         backend = Mock(spec=SQLiteBackend)
-        backend.resolve_id.return_value = None
-        backend.get_conversation.return_value = None
+        backend.resolve_id = AsyncMock(return_value=None)
+        backend.get_conversation = AsyncMock(return_value=None)
 
         repo = ConversationRepository(backend)
 

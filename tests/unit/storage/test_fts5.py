@@ -21,6 +21,7 @@ from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from tests.infra.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
+from tests.infra.mutmut import preserved_mutmut_env
 
 # ============================================================================
 # Tests for search_messages()
@@ -448,7 +449,7 @@ class TestCreateVectorProvider:
 
     def test_returns_none_when_no_voyage_key(self):
         """Returns None when VOYAGE_API_KEY is not configured."""
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", preserved_mutmut_env(), clear=True):
             provider = create_vector_provider()
             assert provider is None
 
