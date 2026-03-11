@@ -4,7 +4,7 @@ Latest recorded artifact per campaign.
 
 | Campaign | Recorded | Commit | Killed | Survived | Timeout | Not checked | Dirty | Runtime |
 | --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: |
-| `cli-query` | `2026-03-11T20:28:01.134608+00:00` | `e058c8240959` | 935 | 1007 | 20 | 0 | no | 90.02s |
+| `cli-query` | `2026-03-11T22:54:21.973050+00:00` | `a3440a0f1a4b` | 961 | 989 | 12 | 0 | no | 66.61s |
 | `cli-run` | `2026-03-11T09:53:20.738093+00:00` | `2bdb267e93b7` | 183 | 92 | 0 | 8 | no | 63.80s |
 | `drive-client` | `2026-03-11T21:40:31.542067+00:00` | `37e26aba2d3d` | 581 | 299 | 3 | 0 | no | 30.06s |
 | `filters` | `2026-03-11T06:21:10.783620+00:00` | `147e689d15ca` | 475 | 5 | 117 | 0 | no | 175.18s |
