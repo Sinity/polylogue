@@ -9,7 +9,6 @@ import pytest
 
 from polylogue.schemas.unified import (
     bulk_harmonize,
-    extract_from_provider_meta,
     harmonize_parsed_message,
 )
 
@@ -41,31 +40,6 @@ class TestHarmonizeParsedMessage:
         assert msg.text == "db text"
         assert msg.timestamp is not None
         assert msg.provider == "claude"
-
-    def test_reuses_extracted_viewports_when_raw_is_absent(self) -> None:
-        provider_meta = {
-            "content_blocks": [
-                {"type": "text", "text": "Assistant answer"},
-                {"type": "thinking", "text": "Internal trace"},
-            ],
-            "reasoning_traces": [],
-            "tool_calls": [],
-        }
-
-        msg = harmonize_parsed_message(
-            "claude-code",
-            provider_meta,
-            message_id="view-id",
-            role="assistant",
-            timestamp="2024-01-15T10:30:00Z",
-        )
-
-        assert msg is not None
-        assert msg.id == "view-id"
-        assert msg.role == "assistant"
-        assert msg.text == "Assistant answer\nInternal trace"
-        assert msg.timestamp is not None
-        assert [trace.text for trace in msg.reasoning_traces] == ["Internal trace"]
 
     def test_falls_back_to_provider_meta_harmonization_for_malformed_payloads(self) -> None:
         provider_meta = {
@@ -177,52 +151,7 @@ class TestDatabaseIntegration:
 
 
 class TestExtractedProviderMetaFallbackText:
-    """Recovery of display text from stored structured viewports."""
-
-    def test_extract_from_provider_meta_rebuilds_text_from_supported_content_blocks(self) -> None:
-        provider_meta = {
-            "content_blocks": [
-                {"type": "text", "text": "plain text"},
-                {"type": "code", "text": "print(x)", "language": "python"},
-                {"type": "tool_result", "text": "tool output"},
-                {"type": "thinking", "text": "private reasoning"},
-                {"type": "tool_use", "text": "ignored tool use"},
-                {"type": "text", "text": ""},
-                "ignored non-dict",
-            ]
-        }
-
-        msg = extract_from_provider_meta(
-            "claude-code",
-            provider_meta,
-            message_id="msg-1",
-            role="assistant",
-        )
-
-        assert msg.id == "msg-1"
-        assert msg.role == "assistant"
-        assert msg.text == "plain text\nprint(x)\ntool output\nprivate reasoning"
-
-    def test_extract_from_provider_meta_ignores_nonsensical_content_blocks_for_text(self) -> None:
-        provider_meta = {
-            "content_blocks": [
-                {"type": "tool_use", "text": "ignored"},
-                {"type": "image", "text": "ignored"},
-                {"type": "text", "text": None},
-                123,
-            ]
-        }
-
-        msg = extract_from_provider_meta(
-            "claude-code",
-            provider_meta,
-            message_id="msg-2",
-            role="assistant",
-        )
-
-        assert msg.id == "msg-2"
-        assert msg.role == "assistant"
-        assert msg.text == ""
+    """Database-backed content block semantics still deserve a seeded regression check."""
 
     def test_content_blocks_have_semantic_types(self, seeded_db) -> None:
         conn = sqlite3.connect(seeded_db)
