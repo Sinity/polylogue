@@ -78,6 +78,17 @@ _provider_meta_or_none = st.one_of(
     }),
 )
 
+_SPARSE_CONVERSATION_HEALTH_CHECKS = [
+    HealthCheck.filter_too_much,
+    HealthCheck.too_slow,
+    HealthCheck.differing_executors,
+]
+
+_SPARSE_MESSAGE_HEALTH_CHECKS = [
+    HealthCheck.too_slow,
+    HealthCheck.differing_executors,
+]
+
 
 @st.composite
 def sparse_message(draw: st.DrawFn) -> Message:
@@ -122,7 +133,7 @@ class TestMessageNoneGuardProperties:
     """Every Message property must handle None text, None provider_meta, etc."""
 
     @given(msg=sparse_message())
-    @settings(max_examples=200)
+    @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
     def test_word_count_never_crashes(self, msg: Message):
         """word_count must return int matching len(text.split()), even with None text."""
         result = msg.word_count
@@ -131,52 +142,52 @@ class TestMessageNoneGuardProperties:
         assert result == expected
 
     @given(msg=sparse_message())
-    @settings(max_examples=200)
+    @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
     def test_is_tool_use_never_crashes(self, msg: Message):
         """is_tool_use must return bool, even with None content_blocks."""
         result = msg.is_tool_use
         assert isinstance(result, bool)
 
     @given(msg=sparse_message())
-    @settings(max_examples=200)
+    @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
     def test_is_thinking_never_crashes(self, msg: Message):
         """is_thinking must return bool, even with None/missing fields."""
         result = msg.is_thinking
         assert isinstance(result, bool)
 
     @given(msg=sparse_message())
-    @settings(max_examples=200)
+    @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
     def test_is_substantive_never_crashes(self, msg: Message):
         result = msg.is_substantive
         assert isinstance(result, bool)
 
     @given(msg=sparse_message())
-    @settings(max_examples=200)
+    @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
     def test_is_noise_never_crashes(self, msg: Message):
         result = msg.is_noise
         assert isinstance(result, bool)
 
     @given(msg=sparse_message())
-    @settings(max_examples=200)
+    @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
     def test_is_context_dump_never_crashes(self, msg: Message):
         result = msg.is_context_dump
         assert isinstance(result, bool)
 
     @given(msg=sparse_message())
-    @settings(max_examples=200)
+    @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
     def test_extract_thinking_never_crashes(self, msg: Message):
         """extract_thinking must return str or None, never crash."""
         result = msg.extract_thinking()
         assert result is None or isinstance(result, str)
 
     @given(msg=sparse_message())
-    @settings(max_examples=200)
+    @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
     def test_cost_usd_never_crashes(self, msg: Message):
         result = msg.cost_usd
         assert result is None or isinstance(result, float)
 
     @given(msg=sparse_message())
-    @settings(max_examples=200)
+    @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
     def test_duration_ms_never_crashes(self, msg: Message):
         result = msg.duration_ms
         assert result is None or isinstance(result, int)
@@ -190,14 +201,14 @@ class TestConversationNoneGuardProperties:
     """Conversation operations must handle mixed None timestamps and fields."""
 
     @given(conv=sparse_conversation())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.filter_too_much, HealthCheck.too_slow])
+    @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
     def test_display_date_never_crashes(self, conv: Conversation):
         """display_date with None updated_at/created_at must not crash."""
         result = conv.display_date
         assert result is None or isinstance(result, datetime)
 
     @given(conv=sparse_conversation())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.filter_too_much, HealthCheck.too_slow])
+    @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
     def test_tags_never_crashes(self, conv: Conversation):
         """tags property must handle None/missing metadata."""
         result = conv.tags
@@ -205,7 +216,7 @@ class TestConversationNoneGuardProperties:
         assert all(isinstance(t, str) for t in result)
 
     @given(conv=sparse_conversation())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.filter_too_much, HealthCheck.too_slow])
+    @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
     def test_len_messages_never_crashes(self, conv: Conversation):
         """len(messages) matches the count of message objects in the conversation."""
         result = len(conv.messages)
@@ -213,7 +224,7 @@ class TestConversationNoneGuardProperties:
         assert result == sum(1 for _ in conv.messages)
 
     @given(conv=sparse_conversation())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.filter_too_much, HealthCheck.too_slow])
+    @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
     def test_iter_messages_never_crashes(self, conv: Conversation):
         """Iterating messages must not crash."""
         for msg in conv.messages:
@@ -233,7 +244,7 @@ class TestSortMixedTimestamps:
     """
 
     @given(convs=st.lists(sparse_conversation(), min_size=2, max_size=20))
-    @settings(max_examples=50, suppress_health_check=[HealthCheck.filter_too_much, HealthCheck.too_slow])
+    @settings(max_examples=50, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
     def test_sort_by_display_date_never_crashes(self, convs: list[Conversation]):
         """Sorting by display_date must handle None values gracefully."""
         _epoch = datetime.min.replace(tzinfo=timezone.utc)
@@ -246,7 +257,7 @@ class TestSortMixedTimestamps:
         assert len(sorted_convs) == len(convs)
 
     @given(convs=st.lists(sparse_conversation(), min_size=0, max_size=15))
-    @settings(max_examples=50, suppress_health_check=[HealthCheck.filter_too_much, HealthCheck.too_slow])
+    @settings(max_examples=50, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
     def test_sort_stability_with_all_none(self, convs: list[Conversation]):
         """When all timestamps are None, sort must preserve relative order."""
         _epoch = datetime.min.replace(tzinfo=timezone.utc)

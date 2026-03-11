@@ -187,6 +187,14 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
                 media_type=seg.get("media_type"),
                 metadata={k: v for k, v in seg.items() if k not in ("type", "media_type")},
             ))
+        elif seg_type == "code":
+            text = seg.get("text") or seg.get("code") or ""
+            if text:
+                metadata = None
+                language = seg.get("language")
+                if isinstance(language, str) and language:
+                    metadata = {"language": language}
+                blocks.append(ParsedContentBlock(type="code", text=str(text), metadata=metadata))
         else:
             # Generic text block
             text = seg.get("text") or seg.get("content") or ""
@@ -259,31 +267,41 @@ def extract_messages_from_list(items: list[object]) -> list[ParsedMessage]:
         )
 
         text = None
+        content_blocks: list[ParsedContentBlock] = []
         text_val = payload.get("text")
         if text_val is not None and isinstance(text_val, str):
             text = text_val
+            if text:
+                content_blocks = [ParsedContentBlock(type="text", text=text)]
         else:
             content = payload.get("content")
             if isinstance(content, str):
                 text = content
+                if text:
+                    content_blocks = [ParsedContentBlock(type="text", text=text)]
             elif isinstance(content, dict):
                 parts = content.get("parts")
                 if isinstance(parts, list):
-                    text = "\n".join(str(part) for part in parts)
+                    texts: list[str] = []
+                    for part in parts:
+                        if isinstance(part, str) and part:
+                            texts.append(part)
+                            content_blocks.append(ParsedContentBlock(type="text", text=part))
+                        elif isinstance(part, dict):
+                            part_text = part.get("text")
+                            if isinstance(part_text, str) and part_text:
+                                texts.append(part_text)
+                                content_blocks.append(ParsedContentBlock(type="text", text=part_text))
+                    text = "\n".join(texts) or None
                 else:
                     text_dict_val = content.get("text")
                     if text_dict_val is not None and isinstance(text_dict_val, str):
                         text = text_dict_val
+                        if text:
+                            content_blocks = [ParsedContentBlock(type="text", text=text)]
             elif isinstance(content, list):
-                # Simple concatenation for list of strings or dicts
-                parts = []
-                for part in content:
-                    if isinstance(part, str):
-                        parts.append(part)
-                    elif isinstance(part, dict):
-                        part_text = part.get("text")
-                        parts.append(part_text if isinstance(part_text, str) else "")
-                text = "\n".join(parts)
+                content_blocks = content_blocks_from_segments(content)
+                text = "\n".join(block.text for block in content_blocks if block.text) or None
 
         if text:
             msg_id = str(payload.get("id") or payload.get("uuid") or item.get("uuid") or item.get("id") or f"msg-{idx}")
@@ -293,6 +311,7 @@ def extract_messages_from_list(items: list[object]) -> list[ParsedMessage]:
                     role=role,
                     text=text,
                     timestamp=str(timestamp) if timestamp is not None else None,
+                    content_blocks=content_blocks,
                 )
             )
     return messages

@@ -12,6 +12,7 @@ from hypothesis import strategies as st
 
 from polylogue.storage.search_providers.hybrid import (
     HybridSearchProvider,
+    _resolve_ranked_conversation_ids,
     create_hybrid_provider,
     reciprocal_rank_fusion,
 )
@@ -131,6 +132,12 @@ def test_rrf_multi_list_boost() -> None:
     assert scores["shared"] > scores["only_in_2"]
 
 
+def test_rrf_default_k_matches_explicit_sixty() -> None:
+    """The default RRF constant must stay equivalent to k=60."""
+    results = [("a", 0.9), ("b", 0.8), ("c", 0.7)]
+    assert reciprocal_rank_fusion(results) == reciprocal_rank_fusion(results, k=60)
+
+
 # ---------------------------------------------------------------------------
 # HybridSearchProvider.search_scored laws
 # ---------------------------------------------------------------------------
@@ -145,6 +152,31 @@ def test_search_scored_respects_limit(limit: int) -> None:
     provider = HybridSearchProvider(fts, vec)
     results = provider.search_scored("test query", limit=limit)
     assert len(results) <= limit
+
+
+def test_search_scored_default_limit_is_twenty() -> None:
+    """Default search_scored limit should stay at 20 results."""
+    fts, vec = _make_providers(
+        fts_results=[f"fts_{i}" for i in range(60)],
+        vec_results=[(f"vec_{i}", 0.9 - i * 0.005) for i in range(60)],
+    )
+    provider = HybridSearchProvider(fts, vec)
+    results = provider.search_scored("test query")
+    assert len(results) == 20
+
+
+def test_search_scored_requests_triple_limit_from_each_backend() -> None:
+    """Hybrid search should over-fetch symmetrically from both backends."""
+    fts, vec = _make_providers(
+        fts_results=[f"fts_{i}" for i in range(30)],
+        vec_results=[(f"vec_{i}", 0.9 - i * 0.01) for i in range(30)],
+    )
+    provider = HybridSearchProvider(fts, vec)
+
+    provider.search_scored("needle", limit=7)
+
+    fts.search.assert_called_once_with("needle", limit=21)
+    vec.query.assert_called_once_with("needle", limit=21)
 
 
 def test_search_scored_fuses_both_providers() -> None:
@@ -191,6 +223,17 @@ def test_search_conversations_deduplicates() -> None:
     result = provider.search_conversations("test", limit=10)
     assert result == ["conv_A", "conv_B"]
     assert result.count("conv_A") == 1, "conv_A must appear only once"
+
+
+def test_search_conversations_empty_results_skips_db_lookup() -> None:
+    """No message hits should return early without opening a DB connection."""
+    fts, vec = _make_providers()
+    provider = HybridSearchProvider(fts, vec)
+    provider.search_scored = MagicMock(return_value=[])  # type: ignore[method-assign]
+
+    with patch("polylogue.storage.search_providers.hybrid.open_connection") as open_conn:
+        assert provider.search_conversations("test", limit=10) == []
+        open_conn.assert_not_called()
 
 
 def test_search_conversations_respects_limit() -> None:
@@ -254,6 +297,26 @@ def test_search_conversations_limit_zero_returns_empty() -> None:
     )
     result = provider.search_conversations("test", limit=0)
     assert result == [], f"limit=0 must return empty list, got {result}"
+
+
+def test_resolve_ranked_conversation_ids_short_circuits_empty_inputs() -> None:
+    """Internal ranked resolver should not hit SQL for empty or nonpositive inputs."""
+    conn = MagicMock()
+
+    assert _resolve_ranked_conversation_ids(
+        conn,
+        message_results=[],
+        limit=5,
+        scope_names=None,
+    ) == []
+    assert _resolve_ranked_conversation_ids(
+        conn,
+        message_results=[("msg1", 0.9)],
+        limit=0,
+        scope_names=None,
+    ) == []
+
+    conn.execute.assert_not_called()
 
 
 def test_search_conversations_empty_providers_equivalent_to_none() -> None:

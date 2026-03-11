@@ -14,9 +14,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from polylogue.lib.filters import ConversationFilter
 from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 
 # =============================================================================
@@ -261,8 +263,254 @@ def test_rrf_combined_formula():
     expected_b = 1/62 + 1/61
     assert abs(scores["b"] - expected_b) < 1e-10
 
-    # Scores should be equal since positions are symmetric
-    assert abs(scores["a"] - scores["b"]) < 1e-10
+
+# =============================================================================
+# ConversationFilter metadata contracts
+# =============================================================================
+
+
+@pytest.fixture
+def summary_filter_repo(make_filter_repo):
+    """Repository with metadata-rich conversations for summary-compatible laws."""
+    return make_filter_repo(
+        [
+            {
+                "id": "conv-alpha",
+                "provider": "claude",
+                "title": "Alpha Python",
+                "metadata": {"tags": ["science", "keep"], "summary": "alpha summary"},
+                "created_at": "2024-01-10T00:00:00+00:00",
+                "messages": [
+                    {"id": "m1", "role": "user", "text": "alpha question with enough words"},
+                    {"id": "m2", "role": "assistant", "text": "alpha answer with enough words"},
+                ],
+            },
+            {
+                "id": "conv-beta",
+                "provider": "chatgpt",
+                "title": "Beta Rust",
+                "metadata": {"tags": ["code"]},
+                "created_at": "2024-02-10T00:00:00+00:00",
+                "messages": [
+                    {"id": "m3", "role": "user", "text": "beta question with enough words"},
+                    {"id": "m4", "role": "assistant", "text": "beta answer with enough words"},
+                ],
+            },
+            {
+                "id": "conv-gamma",
+                "provider": "codex",
+                "title": "Gamma Python",
+                "metadata": {"tags": ["science", "drop"], "summary": "gamma summary"},
+                "created_at": "2024-03-10T00:00:00+00:00",
+                "messages": [
+                    {"id": "m5", "role": "user", "text": "gamma question with enough words"},
+                    {"id": "m6", "role": "assistant", "text": "gamma answer with enough words"},
+                ],
+            },
+            {
+                "id": "conv-delta",
+                "provider": "claude",
+                "title": "Delta Math",
+                "metadata": {"tags": ["math"]},
+                "created_at": "2024-04-10T00:00:00+00:00",
+                "messages": [
+                    {"id": "m7", "role": "user", "text": "delta question with enough words"},
+                    {"id": "m8", "role": "assistant", "text": "delta answer with enough words"},
+                ],
+            },
+        ]
+    )
+
+
+SUMMARY_FILTER_SPECS: list[tuple[str, dict[str, object]]] = [
+    ("provider", {"providers": ["claude"]}),
+    ("excluded-provider", {"excluded_providers": ["codex"]}),
+    ("tag", {"tag": "science"}),
+    ("excluded-tag", {"excluded_tag": "drop"}),
+    ("title-and-summary", {"title": "Python", "has_summary": True}),
+    ("since-until", {"since": "2024-02-15", "until": "2024-04-20"}),
+    (
+        "mixed-metadata",
+        {
+            "providers": ["claude", "chatgpt"],
+            "excluded_providers": ["chatgpt"],
+            "tag": "science",
+            "excluded_tag": "drop",
+            "since": "2024-01-15",
+            "until": "2024-04-20",
+        },
+    ),
+    ("id-prefix", {"id_prefix": "conv-g"}),
+]
+
+
+def _apply_summary_filter_spec(
+    filter_obj: ConversationFilter,
+    spec: dict[str, object],
+) -> ConversationFilter:
+    """Apply a summary-compatible filter spec to a ConversationFilter."""
+    providers = spec.get("providers", [])
+    excluded_providers = spec.get("excluded_providers", [])
+    tag = spec.get("tag")
+    excluded_tag = spec.get("excluded_tag")
+    title = spec.get("title")
+    since = spec.get("since")
+    until = spec.get("until")
+    has_summary = spec.get("has_summary", False)
+    id_prefix = spec.get("id_prefix")
+
+    if providers:
+        filter_obj.provider(*providers)
+    if excluded_providers:
+        filter_obj.exclude_provider(*excluded_providers)
+    if tag:
+        filter_obj.tag(tag)
+    if excluded_tag:
+        filter_obj.exclude_tag(excluded_tag)
+    if title:
+        filter_obj.title(title)
+    if since:
+        filter_obj.since(since)
+    if until:
+        filter_obj.until(until)
+    if has_summary:
+        filter_obj.has("summary")
+    if id_prefix:
+        filter_obj.id(id_prefix)
+    return filter_obj
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("case_name", "spec"), SUMMARY_FILTER_SPECS)
+async def test_summary_filter_count_matches_list_and_list_summaries(
+    summary_filter_repo,
+    case_name: str,
+    spec: dict[str, object],
+) -> None:
+    """Metadata-only filters must agree across count/list/list_summaries."""
+    list_filter = _apply_summary_filter_spec(ConversationFilter(summary_filter_repo), spec)
+    summary_filter = _apply_summary_filter_spec(ConversationFilter(summary_filter_repo), spec)
+    count_filter = _apply_summary_filter_spec(ConversationFilter(summary_filter_repo), spec)
+
+    conversations = await list_filter.list()
+    summaries = await summary_filter.list_summaries()
+    count = await count_filter.count()
+
+    assert [conv.id for conv in conversations] == [summary.id for summary in summaries]
+    assert count == len(conversations) == len(summaries)
+
+
+def test_describe_reports_every_active_filter_kind(summary_filter_repo) -> None:
+    """describe() should expose every active filter without dropping entries."""
+    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2024, 12, 31, tzinfo=timezone.utc)
+
+    parts = (
+        ConversationFilter(summary_filter_repo)
+        .contains("python")
+        .provider("claude", "chatgpt")
+        .exclude_provider("codex")
+        .tag("science")
+        .exclude_tag("drop")
+        .has("summary")
+        .has_tool_use()
+        .has_thinking()
+        .has_file_operations()
+        .has_git_operations()
+        .has_subagent_spawns()
+        .min_messages(2)
+        .max_messages(8)
+        .min_words(5)
+        .since(start)
+        .until(end)
+        .title("Alpha")
+        .id("conv")
+        .exclude_text("rust")
+        .where(lambda c: True)
+        .similar("semantic query")
+        .describe()
+    )
+
+    assert parts == [
+        "contains: python",
+        "provider: claude, chatgpt",
+        "exclude provider: codex",
+        "tag: science",
+        "exclude tag: drop",
+        "has: summary",
+        "has_tool_use",
+        "has_thinking",
+        "has_file_ops",
+        "has_git_ops",
+        "has_subagent",
+        "min_messages: 2",
+        "max_messages: 8",
+        "min_words: 5",
+        "since: 2024-01-01T00:00:00+00:00",
+        "until: 2024-12-31T00:00:00+00:00",
+        "title: Alpha",
+        "id: conv",
+        "exclude text: rust",
+        "custom predicates: 1",
+        "similar: semantic query",
+    ]
+
+
+def test_describe_joins_multiple_fts_terms_exactly(summary_filter_repo) -> None:
+    """describe() should preserve the exact delimiter for multiple FTS terms."""
+    parts = (
+        ConversationFilter(summary_filter_repo)
+        .contains("python")
+        .contains("rust")
+        .describe()
+    )
+
+    assert parts == ["contains: python, rust"]
+
+
+def test_describe_joins_multi_value_filters_and_truncates_similarity(summary_filter_repo) -> None:
+    """describe() should preserve exact delimiters for every multi-value filter kind."""
+    parts = (
+        ConversationFilter(summary_filter_repo)
+        .exclude_provider("claude", "codex")
+        .tag("science", "math")
+        .exclude_tag("drop", "noise")
+        .has("summary", "thinking")
+        .exclude_text("rust")
+        .exclude_text("sql")
+        .similar("abcdefghijklmnopqrstuvwxyz1234567890")
+        .describe()
+    )
+
+    assert parts == [
+        "exclude provider: claude, codex",
+        "tag: science, math",
+        "exclude tag: drop, noise",
+        "has: summary, thinking",
+        "exclude text: rust, sql",
+        "similar: abcdefghijklmnopqrstuvwxyz1234",
+    ]
+
+
+def test_sql_pushdown_only_filters_stay_summary_compatible(summary_filter_repo) -> None:
+    """SQL-pushdown filters should not force full message loading."""
+    filter_obj = (
+        ConversationFilter(summary_filter_repo)
+        .has_tool_use()
+        .has_thinking()
+        .min_messages(1)
+        .max_messages(10)
+        .min_words(1)
+    )
+
+    assert filter_obj.can_use_summaries() is True
+    assert filter_obj.describe() == [
+        "has_tool_use",
+        "has_thinking",
+        "min_messages: 1",
+        "max_messages: 10",
+        "min_words: 1",
+    ]
 
 
 # =============================================================================
