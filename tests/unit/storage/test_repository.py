@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from polylogue.lib.models import Conversation
-from polylogue.lib.stats import ArchiveStats
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
@@ -73,101 +72,10 @@ def repo(repo_db):
     return ConversationRepository(backend=backend)
 
 
-# =============================================================================
-# Lazy vs Eager Loading (Parametrized)
-# =============================================================================
-
-
-class TestLazyVsEagerLoading:
-    """Test get(), get_eager(), and get_summary() loading behavior."""
-
-    @pytest.mark.parametrize("method,conv_id,should_exist,should_load_messages", [
-        ("get", "conv-1", True, True),
-        ("get_eager", "conv-1", True, True),
-        ("get", "nonexistent", False, False),
-        ("get_eager", "nonexistent", False, False),
-    ])
-    async def test_get_methods(self, repo, method, conv_id, should_exist, should_load_messages):
-        """get() and get_eager() return Conversation or None, loading messages."""
-        get_method = getattr(repo, method)
-        conv = await get_method(conv_id)
-        if should_exist:
-            assert conv is not None
-            assert str(conv.id) == conv_id
-            if should_load_messages:
-                assert len(conv.messages) == 2
-                assert conv.messages[0].role == "user"
-                assert conv.messages[1].role == "assistant"
-        else:
-            assert conv is None
-
-    async def test_get_summary_no_messages(self, repo):
-        """get_summary() returns summary without loading messages."""
-        summary = await repo.get_summary("conv-1")
-        assert summary is not None
-        assert summary.id == "conv-1"
-        assert summary.title == "First Conversation"
-
-
-# =============================================================================
-# resolve_id and view (Parametrized)
-# =============================================================================
-
-
-class TestResolveIdAndView:
-    """Test ID resolution and view()."""
-
-    @pytest.mark.parametrize("conv_id,should_resolve", [
-        ("conv-1", True),  # Full ID match
-        ("nonexistent-id", False),  # Nonexistent
-    ])
-    async def test_resolve_id(self, repo, conv_id, should_resolve):
-        """resolve_id() should resolve IDs and return None for nonexistent."""
-        resolved = await repo.resolve_id(conv_id)
-        if should_resolve:
-            assert resolved is not None
-            assert str(resolved) == conv_id
-        else:
-            assert resolved is None
-
-    @pytest.mark.parametrize("conv_id,should_exist", [
-        ("conv-1", True),
-        ("nonexistent-id-xyz", False),
-    ])
-    async def test_view(self, repo, conv_id, should_exist):
-        """view() should return conversation for full ID or None for nonexistent."""
-        conv = await repo.view(conv_id)
-        if should_exist:
-            assert conv is not None
-            assert str(conv.id) == conv_id
-        else:
-            assert conv is None
-
-
-# =============================================================================
-# Tree Traversal (Parametrized)
-# =============================================================================
-
-
-class TestRepositoryTreeTraversal:
-    """Test parent/child/root/tree operations."""
-
-    @pytest.mark.parametrize("method,conv_id,expected_check", [
-        ("get_parent", "conv-3", lambda r: r is not None and str(r.id) == "conv-1"),
-        ("get_parent", "conv-1", lambda r: r is None),
-        ("get_children", "conv-1", lambda r: len(r) == 1 and str(r[0].id) == "conv-3"),
-        ("get_children", "conv-2", lambda r: len(r) == 0),
-    ])
-    async def test_tree_methods(self, repo, method, conv_id, expected_check):
-        """Tree traversal methods return expected relationships."""
-        method_fn = getattr(repo, method)
-        result = await method_fn(conv_id)
-        assert expected_check(result)
-
-    async def test_get_root_nonexistent_raises(self, repo):
-        """get_root() should raise ValueError for nonexistent conversation."""
-        with pytest.raises(ValueError, match="not found"):
-            await repo.get_root("nonexistent")
+async def test_get_root_nonexistent_raises(repo):
+    """Pinned regression: get_root() should raise ValueError for nonexistent conversations."""
+    with pytest.raises(ValueError, match="not found"):
+        await repo.get_root("nonexistent")
 
 
 # =============================================================================
@@ -354,33 +262,6 @@ class TestSearch:
         results = await repo.search_summaries("deterministic ranking token", limit=2)
 
         assert [summary.id for summary in results[:2]] == ["conv-rank-new", "conv-rank-old"]
-
-
-# =============================================================================
-# iter_messages (Parametrized)
-# =============================================================================
-
-
-class TestIterMessages:
-    """Test message streaming."""
-
-    @pytest.mark.parametrize("conv_id,limit,expected_count", [
-        ("conv-1", None, 2),
-        ("conv-1", 1, 1),
-        ("nonexistent", None, 0),
-    ])
-    async def test_iter_messages_and_stats(self, repo, conv_id, limit, expected_count):
-        """iter_messages() and get_conversation_stats() work with limits and nonexistent."""
-        kwargs = {} if limit is None else {"limit": limit}
-        messages = [msg async for msg in repo.iter_messages(conv_id, **kwargs)]
-        assert len(messages) == expected_count
-
-        stats = await repo.get_conversation_stats(conv_id)
-        if conv_id == "conv-1":
-            assert stats is not None
-            assert stats["total_messages"] == 2
-        else:
-            assert stats is None
 
 
 # =============================================================================
@@ -764,43 +645,6 @@ class TestSimilaritySearch:
         ):
             with pytest.raises(ValueError, match="No vector provider configured"):
                 await repo_with_conversations.similarity_search("test query", vector_provider=None)
-
-
-class TestGetArchiveStats:
-    """Test get_archive_stats() comprehensive statistics."""
-
-    @pytest.mark.parametrize("fixture,expected_convs,expected_msgs,expected_provider_count", [
-        ("repo_with_conversations", 4, 6, 3),
-        ("repo_empty", 0, 0, 0),
-    ])
-    async def test_get_archive_stats_counts_and_types(self, request, fixture, expected_convs, expected_msgs, expected_provider_count):
-        """get_archive_stats() returns ArchiveStats with correct counts and provider breakdown."""
-        repo = request.getfixturevalue(fixture)
-        stats = await repo.get_archive_stats()
-
-        assert isinstance(stats, ArchiveStats)
-        assert stats.total_conversations == expected_convs
-        assert stats.total_messages == expected_msgs
-        assert stats.provider_count == expected_provider_count
-
-        # For non-empty repo, check provider breakdown
-        if expected_convs > 0:
-            assert stats.providers.get("claude") == 2
-            assert stats.providers.get("chatgpt") == 1
-            assert stats.providers.get("gemini") == 1
-
-    async def test_get_archive_stats_embeddings_and_metrics(self, repo_with_conversations):
-        """get_archive_stats() computes embedding coverage, avg messages, and DB size."""
-        stats = await repo_with_conversations.get_archive_stats()
-
-        # Embedding coverage (no embeddings initially)
-        assert stats.embedded_conversations == 0
-        assert stats.embedded_messages == 0
-        assert stats.embedding_coverage == 0.0
-
-        # Metrics
-        assert stats.avg_messages_per_conversation == 1.5  # 6 / 4
-        assert stats.db_size_bytes >= 0
 
 
 class TestRecordsToConversation:

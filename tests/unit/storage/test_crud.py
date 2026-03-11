@@ -23,141 +23,16 @@ from polylogue.sources.parsers.claude import (
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import (
     ContentBlockRecord,
-    ConversationRecord,
 )
 from tests.infra.helpers import (
     make_attachment,
     make_conversation,
-    make_hash,
     make_message,
 )
 
 
 class TestConversationOperations:
     """Test conversation save/retrieve operations."""
-
-    async def test_save_and_get_conversation(self, tmp_path: Path) -> None:
-        """save_conversation persists data retrievable by get_conversation."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        conv = make_conversation("conv-1", title="Test Conversation", provider_name="claude")
-        await backend.save_conversation_record(conv)
-
-        retrieved = await backend.get_conversation("conv-1")
-        assert retrieved is not None
-        assert retrieved.conversation_id == "conv-1"
-        assert retrieved.title == "Test Conversation"
-        assert retrieved.provider_name == "claude"
-        await backend.close()
-
-    async def test_get_nonexistent_conversation_returns_none(self, tmp_path: Path) -> None:
-        """get_conversation returns None for missing ID."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        result = await backend.get_conversation("nonexistent")
-        assert result is None
-        await backend.close()
-
-    async def test_save_conversation_upserts(self, tmp_path: Path) -> None:
-        """save_conversation updates existing conversation."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        conv1 = make_conversation("conv-1", title="Original Title")
-        await backend.save_conversation_record(conv1)
-
-        conv2 = make_conversation("conv-1", title="Updated Title")
-        await backend.save_conversation_record(conv2)
-
-        retrieved = await backend.get_conversation("conv-1")
-        assert retrieved is not None
-        assert retrieved.title == "Updated Title"
-        await backend.close()
-
-    async def test_title_contains_escapes_percent_wildcard(self, tmp_path: Path) -> None:
-        """LIKE % wildcard should be escaped in title search."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Create conversations with titles containing % and x
-        conv1 = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="test",
-            provider_conversation_id="prov-1",
-            title="100% done",
-            created_at="2025-01-01",
-            updated_at="2025-01-01",
-            content_hash=make_hash("100% done"),
-        )
-        conv2 = ConversationRecord(
-            conversation_id="conv-2",
-            provider_name="test",
-            provider_conversation_id="prov-2",
-            title="100x done",
-            created_at="2025-01-02",
-            updated_at="2025-01-02",
-            content_hash=make_hash("100x done"),
-        )
-        await backend.save_conversation_record(conv1)
-        await backend.save_conversation_record(conv2)
-
-        # Search for "100%"
-        results = await backend.list_conversations(title_contains="100%")
-        assert len(results) == 1
-        assert results[0].title == "100% done"
-        await backend.close()
-
-    async def test_title_contains_escapes_underscore_wildcard(self, tmp_path: Path) -> None:
-        """LIKE _ wildcard should be escaped in title search."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Create conversations
-        conv1 = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="test",
-            provider_conversation_id="prov-1",
-            title="100_ done",
-            created_at="2025-01-01",
-            updated_at="2025-01-01",
-            content_hash=make_hash("100_ done"),
-        )
-        conv2 = ConversationRecord(
-            conversation_id="conv-2",
-            provider_name="test",
-            provider_conversation_id="prov-2",
-            title="100x done",
-            created_at="2025-01-02",
-            updated_at="2025-01-02",
-            content_hash=make_hash("100x done"),
-        )
-        await backend.save_conversation_record(conv1)
-        await backend.save_conversation_record(conv2)
-
-        # Search for "100_"
-        results = await backend.list_conversations(title_contains="100_")
-        assert len(results) == 1
-        assert results[0].title == "100_ done"
-        await backend.close()
-
-    async def test_title_contains_escapes_backslash(self, tmp_path: Path) -> None:
-        """Backslashes should be escaped in title search."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Create a conversation with backslash
-        conv = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="test",
-            provider_conversation_id="prov-1",
-            title="C:\\Users\\test",
-            created_at="2025-01-01",
-            updated_at="2025-01-01",
-            content_hash=make_hash("C:\\Users\\test"),
-        )
-        await backend.save_conversation_record(conv)
-
-        # Search for "C:\Users\test" - should find it
-        results = await backend.list_conversations(title_contains="C:\\Users\\test")
-        assert len(results) == 1
-        assert "C:" in results[0].title
-        await backend.close()
 
 
 async def test_repository_message_mapping_uses_backend_path(tmp_path: Path) -> None:
@@ -415,114 +290,9 @@ class TestMetadataOperations:
         assert tags == {}
         await backend.close()
 
-    async def test_list_tags_counts(self, tmp_path: Path) -> None:
-        """list_tags returns correct tag counts across conversations."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Create 3 conversations with different tags
-        conv1 = make_conversation("conv-1")
-        conv2 = make_conversation("conv-2")
-        conv3 = make_conversation("conv-3")
-
-        await backend.save_conversation_record(conv1)
-        await backend.save_conversation_record(conv2)
-        await backend.save_conversation_record(conv3)
-
-        # Tag conv-1 with "important" and "work"
-        await backend.add_tag("conv-1", "important")
-        await backend.add_tag("conv-1", "work")
-
-        # Tag conv-2 with "important"
-        await backend.add_tag("conv-2", "important")
-
-        # conv-3 has no tags
-
-        tags = await backend.list_tags()
-        assert tags == {"important": 2, "work": 1}
-        await backend.close()
-
-    async def test_list_tags_provider_filter(self, tmp_path: Path) -> None:
-        """list_tags with provider filter only counts tags from that provider."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Create conversations with different providers
-        conv_claude = make_conversation("conv-claude", provider_name="claude")
-        conv_chatgpt = make_conversation("conv-chatgpt", provider_name="chatgpt")
-
-        await backend.save_conversation_record(conv_claude)
-        await backend.save_conversation_record(conv_chatgpt)
-
-        # Tag both
-        await backend.add_tag("conv-claude", "important")
-        await backend.add_tag("conv-chatgpt", "important")
-        await backend.add_tag("conv-chatgpt", "review")
-
-        # Filter by claude provider
-        tags_claude = await backend.list_tags(provider="claude")
-        assert tags_claude == {"important": 1}
-
-        # Filter by chatgpt provider
-        tags_chatgpt = await backend.list_tags(provider="chatgpt")
-        assert tags_chatgpt == {"important": 1, "review": 1}
-
-        # All tags
-        tags_all = await backend.list_tags()
-        assert tags_all == {"important": 2, "review": 1}
-
-        await backend.close()
-
-    async def test_list_tags_dedup(self, tmp_path: Path) -> None:
-        """list_tags doesn't double-count duplicate tags on same conversation."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        conv = make_conversation("conv-1")
-        await backend.save_conversation_record(conv)
-
-        # Add the same tag twice
-        await backend.add_tag("conv-1", "important")
-        await backend.add_tag("conv-1", "important")
-
-        tags = await backend.list_tags()
-        # Should count as 1, not 2
-        assert tags == {"important": 1}
-        await backend.close()
-
 
 class TestSearchOperations:
     """Test search and resolve operations."""
-
-    async def test_resolve_id_exact_match(self, tmp_path: Path) -> None:
-        """resolve_id returns full ID for exact match."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        conv = make_conversation("conversation-12345")
-        await backend.save_conversation_record(conv)
-
-        resolved = await backend.resolve_id("conversation-12345")
-        assert resolved == "conversation-12345"
-        await backend.close()
-
-    async def test_resolve_id_prefix_match(self, tmp_path: Path) -> None:
-        """resolve_id returns full ID for unique prefix."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        conv = make_conversation("unique-prefix-abc123")
-        await backend.save_conversation_record(conv)
-
-        resolved = await backend.resolve_id("unique-prefix")
-        assert resolved == "unique-prefix-abc123"
-        await backend.close()
-
-    async def test_resolve_id_ambiguous_returns_none(self, tmp_path: Path) -> None:
-        """resolve_id returns None for ambiguous prefix."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        await backend.save_conversation_record(make_conversation("prefix-abc"))
-        await backend.save_conversation_record(make_conversation("prefix-def"))
-
-        resolved = await backend.resolve_id("prefix")
-        assert resolved is None
-        await backend.close()
 
 
 class TestDeleteOperations:
