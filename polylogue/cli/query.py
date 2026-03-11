@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import click
 
@@ -54,7 +54,12 @@ def _describe_filters(params: dict[str, Any] | ConversationQuerySpec) -> list[st
     return _coerce_query_spec(params).describe()
 
 
-def _no_results(env: AppEnv, params: dict[str, Any] | ConversationQuerySpec, *, exit_code: int = 2) -> None:
+def _no_results(
+    env: AppEnv,
+    params: dict[str, Any] | ConversationQuerySpec,
+    *,
+    exit_code: int = 2,
+) -> NoReturn:
     """Print a helpful no-results message and exit."""
     filters = _describe_filters(params)
     if filters:
