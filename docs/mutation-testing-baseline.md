@@ -116,7 +116,7 @@ the follow-up source/helper/query pass.
 | `repository` | `b1f1d35bee28` | 568 | 74 | 66 | 0 | The concentrated read-model laws fixed the helper blind spot and cut survivor density sharply; the main remaining issue is timeout-heavy hydration/archive-stat coverage, not reach. |
 | `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
 | `source-detection` | `38d65c004a2a` | 816 | 330 | 5 | 0 | Clean post-helper-contract rerun sharply improved kill rate while keeping reach complete; survivor mass is now much narrower and still concentrated in ZIP filtering, emit paths, and provider sniffing. |
-| `providers-semantics` | `c0596770631e` | 805 | 504 | 2 | 0 | First focused concentration rerun after source semantic test collapse; reach is still clean and survivor mass remains concentrated in `extract_content_blocks`, `to_meta`, and fallback Claude Code harmonization. |
+| `providers-semantics` | `25ba6d7196f4` | 860 | 449 | 2 | 0 | Clean post-concentration rerun after collapsing duplicated provider viewport laws into unified helper contracts; reach stays clean and survivor mass is now more sharply concentrated in `schemas.unified` fallback harmonization plus adapter `extract_content_blocks`/`to_meta`. |
 | `sources-parse` | `c0596770631e` | 3455 | 2482 | 10 | 0 | First focused concentration rerun after source semantic test collapse; the broad source surface remains fully reachable, with remaining work concentrated in drive-client seams and provider semantic survivor mass. |
 
 ### Readiness Call
