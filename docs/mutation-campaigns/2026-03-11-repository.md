@@ -1,29 +1,29 @@
 # Mutmut Campaign: `repository`
 
-- Recorded on `2026-03-11T06:33:49.870267+00:00`
-- Commit: `147e689d15caf23fc4036c3af6211af4f71bbaad`
+- Recorded on `2026-03-11T09:54:24.616381+00:00`
+- Commit: `2bdb267e93b79f1f0dc863f86b5ed859e4e0dbdd`
 - Worktree dirty: `no`
 - Description: Repository query, projection, and CRUD contracts
-- Workspace: `/tmp/nix-shell.jtFedr/mutmut-repository-z35w2ufi/repo`
+- Workspace: `/tmp/nix-shell.rzHew1/mutmut-repository-y46ey2p_/repo`
 - Command: `mutmut run`
 
 ## Scope
 
 - Mutated paths: `polylogue/storage/repository.py`
-- Selected tests: `tests/unit/storage/test_repository.py`, `tests/unit/storage/test_crud.py`
+- Selected tests: `tests/unit/storage/test_repository.py`, `tests/unit/storage/test_repository_laws.py`, `tests/unit/storage/test_crud.py`, `tests/unit/storage/test_crud_laws.py`
 
 ## Counts
 
 | Status | Count |
 | --- | ---: |
-| Killed | 343 |
-| Survived | 250 |
-| Timeout | 6 |
-| Not checked | 81 |
+| Killed | 370 |
+| Survived | 181 |
+| Timeout | 124 |
+| Not checked | 5 |
 | Suspicious | 0 |
 | Skipped | 0 |
 
-- Runtime: `88.70s`
+- Runtime: `274.90s`
 - Exit code: `0`
 
 ## Dominant Survivors
@@ -32,31 +32,34 @@
 | --- | ---: |
 | `get_archive_stats` | 42 |
 | `_save_via_backend` | 39 |
-| `iter_summary_pages` | 32 |
-| `list` | 28 |
-| `list_summaries` | 27 |
-| `count` | 24 |
+| `iter_summary_pages` | 33 |
+| `_conversation_to_record` | 20 |
 | `search_similar` | 10 |
-| `_hydrate_conversations` | 8 |
-| `iter_messages` | 8 |
+| `iter_messages` | 7 |
 | `similarity_search` | 6 |
+| `search_summaries` | 4 |
+| `search` | 4 |
+| `get_stats_by` | 3 |
 
 ## Dominant Timeouts
 
 | Function | Count |
 | --- | ---: |
-| `__init__` | 2 |
-| `iter_summary_pages` | 2 |
-| `list_summaries` | 1 |
-| `get_session_tree` | 1 |
+| `list_summaries` | 31 |
+| `list` | 28 |
+| `count` | 24 |
+| `_hydrate_conversations` | 8 |
+| `iter_summary_pages` | 8 |
+| `get_parent` | 4 |
+| `get_conversation_stats` | 4 |
+| `get_render_projection` | 3 |
+| `get_session_tree` | 3 |
+| `get_archive_stats` | 3 |
 
 ## Dominant Not-Checked Clusters
 
 | Function | Count |
 | --- | ---: |
-| `_conversation_to_record` | 57 |
-| `get_render_projection` | 16 |
-| `get_stats_by` | 3 |
 | `get_conversation` | 1 |
 | `conversation_exists` | 1 |
 | `aggregate_message_stats` | 1 |
@@ -65,9 +68,43 @@
 
 ## Survivor Keys
 
+- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_10`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_1`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_11`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_13`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_14`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_15`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_16`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_17`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_18`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_19`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_20`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_21`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_22`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_23`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_24`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_25`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_26`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_27`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_29`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_30`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_31`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_32`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_33`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_34`
+- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_35`
+- ... 156 more
+
+## Timeout Keys
+
+- `polylogue.storage.repository.xǁConversationRepositoryǁ__init____mutmut_3`
+- `polylogue.storage.repository.xǁConversationRepositoryǁ__init____mutmut_4`
+- `polylogue.storage.repository.xǁConversationRepositoryǁresolve_id__mutmut_1`
+- `polylogue.storage.repository.xǁConversationRepositoryǁget__mutmut_9`
 - `polylogue.storage.repository.xǁConversationRepositoryǁget__mutmut_10`
-- `polylogue.storage.repository.xǁConversationRepositoryǁview__mutmut_2`
-- `polylogue.storage.repository.xǁConversationRepositoryǁview__mutmut_3`
+- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_11`
+- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_12`
+- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_13`
 - `polylogue.storage.repository.xǁConversationRepositoryǁ_hydrate_conversations__mutmut_13`
 - `polylogue.storage.repository.xǁConversationRepositoryǁ_hydrate_conversations__mutmut_14`
 - `polylogue.storage.repository.xǁConversationRepositoryǁ_hydrate_conversations__mutmut_21`
@@ -78,57 +115,22 @@
 - `polylogue.storage.repository.xǁConversationRepositoryǁ_hydrate_conversations__mutmut_28`
 - `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_1`
 - `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_9`
+- `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_10`
 - `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_11`
 - `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_14`
 - `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_15`
 - `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_16`
 - `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_17`
 - `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_18`
-- `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_19`
-- `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_20`
-- `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_21`
-- `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_22`
-- `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_23`
-- `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_24`
-- ... 225 more
-
-## Timeout Keys
-
-- `polylogue.storage.repository.xǁConversationRepositoryǁ__init____mutmut_3`
-- `polylogue.storage.repository.xǁConversationRepositoryǁ__init____mutmut_4`
-- `polylogue.storage.repository.xǁConversationRepositoryǁlist_summaries__mutmut_29`
-- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_28`
-- `polylogue.storage.repository.xǁConversationRepositoryǁiter_summary_pages__mutmut_48`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_session_tree__mutmut_10`
+- ... 99 more
 
 ## Not-Checked Keys
 
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_1`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_2`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_3`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_4`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_5`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_6`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_7`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_8`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_9`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_10`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_11`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_12`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_13`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_14`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_15`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_render_projection__mutmut_16`
 - `polylogue.storage.repository.xǁConversationRepositoryǁget_conversation__mutmut_1`
 - `polylogue.storage.repository.xǁConversationRepositoryǁconversation_exists__mutmut_1`
 - `polylogue.storage.repository.xǁConversationRepositoryǁaggregate_message_stats__mutmut_1`
 - `polylogue.storage.repository.xǁConversationRepositoryǁget_source_conversations__mutmut_1`
 - `polylogue.storage.repository.xǁConversationRepositoryǁget_message_counts_batch__mutmut_1`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_stats_by__mutmut_1`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_stats_by__mutmut_2`
-- `polylogue.storage.repository.xǁConversationRepositoryǁget_stats_by__mutmut_3`
-- `polylogue.storage.repository.xǁConversationRepositoryǁ_conversation_to_record__mutmut_1`
-- ... 56 more
 
 ## Notes
 

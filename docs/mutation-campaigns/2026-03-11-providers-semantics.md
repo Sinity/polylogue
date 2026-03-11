@@ -1,95 +1,101 @@
 # Mutmut Campaign: `providers-semantics`
 
-- Recorded on `2026-03-11T06:35:38.887231+00:00`
-- Commit: `147e689d15caf23fc4036c3af6211af4f71bbaad`
+- Recorded on `2026-03-11T10:01:27.813065+00:00`
+- Commit: `2bdb267e93b79f1f0dc863f86b5ed859e4e0dbdd`
 - Worktree dirty: `no`
 - Description: Provider semantic extraction, harmonization, and viewport contracts
-- Workspace: `/tmp/nix-shell.fzgbVy/mutmut-providers-semantics-yuhxe36u/repo`
+- Workspace: `/tmp/nix-shell.rzHew1/mutmut-providers-semantics-1bj5aku1/repo`
 - Command: `mutmut run`
 
 ## Scope
 
 - Mutated paths: `polylogue/sources/providers`, `polylogue/schemas/unified.py`
-- Selected tests: `tests/unit/sources/test_parse_laws.py`, `tests/unit/sources/test_harmonization_contracts.py`, `tests/unit/sources/test_providers.py`, `tests/unit/sources/test_null_guard_properties.py`, `tests/unit/sources/test_models.py`
+- Selected tests: `tests/unit/sources/test_parse_laws.py`, `tests/unit/sources/test_harmonization_contracts.py`, `tests/unit/sources/test_provider_viewport_laws.py`, `tests/unit/sources/test_providers.py`, `tests/unit/sources/test_null_guard_properties.py`, `tests/unit/sources/test_models.py`
 
 ## Counts
 
 | Status | Count |
 | --- | ---: |
-| Killed | 162 |
-| Survived | 588 |
-| Timeout | 0 |
-| Not checked | 432 |
+| Killed | 415 |
+| Survived | 652 |
+| Timeout | 3 |
+| Not checked | 112 |
 | Suspicious | 0 |
 | Skipped | 0 |
 
-- Runtime: `35.24s`
+- Runtime: `50.22s`
 - Exit code: `0`
 
 ## Dominant Survivors
 
 | Function | Count |
 | --- | ---: |
-| `extract_content_blocks` | 104 |
-| `extract_reasoning_traces` | 27 |
-| `to_content_blocks` | 5 |
-| `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_4` | 1 |
+| `extract_content_blocks` | 139 |
+| `to_meta` | 70 |
+| `to_content_blocks` | 34 |
+| `extract_reasoning_traces` | 20 |
+| `extract_tool_calls` | 4 |
 | `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_9` | 1 |
 | `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_18` | 1 |
 | `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_19` | 1 |
 | `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_20` | 1 |
-| `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_21` | 1 |
-| `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_22` | 1 |
+| `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_35` | 1 |
 
 ## Dominant Timeouts
 
 | Function | Count |
 | --- | ---: |
-| _none_ | 0 |
+| `iter_user_assistant_pairs` | 3 |
 
 ## Dominant Not-Checked Clusters
 
 | Function | Count |
 | --- | ---: |
-| `to_meta` | 102 |
-| `extract_content_blocks` | 69 |
-| `to_content_blocks` | 46 |
-| `iter_user_assistant_pairs` | 23 |
-| `to_tool_call` | 18 |
-| `to_reasoning_trace` | 8 |
-| `to_token_usage` | 8 |
-| `extract_reasoning_traces` | 6 |
-| `extract_tool_calls` | 6 |
 | `polylogue.schemas.unified.x__missing_role__mutmut_1` | 1 |
+| `polylogue.schemas.unified.x__missing_role__mutmut_2` | 1 |
+| `polylogue.schemas.unified.x__missing_role__mutmut_3` | 1 |
+| `polylogue.schemas.unified.x__missing_role__mutmut_4` | 1 |
+| `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_1` | 1 |
+| `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_2` | 1 |
+| `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_3` | 1 |
+| `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_4` | 1 |
+| `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_5` | 1 |
+| `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_6` | 1 |
 
 ## Survivor Keys
 
-- `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_4`
 - `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_9`
 - `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_18`
 - `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_19`
 - `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_20`
-- `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_21`
-- `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_22`
-- `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_23`
-- `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_24`
-- `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_25`
-- `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_26`
-- `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_27`
-- `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_28`
-- `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_31`
-- `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_34`
 - `polylogue.schemas.unified.x_extract_reasoning_traces__mutmut_35`
-- `polylogue.schemas.unified.x_extract_tool_calls__mutmut_4`
 - `polylogue.schemas.unified.x_extract_tool_calls__mutmut_14`
 - `polylogue.schemas.unified.x_extract_tool_calls__mutmut_16`
 - `polylogue.schemas.unified.x_extract_tool_calls__mutmut_19`
-- `polylogue.schemas.unified.x_extract_tool_calls__mutmut_20`
-- `polylogue.schemas.unified.x_extract_tool_calls__mutmut_21`
 - `polylogue.schemas.unified.x_extract_tool_calls__mutmut_22`
 - `polylogue.schemas.unified.x_extract_tool_calls__mutmut_24`
-- `polylogue.schemas.unified.x_extract_tool_calls__mutmut_25`
-- ... 563 more
+- `polylogue.schemas.unified.x_extract_tool_calls__mutmut_37`
+- `polylogue.schemas.unified.x_extract_tool_calls__mutmut_39`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_7`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_9`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_12`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_13`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_19`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_22`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_23`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_24`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_25`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_26`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_32`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_35`
+- `polylogue.schemas.unified.x_extract_content_blocks__mutmut_36`
+- ... 627 more
+
+## Timeout Keys
+
+- `polylogue.sources.providers.chatgpt.xǁChatGPTConversationǁiter_user_assistant_pairs__mutmut_18`
+- `polylogue.sources.providers.chatgpt.xǁChatGPTConversationǁiter_user_assistant_pairs__mutmut_19`
+- `polylogue.sources.providers.chatgpt.xǁChatGPTConversationǁiter_user_assistant_pairs__mutmut_21`
 
 ## Not-Checked Keys
 
@@ -97,28 +103,28 @@
 - `polylogue.schemas.unified.x__missing_role__mutmut_2`
 - `polylogue.schemas.unified.x__missing_role__mutmut_3`
 - `polylogue.schemas.unified.x__missing_role__mutmut_4`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_1`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_2`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_3`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_4`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_5`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_6`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_7`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_8`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_9`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_10`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_11`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_12`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_13`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_14`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_15`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_16`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_17`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_18`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_19`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_20`
-- `polylogue.schemas.unified.x_extract_codex_text__mutmut_21`
-- ... 407 more
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_1`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_2`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_3`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_4`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_5`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_6`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_7`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_8`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_9`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_10`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_11`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_12`
+- `polylogue.schemas.unified.x_extract_from_provider_meta__mutmut_13`
+- `polylogue.schemas.unified.x_is_message_record__mutmut_1`
+- `polylogue.schemas.unified.x_is_message_record__mutmut_2`
+- `polylogue.schemas.unified.x_is_message_record__mutmut_3`
+- `polylogue.schemas.unified.x_is_message_record__mutmut_4`
+- `polylogue.schemas.unified.x_is_message_record__mutmut_5`
+- `polylogue.schemas.unified.x_is_message_record__mutmut_6`
+- `polylogue.schemas.unified.x_is_message_record__mutmut_7`
+- `polylogue.schemas.unified.x_is_message_record__mutmut_8`
+- ... 87 more
 
 ## Notes
 

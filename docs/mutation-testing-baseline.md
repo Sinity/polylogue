@@ -65,57 +65,68 @@ Recorded on `2026-03-11`.
 
 The latest recorded artifact for each campaign is indexed in
 [`docs/mutation-campaigns/README.md`](mutation-campaigns/README.md). This
-ledger now mixes two clean baselines:
+ledger now mixes three clean baselines:
 
-- the earlier broad campaign wave on commit `147e689d15ca`
-- the schema/pipeline follow-up reruns on commit `d1e704d7a2ba`
+- the broad core baseline on commit `147e689d15ca`
+- the schema/pipeline rerun wave on commit `d1e704d7a2ba`
+- the post-`004` law-wave reruns on commit `2bdb267e93b7`
 
-The wave was run to answer one question: are we ready to execute the next
-law-based test generalization wave in
-[`004-law-test-wave-iteration-plan-2026-03-11.md`](../.claude/scratch/004-law-test-wave-iteration-plan-2026-03-11.md)?
+The `004` law/property wave has now been executed. Its main runtime evidence is
+captured in the fresh reruns for CLI, repository, site, and sources.
 
-### High-Signal Campaigns
+### Already-Healthy Campaigns
 
-These are already mutation-usable. They still have residue, but not blindness.
+These are mutation-usable enough that they can now serve mainly as regression
+guards during future waves rather than first-line remediation targets.
 
-| Campaign | Killed | Survived | Timeout | Not checked | Interpretation |
-| --- | ---: | ---: | ---: | ---: | --- |
-| `filters` | 475 | 5 | 117 | 0 | Mutation-usable; remaining work is mostly timeout-heavy filter pipeline paths rather than blind spots. |
-| `json` | 24 | 2 | 0 | 0 | Nearly saturated after the latest exact contract additions. |
-| `fts5` | 41 | 7 | 0 | 0 | Good signal; some ranking/search semantics still survive. |
-| `hybrid` | 112 | 21 | 0 | 3 | Good enough to use as feedback during later law work. |
-| `models` | 129 | 20 | 3 | 14 | Reasonable signal with bounded semantic weak spots. |
+| Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `filters` | `147e689d15ca` | 475 | 5 | 117 | 0 | Very strong kill rate; remaining debt is timeout-heavy pipeline execution, not semantic blindness. |
+| `json` | `147e689d15ca` | 24 | 2 | 0 | 0 | Effectively saturated for its size. |
+| `fts5` | `147e689d15ca` | 41 | 7 | 0 | 0 | Good search-law signal with a small survivor tail. |
+| `hybrid` | `147e689d15ca` | 112 | 21 | 0 | 3 | Strong enough to guide later search refactors. |
+| `models` | `147e689d15ca` | 129 | 20 | 3 | 14 | Good semantic signal; not a blocking blind spot. |
+| `cli-run` | `2bdb267e93b7` | 183 | 92 | 0 | 8 | `004` improved this from `121/99/0/63` to `183/92/0/8`; it is now a maintenance surface, not the next law-wave priority. |
 
-### Major Remediation Targets
+### Schema / Pipeline Follow-Up Baselines
 
-These are the domains the next law-wave should attack first.
+These were already improved substantially before the `004` execution and remain
+the reference point for those domains.
 
-| Campaign | Killed | Survived | Timeout | Not checked | Primary issue |
-| --- | ---: | ---: | ---: | ---: | --- |
-| `schema-validation` | 235 | 161 | 0 | 0 | Improved after the schema law wave, but validator/verification behavior is still too weakly constrained. |
-| `schema-inference` | 534 | 317 | 447 | 0 | Survivor mass dropped sharply, but timeout-heavy inference/privacy heuristics still dominate. |
-| `schema-core` | 792 | 895 | 7 | 0 | Core schema contracts improved, but drift/sample/privacy surfaces are still materially under-specified. |
-| `repository` | 343 | 250 | 6 | 81 | Read/query/projection contracts are not strong enough. |
-| `pipeline-services` | 736 | 595 | 84 | 246 | The new pipeline laws improved kills and survivors, but acquisition/streaming helpers still produce heavy timeout and not-checked clusters. |
-| `source-detection` | 41 | 197 | 0 | 910 | Detection/dispatch is still mostly unexercised under mutation. |
-| `providers-semantics` | 162 | 588 | 0 | 432 | Harmonization/provider semantic extraction is not ready for saturation claims. |
-| `sources-parse` | 1353 | 2307 | 0 | 2094 | Broad parse/harmonization surface confirms the next law-wave should start in sources. |
+| Campaign | Commit | Killed | Survived | Timeout | Not checked | Primary issue |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `schema-validation` | `d1e704d7a2ba` | 235 | 161 | 0 | 0 | Validator/verification behavior is still under-constrained. |
+| `schema-inference` | `d1e704d7a2ba` | 534 | 317 | 447 | 0 | Timeouts still dominate inference/privacy heuristics. |
+| `schema-core` | `d1e704d7a2ba` | 792 | 895 | 7 | 0 | Core schema behavior still has heavy survivor mass. |
+| `pipeline-services` | `d1e704d7a2ba` | 736 | 595 | 84 | 246 | Acquisition/streaming/state-machine helpers still leave large timeout and not-checked clusters. |
+
+### Post-`004` Rerun Results
+
+This is the current evidence for the domains that the executed law-wave
+targeted directly.
+
+| Campaign | Killed | Survived | Timeout | Not checked | Delta vs previous baseline | Interpretation |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| `cli-query` | 580 | 844 | 21 | 532 | `+112 killed`, `-15 survived`, `+13 timeout`, `-110 not_checked` | Better coverage of query/output contracts, but `_output_stats_by_summaries` and mutation-heavy query execution still need another pass. |
+| `repository` | 370 | 181 | 124 | 5 | `+45 killed`, `+41 survived`, `-21 timeout`, `-65 not_checked` | Big reduction in blind spots; remaining issue is now timeout/survivor quality in read/query paths, not lack of reach. |
+| `site-builder` | 245 | 228 | 1 | 0 | `+23 killed`, `-22 survived`, `-1 timeout` | Streaming/site generation laws materially improved this area. |
+| `source-detection` | 563 | 455 | 3 | 127 | `+88 killed`, `-20 survived`, `-68 not_checked` | Detection/dispatch is no longer mostly blind, but still has meaningful survivor mass. |
+| `providers-semantics` | 415 | 652 | 3 | 112 | `+80 killed`, `0 survived`, `+3 timeout`, `-83 not_checked` | Law-wave improved reach, but `schemas.unified` semantic extraction remains the dominant weak spot. |
+| `sources-parse` | 1651 | 2390 | 7 | 1706 | `+158 killed`, `-11 survived`, `+4 timeout`, `-151 not_checked` | Broadest source surface improved meaningfully, but still confirms sources/parsing as the next major law-wave frontier. |
 
 ### Readiness Call
 
-- We are **ready to continue** the law-wave now.
-- We are **not ready to declare the schema/pipeline domains finished**.
-- The schema/pipeline branch of the wave materially improved signal:
-  - `schema-validation`: the new clean baseline is `235 killed / 161 survived / 0 timeout / 0 not_checked`.
-  - `schema-inference`: survivors dropped from the old pre-wave `759` class of weakness to `317`, but `447` timeouts remain the main problem.
-  - `schema-core`: kills improved and timeouts collapsed to `7`, but survivor mass remains high.
-  - `pipeline-services`: kills improved and survivors dropped relative to the pre-wave baseline, but `246` not-checked mutants and `84` timeouts still show orchestration blind spots.
-- The remaining `004` wave should now continue with:
-  1. mixed CLI/site contract cleanup,
-  2. then source detection + parser dispatch,
-  3. provider semantics + harmonization,
-  4. broad sources/parse contracts,
-  5. repository query/projection laws.
+- `004` is complete.
+- We are ready for another targeted law/property wave.
+- The current highest-yield next fronts are:
+  1. `sources-parse`
+  2. `providers-semantics`
+  3. `repository`
+  4. `cli-query`
+- We are not ready to claim source/harmonization semantics are exhaustively
+  specified. The reruns made those domains mutation-usable, but not saturated.
+- The dominant remaining structural issue is still survivor concentration in
+  `polylogue.schemas.unified` and adjacent source/provider semantic extraction.
 
 ### Comparison Rule For Future Waves
 
@@ -125,4 +136,5 @@ per-campaign artifacts. Expect at least one of these to improve:
 1. Fewer total survivors in the targeted campaign.
 2. Fewer total `not_checked` mutants in source/pipeline/repository domains.
 3. No regression in killed counts for already-healthy campaigns.
-4. No new timeout mass introduced by broader law/property generation.
+4. No new timeout mass introduced by broader law/property generation unless it
+   buys a larger reduction in survivors or not-checked mutants.
