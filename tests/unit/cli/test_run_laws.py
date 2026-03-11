@@ -14,7 +14,13 @@ from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.cli.commands.run import _display_result, _run_sync_once, run_command
+from polylogue.cli.commands.run import (
+    _display_result,
+    _format_elapsed,
+    _PlainProgressObserver,
+    _run_sync_once,
+    run_command,
+)
 from polylogue.config import Config, get_config
 from polylogue.storage.store import RunResult
 
@@ -231,3 +237,55 @@ async def test_run_rerenders_when_title_or_content_changes_contract(
             assert second_mtime > first_mtime
         else:
             assert second_mtime == first_mtime
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (0, "0s"),
+        (59.4, "59s"),
+        (60, "1m00s"),
+        (125, "2m05s"),
+        (3600, "1h00m00s"),
+        (3725, "1h02m05s"),
+    ],
+)
+def test_format_elapsed_contract(seconds: float, expected: str) -> None:
+    assert _format_elapsed(seconds) == expected
+
+
+def test_plain_progress_observer_stage_switch_contract() -> None:
+    with patch("builtins.print") as mock_print, patch(
+        "polylogue.cli.commands.run.time.time",
+        side_effect=[100.0, 101.2, 101.2, 102.8, 102.8],
+    ):
+        observer = _PlainProgressObserver(banner="Running...")
+        observer.on_progress(2, "Scanning: 2")
+        observer.on_progress(3, "Validation[batch]: 3")
+
+    assert observer._stage_key("Validation[batch]: 3") == "Validation"
+    lines = [call.args[0] for call in mock_print.call_args_list if call.args]
+    assert lines == [
+        "Running...",
+        "  Scanning: 2: 2 [1s total]...",
+        "  Scanning: done (2 in 0s)",
+        "  Validation[batch]: 3: 3 [1s total]...",
+    ]
+
+
+def test_plain_progress_observer_completion_contract() -> None:
+    result = _run_result(conversations=3)
+
+    with patch("builtins.print") as mock_print, patch(
+        "polylogue.cli.commands.run.time.time",
+        side_effect=[200.0, 205.0],
+    ):
+        observer = _PlainProgressObserver(banner="Syncing...")
+        observer.on_completed(result)
+
+    lines = [call.args[0] for call in mock_print.call_args_list if call.args]
+    assert lines == [
+        "Syncing...",
+        "  Counts: 3 conv",
+        "  Pipeline complete in 5s",
+    ]

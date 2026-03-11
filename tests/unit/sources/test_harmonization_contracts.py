@@ -11,6 +11,7 @@ from hypothesis import strategies as st
 
 from polylogue.schemas.unified import (
     HarmonizedMessage,
+    extract_codex_text,
     extract_content_blocks,
     extract_harmonized_message,
     extract_reasoning_traces,
@@ -298,3 +299,31 @@ def test_has_tool_use_consistent_with_calls(args: tuple) -> None:
     provider, raw = args
     msg = extract_harmonized_message(provider, raw)
     assert msg.has_tool_use == (len(msg.tool_calls) > 0)
+
+
+@given(
+    st.lists(
+        st.one_of(
+            st.fixed_dictionaries(
+                {
+                    "text": st.text(max_size=40),
+                    "input_text": st.text(max_size=40),
+                    "output_text": st.text(max_size=40),
+                }
+            ),
+            st.just({"type": "image", "url": "https://example.com"}),
+            st.just("not a dict"),
+        ),
+        max_size=8,
+    )
+)
+def test_extract_codex_text_prefers_first_available_text_field(content: list[object]) -> None:
+    expected: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text", "") or block.get("input_text", "") or block.get("output_text", "")
+        if isinstance(text, str) and text:
+            expected.append(text)
+
+    assert extract_codex_text(content) == "\n".join(expected)

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
@@ -15,8 +16,9 @@ from polylogue.cli.commands.site import site_command
 from polylogue.cli.types import AppEnv
 from polylogue.paths import safe_path_component
 from polylogue.services import build_runtime_services
-from polylogue.site.builder import ConversationIndex, SiteBuilder, SiteConfig
+from polylogue.site.builder import ArchiveIndexStats, ConversationIndex, SiteBuilder, SiteConfig
 from tests.infra.strategies import (
+    ConversationSummarySpec,
     build_conversation_summary,
     build_message_counts,
     conversation_summary_batch_strategy,
@@ -198,3 +200,139 @@ def test_site_command_contract(spec) -> None:
         index_html = (output_dir / "index.html").read_text(encoding="utf-8")
         assert (spec.custom_title or "Polylogue Archive") in index_html
         assert (output_dir / "dashboard.html").exists() == spec.include_dashboard
+
+
+def test_site_builder_scan_archive_streaming_contract() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        specs = [
+            ConversationSummarySpec(
+                conversation_id="conv-a",
+                provider="claude",
+                title="A",
+                summary="alpha",
+                tags=("law",),
+                created_at=None,
+                updated_at=None,
+                message_count=2,
+            ),
+            ConversationSummarySpec(
+                conversation_id="conv-b",
+                provider="chatgpt",
+                title="B",
+                summary="beta",
+                tags=(),
+                created_at=None,
+                updated_at=None,
+                message_count=3,
+            ),
+        ]
+        summaries = [build_conversation_summary(spec) for spec in specs]
+        backend = AsyncMock()
+        backend.get_message_counts_batch.return_value = build_message_counts(specs)
+        repository = AsyncMock()
+        _configure_summary_pages(repository, summaries)
+
+        builder = SiteBuilder(
+            output_dir=tmp_path / "site",
+            config=SiteConfig(enable_search=True, search_provider="lunr", include_dashboard=False),
+            backend=backend,
+            repository=repository,
+        )
+        builder.output_dir.mkdir(parents=True, exist_ok=True)
+        builder._generate_conversation_page = AsyncMock(return_value=1)  # type: ignore[method-assign]
+
+        stats, generated = asyncio.run(builder._scan_archive(incremental=True))
+
+        assert generated == len(specs)
+        assert stats.total_conversations == len(specs)
+        assert stats.total_messages == sum(spec.message_count for spec in specs)
+        assert stats.provider_counts == {
+            summary.provider.value: sum(1 for item in summaries if item.provider == summary.provider)
+            for summary in summaries
+        }
+        payload = json.loads((builder.output_dir / "search-index.json").read_text(encoding="utf-8"))
+        assert [entry["id"] for entry in payload] == [spec.conversation_id for spec in specs]
+
+
+def test_site_builder_root_and_provider_index_contract() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        builder = SiteBuilder(
+            output_dir=tmp_path / "site",
+            config=SiteConfig(title="Archive", include_dashboard=False),
+            backend=AsyncMock(),
+            repository=AsyncMock(),
+        )
+        archive_stats = ArchiveIndexStats(
+            root_page_conversations=[
+                ConversationIndex(
+                    id="conv-1",
+                    title="One",
+                    provider="claude",
+                    created_at="2024-01-01",
+                    updated_at="2024-01-01 00:00",
+                    message_count=2,
+                    preview="hello",
+                    path="claude/conv-1/conversation.html",
+                )
+            ],
+            provider_counts={"claude": 1, "chatgpt": 2},
+            provider_messages={"claude": 2, "chatgpt": 5},
+            provider_order=["claude", "chatgpt"],
+            total_conversations=3,
+            total_messages=7,
+        )
+        builder._write_template_stream = AsyncMock()  # type: ignore[method-assign]
+        builder._iter_conversation_indexes = MagicMock(
+            side_effect=lambda provider=None: _summary_pages(
+                [
+                    ConversationIndex(
+                        id=f"{provider}-1",
+                        title=f"{provider} title",
+                        provider=provider or "claude",
+                        created_at="2024-01-01",
+                        updated_at="2024-01-01 00:00",
+                        message_count=1,
+                        preview="preview",
+                        path=f"{provider}/conv/conversation.html",
+                    )
+                ]
+            )
+        )
+
+        asyncio.run(builder._generate_root_index(archive_stats, generated_at="2026-03-11 10:00"))
+        provider_pages = asyncio.run(
+            builder._generate_provider_indexes(archive_stats, generated_at="2026-03-11 10:00")
+        )
+
+        assert provider_pages == 2
+        calls = builder._write_template_stream.await_args_list
+        assert calls[0].args[1] == builder.output_dir / "index.html"
+        assert calls[0].kwargs["conversations"] == archive_stats.root_page_conversations
+        assert calls[1].args[1] == builder.output_dir / safe_path_component("claude", fallback="provider") / "index.html"
+        assert calls[2].args[1] == builder.output_dir / safe_path_component("chatgpt", fallback="provider") / "index.html"
+
+
+def test_site_builder_pagefind_config_contract() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        builder = SiteBuilder(
+            output_dir=tmp_path / "site",
+            config=SiteConfig(enable_search=True, search_provider="pagefind"),
+            backend=AsyncMock(),
+            repository=AsyncMock(),
+        )
+        builder.output_dir.mkdir(parents=True, exist_ok=True)
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch("subprocess.run") as mock_run,
+        ):
+            builder._generate_pagefind_config()
+
+        assert json.loads((builder.output_dir / "pagefind.json").read_text(encoding="utf-8")) == {
+            "site": str(builder.output_dir),
+            "output_subdir": "_pagefind",
+        }
+        mock_run.assert_not_called()
