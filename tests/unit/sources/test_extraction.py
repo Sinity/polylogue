@@ -7,13 +7,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from polylogue.lib.provider_semantics import (
+    extract_chatgpt_text,
+    extract_codex_text,
+)
 from polylogue.lib.roles import normalize_role
 from polylogue.lib.viewports import ContentType, ToolCategory
 from polylogue.schemas.unified import (
     HarmonizedMessage,
     bulk_harmonize,
-    extract_chatgpt_text,
-    extract_codex_text,
     extract_from_provider_meta,
     extract_harmonized_message,
     harmonize_parsed_message,
