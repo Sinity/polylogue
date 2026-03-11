@@ -218,6 +218,11 @@ class GeminiMessage(BaseModel):
                         text=part.text,
                         raw=part.model_dump(),
                     ))
+                elif getattr(part, "inlineData", None) is not None or getattr(part, "fileData", None) is not None:
+                    blocks.append(ContentBlock(
+                        type=ContentType.FILE,
+                        raw=part.model_dump(),
+                    ))
             elif isinstance(part, dict):
                 if part.get("text"):
                     blocks.append(ContentBlock(

@@ -174,6 +174,23 @@ def extract_tool_calls(content: list[dict[str, Any]] | None, provider: Provider 
     return calls
 
 
+def _content_text(value: object) -> str | None:
+    """Extract text from string, dict, or list payloads used in content blocks."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        text = value.get("text")
+        return text if isinstance(text, str) else None
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            text = _content_text(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts) if parts else None
+    return None
+
+
 def extract_content_blocks(content: list[dict[str, Any]] | None) -> list[ContentBlock]:
     """Extract content blocks with type classification."""
     if not content:
@@ -221,7 +238,7 @@ def extract_content_blocks(content: list[dict[str, Any]] | None) -> list[Content
             blocks.append(
                 ContentBlock(
                     type=ContentType.TOOL_RESULT,
-                    text=str(block.get("content", "")),
+                    text=_content_text(block.get("content")) or _content_text(block.get("text")) or "",
                     raw=block,
                 )
             )
@@ -283,7 +300,15 @@ def extract_chatgpt_text(content: dict[str, Any] | None) -> str:
     parts = content.get("parts", [])
     if not isinstance(parts, list):
         return str(parts) if parts else ""
-    return "\n".join(str(p) for p in parts if isinstance(p, str))
+    texts: list[str] = []
+    for part in parts:
+        if isinstance(part, str):
+            texts.append(part)
+            continue
+        text = _content_text(part)
+        if text:
+            texts.append(text)
+    return "\n".join(texts)
 
 
 def extract_codex_text(content: list[dict[str, Any]] | None) -> str:
