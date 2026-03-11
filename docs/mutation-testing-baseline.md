@@ -117,12 +117,12 @@ the follow-up source/helper/query pass.
 | `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
 | `source-detection` | `38d65c004a2a` | 816 | 330 | 5 | 0 | Clean post-helper-contract rerun sharply improved kill rate while keeping reach complete; survivor mass is now much narrower and still concentrated in ZIP filtering, emit paths, and provider sniffing. |
 | `providers-semantics` | `25ba6d7196f4` | 860 | 449 | 2 | 0 | Clean post-concentration rerun after collapsing duplicated provider viewport laws into unified helper contracts; reach stays clean and survivor mass is now more sharply concentrated in `schemas.unified` fallback harmonization plus adapter `extract_content_blocks`/`to_meta`. |
-| `sources-parse` | `c0596770631e` | 3455 | 2482 | 10 | 0 | First focused concentration rerun after source semantic test collapse; the broad source surface remains fully reachable, with remaining work concentrated in drive-client seams and provider semantic survivor mass. |
+| `sources-parse` | `47a9b1cff33f` | 3597 | 2319 | 31 | 0 | Clean post-drive-parser concentration rerun improved kill and survivor counts again while keeping reach complete; the remaining debt is now more sharply concentrated in `schemas.unified`, Drive auth/filter helpers, and timeout-heavy `content_blocks_from_segments` coverage. |
 
 ### Readiness Call
 
 - `004` is complete, and the immediate follow-up reruns are complete.
-- The first post-`005` focused concentration rerun wave is also complete on clean SHA `c0596770631e`.
+- The first post-`005` focused concentration rerun wave is also complete on clean SHAs `c0596770631e` and `47a9b1cff33f`.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
   1. `sources-parse`
@@ -135,7 +135,8 @@ the follow-up source/helper/query pass.
   The reruns removed reach failures, but they did not saturate the semantic space.
 - The dominant structural issues are now:
   - survivor concentration in `polylogue.schemas.unified` and provider viewport shaping,
-  - high survivor density in source parsing/detection and query orchestration,
+  - high survivor density in source parsing and query orchestration,
+  - source parsing now carrying a clearer timeout cluster in `content_blocks_from_segments`,
   - source detection still carrying a narrower but still meaningful survivor cluster around ZIP filtering, emit paths, and provider sniffing,
   - drive-client transport/auth behavior still carrying a narrower but meaningful survivor cluster in auth/load/download helpers.
 - Additional mutmut infrastructure work is not the bottleneck now. The next
