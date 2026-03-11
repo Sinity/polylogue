@@ -70,8 +70,8 @@ ledger now mixes four clean baselines:
 - the broad core baseline on commit `147e689d15ca`
 - the schema/pipeline rerun wave on commit `d1e704d7a2ba`
 - the post-`004` law-wave baselines on commit `2bdb267e93b7`
-- the follow-up source/query/repository reruns on commits `7e7c310037f9` and
-  `a27de694650d`
+- the follow-up source/query/repository reruns on commits `7e7c310037f9`,
+  `a27de694650d`, and `b1f1d35bee28`
 - the clean post-`005` rerun wave on commit `e759af23458d`
 
 `004`, its follow-up reruns, and the first focused post-`005` source/provider
@@ -113,7 +113,7 @@ the follow-up source/helper/query pass.
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | `cli-query` | `e058c8240959` | 935 | 1007 | 20 | 0 | Clean post-concentration rerun: helper ownership is cleaner and survivors are still concentrated in `_async_execute_query` routing plus mutation-heavy modifier/delete paths. |
 | `drive-client` | `7e7c310037f9` | 553 | 327 | 4 | 0 | Drive transport/auth seams are mutation-usable now; remaining residue clusters around credential loading, folder resolution, and retry/download paths. |
-| `repository` | `e759af23458d` | 569 | 104 | 35 | 0 | Repository laws improved materially; the main remaining issue is timeout-heavy hydration/read-path coverage, not blind spots. |
+| `repository` | `b1f1d35bee28` | 568 | 74 | 66 | 0 | The concentrated read-model laws fixed the helper blind spot and cut survivor density sharply; the main remaining issue is timeout-heavy hydration/archive-stat coverage, not reach. |
 | `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
 | `source-detection` | `e058c8240959` | 702 | 445 | 4 | 0 | Clean post-concentration rerun after pruning edge-test duplication; reach is still complete, but survivors remain concentrated in ZIP filtering, emit paths, and provider sniffing. |
 | `providers-semantics` | `c0596770631e` | 805 | 504 | 2 | 0 | First focused concentration rerun after source semantic test collapse; reach is still clean and survivor mass remains concentrated in `extract_content_blocks`, `to_meta`, and fallback Claude Code harmonization. |
