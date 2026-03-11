@@ -40,6 +40,7 @@ _write_message_streaming = _query_output._write_message_streaming
 stream_conversation = _query_output.stream_conversation
 
 if TYPE_CHECKING:
+    from polylogue.cli.query_plan import QueryExecutionPlan
     from polylogue.cli.types import AppEnv
 
 
@@ -52,6 +53,16 @@ def _coerce_query_spec(params: dict[str, Any] | ConversationQuerySpec) -> Conver
 def _describe_filters(params: dict[str, Any] | ConversationQuerySpec) -> list[str]:
     """Build a human-readable list of active filters from params or spec."""
     return _coerce_query_spec(params).describe()
+
+
+def _project_query_results(results: list[Any], plan: QueryExecutionPlan) -> list[Any]:
+    """Apply post-selection transforms consistently before final output."""
+    projected = results
+    if plan.output.transform is not None:
+        projected = _apply_transform(projected, plan.output.transform)
+    if plan.output.dialogue_only:
+        projected = [conversation.dialogue_only() for conversation in projected]
+    return projected
 
 
 def _no_results(
@@ -178,11 +189,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         await _delete_conversations(env, results, params, repo)
         return
 
-    if plan.output.transform is not None:
-        results = _apply_transform(results, plan.output.transform)
-
-    if plan.output.dialogue_only:
-        results = [conversation.dialogue_only() for conversation in results]
+    results = _project_query_results(results, plan)
 
     if route == QueryRoute.STATS_BY:
         _output_stats_by(env, results, plan.stats_dimension or "all")
