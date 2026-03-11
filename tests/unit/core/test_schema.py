@@ -502,6 +502,22 @@ class TestLoadSamples:
         samples = load_samples_from_db("nonexistent-provider", db_path=seeded_db)
         assert samples == []
 
+    def test_load_limited_document_samples_stops_without_full_materialization(self, monkeypatch, tmp_path):
+        """Document-style sampling should stop at the requested limit."""
+        db_path = tmp_path / "samples.db"
+        db_path.write_text("")
+
+        def _iter(*args, **kwargs):
+            yield {"id": "one"}
+            yield {"id": "two"}
+            raise AssertionError("iterator should not be exhausted past the limit")
+
+        monkeypatch.setattr("polylogue.schemas.schema_inference._iter_samples_from_db", _iter)
+
+        samples = load_samples_from_db("chatgpt", db_path=db_path, max_samples=2)
+
+        assert samples == [{"id": "one"}, {"id": "two"}]
+
 
 # MERGED FROM test_schema_inference_coverage.py
 # =============================================================================

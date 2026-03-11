@@ -17,7 +17,7 @@ Findings addressed:
 
 from __future__ import annotations
 
-import asyncio
+import inspect
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -129,10 +129,12 @@ class TestOutputRendererConformance:
         assert cls(archive_root=tmp_path).supports_format() == expected_format
 
     @pytest.mark.parametrize("cls", [MarkdownRenderer, HTMLRenderer], ids=["markdown", "html"])
-    def test_render_is_coroutine_function(self, cls, tmp_path: Path) -> None:
-        """OutputRenderer.render() must be async — the protocol contract is async."""
+    def test_render_returns_awaitable(self, cls, tmp_path: Path) -> None:
+        """OutputRenderer.render() must return an awaitable when called."""
         renderer = cls(archive_root=tmp_path)
-        assert asyncio.iscoroutinefunction(renderer.render)
+        result = renderer.render("test-conv", tmp_path)
+        assert inspect.isawaitable(result)
+        result.close()
 
     @pytest.mark.parametrize("cls", [MarkdownRenderer, HTMLRenderer], ids=["markdown", "html"])
     async def test_render_produces_output(self, cls, tmp_path: Path) -> None:
@@ -248,7 +250,7 @@ class TestParserModuleInterface:
             drive.parse_chunked_prompt,
         ]
         for fn in parse_functions:
-            assert "return" in fn.__annotations__, (
+            assert inspect.signature(fn).return_annotation is not inspect.Signature.empty, (
                 f"{fn.__qualname__} is missing a return type annotation"
             )
 

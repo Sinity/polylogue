@@ -4,8 +4,7 @@ Supersedes specific parametrized examples in test_fts5.py.
 """
 from __future__ import annotations
 
-import pytest
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from polylogue.storage.search import escape_fts5_query

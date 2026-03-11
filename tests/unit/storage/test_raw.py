@@ -152,6 +152,33 @@ class TestRawConversationStorage:
         claude_records = [r async for r in backend.iter_raw_conversations(provider="claude")]
         assert len(claude_records) == 3
 
+    async def test_iter_raw_ids_by_provider_name(self, backend: SQLiteBackend) -> None:
+        """ID iteration can filter by exact provider name without hydrating raw blobs."""
+        from datetime import datetime, timezone
+
+        from polylogue.storage.store import RawConversationRecord
+
+        records = [
+            RawConversationRecord(
+                raw_id=f"raw-id-{i}",
+                provider_name="chatgpt" if i % 2 == 0 else "claude",
+                source_path=f"/path/{i}.json",
+                raw_content=b'{}',
+                acquired_at=datetime.now(timezone.utc).isoformat(),
+            )
+            for i in range(6)
+        ]
+
+        for record in records:
+            await backend.save_raw_conversation(record)
+
+        chatgpt_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="chatgpt")]
+        claude_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="claude")]
+
+        assert len(chatgpt_ids) == 3
+        assert len(claude_ids) == 3
+        assert all(raw_id.startswith("raw-id-") for raw_id in chatgpt_ids + claude_ids)
+
     async def test_iter_raw_conversations_with_limit(self, backend: SQLiteBackend) -> None:
         """Limit the number of records returned."""
         from datetime import datetime, timezone

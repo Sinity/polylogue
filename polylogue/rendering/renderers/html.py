@@ -15,7 +15,11 @@ from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.util import ClassNotFound
 
 from polylogue.render_paths import render_root
-from polylogue.rendering.core import ConversationFormatter, FormattedConversation
+from polylogue.rendering.core import (
+    ConversationFormatter,
+    FormattedConversation,
+    build_rendered_message_payload,
+)
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
@@ -222,32 +226,6 @@ def _attach_branches(messages: list[dict[str, object]]) -> list[dict[str, object
     return mainline
 
 
-def _html_message_entry(
-    *,
-    message_id: object,
-    role: object,
-    text: str,
-    timestamp: object,
-    parent_message_id: object,
-    branch_index: object,
-    md_renderer: MarkdownRenderer,
-) -> dict[str, object]:
-    normalized_role = role or "message"
-    if hasattr(normalized_role, "value"):
-        normalized_role = normalized_role.value
-    normalized_role = str(normalized_role)
-    return {
-        "id": message_id,
-        "role": normalized_role,
-        "role_class": _role_css_class(normalized_role),
-        "text": text[:120],
-        "html_content": md_renderer.render(text),
-        "timestamp": timestamp,
-        "parent_message_id": parent_message_id,
-        "branch_index": branch_index,
-    }
-
-
 class HTMLRenderer:
     """Enhanced HTML renderer with syntax highlighting and polished styling.
 
@@ -328,17 +306,18 @@ class HTMLRenderer:
             text = msg.text or ""
             if not text:
                 continue
-            raw_html_messages.append(
-                _html_message_entry(
-                    message_id=msg.message_id,
-                    role=msg.role,
-                    text=text,
-                    timestamp=msg.sort_key,
-                    parent_message_id=msg.parent_message_id,
-                    branch_index=msg.branch_index,
-                    md_renderer=self.md_renderer,
-                )
+            payload = build_rendered_message_payload(
+                message_id=msg.message_id,
+                role=msg.role,
+                text=text,
+                timestamp=msg.sort_key,
+                parent_message_id=msg.parent_message_id,
+                branch_index=msg.branch_index,
+                render_html=self.md_renderer.render,
+                preview_limit=120,
             )
+            payload["role_class"] = _role_css_class(str(payload["role"]))
+            raw_html_messages.append(payload)
 
         html_messages = _attach_branches(raw_html_messages)
 
@@ -404,17 +383,18 @@ def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
     for msg in conv.messages:
         if not msg.text:
             continue
-        raw_messages.append(
-            _html_message_entry(
-                message_id=msg.id,
-                role=msg.role,
-                text=msg.text,
-                timestamp=str(msg.timestamp) if msg.timestamp else None,
-                parent_message_id=msg.parent_id,
-                branch_index=msg.branch_index,
-                md_renderer=md_renderer,
-            )
+        payload = build_rendered_message_payload(
+            message_id=msg.id,
+            role=msg.role,
+            text=msg.text,
+            timestamp=str(msg.timestamp) if msg.timestamp else None,
+            parent_message_id=msg.parent_id,
+            branch_index=msg.branch_index,
+            render_html=md_renderer.render,
+            preview_limit=120,
         )
+        payload["role_class"] = _role_css_class(str(payload["role"]))
+        raw_messages.append(payload)
 
     messages = _attach_branches(raw_messages)
     title = conv.display_title or str(conv.id)

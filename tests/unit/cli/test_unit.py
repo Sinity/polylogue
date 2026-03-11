@@ -143,6 +143,7 @@ FORMAT_SOURCE_LABEL_CASES = [
 FORMAT_COUNTS_CASES = [
     ({"conversations": 10, "messages": 100}, ("10 conv", "100 msg")),
     ({"conversations": 5, "messages": 50, "rendered": 5}, ("5 rendered",)),
+    ({"acquired": 4, "validated": 4, "validation_drift": 2}, ("4 acquired", "4 validated", "2 drift")),
     ({"conversations": 5, "messages": 50, "rendered": 0}, ()),  # No "rendered"
     ({}, ("0 conv", "0 msg")),
 ]
@@ -741,7 +742,7 @@ class TestRepairFunctions:
 
             results = run_all_repairs(config)
 
-            assert len(results) == 6
+            assert len(results) == 5
             assert all(r.success for r in results)
 
 

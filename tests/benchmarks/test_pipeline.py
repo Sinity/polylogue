@@ -8,16 +8,18 @@ Run with:
 """
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from polylogue.lib.viewports import ToolCategory, classify_tool
+from polylogue.lib.hashing import hash_payload, hash_text
+from polylogue.lib.viewports import classify_tool
+from polylogue.pipeline.prepare import PrepareCache
 from polylogue.pipeline.semantic import extract_tool_metadata
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index, update_index_for_conversations
+from tests.benchmarks.helpers import open_bench_store
 
 
 def _make_diverse_tool_inputs(n: int) -> list[tuple[str, dict[str, Any]]]:
@@ -84,3 +86,34 @@ def test_bench_fts_incremental_update(benchmark, bench_db_5k: Path, n: int) -> N
     ids = [f"bench-conv-{i:05d}" for i in range(n)]
     with open_connection(bench_db_5k) as conn:
         benchmark(lambda: update_index_for_conversations(ids, conn))
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("size", [100, 1_000, 10_000])
+def test_bench_hash_text(benchmark, size: int) -> None:
+    """hash_text() throughput — NFC normalization + SHA-256. Tests text sizes."""
+    text = "α" * size  # NFC normalization-heavy Unicode
+    benchmark(lambda: hash_text(text))
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("depth", [1, 10, 50])
+def test_bench_hash_payload(benchmark, depth: int) -> None:
+    """hash_payload() — JSON serialization + SHA-256 for varying object complexity."""
+    def _make_nested_payload(d: int) -> dict:
+        node: dict = {"value": "leaf", "index": d}
+        for level in range(d):
+            node = {"level": level, "child": node, "data": list(range(10))}
+        return node
+
+    payload = _make_nested_payload(depth)
+    benchmark(lambda: hash_payload(payload))
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("n", [100, 500])
+def test_bench_prepare_cache_load(benchmark, bench_db_5k: Path, n: int) -> None:
+    """PrepareCache.load() — bulk-loads N existing conversations in 2 queries."""
+    cids = {f"bench-conv-{i:05d}" for i in range(n)}
+    with open_bench_store(bench_db_5k) as store:
+        benchmark(lambda: store.run(PrepareCache.load(store.backend, cids)))

@@ -184,11 +184,11 @@ class TestRepositoryViewMethod:
         backend = Mock(spec=SQLiteBackend)
 
         # Mock ID resolution - returns full ID
-        backend.resolve_id.return_value = "full-conv-id-12345"
+        backend.resolve_id = AsyncMock(return_value="full-conv-id-12345")
 
         # view() will call resolve_id and then get()
         # Return None to test just the ID resolution call
-        backend.get_conversation.return_value = None
+        backend.get_conversation = AsyncMock(return_value=None)
 
         repo = ConversationRepository(backend)
 
@@ -205,9 +205,9 @@ class TestRepositoryViewMethod:
         backend = Mock(spec=SQLiteBackend)
 
         # Resolve returns None (no match found)
-        backend.resolve_id.return_value = None
+        backend.resolve_id = AsyncMock(return_value=None)
         # get_conversation also returns None
-        backend.get_conversation.return_value = None
+        backend.get_conversation = AsyncMock(return_value=None)
 
         repo = ConversationRepository(backend)
 
@@ -222,8 +222,8 @@ class TestRepositoryViewMethod:
     async def test_view_returns_none_if_not_found(self):
         """view() should return None if conversation not found."""
         backend = Mock(spec=SQLiteBackend)
-        backend.resolve_id.return_value = None
-        backend.get_conversation.return_value = None
+        backend.resolve_id = AsyncMock(return_value=None)
+        backend.get_conversation = AsyncMock(return_value=None)
 
         repo = ConversationRepository(backend)
 
@@ -259,18 +259,29 @@ class TestRepositoryDataInsertion:
         # Mock the async backend methods that save_via_backend calls
         backend.save_conversation_record = AsyncMock()
         backend.save_messages = AsyncMock()
+        backend.upsert_conversation_stats = AsyncMock()
         backend.prune_attachments = AsyncMock()
         backend.save_attachments = AsyncMock()
 
         repo = ConversationRepository(backend)
 
-        conv_record = Mock(spec=ConversationRecord)
-        conv_record.conversation_id = "conv-1"
-        conv_record.content_hash = "hash123"
+        conv_record = ConversationRecord(
+            conversation_id="conv-1",
+            provider_name="chatgpt",
+            provider_conversation_id="provider-conv-1",
+            title="Conversation",
+            content_hash="hash123",
+        )
 
-        msg_record = Mock(spec=MessageRecord)
-        msg_record.message_id = "msg-1"
-        msg_record.content_hash = "hash456"
+        msg_record = MessageRecord(
+            message_id="msg-1",
+            conversation_id="conv-1",
+            provider_message_id="provider-msg-1",
+            role="user",
+            text="hello",
+            content_hash="hash456",
+            provider_name="chatgpt",
+        )
 
         # Perform save operation
         result = await repo.save_conversation(

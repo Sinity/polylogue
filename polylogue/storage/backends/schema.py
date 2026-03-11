@@ -1,7 +1,7 @@
 """SQLite schema management: DDL and version control.
 
-Schema version policy: v3 is the complete target schema. There are no migrations.
-If user_version != 0 and != 3, the database is incompatible — wipe and re-run.
+Schema version policy: v4 is the complete target schema. There are no migrations.
+If user_version != 0 and != 4, the database is incompatible — wipe and re-run.
 """
 
 from __future__ import annotations
@@ -9,10 +9,9 @@ from __future__ import annotations
 import sqlite3
 
 from polylogue.lib.log import get_logger
-from polylogue.storage.store import _make_ref_id
 
 logger = get_logger(__name__)
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 _VEC0_DDL = """
@@ -30,6 +29,7 @@ SCHEMA_DDL = """
         CREATE TABLE IF NOT EXISTS raw_conversations (
             raw_id TEXT PRIMARY KEY,
             provider_name TEXT NOT NULL,
+            payload_provider TEXT,
             source_name TEXT,
             source_path TEXT NOT NULL,
             source_index INTEGER,
@@ -48,6 +48,10 @@ SCHEMA_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
         ON raw_conversations(provider_name);
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_payload_provider
+        ON raw_conversations(payload_provider)
+        WHERE payload_provider IS NOT NULL;
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_source
         ON raw_conversations(source_path);
@@ -263,10 +267,10 @@ SCHEMA_DDL = """
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Ensure the database is at schema version 2.
+    """Ensure the database is at the current schema version.
 
-    For fresh databases (version 0): apply full DDL and set version to 2.
-    For version 2: nothing to do.
+    For fresh databases (version 0): apply full DDL and set the current version.
+    For the current version: nothing to do.
     For any other version: raise — the DB is incompatible, wipe and re-run.
     """
     cursor = conn.execute("PRAGMA user_version")
@@ -277,7 +281,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(SCHEMA_DDL)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
-        logger.debug("Created fresh schema v3")
+        logger.debug("Created fresh schema v4")
         return
 
     if current_version == SCHEMA_VERSION:
@@ -288,5 +292,5 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     raise DatabaseError(
         f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
         "This database was created with a different schema. Delete the database file and re-run polylogue "
-        "to create a fresh v3 schema."
+        f"to create a fresh v{SCHEMA_VERSION} schema."
     )

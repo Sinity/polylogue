@@ -61,7 +61,7 @@ def patch_deps():
     with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
          patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
          patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-         patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+         patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
         yield
 
 
@@ -130,7 +130,7 @@ class TestPrintSummaryBasic:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=mock_run_data), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=False)
 
@@ -145,7 +145,7 @@ class TestPrintSummaryBasic:
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK") as mock_cached, \
              patch("polylogue.cli.helpers.get_health") as mock_get_health, \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=False)
 
@@ -179,7 +179,7 @@ class TestPrintSummaryVerbose:
              patch("polylogue.cli.helpers.cached_health_summary") as mock_cached, \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health) as mock_get_health, \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=True)
 
@@ -195,7 +195,7 @@ class TestPrintSummaryVerbose:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=True)
 
@@ -212,7 +212,7 @@ class TestPrintSummaryVerbose:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=True)
 
@@ -237,7 +237,7 @@ class TestPrintSummaryVerbose:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             mock_env.ui.plain = is_plain
             print_summary(mock_env, verbose=True)
@@ -270,7 +270,7 @@ class TestPrintSummaryVerbose:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             mock_env.ui.plain = False
             print_summary(mock_env, verbose=True)
@@ -290,7 +290,7 @@ class TestPrintSummaryVerbose:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             mock_env.ui.plain = False
             print_summary(mock_env, verbose=True)
@@ -504,7 +504,7 @@ class TestPrintSummaryAnalyticsVerbose:
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             print_summary(mock_env, verbose=True)
 
@@ -526,7 +526,7 @@ class TestPrintSummaryAnalyticsVerbose:
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             print_summary(mock_env, verbose=True)
 
@@ -549,7 +549,7 @@ class TestPrintSummaryAnalyticsVerbose:
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             print_summary(mock_env, verbose=True)
 
@@ -566,7 +566,7 @@ class TestPrintSummaryAnalyticsVerbose:
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric1, metric2]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric1, metric2]):
 
             print_summary(mock_env, verbose=True)
 
@@ -582,7 +582,7 @@ class TestPrintSummaryAnalyticsVerbose:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             print_summary(mock_env, verbose=False)
 
@@ -605,7 +605,7 @@ class TestPrintSummaryAnalyticsError:
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", side_effect=RuntimeError("DB error")):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, side_effect=RuntimeError("DB error")):
 
             # Should not raise — analytics errors are logged, not displayed
             print_summary(mock_env, verbose=True)
@@ -615,7 +615,7 @@ class TestPrintSummaryAnalyticsError:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", side_effect=RuntimeError("DB error")):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, side_effect=RuntimeError("DB error")):
 
             print_summary(mock_env, verbose=False)
 
@@ -627,7 +627,7 @@ class TestPrintSummaryAnalyticsError:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", side_effect=ImportError("No module")):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, side_effect=ImportError("No module")):
 
             print_summary(mock_env, verbose=False)
             mock_env.ui.summary.assert_called_once()
@@ -662,7 +662,7 @@ class TestPrintSummaryIntegration:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=mock_run_data), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             print_summary(mock_env, verbose=False)
 
@@ -687,7 +687,7 @@ class TestPrintSummaryIntegration:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=mock_run_data), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             mock_env.ui.plain = False
             print_summary(mock_env, verbose=True)
@@ -701,7 +701,7 @@ class TestPrintSummaryIntegration:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="none"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=False)
 
@@ -716,7 +716,7 @@ class TestPrintSummaryIntegration:
         with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=False)
 

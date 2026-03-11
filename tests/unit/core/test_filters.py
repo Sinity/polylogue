@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -310,6 +310,23 @@ class TestConversationFilterTerminal:
 
         final_count = await ConversationFilter(filter_repo).count()
         assert final_count == initial_count - 1
+
+    @pytest.mark.asyncio
+    async def test_filter_delete_uses_summaries_when_possible(self, filter_repo):
+        """delete() uses summary-only loading for content-independent filters."""
+        filter_obj = ConversationFilter(filter_repo).provider("claude").limit(1)
+        filter_obj.list_summaries = AsyncMock(  # type: ignore[method-assign]
+            return_value=[ConversationSummary(id="claude-1", provider="claude")]
+        )
+        filter_obj.list = AsyncMock(side_effect=AssertionError("full conversations should not be loaded"))  # type: ignore[method-assign]
+        delete_mock = AsyncMock(return_value=True)
+        filter_repo.backend.delete_conversation = delete_mock  # type: ignore[method-assign]
+
+        deleted = await filter_obj.delete()
+
+        assert deleted == 1
+        filter_obj.list_summaries.assert_awaited_once()
+        delete_mock.assert_awaited_once_with("claude-1")
 
 
 class TestConversationFilterSort:
