@@ -6,7 +6,8 @@ import asyncio
 import json
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from importlib import resources as importlib_resources
 from pathlib import Path

@@ -20,7 +20,6 @@ from polylogue.schemas.schema_inference import (
     _is_safe_enum_value,
 )
 
-
 # =============================================================================
 # _is_safe_enum_value — existing heuristics (regression guard)
 # =============================================================================
