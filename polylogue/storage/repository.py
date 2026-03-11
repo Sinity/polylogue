@@ -183,6 +183,35 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         """
         return await self._backend.get_conversation(conversation_id)
 
+    async def _hydrate_conversations(
+        self,
+        conversation_records: builtins.list[ConversationRecord],
+        *,
+        ordered_ids: builtins.list[str] | None = None,
+    ) -> builtins.list[Conversation]:
+        """Hydrate eager conversation models from already-fetched records."""
+        if not conversation_records:
+            return []
+
+        by_id = {record.conversation_id: record for record in conversation_records}
+        conversation_ids = ordered_ids or [record.conversation_id for record in conversation_records]
+        present_ids = [conversation_id for conversation_id in conversation_ids if conversation_id in by_id]
+        if not present_ids:
+            return []
+
+        msgs_by_id, atts_by_id = await asyncio.gather(
+            self._backend.get_messages_batch(present_ids),
+            self._backend.get_attachments_batch(present_ids),
+        )
+        return [
+            Conversation.from_records(
+                by_id[conversation_id],
+                msgs_by_id.get(conversation_id, []),
+                atts_by_id.get(conversation_id, []),
+            )
+            for conversation_id in present_ids
+        ]
+
     async def conversation_exists(self, content_hash: str) -> bool:
         """Check if conversation with given content hash exists.
 
@@ -270,6 +299,53 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         )
         return [ConversationSummary.from_record(rec) for rec in conv_records]
 
+    async def iter_summary_pages(
+        self,
+        *,
+        page_size: int = 50,
+        provider: str | None = None,
+        providers: builtins.list[str] | None = None,
+        source: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
+    ) -> AsyncIterator[builtins.list[ConversationSummary]]:
+        """Iterate summary pages in backend sort order without materializing all results."""
+        offset = 0
+        while True:
+            page = await self.list_summaries(
+                limit=page_size,
+                offset=offset,
+                provider=provider,
+                providers=providers,
+                source=source,
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            )
+            if not page:
+                break
+            yield page
+            if len(page) < page_size:
+                break
+            offset += len(page)
+
     async def list(
         self,
         limit: int | None = 50,
@@ -328,11 +404,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             has_subagent=has_subagent,
         )
 
-        # Fetch messages and attachments for all conversations in parallel
-        if not conv_records:
-            return []
-
-        return await self.get_many([rec.conversation_id for rec in conv_records])
+        return await self._hydrate_conversations(conv_records)
 
     async def count(
         self,
@@ -411,8 +483,10 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             List of conversation IDs from that provider
         """
-        records = await self._backend.list_conversations(provider=provider, limit=None)
-        return [rec.conversation_id for rec in records]
+        return [
+            conversation_id
+            async for conversation_id in self._backend.iter_conversation_ids(source_names=[provider])
+        ]
 
     async def get_parent(self, conversation_id: str) -> Conversation | None:
         """Get the parent conversation if it exists.
@@ -440,7 +514,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         child_records = await self._backend.list_conversations(parent_id=conversation_id)
         if not child_records:
             return []
-        return await self.get_many([rec.conversation_id for rec in child_records])
+        return await self._hydrate_conversations(child_records)
 
     async def get_root(self, conversation_id: str) -> Conversation:
         """Walk up the parent chain to find the root conversation.
@@ -546,25 +620,8 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         if not conversation_ids:
             return []
 
-        # Fetch conversation records
         records = await self._backend.get_conversations_batch(conversation_ids)
-        if not records:
-            return []
-
-        # Build dict for order preservation
-        by_id = {rec.conversation_id: rec for rec in records}
-        present_ids = [cid for cid in conversation_ids if cid in by_id]
-
-        # Batch-fetch all messages and attachments (2 queries total)
-        msgs_by_id, atts_by_id = await asyncio.gather(
-            self._backend.get_messages_batch(present_ids),
-            self._backend.get_attachments_batch(present_ids),
-        )
-
-        return [
-            Conversation.from_records(by_id[cid], msgs_by_id.get(cid, []), atts_by_id.get(cid, []))
-            for cid in present_ids
-        ]
+        return await self._hydrate_conversations(records, ordered_ids=conversation_ids)
 
     async def get_conversation_stats(self, conversation_id: str) -> dict[str, int] | None:
         """Get message counts without loading messages.

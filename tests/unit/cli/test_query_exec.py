@@ -29,6 +29,7 @@ from polylogue.cli.types import AppEnv
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.services import build_runtime_services
+from tests.infra.mutmut import preserved_mutmut_env
 
 # =============================================================================
 # Test Helpers for Building Test Data
@@ -298,7 +299,7 @@ class TestExecuteQueryBasic:
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query._output_summary_list")
+    @patch("polylogue.cli.query._output_summary_list", new_callable=AsyncMock)
     @patch("polylogue.cli.query._no_results")
     def test_list_mode(
         self,
@@ -407,7 +408,7 @@ class TestExecuteQueryStream:
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query.stream_conversation")
+    @patch("polylogue.cli.query.stream_conversation", new_callable=AsyncMock)
     @patch("click.echo")
     def test_stream_target_resolution(
         self,
@@ -457,7 +458,7 @@ class TestExecuteQueryStream:
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query.stream_conversation")
+    @patch("polylogue.cli.query.stream_conversation", new_callable=AsyncMock)
     @patch("click.echo")
     def test_stream_warns_on_conflict(
         self,
@@ -505,7 +506,7 @@ class TestExecuteQueryActions:
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query._apply_modifiers")
+    @patch("polylogue.cli.query._apply_modifiers", new_callable=AsyncMock)
     def test_modifiers_trigger_apply(
         self,
         mock_apply,
@@ -521,8 +522,9 @@ class TestExecuteQueryActions:
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
-        convs = [_make_conv()]
-        mock_filter.list = AsyncMock(return_value=convs)
+        summaries = [_make_summary()]
+        mock_filter.can_use_summaries.return_value = True
+        mock_filter.list_summaries = AsyncMock(return_value=summaries)
 
         env = _make_env(config=mock_load_config.return_value)
         params = _make_params(**{param_key: param_value})
@@ -530,12 +532,12 @@ class TestExecuteQueryActions:
         self._fn(env, params)
 
         mock_apply.assert_called_once()
-        assert mock_apply.call_args[0][1] == convs
+        assert mock_apply.call_args[0][1] == summaries
 
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query._delete_conversations")
+    @patch("polylogue.cli.query._delete_conversations", new_callable=AsyncMock)
     def test_delete_matched_calls_delete(
         self,
         mock_delete,
@@ -549,10 +551,10 @@ class TestExecuteQueryActions:
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
-        convs = [_make_conv(), _make_conv()]
-        # Chain calls return the same mock so .provider().list() resolves correctly
+        summaries = [_make_summary("c1"), _make_summary("c2")]
         mock_filter.provider.return_value = mock_filter
-        mock_filter.list = AsyncMock(return_value=convs)
+        mock_filter.can_use_summaries.return_value = True
+        mock_filter.list_summaries = AsyncMock(return_value=summaries)
 
         env = _make_env(config=mock_load_config.return_value)
         # --delete requires at least one filter to prevent accidental full wipe
@@ -561,7 +563,7 @@ class TestExecuteQueryActions:
         self._fn(env, params)
 
         mock_delete.assert_called_once()
-        assert mock_delete.call_args[0][1] == convs
+        assert mock_delete.call_args[0][1] == summaries
 
 
 class TestExecuteQueryFlags:
@@ -964,8 +966,8 @@ class TestSendOutput:
         SEND_OUTPUT_DESTINATIONS,
     )
     @patch("click.echo")
-    @patch("polylogue.cli.query._open_in_browser")
-    @patch("polylogue.cli.query._copy_to_clipboard")
+    @patch("polylogue.cli.query_output._open_in_browser")
+    @patch("polylogue.cli.query_output._copy_to_clipboard")
     def test_send_to_destinations(
         self,
         mock_clipboard,
@@ -1122,7 +1124,7 @@ class TestOpenResult:
         conv = _make_conv("c1")
         params = _make_params()
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", preserved_mutmut_env(), clear=True):
             with pytest.raises(SystemExit) as exc_info:
                 self._fn(env, [conv], params)
 

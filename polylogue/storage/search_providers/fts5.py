@@ -97,7 +97,7 @@ class FTS5Provider:
 
             conn.commit()
 
-    def search(self, query: str) -> list[str]:
+    def search(self, query: str, limit: int | None = None) -> list[str]:
         """Execute a full-text search query.
 
         Uses FTS5's MATCH syntax with relevance ranking. Results are ordered
@@ -105,6 +105,7 @@ class FTS5Provider:
 
         Args:
             query: Search query string (FTS5 syntax)
+            limit: Optional maximum number of message IDs to return
 
         Returns:
             List of message IDs matching the query, ordered by relevance
@@ -127,15 +128,17 @@ class FTS5Provider:
                 return []
 
             # Search with relevance ranking
-            rows = conn.execute(
-                """
+            sql = """
                 SELECT message_id
                 FROM messages_fts
                 WHERE messages_fts MATCH ?
                 ORDER BY bm25(messages_fts), message_id
-                """,
-                (fts_query,),
-            ).fetchall()
+            """
+            params: list[object] = [fts_query]
+            if limit is not None:
+                sql += "\nLIMIT ?"
+                params.append(limit)
+            rows = conn.execute(sql, tuple(params)).fetchall()
 
             return [row["message_id"] for row in rows]
 

@@ -18,6 +18,7 @@ from click.testing import CliRunner
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.services import build_runtime_services
 
 # =============================================================================
 # Async mock helpers
@@ -27,13 +28,45 @@ from polylogue.lib.models import Conversation, ConversationSummary, Message
 async def _empty_messages(*args, **kwargs):
     """Async generator that yields nothing — used to mock iter_messages."""
     return
-    yield  # noqa: unreachable — makes this an async generator
+    yield
+
+
+async def _iter_messages(payloads):
+    """Yield lightweight message-like objects for conversation-page tests."""
+    for index, (role, text) in enumerate(payloads, start=1):
+        yield MagicMock(
+            id=f"msg-{index}",
+            message_id=f"msg-{index}",
+            role=role,
+            text=text,
+            sort_key=f"2024-01-15T10:{index:02d}:00+00:00",
+        )
+
+
+async def _summary_pages(*pages):
+    """Yield configured summary pages in repository sort order."""
+    for page in pages:
+        yield page
+
+
+def _configure_summary_pages(repo, *pages):
+    """Configure a repository mock to serve paged summary iteration."""
+    non_empty_pages = tuple(page for page in pages if page)
+    repo.list_summaries = AsyncMock(side_effect=AssertionError("Use iter_summary_pages instead"))
+    repo.iter_summary_pages = MagicMock(
+        side_effect=lambda *args, **kwargs: _summary_pages(*non_empty_pages)
+    )
+
+
+async def _collect_conversation_indexes(builder):
+    """Collect the builder's streamed conversation indexes for assertions."""
+    return [conversation async for conversation in builder._iter_conversation_indexes()]
 
 
 def _async_repo(summaries):
     """Build an AsyncMock ConversationRepository pre-configured with summaries."""
     repo = AsyncMock()
-    repo.list_summaries.return_value = summaries
+    _configure_summary_pages(repo, summaries)
     repo.iter_messages = _empty_messages
     return repo
 
@@ -43,6 +76,16 @@ def _async_backend(counts):
     backend = AsyncMock()
     backend.get_message_counts_batch.return_value = counts
     return backend
+
+
+def _site_env(mock_ui, *, backend, repository):
+    from polylogue.cli.types import AppEnv
+
+    repository.backend = backend
+    return AppEnv(
+        ui=mock_ui,
+        services=build_runtime_services(backend=backend, repository=repository),
+    )
 
 
 # =============================================================================
@@ -181,7 +224,7 @@ class TestSiteBuilderBuild:
 
         output_dir = tmp_path / "site"
 
-        # Mock the ConversationRepository - patch where they're imported (inside _build_index)
+        # Mock storage where SiteBuilder resolves it internally
         with patch(
             "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
@@ -194,7 +237,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(
                 title="Test Archive",
@@ -231,7 +274,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="Test Archive")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -257,7 +300,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = []
+            _configure_summary_pages(mock_repo, [])
 
             config = SiteConfig(title="Empty Archive")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -265,6 +308,31 @@ class TestSiteBuilderBuild:
 
             assert result["conversations"] == 0
             assert (output_dir / "index.html").exists()
+
+    def test_build_index_requests_all_summaries_without_silent_cap(self, tmp_path, mock_summary):
+        """Site index should not silently cap archive summaries."""
+        from polylogue.site.builder import SiteBuilder, SiteConfig
+
+        output_dir = tmp_path / "site"
+
+        with patch(
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
+        ) as mock_backend_class, patch(
+            "polylogue.storage.repository.ConversationRepository"
+        ) as mock_repo_class:
+            mock_backend = AsyncMock()
+            mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
+
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
+            _configure_summary_pages(mock_repo, [mock_summary])
+
+            builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test"))
+            asyncio.run(_collect_conversation_indexes(builder))
+
+            mock_repo.iter_summary_pages.assert_called_once_with(page_size=500, provider=None)
 
     def test_build_multiple_providers(
         self, tmp_path, mock_summary, mock_summary_gemini
@@ -289,7 +357,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary, mock_summary_gemini]
+            _configure_summary_pages(mock_repo, [mock_summary, mock_summary_gemini])
 
             config = SiteConfig(title="Multi-Provider Archive")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -320,7 +388,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="No Dashboard", include_dashboard=False)
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -348,7 +416,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="With Dashboard", include_dashboard=True)
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -392,13 +460,13 @@ class TestConversationIndex:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
 
             # This should not raise AttributeError
-            conversations = asyncio.run(builder._build_index())
+            conversations = asyncio.run(_collect_conversation_indexes(builder))
 
             # Verify the index was built successfully
             assert len(conversations) == 1
@@ -408,8 +476,7 @@ class TestConversationIndex:
             assert index.id == "test-conv-001"
             assert index.title == "Test Conversation"
             assert index.provider == "claude"
-            # source should be None (not accessed from conversation)
-            assert index.source is None
+            assert not hasattr(index, "source")
             assert index.message_count == 3
 
     def test_conversation_index_title_fallback(self, tmp_path, mock_summary_no_title):
@@ -430,11 +497,11 @@ class TestConversationIndex:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary_no_title]
+            _configure_summary_pages(mock_repo, [mock_summary_no_title])
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = asyncio.run(builder._build_index())
+            conversations = asyncio.run(_collect_conversation_indexes(builder))
 
             assert len(conversations) == 1
             index = conversations[0]
@@ -459,11 +526,11 @@ class TestConversationIndex:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = asyncio.run(builder._build_index())
+            conversations = asyncio.run(_collect_conversation_indexes(builder))
 
             index = conversations[0]
             assert index.message_count == 3
@@ -496,11 +563,11 @@ class TestConversationIndex:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [summary_with_content]
+            _configure_summary_pages(mock_repo, [summary_with_content])
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = asyncio.run(builder._build_index())
+            conversations = asyncio.run(_collect_conversation_indexes(builder))
 
             index = conversations[0]
             assert index.preview == "Hello, how are you?"
@@ -523,11 +590,11 @@ class TestConversationIndex:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = asyncio.run(builder._build_index())
+            conversations = asyncio.run(_collect_conversation_indexes(builder))
 
             index = conversations[0]
             assert index.created_at == "2024-01-15"
@@ -562,16 +629,13 @@ class TestSiteCommand:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = []
+            _configure_summary_pages(mock_repo, [])
 
-            # Create a mock AppEnv object
             from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
-
-            from polylogue.cli.types import AppEnv
-            mock_env = AppEnv(ui=mock_ui)
+            mock_env = _site_env(mock_ui, backend=mock_backend, repository=mock_repo)
 
             result = runner.invoke(
                 site_command,
@@ -603,14 +667,13 @@ class TestSiteCommand:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = []
+            _configure_summary_pages(mock_repo, [])
 
-            from polylogue.cli.types import AppEnv
             from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
-            mock_env = AppEnv(ui=mock_ui)
+            mock_env = _site_env(mock_ui, backend=mock_backend, repository=mock_repo)
 
             result = runner.invoke(
                 site_command,
@@ -656,14 +719,13 @@ class TestSiteCommand:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = []
+            _configure_summary_pages(mock_repo, [])
 
-            from polylogue.cli.types import AppEnv
             from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
-            mock_env = AppEnv(ui=mock_ui)
+            mock_env = _site_env(mock_ui, backend=mock_backend, repository=mock_repo)
 
             result = runner.invoke(
                 site_command,
@@ -692,14 +754,13 @@ class TestSiteCommand:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = []
+            _configure_summary_pages(mock_repo, [])
 
-            from polylogue.cli.types import AppEnv
             from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
-            mock_env = AppEnv(ui=mock_ui)
+            mock_env = _site_env(mock_ui, backend=mock_backend, repository=mock_repo)
 
             result = runner.invoke(
                 site_command,
@@ -716,26 +777,22 @@ class TestSiteCommand:
         runner = CliRunner()
         output_dir = workspace_env["archive_root"] / "site"
 
-        with patch(
-            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
-        ) as mock_backend_class:
-            mock_backend_class.side_effect = RuntimeError("Database error")
+        from polylogue.cli.types import AppEnv
+        from polylogue.ui import UI
 
-            from polylogue.cli.types import AppEnv
-            from polylogue.ui import UI
+        mock_ui = MagicMock(spec=UI)
+        mock_ui.plain = True
+        mock_env = AppEnv(ui=mock_ui)
 
-            mock_ui = MagicMock(spec=UI)
-            mock_ui.plain = True
-            mock_env = AppEnv(ui=mock_ui)
-
+        with patch("polylogue.site.builder.SiteBuilder.build", side_effect=RuntimeError("Database error")):
             result = runner.invoke(
                 site_command,
                 ["--output", str(output_dir)],
                 obj=mock_env,
             )
 
-            # Should fail with error message
-            assert result.exit_code != 0
+        # Should fail with error message
+        assert result.exit_code != 0
 
     def test_site_command_generates_html_files(self, workspace_env):
         """site command generates HTML files in output directory."""
@@ -764,14 +821,13 @@ class TestSiteCommand:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [test_summary]
+            _configure_summary_pages(mock_repo, [test_summary])
 
-            from polylogue.cli.types import AppEnv
             from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
-            mock_env = AppEnv(ui=mock_ui)
+            mock_env = _site_env(mock_ui, backend=mock_backend, repository=mock_repo)
 
             result = runner.invoke(
                 site_command,
@@ -817,7 +873,7 @@ class TestSiteBuilderIntegration:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [summary]
+            _configure_summary_pages(mock_repo, [summary])
 
             config = SiteConfig(title="Test Archive", include_dashboard=True)
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -859,7 +915,7 @@ class TestSiteBuilderIntegration:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [summary]
+            _configure_summary_pages(mock_repo, [summary])
 
             config = SiteConfig(
                 title="Test",
@@ -876,3 +932,105 @@ class TestSiteBuilderIntegration:
             assert search_data[0]["id"] == "conv-123"
             assert search_data[0]["title"] == "Test"
             assert search_data[0]["provider"] == "unknown"
+            index_html = (output_dir / "index.html").read_text()
+            assert "search-index.json" in index_html
+            assert "_pagefind/pagefind-ui.js" not in index_html
+
+    def test_build_without_search_omits_search_assets(self, tmp_path):
+        """Disabling search should omit client search assets and files entirely."""
+        from polylogue.site.builder import SiteBuilder, SiteConfig
+
+        output_dir = tmp_path / "site"
+
+        with patch(
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
+        ) as mock_backend_class, patch(
+            "polylogue.storage.repository.ConversationRepository"
+        ) as mock_repo_class:
+            mock_backend = AsyncMock()
+            mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {}
+
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = _empty_messages
+            _configure_summary_pages(mock_repo, [])
+
+            builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test", enable_search=False))
+            builder.build()
+
+        index_html = (output_dir / "index.html").read_text()
+        assert "_pagefind/pagefind-ui.js" not in index_html
+        assert "search-input" not in index_html
+        assert not (output_dir / "search-index.json").exists()
+
+    def test_build_conversation_page_keeps_tail_messages(self, tmp_path):
+        """Conversation pages should include messages beyond the old 500-message cap."""
+        from polylogue.site.builder import SiteBuilder, SiteConfig
+
+        output_dir = tmp_path / "site"
+        summary = ConversationSummary(
+            id="conv-123",
+            provider="claude",
+            title="Long Conversation",
+            created_at=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2024, 1, 15, 10, 5, 0, tzinfo=timezone.utc),
+        )
+
+        payloads = [("user" if i % 2 == 0 else "assistant", f"message {i}") for i in range(501)]
+
+        with patch(
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
+        ) as mock_backend_class, patch(
+            "polylogue.storage.repository.ConversationRepository"
+        ) as mock_repo_class:
+            mock_backend = AsyncMock()
+            mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"conv-123": 501}
+
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = lambda *args, **kwargs: _iter_messages(payloads)
+            _configure_summary_pages(mock_repo, [summary])
+
+            builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test"))
+            builder.build()
+
+            conversation_html = next(output_dir.rglob("conversation.html")).read_text(encoding="utf-8")
+            assert "message 0" in conversation_html
+            assert "message 500" in conversation_html
+
+    def test_build_conversation_page_preserves_long_message_bodies(self, tmp_path):
+        """Conversation pages should not silently truncate long messages."""
+        from polylogue.site.builder import SiteBuilder, SiteConfig
+
+        output_dir = tmp_path / "site"
+        summary = ConversationSummary(
+            id="conv-456",
+            provider="claude",
+            title="Long Message Conversation",
+            created_at=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2024, 1, 15, 10, 5, 0, tzinfo=timezone.utc),
+        )
+        long_text = ("abcdef " * 900) + "tail-marker"
+
+        with patch(
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
+        ) as mock_backend_class, patch(
+            "polylogue.storage.repository.ConversationRepository"
+        ) as mock_repo_class:
+            mock_backend = AsyncMock()
+            mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"conv-456": 1}
+
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.iter_messages = lambda *args, **kwargs: _iter_messages([("assistant", long_text)])
+            _configure_summary_pages(mock_repo, [summary])
+
+            builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test"))
+            builder.build()
+
+            conversation_html = next(output_dir.rglob("conversation.html")).read_text(encoding="utf-8")
+            assert "tail-marker" in conversation_html
+            assert "[... truncated ...]" not in conversation_html

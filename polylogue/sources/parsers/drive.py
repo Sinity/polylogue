@@ -3,9 +3,8 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from polylogue.lib.log import get_logger
-from polylogue.sources.providers.gemini import GeminiMessage
-
 from polylogue.lib.roles import Role
+from polylogue.sources.providers.gemini import GeminiMessage
 from polylogue.types import Provider
 
 from .base import ParsedAttachment, ParsedConversation, ParsedMessage

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from polylogue.showcase.runner import ShowcaseRunner
 
@@ -30,7 +30,7 @@ class TestShowcaseRunnerSeeding:
 
         with patch.object(runner, "_copy_fixtures", side_effect=_fake_copy) as mock_copy:
             with patch.object(runner, "_generate_synthetic_fixtures") as mock_generate:
-                with patch("polylogue.pipeline.runner.run_sources", side_effect=_fake_run_sources):
+                with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock, side_effect=_fake_run_sources):
                     runner._seed_workspace(workspace)
 
         assert mock_copy.call_count == 1
@@ -47,7 +47,7 @@ class TestShowcaseRunnerSeeding:
 
         with patch.object(runner, "_copy_fixtures") as mock_copy:
             with patch.object(runner, "_generate_synthetic_fixtures", side_effect=_fake_generate) as mock_generate:
-                with patch("polylogue.pipeline.runner.run_sources", side_effect=_fake_run_sources):
+                with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock, side_effect=_fake_run_sources):
                     runner._seed_workspace(workspace)
 
         assert mock_copy.call_count == 0
