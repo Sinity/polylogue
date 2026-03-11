@@ -229,7 +229,6 @@ CAMPAIGNS: dict[str, Campaign] = {
         tests=(
             "tests/unit/sources/test_drive_client_laws.py",
             "tests/unit/sources/test_drive_utils.py",
-            "tests/unit/sources/test_drive_resilience.py",
             "tests/unit/sources/test_drive_ops.py",
         ),
         notes=("Targets the historical Drive not_checked cluster with focused tests.",),
