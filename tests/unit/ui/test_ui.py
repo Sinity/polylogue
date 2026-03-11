@@ -14,7 +14,6 @@ from polylogue.ui import UI
 from polylogue.ui.facade import (
     ConsoleFacade,
     PlainConsole,
-    PlainConsoleFacade,
     UIError,
     create_console_facade,
 )
@@ -68,16 +67,15 @@ class TestPlainConsole:
 # =============================================================================
 
 class TestCreateConsoleFacade:
-    def test_plain_creates_plain_facade(self):
+    def test_plain_creates_console_facade(self):
         facade = create_console_facade(plain=True)
-        assert isinstance(facade, PlainConsoleFacade)
+        assert isinstance(facade, ConsoleFacade)
         assert facade.plain is True
 
     def test_rich_creates_console_facade(self):
         facade = create_console_facade(plain=False)
         assert isinstance(facade, ConsoleFacade)
         assert facade.plain is False
-        assert not isinstance(facade, PlainConsoleFacade)
 
 
 # =============================================================================
@@ -136,14 +134,23 @@ class TestPromptStubs:
 # =============================================================================
 
 class TestConfirm:
-    @pytest.mark.parametrize("prompt,default,expected,ignore", [
-        ("Continue?", True, True, False),
-        ("Continue?", False, False, False),
-        ("anything", True, True, True),
-    ], ids=["plain_default_true", "plain_default_false", "plain_ignores_prompt"])
-    def test_plain_returns_default(self, prompt, default, expected, ignore):
+    @pytest.mark.parametrize("typed,default,expected", [
+        ("y", True, True),
+        ("n", True, False),
+        ("", False, False),
+        ("foo", True, False),
+    ], ids=["yes", "no", "empty_default", "unknown_is_false"])
+    def test_plain_prompts(self, monkeypatch, typed, default, expected):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _: typed)
         facade = ConsoleFacade(plain=True)
-        assert facade.confirm(prompt, default=default) is expected
+        assert facade.confirm("Continue?", default=default) is expected
+
+    def test_plain_non_tty_raises_uierror(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        facade = ConsoleFacade(plain=True)
+        with pytest.raises(UIError, match="confirmation prompts"):
+            facade.confirm("Continue?")
 
     @pytest.mark.parametrize("stub_value,expected", [
         (True, True),
@@ -199,15 +206,30 @@ class TestConfirm:
 # =============================================================================
 
 class TestChoose:
-    @pytest.mark.parametrize("plain,options,prompt", [
-        (True, [], "Pick:"),
-        (False, [], "Pick:"),
-        (True, ["a", "b"], "Pick:"),
-        (True, ["x", "y", "z"], "anything"),
-    ], ids=["plain_empty", "rich_empty", "plain_returns_none", "plain_ignores_prompt"])
-    def test_plain_returns_none(self, plain, options, prompt):
-        facade = ConsoleFacade(plain=plain)
-        assert facade.choose(prompt, options) is None
+    def test_empty_options_returns_none(self):
+        assert ConsoleFacade(plain=True).choose("Pick:", []) is None
+        assert ConsoleFacade(plain=False).choose("Pick:", []) is None
+
+    def test_plain_prompts_for_choice(self, monkeypatch, capsys):
+        responses = iter(["99", "2"])
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _: next(responses))
+        facade = ConsoleFacade(plain=True)
+        assert facade.choose("Pick:", ["a", "b", "c"]) == "b"
+        output = capsys.readouterr().out
+        assert "Enter a number corresponding to your choice." in output
+
+    def test_plain_empty_response_returns_none(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        facade = ConsoleFacade(plain=True)
+        assert facade.choose("Pick:", ["a", "b"]) is None
+
+    def test_plain_non_tty_raises_uierror(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        facade = ConsoleFacade(plain=True)
+        with pytest.raises(UIError, match="menu selections"):
+            facade.choose("Pick:", ["a", "b"])
 
     def test_stub_value_exact_match(self, tmp_path, monkeypatch):
         stub_file = tmp_path / "stubs.jsonl"
@@ -282,15 +304,23 @@ class TestChoose:
 # =============================================================================
 
 class TestInput:
-    @pytest.mark.parametrize("prompt,default,expected", [
-        ("Name:", "anon", "anon"),
-        ("Name:", None, None),
-        ("anything", "default", "default"),
-    ], ids=["plain_returns_default", "plain_no_default", "plain_ignores_prompt"])
-    def test_plain_behavior(self, prompt, default, expected):
+    @pytest.mark.parametrize("typed,default,expected", [
+        ("typed", None, "typed"),
+        ("", "anon", "anon"),
+        ("", None, None),
+    ], ids=["typed_value", "empty_uses_default", "empty_without_default"])
+    def test_plain_behavior(self, monkeypatch, typed, default, expected):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _: typed)
         facade = ConsoleFacade(plain=True)
-        result = facade.input(prompt) if default is None else facade.input(prompt, default=default)
+        result = facade.input("Name:") if default is None else facade.input("Name:", default=default)
         assert result == expected
+
+    def test_plain_non_tty_raises_uierror(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        facade = ConsoleFacade(plain=True)
+        with pytest.raises(UIError, match="text input"):
+            facade.input("Name:")
 
     def test_stub_value_string(self, tmp_path, monkeypatch):
         stub_file = tmp_path / "stubs.jsonl"
@@ -476,28 +506,6 @@ class TestStatusMethods:
         facade = ConsoleFacade(plain=False)
         getattr(facade, method)("Test message")
         # Should not raise
-
-
-# =============================================================================
-# PlainConsoleFacade
-# =============================================================================
-
-class TestPlainConsoleFacade:
-    def test_plain_console_facade_properties_and_methods(self, capsys):
-        facade = PlainConsoleFacade(plain=True)
-        # Test inheritance and properties
-        assert isinstance(facade, ConsoleFacade)
-        assert facade.plain is True
-        assert isinstance(facade.console, PlainConsole)
-
-        # Test banner method
-        facade.banner("Test")
-        output = capsys.readouterr().out
-        assert "Test" in output
-
-        # Test confirm method
-        result = facade.confirm("Q?", default=True)
-        assert result is True
 
 
 # =============================================================================
@@ -699,7 +707,6 @@ class TestConsoleProtocolThemeAndStyles:
 
         # Facade dataclass
         assert is_dataclass(ConsoleFacade)
-        assert is_dataclass(PlainConsoleFacade)
 
         # Plain facade theme and styles
         facade_plain = ConsoleFacade(plain=True)
@@ -930,14 +937,13 @@ class TestConsoleFacadeRendering:
     def test_plain_mode_interactions_and_rendering(self, capsys):
         """Test plain mode fallback for interactions and rendering."""
         facade = create_console_facade(plain=True)
-        assert isinstance(facade, PlainConsoleFacade)
+        assert isinstance(facade, ConsoleFacade)
 
         # Test interactions
-        assert facade.confirm("Ctx?", default=True) is True
-        assert facade.confirm("Ctx?", default=False) is False
-        assert facade.input("Input?", default="Default") == "Default"
-        assert facade.input("Input?", default=None) is None
-        assert facade.choose("Pick", ["A", "B"]) is None
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=["y", "", "2"]):
+            assert facade.confirm("Ctx?", default=True) is True
+            assert facade.input("Input?", default="Default") == "Default"
+            assert facade.choose("Pick", ["A", "B"]) == "B"
 
         # Test rendering
         facade.banner("Title", "Subtitle")
@@ -1005,73 +1011,43 @@ def test_ui_delegation(mock_facade):
 
 
 def test_ui_confirm(mock_facade):
-    # Test delegation
     ui = UI(plain=False)
     mock_facade.confirm.return_value = True
     assert ui.confirm("Are you sure?") is True
     mock_facade.confirm.assert_called_with("Are you sure?", default=True)
 
-    # Test plain mode
     mock_facade.plain = True
     ui = UI(plain=True)
-    with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=["y", "n", "", "foo"]):
-        assert ui.confirm("Q1") is True
-        assert ui.confirm("Q2") is False
-        assert ui.confirm("Q3", default=True) is True
-        assert ui.confirm("Q4") is False
-
-    # Test plain mode EOF
-    mock_facade.plain = True
-    ui = UI(plain=True)
-    with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=EOFError):
-        assert ui.confirm("Q") is True
+    mock_facade.confirm.side_effect = UIError("Plain mode cannot prompt for confirmation prompts")
+    with pytest.raises(SystemExit):
+        ui.confirm("Q?")
+    mock_facade.console.print.assert_called()
 
 
 def test_ui_choose(mock_facade):
-    # Test empty options
     ui = UI(plain=False)
     assert ui.choose("Pick", []) is None
 
-    # Test plain mode
     mock_facade.plain = True
     ui = UI(plain=True)
-    options = ["A", "B", "C"]
-
-    with patch("sys.stdin.isatty", return_value=True):
-        with patch("builtins.input", side_effect=["1", "99", "2", "foo", "3", ""]):
-            assert ui.choose("Pick", options) == "A"
-            assert ui.choose("Pick", options) == "B"
-            assert ui.choose("Pick", options) == "C"
-            assert ui.choose("Pick", options) is None
-
-    # Test plain mode EOF
-    mock_facade.plain = True
-    ui = UI(plain=True)
-    options = ["A"]
-    with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=EOFError):
-        assert ui.choose("Pick", options) is None
+    mock_facade.choose.side_effect = UIError("Plain mode cannot prompt for menu selections")
+    with pytest.raises(SystemExit):
+        ui.choose("Pick", ["A", "B", "C"])
+    mock_facade.console.print.assert_called()
 
 
 def test_ui_input(mock_facade):
-    # Test delegation
     ui = UI(plain=False)
     mock_facade.input.return_value = "val"
     assert ui.input("Prompt") == "val"
     mock_facade.input.assert_called_with("Prompt", default=None)
 
-    # Test plain mode
     mock_facade.plain = True
     ui = UI(plain=True)
-    with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=["val", ""]):
-        assert ui.input("P1") == "val"
-        assert ui.input("P2", default="def") == "def"
-
-    # Test plain mode EOF
-    mock_facade.plain = True
-    ui = UI(plain=True)
-    with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=EOFError):
-        assert ui.input("P") is None
-        assert ui.input("P", default="def") == "def"
+    mock_facade.input.side_effect = UIError("Plain mode cannot prompt for text input")
+    with pytest.raises(SystemExit):
+        ui.input("P1")
+    mock_facade.console.print.assert_called()
 
 
 def test_plain_progress_tracker():

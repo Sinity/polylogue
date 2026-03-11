@@ -521,8 +521,9 @@ class TestExecuteQueryActions:
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
-        convs = [_make_conv()]
-        mock_filter.list = AsyncMock(return_value=convs)
+        summaries = [_make_summary()]
+        mock_filter.can_use_summaries.return_value = True
+        mock_filter.list_summaries = AsyncMock(return_value=summaries)
 
         env = _make_env(config=mock_load_config.return_value)
         params = _make_params(**{param_key: param_value})
@@ -530,7 +531,7 @@ class TestExecuteQueryActions:
         self._fn(env, params)
 
         mock_apply.assert_called_once()
-        assert mock_apply.call_args[0][1] == convs
+        assert mock_apply.call_args[0][1] == summaries
 
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.storage.search_providers.create_vector_provider")
@@ -549,10 +550,10 @@ class TestExecuteQueryActions:
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
-        convs = [_make_conv(), _make_conv()]
-        # Chain calls return the same mock so .provider().list() resolves correctly
+        summaries = [_make_summary("c1"), _make_summary("c2")]
         mock_filter.provider.return_value = mock_filter
-        mock_filter.list = AsyncMock(return_value=convs)
+        mock_filter.can_use_summaries.return_value = True
+        mock_filter.list_summaries = AsyncMock(return_value=summaries)
 
         env = _make_env(config=mock_load_config.return_value)
         # --delete requires at least one filter to prevent accidental full wipe
@@ -561,7 +562,7 @@ class TestExecuteQueryActions:
         self._fn(env, params)
 
         mock_delete.assert_called_once()
-        assert mock_delete.call_args[0][1] == convs
+        assert mock_delete.call_args[0][1] == summaries
 
 
 class TestExecuteQueryFlags:
