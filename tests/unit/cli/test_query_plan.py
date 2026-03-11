@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.cli.query_plan import QueryAction, QueryPlanError, build_query_execution_plan
+from polylogue.cli.query_plan import (
+    QueryAction,
+    QueryPlanError,
+    QueryRoute,
+    build_query_execution_plan,
+    resolve_query_route,
+)
 
 
 class TestBuildQueryExecutionPlan:
@@ -55,3 +61,40 @@ class TestBuildQueryExecutionPlan:
         assert plan.mutation.add_tags == ("todo", "review")
         assert plan.mutation.force is True
         assert plan.mutation.dry_run is True
+
+    @pytest.mark.parametrize(
+        ("params", "can_use_summaries", "expected_route"),
+        [
+            ({"count_only": True, "query": ()}, False, QueryRoute.COUNT),
+            ({"list_mode": True, "query": ("abc",)}, True, QueryRoute.SUMMARY_LIST),
+            ({"list_mode": True, "query": ("abc",)}, False, QueryRoute.SHOW),
+            ({"stream": True, "query": ("abc",)}, False, QueryRoute.STREAM),
+            ({"stats_only": True, "query": ()}, True, QueryRoute.STATS_SQL),
+            ({"stats_by": "provider", "query": ()}, True, QueryRoute.SUMMARY_STATS),
+            ({"stats_by": "provider", "query": ()}, False, QueryRoute.STATS_BY),
+            (
+                {"set_meta": [("priority", "1")], "query": ("abc",)},
+                True,
+                QueryRoute.SUMMARY_MODIFY,
+            ),
+            (
+                {"set_meta": [("priority", "1")], "query": ("abc",)},
+                False,
+                QueryRoute.MODIFY,
+            ),
+            (
+                {"delete_matched": True, "provider": "claude", "query": ()},
+                True,
+                QueryRoute.SUMMARY_DELETE,
+            ),
+            (
+                {"delete_matched": True, "provider": "claude", "query": ()},
+                False,
+                QueryRoute.DELETE,
+            ),
+            ({"open_result": True, "query": ("abc",)}, False, QueryRoute.OPEN),
+        ],
+    )
+    def test_route_resolution(self, params: dict[str, object], can_use_summaries: bool, expected_route: QueryRoute) -> None:
+        plan = build_query_execution_plan(params)
+        assert resolve_query_route(plan, can_use_summaries=can_use_summaries) == expected_route

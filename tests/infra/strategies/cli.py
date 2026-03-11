@@ -49,6 +49,14 @@ class SummaryOutputCase:
 
 
 @dataclass(frozen=True)
+class SummaryStatsCase:
+    """Generated summary-grouping input for _output_stats_by_summaries."""
+
+    summaries: tuple[ConversationSummarySpec, ...]
+    dimension: str
+
+
+@dataclass(frozen=True)
 class SendOutputCase:
     """Generated destination routing case for _send_output."""
 
@@ -136,6 +144,15 @@ def summary_output_case_strategy(draw: st.DrawFn) -> SummaryOutputCase:
 
 
 @st.composite
+def summary_stats_case_strategy(draw: st.DrawFn) -> SummaryStatsCase:
+    """Generate a grouped-summary stats request."""
+    return SummaryStatsCase(
+        summaries=draw(conversation_summary_batch_strategy(min_size=1, max_size=8)),
+        dimension=draw(st.sampled_from(("provider", "month", "year", "day", "all"))),
+    )
+
+
+@st.composite
 def send_output_case_strategy(draw: st.DrawFn) -> SendOutputCase:
     """Generate one destination-routing case with at least one sink."""
     to_stdout = draw(st.booleans())
@@ -149,6 +166,5 @@ def send_output_case_strategy(draw: st.DrawFn) -> SendOutputCase:
         to_file=to_file,
         to_browser=to_browser,
         to_clipboard=to_clipboard,
-        output_format=draw(st.sampled_from(("text", "html"))),
+        output_format=draw(st.sampled_from(("plaintext", "markdown", "html"))),
     )
-
