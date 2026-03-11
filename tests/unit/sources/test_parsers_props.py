@@ -23,6 +23,7 @@ from polylogue.sources.parsers.base import (
     extract_messages_from_list,
     normalize_role,
 )
+from polylogue.sources.parsers.claude import extract_messages_from_chat_messages
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from tests.infra.strategies import (
     chatgpt_export_strategy,
@@ -389,6 +390,44 @@ def test_extract_messages_from_list_preserves_wrapped_segment_semantics() -> Non
     assert messages[1].text == "question\nmore context"
     assert [block.type for block in messages[1].content_blocks] == ["text", "text"]
     assert [block.text for block in messages[1].content_blocks] == ["question", "more context"]
+
+
+def test_extract_messages_from_chat_messages_preserves_structured_segments_and_attachments() -> None:
+    """Claude chat message extraction must keep structured blocks and attachment metadata."""
+    messages, attachments = extract_messages_from_chat_messages(
+        [
+            {
+                "uuid": "assistant-1",
+                "sender": "assistant",
+                "created_at": "2025-01-01T00:00:00Z",
+                "content": [
+                    {"type": "thinking", "thinking": "reason"},
+                    {"type": "tool_result", "tool_use_id": "tool-1", "content": [{"type": "text", "text": "done"}]},
+                    {"type": "code", "code": "print('ok')", "language": "python"},
+                ],
+                "attachments": [{"id": "att-1", "name": "spec.pdf", "mime_type": "application/pdf", "size": 12}],
+            },
+            {
+                "uuid": "user-1",
+                "sender": "human",
+                "text": "question",
+            },
+        ]
+    )
+
+    assert [message.provider_message_id for message in messages] == ["assistant-1", "user-1"]
+    assert [message.role.value for message in messages] == ["assistant", "user"]
+    assert messages[0].text == (
+        "<thinking>reason</thinking>\n"
+        "{\"content\": [{\"text\": \"done\", \"type\": \"text\"}], "
+        "\"tool_use_id\": \"tool-1\", \"type\": \"tool_result\"}"
+    )
+    assert [block.type for block in messages[0].content_blocks] == ["thinking", "tool_result", "code"]
+    assert messages[0].content_blocks[2].metadata == {"language": "python"}
+    assert len(attachments) == 1
+    assert attachments[0].provider_attachment_id == "att-1"
+    assert attachments[0].mime_type == "application/pdf"
+    assert attachments[0].size_bytes == 12
 
 
 def test_parse_chunked_prompt_preserves_reasoning_code_and_drive_docs() -> None:
