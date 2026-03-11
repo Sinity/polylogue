@@ -74,8 +74,8 @@ ledger now mixes four clean baselines:
   `a27de694650d`
 - the clean post-`005` rerun wave on commit `e759af23458d`
 
-`004`, its follow-up reruns, and the first post-`005` source/provider
-consolidation reruns are now complete. The tables below are the current durable
+`004`, its follow-up reruns, and the first focused post-`005` source/provider
+concentration reruns are now complete. The tables below are the current durable
 mutation baselines for the next law/property wave.
 
 ### Already-Healthy Campaigns
@@ -116,13 +116,13 @@ the follow-up source/helper/query pass.
 | `repository` | `e759af23458d` | 569 | 104 | 35 | 0 | Repository laws improved materially; the main remaining issue is timeout-heavy hydration/read-path coverage, not blind spots. |
 | `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
 | `source-detection` | `e759af23458d` | 713 | 435 | 3 | 0 | Detection/dispatch now has zero `not_checked`; remaining survivors cluster in ZIP filtering, emit paths, and provider sniffing. |
-| `providers-semantics` | `e759af23458d` | 847 | 487 | 2 | 0 | Provider/viewpoint coverage is now cleanly reachable; `extract_content_blocks`, `to_meta`, and fallback Claude Code harmonization still dominate. |
-| `sources-parse` | `e759af23458d` | 3494 | 2467 | 11 | 0 | The broad source surface is fully reachable now; remaining work is concentrated in drive-client seams and provider semantic survivor mass. |
+| `providers-semantics` | `c0596770631e` | 805 | 504 | 2 | 0 | First focused concentration rerun after source semantic test collapse; reach is still clean and survivor mass remains concentrated in `extract_content_blocks`, `to_meta`, and fallback Claude Code harmonization. |
+| `sources-parse` | `c0596770631e` | 3455 | 2482 | 10 | 0 | First focused concentration rerun after source semantic test collapse; the broad source surface remains fully reachable, with remaining work concentrated in drive-client seams and provider semantic survivor mass. |
 
 ### Readiness Call
 
 - `004` is complete, and the immediate follow-up reruns are complete.
-- The first post-`005` rerun wave is also complete on a clean SHA.
+- The first post-`005` focused concentration rerun wave is also complete on clean SHA `c0596770631e`.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
   1. `sources-parse`
