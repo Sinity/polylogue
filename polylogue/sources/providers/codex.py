@@ -23,6 +23,7 @@ from polylogue.lib.viewports import (
     ContentType,
     MessageMeta,
     ReasoningTrace,
+    ToolCall,
 )
 
 
@@ -213,4 +214,8 @@ class CodexRecord(BaseModel):
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
         """Extract reasoning traces (Codex does not expose reasoning; returns empty list)."""
+        return []
+
+    def extract_tool_calls(self) -> list[ToolCall]:
+        """Extract tool calls (Codex export message model does not expose them here)."""
         return []

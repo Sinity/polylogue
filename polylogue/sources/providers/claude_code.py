@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
@@ -220,6 +221,17 @@ class ClaudeCodeRecord(BaseModel):
         - summary, system, file-history-snapshot, queue-operation → system
         - progress, result → tool
         """
+        message_role = None
+        if isinstance(self.message, dict):
+            message_role = self.message.get("role")
+        elif self.message is not None:
+            message_role = getattr(self.message, "role", None)
+        if isinstance(message_role, str) and message_role:
+            try:
+                return normalize_role(message_role)
+            except ValueError:
+                pass
+
         if self.type == "user":
             return "user"
         if self.type == "assistant":

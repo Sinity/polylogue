@@ -9,6 +9,8 @@ from hypothesis import assume, given, settings
 from polylogue.lib.viewports import ContentType
 from polylogue.schemas.unified import (
     extract_content_blocks,
+    extract_from_provider_meta,
+    extract_harmonized_message,
     extract_reasoning_traces,
     extract_tool_calls,
 )
@@ -17,6 +19,7 @@ from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.sources.providers.gemini import GeminiMessage
+from polylogue.types import Provider
 from tests.infra.strategies import (
     chatgpt_message_node_strategy,
     claude_ai_message_strategy,
@@ -26,6 +29,59 @@ from tests.infra.strategies import (
 )
 
 _CANONICAL_ROLES = {"user", "assistant", "system", "tool", "unknown"}
+
+
+def _assert_harmonized_matches_record(provider_name: str, raw: dict[str, object], record: object) -> None:
+    harmonized = extract_harmonized_message(provider_name, raw)
+    meta = record.to_meta()
+
+    assert harmonized.provider == Provider.from_string(provider_name)
+    assert harmonized.id == meta.id
+    assert harmonized.role.value == meta.role
+    assert harmonized.text == record.text_content
+    assert harmonized.timestamp == meta.timestamp
+    assert harmonized.model == meta.model
+    assert harmonized.tokens == meta.tokens
+    assert harmonized.cost == meta.cost
+    assert harmonized.duration_ms == meta.duration_ms
+    assert harmonized.content_blocks == record.extract_content_blocks()
+    assert harmonized.reasoning_traces == record.extract_reasoning_traces()
+    assert harmonized.tool_calls == record.extract_tool_calls()
+
+
+def _assert_structured_provider_meta_round_trip(provider_name: str, record: object) -> None:
+    meta = record.to_meta()
+    provider_meta = {
+        "content_blocks": [block.model_dump(mode="json") for block in record.extract_content_blocks()],
+        "reasoning_traces": [trace.model_dump(mode="json") for trace in record.extract_reasoning_traces()],
+        "tool_calls": [call.model_dump(mode="json") for call in record.extract_tool_calls()],
+    }
+    if meta.model is not None:
+        provider_meta["model"] = meta.model
+    if meta.tokens is not None:
+        provider_meta["tokens"] = meta.tokens.model_dump(mode="json")
+    if meta.cost is not None:
+        provider_meta["cost"] = meta.cost.model_dump(mode="json")
+    if meta.duration_ms is not None:
+        provider_meta["duration_ms"] = meta.duration_ms
+
+    harmonized = extract_from_provider_meta(
+        provider_name,
+        provider_meta,
+        message_id=meta.id,
+        role=meta.role,
+        text=record.text_content,
+        timestamp=meta.timestamp,
+    )
+
+    assert harmonized.provider == Provider.from_string(provider_name)
+    assert harmonized.id == meta.id
+    assert harmonized.role.value == meta.role
+    assert harmonized.text == record.text_content
+    assert harmonized.timestamp == meta.timestamp
+    assert harmonized.content_blocks == record.extract_content_blocks()
+    assert harmonized.reasoning_traces == record.extract_reasoning_traces()
+    assert harmonized.tool_calls == record.extract_tool_calls()
 
 
 @given(claude_ai_message_strategy())
@@ -42,6 +98,8 @@ def test_claude_ai_message_viewports_preserve_text_and_role(raw: dict[str, objec
     assert blocks[0].type == ContentType.TEXT
     assert blocks[0].text == message.text
     assert message.parsed_timestamp is None or isinstance(message.parsed_timestamp, datetime)
+    _assert_harmonized_matches_record("claude-ai", raw, message)
+    _assert_structured_provider_meta_round_trip("claude-ai", message)
 
 
 @given(chatgpt_message_node_strategy())
@@ -59,6 +117,8 @@ def test_chatgpt_message_viewports_are_self_consistent(node: dict[str, object]) 
     assert message.role_normalized in _CANONICAL_ROLES
     assert blocks == message.to_content_blocks()
     assert all(block.raw for block in blocks)
+    _assert_harmonized_matches_record("chatgpt", raw_message, message)
+    _assert_structured_provider_meta_round_trip("chatgpt", message)
 
 
 @given(claude_code_message_strategy())
@@ -73,6 +133,8 @@ def test_claude_code_record_viewports_match_unified_extractors(raw: dict[str, ob
     assert record.extract_content_blocks() == extract_content_blocks(record.content_blocks_raw)
     assert record.extract_reasoning_traces() == extract_reasoning_traces(record.content_blocks_raw, "claude-code")
     assert record.extract_tool_calls() == extract_tool_calls(record.content_blocks_raw, "claude-code")
+    _assert_harmonized_matches_record("claude-code", raw, record)
+    _assert_structured_provider_meta_round_trip("claude-code", record)
 
 
 @given(codex_message_strategy())
@@ -97,6 +159,8 @@ def test_codex_record_meta_and_block_classification_are_consistent(raw: dict[str
         else:
             expected_types.append(ContentType.UNKNOWN)
     assert [block.type for block in blocks] == expected_types
+    _assert_harmonized_matches_record("codex", raw, record)
+    _assert_structured_provider_meta_round_trip("codex", record)
 
 
 @given(gemini_message_strategy())
@@ -123,3 +187,5 @@ def test_gemini_message_viewports_are_consistent(raw: dict[str, object]) -> None
         assert traces[0].text == message.text
     else:
         assert not traces
+    _assert_harmonized_matches_record("gemini", raw, message)
+    _assert_structured_provider_meta_round_trip("gemini", message)

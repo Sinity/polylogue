@@ -19,6 +19,7 @@ from polylogue.lib.viewports import (
     ContentType,
     MessageMeta,
     ReasoningTrace,
+    ToolCall,
 )
 
 
@@ -186,6 +187,10 @@ class ChatGPTMessage(BaseModel):
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
         """Extract reasoning traces (ChatGPT does not expose reasoning; returns empty list)."""
+        return []
+
+    def extract_tool_calls(self) -> list[ToolCall]:
+        """Extract tool calls (ChatGPT export message model does not expose them here)."""
         return []
 
 
