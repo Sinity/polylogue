@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import pytest
 from hypothesis import given, settings
 
+from polylogue.lib.provider_semantics import extract_chatgpt_text, extract_claude_code_text
 from polylogue.lib.viewports import ContentType
 from polylogue.schemas.unified import (
     _missing_role,
     bulk_harmonize,
-    extract_claude_code_text,
     extract_content_blocks,
     extract_from_provider_meta,
     extract_harmonized_message,
@@ -463,3 +463,13 @@ def test_extract_harmonized_message_chatgpt_fallback_preserves_dict_text_parts()
     assert harmonized.id == "chatgpt-fallback"
     assert harmonized.role.value == "assistant"
     assert harmonized.text == "hello\nworld"
+
+
+def test_extract_chatgpt_text_prefers_direct_text_contract() -> None:
+    content = {
+        "content_type": "code",
+        "text": "print('ok')",
+        "parts": ["ignored", {"text": "still ignored"}],
+    }
+
+    assert extract_chatgpt_text(content) == "print('ok')"

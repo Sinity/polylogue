@@ -6,6 +6,11 @@ from datetime import datetime
 
 from hypothesis import assume, given, settings
 
+from polylogue.lib.provider_semantics import (
+    extract_chatgpt_text,
+    extract_claude_code_text,
+    extract_codex_text,
+)
 from polylogue.lib.viewports import ContentType
 from polylogue.schemas.unified import (
     extract_content_blocks,
@@ -115,6 +120,7 @@ def test_chatgpt_message_viewports_are_self_consistent(node: dict[str, object]) 
     assert meta.role == message.role_normalized
     assert meta.provider == "chatgpt"
     assert message.role_normalized in _CANONICAL_ROLES
+    assert message.text_content == extract_chatgpt_text(message.content.model_dump(mode="python"))
     assert blocks == message.to_content_blocks()
     assert all(block.raw for block in blocks)
     _assert_harmonized_matches_record("chatgpt", raw_message, message)
@@ -130,6 +136,8 @@ def test_claude_code_record_viewports_match_unified_extractors(raw: dict[str, ob
     assert meta.provider == "claude-code"
     assert meta.role == record.role
     assert record.parsed_timestamp is None or isinstance(record.parsed_timestamp, datetime)
+    if record.content_blocks_raw:
+        assert record.text_content == extract_claude_code_text(record.content_blocks_raw)
     assert record.extract_content_blocks() == extract_content_blocks(record.content_blocks_raw)
     assert record.extract_reasoning_traces() == extract_reasoning_traces(record.content_blocks_raw, "claude-code")
     assert record.extract_tool_calls() == extract_tool_calls(record.content_blocks_raw, "claude-code")
@@ -147,6 +155,7 @@ def test_codex_record_meta_and_block_classification_are_consistent(raw: dict[str
     assert meta.provider == "codex"
     assert meta.role == record.role_normalized
     assert record.role_normalized in _CANONICAL_ROLES
+    assert record.text_content == extract_codex_text(record.effective_content)
     assert len(blocks) == len(record.effective_content)
 
     expected_types = []

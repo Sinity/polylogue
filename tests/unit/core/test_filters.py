@@ -10,12 +10,14 @@ import pytest
 
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, ConversationSummary, Message
-from polylogue.schemas.unified import (
-    HarmonizedMessage,
-    bulk_harmonize,
+from polylogue.lib.provider_semantics import (
     extract_chatgpt_text,
     extract_claude_code_text,
     extract_codex_text,
+)
+from polylogue.schemas.unified import (
+    HarmonizedMessage,
+    bulk_harmonize,
     extract_content_blocks,
     extract_from_provider_meta,
     extract_harmonized_message,
