@@ -15,7 +15,7 @@ from hypothesis import strategies as st
 
 from polylogue.lib.models import Conversation
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import ConversationRepository, _records_to_conversation
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
@@ -1101,8 +1101,61 @@ def test_records_to_conversation_preserves_order_and_parent_contract() -> None:
         MessageRecord(message_id="m3", conversation_id="conv-1", role="user", text="three", content_hash="hash-m3"),
     ]
 
-    converted = Conversation.from_records(conversation, messages, [])
+    converted = _records_to_conversation(conversation, messages, [])
 
     assert str(converted.id) == "conv-1"
     assert str(converted.parent_id) == "parent-conv"
     assert [message.id for message in converted.messages] == ["m1", "m2", "m3"]
+
+
+def test_repository_get_many_preserves_requested_order_and_skips_missing_records() -> None:
+    backend = MagicMock()
+    backend.get_conversations_batch = AsyncMock(
+        return_value=[
+            ConversationRecord(
+                conversation_id="conv-b",
+                provider_name="claude",
+                provider_conversation_id="b",
+                title="B",
+                content_hash="hash-b",
+                provider_meta={},
+                metadata={},
+            ),
+            ConversationRecord(
+                conversation_id="conv-a",
+                provider_name="codex",
+                provider_conversation_id="a",
+                title="A",
+                content_hash="hash-a",
+                provider_meta={},
+                metadata={},
+            ),
+        ]
+    )
+    repo = ConversationRepository(backend=backend)
+    repo._hydrate_conversations = AsyncMock(
+        return_value=[
+            Conversation(id="conv-a", provider="codex", messages=[]),
+            Conversation(id="conv-b", provider="claude", messages=[]),
+        ]
+    )
+
+    conversations = asyncio.run(repo.get_many(["conv-a", "conv-missing", "conv-b"]))
+
+    assert [str(conversation.id) for conversation in conversations] == ["conv-a", "conv-b"]
+    backend.get_conversations_batch.assert_awaited_once_with(["conv-a", "conv-missing", "conv-b"])
+    repo._hydrate_conversations.assert_awaited_once()
+    call = repo._hydrate_conversations.await_args
+    assert [record.conversation_id for record in call.args[0]] == ["conv-b", "conv-a"]
+    assert call.kwargs["ordered_ids"] == ["conv-a", "conv-missing", "conv-b"]
+
+
+def test_repository_get_stats_by_forwards_grouping_contract() -> None:
+    backend = MagicMock()
+    backend.get_stats_by = AsyncMock(return_value={"claude": 2, "codex": 1})
+    repo = ConversationRepository(backend=backend)
+
+    result = asyncio.run(repo.get_stats_by("provider"))
+
+    assert result == {"claude": 2, "codex": 1}
+    backend.get_stats_by.assert_awaited_once_with("provider")
