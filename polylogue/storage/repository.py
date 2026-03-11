@@ -299,6 +299,53 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         )
         return [ConversationSummary.from_record(rec) for rec in conv_records]
 
+    async def iter_summary_pages(
+        self,
+        *,
+        page_size: int = 50,
+        provider: str | None = None,
+        providers: builtins.list[str] | None = None,
+        source: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
+    ) -> AsyncIterator[builtins.list[ConversationSummary]]:
+        """Iterate summary pages in backend sort order without materializing all results."""
+        offset = 0
+        while True:
+            page = await self.list_summaries(
+                limit=page_size,
+                offset=offset,
+                provider=provider,
+                providers=providers,
+                source=source,
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            )
+            if not page:
+                break
+            yield page
+            if len(page) < page_size:
+                break
+            offset += len(page)
+
     async def list(
         self,
         limit: int | None = 50,
