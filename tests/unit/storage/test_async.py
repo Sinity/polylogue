@@ -705,10 +705,10 @@ async def test_conversation_exists_by_hash():
             await repo.save_conversation(conv, messages, [])
 
             # Check existence
-            exists = await repo.conversation_exists("unique_content_hash_123")
+            exists = await repo.conversation_exists_by_hash("unique_content_hash_123")
             assert exists is True
 
-            not_exists = await repo.conversation_exists("different_hash")
+            not_exists = await repo.conversation_exists_by_hash("different_hash")
             assert not_exists is False
 
 
@@ -718,8 +718,8 @@ async def test_conversation_exists_by_hash():
 
 
 @pytest.mark.asyncio
-async def test_get_source_conversations():
-    """get_source_conversations filters by provider."""
+async def test_get_provider_conversation_ids():
+    """get_provider_conversation_ids filters by provider."""
     import uuid
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -752,11 +752,11 @@ async def test_get_source_conversations():
                 await repo.save_conversation(conv, messages, [])
 
             # Get ChatGPT conversations
-            chatgpt_ids = await repo.get_source_conversations("chatgpt")
+            chatgpt_ids = await repo.get_provider_conversation_ids("chatgpt")
             assert len(chatgpt_ids) == 2
 
             # Get Claude conversations
-            claude_ids = await repo.get_source_conversations("claude")
+            claude_ids = await repo.get_provider_conversation_ids("claude")
             assert len(claude_ids) == 1
 
 
@@ -793,7 +793,7 @@ async def test_concurrent_existence_checks():
         async with ConversationRepository(db_path=db_path) as repo:
             # Launch multiple concurrent existence checks
             tasks = [
-                repo.conversation_exists(f"hash_{i}")
+                repo.conversation_exists_by_hash(f"hash_{i}")
                 for i in range(10)
             ]
 

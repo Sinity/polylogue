@@ -212,8 +212,8 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             for conversation_id in present_ids
         ]
 
-    async def conversation_exists(self, content_hash: str) -> bool:
-        """Check if conversation with given content hash exists.
+    async def conversation_exists_by_hash(self, content_hash: str) -> bool:
+        """Check if a conversation with the given content hash exists.
 
         Args:
             content_hash: SHA-256 hash of conversation content
@@ -474,8 +474,8 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         """
         return await self._backend.aggregate_message_stats(conversation_ids)
 
-    async def get_source_conversations(self, provider: str) -> builtins.list[str]:
-        """Get all conversation IDs for a given provider.
+    async def get_provider_conversation_ids(self, provider: str) -> builtins.list[str]:
+        """Get conversation IDs for one provider in archive sort order.
 
         Args:
             provider: Provider name to filter by
@@ -497,9 +497,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             Parent Conversation, or None if no parent
         """
-        conv = await self.get(conversation_id)
-        if conv and conv.parent_id:
-            return await self.get(str(conv.parent_id))
+        conv_record = await self._backend.get_conversation(conversation_id)
+        if conv_record and conv_record.parent_conversation_id:
+            return await self.get(str(conv_record.parent_conversation_id))
         return None
 
     async def get_children(self, conversation_id: str) -> builtins.list[Conversation]:
@@ -516,6 +516,19 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             return []
         return await self._hydrate_conversations(child_records)
 
+    async def _get_root_record(self, conversation_id: str) -> ConversationRecord:
+        """Resolve the root conversation record without hydrating messages repeatedly."""
+        current = await self._backend.get_conversation(conversation_id)
+        if not current:
+            raise ValueError(f"Conversation {conversation_id} not found")
+
+        while current.parent_conversation_id:
+            parent = await self._backend.get_conversation(str(current.parent_conversation_id))
+            if not parent:
+                break
+            current = parent
+        return current
+
     async def get_root(self, conversation_id: str) -> Conversation:
         """Walk up the parent chain to find the root conversation.
 
@@ -528,16 +541,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Raises:
             ValueError: If the conversation is not found
         """
-        current = await self.get(conversation_id)
-        if not current:
+        root_record = await self._get_root_record(conversation_id)
+        root = await self.get(root_record.conversation_id)
+        if root is None:
             raise ValueError(f"Conversation {conversation_id} not found")
-
-        while current.parent_id:
-            parent = await self.get(str(current.parent_id))
-            if not parent:
-                break
-            current = parent
-        return current
+        return root
 
     async def get_session_tree(self, conversation_id: str) -> builtins.list[Conversation]:
         """Get all conversations in the session tree (root + all descendants).
@@ -548,18 +556,21 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             List of all Conversation objects in tree (breadth-first order)
         """
-        root = await self.get_root(conversation_id)
+        root_record = await self._get_root_record(conversation_id)
 
-        tree = []
-        queue = [root]
+        tree_records: builtins.list[ConversationRecord] = []
+        queue: builtins.list[ConversationRecord] = [root_record]
 
         while queue:
             current = queue.pop(0)
-            tree.append(current)
-            children = await self.get_children(str(current.id))
+            tree_records.append(current)
+            children = await self._backend.list_conversations(parent_id=current.conversation_id)
             queue.extend(children)
 
-        return tree
+        return await self._hydrate_conversations(
+            tree_records,
+            ordered_ids=[record.conversation_id for record in tree_records],
+        )
 
     async def search_summaries(
         self,
