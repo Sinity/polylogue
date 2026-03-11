@@ -16,14 +16,11 @@ from polylogue.schemas.schema_inference import (
     PROVIDERS,
     GenerationResult,
     _remove_nested_required,
-    _structure_fingerprint,
     cli_main,
-    collapse_dynamic_keys,
     generate_all_schemas,
     generate_provider_schema,
     generate_schema_from_samples,
     get_sample_count_from_db,
-    is_dynamic_key,
     load_samples_from_db,
     load_samples_from_sessions,
 )
@@ -102,51 +99,6 @@ def test_provider_alias_maps_claude_to_claude_ai(mock_path_attr, mock_schema_dir
         assert "uuid" in validator.schema["properties"]
 
 
-def test_validation_samples_stratify_record_payloads():
-    """Record payload sampling should preserve heterogeneous record variants."""
-    validator = SchemaValidator(
-        {
-            "type": "object",
-            "x-polylogue-sample-granularity": "record",
-            "properties": {"type": {"type": "string"}},
-        },
-        provider="codex",
-    )
-
-    payload: list[dict[str, Any]] = (
-        [{"type": "session_meta"} for _ in range(12)]
-        + [{"type": "response_item"} for _ in range(12)]
-        + [{"record_type": "state"} for _ in range(12)]
-    )
-
-    samples = validator.validation_samples(payload, max_samples=6)
-    signatures = {
-        f"type:{item['type']}" if "type" in item else f"record_type:{item['record_type']}"
-        for item in samples
-    }
-
-    assert len(samples) == 6
-    assert "type:session_meta" in signatures
-    assert "type:response_item" in signatures
-    assert "record_type:state" in signatures
-
-
-def test_validation_samples_all_mode_returns_all_record_dicts():
-    """`max_samples=None` should validate all record dicts for record payloads."""
-    validator = SchemaValidator(
-        {
-            "type": "object",
-            "x-polylogue-sample-granularity": "record",
-            "properties": {"type": {"type": "string"}},
-        },
-        provider="codex",
-    )
-
-    payload: list[dict[str, Any]] = [{"type": "a"}, {"type": "b"}, {"type": "c"}]
-    samples = validator.validation_samples(payload, max_samples=None)
-    assert samples == payload
-
-
 def test_validation_samples_record_mode_skips_non_record_documents():
     """Record-mode validation should skip non-record dict payloads."""
     validator = SchemaValidator(
@@ -161,56 +113,6 @@ def test_validation_samples_record_mode_skips_non_record_documents():
     payload = {"version": 1, "entries": []}
     samples = validator.validation_samples(payload, max_samples=16)
     assert samples == []
-
-
-def test_validation_samples_document_lists_validate_all_dicts_up_to_limit():
-    """Document-mode list payloads should validate each dict sample, not just the first."""
-    validator = SchemaValidator(
-        {
-            "type": "object",
-            "properties": {"id": {"type": "string"}},
-        },
-        provider="chatgpt",
-    )
-
-    payload: list[dict[str, str]] = [
-        {"id": "doc-1"},
-        {"id": "doc-2"},
-        {"id": "doc-3"},
-    ]
-
-    assert validator.validation_samples(payload, max_samples=2) == payload[:2]
-    assert validator.validation_samples(payload, max_samples=None) == payload
-
-
-def test_validation_samples_document_mode_wraps_single_document():
-    """Document-mode dict payloads validate the top-level document once."""
-    validator = SchemaValidator(
-        {
-            "type": "object",
-            "properties": {"id": {"type": "string"}},
-        },
-        provider="chatgpt",
-    )
-
-    payload = {"id": "doc-1"}
-    assert validator.validation_samples(payload, max_samples=1) == [payload]
-
-
-def test_validation_samples_provider_default_record_granularity():
-    """Record-oriented providers default to record sampling without schema hints."""
-    validator = SchemaValidator(
-        {
-            "type": "object",
-            "properties": {"type": {"type": "string"}},
-        },
-        provider="codex",
-    )
-
-    payload = [{"type": "alpha"}, {"type": "beta"}]
-    assert validator.validation_samples(payload, max_samples=None) == payload
-
-
 def test_schema_validator_prefers_registry_latest(monkeypatch):
     """Validator should use latest versioned schema when available."""
     fake_schema = {
@@ -482,118 +384,6 @@ def test_validation_result_properties():
 # =============================================================================
 
 
-class TestDynamicKeyDetection:
-    """Test dynamic key detection for schema collapsing."""
-
-    def test_uuid_detected(self):
-        assert is_dynamic_key("550e8400-e29b-41d4-a716-446655440000")
-        assert is_dynamic_key("550E8400-E29B-41D4-A716-446655440000")
-
-    def test_long_hex_detected(self):
-        assert is_dynamic_key("a" * 24)
-        assert is_dynamic_key("abcdef0123456789abcdef01")
-
-    def test_message_ids_detected(self):
-        assert is_dynamic_key("msg-abc123")
-        assert is_dynamic_key("node-550e8400")
-        assert is_dynamic_key("conv-123abc")
-
-    def test_normal_keys_not_detected(self):
-        assert not is_dynamic_key("content")
-        assert not is_dynamic_key("role")
-        assert not is_dynamic_key("text")
-        assert not is_dynamic_key("id")
-
-
-class TestStructureFingerprint:
-    """Tests for structural fingerprinting used by schema deduping."""
-
-    def test_dynamic_object_keys_are_normalized(self):
-        left = {
-            "mapping": {
-                "550e8400-e29b-41d4-a716-446655440000": {"role": "user"},
-            }
-        }
-        right = {
-            "mapping": {
-                "660f9511-f3ac-52e5-b827-557766551111": {"role": "assistant"},
-            }
-        }
-        assert _structure_fingerprint(left) == _structure_fingerprint(right)
-
-    def test_scalar_type_changes_produce_distinct_fingerprints(self):
-        numeric = {"payload": {"count": 1}}
-        textual = {"payload": {"count": "1"}}
-        assert _structure_fingerprint(numeric) != _structure_fingerprint(textual)
-
-
-class TestSchemaCollapsing:
-    """Test dynamic key collapsing in schemas."""
-
-    def test_collapse_uuid_properties(self):
-        schema = {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "550e8400-e29b-41d4-a716-446655440000": {"type": "object"},
-                "660f9511-f3ac-52e5-b827-557766551111": {"type": "object"},
-            },
-        }
-
-        collapsed = collapse_dynamic_keys(schema)
-
-        assert "title" in collapsed["properties"]
-        assert "550e8400-e29b-41d4-a716-446655440000" not in collapsed["properties"]
-        assert "additionalProperties" in collapsed
-
-    def test_preserve_static_keys(self):
-        schema = {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string"},
-                "content": {"type": "object"},
-            },
-        }
-
-        collapsed = collapse_dynamic_keys(schema)
-
-        assert "id" in collapsed["properties"]
-        assert "content" in collapsed["properties"]
-        assert "additionalProperties" not in collapsed
-
-
-class TestSchemaGeneration:
-    """Test schema generation from samples."""
-
-    def test_generate_from_simple_samples(self):
-        samples = [
-            {"role": "user", "text": "hello"},
-            {"role": "assistant", "text": "hi there"},
-        ]
-
-        schema = generate_schema_from_samples(samples)
-
-        assert schema["type"] == "object"
-        assert "properties" in schema
-        assert "role" in schema["properties"]
-        assert "text" in schema["properties"]
-
-    def test_generate_from_complex_samples(self):
-        samples = [
-            {"id": "1", "content": {"parts": ["text"]}},
-            {"id": "2", "content": {"parts": ["more text"], "type": "text"}},
-        ]
-
-        schema = generate_schema_from_samples(samples)
-
-        assert "content" in schema["properties"]
-        assert "parts" in schema["properties"]["content"]["properties"]
-
-    def test_empty_samples_returns_placeholder(self):
-        schema = generate_schema_from_samples([])
-        assert "No samples available" in schema.get("description", "")
-
-
 class TestProviderSchemaGeneration:
     """Test full provider schema generation."""
 
@@ -682,89 +472,11 @@ class TestRemoveNestedRequired:
         assert "required" in result
         assert result["required"] == ["id", "name"]
 
-    def test_nested_required_removed(self):
-        """Nested required array is removed (depth > 0)."""
-        schema = {"type": "object", "required": ["field1"], "properties": {}}
-        result = self._fn(schema, depth=1)
-        assert "required" not in result
-
-    def test_recurse_into_properties(self):
-        """Required removed from nested properties."""
-        schema = {
-            "type": "object",
-            "required": ["a"],
-            "properties": {
-                "a": {"type": "object", "required": ["x"], "properties": {}},
-            },
-        }
-        result = self._fn(schema, depth=0)
-        # Root required preserved
-        assert "required" in result
-        # Nested required removed
-        assert "required" not in result["properties"]["a"]
-
-    def test_recurse_into_items(self):
-        """Required removed from array items schema."""
-        schema = {
-            "type": "array",
-            "items": {"type": "object", "required": ["id"], "properties": {}},
-        }
-        result = self._fn(schema, depth=0)
-        assert "required" not in result["items"]
-
-    def test_recurse_into_anyof(self):
-        """Required removed from anyOf variants."""
-        schema = {
-            "anyOf": [
-                {"type": "object", "required": ["a"]},
-                {"type": "object", "required": ["b"]},
-            ]
-        }
-        result = self._fn(schema, depth=0)
-        for variant in result["anyOf"]:
-            assert "required" not in variant
-
-    def test_recurse_into_oneof(self):
-        """Required removed from oneOf variants."""
-        schema = {"oneOf": [{"type": "object", "required": ["x"]}]}
-        result = self._fn(schema, depth=0)
-        assert "required" not in result["oneOf"][0]
-
-    def test_recurse_into_allof(self):
-        """Required removed from allOf variants."""
-        schema = {"allOf": [{"type": "object", "required": ["y"]}]}
-        result = self._fn(schema, depth=0)
-        assert "required" not in result["allOf"][0]
-
     def test_non_dict_returns_unchanged(self):
         """Non-dict input returned as-is."""
         assert self._fn("string") == "string"
         assert self._fn(42) == 42
         assert self._fn([1, 2]) == [1, 2]
-
-    def test_deeply_nested(self):
-        """Deeply nested schemas handled correctly."""
-        schema = {
-            "type": "object",
-            "required": ["top"],
-            "properties": {
-                "top": {
-                    "type": "object",
-                    "required": ["mid"],
-                    "properties": {
-                        "mid": {
-                            "type": "object",
-                            "required": ["deep"],
-                            "properties": {},
-                        }
-                    },
-                }
-            },
-        }
-        result = self._fn(schema, depth=0)
-        assert "required" in result
-        assert "required" not in result["properties"]["top"]
-        assert "required" not in result["properties"]["top"]["properties"]["mid"]
 
 
 # =============================================================================
@@ -790,18 +502,6 @@ class TestLoadSamplesFromSessions:
         result = self._fn(d)
         assert result == []
 
-    def test_single_jsonl_file(self, tmp_path):
-        """Single JSONL file with records is loaded."""
-        d = tmp_path / "sessions"
-        d.mkdir()
-        (d / "session1.jsonl").write_text(
-            json.dumps({"type": "user", "text": "hello"}) + "\n"
-            + json.dumps({"type": "assistant", "text": "hi"}) + "\n"
-        )
-        result = self._fn(d)
-        assert len(result) == 2
-        assert result[0]["type"] == "user"
-
     def test_max_sessions_limits_files(self, tmp_path):
         """max_sessions parameter limits number of files processed."""
         d = tmp_path / "sessions"
@@ -814,62 +514,6 @@ class TestLoadSamplesFromSessions:
         # Should process at most 3 sessions
         assert len(result) <= 10
         assert len(result) >= 1
-
-    def test_malformed_json_skipped(self, tmp_path):
-        """Malformed JSON lines are silently skipped."""
-        d = tmp_path / "sessions"
-        d.mkdir()
-        (d / "bad.jsonl").write_text(
-            "not json\n"
-            + json.dumps({"valid": True}) + "\n"
-            + "{incomplete\n"
-        )
-        result = self._fn(d)
-        assert len(result) == 1
-        assert result[0]["valid"] is True
-
-    def test_empty_lines_skipped(self, tmp_path):
-        """Empty lines in JSONL files are skipped."""
-        d = tmp_path / "sessions"
-        d.mkdir()
-        (d / "spaces.jsonl").write_text(
-            "\n\n" + json.dumps({"ok": True}) + "\n\n"
-        )
-        result = self._fn(d)
-        assert len(result) == 1
-
-    def test_recursive_glob(self, tmp_path):
-        """Files in subdirectories are found by rglob."""
-        d = tmp_path / "sessions"
-        sub = d / "sub1"
-        sub.mkdir(parents=True)
-        (sub / "nested.jsonl").write_text(json.dumps({"nested": True}) + "\n")
-        result = self._fn(d)
-        assert len(result) == 1
-        assert result[0]["nested"] is True
-
-    def test_max_samples_stratifies_record_types(self, tmp_path):
-        """max_samples should preserve representative record variants."""
-        d = tmp_path / "sessions"
-        d.mkdir()
-        (d / "mixed.jsonl").write_text(
-            "\n".join(
-                [json.dumps({"type": "session_meta", "idx": i}) for i in range(8)]
-                + [json.dumps({"type": "response_item", "idx": i}) for i in range(8)]
-                + [json.dumps({"record_type": "state", "idx": i}) for i in range(8)]
-            )
-            + "\n"
-        )
-
-        result = load_samples_from_sessions(d, max_samples=6, record_type_key="type")
-        signatures = {
-            f"type:{item['type']}" if "type" in item else f"record_type:{item['record_type']}"
-            for item in result
-        }
-        assert len(result) == 6
-        assert "type:session_meta" in signatures
-        assert "type:response_item" in signatures
-        assert "record_type:state" in signatures
 
 
 # =============================================================================

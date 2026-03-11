@@ -41,6 +41,18 @@ from tests.infra.strategies.messages import (
     thinking_block_strategy,
     tool_use_block_strategy,
 )
+from tests.infra.strategies.pipeline import (
+    AcquisitionInputSpec,
+    ParseMergeEvent,
+    ValidationCase,
+    acquisition_input_batch_strategy,
+    build_acquisition_raw_bytes,
+    build_validation_payload,
+    expected_parse_merge_totals,
+    expected_validation_contract,
+    parse_merge_events_strategy,
+    validation_case_strategy,
+)
 from tests.infra.strategies.providers import (
     chatgpt_export_strategy,
     chatgpt_message_node_strategy,
@@ -56,6 +68,16 @@ from tests.infra.strategies.providers import (
     provider_payload_case_strategy,
     provider_payload_strategy,
     provider_source_case_strategy,
+)
+from tests.infra.strategies.schema import (
+    SessionJsonlFileSpec,
+    dynamic_key_strategy,
+    expected_session_documents,
+    nested_required_schema_strategy,
+    record_payload_strategy,
+    record_variant_signature,
+    session_jsonl_tree_strategy,
+    static_key_strategy,
 )
 from tests.infra.strategies.sources import (
     conversations_wrapper_bytes_strategy,
@@ -101,6 +123,15 @@ __all__ = [
     "provider_payload_strategy",
     "provider_export_strategy",
     "provider_source_case_strategy",
+    # Schema
+    "SessionJsonlFileSpec",
+    "dynamic_key_strategy",
+    "expected_session_documents",
+    "nested_required_schema_strategy",
+    "record_payload_strategy",
+    "record_variant_signature",
+    "session_jsonl_tree_strategy",
+    "static_key_strategy",
     # Source/json wire contracts
     "conversations_wrapper_bytes_strategy",
     "json_array_bytes_strategy",
@@ -114,6 +145,17 @@ __all__ = [
     "expected_tree_ids",
     "root_index",
     "seed_conversation_graph",
+    # Pipeline
+    "AcquisitionInputSpec",
+    "ParseMergeEvent",
+    "ValidationCase",
+    "acquisition_input_batch_strategy",
+    "build_acquisition_raw_bytes",
+    "build_validation_payload",
+    "expected_parse_merge_totals",
+    "expected_validation_contract",
+    "parse_merge_events_strategy",
+    "validation_case_strategy",
     # Filters
     "filter_arg_strategy",
     "filter_chain_strategy",
