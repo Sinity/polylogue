@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from polylogue.config import Config, Source
-from polylogue.render_paths import render_root
+from polylogue.paths import conversation_render_root
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.search import SearchHit, SearchResult
@@ -77,7 +77,9 @@ def _conversation_search_hit(
     message_id = str(matching_message.id) if matching_message else ""
     timestamp = matching_message.timestamp.isoformat() if matching_message and matching_message.timestamp else None
     snippet = _build_search_snippet(matching_message.text or "", query) if matching_message else ""
-    conversation_path = render_root(render_root_path, conversation.provider, str(conversation.id)) / "conversation.md"
+    conversation_path = (
+        conversation_render_root(render_root_path, conversation.provider, str(conversation.id)) / "conversation.md"
+    )
     return SearchHit(
         conversation_id=str(conversation.id),
         provider_name=conversation.provider,

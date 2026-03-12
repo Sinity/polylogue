@@ -66,7 +66,7 @@ def site_command(
         polylogue site --no-search           # Disable search index
     """
     from polylogue.paths import data_home
-    from polylogue.site import SiteBuilder, SiteConfig
+    from polylogue.site.builder import SiteBuilder, SiteConfig
 
     # Determine output path
     output_path = output or (data_home() / "site")

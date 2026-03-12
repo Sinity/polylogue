@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue.cli.click_app import cli as click_cli
-from polylogue.cli.commands.mcp import mcp_command
+from polylogue.cli.click_app import mcp_command
 
 
 class TestDashboardCommand:
