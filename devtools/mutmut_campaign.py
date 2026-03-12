@@ -141,7 +141,9 @@ CAMPAIGNS: dict[str, Campaign] = {
             "polylogue/schemas/verification.py",
         ),
         tests=(
-            "tests/unit/core/test_schema.py",
+            "tests/unit/core/test_schema_validation.py",
+            "tests/unit/core/test_schema_generation.py",
+            "tests/unit/core/test_schema_annotations.py",
             "tests/unit/core/test_schema_laws.py",
             "tests/unit/core/test_schema_privacy.py",
             "tests/unit/core/test_schema_verification.py",
@@ -154,7 +156,7 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="Schema inference and privacy heuristics",
         paths_to_mutate=("polylogue/schemas/schema_inference.py",),
         tests=(
-            "tests/unit/core/test_schema.py",
+            "tests/unit/core/test_schema_generation.py",
             "tests/unit/core/test_schema_laws.py",
             "tests/unit/core/test_schema_privacy.py",
         ),
@@ -167,7 +169,7 @@ CAMPAIGNS: dict[str, Campaign] = {
             "polylogue/schemas/verification.py",
         ),
         tests=(
-            "tests/unit/core/test_schema.py",
+            "tests/unit/core/test_schema_validation.py",
             "tests/unit/core/test_schema_laws.py",
             "tests/unit/core/test_schema_verification.py",
             "tests/unit/storage/test_schema_safety.py",
@@ -178,7 +180,13 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="Acquire/validate/parse planning and stage contracts",
         paths_to_mutate=("polylogue/pipeline/services",),
         tests=(
-            "tests/unit/pipeline/test_services.py",
+            "tests/unit/pipeline/test_acquisition_service.py",
+            "tests/unit/pipeline/test_validation_service.py",
+            "tests/unit/pipeline/test_planning_service.py",
+            "tests/unit/pipeline/test_parsing_service.py",
+            "tests/unit/pipeline/test_render_service.py",
+            "tests/unit/pipeline/test_indexing.py",
+            "tests/unit/pipeline/test_ingest_state.py",
             "tests/unit/pipeline/test_service_laws.py",
         ),
         notes=("Likely to need more helper-level laws to reduce timeout noise.",),
