@@ -17,9 +17,11 @@ from polylogue.lib.hashing import hash_payload, hash_text
 from polylogue.lib.viewports import classify_tool
 from polylogue.pipeline.prepare import PrepareCache
 from polylogue.pipeline.semantic import extract_tool_metadata
-from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index, update_index_for_conversations
-from tests.benchmarks.helpers import open_bench_store
+from tests.benchmarks.helpers import (
+    benchmark_connection_call,
+    benchmark_store_call,
+)
 
 
 def _make_diverse_tool_inputs(n: int) -> list[tuple[str, dict[str, Any]]]:
@@ -68,15 +70,13 @@ def test_bench_extract_tool_metadata(benchmark) -> None:
 @pytest.mark.benchmark
 def test_bench_fts_rebuild_1k(benchmark, bench_db_1k: Path) -> None:
     """FTS5 full rebuild on 1k messages."""
-    with open_connection(bench_db_1k) as conn:
-        benchmark(lambda: rebuild_index(conn))
+    benchmark_connection_call(benchmark, bench_db_1k, rebuild_index)
 
 
 @pytest.mark.benchmark
 def test_bench_fts_rebuild_5k(benchmark, bench_db_5k: Path) -> None:
     """FTS5 full rebuild on 5k messages — shows O(N) scaling."""
-    with open_connection(bench_db_5k) as conn:
-        benchmark(lambda: rebuild_index(conn))
+    benchmark_connection_call(benchmark, bench_db_5k, rebuild_index)
 
 
 @pytest.mark.benchmark
@@ -84,8 +84,11 @@ def test_bench_fts_rebuild_5k(benchmark, bench_db_5k: Path) -> None:
 def test_bench_fts_incremental_update(benchmark, bench_db_5k: Path, n: int) -> None:
     """update_index_for_conversations() for 1, 10, 50 conversations."""
     ids = [f"bench-conv-{i:05d}" for i in range(n)]
-    with open_connection(bench_db_5k) as conn:
-        benchmark(lambda: update_index_for_conversations(ids, conn))
+    benchmark_connection_call(
+        benchmark,
+        bench_db_5k,
+        lambda conn: update_index_for_conversations(ids, conn),
+    )
 
 
 @pytest.mark.benchmark
@@ -115,5 +118,8 @@ def test_bench_hash_payload(benchmark, depth: int) -> None:
 def test_bench_prepare_cache_load(benchmark, bench_db_5k: Path, n: int) -> None:
     """PrepareCache.load() — bulk-loads N existing conversations in 2 queries."""
     cids = {f"bench-conv-{i:05d}" for i in range(n)}
-    with open_bench_store(bench_db_5k) as store:
-        benchmark(lambda: store.run(PrepareCache.load(store.backend, cids)))
+    benchmark_store_call(
+        benchmark,
+        bench_db_5k,
+        lambda store: PrepareCache.load(store.backend, cids),
+    )
