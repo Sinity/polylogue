@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from types import TracebackType
 
 from rich.console import Console
@@ -66,30 +66,19 @@ class UI:
 
     # Prompting ------------------------------------------------------------
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
-        try:
-            return self._facade.confirm(prompt, default=default)
-        except UIError as exc:
-            if self.plain:
-                topic = exc.prompt_topic or str(exc).removeprefix("Plain mode cannot prompt for ").strip(".")
-                if topic:
-                    self._abort_plain_prompt(topic)
-            raise
+        return self._call_prompt(lambda: self._facade.confirm(prompt, default=default))
 
     def choose(self, prompt: str, options: list[str]) -> str | None:
         if not options:
             return None
-        try:
-            return self._facade.choose(prompt, options)
-        except UIError as exc:
-            if self.plain:
-                topic = exc.prompt_topic or str(exc).removeprefix("Plain mode cannot prompt for ").strip(".")
-                if topic:
-                    self._abort_plain_prompt(topic)
-            raise
+        return self._call_prompt(lambda: self._facade.choose(prompt, options))
 
     def input(self, prompt: str, *, default: str | None = None) -> str | None:
+        return self._call_prompt(lambda: self._facade.input(prompt, default=default))
+
+    def _call_prompt(self, operation: Callable[[], object]) -> object:
         try:
-            return self._facade.input(prompt, default=default)
+            return operation()
         except UIError as exc:
             if self.plain:
                 topic = exc.prompt_topic or str(exc).removeprefix("Plain mode cannot prompt for ").strip(".")

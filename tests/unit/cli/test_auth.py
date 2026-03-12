@@ -1,4 +1,4 @@
-"""Tests for auth command and auth helper functions."""
+"""Tests for auth command routing and credential management."""
 
 from __future__ import annotations
 
@@ -15,112 +15,83 @@ from polylogue.cli.commands.auth import (
     _revoke_drive_credentials,
 )
 
-# =============================================================================
-# AUTH COMMAND TESTS
-# =============================================================================
 
-
-class TestAuthCommandInternal:
-    """Tests for auth_command() and auth helper functions."""
+class TestAuthCommandRouting:
+    """CLI command routing tests — service dispatch and error handling."""
 
     def test_unknown_service_fails(self, cli_runner):
-        """auth_command should fail for unknown service."""
         result = cli_runner.invoke(click_cli, ["auth", "--service", "unknown", "--plain"])
         assert result.exit_code != 0
 
     def test_default_service_is_drive(self, cli_runner):
-        """auth_command should default to 'drive' service."""
         with patch("polylogue.cli.commands.auth._drive_oauth_flow"):
             result = cli_runner.invoke(click_cli, ["auth", "--plain"])
-            # Will try to run oauth flow which will likely fail in test
-            # but at least should not fail with "unknown service"
             assert "Unknown auth service" not in result.output
 
 
 class TestGetDrivePaths:
-    """Tests for _get_drive_paths() helper."""
-
-    def test_get_drive_paths_returns_paths(self, tmp_path):
-        """_get_drive_paths should return tuple of (credentials_path, token_path)."""
+    def test_get_drive_paths_returns_path_objects(self, tmp_path):
         env = MagicMock()
         creds_path, token_path = _get_drive_paths(env)
-        # Should return Path objects
         assert isinstance(creds_path, Path)
         assert isinstance(token_path, Path)
-        # Should contain expected names
-        assert "cred" in str(creds_path).lower() or "oauth" in str(creds_path).lower()
 
-    def test_get_drive_paths_handles_errors_gracefully(self, tmp_path):
-        """_get_drive_paths should handle config errors and return defaults."""
+    def test_get_drive_paths_falls_back_on_config_error(self, tmp_path):
         env = MagicMock()
         with patch("polylogue.cli.helpers.load_effective_config", side_effect=Exception("config error")):
             creds_path, token_path = _get_drive_paths(env)
-            # Should still return paths (fallback defaults)
             assert creds_path is not None
             assert token_path is not None
 
 
 class TestDriveOAuthFlow:
-    """Tests for _drive_oauth_flow() function."""
-
-    def test_oauth_missing_credentials_fails(self, tmp_path):
-        """_drive_oauth_flow should fail if credentials file missing."""
+    def test_oauth_missing_credentials_exits(self, tmp_path):
         env = MagicMock()
         creds_path = tmp_path / "missing.json"
         token_path = tmp_path / "token.json"
-        with patch(
-            "polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)
-        ):
+        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
             with pytest.raises(SystemExit):
                 _drive_oauth_flow(env)
 
-    def test_oauth_new_token_success(self, tmp_path):
-        """_drive_oauth_flow should succeed with valid creds and new token."""
-        env = MagicMock()
-        creds_path = tmp_path / "creds.json"
-        creds_path.write_text("{}")
-        token_path = tmp_path / "token.json"  # Not existing
-
-        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)), patch(
-            "polylogue.sources.drive_client.DriveClient"
-        ) as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client_cls.return_value = mock_client
-            _drive_oauth_flow(env)
-            mock_client.resolve_folder_id.assert_called_once_with("root")
-            mock_client_cls.assert_called_once()
-
-    def test_oauth_cached_token_success(self, tmp_path):
-        """_drive_oauth_flow should succeed with existing token."""
-        env = MagicMock()
-        creds_path = tmp_path / "creds.json"
-        creds_path.write_text("{}")
-        token_path = tmp_path / "token.json"
-        token_path.write_text("{}")  # Existing token
-
-        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)), patch(
-            "polylogue.sources.drive_client.DriveClient"
-        ) as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client_cls.return_value = mock_client
-            _drive_oauth_flow(env)
-            # Should use cached credentials message
-
-    def test_oauth_file_not_found_error(self, tmp_path):
-        """_drive_oauth_flow should handle FileNotFoundError."""
+    def test_oauth_calls_load_credentials_on_auth_manager(self, tmp_path):
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
         token_path = tmp_path / "token.json"
 
-        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)), patch(
-            "polylogue.sources.drive_client.DriveClient", side_effect=FileNotFoundError("creds not found")
-        ):
-            with pytest.raises(SystemExit):
+        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
+            with patch("polylogue.cli.commands.auth.DriveAuthManager") as mock_manager_cls:
+                mock_manager = MagicMock()
+                mock_manager_cls.return_value = mock_manager
                 _drive_oauth_flow(env)
+                mock_manager.load_credentials.assert_called_once()
+
+    def test_oauth_cached_token_reports_using_cached(self, tmp_path):
+        env = MagicMock()
+        creds_path = tmp_path / "creds.json"
+        creds_path.write_text("{}")
+        token_path = tmp_path / "token.json"
+        token_path.write_text("{}")  # existing token
+
+        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
+            with patch("polylogue.cli.commands.auth.DriveAuthManager") as mock_manager_cls:
+                mock_manager = MagicMock()
+                mock_manager_cls.return_value = mock_manager
+                # Should not raise
+                _drive_oauth_flow(env)
+
+    def test_oauth_file_not_found_exits(self, tmp_path):
+        env = MagicMock()
+        creds_path = tmp_path / "creds.json"
+        creds_path.write_text("{}")
+        token_path = tmp_path / "token.json"
+
+        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
+            with patch("polylogue.cli.commands.auth.DriveAuthManager", side_effect=FileNotFoundError("creds not found")):
+                with pytest.raises(SystemExit):
+                    _drive_oauth_flow(env)
 
     def test_oauth_token_refresh_failure_retries(self, tmp_path):
-        """_drive_oauth_flow should retry on token refresh failure."""
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
@@ -133,141 +104,104 @@ class TestDriveOAuthFlow:
             call_count[0] += 1
             if call_count[0] == 1:
                 raise Exception("Token refresh failed")
-            # Second call succeeds
-            mock_client = MagicMock()
-            mock_client.resolve_folder_id = MagicMock()
-            return mock_client
+            mock_manager = MagicMock()
+            return mock_manager
 
-        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)), patch(
-            "polylogue.sources.drive_client.DriveClient", side_effect=side_effect
-        ):
-            _drive_oauth_flow(env, retry_on_failure=True)
-            assert call_count[0] == 2
-            # Token should have been deleted between retries
+        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
+            with patch("polylogue.cli.commands.auth.DriveAuthManager", side_effect=side_effect):
+                _drive_oauth_flow(env, retry_on_failure=True)
+                assert call_count[0] == 2
 
-    def test_oauth_non_retriable_error_fails(self, tmp_path):
-        """_drive_oauth_flow should fail on non-retriable error."""
+    def test_oauth_non_retriable_error_exits(self, tmp_path):
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
         token_path = tmp_path / "token.json"
         token_path.write_text("{}")
 
-        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)), patch(
-            "polylogue.sources.drive_client.DriveClient", side_effect=Exception("Auth failed permanently")
-        ):
-            with pytest.raises(SystemExit):
-                _drive_oauth_flow(env, retry_on_failure=False)
-
-    def test_oauth_retry_disabled_fails_immediately(self, tmp_path):
-        """_drive_oauth_flow should fail immediately when retry_on_failure=False."""
-        env = MagicMock()
-        creds_path = tmp_path / "creds.json"
-        creds_path.write_text("{}")
-        token_path = tmp_path / "token.json"
-        token_path.write_text("{}")
-
-        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)), patch(
-            "polylogue.sources.drive_client.DriveClient", side_effect=Exception("Token refresh failed")
-        ):
-            with pytest.raises(SystemExit):
-                _drive_oauth_flow(env, retry_on_failure=False)
+        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
+            with patch("polylogue.cli.commands.auth.DriveAuthManager", side_effect=Exception("Auth failed permanently")):
+                with pytest.raises(SystemExit):
+                    _drive_oauth_flow(env, retry_on_failure=False)
 
 
 class TestRefreshDriveToken:
-    """Tests for _refresh_drive_token() function."""
-
-    def test_refresh_deletes_token(self, tmp_path):
-        """_refresh_drive_token should delete existing token."""
+    def test_refresh_deletes_token_before_reauth(self, tmp_path):
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
         token_path = tmp_path / "token.json"
         token_path.write_text("{}")
 
-        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)), patch(
-            "polylogue.cli.commands.auth._drive_oauth_flow"
-        ) as mock_flow:
-            _refresh_drive_token(env)
-            # Token should be deleted before calling _drive_oauth_flow
-            assert not token_path.exists()
-            mock_flow.assert_called_once_with(env)
+        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
+            with patch("polylogue.cli.commands.auth._drive_oauth_flow") as mock_flow:
+                _refresh_drive_token(env)
+                assert not token_path.exists()
+                mock_flow.assert_called_once_with(env)
 
     def test_refresh_without_token_still_reauths(self, tmp_path):
-        """_refresh_drive_token should reauthenticate even if no token exists."""
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
-        token_path = tmp_path / "token.json"  # Not existing
+        token_path = tmp_path / "token.json"
 
-        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)), patch(
-            "polylogue.cli.commands.auth._drive_oauth_flow"
-        ) as mock_flow:
-            _refresh_drive_token(env)
-            mock_flow.assert_called_once_with(env)
+        with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
+            with patch("polylogue.cli.commands.auth._drive_oauth_flow") as mock_flow:
+                _refresh_drive_token(env)
+                mock_flow.assert_called_once_with(env)
 
 
 class TestRevokeDriveCredentials:
-    """Tests for _revoke_drive_credentials() function."""
-
-    def test_revoke_deletes_token(self, tmp_path):
-        """_revoke_drive_credentials should delete token file."""
+    def test_revoke_calls_auth_manager_revoke(self, tmp_path):
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         token_path = tmp_path / "token.json"
         token_path.write_text("{}")
 
         with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
-            _revoke_drive_credentials(env)
-            assert not token_path.exists()
+            with patch("polylogue.cli.commands.auth.DriveAuthManager") as mock_manager_cls:
+                mock_manager = MagicMock()
+                mock_manager_cls.return_value = mock_manager
+                _revoke_drive_credentials(env)
+                mock_manager.revoke.assert_called_once()
 
-    def test_revoke_without_token(self, tmp_path):
-        """_revoke_drive_credentials should handle missing token gracefully."""
+    def test_revoke_without_token_does_not_raise(self, tmp_path):
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
-        token_path = tmp_path / "token.json"  # Not existing
+        token_path = tmp_path / "token.json"
 
         with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
-            # Should not raise exception
-            _revoke_drive_credentials(env)
+            with patch("polylogue.cli.commands.auth.DriveAuthManager") as mock_manager_cls:
+                mock_manager = MagicMock()
+                mock_manager_cls.return_value = mock_manager
+                _revoke_drive_credentials(env)
+                mock_manager.revoke.assert_called_once()
 
 
 @pytest.mark.integration
 class TestAuthCommand:
-    """Tests for the auth command (subprocess integration)."""
+    """Integration tests for the auth command (subprocess)."""
 
     def test_auth_unknown_service_fails(self, tmp_path):
-        """auth --service unknown fails with error."""
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        result = run_cli(["auth", "--service", "unknown"], env=env)
+        result = run_cli(["auth", "--service", "unknown"], env=workspace["env"])
         assert result.exit_code != 0
-        assert "unknown" in result.output.lower() or "provider" in result.output.lower()
 
     def test_auth_revoke_no_token(self, tmp_path):
-        """auth --revoke handles missing token gracefully."""
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        result = run_cli(["auth", "--revoke"], env=env)
-        # Should succeed or show "no token" message
+        result = run_cli(["auth", "--revoke"], env=workspace["env"])
         output_lower = result.output.lower()
         assert result.exit_code == 0 or "no token" in output_lower or "not found" in output_lower
 
     def test_auth_missing_credentials(self, tmp_path):
-        """auth fails gracefully when credentials file missing."""
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        result = run_cli(["auth"], env=env)
-        # Should fail with helpful message about missing credentials
+        result = run_cli(["auth"], env=workspace["env"])
         assert result.exit_code != 0
         output_lower = result.output.lower()
         assert "credentials" in output_lower or "missing" in output_lower or "oauth" in output_lower

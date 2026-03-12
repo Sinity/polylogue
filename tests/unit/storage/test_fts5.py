@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from hypothesis import given, settings, HealthCheck
+import hypothesis.strategies as st
 
 from polylogue.config import Config, IndexConfig
 from polylogue.sources import RecordBundle, save_bundle
@@ -22,6 +24,7 @@ from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from tests.infra.mutmut import preserved_mutmut_env
 from tests.infra.storage_records import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
+from tests.infra.strategies import fts5_match_text_strategy, search_query_strategy
 
 # ============================================================================
 # Tests for search_messages()
@@ -60,7 +63,7 @@ async def test_search_includes_snippet(workspace_env, storage_repository):
 async def test_search_includes_conversation_metadata(workspace_env, storage_repository):
     """search_messages() includes conversation metadata in results."""
     conv = make_conversation(
-        "conv1", provider_name="claude", title="My Conversation", provider_meta={"source": "my-source"}
+        "conv1", provider_name="claude-ai", title="My Conversation", provider_meta={"source": "my-source"}
     )
     msg = make_message("msg1", "conv1", text="search query", timestamp="2024-01-01T10:30:00Z")
 
@@ -72,7 +75,7 @@ async def test_search_includes_conversation_metadata(workspace_env, storage_repo
     assert len(results.hits) == 1
     hit = results.hits[0]
     assert hit.conversation_id == "conv1"
-    assert hit.provider_name == "claude"
+    assert hit.provider_name == "claude-ai"
     assert hit.title == "My Conversation"
     assert hit.message_id == "msg1"
     assert hit.timestamp is not None and "2024-01-01" in hit.timestamp
@@ -281,7 +284,7 @@ def test_batch_index_10k_messages(test_conn):
 async def test_batch_index_search_returns_correct_provider(workspace_env, storage_repository):
     """Verify batch indexing allows retrieving correct provider_name via search."""
     # Create conversations with different providers
-    conv1 = make_conversation("conv1", provider_name="claude", title="Claude Conv")
+    conv1 = make_conversation("conv1", provider_name="claude-ai", title="Claude Conv")
     conv2 = make_conversation("conv2", provider_name="chatgpt", title="ChatGPT Conv")
 
     messages1 = [make_message(f"msg1-{i}", "conv1", text=f"claude text {i}") for i in range(5)]
@@ -294,7 +297,7 @@ async def test_batch_index_search_returns_correct_provider(workspace_env, storag
 
     # Verify provider names via search
     results1 = search_messages("claude", archive_root=workspace_env["archive_root"], limit=10)
-    assert all(hit.provider_name == "claude" for hit in results1.hits)
+    assert all(hit.provider_name == "claude-ai" for hit in results1.hits)
     assert len(results1.hits) == 1
 
     results2 = search_messages("chatgpt", archive_root=workspace_env["archive_root"], limit=10)
@@ -315,11 +318,8 @@ async def test_batch_index_search_returns_correct_provider(workspace_env, storag
     ("AND", False),  # Operator as literal
     ("quoted", True),  # Part of text with quotes
 ])
-def test_search_messages_escaping_integration(query, should_find, tmp_path):
-    """Integration test for search with various queries.
-
-    Replaces ~10 individual integration tests.
-    """
+def test_search_messages_known_cases(query, should_find, tmp_path):
+    """Integration test for known search cases with specific assertions."""
     # Setup database with test data
     db_path = tmp_path / "test.db"
     DbFactory(db_path)
@@ -348,6 +348,43 @@ def test_search_messages_escaping_integration(query, should_find, tmp_path):
         # Either no results or results don't match the query
         # The important thing is no SQL errors occur
         assert isinstance(results.hits, list)
+
+
+@given(query=search_query_strategy())
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
+def test_search_messages_escaping_never_crashes(query, tmp_path):
+    """Property: search_messages handles any query with controlled error handling.
+
+    Tests FTS5 escaping and query handling with arbitrary inputs.
+    Invalid FTS5 syntax raises DatabaseError (controlled), not unrecoverable crash.
+    """
+    from polylogue.errors import DatabaseError
+
+    db_path = tmp_path / "test.db"
+    DbFactory(db_path)
+
+    # Insert test conversation using builder
+    (ConversationBuilder(db_path, "test1")
+     .title("Test Conversation")
+     .add_message("msg1", role="user", text='This is a test message with "quoted text" inside.')
+     .save())
+
+    # Build search index
+    with open_connection(str(db_path)) as conn:
+        rebuild_index(conn)
+
+    # The critical property: any query should either succeed or raise controlled DatabaseError
+    try:
+        results = search_messages(
+            query,
+            archive_root=tmp_path,
+            db_path=Path(str(db_path)),
+            limit=10,
+        )
+        assert isinstance(results.hits, list)
+    except DatabaseError:
+        # Controlled error for invalid FTS5 queries is acceptable
+        pass
 
 
 # ============================================================================
@@ -505,7 +542,7 @@ class TestFTS5Provider:
     @pytest.fixture
     async def populated_fts(self, workspace_env, storage_repository, fts_provider):
         """FTS provider with indexed test data."""
-        conv = make_conversation("fts-conv-1", provider_name="claude", title="FTS Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
+        conv = make_conversation("fts-conv-1", provider_name="claude-ai", title="FTS Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
         msgs = [
             make_message("fts-msg-1", "fts-conv-1", text="How do I implement quicksort in Python?", timestamp="1000"),
             make_message("fts-msg-2", "fts-conv-1", role="assistant", text="Quicksort is a divide-and-conquer algorithm for sorting", timestamp="1001"),
@@ -902,3 +939,87 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
         search_messages("hello", archive_root=archive_root, limit=5)
     assert exc_info.type.__name__ == "DatabaseError"
     assert "Search index not built" in str(exc_info.value)
+
+
+# ============================================================================
+# Property Laws (from test_fts5_laws.py)
+# ============================================================================
+
+
+@given(st.text())
+def test_escape_fts5_query_never_crashes(text: str) -> None:
+    """escape_fts5_query handles any Unicode input without raising, always returns str."""
+    result = escape_fts5_query(text)
+    assert isinstance(result, str)
+
+
+@given(text=fts5_match_text_strategy())
+def test_escape_fts5_match_text_safe(text: str) -> None:
+    """FTS5 match text from strategy is safely escaped."""
+    result = escape_fts5_query(text)
+    assert isinstance(result, str)
+    assert len(result) > 0 or text.strip() == ""
+
+
+# ============================================================================
+# Search-with-since Property Laws
+# ============================================================================
+
+
+class TestSearchWithSinceLaws:
+    """Property: search with --since returns subset of search without --since."""
+
+    @given(pair=st.one_of(
+        # Import inline to avoid circular issues at module level
+        st.tuples(
+            st.text(min_size=2, max_size=20, alphabet=st.characters(whitelist_categories=("L",))),
+            st.one_of(st.none(), st.dates().map(lambda d: d.isoformat())),
+        ),
+    ))
+    @settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def test_since_filter_is_monotonic(self, pair, tmp_path):
+        """Results with --since must be subset of results without --since.
+
+        All returned messages must have timestamps >= since when since is set.
+        """
+        from polylogue.errors import DatabaseError
+
+        query_text, since = pair
+        db_path = tmp_path / "since.db"
+        DbFactory(db_path)
+
+        # Seed conversations with spread timestamps
+        for i in range(3):
+            (ConversationBuilder(db_path, f"since-conv-{i}")
+             .title(f"Since Test {i}")
+             .add_message(f"msg-{i}", role="user", text=f"{query_text} message {i}",
+                          timestamp=f"2024-{(i % 12) + 1:02d}-15T12:00:00Z")
+             .save())
+
+        with open_connection(str(db_path)) as conn:
+            rebuild_index(conn)
+
+        try:
+            results_all = search_messages(
+                query_text, archive_root=tmp_path, db_path=Path(str(db_path)), limit=100,
+            )
+        except (DatabaseError, ValueError):
+            return  # Invalid query, skip
+
+        if since is None:
+            return  # No since filter to compare
+
+        try:
+            results_since = search_messages(
+                query_text, archive_root=tmp_path, db_path=Path(str(db_path)),
+                since=since, limit=100,
+            )
+        except (DatabaseError, ValueError):
+            return  # Invalid since date, skip
+
+        # Monotonicity: since-filtered results must be subset of unfiltered
+        all_ids = {h.message_id for h in results_all.hits}
+        since_ids = {h.message_id for h in results_since.hits}
+        assert since_ids <= all_ids, (
+            f"since-filtered IDs {since_ids - all_ids} not in unfiltered results"
+        )

@@ -1,0 +1,47 @@
+name: Cleanup or Refactor
+description: Simplify structure, remove duplication, or narrow an overgrown contract.
+title: "[cleanup] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: awkwardness
+    attributes:
+      label: What is awkward now?
+      description: Describe the duplication, accidental complexity, drift, or bad fit.
+    validations:
+      required: true
+  - type: textarea
+    id: target_shape
+    attributes:
+      label: Target shape
+      description: What simpler or more coherent shape do you want instead?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Surfaces likely involved
+      description: Commands, storage, importers, MCP, site, docs, tests, CI.
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and constraints
+      description: What could be broken by this cleanup, and what must remain true?
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] Duplicate or misleading path removed
+        - [ ] Replacement path is wired and documented
+        - [ ] Verification updated
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: How do we know the simplification is safe?

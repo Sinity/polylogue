@@ -11,9 +11,10 @@ from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.health import cached_health_summary, get_health
-from polylogue.lib.log import get_logger
-from polylogue.lib.theme import provider_color
+from polylogue.logging import get_logger
+from polylogue.operations import ProviderMetrics, compute_provider_comparison, get_provider_counts
 from polylogue.pipeline.runner import latest_run
+from polylogue.ui.theme import provider_color
 
 logger = get_logger(__name__)
 
@@ -144,15 +145,13 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     # Show analytics visualization (compatible with plain mode too)
     if ui:
         try:
-            from polylogue.cli.analytics import compute_provider_comparison, get_provider_counts
-
             if verbose:
                 # Full metrics (slow: ~29s) needed for Deep Dive section
-                metrics = asyncio.run(compute_provider_comparison())
+                metrics = asyncio.run(compute_provider_comparison(services=env.services))
                 counts: list[tuple[str, int]] = [(m.provider_name, m.conversation_count) for m in metrics]
             else:
                 # Fast path: conversations-table-only query (~1ms)
-                counts = asyncio.run(get_provider_counts())
+                counts = asyncio.run(get_provider_counts(services=env.services))
                 metrics = []
 
             if counts:

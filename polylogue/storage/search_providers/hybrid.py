@@ -10,7 +10,7 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import TYPE_CHECKING
 
-from polylogue.storage.backends.connection import _build_source_scope_filter, open_connection
+from polylogue.storage.backends.connection import _build_provider_scope_filter, open_connection
 
 if TYPE_CHECKING:
     from polylogue.protocols import VectorProvider
@@ -209,10 +209,9 @@ def _resolve_ranked_conversation_ids(
 
     scope_clause = ""
     if scope_names:
-        scope_sql, scope_params = _build_source_scope_filter(
+        scope_sql, scope_params = _build_provider_scope_filter(
             scope_names,
             provider_column="conversations.provider_name",
-            source_column="conversations.source_name",
         )
         scope_clause = f"WHERE {scope_sql}"
         params.extend(scope_params)
@@ -276,7 +275,7 @@ def create_hybrid_provider(
     from polylogue.storage.search_providers.fts5 import FTS5Provider
 
     # Get or create vector provider
-    vec_provider = vector_provider or create_vector_provider()
+    vec_provider = vector_provider or create_vector_provider(db_path=db_path)
     if vec_provider is None:
         return None
 

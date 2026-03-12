@@ -1,4 +1,9 @@
-"""Consolidated UI tests (facade, UX flows, wrapper API)."""
+"""Focused UI facade and wrapper contracts.
+
+Pure renderer behavior lives in ``test_rendering.py``. This file owns prompting,
+plain-mode fallbacks, wrapper delegation, and the minimal facade rendering
+surface that is specific to ``ConsoleFacade`` / ``UI``.
+"""
 
 from __future__ import annotations
 
@@ -6,921 +11,363 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-from rich.console import Console
 
-from polylogue.ui import UI
-from polylogue.ui.facade import (
-    ConsoleFacade,
-    PlainConsole,
-    UIError,
-    create_console_facade,
-)
-
-# --- Merged from test_ui_facade_coverage.py ---
-
-
-# =============================================================================
-# PlainConsole
-# =============================================================================
-
-class TestPlainConsole:
-    def test_print_basic(self, capsys):
-        pc = PlainConsole()
-        pc.print("hello", "world")
-        assert "hello world" in capsys.readouterr().out
-
-    @pytest.mark.parametrize("input_text,expected_stripped,unexpected", [
-        ("[bold]Important[/bold]", "Important", "[bold]"),
-        ("[green]Success[/green]", "Success", "[green]"),
-        ("[#d97757]colored[/#d97757]", "colored", "[#d97757]"),
-    ])
-    def test_print_strips_markup(self, capsys, input_text, expected_stripped, unexpected):
-        pc = PlainConsole()
-        pc.print(input_text)
-        captured = capsys.readouterr().out
-        assert expected_stripped in captured
-        assert unexpected not in captured
-
-    def test_print_ignores_extra_kwargs(self, capsys):
-        pc = PlainConsole()
-        pc.print("text", sep="|", end="!\n")
-        # Should print "text" without respecting sep/end kwargs
-        assert "text" in capsys.readouterr().out
-
-    def test_print_malformed_markup_fallback(self, capsys):
-        pc = PlainConsole()
-        pc.print("[unclosed markup")
-        captured = capsys.readouterr().out
-        assert "[unclosed markup" in captured
-
-    def test_print_init_accepts_any_args(self):
-        # Should not raise despite extra args
-        pc = PlainConsole("arg1", "arg2", kwarg="value")
-        assert pc is not None
-
-
-# =============================================================================
-# ConsoleFacade creation
-# =============================================================================
-
-class TestCreateConsoleFacade:
-    def test_plain_creates_console_facade(self):
-        facade = create_console_facade(plain=True)
-        assert isinstance(facade, ConsoleFacade)
-        assert facade.plain is True
-
-    def test_rich_creates_console_facade(self):
-        facade = create_console_facade(plain=False)
-        assert isinstance(facade, ConsoleFacade)
-        assert facade.plain is False
-
-
-# =============================================================================
-# Prompt stub system
-# =============================================================================
-
-class TestPromptStubs:
-    @pytest.mark.parametrize("content,expected_count,desc", [
-        (None, 0, "no_env_var"),
-        (json.dumps({"type": "confirm", "value": True}) + "\n", 1, "single_stub"),
-        (json.dumps({"type": "confirm", "value": True}) + "\n" + json.dumps({"type": "choose", "value": "option1"}) + "\n" + json.dumps({"type": "input", "value": "text"}) + "\n", 3, "multiple_stubs"),
-        ("\n\n" + json.dumps({"type": "confirm"}) + "\n\n", 1, "empty_lines"),
-        ("   \n\t\n" + json.dumps({"type": "input"}) + "\n  ", 1, "whitespace_lines"),
-    ], ids=["no_env_var", "single", "multiple", "empty_lines", "whitespace"])
-    def test_stub_loading(self, tmp_path, monkeypatch, content, expected_count, desc):
-        if content is None:
-            monkeypatch.delenv("POLYLOGUE_TEST_PROMPT_FILE", raising=False)
-        else:
-            stub_file = tmp_path / "stubs.jsonl"
-            stub_file.write_text(content)
-            monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=True)
-        assert len(facade._prompt_responses) == expected_count
-
-    def test_invalid_json_raises_uierror(self, tmp_path, monkeypatch):
-        stub_file = tmp_path / "bad.jsonl"
-        stub_file.write_text("not json\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        with pytest.raises(UIError, match="Invalid prompt stub"):
-            ConsoleFacade(plain=True)
-
-    def test_pop_behaviors(self, tmp_path, monkeypatch):
-        # Test type mismatch raises
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": True}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=True)
-        with pytest.raises(UIError, match="expected 'confirm' but got 'choose'"):
-            facade._pop_prompt_response("choose")
-
-        # Test no type matches any
-        stub_file.write_text(json.dumps({"value": True}) + "\n")
-        facade = ConsoleFacade(plain=True)
-        result = facade._pop_prompt_response("anything")
-        assert result == {"value": True}
-
-        # Test empty queue returns none
-        monkeypatch.delenv("POLYLOGUE_TEST_PROMPT_FILE", raising=False)
-        facade = ConsoleFacade(plain=True)
-        result = facade._pop_prompt_response("confirm")
-        assert result is None
-
-
-# =============================================================================
-# confirm
-# =============================================================================
-
-class TestConfirm:
-    @pytest.mark.parametrize("typed,default,expected", [
-        ("y", True, True),
-        ("n", True, False),
-        ("", False, False),
-        ("foo", True, False),
-    ], ids=["yes", "no", "empty_default", "unknown_is_false"])
-    def test_plain_prompts(self, monkeypatch, typed, default, expected):
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("builtins.input", lambda _: typed)
-        facade = ConsoleFacade(plain=True)
-        assert facade.confirm("Continue?", default=default) is expected
-
-    def test_plain_non_tty_raises_uierror(self, monkeypatch):
-        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-        facade = ConsoleFacade(plain=True)
-        with pytest.raises(UIError, match="confirmation prompts"):
-            facade.confirm("Continue?")
-
-    @pytest.mark.parametrize("stub_value,expected", [
-        (True, True),
-        (False, False),
-        ("yes", True),
-        ("y", True),
-        ("true", True),
-        ("1", True),
-        ("no", False),
-        ("n", False),
-        ("false", False),
-        ("0", False),
-    ], ids=[
-        "bool_true", "bool_false", "str_yes", "str_y",
-        "str_true", "str_1", "str_no", "str_n",
-        "str_false", "str_0"
-    ])
-    def test_stub_value_parsing(self, tmp_path, monkeypatch, stub_value, expected):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": stub_value}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?") is expected
-
-    @pytest.mark.parametrize("use_default,default,expected", [
-        (True, True, True),
-        (True, False, False),
-    ])
-    def test_stub_use_default(self, tmp_path, monkeypatch, use_default, default, expected):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "use_default": use_default}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?", default=default) is expected
-
-    def test_stub_invalid_string_returns_default(self, tmp_path, monkeypatch):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": "maybe"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        # Invalid string doesn't match yes/no patterns, so questionary would be called
-        # Mock it to return None so default is used
-        import questionary
-        mock_confirm = MagicMock()
-        mock_confirm.return_value.ask.return_value = None
-        monkeypatch.setattr(questionary, "confirm", lambda *args, **kwargs: mock_confirm.return_value)
-        result = facade.confirm("Continue?", default=True)
-        assert result is True
-
-
-# =============================================================================
-# choose
-# =============================================================================
-
-class TestChoose:
-    def test_empty_options_returns_none(self):
-        assert ConsoleFacade(plain=True).choose("Pick:", []) is None
-        assert ConsoleFacade(plain=False).choose("Pick:", []) is None
-
-    def test_plain_prompts_for_choice(self, monkeypatch, capsys):
-        responses = iter(["99", "2"])
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("builtins.input", lambda _: next(responses))
-        facade = ConsoleFacade(plain=True)
-        assert facade.choose("Pick:", ["a", "b", "c"]) == "b"
-        output = capsys.readouterr().out
-        assert "Enter a number corresponding to your choice." in output
-
-    def test_plain_empty_response_returns_none(self, monkeypatch):
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("builtins.input", lambda _: "")
-        facade = ConsoleFacade(plain=True)
-        assert facade.choose("Pick:", ["a", "b"]) is None
-
-    def test_plain_non_tty_raises_uierror(self, monkeypatch):
-        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-        facade = ConsoleFacade(plain=True)
-        with pytest.raises(UIError, match="menu selections"):
-            facade.choose("Pick:", ["a", "b"])
-
-    def test_stub_value_exact_match(self, tmp_path, monkeypatch):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "value": "option2"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        result = facade.choose("Pick:", ["option1", "option2", "option3"])
-        assert result == "option2"
-
-    def test_stub_value_not_in_options(self, tmp_path, monkeypatch):
-        import questionary
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "value": "unknown"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        # Value not in options, so questionary is called
-        # Mock questionary to return None
-        mock_select = MagicMock()
-        mock_select.return_value.ask.return_value = None
-        monkeypatch.setattr(questionary, "select", lambda *args, **kwargs: mock_select.return_value)
-        result = facade.choose("Pick:", ["a", "b", "c"])
-        assert result is None
-
-    @pytest.mark.parametrize("index,options,expected", [
-        (0, ["a", "b", "c"], "a"),
-        (2, ["a", "b", "c"], "c"),
-        ("2", ["a", "b", "c"], "c"),
-    ], ids=["zero", "last", "string_valid"])
-    def test_stub_index_valid(self, tmp_path, monkeypatch, index, options, expected):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "index": index}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        result = facade.choose("Pick:", options)
-        assert result == expected
-
-    @pytest.mark.parametrize("invalid_index", [99, -1, "not_a_number"], ids=["out_of_bounds", "negative", "string_invalid"])
-    def test_stub_index_invalid(self, tmp_path, monkeypatch, invalid_index):
-        import questionary
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "index": invalid_index}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        # Invalid index, questionary is called
-        mock_select = MagicMock()
-        mock_select.return_value.ask.return_value = None
-        monkeypatch.setattr(questionary, "select", lambda *args, **kwargs: mock_select.return_value)
-        result = facade.choose("Pick:", ["a", "b", "c"])
-        assert result is None
-
-    def test_stub_use_default(self, tmp_path, monkeypatch):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "use_default": True}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        result = facade.choose("Pick:", ["first", "second"])
-        assert result == "first"
-
-    def test_many_options_uses_autocomplete(self, tmp_path, monkeypatch):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "value": "opt13"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        # > 12 options triggers autocomplete instead of select
-        many_options = [f"opt{i}" for i in range(15)]
-        result = facade.choose("Pick:", many_options)
-        assert result == "opt13"
-
-
-# =============================================================================
-# input
-# =============================================================================
-
-class TestInput:
-    @pytest.mark.parametrize("typed,default,expected", [
-        ("typed", None, "typed"),
-        ("", "anon", "anon"),
-        ("", None, None),
-    ], ids=["typed_value", "empty_uses_default", "empty_without_default"])
-    def test_plain_behavior(self, monkeypatch, typed, default, expected):
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("builtins.input", lambda _: typed)
-        facade = ConsoleFacade(plain=True)
-        result = facade.input("Name:") if default is None else facade.input("Name:", default=default)
-        assert result == expected
-
-    def test_plain_non_tty_raises_uierror(self, monkeypatch):
-        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-        facade = ConsoleFacade(plain=True)
-        with pytest.raises(UIError, match="text input"):
-            facade.input("Name:")
-
-    def test_stub_value_string(self, tmp_path, monkeypatch):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "input", "value": "typed"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.input("Name:") == "typed"
-
-    def test_stub_value_number_converted_to_string(self, tmp_path, monkeypatch):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "input", "value": 42}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.input("Number:") == "42"
-
-    def test_stub_use_default(self, tmp_path, monkeypatch):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "input", "use_default": True}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.input("Name:", default="fallback") == "fallback"
-
-    def test_stub_use_default_no_default(self, tmp_path, monkeypatch):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "input", "use_default": True}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.input("Name:") is None
-
-    @pytest.mark.parametrize("stub_value", [None, ""])
-    def test_stub_value_falsy(self, tmp_path, monkeypatch, stub_value):
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "input", "value": stub_value}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        if stub_value is None:
-            assert facade.input("Name:") is None
-        else:
-            assert facade.input("Name:", default="default") == ""
-
-
-# =============================================================================
-# Display methods (banner, summary, render_*, status)
-# =============================================================================
-
-class TestBanner:
-    @pytest.mark.parametrize("plain,has_subtitle", [
-        (True, True),
-        (True, False),
-        (False, True),
-        (False, False),
-    ], ids=["plain_with_subtitle", "plain_no_subtitle", "rich_with_subtitle", "rich_no_subtitle"])
-    def test_banner(self, capsys, plain, has_subtitle):
-        facade = ConsoleFacade(plain=plain)
-        if has_subtitle:
-            facade.banner("Title", "Subtitle")
-            if plain:
-                output = capsys.readouterr().out
-                assert "Title" in output
-                assert "Subtitle" in output
-        else:
-            facade.banner("Title")
-            if plain:
-                output = capsys.readouterr().out
-                assert "Title" in output
-                assert "==" in output
-
-    def test_plain_banner_formatting(self, capsys):
-        facade = ConsoleFacade(plain=True)
-        facade.banner("Test")
-        output = capsys.readouterr().out
-        assert "== Test ==" in output
-
-
-class TestSummary:
-    @pytest.mark.parametrize("lines_count,expected_lines", [
-        (1, ["Line 1"]),
-        (3, ["Line 1", "Line 2", "Line 3"]),
-        (0, []),
-    ], ids=["single_line", "multiple_lines", "empty"])
-    def test_plain_summary(self, capsys, lines_count, expected_lines):
-        facade = ConsoleFacade(plain=True)
-        lines = [f"Line {i+1}" for i in range(lines_count)]
-        facade.summary("Stats", lines)
-        output = capsys.readouterr().out
-        assert "Stats" in output
-        for expected_line in expected_lines:
-            assert expected_line in output
-        if lines_count > 0:
-            assert "--" in output
-
-    def test_plain_summary_with_markup(self, capsys):
-        facade = ConsoleFacade(plain=True)
-        facade.summary("Result", ["[green]✓[/green] Success", "[red]✗[/red] Failed"])
-        output = capsys.readouterr().out
-        assert "Success" in output
-        assert "Failed" in output
-
-    def test_rich_summary(self):
-        facade = ConsoleFacade(plain=False)
-        facade.summary("Stats", ["Line 1", "Line 2"])
-
-
-class TestRenderMarkdown:
-    @pytest.mark.parametrize("plain,multiline", [
-        (True, False),
-        (True, True),
-        (False, False),
-    ], ids=["plain_simple", "plain_multiline", "rich"])
-    def test_render_markdown(self, capsys, plain, multiline):
-        facade = ConsoleFacade(plain=plain)
-        content = "# Title\n\n**Bold** text\n\n- List\n- Items" if multiline else "# Hello\n\nWorld"
-        facade.render_markdown(content)
-        if plain:
-            output = capsys.readouterr().out
-            assert "Hello" in output or "Title" in output
-
-
-class TestRenderCode:
-    @pytest.mark.parametrize("plain,language", [
-        (True, None),
-        (True, "sql"),
-        (True, "python"),
-        (False, "python"),
-        (False, "javascript"),
-    ], ids=["plain_default", "plain_sql", "plain_python", "rich_python", "rich_javascript"])
-    def test_render_code(self, capsys, plain, language):
-        facade = ConsoleFacade(plain=plain)
-        if language == "sql":
-            code = "SELECT * FROM users;"
-            expected_text = "SELECT"
-        elif language == "javascript":
-            code = "console.log('test');"
-            expected_text = "console"
-        else:
-            code = "x = 1" if plain or language is None else "print('hello')" if language == "python" else "x = 1"
-            expected_text = "x" if "x" in code else "print"
-
-        facade.render_code(code, language) if language else facade.render_code(code)
-        if plain:
-            output = capsys.readouterr().out
-            assert expected_text in output or code in output
-
-
-class TestRenderDiff:
-    @pytest.mark.parametrize("old,new,filename,desc", [
-        ("old\n", "new\n", "test.txt", "basic_diff"),
-        ("line1\nline2\n", "line1\nline2_modified\n", "file.txt", "unified_diff"),
-        ("same\n", "same\n", "file.txt", "empty_diff"),
-    ], ids=["basic", "unified", "empty"])
-    def test_render_diff(self, capsys, old, new, filename, desc):
-        # Plain mode
-        facade = ConsoleFacade(plain=True)
-        facade.render_diff(old, new, filename)
-        output = capsys.readouterr().out
-        if desc == "empty_diff":
-            assert filename in output or output.strip() == ""
-        else:
-            assert filename in output or "---" in output
-
-        # Rich mode (just verify no error)
-        facade = ConsoleFacade(plain=False)
-        facade.render_diff("old\n", "new\n", "test.txt")
-
-
-class TestStatusMethods:
-    @pytest.mark.parametrize("method,text,expected_icon", [
-        ("error", "Something broke", "✗"),
-        ("warning", "Watch out", "!"),
-        ("success", "All good", "✓"),
-        ("info", "FYI", None),
-    ], ids=["error", "warning", "success", "info"])
-    def test_status_method_plain(self, capsys, method, text, expected_icon):
-        facade = ConsoleFacade(plain=True)
-        getattr(facade, method)(text)
-        output = capsys.readouterr().out
-        assert text in output
-        if expected_icon:
-            assert expected_icon in output or expected_icon.upper() in output
-
-    @pytest.mark.parametrize("method", ["error", "warning", "success", "info"])
-    def test_status_method_rich(self, method):
-        facade = ConsoleFacade(plain=False)
-        getattr(facade, method)("Test message")
-        # Should not raise
-
-
-class TestUIErrorException:
-    def test_ui_error_behavior(self):
-        assert issubclass(UIError, Exception)
-
-        with pytest.raises(UIError):
-            raise UIError("test error")
-
-        msg = "custom error message"
-        with pytest.raises(UIError, match=msg):
-            raise UIError(msg)
-
-
-class TestConsoleProtocolThemeAndStyles:
-    def test_console_protocol_theme_and_styles(self):
-        from dataclasses import is_dataclass
-        # PlainConsole protocol
-        pc = PlainConsole()
-        assert callable(getattr(pc, "print", None))
-
-        # Facade dataclass
-        assert is_dataclass(ConsoleFacade)
-
-        # Plain facade theme and styles
-        facade_plain = ConsoleFacade(plain=True)
-        assert facade_plain.theme is not None
-
-        # Rich facade protocol, theme, and styles
-        facade_rich = ConsoleFacade(plain=False)
-        assert callable(getattr(facade_rich.console, "print", None))
-        assert facade_rich.theme is not None
-        assert facade_rich._panel_box is not None
-        assert facade_rich._banner_box is not None
-        assert facade_rich._banner_box != facade_rich._panel_box
-
-
-class TestStatusMethodsPrivate:
-    @pytest.mark.parametrize("plain,icon,style,text", [
-        (True, "✓", "status.icon.success", "Test"),
-        (True, "!", "status.icon.warning", "Alert"),
-        (False, "✓", "status.icon.success", "Success"),
-    ], ids=["plain_success", "plain_warning", "rich"])
-    def test_status_private(self, capsys, plain, icon, style, text):
-        facade = ConsoleFacade(plain=plain)
-        facade._status(icon, style, text)
-        if plain:
-            output = capsys.readouterr().out
-            assert text in output
-
-
-class TestChooseWithLargeOptionSet:
-    def test_choose_select_vs_autocomplete_threshold(self, tmp_path, monkeypatch):
-        """Test threshold between select (<=12) and autocomplete (>12)."""
-        # Test exactly 12 options (uses select)
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "index": 0}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        options = [f"opt{i}" for i in range(12)]
-        result = facade.choose("Pick:", options)
-        assert result == "opt0"
-
-        # Test 13 options (uses autocomplete)
-        stub_file.write_text(json.dumps({"type": "choose", "value": "opt12"}) + "\n")
-        facade = ConsoleFacade(plain=False)
-        options = [f"opt{i}" for i in range(13)]
-        result = facade.choose("Pick:", options)
-        assert result == "opt12"
-
-
-class TestInputEdgeCases:
-    @pytest.mark.parametrize("questionary_return,expected,desc", [
-        ("", "fallback", "empty_string_returns_default"),
-        ("   ", "   ", "whitespace_returned_as_is"),
-    ], ids=["empty_questionary", "whitespace_questionary"])
-    def test_input_questionary_results(self, monkeypatch, questionary_return, expected, desc):
-        """Test input with different questionary responses."""
-        import questionary
-
-        monkeypatch.delenv("POLYLOGUE_TEST_PROMPT_FILE", raising=False)
-        facade = ConsoleFacade(plain=False)
-
-        mock_text = MagicMock()
-        mock_text.return_value.ask.return_value = questionary_return
-        monkeypatch.setattr(questionary, "text", lambda *args, **kwargs: mock_text.return_value)
-
-        result = facade.input("Prompt:", default="fallback")
-        assert result == expected
-
-
-class TestRenderDiffEdgeCases:
-    @pytest.mark.parametrize("old,new,filename,desc", [
-        ("line1\nline2\nline3\n", "line1\nmodified2\nline3\nline4\n", "test.py", "multiline"),
-        ("line1", "line1\nline2", "file.txt", "no_trailing_newline"),
-    ], ids=["multiline_format", "no_trailing_newline"])
-    def test_render_diff_edge_cases(self, capsys, old, new, filename, desc):
-        """Test render_diff edge cases."""
-        facade = ConsoleFacade(plain=True)
-        facade.render_diff(old, new, filename)
-        output = capsys.readouterr().out
-        assert filename in output
-
-
-# --- Merged from test_ui_ux.py ---
+from polylogue.ui import UI, _PlainProgressTracker, _RichProgressTracker, create_ui
+from polylogue.ui.facade import ConsoleFacade, PlainConsole, UIError, create_console_facade
 
 
 @pytest.fixture
 def mock_prompt_file(tmp_path, monkeypatch):
-    """Setup a mock prompt response file."""
     prompt_file = tmp_path / "prompts.jsonl"
     monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(prompt_file))
     return prompt_file
 
 
 @pytest.fixture
-def console_facade():
-    """Create a real ConsoleFacade with captured output."""
-    facade = create_console_facade(plain=False)
-    # Replace console with a capture console
-    facade.console = Console(force_terminal=True, no_color=False, width=80)
-    # We'll use capture context in tests
-    return facade
-
-
-class TestConsoleFacadeInteractions:
-    """Test interactive prompts using file-based mocking."""
-
-    @pytest.mark.parametrize("stub_value,expected", [(True, True), (False, False)], ids=["confirm_true", "confirm_false"])
-    def test_confirm(self, mock_prompt_file, stub_value, expected):
-        """Test confirm() returns values from mock."""
-        mock_prompt_file.write_text(json.dumps({"type": "confirm", "value": stub_value}) + "\n")
-        facade = create_console_facade(plain=False)
-        assert facade.confirm("Continue?") is expected
-
-    def test_confirm_default_override(self, mock_prompt_file):
-        """Test confirm() uses default from mock instruction."""
-        mock_prompt_file.write_text(json.dumps({"type": "confirm", "use_default": True}) + "\n")
-
-        facade = create_console_facade(plain=False)
-        assert facade.confirm("Continue?", default=True) is True
-
-        # Reset and test default=False
-        mock_prompt_file.write_text(json.dumps({"type": "confirm", "use_default": True}) + "\n")
-        facade = create_console_facade(plain=False)
-        assert facade.confirm("Continue?", default=False) is False
-
-    def test_input_value(self, mock_prompt_file):
-        """Test input() returns mocked string."""
-        mock_prompt_file.write_text(json.dumps({"type": "input", "value": "test_input"}) + "\n")
-
-        facade = create_console_facade(plain=False)
-        assert facade.input("Name?") == "test_input"
-
-    @pytest.mark.parametrize("value,index,expected", [
-        ("Option B", None, "Option B"),
-        (None, 2, "Option C"),
-    ], ids=["by_value", "by_index"])
-    def test_choose(self, mock_prompt_file, value, index, expected):
-        """Test choose() selects by value or index."""
-        stub_dict = {"type": "choose"}
-        if value:
-            stub_dict["value"] = value
-        if index is not None:
-            stub_dict["index"] = index
-        mock_prompt_file.write_text(json.dumps(stub_dict) + "\n")
-
-        facade = create_console_facade(plain=False)
-        result = facade.choose("Pick one", ["Option A", "Option B", "Option C"])
-        assert result == expected
-
-    def test_interaction_sequence(self, mock_prompt_file):
-        """Test a sequence of different interactions."""
-        lines = [
-            json.dumps({"type": "input", "value": "User"}),
-            json.dumps({"type": "confirm", "value": True}),
-            json.dumps({"type": "choose", "value": "Red"}),
-        ]
-        mock_prompt_file.write_text("\n".join(lines) + "\n")
-
-        facade = create_console_facade(plain=False)
-
-        assert facade.input("Name?") == "User"
-        assert facade.confirm("Save?") is True
-        assert facade.choose("Color?", ["Red", "Blue"]) == "Red"
-
-    def test_mismatched_prompt_type_raises_error(self, mock_prompt_file):
-        """Test that mismatching prompt type raises UIError."""
-        mock_prompt_file.write_text(json.dumps({"type": "input", "value": "User"}) + "\n")
-
-        facade = create_console_facade(plain=False)
-
-        with pytest.raises(UIError, match="expected 'input' but got 'confirm'"):
-            facade.confirm("Save?")
-
-
-class TestConsoleFacadeRendering:
-    """Test rich and plain rendering methods."""
-
-    def test_banner_render(self):
-        """Test banner rendering."""
-        facade = create_console_facade(plain=False)
-        with facade.console.capture() as capture:
-            facade.banner("Welcome", "To Mission Control")
-
-        output = capture.get()
-        assert "Welcome" in output
-        assert "To Mission Control" in output
-        assert "◈" in output or "mission" in output.lower()
-
-    def test_summary_render(self):
-        """Test list summary rendering."""
-        facade = create_console_facade(plain=False)
-        items = ["Item 1", "[red]Item 2[/red]"]
-        with facade.console.capture() as capture:
-            facade.summary("Checklist", items)
-
-        output = capture.get()
-        assert "Checklist" in output
-        assert "Item 1" in output
-        assert "Item 2" in output
-
-    def test_render_diff_and_status(self):
-        """Test diff rendering and status messages."""
-        facade = create_console_facade(plain=False)
-
-        # Test render_diff
-        facade.console.pager = MagicMock()
-        facade.console.pager.return_value.__enter__ = MagicMock()
-        facade.console.pager.return_value.__exit__ = MagicMock()
-
-        with facade.console.capture() as capture:
-            facade.render_diff("line 1\nline 2", "line 1\nline 3", filename="test.txt")
-        output = capture.get()
-        assert "line 2" in output
-        assert "line 3" in output
-
-        # Test status messages
-        with facade.console.capture() as capture:
-            facade.success("Good job")
-            facade.warning("Be careful")
-            facade.error("Oh no")
-            facade.info("FYI")
-
-        output = capture.get()
-        assert "Good job" in output
-        assert "Be careful" in output
-        assert "Oh no" in output
-        assert "FYI" in output
-
-    def test_plain_mode_interactions_and_rendering(self, capsys):
-        """Test plain mode fallback for interactions and rendering."""
-        facade = create_console_facade(plain=True)
-        assert isinstance(facade, ConsoleFacade)
-
-        # Test interactions
-        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=["y", "", "2"]):
-            assert facade.confirm("Ctx?", default=True) is True
-            assert facade.input("Input?", default="Default") == "Default"
-            assert facade.choose("Pick", ["A", "B"]) == "B"
-
-        # Test rendering
-        facade.banner("Title", "Subtitle")
-        captured = capsys.readouterr()
-        assert "== Title ==" in captured.out
-        assert "Subtitle" in captured.out
-
-        facade.success("Done")
-        captured = capsys.readouterr()
-        assert "✓ Done" in captured.out
-
-
-# --- Merged from test_ui_wrapper.py ---
-
-
-@pytest.fixture
 def mock_facade():
     with patch("polylogue.ui.create_console_facade") as mock_create:
         facade = MagicMock(spec=ConsoleFacade)
-        # MagicMock spec doesn't include fields that are initialized in __post_init__ or field(init=False)
-        # unless we explicitly set them on the instance.
-        console_mock = MagicMock()
-        facade.console = console_mock
+        facade.console = MagicMock()
         facade.plain = False
         mock_create.return_value = facade
         yield facade
 
 
-def test_ui_init_and_creation(mock_facade):
-    # Test successful initialization
-    ui = UI(plain=False)
-    assert ui._facade == mock_facade
-    assert ui.plain is False
-    assert ui.console == mock_facade.console
-
-    # Test init failure
-    with patch("polylogue.ui.create_console_facade", side_effect=RuntimeError("Test error")):
-        with pytest.raises(SystemExit) as exc:
-            UI(plain=False)
-        assert "Test error" in str(exc.value)
-
-    # Test create_ui factory
-    from polylogue.ui import create_ui
-    ui = create_ui(plain=True)
-    assert isinstance(ui, UI)
+@pytest.fixture
+def rich_facade():
+    return create_console_facade(plain=False)
 
 
-def test_ui_delegation(mock_facade):
-    ui = UI(plain=False)
-
-    ui.banner("Title", "Subtitle")
-    mock_facade.banner.assert_called_with("Title", "Subtitle")
-
-    ui.summary("Summary", ["line1"])
-    mock_facade.summary.assert_called_with("Summary", ["line1"])
-
-    ui.render_markdown("# Title")
-    mock_facade.render_markdown.assert_called_with("# Title")
-
-    ui.render_code("print('hi')")
-    mock_facade.render_code.assert_called_with("print('hi')", "python")
-
-    ui.render_diff("old", "new")
-    mock_facade.render_diff.assert_called_with("old", "new", "file")
+@pytest.fixture
+def plain_facade():
+    return create_console_facade(plain=True)
 
 
-def test_ui_confirm(mock_facade):
-    ui = UI(plain=False)
-    mock_facade.confirm.return_value = True
-    assert ui.confirm("Are you sure?") is True
-    mock_facade.confirm.assert_called_with("Are you sure?", default=True)
-
-    mock_facade.plain = True
-    ui = UI(plain=True)
-    mock_facade.confirm.side_effect = UIError("Plain mode cannot prompt for confirmation prompts")
-    with pytest.raises(SystemExit):
-        ui.confirm("Q?")
-    mock_facade.console.print.assert_called()
+PROMPT_TOPICS = {
+    "confirm": "confirmation prompts",
+    "choose": "menu selections",
+    "input": "text input",
+}
 
 
-def test_ui_choose(mock_facade):
-    ui = UI(plain=False)
-    assert ui.choose("Pick", []) is None
-
-    mock_facade.plain = True
-    ui = UI(plain=True)
-    mock_facade.choose.side_effect = UIError("Plain mode cannot prompt for menu selections")
-    with pytest.raises(SystemExit):
-        ui.choose("Pick", ["A", "B", "C"])
-    mock_facade.console.print.assert_called()
+def _write_stubs(prompt_file, *entries: dict[str, object]) -> None:
+    prompt_file.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
 
 
-def test_ui_input(mock_facade):
-    ui = UI(plain=False)
-    mock_facade.input.return_value = "val"
-    assert ui.input("Prompt") == "val"
-    mock_facade.input.assert_called_with("Prompt", default=None)
+def _questionary_stub(monkeypatch, method: str, result: object) -> MagicMock:
+    import questionary
 
-    mock_facade.plain = True
-    ui = UI(plain=True)
-    mock_facade.input.side_effect = UIError("Plain mode cannot prompt for text input")
-    with pytest.raises(SystemExit):
-        ui.input("P1")
-    mock_facade.console.print.assert_called()
+    question = MagicMock()
+    question.ask.return_value = result
+    monkeypatch.setattr(questionary, method, lambda *args, **kwargs: question)
+    return question
 
 
-def test_plain_progress_tracker():
-    console_mock = MagicMock()
-    from polylogue.ui import _PlainProgressTracker
-
-    # Test with total (int)
-    tracker = _PlainProgressTracker(console_mock, "Task", 10)
-    tracker.advance(1)
-    tracker.update(description="New Task")
-    tracker.update(total=20)
-    tracker.__exit__(None, None, None)
-    assert console_mock.print.call_count >= 2
-
-    # Test with None total
-    console_mock.reset_mock()
-    tracker = _PlainProgressTracker(console_mock, "Task2", None)
-    tracker.advance(1.5)
-    tracker.update(total=5.5)
-    tracker.__exit__(None, None, None)
-
-
-class TestPlainConsoleMarkupStripping:
-    """Regression tests: PlainConsole must strip Rich markup for CI/plain output."""
-
-    @pytest.mark.parametrize("input_text,should_not_have,should_have", [
-        ("[bold]Archive:[/bold] 1,234 conversations", "[bold]", "Archive: 1,234 conversations"),
-        ("[green]✓[/green] All ok", "[green]", "✓ All ok"),
-        ("[#d97757]████████[/#d97757]", "#d97757", "████████"),
-        ("No markup at all", "", "No markup at all"),
-        ("", "", ""),
-    ], ids=["bold_markup", "color_markup", "hex_color_markup", "plain_text", "empty_string"])
-    def test_markup_handling(self, capsys, input_text, should_not_have, should_have):
+class TestPlainConsole:
+    @pytest.mark.parametrize(
+        ("objects", "expected", "unexpected"),
+        [
+            (("hello", "world"), "hello world", None),
+            (("[bold]Important[/bold]",), "Important", "[bold]"),
+            (("[green]Success[/green]",), "Success", "[green]"),
+            (("[#d97757]colored[/#d97757]",), "colored", "[#d97757]"),
+            (("[unclosed markup",), "[unclosed markup", None),
+        ],
+    )
+    def test_print_contract(self, capsys, objects, expected, unexpected):
         console = PlainConsole()
-        console.print(input_text)
-        captured = capsys.readouterr()
-        if should_not_have:
-            assert should_not_have not in captured.out
-        assert should_have in captured.out
+        console.print(*objects)
+        output = capsys.readouterr().out
+        assert expected in output
+        if unexpected:
+            assert unexpected not in output
+
+    def test_print_ignores_extra_kwargs(self, capsys):
+        PlainConsole().print("text", sep="|", end="!\n")
+        assert "text" in capsys.readouterr().out
+
+    def test_init_accepts_extra_args(self):
+        assert PlainConsole("arg1", key="value") is not None
 
 
-def test_rich_progress_tracker():
-    progress_mock = MagicMock()
-    task_id = "task1"
+class TestConsoleFacadePromptStubs:
+    @pytest.mark.parametrize(
+        ("entries", "expected_count"),
+        [([], 0), ([{"type": "confirm", "value": True}], 1), ([{"type": "confirm", "value": True}, {"type": "choose", "value": "a"}, {"type": "input", "value": "x"}], 3)],
+    )
+    def test_stub_loading_contract(self, tmp_path, monkeypatch, entries, expected_count):
+        if entries:
+            prompt_file = tmp_path / "stubs.jsonl"
+            _write_stubs(prompt_file, *entries)
+            monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(prompt_file))
+        else:
+            monkeypatch.delenv("POLYLOGUE_TEST_PROMPT_FILE", raising=False)
+        assert len(ConsoleFacade(plain=True)._prompt_responses) == expected_count
 
-    from polylogue.ui import _RichProgressTracker
+    def test_invalid_json_raises_uierror(self, tmp_path, monkeypatch):
+        prompt_file = tmp_path / "bad.jsonl"
+        prompt_file.write_text("not json\n")
+        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(prompt_file))
+        with pytest.raises(UIError, match="Invalid prompt stub"):
+            ConsoleFacade(plain=True)
 
-    tracker = _RichProgressTracker(progress_mock, task_id)
+    def test_pop_prompt_response_contract(self, mock_prompt_file):
+        _write_stubs(mock_prompt_file, {"type": "confirm", "value": True})
+        facade = ConsoleFacade(plain=True)
+        with pytest.raises(UIError, match="expected 'confirm' but got 'choose'"):
+            facade._pop_prompt_response("choose")
 
-    with tracker:
-        tracker.advance(5)
-        tracker.update(total=100, description="Processing")
+        _write_stubs(mock_prompt_file, {"value": True})
+        facade = ConsoleFacade(plain=True)
+        assert facade._pop_prompt_response("anything") == {"value": True}
 
-    progress_mock.__enter__.assert_called()
-    progress_mock.advance.assert_called_with(task_id, 5)
-    progress_mock.update.assert_called()
-    progress_mock.__exit__.assert_called()
+        mock_prompt_file.write_text("")
+        facade = ConsoleFacade(plain=True)
+        assert facade._pop_prompt_response("confirm") is None
+
+
+class TestConsoleFacadePrompts:
+    @pytest.mark.parametrize(
+        ("kind", "plain_value", "default", "expected"),
+        [
+            ("confirm", "y", True, True),
+            ("confirm", "n", True, False),
+            ("confirm", "", False, False),
+            ("choose", "2", None, "b"),
+            ("choose", "", None, None),
+            ("input", "typed", None, "typed"),
+            ("input", "", "fallback", "fallback"),
+        ],
+        ids=["confirm_yes", "confirm_no", "confirm_default", "choose_second", "choose_empty", "input_typed", "input_default"],
+    )
+    def test_plain_prompt_matrix(self, monkeypatch, kind, plain_value, default, expected):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _: plain_value)
+        facade = ConsoleFacade(plain=True)
+
+        if kind == "confirm":
+            assert facade.confirm("Continue?", default=default) is expected
+        elif kind == "choose":
+            assert facade.choose("Pick:", ["a", "b", "c"]) == expected
+        else:
+            assert facade.input("Name:", default=default) == expected
+
+    @pytest.mark.parametrize("kind", ["confirm", "choose", "input"])
+    def test_plain_non_tty_raises_uierror(self, monkeypatch, kind):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        facade = ConsoleFacade(plain=True)
+        with pytest.raises(UIError, match=PROMPT_TOPICS[kind]):
+            getattr(facade, kind)("Prompt:", default=True) if kind == "confirm" else (
+                facade.choose("Prompt:", ["a", "b"]) if kind == "choose" else facade.input("Prompt:")
+            )
+
+    @pytest.mark.parametrize(
+        ("entry", "expected"),
+        [
+            ({"type": "confirm", "value": True}, True),
+            ({"type": "confirm", "value": "yes"}, True),
+            ({"type": "confirm", "value": "0"}, False),
+            ({"type": "confirm", "use_default": True}, False),
+        ],
+        ids=["bool_true", "str_yes", "str_zero", "use_default"],
+    )
+    def test_confirm_stub_contract(self, mock_prompt_file, entry, expected):
+        _write_stubs(mock_prompt_file, entry)
+        facade = ConsoleFacade(plain=False)
+        assert facade.confirm("Continue?", default=False) is expected
+
+    @pytest.mark.parametrize(
+        ("entry", "options", "expected"),
+        [
+            ({"type": "choose", "value": "option2"}, ["option1", "option2", "option3"], "option2"),
+            ({"type": "choose", "index": 2}, ["a", "b", "c"], "c"),
+            ({"type": "choose", "index": "2"}, ["a", "b", "c"], "c"),
+            ({"type": "choose", "use_default": True}, ["first", "second"], "first"),
+        ],
+    )
+    def test_choose_stub_contract(self, mock_prompt_file, entry, options, expected):
+        _write_stubs(mock_prompt_file, entry)
+        assert ConsoleFacade(plain=False).choose("Pick:", options) == expected
+
+    @pytest.mark.parametrize(
+        ("entry", "default", "expected"),
+        [
+            ({"type": "input", "value": "typed"}, None, "typed"),
+            ({"type": "input", "value": 42}, None, "42"),
+            ({"type": "input", "use_default": True}, "fallback", "fallback"),
+            ({"type": "input", "value": None}, None, None),
+            ({"type": "input", "value": ""}, "default", ""),
+        ],
+    )
+    def test_input_stub_contract(self, mock_prompt_file, entry, default, expected):
+        _write_stubs(mock_prompt_file, entry)
+        assert ConsoleFacade(plain=False).input("Prompt:", default=default) == expected
+
+    def test_rich_choose_fallback_paths(self, monkeypatch):
+        question = _questionary_stub(monkeypatch, "select", None)
+        facade = ConsoleFacade(plain=False)
+        assert facade.choose("Pick:", ["a", "b", "c"]) is None
+        question.ask.assert_called_once()
+
+        question = _questionary_stub(monkeypatch, "autocomplete", "opt13")
+        assert facade.choose("Pick:", [f"opt{i}" for i in range(15)]) == "opt13"
+        question.ask.assert_called_once()
+
+    def test_rich_confirm_and_input_fallback_paths(self, monkeypatch):
+        confirm = _questionary_stub(monkeypatch, "confirm", None)
+        input_box = _questionary_stub(monkeypatch, "text", "")
+        facade = ConsoleFacade(plain=False)
+        assert facade.confirm("Continue?", default=True) is True
+        assert facade.input("Name:", default="fallback") == "fallback"
+        confirm.ask.assert_called_once()
+        input_box.ask.assert_called_once()
+
+
+class TestConsoleFacadeRendering:
+    def test_console_facade_creation_contract(self):
+        assert create_console_facade(plain=True).plain is True
+        assert create_console_facade(plain=False).plain is False
+
+    @pytest.mark.parametrize(
+        ("method", "args", "expected"),
+        [
+            ("banner", ("Title", "Subtitle"), ["Title", "Subtitle"]),
+            ("summary", ("Stats", ["Line 1", "[green]✓[/green] Success"]), ["Stats", "Line 1", "Success"]),
+            ("render_markdown", ("# Hello\n\nWorld",), ["Hello", "World"]),
+            ("render_code", ("print('hello')", "python"), ["print"]),
+            ("render_diff", ("old\n", "new\n", "test.txt"), ["test.txt"]),
+            ("success", ("Done",), ["Done"]),
+            ("warning", ("Careful",), ["Careful"]),
+            ("error", ("Broken",), ["Broken"]),
+            ("info", ("FYI",), ["FYI"]),
+        ],
+    )
+    def test_plain_rendering_surface_contract(self, capsys, method, args, expected):
+        facade = ConsoleFacade(plain=True)
+        getattr(facade, method)(*args)
+        output = capsys.readouterr().out
+        for text in expected:
+            assert text in output
+
+    def test_rich_rendering_surface_contract(self, rich_facade, capsys):
+        rich_facade.banner("Welcome", "Mission Control")
+        rich_facade.summary("Checklist", ["Item 1", "[red]Item 2[/red]"])
+        rich_facade.render_markdown("# Title\n\nBody")
+        rich_facade.render_code("print('hi')", "python")
+        rich_facade.render_diff("old\n", "new\n", "test.txt")
+        rich_facade.success("Good")
+        rich_facade.warning("Warn")
+        rich_facade.error("Oops")
+        rich_facade.info("FYI")
+        output = capsys.readouterr().out
+        assert "Welcome" in output
+        assert "Mission Control" in output
+        assert "Checklist" in output
+        assert "Item 2" in output
+        assert "test.txt" in output
+        assert "Good" in output
+        assert "Warn" in output
+        assert "Oops" in output
+        assert "FYI" in output
+
+    def test_render_diff_falls_back_when_pager_missing(self, plain_facade):
+        plain_facade.render_diff("line1\n", "line2\n", "file.txt")
+
+    def test_protocol_theme_contract(self):
+        plain = ConsoleFacade(plain=True)
+        rich = ConsoleFacade(plain=False)
+        assert callable(getattr(plain.console, "print", None))
+        assert callable(getattr(rich.console, "print", None))
+        assert plain.theme is not None
+        assert rich.theme is not None
+        assert rich._panel_box is not None
+        assert rich._banner_box is not None
+        assert rich._banner_box != rich._panel_box
+
+
+class TestUIWrapper:
+    def test_ui_init_and_create_contract(self, mock_facade):
+        ui = UI(plain=False)
+        assert ui._facade == mock_facade
+        assert ui.plain is False
+        assert ui.console == mock_facade.console
+        assert isinstance(create_ui(plain=True), UI)
+
+        with patch("polylogue.ui.create_console_facade", side_effect=RuntimeError("boom")):
+            with pytest.raises(SystemExit, match="boom"):
+                UI(plain=False)
+
+    def test_ui_delegation_contract(self, mock_facade):
+        ui = UI(plain=False)
+        ui.banner("Title", "Subtitle")
+        ui.summary("Summary", ["line1"])
+        ui.render_markdown("# Title")
+        ui.render_code("print('hi')")
+        ui.render_diff("old", "new")
+        mock_facade.banner.assert_called_with("Title", "Subtitle")
+        mock_facade.summary.assert_called_with("Summary", ["line1"])
+        mock_facade.render_markdown.assert_called_with("# Title")
+        mock_facade.render_code.assert_called_with("print('hi')", "python")
+        mock_facade.render_diff.assert_called_with("old", "new", "file")
+
+    @pytest.mark.parametrize(
+        ("method", "args", "kwargs"),
+        [
+            ("confirm", ("Are you sure?",), {"default": True}),
+            ("choose", ("Pick", ["A", "B"]), {}),
+            ("input", ("Prompt",), {"default": None}),
+        ],
+    )
+    def test_ui_prompt_delegation_contract(self, mock_facade, method, args, kwargs):
+        ui = UI(plain=False)
+        getattr(mock_facade, method).return_value = True if method == "confirm" else "A" if method == "choose" else "val"
+        result = getattr(ui, method)(*args, **kwargs)
+        assert result is not None
+        getattr(mock_facade, method).assert_called_once_with(*args, **kwargs)
+
+    @pytest.mark.parametrize(
+        ("method", "call"),
+        [
+            ("confirm", lambda ui: ui.confirm("Q?")),
+            ("choose", lambda ui: ui.choose("Pick", ["A", "B"])),
+            ("input", lambda ui: ui.input("Prompt")),
+        ],
+    )
+    def test_ui_plain_prompt_abort_contract(self, mock_facade, method, call):
+        mock_facade.plain = True
+        mock_facade.console = MagicMock()
+        getattr(mock_facade, method).side_effect = UIError(f"Plain mode cannot prompt for {PROMPT_TOPICS[method]}", prompt_topic=PROMPT_TOPICS[method])
+        ui = UI(plain=True)
+        with pytest.raises(SystemExit):
+            call(ui)
+        mock_facade.console.print.assert_called()
+
+
+class TestProgressTrackers:
+    def test_plain_progress_tracker_contract(self):
+        console = MagicMock()
+        tracker = _PlainProgressTracker(console, "Task", 10)
+        with tracker:
+            tracker.advance(1)
+            tracker.update(description="New Task")
+            tracker.update(total=20)
+        assert console.print.call_count >= 2
+
+        console.reset_mock()
+        tracker = _PlainProgressTracker(console, "Task2", None)
+        with tracker:
+            tracker.advance(1.5)
+            tracker.update(total=5.5)
+        assert console.print.call_count >= 2
+
+    def test_rich_progress_tracker_contract(self):
+        progress = MagicMock()
+        task_id = "task-1"
+        tracker = _RichProgressTracker(progress, task_id)
+        with tracker:
+            tracker.advance(5)
+            tracker.update(total=100, description="Processing")
+        progress.__enter__.assert_called_once()
+        progress.advance.assert_called_with(task_id, 5)
+        progress.update.assert_called()
+        progress.__exit__.assert_called_once()

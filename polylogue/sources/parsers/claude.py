@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from polylogue.lib.branch_type import BranchType
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.roles import Role
 from polylogue.sources.providers.claude_ai import ClaudeAIConversation
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
@@ -331,6 +331,8 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     # Conversation-level stats accumulated from raw items (not from message provider_meta)
     total_cost: float = 0.0
     total_duration: int = 0
+    saw_cost_field = False
+    saw_duration_field = False
     has_sidechain: bool = False
     cwds: set[str] = set()
     models: set[str] = set()
@@ -408,11 +410,13 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         )
 
         # Accumulate conversation-level stats from the raw item
-        cost_val = item.get("costUSD")
-        if cost_val:
+        if "costUSD" in item:
+            saw_cost_field = True
+            cost_val = item.get("costUSD")
             total_cost += _safe_float(cost_val)
-        dur_val = item.get("durationMs")
-        if dur_val:
+        if "durationMs" in item:
+            saw_duration_field = True
+            dur_val = item.get("durationMs")
             total_duration += _safe_int(dur_val)
         if item.get("isSidechain"):
             has_sidechain = True
@@ -444,9 +448,9 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     conv_meta: dict[str, Any] = {}
     if context_compactions:
         conv_meta["context_compactions"] = context_compactions
-    if total_cost > 0:
+    if saw_cost_field:
         conv_meta["total_cost_usd"] = total_cost
-    if total_duration > 0:
+    if saw_duration_field:
         conv_meta["total_duration_ms"] = total_duration
     if cwds:
         conv_meta["working_directories"] = sorted(cwds)
@@ -496,7 +500,7 @@ def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation
         title = payload.get("title") or payload.get("name") or fallback_id
         conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
         return ParsedConversation(
-            provider_name=Provider.CLAUDE,
+            provider_name=Provider.CLAUDE_AI,
             provider_conversation_id=str(conv_id or fallback_id),
             title=str(title),
             created_at=str(payload.get("created_at")) if payload.get("created_at") else None,
@@ -531,7 +535,7 @@ def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation
                 attachments.append(attachment)
 
     return ParsedConversation(
-        provider_name="claude",
+        provider_name=Provider.CLAUDE_AI,
         provider_conversation_id=conv.uuid,
         title=conv.title,
         created_at=conv.created_at,

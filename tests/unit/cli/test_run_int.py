@@ -83,12 +83,17 @@ async def test_run_sources_filtered_by_stage(
             Source(name="source-a", path=inbox / "a.json"),
             Source(name="source-b", path=inbox / "b.json"),
         ]
+        # Stages are independent: acquire + validate before testing parse
+        await run_sources(config=config, stage="acquire", source_names=["source-a"])
+        await run_sources(config=config, stage="validate", source_names=["source-a"])
         result = await run_sources(config=config, stage=stage, source_names=["source-a"])
     else:
         inbox = tmp_path / "inbox"
         source_file = ChatGPTExportBuilder("conv-chatgpt").add_node("user", "hello").write_to(inbox / "conversation.json")
         config = get_config()
         config.sources = [Source(name="inbox", path=source_file)]
+        await run_sources(config=config, stage="acquire", source_names=["inbox"])
+        await run_sources(config=config, stage="validate", source_names=["inbox"])
         await run_sources(config=config, stage="parse", source_names=["inbox"])
         result = await run_sources(config=config, stage=stage, source_names=["inbox"])
 
@@ -110,6 +115,9 @@ async def test_run_index_filters_selected_sources(workspace_env, tmp_path, monke
         Source(name="source-a", path=inbox / "a.json"),
         Source(name="source-b", path=inbox / "b.json"),
     ]
+    # Stages are independent: populate pipeline through all three predecessors
+    await run_sources(config=config, stage="acquire")
+    await run_sources(config=config, stage="validate")
     await run_sources(config=config, stage="parse")
 
     id_by_source = {}
@@ -233,23 +241,40 @@ def test_display_result_reports_index_error_hint(mock_env, capsys):
 class TestWatchModeCallbacks:
     def test_notify_callback_executes_with_count(self):
         with patch("subprocess.run") as mock_run:
-            NotificationObserver().on_completed(MagicMock(counts={"conversations": 5}))
+            NotificationObserver().on_completed(
+                MagicMock(
+                    counts={"conversations": 5, "new_conversations": 5, "changed_conversations": 0},
+                    drift={"new": {"conversations": 5}, "changed": {"conversations": 0}},
+                )
+            )
         assert "notify-send" in mock_run.call_args[0][0]
         assert "5" in str(mock_run.call_args[0][0])
 
     def test_notify_zero_is_noop(self):
         with patch("subprocess.run") as mock_run:
-            NotificationObserver().on_completed(MagicMock(counts={"conversations": 0}))
+            NotificationObserver().on_completed(MagicMock(counts={"conversations": 0}, drift={}))
         mock_run.assert_not_called()
 
     def test_notify_missing_binary_is_ignored(self):
         with patch("subprocess.run", side_effect=FileNotFoundError()):
-            NotificationObserver().on_completed(MagicMock(counts={"conversations": 1}))
+            NotificationObserver().on_completed(
+                MagicMock(
+                    counts={"conversations": 1, "new_conversations": 1, "changed_conversations": 0},
+                    drift={"new": {"conversations": 1}, "changed": {"conversations": 0}},
+                )
+            )
 
     def test_exec_callback_executes_with_count(self):
         with patch("subprocess.run") as mock_run:
-            ExecObserver("echo $POLYLOGUE_NEW_COUNT").on_completed(MagicMock(counts={"conversations": 3}))
-        assert mock_run.call_args.kwargs["env"]["POLYLOGUE_NEW_COUNT"] == "3"
+            ExecObserver("echo $POLYLOGUE_ACTIVITY_COUNT").on_completed(
+                MagicMock(
+                    counts={"conversations": 3, "new_conversations": 3, "changed_conversations": 0},
+                    drift={"new": {"conversations": 3}, "changed": {"conversations": 0}},
+                )
+            )
+        assert mock_run.call_args.kwargs["env"]["POLYLOGUE_ACTIVITY_COUNT"] == "3"
+        assert mock_run.call_args.kwargs["env"]["POLYLOGUE_NEW_CONVERSATION_COUNT"] == "3"
+        assert mock_run.call_args.kwargs["env"]["POLYLOGUE_CHANGED_CONVERSATION_COUNT"] == "0"
         assert mock_run.call_args.kwargs.get("shell") is not True
 
     @pytest.mark.parametrize(
@@ -270,7 +295,12 @@ class TestWatchModeCallbacks:
         with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo), patch(
             "urllib.request.urlopen"
         ) as mock_urlopen:
-            WebhookObserver("http://example.com/webhook").on_completed(MagicMock(counts={"conversations": 2}))
+            WebhookObserver("http://example.com/webhook").on_completed(
+                MagicMock(
+                    counts={"conversations": 2, "new_conversations": 2, "changed_conversations": 0},
+                    drift={"new": {"conversations": 2}, "changed": {"conversations": 0}},
+                )
+            )
         call_args = mock_urlopen.call_args[0][0]
         assert call_args.get_full_url() == "http://example.com/webhook"
         assert call_args.get_method() == "POST"
@@ -281,13 +311,28 @@ class TestWatchModeCallbacks:
         with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo), patch(
             "urllib.request.urlopen"
         ), patch("urllib.request.Request") as mock_request:
-            WebhookObserver("http://example.com/webhook").on_completed(MagicMock(counts={"conversations": 7}))
+            WebhookObserver("http://example.com/webhook").on_completed(
+                MagicMock(
+                    counts={"conversations": 7, "new_conversations": 7, "changed_conversations": 0},
+                    drift={"new": {"conversations": 7}, "changed": {"conversations": 0}},
+                )
+            )
         payload = json.loads(mock_request.call_args.kwargs["data"].decode())
-        assert payload == {"event": "sync", "new_conversations": 7}
+        assert payload == {
+            "event": "sync",
+            "conversation_activity_count": 7,
+            "new_conversations": 7,
+            "changed_conversations": 0,
+        }
 
     def test_webhook_errors_do_not_raise(self):
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
         with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo), patch(
             "urllib.request.urlopen", side_effect=ConnectionError("Connection failed")
         ):
-            WebhookObserver("http://example.com/webhook").on_completed(MagicMock(counts={"conversations": 1}))
+            WebhookObserver("http://example.com/webhook").on_completed(
+                MagicMock(
+                    counts={"conversations": 1, "new_conversations": 1, "changed_conversations": 0},
+                    drift={"new": {"conversations": 1}, "changed": {"conversations": 0}},
+                )
+            )

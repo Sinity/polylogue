@@ -74,7 +74,7 @@ class TestFilterStateIsolation:
         f2 = ConversationFilter(mock_repo)
 
         f1.provider("chatgpt")
-        f2.provider("claude")
+        f2.provider("claude-ai")
 
         await f1.list()
         await f2.list()
@@ -82,7 +82,7 @@ class TestFilterStateIsolation:
         first_call = mock_repo.list.await_args_list[0]
         second_call = mock_repo.list.await_args_list[1]
         assert first_call.kwargs["provider"] == "chatgpt"
-        assert second_call.kwargs["provider"] == "claude"
+        assert second_call.kwargs["provider"] == "claude-ai"
 
     @pytest.mark.asyncio
     async def test_chained_methods_accumulate_on_same_instance(self, mock_repo):
@@ -99,11 +99,11 @@ class TestFilterStateIsolation:
         """Reusing a filter adds to existing providers list."""
         f = ConversationFilter(mock_repo)
         f.provider("chatgpt")
-        f.provider("claude")  # second call
+        f.provider("claude-ai")  # second call
 
         await f.list()
         call = mock_repo.list.await_args_list[-1]
-        assert call.kwargs["providers"] == ["chatgpt", "claude"]
+        assert call.kwargs["providers"] == ["chatgpt", "claude-ai"]
 
     @pytest.mark.asyncio
     async def test_filter_sort_replaces_not_accumulates(self, mock_repo):

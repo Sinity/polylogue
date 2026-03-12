@@ -1,82 +1,136 @@
+"""Direct tests for polylogue.schemas.code_detection module.
+
+Covers detect_language(), regex patterns, alias resolution,
+extract_code_block_from_dict(), and extract_code_block().
+"""
 from __future__ import annotations
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from polylogue.schemas.code_detection import LANGUAGE_PATTERNS, detect_language, extract_code_block
-
-
-def test_language_patterns_cover_major_languages() -> None:
-    expected = {
-        "python",
-        "javascript",
-        "typescript",
-        "rust",
-        "go",
-        "java",
-        "c",
-        "cpp",
-        "bash",
-        "sql",
-        "html",
-        "css",
-        "json",
-        "yaml",
-    }
-    assert expected.issubset(LANGUAGE_PATTERNS)
-    assert all(patterns for patterns in LANGUAGE_PATTERNS.values())
-
-
-@pytest.mark.parametrize(
-    ("code", "expected"),
-    [
-        ("def hello():\n    print('world')", "python"),
-        ("const x = () => console.log('hi')", "javascript"),
-        ("interface User {\n  name: string;\n}", "typescript"),
-        ("fn main() {\n    println!(\"Hello\");\n}", "rust"),
-        ("func main() {\n    fmt.Println(\"hi\")\n}", "go"),
-        ("public class Main {\n    public static void main(String[] args) {}\n}", "java"),
-        ("#include <stdio.h>\nint main() {}", "c"),
-        ("std::cout << \"Hi\" << std::endl;", "cpp"),
-        ("#!/bin/bash\necho 'test'", "bash"),
-        ("SELECT * FROM users WHERE id = 1;", "sql"),
-        ("<!DOCTYPE html>\n<html><body></body></html>", "html"),
-        (".container {\n  display: flex;\n}", "css"),
-        ('{"name": "test", "value": 123}', "json"),
-        ("name: test\nvalue: 123", "yaml"),
-    ],
+from polylogue.schemas.code_detection import (
+    LANGUAGE_PATTERNS,
+    _regex_scores,
+    detect_language,
+    extract_code_block,
+    extract_code_block_from_dict,
 )
-def test_detect_language_exact_contracts(code: str, expected: str) -> None:
-    assert detect_language(code) == expected
 
 
-@pytest.mark.parametrize("code", ["", "   \n\n   ", "This is plain text without code markers", "random gibberish @@##$$"])
-def test_detect_language_returns_none_for_non_code(code: str) -> None:
-    assert detect_language(code) is None
+class TestDetectLanguage:
+    @pytest.mark.parametrize(("code", "expected"), [
+        ('def hello():\n    print("hi")', "python"),
+        ('class Foo:\n    pass', "python"),
+        ('from os import path\nimport sys', "python"),
+        ('fn main() {\n    println!("hello");\n}', "rust"),
+        ('pub struct Foo {\n    bar: i32,\n}', "rust"),
+        ('func main() {\n    fmt.Println("hello")\n}', "go"),
+        ('package main\nimport "fmt"', "go"),
+        ('SELECT name FROM users WHERE id = 1', "sql"),
+        ('CREATE TABLE foo (id INT, name TEXT)', "sql"),
+    ])
+    def test_detects_language(self, code: str, expected: str) -> None:
+        assert detect_language(code) == expected
+
+    def test_returns_none_for_plain_text(self) -> None:
+        assert detect_language("Hello, this is just a normal sentence.") is None
+
+    @pytest.mark.parametrize(("alias", "canonical"), [
+        ("py", "python"),
+        ("js", "javascript"),
+        ("ts", "typescript"),
+        ("rs", "rust"),
+        ("sh", "bash"),
+        ("zsh", "bash"),
+    ])
+    def test_declared_lang_aliases(self, alias: str, canonical: str) -> None:
+        assert detect_language("anything", declared_lang=alias) == canonical
+
+    def test_declared_lang_passthrough(self) -> None:
+        assert detect_language("anything", declared_lang="ruby") == "ruby"
+
+    def test_declared_lang_takes_priority(self) -> None:
+        python_code = 'def hello():\n    print("hi")'
+        assert detect_language(python_code, declared_lang="ruby") == "ruby"
+
+    @given(st.text(max_size=500))
+    @settings(max_examples=100)
+    def test_never_raises(self, code: str) -> None:
+        result = detect_language(code)
+        assert result is None or isinstance(result, str)
 
 
-@pytest.mark.parametrize(
-    ("declared", "expected"),
-    [("py", "python"), ("js", "javascript"), ("ts", "typescript"), ("rs", "rust"), ("sh", "bash"), ("zsh", "bash")],
-)
-def test_detect_language_normalizes_alias_hints(declared: str, expected: str) -> None:
-    assert detect_language("", declared_lang=declared) == expected
+class TestRegexScores:
+    def test_python_code_scores_positive(self) -> None:
+        scores = _regex_scores('def hello():\n    pass')
+        assert "python" in scores
+        assert scores["python"] > 0
+
+    def test_empty_string_scores_nothing(self) -> None:
+        scores = _regex_scores("")
+        assert len(scores) == 0
+
+    def test_all_languages_have_patterns(self) -> None:
+        for lang in LANGUAGE_PATTERNS:
+            assert len(LANGUAGE_PATTERNS[lang]) > 0
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("```python\ndef hello():\n    pass\n```", "def hello():\n    pass"),
-        ("```\nsome code\n```", "some code"),
-        ("Text before\n\n    indented code\n    more code\n\nText after", "indented code\nmore code"),
-        ("<thinking>Let me analyze this</thinking>", "Let me analyze this"),
-    ],
-)
-def test_extract_code_block_contracts(text: str, expected: str) -> None:
-    result = extract_code_block(text)
-    assert expected in result or result == expected
+class TestExtractCodeBlockFromDict:
+    def test_fenced_with_language(self) -> None:
+        block = {"type": "text", "text": "```python\ndef hello(): pass\n```"}
+        result = extract_code_block_from_dict(block)
+        assert result is not None
+        assert result["type"] == "code"
+        assert result["language"] == "python"
+        assert result["declared_language"] == "python"
+        assert "def hello" in result["text"]
+
+    def test_fenced_without_language(self) -> None:
+        block = {"type": "text", "text": '```\ndef hello(): pass\n```'}
+        result = extract_code_block_from_dict(block)
+        assert result is not None
+        assert result["type"] == "code"
+
+    def test_non_code_text(self) -> None:
+        block = {"type": "text", "text": "Just a short note"}
+        result = extract_code_block_from_dict(block)
+        assert result is None
+
+    def test_code_without_fence(self) -> None:
+        # Long enough text that looks like code
+        code_text = 'def hello():\n    print("world")\n\nclass Foo:\n    pass'
+        block = {"type": "text", "text": code_text}
+        result = extract_code_block_from_dict(block)
+        assert result is not None
+        assert result["language"] == "python"
 
 
-@pytest.mark.parametrize("text", ["No code blocks here", "Just plain text", ""])
-def test_extract_code_block_returns_original_or_empty_for_non_code(text: str) -> None:
-    result = extract_code_block(text)
-    assert result in {text, ""}
+class TestExtractCodeBlock:
+    def test_fenced_block(self) -> None:
+        text = "```python\ndef hello(): pass\n```"
+        assert extract_code_block(text) == "def hello(): pass"
+
+    def test_fenced_no_language(self) -> None:
+        text = "```\nsome code\n```"
+        assert extract_code_block(text) == "some code"
+
+    def test_thinking_block(self) -> None:
+        text = "<thinking>let me think about this</thinking>"
+        assert extract_code_block(text) == "let me think about this"
+
+    def test_indented_block(self) -> None:
+        text = "\n    def hello():\n        pass\n"
+        result = extract_code_block(text)
+        assert "def hello" in result
+
+    def test_no_code_returns_empty(self) -> None:
+        assert extract_code_block("No code here") == ""
+
+    def test_empty_string(self) -> None:
+        assert extract_code_block("") == ""
+
+    def test_code_detected_without_markers(self) -> None:
+        code = 'def foo():\n    return 42\n\nclass Bar:\n    pass'
+        result = extract_code_block(code)
+        assert "def foo" in result

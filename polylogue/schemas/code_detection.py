@@ -20,7 +20,7 @@ import re
 from functools import lru_cache
 from typing import Any
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 

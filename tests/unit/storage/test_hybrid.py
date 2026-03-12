@@ -103,7 +103,7 @@ class TestHybridSearchProvider:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         # Add conversations from different providers
-        for provider_name in ["claude", "chatgpt"]:
+        for provider_name in ["claude-ai", "chatgpt"]:
             for i in range(2):
                 conv = ConversationRecord(
                     conversation_id=f"{provider_name}-conv-{i}",
@@ -130,9 +130,9 @@ class TestHybridSearchProvider:
         # Create hybrid provider with mocks
         fts_mock = MagicMock()
         fts_mock.search.return_value = [
-            "claude-msg-0",
+            "claude-ai-msg-0",
             "chatgpt-msg-0",
-            "claude-msg-1",
+            "claude-ai-msg-1",
             "chatgpt-msg-1",
         ]
         fts_mock.db_path = tmp_path / "test.db"
@@ -143,9 +143,9 @@ class TestHybridSearchProvider:
         provider = HybridSearchProvider(fts_provider=fts_mock, vector_provider=vec_mock)
 
         # Search with provider filter
-        result = provider.search_conversations("test", limit=10, providers=["claude"])
-        # Should filter to only claude conversations
-        assert set(result) == {"claude-conv-0", "claude-conv-1"}
+        result = provider.search_conversations("test", limit=10, providers=["claude-ai"])
+        # Should filter to only Claude AI conversations
+        assert set(result) == {"claude-ai-conv-0", "claude-ai-conv-1"}
 
 
 class TestReciprocalRankFusion:
@@ -457,7 +457,7 @@ class TestProviderFilteringIntegration:
             results = hybrid_provider.search_conversations(
                 "test query",
                 limit=10,
-                providers=["claude", "chatgpt"]
+                providers=["claude-ai", "chatgpt"]
             )
 
             # Should return claude and chatgpt, but not gemini
@@ -513,10 +513,10 @@ class TestFTS5ProviderDirectFiltering:
 
 
 class TestSearchProviderSourceFiltering:
-    """Tests for source_name filtering in addition to provider_name."""
+    """Tests that provider filters stay provider-scoped."""
 
     async def test_hybrid_search_filters_by_source_name(self):
-        """HybridSearchProvider should filter by source_name as well as provider_name."""
+        """HybridSearchProvider should not conflate provider filters with source_name."""
         mock_fts = MagicMock()
         mock_fts.db_path = None
         mock_fts.search.return_value = ["msg-1", "msg-2"]
@@ -542,12 +542,12 @@ class TestSearchProviderSourceFiltering:
                 providers=["specific-source"]
             )
 
-            # Should have called the SQL with both provider_name and source_name checks
+            # Provider filtering should stay scoped to provider_name only.
             execute_call = mock_context.execute.call_args
             assert execute_call is not None
             sql = execute_call.args[0]
             assert "conversations.provider_name" in sql
-            assert "conversations.source_name" in sql
+            assert "conversations.source_name" not in sql
 
 
 class TestListConversationsByParent:

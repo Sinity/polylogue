@@ -113,7 +113,7 @@ def sparse_conversation(draw: st.DrawFn) -> Conversation:
     messages = draw(st.lists(sparse_message(), min_size=0, max_size=10))
     return Conversation(
         id=draw(st.text(min_size=1, max_size=30)),
-        provider=draw(st.sampled_from(["chatgpt", "claude", "gemini", "claude-code", "codex"])),
+        provider=draw(st.sampled_from(["chatgpt", "claude-ai", "gemini", "claude-code", "codex"])),
         title=draw(st.one_of(st.none(), st.text(max_size=100))),
         messages=MessageCollection(messages=messages),
         created_at=draw(_timestamp_or_none),

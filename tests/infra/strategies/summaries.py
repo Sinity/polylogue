@@ -9,7 +9,7 @@ from hypothesis import strategies as st
 
 from polylogue.lib.models import ConversationSummary
 
-_PROVIDERS = ("claude", "chatgpt", "gemini", "codex", "claude-code")
+_PROVIDERS = ("claude-ai", "chatgpt", "gemini", "codex", "claude-code")
 _SLUG_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789-"
 _TEXT_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,:;?!-_/"
 

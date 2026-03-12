@@ -46,6 +46,13 @@ def _configure_summary_pages(repo: AsyncMock, summaries):
     repo.iter_messages = _empty_messages
 
 
+def _make_backend() -> AsyncMock:
+    backend = AsyncMock()
+    backend.queries = MagicMock()
+    backend.queries.get_message_counts_batch = AsyncMock(return_value={})
+    return backend
+
+
 def _make_site_env(*, backend: AsyncMock, repository: AsyncMock) -> AppEnv:
     ui = MagicMock()
     ui.plain = True
@@ -86,8 +93,8 @@ def test_site_builder_archive_shape_contract(spec) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         summaries = [build_conversation_summary(summary) for summary in spec.summaries]
-        backend = AsyncMock()
-        backend.get_message_counts_batch.return_value = build_message_counts(spec.summaries)
+        backend = _make_backend()
+        backend.queries.get_message_counts_batch.return_value = build_message_counts(spec.summaries)
         repository = AsyncMock()
         _configure_summary_pages(repository, summaries)
 
@@ -130,8 +137,8 @@ def test_site_builder_archive_shape_contract(spec) -> None:
 def test_site_builder_search_surface_contract(summaries, mode: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        backend = AsyncMock()
-        backend.get_message_counts_batch.return_value = build_message_counts(summaries)
+        backend = _make_backend()
+        backend.queries.get_message_counts_batch.return_value = build_message_counts(summaries)
         repository = AsyncMock()
         _configure_summary_pages(repository, [build_conversation_summary(summary) for summary in summaries])
         output_dir = tmp_path / "site"
@@ -175,8 +182,8 @@ def test_site_command_contract(spec) -> None:
         tmp_path = Path(tmp)
         runner = CliRunner()
         summaries = [build_conversation_summary(summary) for summary in spec.summaries]
-        backend = AsyncMock()
-        backend.get_message_counts_batch.return_value = build_message_counts(spec.summaries)
+        backend = _make_backend()
+        backend.queries.get_message_counts_batch.return_value = build_message_counts(spec.summaries)
         repository = AsyncMock()
         _configure_summary_pages(repository, summaries)
         env = _make_site_env(backend=backend, repository=repository)
@@ -208,7 +215,7 @@ def test_site_builder_scan_archive_streaming_contract() -> None:
         specs = [
             ConversationSummarySpec(
                 conversation_id="conv-a",
-                provider="claude",
+                provider="claude-ai",
                 title="A",
                 summary="alpha",
                 tags=("law",),
@@ -228,8 +235,8 @@ def test_site_builder_scan_archive_streaming_contract() -> None:
             ),
         ]
         summaries = [build_conversation_summary(spec) for spec in specs]
-        backend = AsyncMock()
-        backend.get_message_counts_batch.return_value = build_message_counts(specs)
+        backend = _make_backend()
+        backend.queries.get_message_counts_batch.return_value = build_message_counts(specs)
         repository = AsyncMock()
         _configure_summary_pages(repository, summaries)
 
@@ -269,7 +276,7 @@ def test_site_builder_root_and_provider_index_contract() -> None:
                 ConversationIndex(
                     id="conv-1",
                     title="One",
-                    provider="claude",
+                    provider="claude-ai",
                     created_at="2024-01-01",
                     updated_at="2024-01-01 00:00",
                     message_count=2,
@@ -277,9 +284,9 @@ def test_site_builder_root_and_provider_index_contract() -> None:
                     path="claude/conv-1/conversation.html",
                 )
             ],
-            provider_counts={"claude": 1, "chatgpt": 2},
-            provider_messages={"claude": 2, "chatgpt": 5},
-            provider_order=["claude", "chatgpt"],
+            provider_counts={"claude-ai": 1, "chatgpt": 2},
+            provider_messages={"claude-ai": 2, "chatgpt": 5},
+            provider_order=["claude-ai", "chatgpt"],
             total_conversations=3,
             total_messages=7,
         )
@@ -290,7 +297,7 @@ def test_site_builder_root_and_provider_index_contract() -> None:
                     ConversationIndex(
                         id=f"{provider}-1",
                         title=f"{provider} title",
-                        provider=provider or "claude",
+                        provider=provider or "claude-ai",
                         created_at="2024-01-01",
                         updated_at="2024-01-01 00:00",
                         message_count=1,
@@ -310,7 +317,7 @@ def test_site_builder_root_and_provider_index_contract() -> None:
         calls = builder._write_template_stream.await_args_list
         assert calls[0].args[1] == builder.output_dir / "index.html"
         assert calls[0].kwargs["conversations"] == archive_stats.root_page_conversations
-        assert calls[1].args[1] == builder.output_dir / safe_path_component("claude", fallback="provider") / "index.html"
+        assert calls[1].args[1] == builder.output_dir / safe_path_component("claude-ai", fallback="provider") / "index.html"
         assert calls[2].args[1] == builder.output_dir / safe_path_component("chatgpt", fallback="provider") / "index.html"
 
 
