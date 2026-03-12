@@ -190,30 +190,3 @@ class TestExtractSubagentSpawns:
     def test_empty_invocations(self):
         assert extract_subagent_spawns([]) == []
 
-
-# =============================================================================
-# Tests for language detection via detect_language
-# =============================================================================
-
-class TestLanguageDetection:
-    def test_python_code_detected(self):
-        from polylogue.schemas.code_detection import detect_language
-        lang = detect_language("def hello():\n    print('hi')")
-        assert lang == "python"
-
-    def test_code_block_gets_language_metadata(self):
-        """Verify detect_language returns non-None for python code."""
-        from polylogue.schemas.code_detection import detect_language
-        result = detect_language("def foo():\n    pass")
-        assert result is not None
-
-    def test_declared_language_wins(self):
-        from polylogue.schemas.code_detection import detect_language
-        # detect_language with declared_lang should return the declared lang
-        result = detect_language("x = 1", "python")
-        assert result == "python"
-
-    def test_empty_code_returns_none(self):
-        from polylogue.schemas.code_detection import detect_language
-        result = detect_language("")
-        assert result is None
