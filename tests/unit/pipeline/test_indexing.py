@@ -56,6 +56,48 @@ class TestIndexService:
         result = await service.update_index(["conv1"])
         assert result is True
 
+    async def test_update_index_accepts_async_iterable(self, sqlite_backend):
+        """Streaming conversation IDs can be indexed without prebuilding a list."""
+        from polylogue.storage.store import ConversationRecord, MessageRecord
+
+        await sqlite_backend.save_conversation_record(
+            ConversationRecord(
+                conversation_id="conv-stream",
+                provider_name="chatgpt",
+                provider_conversation_id="prov-conv-stream",
+                title="Stream Test",
+                content_hash="hash-stream",
+            )
+        )
+        await sqlite_backend.save_messages(
+            [
+                MessageRecord(
+                    message_id="msg-stream",
+                    conversation_id="conv-stream",
+                    role="user",
+                    text="hello world",
+                    content_hash="msghash-stream",
+                )
+            ]
+        )
+
+        config = Config(
+            archive_root="/tmp",
+            render_root="/tmp/render",
+            sources=[],
+        )
+        service = IndexService(config, backend=sqlite_backend)
+
+        async def conversation_ids():
+            yield "conv-stream"
+
+        result = await service.update_index(conversation_ids())
+
+        assert result is True
+        status = await service.get_index_status()
+        assert status["exists"] is True
+        assert status["count"] >= 1
+
     async def test_rebuild_index_success(self, sqlite_backend):
         """Rebuild index from scratch."""
         config = Config(
@@ -107,6 +149,21 @@ class TestIndexService:
         await service.ensure_index_exists()
 
         # get_index_status should use the same backend and find the table
+        status = await service.get_index_status()
+        assert status["exists"] is True
+        assert isinstance(status["count"], int)
+
+    async def test_get_index_status_after_schema_init(self, sqlite_backend):
+        """Status after schema init shows index exists with zero-or-more entries."""
+        config = Config(
+            archive_root="/tmp",
+            render_root="/tmp/render",
+            sources=[],
+        )
+        service = IndexService(config, backend=sqlite_backend)
+
+        await sqlite_backend.list_conversations()
+
         status = await service.get_index_status()
         assert status["exists"] is True
         assert isinstance(status["count"], int)
@@ -186,6 +243,39 @@ class TestIndexServiceErrors:
         ):
             result = await service.get_index_status()
             assert result == {"exists": False, "count": 0}
+
+    async def test_update_index_no_backend(self):
+        """Update without backend returns False."""
+        from unittest.mock import MagicMock
+
+        config = MagicMock()
+        service = IndexService(config=config, backend=None)
+
+        result = await service.update_index(["conv-1"])
+
+        assert result is False
+
+    async def test_rebuild_no_backend(self):
+        """Rebuild without backend returns False."""
+        from unittest.mock import MagicMock
+
+        config = MagicMock()
+        service = IndexService(config=config, backend=None)
+
+        result = await service.rebuild_index()
+
+        assert result is False
+
+    async def test_get_index_status_no_backend(self):
+        """Status without backend returns defaults."""
+        from unittest.mock import MagicMock
+
+        config = MagicMock()
+        service = IndexService(config=config, backend=None)
+
+        status = await service.get_index_status()
+
+        assert status == {"exists": False, "count": 0}
 
     async def test_update_index_empty_ids_ensures_index(self):
         """update_index always delegates to the canonical storage helper."""
