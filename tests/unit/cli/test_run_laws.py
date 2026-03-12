@@ -115,6 +115,30 @@ def test_run_sync_once_forwards_arguments_contract(
         mock_print.assert_not_called()
 
 
+def test_run_sync_once_forwards_plan_snapshot_contract() -> None:
+    env = _make_env(plain=True)
+    cfg = Config(archive_root=Path("/tmp/archive"), render_root=Path("/tmp/render"), sources=[])
+    result = _run_result()
+
+    with (
+        patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run,
+        patch("builtins.print"),
+    ):
+        mock_run.return_value = result
+        observed = _run_sync_once(
+            cfg,
+            env,
+            "all",
+            None,
+            "html",
+            plan_snapshot=MagicMock(timestamp=123, counts={"scan": 1}, sources=[], cursors={}),
+        )
+
+    assert observed == result
+    assert "plan" in mock_run.call_args.kwargs
+    assert mock_run.call_args.kwargs["plan"] is not None
+
+
 @settings(
     max_examples=50,
     deadline=None,
