@@ -79,10 +79,26 @@ def dialogue_noise_mix() -> Conversation:
             id="a3",
             role="assistant",
             text="Calling tool",
-            provider_meta={"content_blocks": [{"type": "tool_use", "tool_name": "Read"}]},
+            provider_meta={"content_blocks": [{"type": "tool_use"}]},
         ),
     ]
     return Conversation(id="mixed", provider="claude", messages=MessageCollection(messages=messages))
+
+
+@pytest.fixture
+def projection_conversation() -> Conversation:
+    return Conversation(
+        id="projection",
+        provider="test",
+        messages=MessageCollection(
+            messages=[
+                Message(id="u1", role="user", text="First question here"),
+                Message(id="a1", role="assistant", text="First answer here"),
+                Message(id="u2", role="user", text="Second question here"),
+                Message(id="a2", role="assistant", text="Second answer here"),
+            ]
+        ),
+    )
 
 
 class TestDialoguePairContracts:
@@ -213,9 +229,7 @@ class TestConversationMetadataAndAggregation:
         )
         assert branched.user_message_count == 3
         assert branched.assistant_message_count == 3
-
-        clone = conversation_with_metadata.model_copy()
-        assert clone == conversation_with_metadata
+        assert conversation_with_metadata.model_copy() == conversation_with_metadata
 
 
 VIEW_CASES = [
@@ -331,6 +345,29 @@ class TestConversationViewsAndIteration:
         assert [message.id for message in branches[0][1]] == ["m2", "m3"]
 
 
+class TestConversationProjectionContracts:
+    def test_projection_count_and_execute_contract(self, projection_conversation):
+        projection = projection_conversation.project()
+        assert projection.count() == 4
+        assert [message.id for message in projection.to_list()] == ["u1", "a1", "u2", "a2"]
+        executed = projection.execute()
+        assert isinstance(executed, Conversation)
+        assert [message.id for message in executed.messages] == ["u1", "a1", "u2", "a2"]
+
+    @pytest.mark.parametrize(
+        ("projector", "expected_ids"),
+        [
+            (lambda p: p.limit(2), ["u1", "a1"]),
+            (lambda p: p.offset(1), ["a1", "u2", "a2"]),
+            (lambda p: p.reverse(), ["a2", "u2", "a1", "u1"]),
+            (lambda p: p.user_messages(), ["u1", "u2"]),
+        ],
+    )
+    def test_projection_window_contract_matrix(self, projection_conversation, projector, expected_ids):
+        projection = projector(projection_conversation.project())
+        assert [message.id for message in projection.to_list()] == expected_ids
+
+
 class TestConversationRendering:
     @pytest.fixture
     def render_cases(self):
@@ -405,18 +442,8 @@ class TestConversationRendering:
                 expected=("Important question", "Important answer"),
                 excluded=("System instructions", "Tool output"),
             ),
-            RenderCase(
-                name="unicode",
-                conversation=unicode_conv,
-                method="to_text",
-                expected=("🎯", "目的"),
-            ),
-            RenderCase(
-                name="attachments",
-                conversation=attachment_conv,
-                method="to_text",
-                expected=("Here's the document", "I'll review it"),
-            ),
+            RenderCase(name="unicode", conversation=unicode_conv, method="to_text", expected=("🎯", "目的")),
+            RenderCase(name="attachments", conversation=attachment_conv, method="to_text", expected=("Here's the document", "I'll review it")),
         ]
 
     @pytest.mark.parametrize("include_empty", [True, False])
@@ -427,8 +454,7 @@ class TestConversationRendering:
 
     def test_render_contract_matrix(self, render_cases):
         for case in render_cases:
-            kwargs = case.kwargs or {}
-            rendered = getattr(case.conversation, case.method)(**kwargs)
+            rendered = getattr(case.conversation, case.method)(**(case.kwargs or {}))
             assert_contains_all(rendered, *case.expected)
             if case.excluded:
                 assert_not_contains_any(rendered, *case.excluded)

@@ -1,8 +1,8 @@
-"""Tests for Claude Code semantic extraction.
+"""Pinned Claude Code semantic regressions.
 
-These tests verify that the semantic extractors correctly parse
-thinking traces, tool invocations, git operations, file changes,
-subagent spawns, and context compaction events.
+Cross-provider semantic ownership lives in ``test_unified_semantic_laws.py``.
+This file keeps Claude-specific helper and parser regressions that still add
+unique value.
 """
 
 from __future__ import annotations
@@ -20,500 +20,163 @@ from polylogue.pipeline.semantic import (
 )
 from polylogue.sources.parsers.claude import parse_code
 
-# =============================================================================
-# Thinking Trace Extraction Tests
-# =============================================================================
+
+@pytest.mark.parametrize(
+    ("blocks", "expected_texts"),
+    [
+        ([{"type": "thinking", "thinking": "I need to analyze this carefully."}], ["I need to analyze this carefully."]),
+        ([{"type": "thinking", "thinking": "First thought"}, {"type": "text", "text": "Response"}, {"type": "thinking", "thinking": "Second thought"}], ["First thought", "Second thought"]),
+        ([{"type": "thinking", "thinking": ""}, {"type": "thinking", "thinking": None}], []),
+        ([{"type": "text", "text": "Hello"}], []),
+    ],
+    ids=["single", "multiple", "empty", "none"],
+)
+def test_extract_thinking_traces_contract(blocks: list[dict[str, object]], expected_texts: list[str]) -> None:
+    traces = extract_thinking_traces(blocks)
+    assert [trace["text"] for trace in traces] == expected_texts
 
 
-class TestThinkingTraces:
-    """Tests for thinking trace extraction."""
-
-    def test_extracts_thinking_blocks(self):
-        """Thinking blocks are extracted with text and token count."""
-        blocks = [
-            {"type": "thinking", "thinking": "I need to analyze this carefully."},
-            {"type": "text", "text": "Here is my response."},
-        ]
-
-        traces = extract_thinking_traces(blocks)
-
-        assert len(traces) == 1
-        assert "analyze" in traces[0]["text"]
-        assert traces[0]["token_count"] > 0
-
-    def test_handles_empty_thinking(self):
-        """Empty thinking blocks are skipped."""
-        blocks = [
-            {"type": "thinking", "thinking": ""},
-            {"type": "thinking", "thinking": None},
-        ]
-
-        traces = extract_thinking_traces(blocks)
-        assert len(traces) == 0
-
-    def test_handles_no_thinking_blocks(self):
-        """No error when no thinking blocks present."""
-        blocks = [
-            {"type": "text", "text": "Hello"},
-        ]
-
-        traces = extract_thinking_traces(blocks)
-        assert len(traces) == 0
-
-    def test_handles_multiple_thinking_blocks(self):
-        """Multiple thinking blocks are all extracted."""
-        blocks = [
-            {"type": "thinking", "thinking": "First thought"},
-            {"type": "text", "text": "Response"},
-            {"type": "thinking", "thinking": "Second thought"},
-        ]
-
-        traces = extract_thinking_traces(blocks)
-        assert len(traces) == 2
+@pytest.mark.parametrize(
+    ("blocks", "expected"),
+    [
+        ([{"type": "tool_use", "name": "Read", "id": "tool-1", "input": {"file_path": "/test.py"}}], {"file": True, "search": False, "git": False, "subagent": False}),
+        ([{"type": "tool_use", "name": "Glob", "id": "tool-1", "input": {}}], {"file": False, "search": True, "git": False, "subagent": False}),
+        ([{"type": "tool_use", "name": "Bash", "id": "tool-1", "input": {"command": "git status"}}], {"file": False, "search": False, "git": True, "subagent": False}),
+        ([{"type": "tool_use", "name": "Task", "id": "tool-1", "input": {"subagent_type": "Explore"}}], {"file": False, "search": False, "git": False, "subagent": True}),
+        ([{"type": "tool_use", "name": "Bash", "id": "tool-1", "input": {"command": "ls -la"}}], {"file": False, "search": False, "git": False, "subagent": False}),
+    ],
+    ids=["read", "search", "git", "subagent", "plain-bash"],
+)
+def test_extract_tool_invocations_contract(blocks: list[dict[str, object]], expected: dict[str, bool]) -> None:
+    invocation = extract_tool_invocations(blocks)[0]
+    assert invocation.get("is_file_operation", False) is expected["file"]
+    assert invocation.get("is_search_operation", False) is expected["search"]
+    assert invocation.get("is_git_operation", False) is expected["git"]
+    assert invocation.get("is_subagent", False) is expected["subagent"]
 
 
-# =============================================================================
-# Tool Invocation Extraction Tests
-# =============================================================================
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"tool_name": "Bash", "input": {"command": "git status"}}, {"command": "status"}),
+        ({"tool_name": "Bash", "input": {"command": 'git commit -m "Fix bug"'}}, {"command": "commit", "message": "Fix bug"}),
+        ({"tool_name": "Bash", "input": {"command": "git checkout feature-branch"}}, {"command": "checkout", "branch": "feature-branch"}),
+        ({"tool_name": "Bash", "input": {"command": "git push origin main"}}, {"command": "push", "remote": "origin", "branch": "main"}),
+        ({"tool_name": "Bash", "input": {"command": "git add file1.py file2.py"}}, {"command": "add", "files": ["file1.py", "file2.py"]}),
+    ],
+    ids=["status", "commit", "checkout", "push", "add"],
+)
+def test_parse_git_operation_contract(payload: dict[str, object], expected: dict[str, object]) -> None:
+    result = parse_git_operation(payload)
+    assert result is not None
+    for key, value in expected.items():
+        if key == "files":
+            assert set(result[key]) == set(value)
+        else:
+            assert result[key] == value
 
 
-class TestToolInvocations:
-    """Tests for tool invocation extraction."""
-
-    def test_extracts_tool_use_blocks(self):
-        """Tool use blocks are extracted with name, id, and input."""
-        blocks = [
-            {
-                "type": "tool_use",
-                "name": "Read",
-                "id": "tool_123",
-                "input": {"file_path": "/test.py"},
-            }
-        ]
-
-        invocations = extract_tool_invocations(blocks)
-
-        assert len(invocations) == 1
-        assert invocations[0]["tool_name"] == "Read"
-        assert invocations[0]["tool_id"] == "tool_123"
-        assert invocations[0]["input"]["file_path"] == "/test.py"
-
-    def test_detects_file_operations(self):
-        """File operations are correctly flagged."""
-        file_tools = ["Read", "Write", "Edit", "NotebookEdit"]
-
-        for tool in file_tools:
-            blocks = [{"type": "tool_use", "name": tool, "id": "t1", "input": {}}]
-            invocations = extract_tool_invocations(blocks)
-            assert invocations[0]["is_file_operation"], f"{tool} should be file operation"
-
-    def test_detects_search_operations(self):
-        """Search operations are correctly flagged."""
-        search_tools = ["Glob", "Grep", "WebSearch"]
-
-        for tool in search_tools:
-            blocks = [{"type": "tool_use", "name": tool, "id": "t1", "input": {}}]
-            invocations = extract_tool_invocations(blocks)
-            assert invocations[0]["is_search_operation"], f"{tool} should be search operation"
-
-    def test_detects_git_operations(self):
-        """Git commands in Bash are flagged."""
-        blocks = [
-            {
-                "type": "tool_use",
-                "name": "Bash",
-                "id": "t1",
-                "input": {"command": "git status"},
-            }
-        ]
-
-        invocations = extract_tool_invocations(blocks)
-        assert invocations[0]["is_git_operation"]
-
-    def test_non_git_bash_not_flagged(self):
-        """Non-git Bash commands are not flagged as git operations."""
-        blocks = [
-            {
-                "type": "tool_use",
-                "name": "Bash",
-                "id": "t1",
-                "input": {"command": "ls -la"},
-            }
-        ]
-
-        invocations = extract_tool_invocations(blocks)
-        assert not invocations[0].get("is_git_operation")
-
-    def test_detects_subagent_spawns(self):
-        """Task tool is flagged as subagent."""
-        blocks = [
-            {
-                "type": "tool_use",
-                "name": "Task",
-                "id": "t1",
-                "input": {"subagent_type": "Explore"},
-            }
-        ]
-
-        invocations = extract_tool_invocations(blocks)
-        assert invocations[0]["is_subagent"]
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ([{"tool_name": "Read", "input": {"file_path": "/test.py"}}], {"operation": "read", "path": "/test.py"}),
+        ([{"tool_name": "Write", "input": {"file_path": "/new.py", "content": "print('hello')"}}], {"operation": "write", "path": "/new.py"}),
+        ([{"tool_name": "Edit", "input": {"file_path": "/test.py", "old_string": "old code", "new_string": "new code"}}], {"operation": "edit", "path": "/test.py"}),
+    ],
+    ids=["read", "write", "edit"],
+)
+def test_extract_file_changes_contract(payload: list[dict[str, object]], expected: dict[str, str]) -> None:
+    changes = extract_file_changes(payload)
+    assert len(changes) == 1
+    assert changes[0]["operation"] == expected["operation"]
+    assert changes[0]["path"] == expected["path"]
 
 
-# =============================================================================
-# Git Operation Parsing Tests
-# =============================================================================
+def test_extract_file_changes_truncates_long_content() -> None:
+    long_content = "x" * 1000
+    changes = extract_file_changes([
+        {"tool_name": "Write", "input": {"file_path": "/test.py", "content": long_content}},
+    ])
+    assert len(changes[0]["new_content"]) <= 500
 
 
-class TestGitOperations:
-    """Tests for git operation parsing."""
-
-    def test_parse_git_status(self):
-        """Git status command is parsed."""
-        result = parse_git_operation({
-            "tool_name": "Bash",
-            "input": {"command": "git status"},
-        })
-
-        assert result["command"] == "status"
-
-    def test_parse_git_commit_with_message(self):
-        """Git commit message is extracted."""
-        result = parse_git_operation({
-            "tool_name": "Bash",
-            "input": {"command": 'git commit -m "Fix bug"'},
-        })
-
-        assert result["command"] == "commit"
-        assert result["message"] == "Fix bug"
-
-    def test_parse_git_checkout_branch(self):
-        """Git checkout branch is extracted."""
-        result = parse_git_operation({
-            "tool_name": "Bash",
-            "input": {"command": "git checkout feature-branch"},
-        })
-
-        assert result["command"] == "checkout"
-        assert result["branch"] == "feature-branch"
-
-    def test_parse_git_push(self):
-        """Git push remote and branch are extracted."""
-        result = parse_git_operation({
-            "tool_name": "Bash",
-            "input": {"command": "git push origin main"},
-        })
-
-        assert result["command"] == "push"
-        assert result["remote"] == "origin"
-        assert result["branch"] == "main"
-
-    def test_parse_git_add_files(self):
-        """Git add files are extracted."""
-        result = parse_git_operation({
-            "tool_name": "Bash",
-            "input": {"command": "git add file1.py file2.py"},
-        })
-
-        assert result["command"] == "add"
-        assert "file1.py" in result["files"]
-        assert "file2.py" in result["files"]
-
-    def test_returns_none_for_non_git(self):
-        """Non-git commands return None."""
-        result = parse_git_operation({
-            "tool_name": "Bash",
-            "input": {"command": "ls -la"},
-        })
-
-        assert result is None
-
-    def test_returns_none_for_non_bash(self):
-        """Non-Bash tools return None."""
-        result = parse_git_operation({
-            "tool_name": "Read",
-            "input": {"file_path": "/test.py"},
-        })
-
+@pytest.mark.parametrize(
+    ("item", "should_detect"),
+    [
+        ({"type": "summary", "message": {"content": "Summary of the conversation so far..."}, "timestamp": 1704067200}, True),
+        ({"type": "summary", "message": {"content": [{"type": "text", "text": "Conversation summary here"}]}}, True),
+        ({"type": "user", "message": {"content": "Hello"}}, False),
+    ],
+    ids=["summary-text", "summary-blocks", "non-summary"],
+)
+def test_context_compaction_detection_contract(item: dict[str, object], should_detect: bool) -> None:
+    result = detect_context_compaction(item)
+    if should_detect:
+        assert result is not None
+        assert "summary" in result["summary"].lower()
+    else:
         assert result is None
 
 
-# =============================================================================
-# File Change Extraction Tests
-# =============================================================================
-
-
-class TestFileChanges:
-    """Tests for file change extraction."""
-
-    def test_extract_read_operation(self):
-        """Read operations are extracted."""
-        invocations = [
-            {"tool_name": "Read", "input": {"file_path": "/test.py"}},
-        ]
-
-        changes = extract_file_changes(invocations)
-
-        assert len(changes) == 1
-        assert changes[0]["path"] == "/test.py"
-        assert changes[0]["operation"] == "read"
-
-    def test_extract_write_operation(self):
-        """Write operations are extracted with content."""
-        invocations = [
-            {
-                "tool_name": "Write",
-                "input": {"file_path": "/new.py", "content": "print('hello')"},
-            },
-        ]
-
-        changes = extract_file_changes(invocations)
-
-        assert len(changes) == 1
-        assert changes[0]["operation"] == "write"
-        assert changes[0]["new_content"] is not None
-
-    def test_extract_edit_operation(self):
-        """Edit operations are extracted with old and new content."""
-        invocations = [
-            {
-                "tool_name": "Edit",
-                "input": {
-                    "file_path": "/test.py",
-                    "old_string": "old code",
-                    "new_string": "new code",
-                },
-            },
-        ]
-
-        changes = extract_file_changes(invocations)
-
-        assert len(changes) == 1
-        assert changes[0]["operation"] == "edit"
-        assert changes[0]["old_content"] is not None
-        assert changes[0]["new_content"] is not None
-
-    def test_truncates_long_content(self):
-        """Long content is truncated."""
-        long_content = "x" * 1000
-        invocations = [
-            {"tool_name": "Write", "input": {"file_path": "/test.py", "content": long_content}},
-        ]
-
-        changes = extract_file_changes(invocations)
-
-        assert len(changes[0]["new_content"]) <= 500
-
-
-# =============================================================================
-# Context Compaction Detection Tests
-# =============================================================================
-
-
-class TestContextCompaction:
-    """Tests for context compaction detection."""
-
-    def test_detects_summary_message(self):
-        """Summary messages are detected as compaction events."""
-        item = {
-            "type": "summary",
-            "message": {"content": "Summary of the conversation so far..."},
-            "timestamp": 1704067200,
-        }
-
-        compaction = detect_context_compaction(item)
-
-        assert compaction is not None
-        assert "Summary" in compaction["summary"]
-        assert compaction["timestamp"] == 1704067200
-
-    def test_detects_summary_with_content_blocks(self):
-        """Summary with content blocks is detected."""
-        item = {
-            "type": "summary",
+def test_parse_code_semantic_projection_contract() -> None:
+    payload = [
+        {
+            "type": "assistant",
+            "uuid": "msg-1",
+            "timestamp": 1704067200000,
+            "costUSD": 0.01,
+            "durationMs": 1000,
             "message": {
+                "role": "assistant",
                 "content": [
-                    {"type": "text", "text": "Conversation summary here"},
-                ]
+                    {"type": "thinking", "thinking": "Let me think..."},
+                    {"type": "text", "text": "Here is my answer"},
+                    {"type": "tool_use", "name": "Read", "id": "tool-1", "input": {"file_path": "/test.py"}},
+                    {"type": "tool_use", "name": "Task", "id": "tool-2", "input": {"subagent_type": "Explore", "prompt": "Find config files"}},
+                ],
             },
-        }
-
-        compaction = detect_context_compaction(item)
-
-        assert compaction is not None
-        assert "summary" in compaction["summary"].lower()
-
-    def test_returns_none_for_non_summary(self):
-        """Non-summary messages return None."""
-        item = {"type": "user", "message": {"content": "Hello"}}
-
-        compaction = detect_context_compaction(item)
-
-        assert compaction is None
-
-
-# =============================================================================
-# Integration Tests with parse_code
-# =============================================================================
-
-
-class TestParseCodeSemantic:
-    """Integration tests for semantic extraction in parse_code."""
-
-    def test_extracts_semantic_data_to_content_blocks(self):
-        """parse_code parses semantic content blocks into ParsedContentBlock objects."""
-        payload = [
-            {
-                "type": "assistant",
-                "uuid": "msg-1",
-                "timestamp": 1704067200000,
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "thinking", "thinking": "Let me think..."},
-                        {"type": "text", "text": "Here is my answer"},
-                        {
-                            "type": "tool_use",
-                            "name": "Read",
-                            "id": "tool-1",
-                            "input": {"file_path": "/test.py"},
-                        },
-                    ],
-                },
+        },
+        {
+            "type": "summary",
+            "message": {"content": "Summary of conversation"},
+            "timestamp": 1704067201000,
+        },
+        {
+            "type": "assistant",
+            "uuid": "msg-2",
+            "timestamp": 1704067202000,
+            "costUSD": 0.02,
+            "durationMs": 2000,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "name": "Bash", "id": "tool-3", "input": {"command": "git commit -m 'Fix bug'"}},
+                ],
             },
-        ]
+        },
+    ]
 
-        result = parse_code(payload, "test-session")
+    result = parse_code(payload, "test-session")
 
-        assert len(result.messages) == 1
-        # provider_meta is no longer set on ParsedMessage (removed in schema v3 cleanup)
-        assert result.messages[0].provider_meta is None
-
-        # Semantic data is now in content_blocks, classified at ingest time by prepare.py
-        blocks = result.messages[0].content_blocks
-        block_types = [b.type for b in blocks]
-        assert "thinking" in block_types
-        assert "tool_use" in block_types
-
-    def test_extracts_git_operations(self):
-        """parse_code parses Bash git commands into tool_use content blocks."""
-        payload = [
-            {
-                "type": "assistant",
-                "uuid": "msg-1",
-                "timestamp": 1704067200000,
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "name": "Bash",
-                            "id": "tool-1",
-                            "input": {"command": "git commit -m 'Fix bug'"},
-                        },
-                    ],
-                },
-            },
-        ]
-
-        result = parse_code(payload, "test-session")
-
-        blocks = result.messages[0].content_blocks
-        bash_blocks = [b for b in blocks if b.tool_name == "Bash"]
-        assert len(bash_blocks) == 1
-        assert bash_blocks[0].tool_input is not None
-        assert bash_blocks[0].tool_input.get("command") == "git commit -m 'Fix bug'"
-
-    def test_extracts_subagent_spawns(self):
-        """parse_code parses Task tool calls into tool_use content blocks."""
-        payload = [
-            {
-                "type": "assistant",
-                "uuid": "msg-1",
-                "timestamp": 1704067200000,
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "name": "Task",
-                            "id": "tool-1",
-                            "input": {
-                                "subagent_type": "Explore",
-                                "prompt": "Find config files",
-                            },
-                        },
-                    ],
-                },
-            },
-        ]
-
-        result = parse_code(payload, "test-session")
-
-        blocks = result.messages[0].content_blocks
-        task_blocks = [b for b in blocks if b.tool_name == "Task"]
-        assert len(task_blocks) == 1
-        assert task_blocks[0].tool_input is not None
-        assert task_blocks[0].tool_input.get("subagent_type") == "Explore"
-
-    def test_tracks_context_compactions(self):
-        """parse_code tracks context compaction events at conversation level."""
-        payload = [
-            {"type": "user", "uuid": "msg-1", "message": {"content": "Hello"}},
-            {
-                "type": "summary",
-                "message": {"content": "Summary of conversation"},
-                "timestamp": 1704067200000,
-            },
-            {"type": "assistant", "uuid": "msg-2", "message": {"content": "Hi"}},
-        ]
-
-        result = parse_code(payload, "test-session")
-
-        # Compaction should be in conversation provider_meta
-        assert result.provider_meta is not None
-        assert "context_compactions" in result.provider_meta
-        assert len(result.provider_meta["context_compactions"]) == 1
-
-    def test_aggregates_cost_and_duration(self):
-        """parse_code aggregates total cost and duration."""
-        payload = [
-            {
-                "type": "assistant",
-                "uuid": "msg-1",
-                "timestamp": 1704067200000,
-                "costUSD": 0.01,
-                "durationMs": 1000,
-                "message": {"content": "Response 1"},
-            },
-            {
-                "type": "assistant",
-                "uuid": "msg-2",
-                "timestamp": 1704067201000,
-                "costUSD": 0.02,
-                "durationMs": 2000,
-                "message": {"content": "Response 2"},
-            },
-        ]
-
-        result = parse_code(payload, "test-session")
-
-        assert result.provider_meta is not None
-        assert result.provider_meta["total_cost_usd"] == pytest.approx(0.03)
-        assert result.provider_meta["total_duration_ms"] == 3000
-
-
-# =============================================================================
-# Property-Based Tests
-# =============================================================================
+    assert len(result.messages) == 2
+    assert result.messages[0].provider_meta is None
+    first_types = [block.type for block in result.messages[0].content_blocks]
+    assert "thinking" in first_types and "tool_use" in first_types
+    bash_blocks = [block for block in result.messages[1].content_blocks if block.tool_name == "Bash"]
+    assert len(bash_blocks) == 1
+    assert bash_blocks[0].tool_input is not None
+    assert bash_blocks[0].tool_input.get("command") == "git commit -m 'Fix bug'"
+    assert result.provider_meta is not None
+    assert len(result.provider_meta["context_compactions"]) == 1
+    assert result.provider_meta["total_cost_usd"] == pytest.approx(0.03)
+    assert result.provider_meta["total_duration_ms"] == 3000
 
 
 @given(st.lists(st.text(min_size=1, max_size=50), min_size=0, max_size=5))
 @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
-def test_thinking_extraction_never_crashes(texts: list[str]):
-    """Thinking trace extraction handles any input."""
+def test_thinking_extraction_never_crashes(texts: list[str]) -> None:
     blocks = [{"type": "thinking", "thinking": text} for text in texts]
-    traces = extract_thinking_traces(blocks)
-    assert isinstance(traces, list)
+    assert isinstance(extract_thinking_traces(blocks), list)
 
 
 @given(
@@ -524,11 +187,9 @@ def test_thinking_extraction_never_crashes(texts: list[str]):
     )
 )
 @settings(max_examples=50)
-def test_tool_extraction_never_crashes(tool_names: list[str]):
-    """Tool invocation extraction handles any tools."""
+def test_tool_extraction_never_crashes(tool_names: list[str]) -> None:
     blocks = [
         {"type": "tool_use", "name": name, "id": f"t{i}", "input": {}}
         for i, name in enumerate(tool_names)
     ]
-    invocations = extract_tool_invocations(blocks)
-    assert len(invocations) == len(tool_names)
+    assert len(extract_tool_invocations(blocks)) == len(tool_names)
