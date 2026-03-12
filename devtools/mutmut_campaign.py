@@ -398,7 +398,14 @@ def patch_mutmut_section(
 
 
 def copy_workspace(src: Path, dst: Path) -> None:
-    shutil.copytree(src, dst, ignore=DEFAULT_IGNORE_PATTERNS, dirs_exist_ok=True)
+    shutil.copytree(
+        src,
+        dst,
+        ignore=DEFAULT_IGNORE_PATTERNS,
+        dirs_exist_ok=True,
+        symlinks=True,
+        ignore_dangling_symlinks=True,
+    )
 
 
 def git_commit_sha(cwd: Path) -> str:
