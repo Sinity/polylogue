@@ -94,15 +94,16 @@ guards during future waves rather than first-line remediation targets.
 
 ### Schema / Pipeline Follow-Up Baselines
 
-These were already improved substantially before the `004` execution and remain
-the reference point for those domains.
+These are the clean post-Phase-4 baselines after splitting schema and pipeline
+owner files, refreshing the campaign definitions, and rerunning all four
+campaigns on commit `856caf495bab`.
 
 | Campaign | Commit | Killed | Survived | Timeout | Not checked | Primary issue |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| `schema-validation` | `d1e704d7a2ba` | 235 | 161 | 0 | 0 | Validator/verification behavior is still under-constrained. |
-| `schema-inference` | `d1e704d7a2ba` | 534 | 317 | 447 | 0 | Timeouts still dominate inference/privacy heuristics. |
-| `schema-core` | `d1e704d7a2ba` | 792 | 895 | 7 | 0 | Core schema behavior still has heavy survivor mass. |
-| `pipeline-services` | `d1e704d7a2ba` | 736 | 595 | 84 | 246 | Acquisition/streaming/state-machine helpers still leave large timeout and not-checked clusters. |
+| `schema-validation` | `856caf495bab` | 235 | 161 | 0 | 0 | Stable after the Phase 4 split: reach is complete, but drift detection and validation sample behavior are still under-constrained. |
+| `schema-inference` | `856caf495bab` | 561 | 707 | 30 | 0 | The split removed the old timeout wall (`447 -> 30`) and exposed the real survivor mass in dynamic-key/pathlike/privacy heuristics. |
+| `schema-core` | `856caf495bab` | 795 | 883 | 16 | 0 | Aggregate schema reach remains complete; the remaining debt is concentrated in schema annotation and inference heuristics rather than blind spots. |
+| `pipeline-services` | `856caf495bab` | 841 | 648 | 84 | 35 | Phase 4 materially improved reach (`246 -> 35 not_checked`) and kill count, but Drive raw-stream acquisition still sits outside the current service-law surface. |
 
 ### Current Campaign Baselines
 

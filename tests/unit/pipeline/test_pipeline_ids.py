@@ -42,6 +42,7 @@ def test_attachment_content_id_returns_target_path_without_moving(tmp_path):
     assert updated_meta is not None and "sha256" in updated_meta
     assert source_file.exists()
     assert not target.exists()
+    assert attachment.provider_meta == {}
 
 
 def test_materialize_attachment_path_moves_file_into_assets(tmp_path):
