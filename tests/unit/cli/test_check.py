@@ -11,7 +11,7 @@ from click.testing import CliRunner
 from polylogue.cli import cli
 from polylogue.health import HealthCheck, HealthReport, VerifyStatus
 from polylogue.storage.backends.connection import open_connection
-from tests.infra.helpers import DbFactory
+from tests.infra.storage_records import DbFactory
 
 
 @pytest.fixture

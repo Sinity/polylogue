@@ -335,7 +335,7 @@ def db_path(workspace_env):
         def test_something(db_path):
             builder = ConversationBuilder(db_path, "test-conv")
     """
-    from tests.infra.helpers import db_setup
+    from tests.infra.storage_records import db_setup
 
     return db_setup(workspace_env)
 
@@ -350,7 +350,7 @@ def conversation_builder(db_path):
                    .add_message("m1", text="Hello")
                    .save())
     """
-    from tests.infra.helpers import ConversationBuilder
+    from tests.infra.storage_records import ConversationBuilder
 
     def _builder(conversation_id: str = "test-conv"):
         return ConversationBuilder(db_path, conversation_id)

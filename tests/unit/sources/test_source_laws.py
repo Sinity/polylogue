@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import zipfile
 from io import BytesIO
@@ -13,6 +14,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.config import Source
+from polylogue.sources import source as source_module
 from polylogue.sources.drive import (
     download_drive_files,
     drive_cache_file_path,
@@ -30,8 +32,12 @@ from polylogue.sources.source import (
     _ConversationEmitter,
     _decode_json_bytes,
     _has_supported_extension,
+    _initialize_cursor_state,
     _iter_json_stream,
+    _log_source_iteration_summary,
     _ParseContext,
+    _record_cursor_failure,
+    _select_paths_for_processing,
     _zip_entry_provider_hint,
     _ZipEntryValidator,
     detect_provider,
@@ -42,6 +48,7 @@ from polylogue.sources.source import (
     parse_payload,
 )
 from polylogue.types import Provider
+from tests.infra.source_builders import GenericConversationBuilder, make_claude_chat_message
 from tests.infra.strategies import (
     conversations_wrapper_bytes_strategy,
     json_array_bytes_strategy,
@@ -104,6 +111,35 @@ def test_detect_provider_prefers_payload_shape_over_conflicting_path_hint() -> N
     }
 
     assert detect_provider(payload, Path("misleading/claude-code/session.jsonl")) == Provider.CHATGPT
+
+
+@pytest.mark.parametrize(
+    ("payload", "path", "expected"),
+    [
+        ({"mapping": {}}, Path("unknown.json"), Provider.CHATGPT),
+        ({"chat_messages": []}, Path("unknown.json"), Provider.CLAUDE),
+        ({"type": "assistant", "message": {"content": "hi"}}, Path("unknown.json"), Provider.CLAUDE_CODE),
+        ({"type": "message", "role": "user", "content": []}, Path("unknown.json"), Provider.CODEX),
+        ({"chunkedPrompt": {"chunks": []}}, Path("unknown.json"), Provider.GEMINI),
+        ([{"mapping": {}}], Path("unknown.json"), Provider.CHATGPT),
+        ([{"chat_messages": []}], Path("unknown.json"), Provider.CLAUDE),
+        ([{"chunks": []}], Path("unknown.json"), Provider.GEMINI),
+        ([{"type": "assistant", "message": {"content": "hi"}}], Path("unknown.json"), Provider.CLAUDE_CODE),
+        ([{"type": "message", "role": "user", "content": []}], Path("unknown.json"), Provider.CODEX),
+        ({"unrelated": True}, Path("folder/chatgpt-export.json"), Provider.CHATGPT),
+        ({"unrelated": True}, Path("folder/claude-code/session.jsonl"), Provider.CLAUDE_CODE),
+        ({"unrelated": True}, Path("folder/claude_code/session.jsonl"), Provider.CLAUDE_CODE),
+        ({"unrelated": True}, Path("/tmp/claude/history.json"), Provider.CLAUDE),
+        ({"unrelated": True}, Path("folder/codex-export.json"), Provider.CODEX),
+        ({"unrelated": True}, Path("folder/gemini-export.json"), Provider.GEMINI),
+    ],
+)
+def test_detect_provider_exact_heuristics_contract(
+    payload: object,
+    path: Path,
+    expected: Provider,
+) -> None:
+    assert detect_provider(payload, path) == expected
 
 
 @given(provider_payload_case_strategy(_CANONICAL_PROVIDERS))
@@ -195,6 +231,42 @@ def test_iter_json_stream_jsonl_preserves_valid_records_with_blank_lines(case: t
     assert list(_iter_json_stream(BytesIO(raw), "test.jsonl")) == documents
 
 
+def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = b'{"id": 1}\n{broken}\n{broken}\n{broken}\n{broken}\n'
+    warnings: list[str] = []
+
+    monkeypatch.setattr(
+        source_module.logger,
+        "warning",
+        lambda message, *args: warnings.append(message % args if args else message),
+    )
+
+    items = list(_iter_json_stream(BytesIO(raw), "test.jsonl"))
+
+    assert items == [{"id": 1}]
+    assert warnings[:3] == [
+        "Skipping invalid JSON line in test.jsonl: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+    ] * 3
+    assert warnings[3] == "Skipping further invalid JSON lines in test.jsonl..."
+    assert warnings[4] == "Skipped 4 invalid JSON lines in test.jsonl"
+
+
+def test_iter_json_stream_falls_back_to_full_json_load_when_streaming_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def broken_items(handle: BytesIO, prefix: str):
+        calls.append(prefix)
+        raise source_module.ijson.common.JSONError("boom")
+
+    monkeypatch.setattr(source_module.ijson, "items", broken_items)
+
+    raw = b'{"conversations":[{"id":"one"},{"id":"two"}]}'
+    items = list(_iter_json_stream(BytesIO(raw), "test.json"))
+
+    assert calls == ["item", "conversations.item"]
+    assert items == [{"conversations": [{"id": "one"}, {"id": "two"}]}]
+
+
 def _materialize_generated_source(root: Path, *, hint_path: Path, raw: bytes, use_zip: bool) -> Source:
     """Write generated provider bytes either directly or inside a ZIP archive."""
     if use_zip:
@@ -207,6 +279,15 @@ def _materialize_generated_source(root: Path, *, hint_path: Path, raw: bytes, us
     payload_path.parent.mkdir(parents=True, exist_ok=True)
     payload_path.write_bytes(raw)
     return Source(name="generated", path=payload_path)
+
+
+def _write_generic_conversation(path: Path, conversation_id: str, text: str = "hello") -> Path:
+    GenericConversationBuilder(conversation_id).title(conversation_id).add_message(
+        "user",
+        f"{conversation_id}-message",
+        text=text,
+    ).write_to(path)
+    return path
 
 
 @given(
@@ -298,6 +379,226 @@ def test_iter_source_conversations_accepts_grouped_json_extensions(case: tuple[s
     assert all(str(conversation.provider_name) == provider for conversation in conversations)
 
 
+def test_parse_payload_depth_guard_contract() -> None:
+    assert parse_payload(Provider.CHATGPT.value, {}, "test", _depth=11) == []
+
+
+def test_source_iteration_preserves_claude_attachment_metadata_contract(tmp_path: Path) -> None:
+    payload = {
+        "chat_messages": [
+            make_claude_chat_message(
+                "msg-1",
+                "assistant",
+                "Files",
+                attachments=[{"id": "file-1", "name": "notes.txt", "size": 12, "mimeType": "text/plain"}],
+            )
+        ]
+    }
+    source_file = tmp_path / "claude.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    conversations = list(iter_source_conversations(Source(name="inbox", path=source_file)))
+
+    assert len(conversations) == 1
+    attachment = conversations[0].attachments[0]
+    assert attachment.provider_attachment_id == "file-1"
+    assert attachment.name == "notes.txt"
+
+
+def test_iter_source_conversations_handles_empty_directories_contract(tmp_path: Path) -> None:
+    cursor_state: dict[str, object] = {}
+
+    assert list(iter_source_conversations(Source(name="test", path=tmp_path), cursor_state=cursor_state)) == []
+    assert cursor_state["file_count"] == 0
+    assert cursor_state["failed_count"] == 0
+
+
+@pytest.mark.parametrize("iterator", ["parsed", "raw"], ids=["parsed", "raw"])
+def test_source_iteration_continues_after_invalid_json_contract(tmp_path: Path, iterator: str) -> None:
+    _write_generic_conversation(tmp_path / "valid1.json", "valid1", "hi")
+    (tmp_path / "invalid.json").write_text("{ broken json", encoding="utf-8")
+    _write_generic_conversation(tmp_path / "valid2.json", "valid2", "bye")
+
+    cursor_state: dict[str, object] = {}
+    if iterator == "parsed":
+        results = list(iter_source_conversations(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+        conversation_ids = [conversation.provider_conversation_id for conversation in results]
+        raw_items = []
+    else:
+        raw_items = list(iter_source_conversations_with_raw(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+        results = [conversation for _, conversation in raw_items]
+        conversation_ids = [conversation.provider_conversation_id for conversation in results]
+
+    assert conversation_ids == ["valid1", "valid2"]
+    assert cursor_state["file_count"] == 3
+    assert cursor_state["failed_count"] == 1
+    assert any("invalid.json" in item["path"] for item in cursor_state["failed_files"])
+    if iterator == "raw":
+        assert all(raw_data is not None for raw_data, _ in raw_items)
+
+
+def test_iter_source_conversations_tracks_file_disappearance_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    first = _write_generic_conversation(tmp_path / "first.json", "first")
+    second = _write_generic_conversation(tmp_path / "second.json", "second")
+    cursor_state: dict[str, object] = {}
+    original_open = Path.open
+
+    def flaky_open(path: Path, *args: object, **kwargs: object):
+        if path == second:
+            raise FileNotFoundError("deleted")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+
+    conversations = list(iter_source_conversations(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+
+    assert [conversation.provider_conversation_id for conversation in conversations] == ["first"]
+    assert cursor_state["failed_count"] == 1
+    assert any("second.json" in item["path"] for item in cursor_state["failed_files"])
+    assert first.exists()
+
+
+@pytest.mark.parametrize("skip_dir_name", ["analysis", "__pycache__"])
+def test_source_iteration_prunes_skip_dirs_contract(tmp_path: Path, skip_dir_name: str) -> None:
+    skip_dir = tmp_path / skip_dir_name
+    skip_dir.mkdir()
+    _write_generic_conversation(skip_dir / "skipped.json", "skipped")
+
+    assert list(iter_source_conversations(Source(name="test", path=tmp_path))) == []
+    assert list(iter_source_conversations_with_raw(Source(name="test", path=tmp_path))) == []
+
+
+def test_source_iteration_follows_symlinked_directories_contract(tmp_path: Path) -> None:
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    _write_generic_conversation(subdir / "linked.json", "linked")
+
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(subdir)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks not supported on this system")
+
+    parsed = list(iter_source_conversations(Source(name="test", path=link)))
+    raw = list(iter_source_conversations_with_raw(Source(name="test", path=link)))
+
+    assert [conversation.provider_conversation_id for conversation in parsed] == ["linked"]
+    assert [conversation.provider_conversation_id for _, conversation in raw] == ["linked"]
+
+
+def test_iter_source_conversations_with_raw_accepts_single_file_sources_contract(tmp_path: Path) -> None:
+    source_file = _write_generic_conversation(tmp_path / "single.json", "single")
+
+    items = list(iter_source_conversations_with_raw(Source(name="test", path=source_file)))
+
+    assert len(items) == 1
+    raw_data, conversation = items[0]
+    assert raw_data is not None
+    assert raw_data.source_path == str(source_file)
+    assert conversation.provider_conversation_id == "single"
+
+
+@pytest.mark.parametrize(
+    ("source_name", "filename", "use_zip", "needle"),
+    [
+        ("claude-code", "session.jsonl", False, b"Hello"),
+        ("claude-code", "session.jsonl", True, b"From zip"),
+    ],
+    ids=["plain-jsonl", "zip-jsonl"],
+)
+def test_iter_source_conversations_with_raw_preserves_grouped_bytes_contract(
+    tmp_path: Path,
+    source_name: str,
+    filename: str,
+    use_zip: bool,
+    needle: bytes,
+) -> None:
+    records = [
+        {"type": "user", "uuid": "u1", "sessionId": "s1", "message": {"content": needle.decode("utf-8")}},
+        {"type": "assistant", "uuid": "a1", "sessionId": "s1", "message": {"content": "Hi"}},
+    ]
+    content = "\n".join(json.dumps(record) for record in records) + "\n"
+
+    if use_zip:
+        source_path = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(source_path, "w") as zf:
+            zf.writestr(filename, content)
+    else:
+        source_path = tmp_path / filename
+        source_path.write_text(content, encoding="utf-8")
+
+    items = list(iter_source_conversations_with_raw(Source(name=source_name, path=source_path)))
+
+    assert len(items) == 1
+    raw_data, conversation = items[0]
+    assert raw_data is not None
+    assert raw_data.source_index is None
+    assert needle in raw_data.raw_bytes
+    assert conversation.provider_name == Provider.CLAUDE_CODE
+
+
+def test_iter_source_conversations_with_raw_assigns_source_indexes_for_multi_conversation_zip_contract(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "multi.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr(
+            "data.json",
+            json.dumps(
+                [
+                    {"id": "c1", "messages": [{"id": "m1", "role": "user", "text": "Q1"}]},
+                    {"id": "c2", "messages": [{"id": "m2", "role": "user", "text": "Q2"}]},
+                ]
+            ),
+        )
+
+    results = list(iter_source_conversations_with_raw(Source(name="test", path=archive_path)))
+
+    assert len(results) == 2
+    assert [raw_data.source_index for raw_data, _ in results if raw_data is not None] == [0, 1]
+
+
+def test_iter_source_conversations_with_raw_tracks_unicode_decode_failures_contract(
+    tmp_path: Path,
+) -> None:
+    bad_file = tmp_path / "bad_encoding.json"
+    bad_file.write_bytes(b"\xff\xfe invalid utf-8 { bad json")
+
+    cursor_state: dict[str, object] = {}
+    results = list(iter_source_conversations_with_raw(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+
+    assert results == []
+    assert cursor_state["failed_count"] == 1
+    assert any("bad_encoding.json" in item["path"] for item in cursor_state["failed_files"])
+
+
+def test_source_iteration_ignores_stat_failures_for_optional_mtime_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_file = _write_generic_conversation(source_dir / "conv.json", "conv")
+    original_stat = Path.stat
+
+    def flaky_stat(path: Path, *args: object, **kwargs: object):
+        if path == source_file:
+            raise OSError("no stat")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+
+    parsed_cursor: dict[str, object] = {}
+    raw_items = list(iter_source_conversations_with_raw(Source(name="test", path=source_dir), capture_raw=True))
+    parsed_items = list(iter_source_conversations(Source(name="test", path=source_dir), cursor_state=parsed_cursor))
+
+    assert len(raw_items) == 1
+    assert raw_items[0][0] is not None and raw_items[0][0].file_mtime is None
+    assert [conversation.provider_conversation_id for conversation in parsed_items] == ["conv"]
+    assert parsed_cursor["file_count"] == 1
+    assert "latest_mtime" not in parsed_cursor
+
+
 @pytest.mark.parametrize(
     ("provider", "payload", "expected_provider", "expected_count"),
     [
@@ -332,6 +633,123 @@ def test_parse_drive_payload_contract(
     assert all(conversation.provider_name == expected_provider for conversation in conversations)
 
 
+def test_parse_payload_generic_messages_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    sentinel_messages = [ParsedMessage(provider_message_id="m1", role="user", text="hello")]
+
+    monkeypatch.setattr(source_module, "extract_messages_from_list", lambda messages: sentinel_messages)
+
+    conversations = parse_payload(
+        Provider.DRIVE.value,
+        {"id": "conv-1", "name": "Named", "messages": [{"ignored": True}]},
+        "fallback",
+    )
+
+    assert len(conversations) == 1
+    assert conversations[0].provider_name == Provider.DRIVE
+    assert conversations[0].provider_conversation_id == "conv-1"
+    assert conversations[0].title == "Named"
+    assert conversations[0].messages == sentinel_messages
+
+
+def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[object, str]] = []
+
+    def fake_parse(payload: object, fallback_id: str) -> ParsedConversation:
+        calls.append((payload, fallback_id))
+        return ParsedConversation(
+            provider_name="chatgpt",
+            provider_conversation_id=fallback_id,
+            title=fallback_id,
+            created_at=None,
+            updated_at=None,
+            messages=[],
+        )
+
+    monkeypatch.setattr(source_module.chatgpt, "parse", fake_parse)
+    payloads = [{"id": "one"}, {"id": "two"}]
+
+    conversations = parse_payload(Provider.CHATGPT.value, payloads, "bundle")
+
+    assert [conversation.provider_conversation_id for conversation in conversations] == ["bundle-0", "bundle-1"]
+    assert calls == [(payloads[0], "bundle-0"), (payloads[1], "bundle-1")]
+
+
+def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[object, str]] = []
+
+    def fake_parse_code(payload: object, fallback_id: str) -> ParsedConversation:
+        calls.append((payload, fallback_id))
+        return ParsedConversation(
+            provider_name="claude-code",
+            provider_conversation_id=fallback_id,
+            title=fallback_id,
+            created_at=None,
+            updated_at=None,
+            messages=[],
+        )
+
+    monkeypatch.setattr(source_module.claude, "parse_code", fake_parse_code)
+
+    from_messages = parse_payload(
+        Provider.CLAUDE_CODE.value,
+        {"messages": [{"type": "user"}, {"type": "assistant"}]},
+        "session",
+    )
+    from_single = parse_payload(
+        Provider.CLAUDE_CODE.value,
+        {"type": "assistant", "message": {"content": "hi"}},
+        "single",
+    )
+
+    assert [conversation.provider_conversation_id for conversation in from_messages] == ["session"]
+    assert [conversation.provider_conversation_id for conversation in from_single] == ["single"]
+    assert calls == [
+        ([{"type": "user"}, {"type": "assistant"}], "session"),
+        ([{"type": "assistant", "message": {"content": "hi"}}], "single"),
+    ]
+
+
+def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    drive_calls: list[tuple[str, object, str]] = []
+    parse_calls: list[tuple[str, object, str]] = []
+
+    def fake_chunked(provider: str, payload: object, fallback_id: str) -> ParsedConversation:
+        drive_calls.append((provider, payload, fallback_id))
+        return ParsedConversation(
+            provider_name=provider,
+            provider_conversation_id=fallback_id,
+            title=fallback_id,
+            created_at=None,
+            updated_at=None,
+            messages=[],
+        )
+
+    def fake_parse_payload(provider: str, payload: object, fallback_id: str, _depth: int = 0):
+        parse_calls.append((provider, payload, fallback_id))
+        return [
+            ParsedConversation(
+                provider_name=provider,
+                provider_conversation_id=fallback_id,
+                title=fallback_id,
+                created_at=None,
+                updated_at=None,
+                messages=[],
+            )
+        ]
+
+    monkeypatch.setattr(source_module.drive, "parse_chunked_prompt", fake_chunked)
+    monkeypatch.setattr(source_module, "parse_payload", fake_parse_payload)
+    monkeypatch.setattr(source_module, "detect_provider", lambda payload, path: Provider.CHATGPT)
+
+    chunked = parse_drive_payload("gemini", [{"role": "user", "text": "hello"}], "chunks")
+    recursive = parse_drive_payload("drive", [{"mapping": {}, "id": "chatgpt-ish"}], "wrapped")
+
+    assert [conversation.provider_conversation_id for conversation in chunked] == ["chunks"]
+    assert drive_calls == [("gemini", {"chunks": [{"role": "user", "text": "hello"}]}, "chunks")]
+    assert [conversation.provider_conversation_id for conversation in recursive] == ["wrapped-0"]
+    assert parse_calls == [("chatgpt", {"mapping": {}, "id": "chatgpt-ish"}, "wrapped-0")]
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -350,6 +768,24 @@ def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, obj
 
 
 @pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (json.dumps({"id": "utf16-le"}).encode("utf-16-le"), {"id": "utf16-le"}),
+        (json.dumps({"id": "utf16-be"}).encode("utf-16-be"), {"id": "utf16-be"}),
+        (json.dumps({"id": "utf32-le"}).encode("utf-32-le"), {"id": "utf32-le"}),
+        (b'{"name":"caf\xe9"}', {"name": "caf"}),
+    ],
+)
+def test_decode_json_bytes_exact_encoding_fallback_contract(
+    raw: bytes,
+    expected: dict[str, object],
+) -> None:
+    decoded = _decode_json_bytes(raw)
+    assert decoded is not None
+    assert json.loads(decoded) == expected
+
+
+@pytest.mark.parametrize(
     ("filename", "expected"),
     [
         ("CHATGPT.JSON", True),
@@ -361,6 +797,103 @@ def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, obj
 )
 def test_has_supported_extension_contract(filename: str, expected: bool) -> None:
     assert _has_supported_extension(Path(filename)) is expected
+
+
+def test_record_cursor_failure_updates_state_exactly() -> None:
+    cursor_state = {"failed_files": [], "failed_count": 0}
+
+    _record_cursor_failure(cursor_state, "/tmp/data.json", "broken")
+
+    assert cursor_state == {
+        "failed_files": [{"path": "/tmp/data.json", "error": "broken"}],
+        "failed_count": 1,
+    }
+
+
+def test_record_cursor_failure_is_noop_without_cursor_state() -> None:
+    _record_cursor_failure(None, "/tmp/data.json", "broken")
+
+
+def test_initialize_cursor_state_tracks_latest_path_and_mtime(tmp_path: Path) -> None:
+    older = tmp_path / "older.json"
+    newer = tmp_path / "newer.json"
+    older.write_text("{}", encoding="utf-8")
+    newer.write_text("{}", encoding="utf-8")
+    os.utime(older, (1000, 1000))
+    os.utime(newer, (2000, 2000))
+
+    cursor_state: dict[str, object] = {}
+    _initialize_cursor_state(cursor_state, [older, newer])
+
+    assert cursor_state["file_count"] == 2
+    assert cursor_state["failed_files"] == []
+    assert cursor_state["failed_count"] == 0
+    assert cursor_state["latest_path"] == str(newer)
+    assert cursor_state["latest_mtime"] == newer.stat().st_mtime
+
+
+def test_select_paths_for_processing_skips_known_mtimes_only_when_mtime_enabled(tmp_path: Path) -> None:
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    first.write_text("{}", encoding="utf-8")
+    second.write_text("{}", encoding="utf-8")
+
+    first_mtime = source_module._get_file_mtime(first)
+    second_mtime = source_module._get_file_mtime(second)
+
+    selected, skipped = _select_paths_for_processing(
+        [first, second],
+        include_file_mtime=True,
+        known_mtimes={str(first): first_mtime},
+    )
+    assert skipped == 1
+    assert selected == [(second, second_mtime)]
+
+    selected_without_mtime, skipped_without_mtime = _select_paths_for_processing(
+        [first, second],
+        include_file_mtime=False,
+        known_mtimes={str(first): first_mtime},
+    )
+    assert skipped_without_mtime == 0
+    assert selected_without_mtime == [(first, None), (second, None)]
+
+
+def test_log_source_iteration_summary_emits_only_relevant_messages(monkeypatch: pytest.MonkeyPatch) -> None:
+    infos: list[str] = []
+    warnings: list[str] = []
+
+    monkeypatch.setattr(
+        source_module.logger,
+        "info",
+        lambda message, *args: infos.append(message % args if args else message),
+    )
+    monkeypatch.setattr(
+        source_module.logger,
+        "warning",
+        lambda message, *args: warnings.append(message % args if args else message),
+    )
+
+    _log_source_iteration_summary(
+        source_name="inbox",
+        total_paths=5,
+        skipped_mtime=2,
+        failed_count=1,
+        failure_kind="read",
+    )
+
+    assert infos == ["Skipped 2 of 5 files from source 'inbox' (unchanged mtime)"]
+    assert warnings == ["Skipped 1 of 5 files from source 'inbox' due to read errors. Run with --verbose for details."]
+
+    _log_source_iteration_summary(
+        source_name="inbox",
+        total_paths=5,
+        skipped_mtime=0,
+        failed_count=0,
+        failure_kind="read",
+    )
+
+    assert infos == ["Skipped 2 of 5 files from source 'inbox' (unchanged mtime)"]
+    assert warnings == ["Skipped 1 of 5 files from source 'inbox' due to read errors. Run with --verbose for details."]
 
 
 def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
@@ -491,6 +1024,39 @@ def test_conversation_emitter_individual_raw_capture_contract() -> None:
     assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == [0, 1]
     assert all(raw_data is not None for raw_data, _ in emitted)
     assert all(raw_data.provider_hint == Provider.DRIVE for raw_data, _ in emitted if raw_data is not None)
+
+
+def test_conversation_emitter_individual_raw_provider_hint_tracks_detected_payload_contract() -> None:
+    payload = {
+        "mapping": {
+            "node-1": {
+                "message": {
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["hello"]},
+                }
+            }
+        }
+    }
+    raw = json.dumps([payload]).encode("utf-8")
+    ctx = _ParseContext(
+        provider_hint=Provider.DRIVE,
+        should_group=False,
+        source_path_str="/tmp/export.json",
+        fallback_id="export",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=True,
+        session_index={},
+        detect_path=Path("export.json"),
+    )
+
+    emitted = list(_ConversationEmitter(ctx).emit(BytesIO(raw), "export.json"))
+
+    assert len(emitted) == 1
+    raw_data, conversation = emitted[0]
+    assert raw_data is not None
+    assert raw_data.provider_hint == Provider.CHATGPT
+    assert raw_data.source_index == 0
+    assert conversation.provider_name == Provider.CHATGPT
 
 
 def test_conversation_emitter_grouped_jsonl_contract() -> None:
@@ -866,3 +1432,42 @@ def test_iter_source_raw_data_uses_per_entry_provider_hints_for_mixed_zip_source
         f"{archive_path}:nested/gemini-export.json",
     ]
     assert [item.provider_hint for item in items] == [Provider.CHATGPT, Provider.GEMINI]
+
+
+def test_iter_source_raw_data_skips_known_mtimes_without_reading_file(tmp_path: Path) -> None:
+    skipped = tmp_path / "cached.json"
+    fresh = tmp_path / "fresh.json"
+    skipped.write_text('{"id":"cached"}', encoding="utf-8")
+    fresh.write_text('{"id":"fresh"}', encoding="utf-8")
+
+    items = list(
+        iter_source_raw_data(
+            Source(name="chatgpt", path=tmp_path),
+            known_mtimes={str(skipped): source_module._get_file_mtime(skipped)},
+        )
+    )
+
+    assert [item.source_path for item in items] == [str(fresh)]
+
+
+def test_iter_source_raw_data_tracks_read_failures_without_stopping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    good = tmp_path / "good.json"
+    bad = tmp_path / "bad.json"
+    good.write_text('{"mapping": {}, "id": "good"}', encoding="utf-8")
+    bad.write_text('{"mapping": {}, "id": "bad"}', encoding="utf-8")
+
+    original_read_bytes = Path.read_bytes
+
+    def flaky_read_bytes(path: Path) -> bytes:
+        if path == bad:
+            raise OSError("boom")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+
+    cursor_state: dict[str, object] = {}
+    items = list(iter_source_raw_data(Source(name="chatgpt", path=tmp_path), cursor_state=cursor_state))
+
+    assert [item.source_path for item in items] == [str(good)]
+    assert cursor_state["failed_count"] == 1
+    assert any(entry["path"] == str(bad) and entry["error"] == "boom" for entry in cursor_state["failed_files"])

@@ -208,7 +208,7 @@ async def test_run_rerenders_when_title_or_content_changes_contract(
 ) -> None:
     from polylogue.config import Source, get_config
     from polylogue.pipeline.runner import run_sources
-    from tests.infra.helpers import GenericConversationBuilder
+    from tests.infra.source_builders import GenericConversationBuilder
 
     with _workspace_paths() as (config, root):
         inbox = root / "inbox"

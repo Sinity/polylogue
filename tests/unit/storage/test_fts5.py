@@ -20,8 +20,8 @@ from polylogue.storage.index import rebuild_index, update_index_for_conversation
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
-from tests.infra.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
 from tests.infra.mutmut import preserved_mutmut_env
+from tests.infra.storage_records import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
 
 # ============================================================================
 # Tests for search_messages()

@@ -36,7 +36,7 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.search import escape_fts5_query
 from polylogue.storage.store import AttachmentRecord, ConversationRecord
-from tests.infra.helpers import make_conversation, make_message
+from tests.infra.storage_records import make_conversation, make_message
 from tests.infra.strategies.adversarial import (
     control_char_strategy,
     fts5_operator_strategy,
