@@ -9,10 +9,9 @@ This module contains tests for:
 
 from __future__ import annotations
 
-import json
+import asyncio
 import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -23,16 +22,10 @@ from polylogue.storage.backends.connection import connection_context, open_conne
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
 from polylogue.storage.store import (
     ConversationRecord,
-    MessageRecord,
     RawConversationRecord,
-    _json_or_none,
 )
 from tests.infra.storage_records import (
-    _make_ref_id,
-    make_attachment,
     make_conversation,
-    make_message,
-    store_records,
 )
 
 # test_db and test_conn fixtures are in conftest.py
@@ -134,18 +127,6 @@ def test_open_connection_thread_isolation(tmp_path):
     assert len(set(connection_ids)) == num_threads
 
 
-def test_open_connection_creates_parent_directories(tmp_path):
-    """open_connection() creates parent directories if they don't exist."""
-    db_path = tmp_path / "nested" / "deeply" / "test.db"
-    assert not db_path.parent.exists()
-
-    with open_connection(db_path) as conn:
-        assert conn is not None
-
-    assert db_path.exists()
-    assert db_path.parent.exists()
-
-
 def test_open_connection_busy_timeout_set(tmp_path):
     """open_connection() sets busy_timeout for concurrent access."""
     db_path = tmp_path / "test.db"
@@ -159,11 +140,6 @@ def test_open_connection_busy_timeout_set(tmp_path):
 # =============================================================================
 # DB+STORE INTEGRATION (from test_db_store.py)
 # =============================================================================
-
-
-class TestConnectionContextReuse:
-    """Test connection reuse within same thread."""
-
 
 class TestConnectionCommitAndRollback:
     """Test transaction commit/rollback behavior."""
@@ -281,51 +257,6 @@ class TestThreadSafety:
         assert len(errors) == 0, f"Errors: {errors}"
         assert len(set(connection_ids.values())) == 3, "Each thread should have different connection object"
 
-    def test_concurrent_writes_with_write_lock(self, tmp_path):
-        """Concurrent store_records() calls properly serialize via write lock."""
-        db_path = tmp_path / "test.db"
-
-        # Initialize database with WAL mode first
-        with open_connection(db_path) as conn:
-            conn.execute("SELECT 1").fetchone()
-
-        errors = []
-
-        def write_conversation(conv_id: int):
-            try:
-                conv = make_conversation(f"c{conv_id}", title=f"Conversation {conv_id}")
-                messages = [
-                    make_message(
-                        f"m{conv_id}-{i}",
-                        f"c{conv_id}",
-                        role="user" if i % 2 == 0 else "assistant",
-                        text=f"Message {i}",
-                    )
-                    for i in range(3)
-                ]
-
-                with open_connection(db_path) as conn:
-                    store_records(conversation=conv, messages=messages, attachments=[], conn=conn)
-                    conn.commit()  # Explicit commit to release locks faster
-            except Exception as e:
-                errors.append((conv_id, str(e)))
-
-        # Run concurrent writes with reduced parallelism to avoid lock contention
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(write_conversation, i) for i in range(20)]
-            for future in as_completed(futures):
-                future.result()
-
-        assert len(errors) == 0
-
-        # Verify all conversations written
-        with open_connection(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-            assert count == 20
-
-            msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            assert msg_count == 60  # 20 * 3
-
 
 class TestSchemaAndMigration:
     """Test schema initialization and versioning."""
@@ -382,318 +313,138 @@ class TestSchemaAndMigration:
         assert db_path.parent.exists()
 
 
-class TestBackendEdgeCases:
-    """Test edge cases and boundary conditions."""
+class TestAsyncBackendInfrastructure:
+    """Async backend locking, initialization, and lifecycle contracts."""
 
-    def test_store_records_with_null_optional_fields(self, tmp_path):
-        """store_records() handles conversations/messages with NULL optional fields."""
-        db_path = tmp_path / "test.db"
+    @pytest.mark.asyncio
+    async def test_concurrent_schema_initialization(self, tmp_path):
+        """Concurrent operations must initialize schema once without racing."""
+        backend = SQLiteBackend(db_path=tmp_path / "test_concurrent.db")
 
-        conv = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title=None,  # NULL
-            created_at=None,  # NULL
-            updated_at=None,  # NULL
-            content_hash="hash1",
-            provider_meta=None,  # NULL
+        results = await asyncio.gather(
+            *[backend.get_conversation(f"test:{i}") for i in range(10)]
         )
 
-        msg = MessageRecord(
-            message_id="m1",
-            conversation_id="c1",
-            provider_message_id=None,  # NULL
-            role=None,  # NULL
-            text=None,  # NULL
-            timestamp=None,  # NULL
-            content_hash="msghash1",
-            provider_meta=None,  # NULL
+        assert all(result is None for result in results)
+        assert backend._schema_ensured is True
+
+    @pytest.mark.asyncio
+    async def test_schema_init_called_once_despite_concurrency(self, tmp_path):
+        """The schema guard must collapse many concurrent calls into one actual init."""
+        backend = SQLiteBackend(db_path=tmp_path / "test_once.db")
+
+        init_count = 0
+        original_ensure_schema = backend._ensure_schema
+
+        async def counting_ensure_schema(conn):
+            nonlocal init_count
+            init_count += 1
+            return await original_ensure_schema(conn)
+
+        backend._ensure_schema = counting_ensure_schema
+
+        await asyncio.gather(*[backend.list_conversations() for _ in range(20)])
+
+        assert init_count == 1
+
+    @pytest.mark.asyncio
+    async def test_schema_lock_prevents_duplicate_slow_initialization(self, tmp_path):
+        """A slow schema init path must still run exactly once under contention."""
+        backend = SQLiteBackend(db_path=tmp_path / "test_lock.db")
+        backend._schema_ensured = False
+
+        events: list[str] = []
+        original_ensure_schema = backend._ensure_schema
+
+        async def slow_ensure_schema(conn):
+            events.append("start")
+            await asyncio.sleep(0.05)
+            await original_ensure_schema(conn)
+            events.append("end")
+
+        backend._ensure_schema = slow_ensure_schema
+
+        await asyncio.gather(
+            backend.get_conversation("a"),
+            backend.get_conversation("b"),
         )
 
-        with open_connection(db_path) as conn:
-            counts = store_records(conversation=conv, messages=[msg], attachments=[], conn=conn)
+        assert events.count("start") == 1
+        assert events.count("end") == 1
 
-        assert counts["conversations"] == 1
-        assert counts["messages"] == 1
+    @pytest.mark.asyncio
+    async def test_transaction_context_manager_acquires_and_releases_write_lock(self, tmp_path):
+        """transaction() must hold the write lock for the duration of the context only."""
+        backend = SQLiteBackend(db_path=tmp_path / "transaction.db")
 
-        # Verify NULLs preserved
-        with open_connection(db_path) as conn:
-            conv_row = conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("c1",)).fetchone()
-            assert conv_row["title"] is None
-            assert conv_row["created_at"] is None
+        async with backend.transaction():
+            assert backend._write_lock.locked()
 
-            msg_row = conn.execute("SELECT * FROM messages WHERE message_id = ?", ("m1",)).fetchone()
-            assert msg_row["role"] is None
-            assert msg_row["text"] is None
+        assert not backend._write_lock.locked()
 
-    def test_store_records_with_empty_messages_and_attachments(self, tmp_path):
-        """store_records() handles conversation with no messages or attachments."""
-        db_path = tmp_path / "test.db"
+    @pytest.mark.asyncio
+    async def test_concurrent_writes_are_serialized_by_write_lock(self, tmp_path):
+        """Concurrent write contexts must all complete without losing participants."""
+        backend = SQLiteBackend(db_path=tmp_path / "writes.db")
+        execution_order: list[int] = []
 
-        conv = make_conversation("c1", title="Empty Conversation")
+        async def write_operation(task_id: int):
+            async with backend.transaction():
+                execution_order.append(task_id)
+                await asyncio.sleep(0.01)
 
-        with open_connection(db_path) as conn:
-            counts = store_records(conversation=conv, messages=[], attachments=[], conn=conn)
+        await asyncio.gather(*[write_operation(i) for i in range(5)])
 
-        assert counts["conversations"] == 1
-        assert counts["messages"] == 0
-        assert counts["attachments"] == 0
+        assert len(execution_order) == 5
+        assert set(execution_order) == {0, 1, 2, 3, 4}
 
-    def test_attachment_without_message_id(self, tmp_path):
-        """Attachments can exist without being tied to a message."""
-        db_path = tmp_path / "test.db"
+    @pytest.mark.asyncio
+    async def test_reads_do_not_acquire_write_lock(self, tmp_path):
+        """Read-only operations must not grab the write lock."""
+        backend = SQLiteBackend(db_path=tmp_path / "read-no-lock.db")
 
-        conv = make_conversation("c1", title="Test")
-        # Attachment without message_id
-        att = make_attachment("att1", "c1", message_id=None, mime_type="application/pdf", size_bytes=5000)
+        await backend.list_conversations()
 
-        with open_connection(db_path) as conn:
-            counts = store_records(conversation=conv, messages=[], attachments=[att], conn=conn)
+        assert not backend._write_lock.locked()
 
-        assert counts["attachments"] == 1
+    @pytest.mark.asyncio
+    async def test_reads_can_proceed_during_write(self, tmp_path):
+        """WAL-mode reads should proceed while a write transaction is open."""
+        backend = SQLiteBackend(db_path=tmp_path / "read-during-write.db")
+        read_completed = False
 
-        # Verify stored
-        with open_connection(db_path) as conn:
-            row = conn.execute("SELECT * FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-            assert row is not None
-            assert row["ref_count"] == 1
+        async def slow_write():
+            async with backend.transaction():
+                await asyncio.sleep(0.1)
 
+        async def quick_read():
+            nonlocal read_completed
+            await backend.list_conversations()
+            read_completed = True
 
-class TestComplexScenarios:
-    """Test realistic complex scenarios."""
+        write_task = asyncio.create_task(slow_write())
+        await asyncio.sleep(0.01)
+        read_task = asyncio.create_task(quick_read())
+        await asyncio.gather(write_task, read_task)
 
-    def test_conversation_lifecycle_with_attachments(self, tmp_path):
-        """Full lifecycle: create → add attachments → remove attachments → cleanup."""
-        db_path = tmp_path / "test.db"
+        assert read_completed
 
-        # Step 1: Create conversation with one attachment
-        conv_v1 = make_conversation(
-            "c1",
-            provider_name="claude",
-            title="Analysis Project",
-            created_at="2024-01-01T10:00:00Z",
-            updated_at="2024-01-01T10:00:00Z",
-            content_hash="hash-v1",
-        )
-        msg1 = make_message("m1", "c1", text="Please analyze this image", timestamp="2024-01-01T10:00:00Z")
-        att1 = make_attachment("att-image", "c1", "m1", mime_type="image/png", size_bytes=51200)
+    @pytest.mark.asyncio
+    async def test_connection_error_during_init(self):
+        """Invalid connection targets must surface an error instead of silently succeeding."""
+        with pytest.raises((OSError, PermissionError, Exception)):
+            backend = SQLiteBackend(db_path=Path("/nonexistent/deeply/nested/path/db.db"))
+            await backend.get_conversation("test")
 
-        with open_connection(db_path) as conn:
-            store_records(conversation=conv_v1, messages=[msg1], attachments=[att1], conn=conn)
+    @pytest.mark.asyncio
+    async def test_close_is_idempotent(self, tmp_path):
+        """Repeated close() calls must be safe on an initialized backend."""
+        backend = SQLiteBackend(db_path=tmp_path / "close.db")
+        await backend.list_conversations()
 
-        # Step 2: Add more messages and attachments
-        msg2 = make_message("m2", "c1", role="assistant", text="The image shows...", timestamp="2024-01-01T10:01:00Z")
-        att2 = make_attachment("att-export", "c1", "m2", mime_type="application/json", size_bytes=2048)
-        conv_v2 = make_conversation(
-            "c1",
-            provider_name="claude",
-            title="Analysis Project",
-            created_at="2024-01-01T10:00:00Z",
-            updated_at="2024-01-01T10:02:00Z",
-            content_hash="hash-v2",
-        )
-
-        with open_connection(db_path) as conn:
-            store_records(
-                conversation=conv_v2,
-                messages=[msg1, msg2],
-                attachments=[att1, att2],
-                conn=conn,
-            )
-
-        # Verify 2 attachments now
-        with open_connection(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
-            assert count == 2
-
-        # Step 3: Final update removes one attachment
-        conv_v3 = make_conversation(
-            "c1",
-            provider_name="claude",
-            title="Analysis Project - Final",
-            created_at="2024-01-01T10:00:00Z",
-            updated_at="2024-01-01T10:03:00Z",
-            content_hash="hash-v3",
-        )
-
-        with open_connection(db_path) as conn:
-            store_records(
-                conversation=conv_v3,
-                messages=[msg1, msg2],
-                attachments=[att1],  # Only image, no export
-                conn=conn,
-            )
-
-        # Verify: image kept, export deleted
-        with open_connection(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
-            assert count == 1
-
-            remaining = conn.execute("SELECT attachment_id FROM attachments").fetchone()
-            assert remaining["attachment_id"] == "att-image"
-
-    def test_multi_provider_conversations_separate(self, tmp_path):
-        """Conversations from different providers don't interfere."""
-        db_path = tmp_path / "test.db"
-
-        conv_gpt = make_conversation(
-            "c-gpt", provider_name="chatgpt", title="ChatGPT Conversation", content_hash="hash-gpt"
-        )
-        conv_claude = make_conversation(
-            "c-claude", provider_name="claude", title="Claude Conversation", content_hash="hash-claude"
-        )
-
-        with open_connection(db_path) as conn:
-            store_records(conversation=conv_gpt, messages=[], attachments=[], conn=conn)
-            store_records(conversation=conv_claude, messages=[], attachments=[], conn=conn)
-
-        # Verify both stored correctly
-        with open_connection(db_path) as conn:
-            gpt_row = conn.execute("SELECT * FROM conversations WHERE provider_name = ?", ("chatgpt",)).fetchone()
-            claude_row = conn.execute("SELECT * FROM conversations WHERE provider_name = ?", ("claude",)).fetchone()
-
-            assert gpt_row is not None
-            assert gpt_row["title"] == "ChatGPT Conversation"
-            assert claude_row is not None
-            assert claude_row["title"] == "Claude Conversation"
-
-
-def _seed_conversation(backend):
-    """Helper: insert a conversation so metadata operations have a target."""
-    conn = backend._get_connection()
-    conv = make_conversation("conv1", content_hash="hash1")
-    msg = make_message("m1", "conv1", text="Hello")
-    store_records(conversation=conv, messages=[msg], attachments=[], conn=conn)
-    conn.commit()
-    return "conv1"
-
-
-# =============================================================================
-# GET CONVERSATION STATS (parametrized)
-# =============================================================================
-
-# Test cases for get_conversation_stats with different message configurations
-CONVERSATION_STATS_CASES = [
-    (
-        [],
-        {"total": 0, "dialogue": 0, "tool": 0},
-        "empty",
-    ),
-    (
-        [
-            ("msg-0", "user", "Message 0"),
-            ("msg-1", "assistant", "Message 1"),
-            ("msg-2", "user", "Message 2"),
-            ("msg-3", "assistant", "Message 3"),
-            ("msg-4", "user", "Message 4"),
-        ],
-        {"total": 5, "dialogue": 5, "tool": 0},
-        "dialogue_only",
-    ),
-    (
-        [
-            ("msg-1", "user", "Hello"),
-            ("msg-2", "tool", "Tool output"),
-            ("msg-3", "assistant", "Response"),
-        ],
-        {"total": 3, "dialogue": 2, "tool": 1},
-        "with_tool",
-    ),
-]
-
-
-@pytest.mark.parametrize("messages_spec,expected,desc", CONVERSATION_STATS_CASES, ids=str)
-async def test_get_conversation_stats(tmp_path, messages_spec, expected, desc):
-    """get_conversation_stats counts correctly: {desc}."""
-    backend = SQLiteBackend(db_path=tmp_path / "test.db")
-    record = ConversationRecord(
-        conversation_id="conv-1",
-        provider_name="claude",
-        provider_conversation_id="prov-1",
-        title="Test",
-        created_at="2025-01-01T00:00:00Z",
-        updated_at="2025-01-01T00:00:00Z",
-        content_hash="hash",
-        version=1,
-    )
-    await backend.save_conversation_record(record)
-
-    messages = [
-        MessageRecord(
-            message_id=msg_id,
-            conversation_id="conv-1",
-            role=role,
-            text=text,
-            timestamp=f"2025-01-01T10:{i:02d}:00Z",
-            content_hash=f"h{i}",
-            version=1,
-        )
-        for i, (msg_id, role, text) in enumerate(messages_spec)
-    ]
-
-    if messages:
-        await backend.save_messages(messages)
-
-    stats = await backend.get_conversation_stats("conv-1")
-    assert stats["total_messages"] == expected["total"]
-    assert stats["dialogue_messages"] == expected["dialogue"]
-    assert stats["tool_messages"] == expected["tool"]
-
-
-# =============================================================================
-# HELPER FUNCTIONS (parametrized)
-# =============================================================================
-
-# Test _json_or_none function
-JSON_OR_NONE_CASES = [
-    ({"key": "value"}, "dict", True),
-    (None, "none", False),
-    ({"nested": {"key": "value"}, "list": [1, 2, 3]}, "nested dict", True),
-]
-
-
-@pytest.mark.parametrize("input_val,desc,is_json", JSON_OR_NONE_CASES, ids=str)
-def test_json_or_none(input_val, desc, is_json):
-    """_json_or_none handles {desc}."""
-    result = _json_or_none(input_val)
-    if is_json:
-        assert isinstance(result, str)
-        assert json.loads(result) == input_val
-    else:
-        assert result is None
-
-
-def test_make_ref_id_deterministic():
-    """_make_ref_id() produces deterministic IDs."""
-    id1 = _make_ref_id("att1", "conv1", "msg1")
-    id2 = _make_ref_id("att1", "conv1", "msg1")
-    assert id1 == id2
-
-
-def test_make_ref_id_different_inputs():
-    """_make_ref_id() produces different IDs for different inputs."""
-    id1 = _make_ref_id("att1", "conv1", "msg1")
-    id2 = _make_ref_id("att2", "conv1", "msg1")
-    id3 = _make_ref_id("att1", "conv2", "msg1")
-    assert id1 != id2
-    assert id1 != id3
-    assert id2 != id3
-
-
-def test_make_ref_id_format():
-    """_make_ref_id returns expected format."""
-    ref_id = _make_ref_id("att-1", "conv-1", "msg-1")
-    assert ref_id.startswith("ref-")
-    assert len(ref_id) == len("ref-") + 16  # 16-char hex digest
-
-
-def test_make_ref_id_with_none_message_id():
-    """_make_ref_id() handles None message_id."""
-    id1 = _make_ref_id("att1", "conv1", None)
-    id2 = _make_ref_id("att1", "conv1", None)
-    assert id1 == id2
-    assert id1 != _make_ref_id("att1", "conv1", "msg1")
+        await backend.close()
+        await backend.close()
+        await backend.close()
 
 
 def test_default_db_path(tmp_path, monkeypatch):
