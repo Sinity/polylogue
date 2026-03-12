@@ -13,19 +13,11 @@ import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from polylogue.schemas.unified import (
-    extract_harmonized_message,
-)
-from polylogue.sources.parsers.base import normalize_role as old_normalize_role
-from polylogue.sources.parsers.claude import (
-    extract_text_from_segments as old_extract_segments,
-)
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context, open_connection
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
@@ -565,67 +557,6 @@ class TestComplexScenarios:
             assert gpt_row["title"] == "ChatGPT Conversation"
             assert claude_row is not None
             assert claude_row["title"] == "Claude Conversation"
-
-
-# =============================================================================
-# BACKEND COMPARISON TESTS (from test_backend_core.py)
-# =============================================================================
-
-
-@dataclass
-class ComparisonResult:
-    """Result of comparing old vs new extraction."""
-
-    field: str
-    old_value: str | None
-    new_value: str | None
-    equivalent: bool
-
-
-def compare_extractions(provider: str, raw: dict) -> list[ComparisonResult]:
-    """Compare old and new extraction for a single message."""
-    results = []
-
-    try:
-        new_msg = extract_harmonized_message(provider, raw)
-    except Exception as e:
-        return [ComparisonResult("extraction", None, str(e), False)]
-
-    if provider == "claude-code":
-        msg_obj = raw.get("message", {})
-        msg_type = raw.get("type")
-
-        if msg_type in ("user", "human"):
-            old_role = "user"
-        elif msg_type == "assistant":
-            old_role = "assistant"
-        else:
-            old_role = msg_type or "unknown"
-
-        content_raw = msg_obj.get("content") if isinstance(msg_obj, dict) else None
-        old_text = old_extract_segments(content_raw) if isinstance(content_raw, list) else None
-
-        old_role_norm = old_normalize_role(old_role)
-        new_role_norm = new_msg.role
-
-        results.append(ComparisonResult(
-            field="role",
-            old_value=old_role_norm,
-            new_value=new_role_norm,
-            equivalent=old_role_norm == new_role_norm,
-        ))
-
-        old_text_norm = (old_text or "").strip()
-        new_text_norm = (new_msg.text or "").strip()
-
-        results.append(ComparisonResult(
-            field="text",
-            old_value=old_text_norm if old_text_norm else None,
-            new_value=new_text_norm if new_text_norm else None,
-            equivalent=old_text_norm == new_text_norm,
-        ))
-
-    return results
 
 
 def _seed_conversation(backend):
