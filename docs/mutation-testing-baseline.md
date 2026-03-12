@@ -57,7 +57,7 @@ Recorded on `2026-03-12`.
 ### Full Test Suite
 
 - Command: `nix develop -c pytest -q -n 0`
-- Result: `3917 passed, 1 warning in 244.35s`
+- Result: `3222 passed, 1 warning in 250.33s`
 - Note: repo-wide pytest defaults still enable `-n auto`; use `-n 0` here for
   stable mutation-comparison timing.
 
@@ -74,6 +74,7 @@ ledger now mixes four clean baselines:
   `a27de694650d`, and `3bdd3f02dc87`
 - the clean post-`005` rerun wave on commit `e759af23458d`
 - the clean Phase-5 CLI/site concentration reruns on commit `58264c2c47be`
+- the clean second concentration-program reruns on commit `e07c4baebfe6`
 
 `004`, its follow-up reruns, and the first focused post-`005` source/provider
 concentration reruns are now complete. The tables below are the current durable
@@ -121,24 +122,46 @@ the follow-up source/helper/query pass.
 | `providers-semantics` | `315beb0f19f1` | 819 | 455 | 2 | 0 | Clean rerun after consolidating semantic-law ownership and refactoring `schemas.unified` dispatch into explicit adapter/fallback maps. Reach stayed complete, but kill count regressed, which means the suite is more concentrated yet still underspecified around `extract_content_blocks`, `to_meta`, fallback Claude Code extraction, and harmonization edge cases. |
 | `sources-parse` | `47a9b1cff33f` | 3597 | 2319 | 31 | 0 | Clean post-drive-parser concentration rerun improved kill and survivor counts again while keeping reach complete; the remaining debt is now more sharply concentrated in `schemas.unified`, Drive auth/filter helpers, and timeout-heavy `content_blocks_from_segments` coverage. |
 
+### Second Concentration Program Clean Baselines
+
+These are the latest clean reruns after the bulk source-edit concentration pass
+on commit `e07c4baebfe6`. They supersede the older rows above for the touched
+campaigns.
+
+| Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `models` | `e07c4baebfe6` | 138 | 22 | 3 | 3 | Still a healthy semantic surface, but the concentrated owner file exposed a small remaining blind spot in `mainline_messages` / `project` alongside the old `_is_chatgpt_thinking` / `extract_thinking` survivor cluster. |
+| `ui-core` | `e07c4baebfe6` | 11 | 15 | 0 | 0 | Reach is complete and runtime is cheap, but the remaining surface is underspecified around `PlainConsole.print`; this is now a small focused projection-contract problem rather than an ownership problem. |
+| `cli-run` | `e07c4baebfe6` | 186 | 89 | 0 | 8 | The concentration pass removed the old timeout wall entirely, but `not_checked` persists in rich progress observers and survivor density is still concentrated in plain progress formatting/observer behavior. |
+| `cli-query` | `e07c4baebfe6` | 992 | 964 | 6 | 0 | Slightly better than the earlier concentrated baseline, but still a high-survivor orchestration surface; remaining debt is mostly in `_async_execute_query`, modifier/delete action flows, and result-shaping routes. |
+| `filters` | `e07c4baebfe6` | 453 | 55 | 89 | 0 | Still strong overall and fully reachable, but the new concentrated owner exposes more honest survivor mass in `pick`, `has_branches`, `_needs_content_loading`, and summary-sort helpers. Timeout mass remains the main remaining cost center. |
+| `providers-semantics` | `e07c4baebfe6` | 785 | 489 | 2 | 0 | Reach stays complete, but this remains materially underspecified around shared content-block/meta extraction in `polylogue.schemas.unified` and provider viewport shaping. |
+| `sources-parse` | `e07c4baebfe6` | 3538 | 2365 | 9 | 0 | Reach stays complete and timeout mass dropped further, but the survivor frontier is still large; the dominant clusters remain shared semantic extraction, Drive auth/filter helpers, JSON/file iteration, and source parsing orchestration. |
+
 ### Readiness Call
 
 - `004` is complete, and the immediate follow-up reruns are complete.
 - The first post-`005` focused concentration rerun wave is complete on clean SHAs `c0596770631e`, `47a9b1cff33f`, `a3440a0f1a4b`, and `027519a11118`.
+- The bulk second concentration-program reruns are complete on clean SHA `e07c4baebfe6`.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
   1. `sources-parse`
   2. `providers-semantics`
-  3. `source-detection`
-  4. `drive-client`
-  5. `repository`
-  6. `cli-query`
+  3. `cli-query`
+  4. `filters`
+  5. `source-detection`
+  6. `drive-client`
+  7. `repository`
+  8. `cli-run`
+  9. `ui-core`
 - We are not ready to claim source/provider/harmonization semantics are exhaustively specified.
   The reruns removed reach failures, but they did not saturate the semantic space.
 - The dominant structural issues are now:
   - survivor concentration in `polylogue.schemas.unified` and provider viewport shaping,
   - `providers-semantics` concentration reduced duplication but also revealed lost mutation signal around adapter content-block/meta extraction,
   - high survivor density in source parsing and query orchestration,
+  - rich/plain CLI progress observer behavior is now isolated enough to target directly,
+  - `filters` concentration removed ownership noise but left a smaller, sharper `pick`/sort/loading survivor cluster,
   - source parsing now carrying a clearer timeout cluster in `content_blocks_from_segments`,
   - source detection still carrying a narrower but still meaningful survivor cluster around ZIP filtering, emit paths, and provider sniffing,
   - drive-client transport/auth behavior still carrying a narrower but meaningful survivor cluster in auth/load/download helpers.
