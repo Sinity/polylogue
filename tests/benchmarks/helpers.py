@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from sqlite3 import Connection
+from typing import TypeVar
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -16,7 +21,7 @@ class BenchAsyncStore:
     backend: SQLiteBackend
     repository: ConversationRepository
 
-    def run(self, awaitable):
+    def run(self, awaitable: Awaitable[T]) -> T:
         return self.loop.run_until_complete(awaitable)
 
 
@@ -32,3 +37,23 @@ def open_bench_store(db_path: Path) -> Iterator[BenchAsyncStore]:
     finally:
         loop.run_until_complete(backend.close())
         loop.close()
+
+
+def benchmark_store_call(
+    benchmark,
+    db_path: Path,
+    operation: Callable[[BenchAsyncStore], Awaitable[T]],
+) -> None:
+    """Benchmark one async repository/backend operation against a seeded DB."""
+    with open_bench_store(db_path) as store:
+        benchmark(lambda: store.run(operation(store)))
+
+
+def benchmark_connection_call(
+    benchmark,
+    db_path: Path,
+    operation: Callable[[Connection], T],
+) -> None:
+    """Benchmark one sync sqlite/index operation against a seeded DB."""
+    with open_connection(db_path) as conn:
+        benchmark(lambda: operation(conn))

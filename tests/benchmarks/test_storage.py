@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
-from tests.benchmarks.helpers import open_bench_store
+from tests.benchmarks.helpers import benchmark_store_call, open_bench_store
 
 
 def _make_hash(s: str) -> str:
@@ -24,46 +24,62 @@ def _make_hash(s: str) -> str:
 @pytest.mark.benchmark
 def test_bench_list_conversations_no_filter(benchmark, bench_db_5k: Path) -> None:
     """list_conversations(limit=50) on 5k-message DB — baseline query cost."""
-    with open_bench_store(bench_db_5k) as store:
-        benchmark(lambda: store.run(store.backend.list_conversations(limit=50)))
+    benchmark_store_call(
+        benchmark,
+        bench_db_5k,
+        lambda store: store.backend.list_conversations(limit=50),
+    )
 
 
 @pytest.mark.benchmark
 def test_bench_list_conversations_provider_filter(benchmark, bench_db_5k: Path) -> None:
     """list with provider=chatgpt — tests simple WHERE on indexed column."""
-    with open_bench_store(bench_db_5k) as store:
-        benchmark(lambda: store.run(store.backend.list_conversations(provider="chatgpt", limit=50)))
+    benchmark_store_call(
+        benchmark,
+        bench_db_5k,
+        lambda store: store.backend.list_conversations(provider="chatgpt", limit=50),
+    )
 
 
 @pytest.mark.benchmark
 def test_bench_list_conversations_has_tool_use(benchmark, bench_db_5k: Path) -> None:
     """list with has_tool_use=True — tests stats LEFT JOIN path."""
-    with open_bench_store(bench_db_5k) as store:
-        benchmark(lambda: store.run(store.backend.list_conversations(has_tool_use=True, limit=50)))
+    benchmark_store_call(
+        benchmark,
+        bench_db_5k,
+        lambda store: store.backend.list_conversations(has_tool_use=True, limit=50),
+    )
 
 
 @pytest.mark.benchmark
 def test_bench_list_conversations_semantic_filter(benchmark, bench_db_5k: Path) -> None:
     """list with has_file_ops=True — tests EXISTS subquery path (schema v3)."""
-    with open_bench_store(bench_db_5k) as store:
-        benchmark(lambda: store.run(store.backend.list_conversations(has_file_ops=True, limit=50)))
+    benchmark_store_call(
+        benchmark,
+        bench_db_5k,
+        lambda store: store.backend.list_conversations(has_file_ops=True, limit=50),
+    )
 
 
 @pytest.mark.benchmark
 def test_bench_list_conversations_combined_filter(benchmark, bench_db_10k: Path) -> None:
     """provider + has_tool_use + min_messages — combined filter stack."""
-    with open_bench_store(bench_db_10k) as store:
-        benchmark(lambda: store.run(
-            store.backend.list_conversations(provider="claude", has_tool_use=True, min_messages=2, limit=50)
-        ))
+    benchmark_store_call(
+        benchmark,
+        bench_db_10k,
+        lambda store: store.backend.list_conversations(provider="claude", has_tool_use=True, min_messages=2, limit=50),
+    )
 
 
 @pytest.mark.benchmark
 def test_bench_get_many_100(benchmark, bench_db_5k: Path) -> None:
     """get_many() with 100 IDs — parallel batch fetch cost."""
     ids = [f"bench-conv-{i:05d}" for i in range(100)]
-    with open_bench_store(bench_db_5k) as store:
-        benchmark(lambda: store.run(store.repository.get_many(ids)))
+    benchmark_store_call(
+        benchmark,
+        bench_db_5k,
+        lambda store: store.repository.get_many(ids),
+    )
 
 
 @pytest.mark.benchmark

@@ -21,6 +21,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from polylogue.lib import json as core_json
+from polylogue.lib.provider_identity import normalize_provider_token
 from polylogue.services import build_runtime_services
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -473,10 +474,26 @@ def test_provider_from_string_whitespace_stripped(value: str) -> None:
     assert Provider.from_string(f" {value}").value == value
 
 
-@given(st.text().filter(lambda s: s.strip().lower() not in [
-    "chatgpt", "claude", "claude-code", "codex", "gemini", "drive", "unknown",
-    "gpt", "openai", "claude-ai", "anthropic"
-]))
+KNOWN_PROVIDER_TOKENS = {
+    normalize_provider_token(token)
+    for token in (
+        "chatgpt",
+        "claude",
+        "claude-code",
+        "codex",
+        "gemini",
+        "drive",
+        "unknown",
+        "gpt",
+        "openai",
+        "claude-ai",
+        "anthropic",
+        "claudecode",
+    )
+}
+
+
+@given(st.text().filter(lambda s: normalize_provider_token(s) not in KNOWN_PROVIDER_TOKENS))
 def test_provider_from_string_unknown_fallback(value: str) -> None:
     """Unknown provider strings return UNKNOWN."""
     result = Provider.from_string(value)

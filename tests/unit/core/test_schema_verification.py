@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.verification import verify_raw_corpus
 from polylogue.storage.backends.connection import open_connection
@@ -99,6 +101,7 @@ def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path):
     assert stats.invalid_records == 0
 
 
+@pytest.mark.slow
 def test_verify_raw_corpus_uses_persisted_payload_provider_for_filters(db_path, monkeypatch):
     from polylogue.schemas import ValidationResult
 

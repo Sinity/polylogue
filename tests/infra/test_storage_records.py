@@ -1,0 +1,79 @@
+"""Focused tests for shared storage-record test infrastructure."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+
+from tests.infra.storage_records import make_conversation, make_message, store_records
+
+
+def test_store_records_commits_within_lock(monkeypatch):
+    import tests.infra.storage_records as storage_helpers
+
+    class TrackingLock:
+        def __init__(self) -> None:
+            self.held = False
+
+        def __enter__(self):
+            self.held = True
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.held = False
+            return False
+
+    class DummyConn:
+        def __init__(self, lock: TrackingLock) -> None:
+            self._lock = lock
+            self.commit_states: list[bool] = []
+
+        def commit(self) -> None:
+            self.commit_states.append(self._lock.held)
+
+    lock = TrackingLock()
+    conn = DummyConn(lock)
+
+    @contextmanager
+    def fake_connection_context(passed_conn):
+        yield passed_conn
+
+    monkeypatch.setattr(storage_helpers, "_WRITE_LOCK", lock)
+    monkeypatch.setattr(storage_helpers, "connection_context", fake_connection_context)
+    monkeypatch.setattr(storage_helpers, "upsert_conversation", lambda *_: True)
+    monkeypatch.setattr(storage_helpers, "upsert_message", lambda *_: True)
+    monkeypatch.setattr(storage_helpers, "upsert_attachment", lambda *_: True)
+    monkeypatch.setattr(storage_helpers, "_prune_attachment_refs", lambda *_: None)
+
+    result = storage_helpers.store_records(
+        conversation=make_conversation("test:1", title="Test", content_hash="abc123"),
+        messages=[make_message("test:1:msg1", "test:1", text="Hello")],
+        attachments=[],
+        conn=conn,
+    )
+
+    assert result["conversations"] == 1
+    assert result["messages"] == 1
+    assert conn.commit_states == [True]
+
+
+def test_concurrent_store_records_no_deadlock(workspace_env):
+    import concurrent.futures
+
+    from polylogue.storage.backends.connection import open_connection
+
+    with open_connection(None):
+        pass
+
+    def store_one(idx: int):
+        return store_records(
+            conversation=make_conversation(f"test:{idx}", title=f"Test {idx}", content_hash=f"hash{idx}"),
+            messages=[make_message(f"test:{idx}:msg1", f"test:{idx}", text=f"Hello {idx}")],
+            attachments=[],
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(store_one, i) for i in range(10)]
+        results = [future.result(timeout=30) for future in futures]
+
+    assert len(results) == 10
+    assert all(result["conversations"] == 1 for result in results)

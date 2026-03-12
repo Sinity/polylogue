@@ -48,7 +48,6 @@ class ScanResult:
     """Result of scanning raw payloads from sources without persisting them."""
 
     def __init__(self) -> None:
-        self.records: list[RawConversationRecord] = []
         self.counts: dict[str, int] = {
             "scanned": 0,
             "errors": 0,
@@ -98,32 +97,6 @@ class AcquisitionService:
                 error=str(exc),
             )
             result.counts["errors"] += 1
-
-    async def scan_sources(
-        self,
-        sources: list[Source],
-        *,
-        progress_callback: ProgressCallback | None = None,
-        ui: object | None = None,
-        drive_config: DriveConfig | None = None,
-        progress_label: str = "Scanning",
-    ) -> ScanResult:
-        """Scan raw payloads from sources without writing them."""
-        result = ScanResult()
-        async def _collect(record: RawConversationRecord) -> None:
-            result.records.append(record)
-
-        visited = await self.visit_sources(
-            sources,
-            progress_callback=progress_callback,
-            ui=ui,
-            drive_config=drive_config,
-            progress_label=progress_label,
-            on_record=_collect,
-        )
-        result.counts = visited.counts
-        result.cursors = visited.cursors
-        return result
 
     async def visit_sources(
         self,
@@ -220,36 +193,6 @@ class AcquisitionService:
                 on_record=_store,
             )
             result.counts["errors"] += visit_result.counts["errors"]
-
-        return result
-
-    async def store_records(
-        self,
-        records: list[RawConversationRecord],
-    ) -> AcquireResult:
-        """Persist scanned raw records without rescanning sources."""
-        result = AcquireResult()
-
-        # Use a single persistent connection with batched commits for the
-        # entire acquisition phase.  This avoids fd/WAL exhaustion from
-        # connection-per-INSERT and eliminates per-item fsync overhead.
-        flush_interval = 500
-        items_since_flush = 0
-
-        async with self.backend.bulk_connection():
-            for record in records:
-                await self._persist_record(record, result=result)
-                items_since_flush += 1
-                if items_since_flush >= flush_interval:
-                    await self.backend.bulk_flush()
-                    items_since_flush = 0
-
-        logger.info(
-            "Acquisition complete",
-            acquired=result.counts["acquired"],
-            skipped=result.counts["skipped"],
-            errors=result.counts["errors"],
-        )
 
         return result
 
