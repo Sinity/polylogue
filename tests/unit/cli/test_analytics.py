@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.cli.analytics import ProviderMetrics, compute_provider_comparison
+from polylogue.cli.helpers import ProviderMetrics, compute_provider_comparison
 from tests.infra.storage_records import make_conversation, make_message
 
 

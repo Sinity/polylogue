@@ -12,7 +12,7 @@ from pathlib import Path
 
 from polylogue.errors import DatabaseError
 from polylogue.lib.log import get_logger
-from polylogue.render_paths import render_root
+from polylogue.paths import conversation_render_root
 
 from .backends.connection import _build_source_scope_filter, open_connection
 from .search_cache import SearchCacheKey
@@ -86,7 +86,7 @@ def _resolve_conversation_path(
         Path to the conversation's rendered markdown file
     """
     output_root = render_root_path or (archive_root / "render")
-    safe_root = render_root(output_root, provider_name, conversation_id)
+    safe_root = conversation_render_root(output_root, provider_name, conversation_id)
     return safe_root / "conversation.md"
 
 

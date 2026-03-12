@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 
-from polylogue.export import export_jsonl
 from polylogue.paths import is_within_root
 from polylogue.rendering.renderers import HTMLRenderer
 from polylogue.sources import RecordBundle, save_bundle
@@ -104,18 +103,6 @@ async def test_render_includes_orphan_attachments(workspace_env, storage_reposit
     markdown = md_path.read_text(encoding="utf-8")
 
     assert "- Attachment: notes.txt" in markdown
-
-
-async def test_export_includes_attachments(workspace_env, tmp_path, storage_repository):
-    bundle = RecordBundle(
-        conversation=_conversation_record(),
-        messages=[],
-        attachments=[make_attachment("att-1", "conv:hash", None, mime_type="text/plain", size_bytes=12)],
-    )
-    await save_bundle(bundle, repository=storage_repository)
-    output = export_jsonl(archive_root=workspace_env["archive_root"], output_path=tmp_path / "export.jsonl")
-    payload = output.read_text(encoding="utf-8").strip().splitlines()[0]
-    assert '"attachments"' in payload
 
 
 async def test_ingest_updates_metadata(workspace_env, storage_repository):

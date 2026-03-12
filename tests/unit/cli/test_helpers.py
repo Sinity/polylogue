@@ -82,20 +82,20 @@ def _run_summary(
 ):
     env, buffer = _make_env(config, plain=plain)
     analytics_patches = {
-        "polylogue.cli.analytics.compute_provider_comparison": AsyncMock(return_value=metrics),
-        "polylogue.cli.analytics.get_provider_counts": AsyncMock(return_value=counts),
+        "polylogue.cli.helpers.compute_provider_comparison": AsyncMock(return_value=metrics),
+        "polylogue.cli.helpers.get_provider_counts": AsyncMock(return_value=counts),
     }
     if analytics_error is not None:
-        analytics_patches["polylogue.cli.analytics.compute_provider_comparison"] = AsyncMock(side_effect=analytics_error)
-        analytics_patches["polylogue.cli.analytics.get_provider_counts"] = AsyncMock(side_effect=analytics_error)
+        analytics_patches["polylogue.cli.helpers.compute_provider_comparison"] = AsyncMock(side_effect=analytics_error)
+        analytics_patches["polylogue.cli.helpers.get_provider_counts"] = AsyncMock(side_effect=analytics_error)
 
     with (
         patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=last_run),
         patch("polylogue.cli.helpers.cached_health_summary", return_value=cached_health) as mock_cached,
         patch("polylogue.cli.helpers.get_health", return_value=health) as mock_get_health,
         patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"),
-        patch("polylogue.cli.analytics.compute_provider_comparison", analytics_patches["polylogue.cli.analytics.compute_provider_comparison"]),
-        patch("polylogue.cli.analytics.get_provider_counts", analytics_patches["polylogue.cli.analytics.get_provider_counts"]),
+        patch("polylogue.cli.helpers.compute_provider_comparison", analytics_patches["polylogue.cli.helpers.compute_provider_comparison"]),
+        patch("polylogue.cli.helpers.get_provider_counts", analytics_patches["polylogue.cli.helpers.get_provider_counts"]),
     ):
         print_summary(env, verbose=verbose)
 

@@ -11,14 +11,12 @@ from __future__ import annotations
 from typing import Any
 
 import click
+from click.shell_completion import get_completion_class
 
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
-from polylogue.cli.commands.completions import completions_command
-from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.demo import demo_command
 from polylogue.cli.commands.embed import embed_command
-from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.qa import qa_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
@@ -160,6 +158,49 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     from polylogue.cli.helpers import print_summary
 
     print_summary(env, verbose=verbose)
+
+
+@click.command("dashboard")
+@click.pass_obj
+def dashboard_command(env: AppEnv) -> None:
+    """Launch the Mission Control TUI dashboard."""
+    from polylogue.ui.tui.app import PolylogueApp
+
+    app = PolylogueApp(config=env.config, repository=env.repository)
+    app.run()
+
+
+@click.command("completions")
+@click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
+@click.pass_context
+def completions_command(ctx: click.Context, shell: str) -> None:
+    """Generate shell completion scripts."""
+    root_cmd = ctx.find_root().command
+    comp_cls = get_completion_class(shell)
+    if comp_cls is None:
+        raise click.ClickException(f"Unsupported shell: {shell}")
+
+    comp = comp_cls(root_cmd, {}, "polylogue", "_POLYLOGUE_COMPLETE")
+    click.echo(comp.source())
+
+
+@click.command("mcp")
+@click.option("--transport", type=click.Choice(["stdio"]), default="stdio", help="Transport protocol")
+@click.pass_obj
+def mcp_command(env: AppEnv, transport: str) -> None:
+    """Start the MCP server for AI assistant integration."""
+    if transport != "stdio":
+        env.ui.console.print(f"Unsupported transport: {transport}")
+        raise SystemExit(1)
+
+    try:
+        from polylogue.mcp.server import serve_stdio
+    except ImportError as exc:
+        env.ui.console.print(f"MCP dependencies not installed: {exc}")
+        env.ui.console.print("Install with: pip install polylogue[mcp]")
+        raise SystemExit(1) from None
+
+    serve_stdio(env.services)
 
 
 # Main CLI group with query-mode options

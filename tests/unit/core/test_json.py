@@ -1,4 +1,4 @@
-"""Tests for core JSON, environment, dates, versions, timestamps, repository, and projections.
+"""Tests for core JSON, dates, versions, timestamps, repository, and projections.
 
 Consolidated from:
 - test_core_json.py
@@ -150,58 +150,6 @@ def test_encoder_decimal_serialized_when_custom_fails():
     output = core_json.dumps(payload, default=custom_handler)
     data = core_json.loads(output)
     assert data["value"] == 1.5
-
-
-# =============================================================================
-# ENVIRONMENT VARIABLE TESTS - PARAMETRIZED
-# =============================================================================
-
-
-GET_ENV_CASES = [
-    ("prefixed_precedence", "VOYAGE_API_KEY", {"POLYLOGUE_VOYAGE_API_KEY": "local-key", "VOYAGE_API_KEY": "global-key"}, "local-key", None, "POLYLOGUE_* variable takes precedence over unprefixed"),
-    ("unprefixed_fallback", "VOYAGE_API_KEY", {"VOYAGE_API_KEY": "global-key"}, "global-key", None, "Falls back to unprefixed when prefixed not set"),
-    ("default_value", "MISSING_VAR", {}, "fallback", "fallback", "Returns default when neither variable is set"),
-    ("none_without_default", "TOTALLY_MISSING", {}, None, None, "Returns None when neither variable is set and no default given"),
-    ("empty_string_fallback", "EMPTY", {"POLYLOGUE_EMPTY": "", "EMPTY": "real_value"}, "real_value", None, "Empty string values are treated as falsy (falls through)"),
-]
-
-
-@pytest.mark.parametrize("scenario,var_name,env_vars,expected,default_val,desc", GET_ENV_CASES)
-def test_get_env_comprehensive(scenario, var_name, env_vars, expected, default_val, desc, monkeypatch):
-    """Comprehensive get_env() tests."""
-    from polylogue.lib.env import get_env
-
-    for key, value in env_vars.items():
-        monkeypatch.setenv(key, value)
-
-    result = get_env(var_name, default_val) if default_val is not None else get_env(var_name)
-
-    assert result == expected, f"Failed {desc}"
-
-
-GET_ENV_MULTI_CASES = [
-    ("prefixed_precedence", ("GOOGLE_API_KEY", "GEMINI_API_KEY"), {"POLYLOGUE_GOOGLE_API_KEY": "polylogue_key", "GOOGLE_API_KEY": "google_key", "GEMINI_API_KEY": "gemini_key"}, "polylogue_key", None, "Prefixed variable takes precedence over all"),
-    ("unprefixed_primary", ("GOOGLE_API_KEY", "GEMINI_API_KEY"), {"GOOGLE_API_KEY": "google_key", "GEMINI_API_KEY": "gemini_key"}, "google_key", None, "Unprefixed primary takes precedence over alternatives"),
-    ("alternative_fallback", ("GOOGLE_API_KEY", "GEMINI_API_KEY"), {"GEMINI_API_KEY": "gemini_key"}, "gemini_key", None, "Falls back to alternative when primary not set"),
-    ("default_value", ("MISSING", "ALSO_MISSING"), {}, "default_val", "default_val", "Returns default when no variables are set"),
-    ("single_var", ("SINGLE_KEY",), {"SINGLE_KEY": "single_value"}, "single_value", None, "Works with no alternative names provided"),
-]
-
-
-@pytest.mark.parametrize("scenario,var_names,env_vars,expected,default_val,desc", GET_ENV_MULTI_CASES)
-def test_get_env_multi_comprehensive(scenario, var_names, env_vars, expected, default_val, desc, monkeypatch):
-    """Comprehensive get_env_multi() tests."""
-    from polylogue.lib.env import get_env_multi
-
-    for key, value in env_vars.items():
-        monkeypatch.setenv(key, value)
-
-    result = get_env_multi(*var_names, default=default_val) if default_val is not None else get_env_multi(*var_names)
-
-    assert result == expected, f"Failed {desc}"
-
-
-
 
 
 async def test_repository(test_db):

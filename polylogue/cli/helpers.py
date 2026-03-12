@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
@@ -16,6 +17,90 @@ from polylogue.lib.theme import provider_color
 from polylogue.pipeline.runner import latest_run
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class ProviderMetrics:
+    """Aggregated message and provider metrics for archive summaries."""
+
+    provider_name: str
+    conversation_count: int
+    message_count: int
+    user_message_count: int
+    assistant_message_count: int
+    avg_messages_per_conversation: float
+    avg_user_words: float
+    avg_assistant_words: float
+    tool_use_count: int
+    thinking_count: int
+    total_conversations_with_tools: int
+    total_conversations_with_thinking: int
+
+    @property
+    def tool_use_percentage(self) -> float:
+        if self.conversation_count == 0:
+            return 0.0
+        return (self.total_conversations_with_tools / self.conversation_count) * 100
+
+    @property
+    def thinking_percentage(self) -> float:
+        if self.conversation_count == 0:
+            return 0.0
+        return (self.total_conversations_with_thinking / self.conversation_count) * 100
+
+
+async def get_provider_counts(db_path: Path | None = None) -> list[tuple[str, int]]:
+    """Return (provider, conversation_count) pairs for archive summaries."""
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+
+    backend = SQLiteBackend(db_path=db_path)
+    try:
+        rows = await backend.get_provider_conversation_counts()
+    finally:
+        await backend.close()
+    return [(row["provider_name"] or "unknown", row["conversation_count"]) for row in rows]
+
+
+async def compute_provider_comparison(db_path: Path | None = None) -> list[ProviderMetrics]:
+    """Return provider-level metrics for the verbose archive summary."""
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+
+    backend = SQLiteBackend(db_path=db_path)
+    try:
+        rows = await backend.get_provider_metrics_rows()
+    finally:
+        await backend.close()
+
+    results: list[ProviderMetrics] = []
+    for row in rows:
+        conversation_count = row["conversation_count"]
+        user_message_count = row["user_message_count"]
+        assistant_message_count = row["assistant_message_count"]
+        user_word_sum = row["user_word_sum"] or 0
+        assistant_word_sum = row["assistant_word_sum"] or 0
+
+        results.append(
+            ProviderMetrics(
+                provider_name=row["provider_name"] or "unknown",
+                conversation_count=conversation_count,
+                message_count=row["message_count"],
+                user_message_count=user_message_count,
+                assistant_message_count=assistant_message_count,
+                avg_messages_per_conversation=(
+                    row["message_count"] / conversation_count if conversation_count > 0 else 0.0
+                ),
+                avg_user_words=(user_word_sum / user_message_count if user_message_count > 0 else 0.0),
+                avg_assistant_words=(
+                    assistant_word_sum / assistant_message_count if assistant_message_count > 0 else 0.0
+                ),
+                tool_use_count=row["tool_use_count"],
+                thinking_count=row["thinking_count"],
+                total_conversations_with_tools=row["conversations_with_tools"],
+                total_conversations_with_thinking=row["conversations_with_thinking"],
+            )
+        )
+
+    return results
 
 
 def fail(command: str, message: str) -> NoReturn:
@@ -144,8 +229,6 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     # Show analytics visualization (compatible with plain mode too)
     if ui:
         try:
-            from polylogue.cli.analytics import compute_provider_comparison, get_provider_counts
-
             if verbose:
                 # Full metrics (slow: ~29s) needed for Deep Dive section
                 metrics = asyncio.run(compute_provider_comparison())

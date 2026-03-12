@@ -253,6 +253,13 @@ def safe_path_component(raw: str, *, fallback: str = "item") -> str:
     return safe
 
 
+def conversation_render_root(base_render_root: Path, provider: str, conversation_id: str) -> Path:
+    """Return the sanitized render directory for a conversation."""
+    safe_provider = safe_path_component(provider, fallback="provider")
+    safe_conversation = safe_path_component(conversation_id, fallback="conversation")
+    return base_render_root / safe_provider / safe_conversation
+
+
 def is_within_root(path: Path, root: Path) -> bool:
     """Return True if path resolves within root."""
     try:
@@ -293,5 +300,6 @@ __all__ = [
     "get_drive_config",
     "get_index_config",
     "safe_path_component",
+    "conversation_render_root",
     "is_within_root",
 ]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.pipeline.services.ingest_state import IngestPhase, IngestState
+from polylogue.pipeline.services.parsing import IngestPhase, IngestState
 
 
 def test_ingest_state_happy_path_transitions() -> None:
