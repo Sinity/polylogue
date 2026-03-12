@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from polylogue.lib.provider_semantics import (
     extract_chatgpt_text,
@@ -23,6 +24,7 @@ from polylogue.lib.viewports import (
     ToolCall,
 )
 from polylogue.schemas.unified import (
+    HarmonizedMessage,
     _coerce_content_blocks,
     _coerce_reasoning_traces,
     _coerce_tool_calls,
@@ -52,6 +54,7 @@ from tests.infra.strategies import (
     claude_ai_semantic_message_strategy,
     claude_code_semantic_record_strategy,
     codex_semantic_record_strategy,
+    content_block_strategy,
     gemini_semantic_message_strategy,
     provider_semantic_case_strategy,
 )
@@ -147,6 +150,44 @@ def _expected_block_types(provider: str, raw: dict[str, object]) -> list[Content
     raise AssertionError(provider)
 
 
+def _expected_reasoning_texts(content: list[object]) -> list[str]:
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "thinking":
+            text = block.get("thinking") or block.get("text")
+            if text:
+                texts.append(str(text))
+        elif block.get("isThought") and block.get("text"):
+            texts.append(str(block["text"]))
+    return texts
+
+
+def _expected_tool_blocks(content: list[object]) -> list[dict[str, object]]:
+    return [
+        block
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+
+
+def _expected_content_types(content: list[object]) -> list[ContentType]:
+    mapping = {
+        "text": ContentType.TEXT,
+        "thinking": ContentType.THINKING,
+        "tool_use": ContentType.TOOL_USE,
+        "tool_result": ContentType.TOOL_RESULT,
+        "code": ContentType.CODE,
+    }
+    return [
+        mapping[block_type]
+        for block in content
+        if isinstance(block, dict)
+        and (block_type := block.get("type", "text")) in mapping
+    ]
+
+
 @given(provider_semantic_case_strategy())
 @settings(max_examples=40, deadline=None)
 def test_unified_semantic_equivalence_for_rich_provider_cases(case: tuple[str, dict[str, object]]) -> None:
@@ -227,6 +268,114 @@ def test_is_message_record_contract(provider: str, raw: dict[str, object], expec
 def test_missing_role_contract() -> None:
     with pytest.raises(ValueError, match="Message has no role"):
         _missing_role()
+
+
+@given(st.sampled_from(["user", "assistant", "system", "tool", "unknown", "human", "model", "ASSISTANT", "SYSTEM", "USER"]))
+def test_harmonized_message_role_coercion_contract(role_str: str) -> None:
+    msg = HarmonizedMessage(role=role_str, text="test", provider="claude-code")
+    assert msg.role.value in _VALID_VIEWPORT_ROLES
+
+
+@given(st.sampled_from(["chatgpt", "claude", "claude-code", "gemini", "codex"]))
+def test_harmonized_message_provider_coercion_contract(provider_str: str) -> None:
+    msg = HarmonizedMessage(role="user", text="test", provider=provider_str)
+    assert msg.provider.value == provider_str
+
+
+def test_extract_harmonized_message_invalid_provider_contract() -> None:
+    with pytest.raises(ValueError, match="Unknown provider"):
+        extract_harmonized_message("unknown_provider", {})
+
+
+@given(
+    st.lists(
+        st.one_of(
+            content_block_strategy(),
+            st.fixed_dictionaries({"isThought": st.just(True), "text": st.text(min_size=1, max_size=100)}),
+            st.just("not a dict"),
+            st.just(42),
+        ),
+        max_size=10,
+    ),
+    st.sampled_from(["claude-code", "claude", "chatgpt", "gemini", "codex"]),
+)
+def test_extract_reasoning_traces_preserve_reasoning_blocks_contract(
+    content: list[object],
+    provider: str,
+) -> None:
+    traces = extract_reasoning_traces(content, provider)
+    assert [trace.text for trace in traces] == _expected_reasoning_texts(content)
+    assert all(str(trace.provider) == provider for trace in traces)
+
+
+@given(
+    st.lists(
+        st.one_of(
+            content_block_strategy(),
+            st.just("not a dict"),
+            st.just(None),
+        ),
+        max_size=10,
+    ),
+    st.sampled_from(["claude-code", "claude", "chatgpt", "gemini", "codex"]),
+)
+def test_extract_tool_calls_preserve_tool_use_blocks_contract(
+    content: list[object],
+    provider: str,
+) -> None:
+    calls = extract_tool_calls(content, provider)
+    expected = _expected_tool_blocks(content)
+    assert [call.name for call in calls] == [str(block.get("name", "")) for block in expected]
+    assert [call.id for call in calls] == [block.get("id") for block in expected]
+    assert [call.input for call in calls] == [
+        block.get("input", {}) if isinstance(block.get("input"), dict) else {}
+        for block in expected
+    ]
+    assert all(str(call.provider) == provider for call in calls)
+
+
+@given(
+    st.lists(
+        st.one_of(
+            content_block_strategy(),
+            st.fixed_dictionaries({"type": st.just("unknown"), "text": st.text(max_size=50)}),
+            st.just("not a dict"),
+        ),
+        max_size=10,
+    )
+)
+def test_extract_content_blocks_preserve_recognized_block_order_contract(
+    content: list[object],
+) -> None:
+    blocks = extract_content_blocks(content)
+    assert [block.type for block in blocks] == _expected_content_types(content)
+
+
+@given(
+    st.lists(
+        st.one_of(
+            st.fixed_dictionaries(
+                {
+                    "text": st.text(max_size=40),
+                    "input_text": st.text(max_size=40),
+                    "output_text": st.text(max_size=40),
+                }
+            ),
+            st.just({"type": "image", "url": "https://example.com"}),
+            st.just("not a dict"),
+        ),
+        max_size=8,
+    )
+)
+def test_extract_codex_text_prefers_first_available_text_field_contract(content: list[object]) -> None:
+    expected: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text", "") or block.get("input_text", "") or block.get("output_text", "")
+        if isinstance(text, str) and text:
+            expected.append(text)
+    assert extract_codex_text(content) == "\n".join(expected)
 
 
 def test_coerce_extracted_viewports_skip_invalid_items_and_inject_provider_contract() -> None:

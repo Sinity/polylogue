@@ -1,102 +1,10 @@
-"""Focused regression contracts for unified extraction bridges and stored viewport recovery."""
+"""Seeded-db regressions for unified extraction output."""
 
 from __future__ import annotations
 
 import sqlite3
-from types import SimpleNamespace
 
 import pytest
-
-from polylogue.schemas.unified import (
-    bulk_harmonize,
-    harmonize_parsed_message,
-)
-
-
-class TestHarmonizeParsedMessage:
-    """Direct contracts for ParsedMessage -> HarmonizedMessage bridging."""
-
-    def test_returns_none_for_missing_provider_meta(self) -> None:
-        assert harmonize_parsed_message("claude-ai", None) is None
-
-    def test_skips_non_message_claude_code_records(self) -> None:
-        assert harmonize_parsed_message("claude-code", {"type": "progress"}) is None
-
-    def test_overlays_database_fields_for_raw_payloads(self) -> None:
-        provider_meta = {"raw": {"sender": "human", "text": ""}}
-
-        msg = harmonize_parsed_message(
-            "claude-ai",
-            provider_meta,
-            message_id="db-id",
-            role="user",
-            text="db text",
-            timestamp="2024-01-15T10:30:00Z",
-        )
-
-        assert msg is not None
-        assert msg.id == "db-id"
-        assert msg.role == "user"
-        assert msg.text == "db text"
-        assert msg.timestamp is not None
-        assert msg.provider == "claude"
-
-    def test_falls_back_to_provider_meta_harmonization_for_malformed_payloads(self) -> None:
-        provider_meta = {
-            "sender": "assistant",
-            "text": "Fallback text",
-            "created_at": "2024-01-15T10:30:00Z",
-        }
-
-        msg = harmonize_parsed_message("claude-ai", provider_meta)
-
-        assert msg is not None
-        assert msg.role == "assistant"
-        assert msg.text == "Fallback text"
-        assert msg.timestamp is not None
-
-
-class TestBulkHarmonize:
-    """Contracts for bulk ParsedMessage harmonization."""
-
-    def test_skips_entries_without_provider_meta_or_non_messages(self) -> None:
-        parsed_messages = [
-            SimpleNamespace(provider_meta=None),
-            SimpleNamespace(provider_meta={"type": "progress"}),
-            SimpleNamespace(
-                provider_meta={"sender": "assistant", "text": "Kept"},
-                provider_message_id="kept-id",
-                role="assistant",
-                text="Kept",
-                timestamp="2024-01-15T10:30:00Z",
-            ),
-        ]
-
-        result = bulk_harmonize("claude-code", parsed_messages)
-
-        assert len(result) == 1
-        assert result[0].id == "kept-id"
-        assert result[0].role == "assistant"
-        assert result[0].text == "Kept"
-
-    def test_passes_database_context_through_to_harmonized_messages(self) -> None:
-        parsed_messages = [
-            SimpleNamespace(
-                provider_meta={"sender": "human", "text": ""},
-                provider_message_id="db-id",
-                role="user",
-                text="db text",
-                timestamp="2024-01-15T10:30:00Z",
-            )
-        ]
-
-        result = bulk_harmonize("claude-ai", parsed_messages)
-
-        assert len(result) == 1
-        assert result[0].id == "db-id"
-        assert result[0].role == "user"
-        assert result[0].text == "db text"
-        assert result[0].timestamp is not None
 
 
 class TestDatabaseIntegration:
