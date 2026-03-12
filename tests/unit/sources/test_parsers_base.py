@@ -20,7 +20,7 @@ from polylogue.sources.parsers.claude import (
     parse_ai,
     parse_code,
 )
-from tests.infra.helpers import make_claude_chat_message
+from tests.infra.source_builders import make_claude_chat_message
 
 # =============================================================================
 # CLAUDE PARSER TESTS

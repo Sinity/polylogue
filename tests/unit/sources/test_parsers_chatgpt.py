@@ -10,7 +10,7 @@ from polylogue.sources.parsers.chatgpt import _coerce_float, extract_messages_fr
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.claude import looks_like_ai, looks_like_code
-from tests.infra.helpers import make_chatgpt_node
+from tests.infra.source_builders import make_chatgpt_node
 
 # =============================================================================
 # CHATGPT PARSER TESTS

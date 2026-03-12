@@ -24,11 +24,13 @@ from polylogue.rendering.renderers import (
     list_formats,
 )
 from polylogue.storage.backends.connection import open_connection
-from tests.infra.helpers import (
-    ConversationBuilder,
+from tests.infra.assertions import (
     assert_contains_all,
     assert_messages_ordered,
     assert_not_contains_any,
+)
+from tests.infra.storage_records import (
+    ConversationBuilder,
     db_setup,
     make_conversation,
     make_message,
