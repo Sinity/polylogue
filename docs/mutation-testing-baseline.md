@@ -57,7 +57,7 @@ Recorded on `2026-03-12`.
 ### Full Test Suite
 
 - Command: `nix develop -c pytest -q -n 0`
-- Result: `3222 passed, 1 warning in 250.33s`
+- Result: `2925 passed, 1 warning in 204.59s`
 - Note: repo-wide pytest defaults still enable `-n auto`; use `-n 0` here for
   stable mutation-comparison timing.
 
@@ -138,28 +138,55 @@ campaigns.
 | `providers-semantics` | `e07c4baebfe6` | 785 | 489 | 2 | 0 | Reach stays complete, but this remains materially underspecified around shared content-block/meta extraction in `polylogue.schemas.unified` and provider viewport shaping. |
 | `sources-parse` | `e07c4baebfe6` | 3538 | 2365 | 9 | 0 | Reach stays complete and timeout mass dropped further, but the survivor frontier is still large; the dominant clusters remain shared semantic extraction, Drive auth/filter helpers, JSON/file iteration, and source parsing orchestration. |
 
+### Bulk Suite Densification Pre-Commit Baselines
+
+These are the latest post-edit reruns from the bulk whole-suite densification
+pass. They were recorded before committing the test rewrite batch, so the
+campaign artifacts correctly report `Dirty = yes` and commit `eb43cfd48e98`
+even though the measured tree is exactly the one that passed
+`pytest -q -n 0` above.
+
+Use these as the current empirical state of the touched fronts, but do not
+confuse them with clean post-commit baselines.
+
+| Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `filters` | `eb43cfd48e98` | 451 | 59 | 87 | 0 | Slight regression from the previous clean concentration rerun. The suite is smaller and still fully reaches the surface, but the remaining weak cluster is sharper and more honest around `pick`, `_needs_content_loading`, `has_branches`, and summary-sort/describe behavior. |
+| `models` | `eb43cfd48e98` | 120 | 41 | 3 | 2 | The owner file is much smaller, but survivor density worsened and a small `mainline_messages` blind spot remains. The remaining debt is concentrated in `_is_chatgpt_thinking`, `extract_thinking`, and message-pair traversal. |
+| `hybrid` | `eb43cfd48e98` | 113 | 20 | 0 | 3 | Slight improvement over the older clean baseline. The remaining gaps are narrow and still centered on provider construction and ranked-conversation resolution. |
+| `repository` | `eb43cfd48e98` | 534 | 134 | 40 | 1 | Mixed result: timeout mass dropped substantially, but survivor density rose and one `conversation_exists_by_hash` mutant slipped to `not_checked`. The concentrated owner is smaller, but archive stats, save/search similarity, hydration, and record conversion still need stronger laws. |
+| `cli-query` | `eb43cfd48e98` | 1022 | 932 | 8 | 0 | Best result of this pass. Kills improved materially and survivors dropped versus the prior clean rerun, while timeout mass stayed low. The remaining frontier is still mostly `_async_execute_query` and modifier/delete action routing. |
+| `source-detection` | `eb43cfd48e98` | 819 | 331 | 1 | 0 | Slight regression in kill/survivor balance, but timeout noise dropped and reach stayed complete. The remaining concentrated weak spots are `filter_entries`, emit paths, and grouped/individual save-bundle behavior. |
+| `providers-semantics` | `eb43cfd48e98` | 778 | 496 | 2 | 0 | Slight regression with the same overall story: reach is complete, but `polylogue.schemas.unified` still carries too much semantic authority. Shared block/meta/reasoning extraction remains under-specified. |
+| `sources-parse` | `eb43cfd48e98` | 3531 | 2366 | 15 | 0 | Broad source reach remains complete, but this pass did not improve the broad source frontier overall. The main survivor mass is still shared semantic extraction plus Drive auth/filter/file iteration helpers, with modest timeout growth. |
+
 ### Readiness Call
 
 - `004` is complete, and the immediate follow-up reruns are complete.
 - The first post-`005` focused concentration rerun wave is complete on clean SHAs `c0596770631e`, `47a9b1cff33f`, `a3440a0f1a4b`, and `027519a11118`.
 - The bulk second concentration-program reruns are complete on clean SHA `e07c4baebfe6`.
+- The whole-suite densification pass is also measured, but only as a dirty
+  pre-commit rerun set on `eb43cfd48e98`. That is current evidence, not yet a
+  clean replacement baseline.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
-  1. `sources-parse`
-  2. `providers-semantics`
-  3. `cli-query`
-  4. `filters`
-  5. `source-detection`
-  6. `drive-client`
-  7. `repository`
-  8. `cli-run`
-  9. `ui-core`
+  1. `providers-semantics`
+  2. `sources-parse`
+  3. `repository`
+  4. `models`
+  5. `filters`
+  6. `source-detection`
+  7. `cli-query`
+  8. `drive-client`
+  9. `cli-run`
+  10. `ui-core`
 - We are not ready to claim source/provider/harmonization semantics are exhaustively specified.
   The reruns removed reach failures, but they did not saturate the semantic space.
 - The dominant structural issues are now:
   - survivor concentration in `polylogue.schemas.unified` and provider viewport shaping,
   - `providers-semantics` concentration reduced duplication but also revealed lost mutation signal around adapter content-block/meta extraction,
   - high survivor density in source parsing and query orchestration,
+  - the whole-suite densification pass improved suite size and runtime more than mutation density in source/semantic fronts, so the next pass should bias toward stronger semantic oracles rather than further deletions alone,
   - rich/plain CLI progress observer behavior is now isolated enough to target directly,
   - `filters` concentration removed ownership noise but left a smaller, sharper `pick`/sort/loading survivor cluster,
   - source parsing now carrying a clearer timeout cluster in `content_blocks_from_segments`,

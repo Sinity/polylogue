@@ -1,0 +1,135 @@
+{
+  "campaign": "models",
+  "description": "Message/Conversation semantic helpers and pairing logic",
+  "commit": "eb43cfd48e989a58780604e9cbf9d3ba93700ff8",
+  "worktree_dirty": true,
+  "status_summary": [
+    " M tests/unit/cli/test_helpers.py",
+    " M tests/unit/cli/test_query_exec.py",
+    " M tests/unit/core/test_conversation_semantics.py",
+    " M tests/unit/core/test_dates.py",
+    " M tests/unit/core/test_filters_adv.py",
+    " M tests/unit/core/test_filters_props.py",
+    " M tests/unit/core/test_hashing.py",
+    " M tests/unit/core/test_message_laws.py",
+    " M tests/unit/core/test_models.py",
+    " D tests/unit/core/test_properties.py",
+    " M tests/unit/sources/test_claude.py",
+    " M tests/unit/sources/test_content_extraction.py",
+    " M tests/unit/sources/test_extraction.py",
+    " M tests/unit/sources/test_parsers.py",
+    " M tests/unit/sources/test_seeded_parser_contracts.py",
+    " M tests/unit/storage/test_backend.py",
+    " M tests/unit/storage/test_hybrid_laws.py",
+    " M tests/unit/storage/test_repository_laws.py",
+    " M tests/unit/storage/test_store_ops.py",
+    " M tests/unit/storage/test_vec.py"
+  ],
+  "created_at": "2026-03-12T09:56:43.482654+00:00",
+  "workspace": "/tmp/nix-shell.hWWMSo/mutmut-models-_p8lwfeb/repo",
+  "command": [
+    "mutmut",
+    "run"
+  ],
+  "paths_to_mutate": [
+    "polylogue/lib/models.py"
+  ],
+  "tests": [
+    "tests/unit/core/test_models.py",
+    "tests/unit/core/test_message_laws.py",
+    "tests/unit/core/test_conversation_semantics.py"
+  ],
+  "counts": {
+    "killed": 120,
+    "survived": 41,
+    "not_checked": 2,
+    "timeout": 3,
+    "suspicious": 0,
+    "skipped": 0
+  },
+  "dominant_survivors": [
+    [
+      "_is_chatgpt_thinking",
+      22
+    ],
+    [
+      "extract_thinking",
+      15
+    ],
+    [
+      "iter_pairs",
+      2
+    ],
+    [
+      "to_text",
+      2
+    ]
+  ],
+  "dominant_timeouts": [
+    [
+      "iter_pairs",
+      3
+    ]
+  ],
+  "dominant_not_checked": [
+    [
+      "mainline_messages",
+      2
+    ]
+  ],
+  "survivor_keys": [
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_5",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_7",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_11",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_14",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_16",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_21",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_23",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_26",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_30",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_31",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_33",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_34",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_35",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_36",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_38",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_39",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_40",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_41",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_42",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_43",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_44",
+    "polylogue.lib.models.x\u01c1Message\u01c1_is_chatgpt_thinking__mutmut_45",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_14",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_16",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_17",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_18",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_19",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_22",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_24",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_30",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_31",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_41",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_47",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_48",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_49",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_50",
+    "polylogue.lib.models.x\u01c1Message\u01c1extract_thinking__mutmut_51",
+    "polylogue.lib.models.x\u01c1Conversation\u01c1iter_pairs__mutmut_7",
+    "polylogue.lib.models.x\u01c1Conversation\u01c1iter_pairs__mutmut_19",
+    "polylogue.lib.models.x\u01c1Conversation\u01c1to_text__mutmut_4",
+    "polylogue.lib.models.x\u01c1Conversation\u01c1to_text__mutmut_8"
+  ],
+  "timeout_keys": [
+    "polylogue.lib.models.x\u01c1Conversation\u01c1iter_pairs__mutmut_16",
+    "polylogue.lib.models.x\u01c1Conversation\u01c1iter_pairs__mutmut_17",
+    "polylogue.lib.models.x\u01c1Conversation\u01c1iter_pairs__mutmut_20"
+  ],
+  "not_checked_keys": [
+    "polylogue.lib.models.x\u01c1Conversation\u01c1mainline_messages__mutmut_1",
+    "polylogue.lib.models.x\u01c1Conversation\u01c1mainline_messages__mutmut_2"
+  ],
+  "runtime_seconds": 27.953421,
+  "exit_code": 0,
+  "notes": []
+}
