@@ -238,7 +238,6 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="Repository query, projection, and CRUD contracts",
         paths_to_mutate=("polylogue/storage/repository.py",),
         tests=(
-            "tests/unit/storage/test_async.py",
             "tests/unit/storage/test_repository_laws.py",
         ),
         notes=("Large surface; use to gauge storage law readiness before repository-law work.",),

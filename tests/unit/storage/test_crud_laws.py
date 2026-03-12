@@ -5,11 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import make_conversation
+from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
+from tests.infra.storage_records import make_attachment, make_conversation, make_message
 from tests.infra.strategies import (
     conversation_graph_strategy,
     expected_sorted_ids,
@@ -26,6 +28,11 @@ def _seed_backend(specs) -> tuple[TemporaryDirectory[str], SQLiteBackend]:
     db_path = Path(tempdir.name) / "backend.db"
     seed_conversation_graph(db_path, specs)
     return tempdir, SQLiteBackend(db_path=db_path)
+
+
+def _new_backend(name: str) -> tuple[TemporaryDirectory[str], SQLiteBackend]:
+    tempdir = TemporaryDirectory()
+    return tempdir, SQLiteBackend(db_path=Path(tempdir.name) / name)
 
 
 @settings(
@@ -212,6 +219,434 @@ async def test_backend_delete_is_persistent(specs, candidate_index: int) -> None
         assert await backend.delete_conversation(target_id) is True
         assert await backend.get_conversation(target_id) is None
         assert await backend.delete_conversation(target_id) is False
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+async def test_backend_get_conversations_batch_contract() -> None:
+    """Batch conversation lookup must preserve requested order, duplicates, and skip missing IDs."""
+    tempdir, backend = _new_backend("conversation-batch.db")
+    try:
+        await backend.save_conversation_record(make_conversation("conv-1", title="First"))
+        await backend.save_conversation_record(make_conversation("conv-2", title="Second"))
+
+        assert await backend.get_conversations_batch([]) == []
+
+        batch = await backend.get_conversations_batch(["conv-2", "missing", "conv-1", "conv-1"])
+        assert [record.conversation_id for record in batch] == ["conv-2", "conv-1", "conv-1"]
+        assert [record.title for record in batch] == ["Second", "First", "First"]
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+async def test_backend_conversation_roundtrip_preserves_nulls_branching_and_metadata_contract() -> None:
+    """Conversation save/get must preserve null optionals, branch links, and user metadata on upsert."""
+    tempdir, backend = _new_backend("conversation-roundtrip.db")
+    try:
+        await backend.save_conversation_record(
+            ConversationRecord(
+                conversation_id="conv-root",
+                provider_name="claude",
+                provider_conversation_id="prov-root",
+                title=None,
+                created_at=None,
+                updated_at=None,
+                content_hash="hash-root",
+                provider_meta=None,
+                version=1,
+            )
+        )
+        await backend.save_conversation_record(
+            make_conversation(
+                "conv-child",
+                provider_name="claude",
+                title="Child",
+                parent_conversation_id="conv-root",
+                branch_type="continuation",
+                content_hash="hash-child-v1",
+            )
+        )
+        await backend.update_metadata("conv-child", "custom_key", "custom_value")
+        await backend.save_conversation_record(
+            make_conversation(
+                "conv-child",
+                provider_name="claude",
+                title="Child Updated",
+                parent_conversation_id="conv-root",
+                branch_type="continuation",
+                content_hash="hash-child-v2",
+                metadata=None,
+            )
+        )
+
+        root = await backend.get_conversation("conv-root")
+        child = await backend.get_conversation("conv-child")
+
+        assert root is not None
+        assert root.title is None
+        assert root.created_at is None
+        assert root.provider_meta is None
+
+        assert child is not None
+        assert child.title == "Child Updated"
+        assert child.parent_conversation_id == "conv-root"
+        assert child.branch_type == "continuation"
+        metadata = await backend.get_metadata("conv-child")
+        assert metadata["custom_key"] == "custom_value"
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+async def test_backend_message_roundtrip_contract() -> None:
+    """Message save/get must preserve ordering, text, and branching fields."""
+    tempdir, backend = _new_backend("message-roundtrip.db")
+    try:
+        await backend.save_conversation_record(make_conversation("conv-1", title="Messages"))
+        parent = MessageRecord(
+            message_id="msg-parent",
+            conversation_id="conv-1",
+            role="user",
+            text="Parent",
+            sort_key=1.0,
+            content_hash="hash-parent",
+            version=1,
+        )
+        child = MessageRecord(
+            message_id="msg-child",
+            conversation_id="conv-1",
+            role="assistant",
+            text="Child",
+            sort_key=2.0,
+            content_hash="hash-child",
+            version=1,
+            parent_message_id="msg-parent",
+            branch_index=2,
+        )
+        await backend.save_messages([child, parent])
+
+        assert await backend.get_messages("missing") == []
+
+        messages = await backend.get_messages("conv-1")
+        assert [message.message_id for message in messages] == ["msg-parent", "msg-child"]
+        assert messages[0].text == "Parent"
+        assert messages[1].text == "Child"
+        assert messages[1].parent_message_id == "msg-parent"
+        assert messages[1].branch_index == 2
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+async def test_backend_get_messages_batch_contract() -> None:
+    """Batch message lookup must return requested keys with sorted groups and empty misses."""
+    tempdir, backend = _new_backend("messages-batch.db")
+    try:
+        await backend.save_conversation_record(make_conversation("conv-1"))
+        await backend.save_conversation_record(make_conversation("conv-2"))
+        await backend.save_messages(
+            [
+                MessageRecord(
+                    message_id="m3",
+                    conversation_id="conv-1",
+                    role="assistant",
+                    text="third",
+                    sort_key=3.0,
+                    content_hash="hash-3",
+                    version=1,
+                ),
+                MessageRecord(
+                    message_id="m1",
+                    conversation_id="conv-1",
+                    role="user",
+                    text="first",
+                    sort_key=1.0,
+                    content_hash="hash-1",
+                    version=1,
+                ),
+                MessageRecord(
+                    message_id="m2",
+                    conversation_id="conv-1",
+                    role="assistant",
+                    text="second",
+                    sort_key=2.0,
+                    content_hash="hash-2",
+                    version=1,
+                ),
+                MessageRecord(
+                    message_id="m4",
+                    conversation_id="conv-2",
+                    role="user",
+                    text="other",
+                    sort_key=4.0,
+                    content_hash="hash-4",
+                    version=1,
+                ),
+            ]
+        )
+
+        assert await backend.get_messages_batch([]) == {}
+
+        result = await backend.get_messages_batch(["missing-1", "conv-1", "conv-2", "missing-2"])
+        assert list(result) == ["missing-1", "conv-1", "conv-2", "missing-2"]
+        assert result["missing-1"] == []
+        assert result["missing-2"] == []
+        assert [message.message_id for message in result["conv-1"]] == ["m1", "m2", "m3"]
+        assert [message.message_id for message in result["conv-2"]] == ["m4"]
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+async def test_backend_get_attachments_batch_contract() -> None:
+    """Batch attachment lookup must preserve fields and return empty groups for missing IDs."""
+    tempdir, backend = _new_backend("attachments-batch.db")
+    try:
+        await backend.save_conversation_record(make_conversation("conv-1"))
+        await backend.save_conversation_record(make_conversation("conv-2"))
+        await backend.save_messages([make_message("m1", "conv-1"), make_message("m2", "conv-2")])
+        await backend.save_attachments(
+            [
+                make_attachment(
+                    "att-1",
+                    "conv-1",
+                    "m1",
+                    mime_type="application/pdf",
+                    size_bytes=2048,
+                    path="/tmp/test.pdf",
+                ),
+                make_attachment("att-2", "conv-2", "m2", mime_type="image/png", size_bytes=512),
+            ]
+        )
+
+        assert await backend.get_attachments_batch([]) == {}
+
+        result = await backend.get_attachments_batch(["missing", "conv-1", "conv-2"])
+        assert list(result) == ["missing", "conv-1", "conv-2"]
+        assert result["missing"] == []
+        assert [attachment.attachment_id for attachment in result["conv-1"]] == ["att-1"]
+        assert [attachment.attachment_id for attachment in result["conv-2"]] == ["att-2"]
+        assert result["conv-1"][0].mime_type == "application/pdf"
+        assert result["conv-1"][0].size_bytes == 2048
+        assert result["conv-1"][0].path == "/tmp/test.pdf"
+        assert result["conv-1"][0].message_id == "m1"
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+async def test_backend_metadata_and_tag_contract() -> None:
+    """Metadata and tag mutations must compose consistently through the backend API."""
+    tempdir, backend = _new_backend("metadata-tags.db")
+    try:
+        await backend.save_conversation_record(make_conversation("conv-1"))
+
+        assert await backend.list_tags() == {}
+
+        await backend.update_metadata("conv-1", "rating", 5)
+        await backend.update_metadata("conv-1", "reviewed", True)
+        await backend.update_metadata("conv-1", "temp", "value")
+        await backend.delete_metadata("conv-1", "temp")
+        await backend.add_tag("conv-1", "important")
+        await backend.add_tag("conv-1", "work")
+        await backend.remove_tag("conv-1", "work")
+
+        metadata = await backend.get_metadata("conv-1")
+        assert metadata["rating"] == 5
+        assert metadata["reviewed"] is True
+        assert "temp" not in metadata
+        assert metadata["tags"] == ["important"]
+        assert await backend.list_tags() == {"important": 1}
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+async def test_backend_delete_reparents_children_contract() -> None:
+    """Deleting an interior conversation must reparent its descendants to preserve the tree."""
+    tempdir, backend = _new_backend("delete-reparent.db")
+    try:
+        await backend.save_conversation_record(make_conversation("root"))
+        await backend.save_conversation_record(make_conversation("child", parent_conversation_id="root"))
+        await backend.save_conversation_record(make_conversation("grandchild", parent_conversation_id="child"))
+
+        assert await backend.delete_conversation("child") is True
+
+        assert await backend.get_conversation("child") is None
+        grandchild = await backend.get_conversation("grandchild")
+        assert grandchild is not None
+        assert grandchild.parent_conversation_id == "root"
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+async def test_backend_prune_attachments_contract() -> None:
+    """Pruning must keep requested refs, drop local-only refs, and preserve shared attachments."""
+    tempdir, backend = _new_backend("prune-attachments.db")
+    try:
+        await backend.save_conversation_record(make_conversation("conv-1"))
+        await backend.save_conversation_record(make_conversation("conv-2"))
+        await backend.save_messages([make_message("m1", "conv-1"), make_message("m2", "conv-2")])
+        await backend.save_attachments(
+            [
+                make_attachment("att-1", "conv-1", "m1"),
+                make_attachment("att-2", "conv-1", "m1"),
+                make_attachment("shared-att", "conv-1", "m1"),
+                make_attachment("shared-att", "conv-2", "m2"),
+            ]
+        )
+
+        await backend.prune_attachments("conv-1", {"att-1"})
+        conv1_ids = {attachment.attachment_id for attachment in await backend.get_attachments("conv-1")}
+        conv2_ids = {attachment.attachment_id for attachment in await backend.get_attachments("conv-2")}
+        assert conv1_ids == {"att-1"}
+        assert conv2_ids == {"shared-att"}
+
+        async with backend.connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'shared-att'")
+            shared_count = (await cursor.fetchone())[0]
+            assert shared_count == 1
+
+        await backend.prune_attachments("conv-1", set())
+        assert await backend.get_attachments("conv-1") == []
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+async def test_backend_nested_transaction_and_control_contract() -> None:
+    """Transaction controls must enforce active state and nested savepoints correctly."""
+    tempdir, backend = _new_backend("transactions.db")
+    try:
+        with pytest.raises(Exception, match="No active transaction to commit"):
+            await backend.commit()
+        with pytest.raises(Exception, match="No active transaction to rollback"):
+            await backend.rollback()
+
+        await backend.begin()
+        await backend.save_conversation_record(make_conversation("conv-1", title="First"))
+        await backend.begin()
+        await backend.save_conversation_record(make_conversation("conv-2", title="Second"))
+        await backend.rollback()
+        await backend.commit()
+
+        assert await backend.get_conversation("conv-1") is not None
+        assert await backend.get_conversation("conv-2") is None
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+@pytest.mark.parametrize(
+    ("messages", "expected"),
+    [
+        ([], {"total_messages": 0, "dialogue_messages": 0, "tool_messages": 0}),
+        (
+            [
+                make_message("m1", "conv-1", role="user", text="hello", sort_key=1.0, content_hash="hash-1"),
+                make_message("m2", "conv-1", role="assistant", text="hi", sort_key=2.0, content_hash="hash-2"),
+                make_message("m3", "conv-1", role="tool", text="output", sort_key=3.0, content_hash="hash-3"),
+            ],
+            {"total_messages": 3, "dialogue_messages": 2, "tool_messages": 1},
+        ),
+    ],
+    ids=["empty", "with-tool"],
+)
+async def test_backend_get_conversation_stats_contract(messages, expected) -> None:
+    """Conversation stats must count total, dialogue, and tool messages consistently."""
+    tempdir, backend = _new_backend("conversation-stats.db")
+    try:
+        await backend.save_conversation_record(make_conversation("conv-1"))
+        if messages:
+            await backend.save_messages(messages)
+
+        assert await backend.get_conversation_stats("conv-1") == expected
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+async def test_backend_save_conversation_counts_contract() -> None:
+    """save_conversation() must report created counts for message and attachment payloads."""
+    tempdir, backend = _new_backend("save-conversation.db")
+    try:
+        conversation = make_conversation("conv-1", content_hash="hash-1")
+        messages = [
+            make_message("m1", "conv-1", text="one", content_hash="msg-hash-1"),
+            make_message("m2", "conv-1", role="assistant", text="two", content_hash="msg-hash-2"),
+        ]
+        attachments = [
+            make_attachment("att-1", "conv-1", "m1"),
+            make_attachment("att-2", "conv-1", "m1"),
+        ]
+
+        counts = await backend.save_conversation(conversation, messages, attachments)
+        assert counts == {
+            "conversations_created": 1,
+            "messages_created": 2,
+            "attachments_created": 2,
+        }
+
+        empty_counts = await backend.save_conversation(
+            make_conversation("conv-2", content_hash="hash-2"),
+            [],
+            [],
+        )
+        assert empty_counts == {
+            "conversations_created": 1,
+            "messages_created": 0,
+            "attachments_created": 0,
+        }
+    finally:
+        await backend.close()
+        tempdir.cleanup()
+
+
+async def test_backend_content_blocks_roundtrip_preserves_semantic_type() -> None:
+    """Content blocks loaded through the backend must preserve semantic_type and ordering."""
+    tempdir, backend = _new_backend("content-blocks.db")
+    try:
+        await backend.save_conversation_record(make_conversation("conv-sem"))
+        await backend.save_messages([make_message("msg-sem", "conv-sem", role="assistant", text="")])
+        await backend.save_content_blocks(
+            [
+                ContentBlockRecord(
+                    block_id="block-1",
+                    message_id="msg-sem",
+                    conversation_id="conv-sem",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="Bash",
+                    semantic_type="git",
+                    metadata='{"command": "status"}',
+                ),
+                ContentBlockRecord(
+                    block_id="block-2",
+                    message_id="msg-sem",
+                    conversation_id="conv-sem",
+                    block_index=1,
+                    type="thinking",
+                    text="Let me think",
+                    semantic_type="thinking",
+                ),
+                ContentBlockRecord(
+                    block_id="block-3",
+                    message_id="msg-sem",
+                    conversation_id="conv-sem",
+                    block_index=2,
+                    type="text",
+                    text="plain text",
+                    semantic_type=None,
+                ),
+            ]
+        )
+
+        blocks = (await backend.get_content_blocks(["msg-sem"]))["msg-sem"]
+        assert [block.block_index for block in blocks] == [0, 1, 2]
+        assert [block.semantic_type for block in blocks] == ["git", "thinking", None]
     finally:
         await backend.close()
         tempdir.cleanup()
