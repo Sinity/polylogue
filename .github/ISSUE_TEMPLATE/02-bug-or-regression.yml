@@ -1,0 +1,58 @@
+name: Bug or Regression
+description: Report behavior that is wrong, misleading, broken, or has regressed.
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What is happening?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction or trigger
+      description: How can this be reproduced or exercised?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Suspected scope
+      description: Commands, importers, storage, MCP tools, site, or docs if known.
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - p0 - data loss / archive corruption / security problem
+        - p1 - major broken behavior / blocker
+        - p2 - important but workaround exists
+        - p3 - minor / localized
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Logs, screenshots, traces, failing output, or code references.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Fix acceptance criteria
+      placeholder: |
+        - [ ] Root cause identified
+        - [ ] Behavior corrected
+        - [ ] Regression coverage added or verification recorded
+    validations:
+      required: true

@@ -75,9 +75,7 @@ def make_repo_mock() -> MagicMock:
     repo.resolve_id = AsyncMock(return_value=None)
     repo.get_archive_stats = AsyncMock(return_value=MagicMock())
     repo.get_summary = AsyncMock(return_value=None)
-    repo.get_conversation_stats = AsyncMock(return_value={})
     repo.get_session_tree = AsyncMock(return_value=[])
-    repo.get_stats_by = AsyncMock(return_value={})
     repo.add_tag = AsyncMock(return_value=None)
     repo.remove_tag = AsyncMock(return_value=None)
     repo.list_tags = AsyncMock(return_value={})
@@ -86,6 +84,9 @@ def make_repo_mock() -> MagicMock:
     repo.delete_metadata = AsyncMock(return_value=None)
     repo.delete_conversation = AsyncMock(return_value=False)
     repo.backend = MagicMock()
+    repo.queries = MagicMock()
+    repo.queries.get_conversation_stats = AsyncMock(return_value={})
+    repo.queries.get_stats_by = AsyncMock(return_value={})
     return repo
 
 

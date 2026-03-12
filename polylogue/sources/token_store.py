@@ -11,7 +11,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 

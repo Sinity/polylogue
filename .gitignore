@@ -48,9 +48,7 @@ AGENTS.override.md
 # Local tooling/session artifacts
 .cclsp.json
 .mcp.json
-QA_SESSION.md
-qa_outputs/
-qa_archive/
+qa/
 
 # Generated agent surface
 AGENTS.md

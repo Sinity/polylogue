@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.render_paths import render_root
+from polylogue.paths import conversation_render_root
 from polylogue.rendering.core import ConversationFormatter
 
 
@@ -46,7 +46,7 @@ class MarkdownRenderer:
         formatted = await self.formatter.format(conversation_id)
 
         # Determine output path
-        render_root_path = render_root(output_path, formatted.provider, conversation_id)
+        render_root_path = conversation_render_root(output_path, formatted.provider, conversation_id)
         render_root_path.mkdir(parents=True, exist_ok=True)
         md_path = render_root_path / "conversation.md"
 

@@ -11,22 +11,21 @@ from __future__ import annotations
 from typing import Any
 
 import click
+from click.shell_completion import get_completion_class
 
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
-from polylogue.cli.commands.completions import completions_command
-from polylogue.cli.commands.dashboard import dashboard_command
-from polylogue.cli.commands.demo import demo_command
+from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.commands.embed import embed_command
-from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.qa import qa_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
+from polylogue.cli.commands.schema import schema_command
 from polylogue.cli.commands.site import site_command
 from polylogue.cli.commands.tags import tags_command
 from polylogue.cli.formatting import announce_plain_mode, plain_forced_by_env, should_use_plain
 from polylogue.cli.types import AppEnv
-from polylogue.lib.log import configure_logging
+from polylogue.logging import configure_logging
 from polylogue.ui import create_ui
 from polylogue.version import POLYLOGUE_VERSION
 
@@ -160,6 +159,49 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     from polylogue.cli.helpers import print_summary
 
     print_summary(env, verbose=verbose)
+
+
+@click.command("dashboard")
+@click.pass_obj
+def dashboard_command(env: AppEnv) -> None:
+    """Launch the Mission Control TUI dashboard."""
+    from polylogue.ui.tui.app import PolylogueApp
+
+    app = PolylogueApp(config=env.config, repository=env.repository)
+    app.run()
+
+
+@click.command("completions")
+@click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
+@click.pass_context
+def completions_command(ctx: click.Context, shell: str) -> None:
+    """Generate shell completion scripts."""
+    root_cmd = ctx.find_root().command
+    comp_cls = get_completion_class(shell)
+    if comp_cls is None:
+        raise click.ClickException(f"Unsupported shell: {shell}")
+
+    comp = comp_cls(root_cmd, {}, "polylogue", "_POLYLOGUE_COMPLETE")
+    click.echo(comp.source())
+
+
+@click.command("mcp")
+@click.option("--transport", type=click.Choice(["stdio"]), default="stdio", help="Transport protocol")
+@click.pass_obj
+def mcp_command(env: AppEnv, transport: str) -> None:
+    """Start the MCP server for AI assistant integration."""
+    if transport != "stdio":
+        env.ui.console.print(f"Unsupported transport: {transport}")
+        raise SystemExit(1)
+
+    try:
+        from polylogue.mcp.server import serve_stdio
+    except ImportError as exc:
+        env.ui.console.print(f"MCP dependencies not installed: {exc}")
+        env.ui.console.print("Install the base polylogue package in an environment that includes its runtime dependencies.")
+        raise SystemExit(1) from None
+
+    serve_stdio(env.services)
 
 
 # Main CLI group with query-mode options
@@ -299,12 +341,12 @@ def cli(
     \b
     Query mode (default):
         polylogue "search terms"
-        polylogue -p claude --since "last week"
+        polylogue -p claude-ai --since "last week"
         polylogue --latest --output browser
 
     \b
     Combined filters:
-        polylogue "error" -p claude --since 2025-01 --list
+        polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
 
@@ -317,12 +359,14 @@ def cli(
     Subcommands:
         polylogue run       Parse/render/index pipeline
         polylogue check     Health check and repair
+        polylogue qa        Composable QA (audit, exercises, invariants)
+        polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
+        polylogue schema    Schema inference and versioning
         polylogue mcp       Start MCP server
-        polylogue qa        Snapshot/index QA artifacts
 
     Run `polylogue <command> --help` for subcommand details.
     """
@@ -351,12 +395,75 @@ cli.add_command(dashboard_command)
 cli.add_command(embed_command)
 cli.add_command(site_command)
 cli.add_command(tags_command)
-cli.add_command(demo_command)
+cli.add_command(generate_command)
 cli.add_command(qa_command)
+cli.add_command(schema_command)
 
 
 def main() -> None:
-    cli()
+    """CLI entrypoint with machine-error handling.
+
+    When ``--json`` is detected in argv, Click exceptions and unexpected
+    errors are caught and emitted as structured JSON on stdout instead of
+    Click's default plain-text stderr output.
+    """
+    import sys
+
+    from polylogue.cli.machine_errors import (
+        error_invalid_arguments,
+        error_runtime,
+        extract_command,
+        wants_json,
+    )
+
+    argv = sys.argv[1:]
+    if not wants_json(argv):
+        cli()
+        return
+
+    command = extract_command(argv)
+    try:
+        cli(standalone_mode=False)
+    except click.UsageError as exc:
+        option = getattr(exc, "option_name", None) or _extract_option(str(exc))
+        error_invalid_arguments(
+            str(exc),
+            command=command,
+            option=option,
+        ).emit(exit_code=exc.exit_code if hasattr(exc, "exit_code") else 2)
+    except click.BadParameter as exc:
+        error_invalid_arguments(
+            str(exc),
+            command=command,
+            option=exc.param_hint,
+        ).emit(exit_code=2)
+    except click.ClickException as exc:
+        error_runtime(
+            exc.format_message(),
+            command=command,
+        ).emit(exit_code=exc.exit_code)
+    except SystemExit as exc:
+        # Commands that call fail() raise SystemExit with a string message
+        code = exc.code
+        if isinstance(code, str):
+            error_invalid_arguments(code, command=command).emit(exit_code=1)
+        elif isinstance(code, int) and code != 0:
+            raise
+        # exit_code 0 = success, let it pass
+    except Exception as exc:
+        error_runtime(
+            str(exc),
+            command=command,
+            exception_type=type(exc).__qualname__,
+        ).emit(exit_code=1)
+
+
+def _extract_option(message: str) -> str | None:
+    """Try to extract the option name from a Click error message."""
+    # "No such option: --bad-flag" → "--bad-flag"
+    if "No such option:" in message:
+        return message.split("No such option:")[-1].strip().split()[0]
+    return None
 
 
 __all__ = ["cli", "main"]

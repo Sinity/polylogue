@@ -442,7 +442,7 @@ class TestRawConversationParsing:
                     continue
 
                 # Validate basic structure
-                assert result.provider_name in [provider, "chatgpt", "claude", "codex", "claude-code"]
+                assert result.provider_name in [provider, "chatgpt", "claude-ai", "codex", "claude-code"]
                 assert result.provider_conversation_id is not None
                 assert isinstance(result.messages, list)
 

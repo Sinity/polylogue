@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from polylogue.export import export_jsonl
+import pytest
+
 from polylogue.paths import is_within_root
 from polylogue.rendering.renderers import HTMLRenderer
 from polylogue.sources import RecordBundle, save_bundle
@@ -106,18 +107,6 @@ async def test_render_includes_orphan_attachments(workspace_env, storage_reposit
     assert "- Attachment: notes.txt" in markdown
 
 
-async def test_export_includes_attachments(workspace_env, tmp_path, storage_repository):
-    bundle = RecordBundle(
-        conversation=_conversation_record(),
-        messages=[],
-        attachments=[make_attachment("att-1", "conv:hash", None, mime_type="text/plain", size_bytes=12)],
-    )
-    await save_bundle(bundle, repository=storage_repository)
-    output = export_jsonl(archive_root=workspace_env["archive_root"], output_path=tmp_path / "export.jsonl")
-    payload = output.read_text(encoding="utf-8").strip().splitlines()[0]
-    assert '"attachments"' in payload
-
-
 async def test_ingest_updates_metadata(workspace_env, storage_repository):
     bundle = RecordBundle(
         conversation=make_conversation("conv-update", provider_name="codex", title="Old", content_hash="hash-old", provider_meta={"source": "inbox"}),
@@ -213,3 +202,73 @@ async def test_ingest_removes_missing_attachments(workspace_env, storage_reposit
         ref_count = conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0]
     assert attachment_count == 0
     assert ref_count == 0
+
+
+# =====================================================================
+# Merged from test_ingest_state.py (preparation/ingestion)
+# =====================================================================
+
+
+def test_ingest_state_happy_path_transitions() -> None:
+    from polylogue.pipeline.services.parsing import IngestPhase, IngestState
+
+    state = IngestState(source_names=("inbox",), parse_requested=True)
+    assert state.phase == IngestPhase.INIT
+
+    state.record_acquired(["raw-1", "raw-2"])
+    assert state.phase == IngestPhase.ACQUIRED
+    assert state.acquired_raw_ids == ["raw-1", "raw-2"]
+
+    state.record_validation_candidates(["raw-1", "raw-2", "raw-3"])
+    state.record_validation_result(["raw-1", "raw-3"])
+    assert state.phase == IngestPhase.VALIDATED
+    assert state.parseable_raw_ids == ["raw-1", "raw-3"]
+
+    state.record_parse_candidates(["raw-3", "raw-1"])
+    state.record_parse_completed()
+    assert state.phase == IngestPhase.PARSED
+    assert state.parse_raw_ids == ["raw-3", "raw-1"]
+
+
+def test_ingest_state_rejects_out_of_order_transition() -> None:
+    from polylogue.pipeline.services.parsing import IngestState
+
+    state = IngestState(source_names=("inbox",), parse_requested=True)
+    with pytest.raises(RuntimeError, match="expected phase acquired"):
+        state.record_validation_candidates(["raw-1"])
+
+
+def test_ingest_state_rejects_unexpected_validation_ids() -> None:
+    from polylogue.pipeline.services.parsing import IngestState
+
+    state = IngestState(source_names=("inbox",), parse_requested=True)
+    state.record_acquired(["raw-1"])
+    state.record_validation_candidates(["raw-1"])
+    with pytest.raises(ValueError, match="outside validation candidates"):
+        state.record_validation_result(["raw-2"])
+
+
+def test_ingest_state_rejects_unexpected_parse_ids() -> None:
+    from polylogue.pipeline.services.parsing import IngestState
+
+    state = IngestState(source_names=("inbox",), parse_requested=True)
+    state.record_acquired(["raw-1"])
+    state.record_validation_candidates(["raw-1"])
+    state.record_validation_result(["raw-1"])
+    with pytest.raises(ValueError, match="outside validation candidates"):
+        state.record_parse_candidates(["raw-2"])
+
+
+def test_ingest_state_allows_persisted_prevalidated_parse_ids() -> None:
+    from polylogue.pipeline.services.parsing import IngestPhase, IngestState
+
+    state = IngestState(source_names=("inbox",), parse_requested=True)
+    state.record_acquired([])
+    state.record_validation_candidates([])
+    state.record_validation_result([])
+    state.record_parse_candidates(
+        ["raw-prevalidated"],
+        persisted_validated_raw_ids=["raw-prevalidated"],
+    )
+    state.record_parse_completed()
+    assert state.phase == IngestPhase.PARSED

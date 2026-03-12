@@ -1,0 +1,63 @@
+{
+  "campaign": "ui-core",
+  "description": "UI prompt, progress, and facade interaction contracts",
+  "commit": "e07c4baebfe68af194fd423cd8fa0ecab515ca01",
+  "worktree_dirty": false,
+  "status_summary": [],
+  "created_at": "2026-03-12T07:01:35.777810+00:00",
+  "workspace": "/tmp/nix-shell.s1UDJ3/mutmut-ui-core-x1ifk6rz/repo",
+  "command": [
+    "mutmut",
+    "run"
+  ],
+  "paths_to_mutate": [
+    "polylogue/ui/__init__.py",
+    "polylogue/ui/facade.py"
+  ],
+  "tests": [
+    "tests/unit/ui/test_ui.py",
+    "tests/unit/ui/test_rendering.py"
+  ],
+  "counts": {
+    "killed": 11,
+    "survived": 15,
+    "timeout": 0,
+    "not_checked": 0,
+    "suspicious": 0,
+    "skipped": 0
+  },
+  "dominant_survivors": [
+    [
+      "print",
+      14
+    ],
+    [
+      "__init__",
+      1
+    ]
+  ],
+  "dominant_timeouts": [],
+  "dominant_not_checked": [],
+  "survivor_keys": [
+    "polylogue.ui.facade.x\u01c1UIError\u01c1__init____mutmut_2",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_2",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_3",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_4",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_5",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_6",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_7",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_8",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_9",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_10",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_11",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_12",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_13",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_14",
+    "polylogue.ui.facade.x\u01c1PlainConsole\u01c1print__mutmut_17"
+  ],
+  "timeout_keys": [],
+  "not_checked_keys": [],
+  "runtime_seconds": 12.145656,
+  "exit_code": 0,
+  "notes": []
+}

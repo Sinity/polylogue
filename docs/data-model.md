@@ -7,7 +7,7 @@
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | str | Unique ID (`provider:provider_id`) |
-| `provider` | str | Source provider (`chatgpt`, `claude`, `claude-code`, `gemini`) |
+| `provider` | str | Source provider (`chatgpt`, `claude-ai`, `claude-code`, `gemini`) |
 | `original_title` | str? | Provider's original title |
 | `created_at` | datetime? | Creation timestamp |
 | `updated_at` | datetime? | Last update timestamp |

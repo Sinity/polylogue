@@ -349,7 +349,7 @@ Lazy builder pattern — no database queries until a terminal method is called:
 
 ```python
 # Building the filter is synchronous and cheap
-chain = ConversationFilter(repo).provider("claude").since("2024-01-01").contains("error")
+chain = ConversationFilter(repo).provider("claude-ai").since("2024-01-01").contains("error")
 
 # Terminal triggers the actual query
 results = await chain.list()       # Full conversations
@@ -523,8 +523,7 @@ tests/
 | `raw_synthetic_samples` | session | Raw conversation data for unit tests |
 | `repository` | function | Fresh `ConversationRepository` with in-memory backend |
 
-All fixtures use the same `SyntheticCorpus` infrastructure as `polylogue demo --seed/--corpus`.
-Note: `polylogue demo --showcase` currently seeds from packaged static fixtures.
+All fixtures use the same `SyntheticCorpus` infrastructure as `polylogue generate --seed`.
 
 ### Test Markers
 

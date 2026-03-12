@@ -56,7 +56,7 @@ async def resolve_stream_target(
     raise SystemExit(1)
 
 
-async def _apply_modifiers(
+async def apply_modifiers(
     env: AppEnv,
     results: list[Conversation | ConversationSummary],
     params: dict[str, Any],
@@ -122,7 +122,7 @@ async def _apply_modifiers(
         click.echo(report)
 
 
-async def _delete_conversations(
+async def delete_conversations(
     env: AppEnv,
     results: list[Conversation | ConversationSummary],
     params: dict[str, Any],
@@ -188,7 +188,7 @@ async def _delete_conversations(
     click.echo(f"Deleted {deleted_count} conversation(s)")
 
 
-def _apply_transform(results: list[Conversation], transform: str) -> list[Conversation]:
+def apply_transform(results: list[Conversation], transform: str) -> list[Conversation]:
     """Apply a transform to filter messages from conversations."""
     transformed = []
     for conv in results:

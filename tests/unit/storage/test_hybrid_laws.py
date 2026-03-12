@@ -138,6 +138,65 @@ def test_rrf_default_k_matches_explicit_sixty() -> None:
     assert reciprocal_rank_fusion(results) == reciprocal_rank_fusion(results, k=60)
 
 
+
+
+@given(
+    st.lists(
+        st.tuples(st.uuids().map(str), st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False)),
+        min_size=1,
+        max_size=30,
+    ),
+    st.lists(
+        st.tuples(st.uuids().map(str), st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False)),
+        min_size=0,
+        max_size=30,
+    ),
+    st.integers(min_value=1, max_value=100),
+)
+def test_rrf_scores_stay_within_rank_bound(
+    results1: list[tuple[str, float]],
+    results2: list[tuple[str, float]],
+    k: int,
+) -> None:
+    fused = reciprocal_rank_fusion(results1, results2, k=k)
+    max_lists = 1 + int(bool(results2))
+    bound = max_lists / (k + 1)
+    assert all(0 < score <= bound + 1e-10 for _item_id, score in fused)
+
+
+@given(
+    st.lists(
+        st.tuples(st.uuids().map(str), st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False)),
+        min_size=1,
+        max_size=20,
+    ),
+    st.lists(
+        st.tuples(st.uuids().map(str), st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False)),
+        min_size=1,
+        max_size=20,
+    ),
+    st.integers(min_value=1, max_value=100),
+)
+def test_rrf_symmetric_scores(
+    results1: list[tuple[str, float]],
+    results2: list[tuple[str, float]],
+    k: int,
+) -> None:
+    assert dict(reciprocal_rank_fusion(results1, results2, k=k)) == dict(
+        reciprocal_rank_fusion(results2, results1, k=k)
+    )
+
+
+def test_rrf_single_list_preserves_first_unique_order() -> None:
+    results = [("a", 1.0), ("b", 0.9), ("a", 0.1), ("c", 0.8)]
+    assert [item_id for item_id, _score in reciprocal_rank_fusion(results)] == ["a", "b", "c"]
+
+
+def test_rrf_formula_contract() -> None:
+    fused = dict(reciprocal_rank_fusion([("a", 0.0), ("b", 0.0)], [("b", 0.0), ("a", 0.0)], k=60))
+    assert abs(fused["a"] - (1 / 61 + 1 / 62)) < 1e-10
+    assert abs(fused["b"] - (1 / 61 + 1 / 62)) < 1e-10
+
 # ---------------------------------------------------------------------------
 # HybridSearchProvider.search_scored laws
 # ---------------------------------------------------------------------------
@@ -268,7 +327,7 @@ def test_search_conversations_provider_filter() -> None:
     ])
     conn.executemany("INSERT INTO conversations VALUES (?, ?, ?)", [
         ("conv_chatgpt", "chatgpt", "chatgpt"),
-        ("conv_claude", "claude", "claude"),
+        ("conv_claude", "claude-ai", "claude-ai"),
     ])
     conn.commit()
     fts.db_path = conn

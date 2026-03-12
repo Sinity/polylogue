@@ -44,7 +44,7 @@ class TestMCPRealRepositoryPaths:
 
     @pytest.mark.asyncio
     async def test_search_uses_real_repository_and_filter_stack(self, tmp_path):
-        from polylogue.mcp.server import _build_server
+        from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-search.db")
         repo = ConversationRepository(backend=backend)
@@ -59,14 +59,14 @@ class TestMCPRealRepositoryPaths:
             )
             await _insert_conversation(
                 repo,
-                conversation_id="claude:other",
-                provider="claude",
+                conversation_id="claude-ai:other",
+                provider="claude-ai",
                 provider_conversation_id="other",
                 text="something unrelated",
             )
 
             with patch("polylogue.mcp.server._get_repo", return_value=repo):
-                server = _build_server()
+                server = build_server()
                 result = await invoke_surface_async(server._tool_manager._tools["search"].fn, query="needle", limit=10)
 
             parsed = json.loads(result)
@@ -78,7 +78,7 @@ class TestMCPRealRepositoryPaths:
 
     @pytest.mark.asyncio
     async def test_list_applies_provider_filter_on_real_repository(self, tmp_path):
-        from polylogue.mcp.server import _build_server
+        from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-list.db")
         repo = ConversationRepository(backend=backend)
@@ -93,30 +93,30 @@ class TestMCPRealRepositoryPaths:
             )
             await _insert_conversation(
                 repo,
-                conversation_id="claude:one",
-                provider="claude",
+                conversation_id="claude-ai:one",
+                provider="claude-ai",
                 provider_conversation_id="one",
                 text="claude content",
             )
 
             with patch("polylogue.mcp.server._get_repo", return_value=repo):
-                server = _build_server()
+                server = build_server()
                 result = await invoke_surface_async(
                     server._tool_manager._tools["list_conversations"].fn,
-                    provider="claude",
+                    provider="claude-ai",
                     limit=10,
                 )
 
             parsed = json.loads(result)
             assert len(parsed) == 1
-            assert parsed[0]["id"] == "claude:one"
-            assert parsed[0]["provider"] == "claude"
+            assert parsed[0]["id"] == "claude-ai:one"
+            assert parsed[0]["provider"] == "claude-ai"
         finally:
             await backend.close()
 
     @pytest.mark.asyncio
     async def test_list_with_invalid_limit_clamps_on_real_repository(self, tmp_path):
-        from polylogue.mcp.server import _build_server
+        from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-invalid-limit.db")
         repo = ConversationRepository(backend=backend)
@@ -138,7 +138,7 @@ class TestMCPRealRepositoryPaths:
             )
 
             with patch("polylogue.mcp.server._get_repo", return_value=repo):
-                server = _build_server()
+                server = build_server()
                 result = await invoke_surface_async(server._tool_manager._tools["list_conversations"].fn, limit=-1)
 
             parsed = json.loads(result)
@@ -148,7 +148,7 @@ class TestMCPRealRepositoryPaths:
             await backend.close()
 
     def test_add_list_remove_tag_roundtrip(self, tmp_path):
-        from polylogue.mcp.server import _build_server
+        from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-mutations-real.db")
         repo = ConversationRepository(backend=backend)
@@ -166,7 +166,7 @@ class TestMCPRealRepositoryPaths:
             )
 
             with patch("polylogue.mcp.server._get_repo", return_value=repo):
-                server = _build_server()
+                server = build_server()
 
                 initial_tags = json.loads(invoke_surface(server._tool_manager._tools["list_tags"].fn, provider="chatgpt"))
                 assert initial_tags.get("important", 0) == 0

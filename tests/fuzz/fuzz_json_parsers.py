@@ -192,7 +192,7 @@ def fuzz_claude_ai_parser(data: bytes) -> None:
         assert result is not None, "parse_ai() returned None"
         assert hasattr(result, "messages"), "Missing messages attribute"
         assert hasattr(result, "provider_name"), "Missing provider_name attribute"
-        assert result.provider_name == "claude", f"Wrong provider: {result.provider_name}"
+        assert result.provider_name == "claude-ai", f"Wrong provider: {result.provider_name}"
 
     except (ValueError, TypeError, KeyError, AttributeError):
         pass

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 from click.testing import CliRunner
@@ -21,31 +21,31 @@ def cli_runner():
 
 
 def _extract_json(output: str) -> dict:
-    """Extract JSON from CLI output, skipping non-JSON lines."""
+    """Extract JSON from CLI output, unwrapping the success envelope."""
     lines = output.strip().split("\n")
     # Find first line that starts with { and join all subsequent lines
     json_start = next((i for i, line in enumerate(lines) if line.strip().startswith("{")), None)
     if json_start is None:
         raise ValueError(f"No JSON found in output: {output}")
     json_str = "\n".join(lines[json_start:])
-    return json.loads(json_str)
+    data = json.loads(json_str)
+    # Unwrap success envelope
+    if isinstance(data, dict) and data.get("status") == "ok" and "result" in data:
+        return data["result"]
+    return data
 
 
 class TestHealthReportConstruction:
     """Tests for proper HealthReport instantiation."""
 
     def test_health_report_requires_summary(self):
-        """HealthReport must include summary dict with ok/warning/error counts."""
+        """HealthReport derives summary dict from check statuses."""
         checks = [
-            HealthCheck("database", VerifyStatus.OK, detail="DB reachable"),
-            HealthCheck("archive", VerifyStatus.WARNING, detail="Not found"),
+            HealthCheck("database", VerifyStatus.OK, summary="DB reachable"),
+            HealthCheck("archive", VerifyStatus.WARNING, summary="Not found"),
         ]
 
-        # Correct: include summary
-        report = HealthReport(
-            checks=checks,
-            summary={"ok": 1, "warning": 1, "error": 0},
-        )
+        report = HealthReport(checks=checks)
 
         assert len(report.checks) == 2
         assert report.summary == {"ok": 1, "warning": 1, "error": 0}
@@ -59,10 +59,7 @@ class TestHealthReportConstruction:
             HealthCheck("check4", VerifyStatus.ERROR),
         ]
 
-        report = HealthReport(
-            checks=checks,
-            summary={"ok": 2, "warning": 1, "error": 1},
-        )
+        report = HealthReport(checks=checks)
 
         # Verify counts match
         assert report.summary["ok"] == 2
@@ -71,8 +68,8 @@ class TestHealthReportConstruction:
 
     def test_health_report_to_dict_serialization(self):
         """HealthReport should serialize to dict with all required fields."""
-        checks = [HealthCheck("test", VerifyStatus.OK, detail="OK")]
-        report = HealthReport(checks=checks, summary={"ok": 1, "warning": 0, "error": 0})
+        checks = [HealthCheck("test", VerifyStatus.OK, summary="OK")]
+        report = HealthReport(checks=checks)
 
         data = report.to_dict()
 
@@ -83,7 +80,7 @@ class TestHealthReportConstruction:
 
     def test_health_report_empty_checks(self):
         """HealthReport with no checks should still have summary."""
-        report = HealthReport(checks=[], summary={"ok": 0, "warning": 0, "error": 0})
+        report = HealthReport(checks=[])
 
         assert len(report.checks) == 0
         assert report.summary == {"ok": 0, "warning": 0, "error": 0}
@@ -117,7 +114,7 @@ class TestCheckCommand:
 
         factory.create_conversation(
             id="conv1",
-            provider="claude",
+            provider="claude-ai",
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
@@ -191,7 +188,7 @@ class TestCheckCommand:
         )
         factory.create_conversation(
             id="conv2",
-            provider="claude",
+            provider="claude-ai",
             messages=[{"id": "m2", "role": "user", "text": "world"}],
         )
 
@@ -205,7 +202,7 @@ class TestCheckCommand:
 
         # Verbose output should contain provider names for breakdowns
         # (provider_distribution check always has breakdown)
-        assert "chatgpt" in result_verbose.output or "claude" in result_verbose.output
+        assert "chatgpt" in result_verbose.output or "claude-ai" in result_verbose.output
 
     def test_check_detects_empty_conversations(self, db_path, cli_runner):
         """Check detects conversations with no messages (warning status)."""
@@ -387,25 +384,33 @@ class TestCheckCommand:
 class TestCheckCommandSupplementary:
     """Tests for check command edge cases."""
 
-    def test_vacuum_without_repair_fails(self, cli_workspace):
-        """--vacuum requires --repair."""
+    # --- Flag validation: invalid combos rejected with correct error ---
+
+    INVALID_FLAG_COMBOS = [
+        (["check", "--vacuum"], "--vacuum requires --repair"),
+        (["check", "--preview"], "--preview requires --repair"),
+        (["check", "--schema-provider", "chatgpt"], "--schema-provider requires --schemas"),
+        (["check", "--schema-record-limit", "100"], "--schema-record-limit requires --schemas"),
+        (["check", "--schema-record-offset", "10"], "--schema-record-offset requires --schemas"),
+        (["check", "--schema-quarantine-malformed"], "--schema-quarantine-malformed requires --schemas"),
+        (["check", "--schemas", "--schema-samples", "0"], "--schema-samples must be a positive integer or 'all'"),
+        (["check", "--schemas", "--schema-record-limit", "0"], "--schema-record-limit must be a positive integer"),
+        (["check", "--schemas", "--schema-record-offset", "-1"], "--schema-record-offset must be >= 0"),
+    ]
+
+    @pytest.mark.parametrize("args,expected_error", INVALID_FLAG_COMBOS)
+    def test_invalid_flag_combinations_rejected(self, cli_workspace, args, expected_error):
+        """Flag dependencies and value constraints are enforced."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--vacuum"])
+        result = runner.invoke(cli, args)
         assert result.exit_code != 0
+        assert expected_error in result.output
 
-    def test_preview_without_repair_fails(self, cli_workspace):
-        """--preview requires --repair."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--preview"])
-        assert result.exit_code != 0
+    # --- Remaining non-repetitive tests ---
 
     def test_json_output_with_repair(self, cli_workspace):
         """--json with --repair includes repair results."""
@@ -416,7 +421,8 @@ class TestCheckCommandSupplementary:
         runner = CliRunner()
         result = runner.invoke(cli, ["check", "--json", "--repair", "--preview"])
         assert result.exit_code == 0
-        data = json.loads(result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output)
+        envelope = json.loads(result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output)
+        data = envelope.get("result", envelope)
         assert "repairs" in data
 
     def test_repair_with_no_issues_shows_message(self, cli_workspace):
@@ -451,21 +457,11 @@ class TestCheckCommandSupplementary:
         result = runner.invoke(cli, ["--plain", "check", "--json", "--repair", "--preview", "--vacuum"])
 
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        envelope = json.loads(result.output)
+        data = envelope.get("result", envelope)
         assert "repairs" in data
         assert data["vacuum"]["ok"] is True
         assert data["vacuum"]["preview"] is True
-
-    def test_schema_provider_requires_schemas_flag(self, cli_workspace):
-        """--schema-provider requires --schemas."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schema-provider", "chatgpt"])
-        assert result.exit_code != 0
-        assert "--schema-provider requires --schemas" in result.output
 
     def test_check_schemas_json_output(self, cli_workspace):
         """--schemas adds schema_verification block to JSON output."""
@@ -546,73 +542,8 @@ class TestCheckCommandSupplementary:
             record_limit=250,
             record_offset=500,
             quarantine_malformed=False,
+            progress_callback=ANY,
         )
-
-    def test_schema_samples_invalid_value_fails(self, cli_workspace):
-        """--schema-samples must be a positive integer or 'all'."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schemas", "--schema-samples", "0"])
-        assert result.exit_code != 0
-        assert "--schema-samples must be a positive integer or 'all'" in result.output
-
-    def test_schema_record_limit_requires_schemas_flag(self, cli_workspace):
-        """--schema-record-limit requires --schemas."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schema-record-limit", "100"])
-        assert result.exit_code != 0
-        assert "--schema-record-limit requires --schemas" in result.output
-
-    def test_schema_record_offset_requires_schemas_flag(self, cli_workspace):
-        """--schema-record-offset requires --schemas."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schema-record-offset", "10"])
-        assert result.exit_code != 0
-        assert "--schema-record-offset requires --schemas" in result.output
-
-    def test_schema_record_limit_invalid_value_fails(self, cli_workspace):
-        """--schema-record-limit must be a positive integer."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schemas", "--schema-record-limit", "0"])
-        assert result.exit_code != 0
-        assert "--schema-record-limit must be a positive integer" in result.output
-
-    def test_schema_record_offset_invalid_value_fails(self, cli_workspace):
-        """--schema-record-offset must be non-negative."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schemas", "--schema-record-offset", "-1"])
-        assert result.exit_code != 0
-        assert "--schema-record-offset must be >= 0" in result.output
-
-    def test_schema_quarantine_requires_schemas_flag(self, cli_workspace):
-        """--schema-quarantine-malformed requires --schemas."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schema-quarantine-malformed"])
-        assert result.exit_code != 0
-        assert "--schema-quarantine-malformed requires --schemas" in result.output
 
     def test_check_schemas_forwards_quarantine_flag(self, cli_workspace):
         """Quarantine option is forwarded to verify_raw_corpus."""
@@ -644,4 +575,5 @@ class TestCheckCommandSupplementary:
             record_limit=None,
             record_offset=0,
             quarantine_malformed=True,
+            progress_callback=ANY,
         )

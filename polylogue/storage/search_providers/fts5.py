@@ -6,10 +6,12 @@ extension for full-text search capabilities.
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from polylogue.storage.backends.connection import connection_context, open_connection
+from polylogue.storage.fts_lifecycle import replace_fts_rows_for_messages_sync
+from polylogue.storage.index import ensure_index
+from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import MessageRecord
 
 
@@ -33,69 +35,22 @@ class FTS5Provider:
         """
         self.db_path = db_path
 
-    def _ensure_index(self, conn: sqlite3.Connection) -> None:
-        """Create FTS5 virtual table if it doesn't exist.
-
-        Args:
-            conn: Active SQLite database connection
-        """
-        conn.execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-                message_id UNINDEXED,
-                conversation_id UNINDEXED,
-                content
-            );
-            """
-        )
-
     def index(self, messages: list[MessageRecord]) -> None:
-        """Index a list of messages for full-text search.
-
-        This operation is incremental - it deletes existing entries for the
-        affected conversations and re-inserts them. This ensures idempotency.
+        """Repair index rows for the supplied conversations from persisted messages.
 
         Args:
-            messages: Messages to index. Must include message_id, conversation_id,
-                     and text content.
+            messages: Messages whose persisted conversations should be re-indexed.
+                Messages must already exist in the SQLite archive.
 
         Raises:
             DatabaseError: If indexing fails
         """
-        if not messages:
-            return
-
-        # Extract unique conversation IDs
-        conversation_ids = list({msg.conversation_id for msg in messages})
-
         with connection_context(self.db_path) as conn:
-            self._ensure_index(conn)
-
-            # Batch delete existing entries for these conversations
-            if conversation_ids:
-                placeholders = ",".join("?" * len(conversation_ids))
-                conn.execute(f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})", conversation_ids)
-
-            # Prepare batch insert with provider_name lookup
-            # Filter messages with text content
-            messages_to_index = [msg for msg in messages if msg.text]
-
-            if messages_to_index:
-                # Build lookup map of conversation_id -> provider_name
-                # Prepare batch insert data
-                insert_data = [(msg.message_id, msg.conversation_id, msg.text) for msg in messages_to_index]
-
-                # Batch insert using executemany
-                if insert_data:
-                    conn.executemany(
-                        """
-                        INSERT INTO messages_fts (message_id, conversation_id, text)
-                        VALUES (?, ?, ?)
-                        """,
-                        insert_data,
-                    )
-
+            ensure_index(conn)
+            replace_fts_rows_for_messages_sync(conn, messages)
             conn.commit()
+        if messages:
+            invalidate_search_cache()
 
     def search(self, query: str, limit: int | None = None) -> list[str]:
         """Execute a full-text search query.

@@ -1,17 +1,14 @@
-"""SQLite schema management: DDL and version control.
-
-Schema version policy: v4 is the complete target schema. There are no migrations.
-If user_version != 0 and != 4, the database is incompatible — wipe and re-run.
-"""
+"""SQLite schema management: DDL and version control."""
 
 from __future__ import annotations
 
 import sqlite3
+from contextlib import suppress
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 1
 
 
 _VEC0_DDL = """
@@ -166,11 +163,6 @@ SCHEMA_DDL = """
         CREATE INDEX IF NOT EXISTS idx_content_blocks_conv_semantic
         ON content_blocks(conversation_id, semantic_type);
 
-        CREATE TABLE IF NOT EXISTS message_meta (
-            message_id TEXT PRIMARY KEY REFERENCES messages(message_id) ON DELETE CASCADE,
-            raw_json TEXT NOT NULL
-        );
-
         CREATE TABLE IF NOT EXISTS conversation_stats (
             conversation_id TEXT PRIMARY KEY
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE,
@@ -266,12 +258,26 @@ SCHEMA_DDL = """
 """
 
 
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _ensure_vec0_table(conn: sqlite3.Connection) -> None:
+    with suppress(Exception):
+        conn.execute("SELECT vec_version()")
+        conn.execute(_VEC0_DDL)
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Ensure the database is at the current schema version.
 
-    For fresh databases (version 0): apply full DDL and set the current version.
-    For the current version: nothing to do.
-    For any other version: raise — the DB is incompatible, wipe and re-run.
+    The schema is defined entirely by ``SCHEMA_DDL``. Fresh databases get that
+    DDL applied and are stamped with version 1. Existing databases must already
+    match version 1 exactly; there is no migration ladder.
     """
     cursor = conn.execute("PRAGMA user_version")
     current_version = cursor.fetchone()[0]
@@ -279,18 +285,20 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if current_version == 0:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(SCHEMA_DDL)
+        _ensure_vec0_table(conn)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
-        logger.debug("Created fresh schema v4")
+        logger.debug("Created fresh schema v%s", SCHEMA_VERSION)
         return
 
     if current_version == SCHEMA_VERSION:
+        _ensure_vec0_table(conn)
         return
 
     from polylogue.errors import DatabaseError
 
     raise DatabaseError(
         f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
-        "This database was created with a different schema. Delete the database file and re-run polylogue "
-        f"to create a fresh v{SCHEMA_VERSION} schema."
+        "This database was created with a different schema. Recreate the database "
+        f"or update its user_version to match v{SCHEMA_VERSION} after verifying the schema."
     )

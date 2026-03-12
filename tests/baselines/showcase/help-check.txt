@@ -1,0 +1,30 @@
+Usage: cli check [OPTIONS]
+
+  Health check with optional repair.
+
+Options:
+  --json                          Output as JSON
+  -v, --verbose                   Show breakdown by provider
+  --repair                        Attempt to repair detected issues
+  --preview                       Preview repairs without executing (requires
+                                  --repair)
+  --vacuum                        Reclaim unused space after repair (requires
+                                  --repair)
+  --deep                          Run SQLite integrity check (slow on large
+                                  databases)
+  --runtime                       Run environment and runtime verification
+                                  checks
+  --schemas                       Run raw-corpus schema verification (non-
+                                  mutating)
+  --schema-provider TEXT          Limit schema verification to DB provider name
+                                  (repeatable)
+  --schema-samples TEXT           Validation samples per raw payload: positive
+                                  integer or 'all'  [default: all]
+  --schema-record-limit INTEGER   Limit schema verification to N raw records
+                                  (for chunked runs)
+  --schema-record-offset INTEGER  Start offset for chunked schema verification
+                                  [default: 0]
+  --schema-quarantine-malformed   Mark malformed raw payloads as failed
+                                  validation during schema verification (mutates
+                                  DB)
+  -h, --help                      Show this message and exit.
