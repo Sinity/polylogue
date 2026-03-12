@@ -29,6 +29,7 @@ class TestProviderSchemaGeneration:
         assert expected_core.issubset(PROVIDERS.keys())
         assert all(name.strip() for name in PROVIDERS)
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "codex"])
     def test_generate_schema_from_db(self, seeded_db, provider):
         result = generate_provider_schema(provider, db_path=seeded_db, max_samples=100)

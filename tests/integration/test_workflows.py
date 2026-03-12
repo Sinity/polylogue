@@ -23,6 +23,8 @@ from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 
+pytestmark = pytest.mark.slow
+
 # =============================================================================
 # FIXTURES
 # =============================================================================
