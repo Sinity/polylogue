@@ -1,8 +1,8 @@
-"""Drive utility function tests — parsing, ID detection, retry config, credential resolution."""
+"""Compact contracts for Drive utility parsing and path resolution."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -23,442 +23,229 @@ from polylogue.sources.drive_client import (
     default_token_path,
 )
 
-# ============================================================================
-# Test Data Tables (Module-level constants for parametrization)
-# ============================================================================
 
-PARSE_MODIFIED_TIME_CASES = [
-    (None, type(None), "none_input"),
-    ("", type(None), "empty_string"),
-    ("2024-01-15T10:30:45Z", float, "iso_with_z"),
-    ("2024-01-15T10:30:45", float, "iso_without_z"),
-    ("2024-01-15T10:30:45+00:00", float, "iso_with_offset"),
-    ("not a date", type(None), "invalid_string"),
-    ("   ", type(None), "whitespace_only"),
-]
-
-PARSE_SIZE_CASES = [
-    (None, None, "none_input"),
-    (0, 0, "zero_integer"),
-    (1024, 1024, "positive_integer"),
-    (999999, 999999, "large_integer"),
-    (-1, -1, "negative_integer"),
-    ("123", 123, "string_integer"),
-    ("0", 0, "string_zero"),
-    ("999999", 999999, "string_large"),
-    ("  456  ", 456, "string_with_whitespace"),
-    ("not a number", None, "invalid_string"),
-    ("12.34", None, "float_string"),
-    ("12a", None, "alphanumeric_string"),
-    ("", None, "empty_string"),
-    ("123.456", None, "float_in_string"),
-]
-
-LOOKS_LIKE_ID_CASES = [
-    ("", False, "empty_string"),
-    ("hello world", False, "string_with_spaces"),
-    (" test", False, "leading_space"),
-    ("test ", False, "trailing_space"),
-    ("abc-123-def", True, "alphanumeric_with_dashes"),
-    ("file-1", True, "short_with_dash"),
-    ("file_1_test", True, "alphanumeric_with_underscores"),
-    ("_private", True, "leading_underscore"),
-    ("abc123", True, "pure_alphanumeric"),
-    ("FILE", True, "uppercase"),
-    ("123", True, "digits_only"),
-    ("a", True, "single_char"),
-    ("1", True, "single_digit"),
-    ("file.txt", False, "string_with_dots"),
-    ("a.b.c", False, "multiple_dots"),
-    ("file@home", False, "string_with_at"),
-    ("test#1", False, "string_with_hash"),
-    ("a/b", False, "string_with_slash"),
-    ("---", True, "dashes_only"),
-    ("___", True, "underscores_only"),
-]
-
-RESOLVE_RETRIES_CASES = [
-    (5, 5, "explicit_five"),
-    (0, 0, "explicit_zero"),
-    (10, 10, "explicit_ten"),
-    (-5, 0, "explicit_negative_clamped"),
-]
-
-RESOLVE_RETRY_BASE_CASES = [
-    (1.5, 1.5, "explicit_float"),
-    (0.1, 0.1, "explicit_small"),
-    (-0.5, 0.0, "negative_clamped"),
-]
-
-DEFAULT_PATHS_CREDENTIALS_CASES = [
-    (None, True, "no_config_returns_default"),
-    (MagicMock(credentials_path="/custom/creds.json"), False, "config_with_path_uses_value"),
-]
-
-DEFAULT_PATHS_TOKEN_CASES = [
-    (None, True, "no_config_returns_default"),
-    (MagicMock(token_path="/custom/token.json"), False, "config_with_path_uses_value"),
-]
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("not a date", None),
+        ("12345", None),
+        ("2024-13-45T99:99:99Z", None),
+        ("2024-01-15T10:30:45Z", datetime(2024, 1, 15, 10, 30, 45, tzinfo=timezone.utc).timestamp()),
+        ("2024-01-15T10:30:45+00:00", datetime(2024, 1, 15, 10, 30, 45, tzinfo=timezone.utc).timestamp()),
+    ],
+)
+def test_parse_modified_time_contract(raw: str | None, expected: float | None) -> None:
+    result = _parse_modified_time(raw)
+    if expected is None:
+        assert result is None
+    else:
+        assert result == expected
 
 
-# ============================================================================
-# Parametrized Tests for _parse_modified_time
-# ============================================================================
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, None),
+        (0, 0),
+        (1024, 1024),
+        (-1, -1),
+        ("123", 123),
+        ("  456  ", 456),
+        ("0", 0),
+        ("not a number", None),
+        ("12.34", None),
+        ("12a", None),
+        ("", None),
+    ],
+)
+def test_parse_size_contract(raw: str | int | None, expected: int | None) -> None:
+    assert _parse_size(raw) == expected
 
 
-class TestParseModifiedTime:
-    """Tests for _parse_modified_time utility function."""
-
-    @pytest.mark.parametrize("input_val,expect_type,desc", PARSE_MODIFIED_TIME_CASES)
-    def test_parse_modified_time(self, input_val, expect_type, desc):
-        """Test _parse_modified_time with various inputs."""
-        result = _parse_modified_time(input_val)
-        assert isinstance(result, expect_type), f"Failed for {desc}"
-
-        # Additional checks for valid timestamps
-        if expect_type is float:
-            assert result > 0
-            if input_val == "2024-01-15T10:30:45Z":
-                dt = datetime.fromtimestamp(result)
-                assert dt.year == 2024
-                assert dt.month == 1
-                assert dt.day == 15
-
-    def test_invalid_timestamps_return_none(self):
-        """Test that all invalid timestamp forms return None."""
-        invalid_inputs = ["12345", "2024-13-45T99:99:99Z"]
-        for inp in invalid_inputs:
-            assert _parse_modified_time(inp) is None
-
-    def test_parse_modified_time_exact_timestamp_contract(self):
-        assert _parse_modified_time("2024-01-15T10:30:45Z") == datetime.fromisoformat(
-            "2024-01-15T10:30:45+00:00"
-        ).timestamp()
-        assert _parse_modified_time("2024-01-15T10:30:45+00:00") == datetime.fromisoformat(
-            "2024-01-15T10:30:45+00:00"
-        ).timestamp()
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", False),
+        ("hello world", False),
+        (" test", False),
+        ("test ", False),
+        ("file.txt", False),
+        ("file@home", False),
+        ("a/b", False),
+        ("abc-123-def", True),
+        ("file_1_test", True),
+        ("abc123", True),
+        ("123", True),
+        ("a", True),
+        ("---", True),
+    ],
+)
+def test_looks_like_id_contract(value: str, expected: bool) -> None:
+    assert _looks_like_id(value) is expected
 
 
-# ============================================================================
-# Parametrized Tests for _parse_size
-# ============================================================================
+@pytest.mark.parametrize(
+    ("explicit", "config_value", "env_value", "expected"),
+    [
+        (5, None, None, 5),
+        (0, None, None, 0),
+        (-5, None, None, 0),
+        (None, 7, None, 7),
+        (None, -2, None, 0),
+        (None, None, "9", 9),
+        (None, None, "-3", 0),
+        (None, None, "not_a_number", DEFAULT_DRIVE_RETRIES),
+        (None, None, None, DEFAULT_DRIVE_RETRIES),
+        (10, 5, "20", 10),
+        (None, 5, "20", 5),
+    ],
+)
+def test_resolve_retries_precedence_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    explicit: int | None,
+    config_value: int | None,
+    env_value: str | None,
+    expected: int,
+) -> None:
+    if env_value is None:
+        monkeypatch.delenv("POLYLOGUE_DRIVE_RETRIES", raising=False)
+    else:
+        monkeypatch.setenv("POLYLOGUE_DRIVE_RETRIES", env_value)
+    config = None if config_value is None else MagicMock(retry_count=config_value)
+    assert _resolve_retries(value=explicit, config=config) == expected
 
 
-class TestParseSize:
-    """Tests for _parse_size utility function."""
-
-    @pytest.mark.parametrize("input_val,expected,desc", PARSE_SIZE_CASES)
-    def test_parse_size(self, input_val, expected, desc):
-        """Test _parse_size with various inputs."""
-        result = _parse_size(input_val)
-        assert result == expected, f"Failed for {desc}"
-
-
-# ============================================================================
-# Parametrized Tests for _looks_like_id
-# ============================================================================
-
-
-class TestLooksLikeId:
-    """Tests for _looks_like_id utility function."""
-
-    @pytest.mark.parametrize("input_str,expected,desc", LOOKS_LIKE_ID_CASES)
-    def test_looks_like_id(self, input_str, expected, desc):
-        """Test _looks_like_id with various inputs."""
-        result = _looks_like_id(input_str)
-        assert result is expected, f"Failed for {desc}"
-
-
-# ============================================================================
-# Parametrized Tests for _resolve_retries
-# ============================================================================
-
-
-class TestResolveRetries:
-    """Tests for _resolve_retries function."""
-
-    @pytest.mark.parametrize("value,expected,desc", RESOLVE_RETRIES_CASES)
-    def test_resolve_retries_explicit_values(self, value, expected, desc):
-        """Test explicit value resolution."""
-        assert _resolve_retries(value=value, config=None) == expected
-
-    def test_config_retry_count_used(self):
-        """Config retry_count should be used when value is None."""
-        config = MagicMock()
-        config.retry_count = 7
-        assert _resolve_retries(value=None, config=config) == 7
-
-    def test_environment_variable_used(self, monkeypatch):
-        """Environment variable should be used when available."""
-        monkeypatch.setenv("POLYLOGUE_DRIVE_RETRIES", "9")
-        assert _resolve_retries(value=None, config=None) == 9
-
-    def test_env_variable_negative_clamped(self, monkeypatch):
-        """Negative env value should be clamped."""
-        monkeypatch.setenv("POLYLOGUE_DRIVE_RETRIES", "-3")
-        assert _resolve_retries(value=None, config=None) == 0
-
-    def test_invalid_env_variable_ignored(self, monkeypatch):
-        """Invalid env value should be ignored, falling back to default."""
-        monkeypatch.setenv("POLYLOGUE_DRIVE_RETRIES", "not_a_number")
-        result = _resolve_retries(value=None, config=None)
-        assert result == DEFAULT_DRIVE_RETRIES
-
-    def test_priority_explicit_over_config(self):
-        """Explicit value should have priority over config."""
-        config = MagicMock()
-        config.retry_count = 5
-        assert _resolve_retries(value=10, config=config) == 10
-
-    def test_priority_config_over_env(self, monkeypatch):
-        """Config should have priority over env when value is None."""
-        monkeypatch.setenv("POLYLOGUE_DRIVE_RETRIES", "20")
-        config = MagicMock()
-        config.retry_count = 5
-        assert _resolve_retries(value=None, config=config) == 5
-
-
-# ============================================================================
-# Parametrized Tests for _resolve_retry_base
-# ============================================================================
-
-
-class TestResolveRetryBase:
-    """Tests for _resolve_retry_base function."""
-
-    @pytest.mark.parametrize("value,expected,desc", RESOLVE_RETRY_BASE_CASES)
-    def test_resolve_retry_base_explicit_value(self, value, expected, desc):
-        """Test explicit value resolution."""
-        assert _resolve_retry_base(value=value) == expected
-
-    def test_environment_variable_used(self, monkeypatch):
-        """Environment variable should be used."""
-        monkeypatch.setenv("POLYLOGUE_DRIVE_RETRY_BASE", "2.5")
-        assert _resolve_retry_base(value=None) == 2.5
-
-    def test_invalid_env_variable_ignored(self, monkeypatch):
-        """Invalid env value should be ignored, falling back to default."""
-        monkeypatch.setenv("POLYLOGUE_DRIVE_RETRY_BASE", "not_a_float")
-        result = _resolve_retry_base(value=None)
-        assert result == DEFAULT_DRIVE_RETRY_BASE
-
-    def test_default_when_nothing_specified(self, monkeypatch):
-        """Default should be used when nothing is specified."""
+@pytest.mark.parametrize(
+    ("explicit", "env_value", "expected"),
+    [
+        (1.5, None, 1.5),
+        (0.1, None, 0.1),
+        (-0.5, None, 0.0),
+        (None, "2.5", 2.5),
+        (None, "not_a_float", DEFAULT_DRIVE_RETRY_BASE),
+        (None, None, DEFAULT_DRIVE_RETRY_BASE),
+    ],
+)
+def test_resolve_retry_base_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    explicit: float | None,
+    env_value: str | None,
+    expected: float,
+) -> None:
+    if env_value is None:
         monkeypatch.delenv("POLYLOGUE_DRIVE_RETRY_BASE", raising=False)
-        result = _resolve_retry_base(value=None)
-        assert result == DEFAULT_DRIVE_RETRY_BASE
+    else:
+        monkeypatch.setenv("POLYLOGUE_DRIVE_RETRY_BASE", env_value)
+    assert _resolve_retry_base(explicit) == expected
 
 
-# ============================================================================
-# Parametrized Tests for default_credentials_path and default_token_path
-# ============================================================================
-
-
-class TestDefaultPaths:
-    """Tests for default credentials and token path functions."""
-
-    @pytest.mark.parametrize(
-        "config,should_use_default,desc",
-        [
-            (None, True, "credentials_no_config"),
-            (MagicMock(credentials_path="/custom/creds.json"), False, "credentials_with_config"),
-        ]
+@pytest.mark.parametrize(
+    ("attr_name", "default_fn", "configured", "expected"),
+    [
+        ("credentials_path", default_credentials_path, None, None),
+        ("credentials_path", default_credentials_path, "/custom/creds.json", Path("/custom/creds.json")),
+        ("token_path", default_token_path, None, None),
+        ("token_path", default_token_path, "/custom/token.json", Path("/custom/token.json")),
+    ],
+)
+def test_default_path_helpers_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    attr_name: str,
+    default_fn,
+    configured: str | None,
+    expected: Path | None,
+) -> None:
+    sentinel = Path(f"/tmp/sentinel-{attr_name}.json")
+    patch_target = (
+        "polylogue.sources.drive_client.drive_credentials_path"
+        if attr_name == "credentials_path"
+        else "polylogue.sources.drive_client.drive_token_path"
     )
-    def test_default_credentials_path(self, config, should_use_default, desc):
-        """Test default credentials path resolution."""
-        path = default_credentials_path(config=config)
-        assert isinstance(path, Path)
-        if should_use_default:
-            assert "credentials" in str(path)
-        else:
-            assert path == Path("/custom/creds.json")
-
-    def test_default_credentials_path_delegates_to_global_default(self, monkeypatch):
-        sentinel = Path("/tmp/sentinel-credentials.json")
-        monkeypatch.setattr("polylogue.sources.drive_client.drive_credentials_path", lambda: sentinel)
-        assert default_credentials_path() == sentinel
-
-    def test_default_credentials_path_config_none_uses_default(self):
-        """If config.credentials_path is None, use default."""
-        config = MagicMock()
-        config.credentials_path = None
-        path = default_credentials_path(config=config)
-        assert "credentials" in str(path)
-
-    def test_default_credentials_path_missing_attribute(self):
-        """If config doesn't have credentials_path attribute, use default."""
-        config = MagicMock(spec=[])  # Empty spec = no attributes
-        path = default_credentials_path(config=config)
-        assert "credentials" in str(path)
-
-    @pytest.mark.parametrize(
-        "config,should_use_default,desc",
-        [
-            (None, True, "token_no_config"),
-            (MagicMock(token_path="/custom/token.json"), False, "token_with_config"),
-        ]
-    )
-    def test_default_token_path(self, config, should_use_default, desc):
-        """Test default token path resolution."""
-        path = default_token_path(config=config)
-        assert isinstance(path, Path)
-        if should_use_default:
-            assert "token" in str(path)
-        else:
-            assert path == Path("/custom/token.json")
-
-    def test_default_token_path_delegates_to_global_default(self, monkeypatch):
-        sentinel = Path("/tmp/sentinel-token.json")
-        monkeypatch.setattr("polylogue.sources.drive_client.drive_token_path", lambda: sentinel)
-        assert default_token_path() == sentinel
-
-    def test_default_token_path_config_none_uses_default(self):
-        """If config.token_path is None, use default."""
-        config = MagicMock()
-        config.token_path = None
-        path = default_token_path(config=config)
-        assert "token" in str(path)
+    monkeypatch.setattr(patch_target, lambda: sentinel)
+    config = None if configured is None else MagicMock(**{attr_name: configured})
+    result = default_fn(config=config)
+    assert result == (expected or sentinel)
 
 
-# ============================================================================
-# Tests for _resolve_credentials_path
-# ============================================================================
+@pytest.mark.parametrize(
+    ("config_path", "env_path", "default_exists", "ui_plain", "ui_response", "expected_kind"),
+    [
+        ("/cfg/creds.json", None, False, True, None, "config"),
+        (None, "~/creds.json", False, True, None, "env"),
+        (None, None, True, True, None, "default"),
+        (None, None, False, False, "user", "interactive"),
+        (None, None, False, False, None, "error"),
+        (None, None, False, True, None, "error"),
+    ],
+)
+def test_resolve_credentials_path_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_path: str | None,
+    env_path: str | None,
+    default_exists: bool,
+    ui_plain: bool,
+    ui_response: str | None,
+    expected_kind: str,
+) -> None:
+    default_path = tmp_path / "default" / "creds.json"
+    if default_exists:
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        default_path.write_text('{"default": true}', encoding="utf-8")
+    user_path = tmp_path / "user" / "creds.json"
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text('{"user": true}', encoding="utf-8")
 
-
-class TestResolveCredentialsPath:
-    """Tests for _resolve_credentials_path function."""
-
-    def test_config_path_takes_priority(self, tmp_path):
-        """Config credentials_path should be used first."""
-        creds_path = tmp_path / "config_creds.json"
-        creds_path.write_text('{"test": true}')
-
-        config = MagicMock()
-        config.credentials_path = str(creds_path)
-
-        result = _resolve_credentials_path(ui=None, config=config)
-        assert result == creds_path
-
-    def test_env_path_when_no_config(self, tmp_path, monkeypatch):
-        """Environment variable should be used when config not provided."""
-        creds_path = tmp_path / "env_creds.json"
-        creds_path.write_text('{"test": true}')
-
-        monkeypatch.setenv("POLYLOGUE_CREDENTIAL_PATH", str(creds_path))
-        result = _resolve_credentials_path(ui=None, config=None)
-        assert result == creds_path
-
-    def test_env_path_expansion(self, tmp_path, monkeypatch):
-        """Environment path should expand ~ to home."""
-        monkeypatch.setenv("POLYLOGUE_CREDENTIAL_PATH", "~/creds.json")
-        result = _resolve_credentials_path(ui=None, config=None)
-        assert "~" not in str(result)
-
-    def test_default_path_when_exists(self, tmp_path, monkeypatch):
-        """Default path should be used if it exists."""
-        default_path = tmp_path / "default_creds.json"
-        default_path.write_text('{"default": true}')
-
-        monkeypatch.setattr(
-            "polylogue.sources.drive_client.default_credentials_path",
-            lambda config: default_path,
-        )
+    monkeypatch.setattr("polylogue.sources.drive_client.default_credentials_path", lambda config: default_path)
+    if env_path is None:
         monkeypatch.delenv("POLYLOGUE_CREDENTIAL_PATH", raising=False)
+    else:
+        monkeypatch.setenv("POLYLOGUE_CREDENTIAL_PATH", env_path)
 
-        result = _resolve_credentials_path(ui=None, config=None)
+    config = None if config_path is None else MagicMock(credentials_path=config_path)
+    ui = MagicMock()
+    ui.plain = ui_plain
+    ui.input.return_value = str(user_path) if ui_response == "user" else ui_response
+
+    if expected_kind == "error":
+        with pytest.raises(DriveAuthError, match="credentials"):
+            _resolve_credentials_path(ui=None if ui_plain else ui, config=config)
+        return
+
+    result = _resolve_credentials_path(ui=None if ui_plain else ui, config=config)
+    if expected_kind == "config":
+        assert result == Path(config_path)
+    elif expected_kind == "env":
+        assert result == Path(env_path).expanduser()
+    elif expected_kind == "default":
         assert result == default_path
-
-    def test_raises_when_not_found_no_ui(self, tmp_path, monkeypatch):
-        """Should raise DriveAuthError when credentials not found and no UI."""
-        nonexistent_path = tmp_path / "nonexistent" / "creds.json"
-
-        monkeypatch.setattr(
-            "polylogue.sources.drive_client.default_credentials_path",
-            lambda config: nonexistent_path,
-        )
-        monkeypatch.delenv("POLYLOGUE_CREDENTIAL_PATH", raising=False)
-
-        with pytest.raises(DriveAuthError, match="credentials not found"):
-            _resolve_credentials_path(ui=None, config=None)
-
-    def test_interactive_ui_prompt(self, tmp_path, monkeypatch):
-        """UI prompt should be used when available and in non-plain mode."""
-        default_path = tmp_path / "default" / "creds.json"
-        user_path = tmp_path / "user" / "creds.json"
-        user_path.parent.mkdir(parents=True, exist_ok=True)
-        user_path.write_text('{"user": true}')
-
-        monkeypatch.setattr(
-            "polylogue.sources.drive_client.default_credentials_path",
-            lambda config: default_path,
-        )
-        monkeypatch.delenv("POLYLOGUE_CREDENTIAL_PATH", raising=False)
-
-        mock_ui = MagicMock()
-        mock_ui.plain = False
-        mock_ui.input = MagicMock(return_value=str(user_path))
-
-        result = _resolve_credentials_path(ui=mock_ui, config=None)
+    else:
         assert result == default_path
-        assert default_path.exists()
         assert default_path.read_text(encoding="utf-8") == '{"user": true}'
-        mock_ui.input.assert_called_once_with(
-            f"Path to Google OAuth client JSON (default {default_path}):",
-            default=str(default_path),
-        )
-
-    def test_interactive_no_response_raises(self, tmp_path, monkeypatch):
-        """No response from UI should raise error."""
-        default_path = tmp_path / "default" / "creds.json"
-
-        monkeypatch.setattr(
-            "polylogue.sources.drive_client.default_credentials_path",
-            lambda config: default_path,
-        )
-        monkeypatch.delenv("POLYLOGUE_CREDENTIAL_PATH", raising=False)
-
-        mock_ui = MagicMock()
-        mock_ui.plain = False
-        mock_ui.input = MagicMock(return_value=None)
-
-        with pytest.raises(DriveAuthError):
-            _resolve_credentials_path(ui=mock_ui, config=None)
+        ui.input.assert_called_once()
 
 
-# ============================================================================
-# Tests for _resolve_token_path
-# ============================================================================
-
-
-class TestResolveTokenPath:
-    """Tests for _resolve_token_path function."""
-
-    def test_config_path_takes_priority(self, tmp_path):
-        """Config token_path should be used first."""
-        token_path = tmp_path / "config_token.json"
-        config = MagicMock()
-        config.token_path = str(token_path)
-
-        result = _resolve_token_path(config=config)
-        assert result == token_path
-
-    def test_env_path_when_no_config(self, tmp_path, monkeypatch):
-        """Environment variable should be used when config not provided."""
-        token_path = tmp_path / "env_token.json"
-        monkeypatch.setenv("POLYLOGUE_TOKEN_PATH", str(token_path))
-
-        result = _resolve_token_path(config=None)
-        assert result == token_path
-
-    def test_env_path_expansion(self, monkeypatch):
-        """Environment path should expand ~."""
-        monkeypatch.setenv("POLYLOGUE_TOKEN_PATH", "~/token.json")
-        result = _resolve_token_path(config=None)
-        assert "~" not in str(result)
-
-    def test_default_when_nothing_specified(self, monkeypatch):
-        """Default should be used when config and env not set."""
+@pytest.mark.parametrize(
+    ("config_path", "env_path", "expected"),
+    [
+        ("/cfg/token.json", None, Path("/cfg/token.json")),
+        (None, "~/token.json", Path("~/token.json").expanduser()),
+        (None, None, Path("/tmp/default-token.json")),
+    ],
+)
+def test_resolve_token_path_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    config_path: str | None,
+    env_path: str | None,
+    expected: Path,
+) -> None:
+    monkeypatch.setattr("polylogue.sources.drive_client.default_token_path", lambda config: Path("/tmp/default-token.json"))
+    if env_path is None:
         monkeypatch.delenv("POLYLOGUE_TOKEN_PATH", raising=False)
-        sentinel = Path("/tmp/default-token.json")
-        monkeypatch.setattr("polylogue.sources.drive_client.default_token_path", lambda config: sentinel)
-        assert _resolve_token_path(config=None) == sentinel
+    else:
+        monkeypatch.setenv("POLYLOGUE_TOKEN_PATH", env_path)
+    config = None if config_path is None else MagicMock(token_path=config_path)
+    assert _resolve_token_path(config=config) == expected

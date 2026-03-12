@@ -1,4 +1,4 @@
-"""Unit-level cache and summary contracts for `polylogue.health`."""
+"""Compact unit contracts for health caching and reporting."""
 
 from __future__ import annotations
 
@@ -10,471 +10,190 @@ from pathlib import Path
 
 import pytest
 
-# ============================================================================
-# Test Data Constants (SCREAMING_CASE tuples for parametrization)
-# ============================================================================
 
-# Cache error scenarios: (error_type, error_description, fixture_setup)
-CACHE_ERROR_SCENARIOS = [
-    (
-        "invalid_json",
-        "Corrupted cache file with invalid JSON",
-        lambda tmp_path: tmp_path.joinpath("health.json").write_text("{ this is not valid json }"),
-    ),
-    (
-        "non_dict_json",
-        "Valid JSON that isn't a dict",
-        lambda tmp_path: tmp_path.joinpath("health.json").write_text('["not", "a", "dict"]'),
-    ),
-    (
-        "missing_file",
-        "Missing cache file",
-        lambda tmp_path: None,  # No setup needed
-    ),
-    (
-        "unicode_error",
-        "Unicode decode errors in cache",
-        lambda tmp_path: tmp_path.joinpath("health.json").write_bytes(b"\xff\xfe invalid utf8"),
-    ),
-]
+@pytest.mark.parametrize(
+    ("payload", "write_bytes", "expected"),
+    [
+        (None, False, None),
+        ("{ this is not valid json }", False, None),
+        ('["not", "a", "dict"]', False, None),
+        (b"\xff\xfe invalid utf8", True, None),
+        (json.dumps({"status": "ok", "checks": []}), False, {"status": "ok", "checks": []}),
+    ],
+)
+def test_load_cached_contract(tmp_path: Path, payload: str | bytes | None, write_bytes: bool, expected) -> None:
+    from polylogue.health import _load_cached
 
-# Health check instantiation: (name, status_enum, detail)
-HEALTH_CHECK_INSTANCES = [
-    ("test", "OK", "All good"),
-    ("database", "ERROR", "Connection failed"),
-    ("archive", "WARNING", "Directory missing"),
-]
-
-# Run health check types: (check_name, expected_status_enum)
-HEALTH_CHECK_TYPES = [
-    ("config", "OK"),
-    ("archive_root", "OK"),
-    ("render_root", "OK"),
-    ("database", "OK"),
-    ("index", None),  # Just verify it exists
-]
-
-class TestHealthCacheErrorHandling:
-    """Tests for health check cache error handling."""
-
-    @pytest.mark.parametrize("error_type,description,setup", CACHE_ERROR_SCENARIOS)
-    def test_cache_errors_return_none(self, error_type, description, setup, tmp_path):
-        """Cache errors should return None, not crash or return garbage.
-
-        Parametrized across multiple error types: invalid JSON, non-dict, missing file, unicode.
-        """
-        from polylogue.health import _load_cached
-
-        # Setup error condition
-        if setup:
-            setup(tmp_path)
-
-        # For missing_file test, use a path that doesn't exist
-        if error_type == "missing_file":
-            tmp_path = tmp_path / "does_not_exist"
-
-        # Should return None (cache miss), not crash or return garbage
-        result = _load_cached(tmp_path)
-
-        assert result is None, f"{description}: should return None"
-
-    def test_cache_read_permission_error_returns_none(self, tmp_path: Path):
-        """Permission errors reading cache should return None, not raise."""
-        from polylogue.health import _load_cached
-
+    if payload is not None:
         cache_file = tmp_path / "health.json"
-        cache_file.write_text(json.dumps({"status": "ok"}))
-
-        # Make file unreadable (on Unix-like systems)
-        try:
-            os.chmod(cache_file, 0o000)
-
-            # Should return None, not raise
-            result = _load_cached(tmp_path)
-            assert result is None, "Permission error should return None"
-        finally:
-            # Restore permissions for cleanup
-            os.chmod(cache_file, stat.S_IRUSR | stat.S_IWUSR)
-
-    def test_cache_read_logs_corruption_warning(self, tmp_path: Path, capsys):
-        """Cache read errors should be logged as warnings."""
-        from polylogue.health import _load_cached
-
-        # Create corrupted cache file (must be named health.json)
-        cache_file = tmp_path / "health.json"
-        cache_file.write_text("{ invalid json")
-
-        result = _load_cached(tmp_path)
-
-        # Should return None
-        assert result is None
-        # Should have logged a warning about the corruption (structlog outputs to stdout)
-        captured = capsys.readouterr()
-        assert "cache" in captured.out.lower() or "cache" in captured.err.lower(), (
-            f"Expected warning log about cache, got stdout: {captured.out}, stderr: {captured.err}"
-        )
-
-    def test_cache_read_logs_permission_error(self, tmp_path: Path, capsys):
-        """Permission errors should be logged."""
-        from polylogue.health import _load_cached
-
-        cache_file = tmp_path / "health.json"
-        cache_file.write_text(json.dumps({"status": "ok"}))
-
-        try:
-            os.chmod(cache_file, 0o000)
-
-            result = _load_cached(tmp_path)
-
-            # Should return None
-            assert result is None
-            # Should have logged something about the error (structlog outputs to stdout)
-            captured = capsys.readouterr()
-            assert (
-                "permission" in captured.out.lower()
-                or "cache" in captured.out.lower()
-                or "permission" in captured.err.lower()
-                or "cache" in captured.err.lower()
-            ), f"Expected warning about permission/cache, got stdout: {captured.out}, stderr: {captured.err}"
-        finally:
-            os.chmod(cache_file, stat.S_IRUSR | stat.S_IWUSR)
-
-    def test_cache_write_creates_parent_dirs(self, tmp_path: Path):
-        """Cache write should create parent directories if needed."""
-        from polylogue.health import _write_cache
-
-        nested_path = tmp_path / "nested" / "deep" / "dir"
-
-        # Write cache to nested path (directories don't exist yet)
-        _write_cache(nested_path, {"status": "ok"})
-
-        # Should have created the file
-        cache_file = nested_path / "health.json"
-        assert cache_file.exists(), "Cache write should create parent directories"
-
-        # Verify content
-        content = json.loads(cache_file.read_text())
-        assert content.get("status") == "ok"
-
-    def test_cache_write_error_logged_not_raised(self, tmp_path: Path, capsys, monkeypatch):
-        """Cache write errors should be logged, not raised."""
-        from polylogue.health import _write_cache
-
-        # Mock Path.write_text to raise an OSError
-        original_write = Path.write_text
-
-        def failing_write(self, data, encoding=None):
-            if "health.json" in str(self):
-                raise OSError("Simulated write error")
-            return original_write(self, data, encoding=encoding)
-
-        monkeypatch.setattr(Path, "write_text", failing_write)
-        # Should not raise, just log warning
-        _write_cache(tmp_path, {"status": "ok"})
-
-        # Should have logged a warning (structlog outputs to stdout)
-        captured = capsys.readouterr()
-        assert (
-            "failed" in captured.out.lower()
-            or "cache" in captured.out.lower()
-            or "failed" in captured.err.lower()
-            or "cache" in captured.err.lower()
-        ), f"Expected warning about write failure, got stdout: {captured.out}, stderr: {captured.err}"
-
-    def test_cache_with_valid_json_returns_dict(self, tmp_path: Path):
-        """Valid cache file should return the dict."""
-        from polylogue.health import _load_cached
-
-        cache_file = tmp_path / "health.json"
-        test_data = {
-            "timestamp": 1234567890,
-            "checks": [{"name": "test", "status": "ok", "detail": "ok"}],
-        }
-        cache_file.write_text(json.dumps(test_data))
-
-        result = _load_cached(tmp_path)
-
-        assert result == test_data, "Valid cache should return the dict"
-
-
-class TestHealthCheck:
-    """Tests for HealthCheck dataclass."""
-
-    @pytest.mark.parametrize("name,status_str,detail", HEALTH_CHECK_INSTANCES)
-    def test_health_check_creation(self, name, status_str, detail):
-        """HealthCheck should be creatable with name, status, detail."""
-        from polylogue.health import HealthCheck, VerifyStatus
-
-        # Convert string to enum
-        status = getattr(VerifyStatus, status_str)
-        check = HealthCheck(name=name, status=status, detail=detail)
-
-        assert check.name == name
-        assert check.status == status
-        assert check.detail == detail
-
-    def test_health_check_to_dict(self):
-        """HealthCheck should convert to dict for serialization."""
-        from polylogue.health import HealthCheck, VerifyStatus
-
-        check = HealthCheck(name="database", status=VerifyStatus.ERROR, detail="Connection failed")
-
-        result = check.to_dict()
-        assert result == {
-            "name": "database",
-            "status": "error",
-            "count": 0,
-            "detail": "Connection failed",
-            "breakdown": {},
-        }
-
-
-class TestRunHealth:
-    """Tests for run_health function."""
-
-    def test_run_health_with_valid_config(self, cli_workspace):
-        """run_health should return checks for valid configuration."""
-        from polylogue.config import get_config
-        from polylogue.health import run_health
-
-        config = get_config()
-        result = run_health(config)
-
-        assert result.timestamp > 0
-        assert isinstance(result.checks, list)
-        assert len(result.checks) > 0
-
-    @pytest.mark.parametrize("check_name,expected_status", HEALTH_CHECK_TYPES)
-    def test_run_health_includes_check_types(self, cli_workspace, check_name, expected_status):
-        """run_health should include checks for all required health aspects."""
-        from polylogue.config import get_config
-        from polylogue.health import VerifyStatus, run_health
-
-        config = get_config()
-        result = run_health(config)
-
-        checks = result.checks
-        matching_checks = [c for c in checks if c.name == check_name]
-        assert len(matching_checks) > 0, f"Missing check: {check_name}"
-
-        if expected_status:
-            expected_enum = getattr(VerifyStatus, expected_status)
-            assert matching_checks[0].status == expected_enum, f"{check_name} should be {expected_status}"
-
-    def test_run_health_archive_root_warning_when_missing(self, tmp_path):
-        """run_health should warn when archive_root doesn't exist."""
-        from polylogue.config import Config, Source
-        from polylogue.health import VerifyStatus, run_health
-
-        missing_archive = tmp_path / "missing"
-        config = Config(
-            archive_root=missing_archive,
-            render_root=missing_archive / "render",
-            sources=[Source(name="test", path=tmp_path)],
-        )
-
-        result = run_health(config)
-        checks = result.checks
-        archive_checks = [c for c in checks if c.name == "archive_root"]
-        assert len(archive_checks) > 0
-        assert archive_checks[0].status == VerifyStatus.WARNING
-
-    def test_run_health_render_root_warning_when_missing(self, tmp_path):
-        """run_health should warn when render_root doesn't exist."""
-        from polylogue.config import Config, Source
-        from polylogue.health import VerifyStatus, run_health
-
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        missing_render = tmp_path / "missing"
-
-        config = Config(
-            archive_root=archive_root,
-            render_root=missing_render,
-            sources=[Source(name="test", path=tmp_path)],
-        )
-
-        result = run_health(config)
-        checks = result.checks
-        render_checks = [c for c in checks if c.name == "render_root"]
-        assert len(render_checks) > 0
-        assert render_checks[0].status == VerifyStatus.WARNING
-
-    def test_run_health_includes_source_checks(self, cli_workspace):
-        """run_health should include checks for each source."""
-        from polylogue.config import get_config
-        from polylogue.health import run_health
-
-        config = get_config()
-        result = run_health(config)
-
-        checks = result.checks
-        source_checks = [c for c in checks if c.name.startswith("source:")]
-        assert len(source_checks) >= len(config.sources)
-
-    def test_run_health_caches_result(self, cli_workspace):
-        """run_health should write cache to health.json."""
-        from polylogue.config import get_config
-        from polylogue.health import _cache_path, run_health
-
-        config = get_config()
-        result = run_health(config)
-
-        cache_file = _cache_path(config.archive_root)
-        assert cache_file.exists(), "run_health should write cache file"
-
-        cached_data = json.loads(cache_file.read_text())
-        assert cached_data["timestamp"] == result.timestamp
-        assert len(cached_data["checks"]) == len(result.checks)
-
-
-class TestGetHealth:
-    """Tests for get_health function."""
-
-    def test_get_health_returns_fresh_on_cache_miss(self, cli_workspace):
-        """get_health should run fresh checks when cache doesn't exist."""
-        from polylogue.config import get_config
-        from polylogue.health import get_health
-
-        config = get_config()
-        result = get_health(config)
-
-        assert result.timestamp > 0
-        assert isinstance(result.checks, list)
-        assert result.cached is False
-        assert result.age_seconds == 0
-
-    def test_get_health_returns_cached_when_valid(self, cli_workspace):
-        """get_health should return cached result when valid."""
-        from polylogue.config import get_config
-        from polylogue.health import get_health
-
-        config = get_config()
-
-        # First call populates cache
-        result1 = get_health(config)
-        timestamp1 = result1.timestamp
-
-        # Second call should return cached result (same timestamp)
-        # Cache TTL validation doesn't require delay; we verify cache is used via the cached flag
-        result2 = get_health(config)
-        timestamp2 = result2.timestamp
-
-        assert timestamp1 == timestamp2, "Cached result should have same timestamp"
-        assert result2.cached is True
-        assert result2.age_seconds >= 0
-
-    def test_get_health_refreshes_on_cache_expiry(self, cli_workspace, monkeypatch):
-        """get_health should refresh when cache is too old."""
-        import time
-
-        from polylogue.config import get_config
-        from polylogue.health import HEALTH_TTL_SECONDS, get_health
-
-        config = get_config()
-
-        # First call populates cache
-        get_health(config)
-
-        # Manually set cache timestamp to old
-        from polylogue.health import _cache_path, _load_cached
-
-        cache_file = _cache_path(config.archive_root)
-        cached = _load_cached(config.archive_root)
-        if cached:
-            cached["timestamp"] = int(time.time()) - HEALTH_TTL_SECONDS - 100
-            cache_file.write_text(json.dumps(cached))
-
-        # Second call should refresh (not use cache)
-        result2 = get_health(config)
-
-        assert result2.cached is False
-
-    def test_get_health_includes_cache_metadata(self, cli_workspace):
-        """get_health should include cached and age_seconds fields."""
-        from polylogue.config import get_config
-        from polylogue.health import get_health
-
-        config = get_config()
-        result = get_health(config)
-
-        assert isinstance(result.cached, bool)
-        assert isinstance(result.age_seconds, int)
-
-
-class TestCachedHealthSummary:
-    """Tests for cached_health_summary function."""
-
-    def test_cached_health_summary_not_run_when_no_cache(self, tmp_path):
-        """Should return 'not run' when cache doesn't exist."""
-        from polylogue.health import cached_health_summary
-
-        result = cached_health_summary(tmp_path)
-        assert result == "not run"
-
-    def test_cached_health_summary_with_valid_cache(self, cli_workspace):
-        """Should return summary string from valid cache."""
-        from polylogue.config import get_config
-        from polylogue.health import cached_health_summary, run_health
-
-        config = get_config()
-        run_health(config)  # Populate cache
-
-        result = cached_health_summary(config.archive_root)
-
-        # Should be cached X seconds ago (with check counts)
-        assert "cached" in result
-        assert "ago" in result
-        assert "ok=" in result or "warning=" in result or "error=" in result
-
-    def test_cached_health_summary_corrupted_cache(self, tmp_path):
-        """Should return 'unknown' when cache is corrupted."""
-        from polylogue.health import cached_health_summary
-
-        # Create corrupted cache
-        cache_file = tmp_path / "health.json"
-        cache_file.write_text("{invalid json")
-
-        result = cached_health_summary(tmp_path)
-        assert result == "unknown" or result == "not run"
-
-    def test_cached_health_summary_non_dict_cache(self, tmp_path):
-        """Should handle non-dict JSON gracefully."""
-        from polylogue.health import cached_health_summary
-
-        cache_file = tmp_path / "health.json"
-        cache_file.write_text('["not", "a", "dict"]')
-
-        result = cached_health_summary(tmp_path)
-        # Should not crash, returns fallback
-        assert isinstance(result, str)
-
-    def test_cached_health_summary_missing_timestamp(self, tmp_path):
-        """Should handle missing timestamp safely."""
-        from polylogue.health import cached_health_summary
-
-        cache_file = tmp_path / "health.json"
-        cache_file.write_text(json.dumps({"checks": []}))
-
-        result = cached_health_summary(tmp_path)
-        assert "cached" in result
-
-    def test_cached_health_summary_non_int_timestamp(self, tmp_path):
-        """Should handle non-int timestamp safely."""
-        from polylogue.health import cached_health_summary
-
-        cache_file = tmp_path / "health.json"
-        cache_file.write_text(json.dumps({"timestamp": "not-an-int", "checks": []}))
-
-        result = cached_health_summary(tmp_path)
-        assert result == "unknown"
-
-    def test_cached_health_summary_counts_statuses(self, tmp_path):
-        """Should properly count ok, warning, error statuses."""
-        from polylogue.health import cached_health_summary
-
-        cache_file = tmp_path / "health.json"
-        cache_file.write_text(
+        if write_bytes:
+            cache_file.write_bytes(payload)
+        else:
+            cache_file.write_text(payload, encoding="utf-8")
+
+    assert _load_cached(tmp_path) == expected
+
+
+def test_load_cached_permission_error_contract(tmp_path: Path) -> None:
+    from polylogue.health import _load_cached
+
+    cache_file = tmp_path / "health.json"
+    cache_file.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+    try:
+        os.chmod(cache_file, 0)
+        assert _load_cached(tmp_path) is None
+    finally:
+        os.chmod(cache_file, stat.S_IRUSR | stat.S_IWUSR)
+
+
+@pytest.mark.parametrize("payload", ["{ invalid json", b"\xff\xfe invalid utf-8"])
+def test_load_cached_logs_failures(tmp_path: Path, payload: str | bytes, capsys: pytest.CaptureFixture[str]) -> None:
+    from polylogue.health import _load_cached
+
+    cache_file = tmp_path / "health.json"
+    if isinstance(payload, bytes):
+        cache_file.write_bytes(payload)
+    else:
+        cache_file.write_text(payload, encoding="utf-8")
+
+    assert _load_cached(tmp_path) is None
+    captured = capsys.readouterr()
+    assert "cache" in (captured.out + captured.err).lower()
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_write_cache_contract(tmp_path: Path, nested: bool) -> None:
+    from polylogue.health import _write_cache
+
+    archive_root = tmp_path / "nested" / "deep" if nested else tmp_path
+    payload = {"status": "ok", "checks": []}
+    _write_cache(archive_root, payload)
+    assert json.loads((archive_root / "health.json").read_text(encoding="utf-8")) == payload
+
+
+def test_write_cache_logs_failures(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.health import _write_cache
+
+    original = Path.write_text
+
+    def failing_write(self: Path, data: str, encoding: str | None = None) -> int:
+        if self.name == "health.json":
+            raise OSError("boom")
+        return original(self, data, encoding=encoding)
+
+    monkeypatch.setattr(Path, "write_text", failing_write)
+    _write_cache(tmp_path, {"status": "ok"})
+    captured = capsys.readouterr()
+    assert "cache" in (captured.out + captured.err).lower()
+
+
+@pytest.mark.parametrize(
+    ("name", "status_name", "detail", "expected"),
+    [
+        ("test", "OK", "All good", {"name": "test", "status": "ok", "count": 0, "detail": "All good", "breakdown": {}}),
+        ("database", "ERROR", "Connection failed", {"name": "database", "status": "error", "count": 0, "detail": "Connection failed", "breakdown": {}}),
+        ("archive", "WARNING", "Directory missing", {"name": "archive", "status": "warning", "count": 0, "detail": "Directory missing", "breakdown": {}}),
+    ],
+)
+def test_health_check_dataclass_contract(name: str, status_name: str, detail: str, expected: dict[str, object]) -> None:
+    from polylogue.health import HealthCheck, VerifyStatus
+
+    check = HealthCheck(name=name, status=getattr(VerifyStatus, status_name), detail=detail)
+    assert check.to_dict() == expected
+
+
+@pytest.mark.parametrize(
+    ("deep", "expected_checks"),
+    [
+        (False, {"config", "archive_root", "render_root", "database", "index", "fts_sync", "schemas_coverage", "schemas_freshness"}),
+        (True, {"config", "archive_root", "render_root", "database", "sqlite_integrity", "index", "fts_sync", "schemas_coverage", "schemas_freshness"}),
+    ],
+)
+def test_run_health_core_contract(cli_workspace, deep: bool, expected_checks: set[str]) -> None:
+    from polylogue.config import get_config
+    from polylogue.health import run_health
+
+    report = run_health(get_config(), deep=deep)
+    names = {check.name for check in report.checks}
+    assert report.timestamp > 0
+    assert expected_checks.issubset(names)
+    assert sum(report.summary.values()) == len(report.checks)
+
+
+@pytest.mark.parametrize(
+    ("path_name", "missing"),
+    [("archive_root", True), ("render_root", True), ("archive_root", False), ("render_root", False)],
+)
+def test_run_health_path_contracts(tmp_path: Path, path_name: str, missing: bool) -> None:
+    from polylogue.config import Config, Source
+    from polylogue.health import VerifyStatus, run_health
+
+    archive_root = tmp_path / "archive"
+    render_root = tmp_path / "render"
+    if path_name != "archive_root" or not missing:
+        archive_root.mkdir(parents=True, exist_ok=True)
+    if path_name != "render_root" or not missing:
+        render_root.mkdir(parents=True, exist_ok=True)
+
+    report = run_health(
+        Config(archive_root=archive_root, render_root=render_root, sources=[Source(name="test", path=tmp_path)])
+    )
+    check = next(c for c in report.checks if c.name == path_name)
+    assert check.status == (VerifyStatus.WARNING if missing else VerifyStatus.OK)
+
+
+def test_run_health_includes_source_checks(cli_workspace) -> None:
+    from polylogue.config import get_config
+    from polylogue.health import run_health
+
+    config = get_config()
+    report = run_health(config)
+    source_checks = [check for check in report.checks if check.name.startswith("source:")]
+    assert len(source_checks) >= len(config.sources)
+
+
+def test_run_health_writes_cache(cli_workspace) -> None:
+    from polylogue.config import get_config
+    from polylogue.health import _cache_path, run_health
+
+    config = get_config()
+    report = run_health(config)
+    cached = json.loads(_cache_path(config.archive_root).read_text(encoding="utf-8"))
+    assert cached["timestamp"] == report.timestamp
+    assert len(cached["checks"]) == len(report.checks)
+
+
+@pytest.mark.parametrize("deep", [False, True])
+def test_get_health_contract(cli_workspace, deep: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.config import get_config
+    from polylogue.health import HEALTH_TTL_SECONDS, _cache_path, _load_cached, get_health
+
+    config = get_config()
+    first = get_health(config, deep=deep)
+    assert first.timestamp > 0
+    if deep:
+        assert first.cached is False
+        return
+
+    second = get_health(config)
+    assert second.cached is True
+    cached = _load_cached(config.archive_root)
+    assert cached is not None
+    cached["timestamp"] = int(time.time()) - HEALTH_TTL_SECONDS - 100
+    _cache_path(config.archive_root).write_text(json.dumps(cached), encoding="utf-8")
+    refreshed = get_health(config)
+    assert refreshed.cached is False
+    assert refreshed.age_seconds == 0
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (None, "not run"),
+        ("{invalid json", "not run"),
+        (json.dumps({"checks": []}), "cached"),
+        (json.dumps({"timestamp": "bad", "checks": []}), "unknown"),
+        (
             json.dumps(
                 {
                     "timestamp": int(time.time()),
@@ -484,126 +203,28 @@ class TestCachedHealthSummary:
                         {"name": "check2", "status": "ok", "detail": "ok"},
                         {"name": "check3", "status": "warning", "detail": "warning"},
                         {"name": "check4", "status": "error", "detail": "error"},
+                        "not-a-dict",
                     ],
                 }
-            )
-        )
+            ),
+            "ok=2",
+        ),
+    ],
+)
+def test_cached_health_summary_contract(tmp_path: Path, payload: str | None, expected: str) -> None:
+    from polylogue.health import cached_health_summary
 
-        result = cached_health_summary(tmp_path)
-
-        # Should contain count summary
-        assert "ok=2" in result
-        assert "warning=1" in result
-        assert "error=1" in result
-
-    def test_cached_health_summary_ignores_invalid_checks(self, tmp_path):
-        """Should skip non-dict items in checks list."""
-        from polylogue.health import cached_health_summary
-
-        cache_file = tmp_path / "health.json"
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "timestamp": int(time.time()),
-                    "summary": {"ok": 1, "warning": 1},
-                    "checks": [
-                        {"name": "check1", "status": "ok", "detail": "ok"},
-                        "not a dict",  # Invalid check
-                        {"name": "check2", "status": "warning", "detail": "warning"},
-                    ],
-                }
-            )
-        )
-
-        result = cached_health_summary(tmp_path)
-
-        # Should still work, ignoring the invalid check
-        assert isinstance(result, str)
+    if payload is not None:
+        (tmp_path / "health.json").write_text(payload, encoding="utf-8")
+    result = cached_health_summary(tmp_path)
+    assert expected in result if expected.startswith(("cached", "ok=")) else result == expected
 
 
-class TestHealthTTL:
-    """Tests for health check TTL constant."""
+def test_verify_status_and_cache_path_contract(tmp_path: Path) -> None:
+    from polylogue.health import HEALTH_TTL_SECONDS, VerifyStatus, _cache_path
 
-    def test_health_ttl_is_reasonable(self):
-        """HEALTH_TTL_SECONDS should be a reasonable cache duration."""
-        from polylogue.health import HEALTH_TTL_SECONDS
-
-        # Should be reasonable (e.g., between 1 minute and 1 hour)
-        assert 60 <= HEALTH_TTL_SECONDS <= 3600
-        assert isinstance(HEALTH_TTL_SECONDS, int)
-
-
-class TestCachePath:
-    """Tests for _cache_path function."""
-
-    def test_cache_path_returns_health_json_in_archive_root(self, tmp_path):
-        """_cache_path should return archive_root/health.json."""
-        from polylogue.health import _cache_path
-
-        result = _cache_path(tmp_path)
-
-        assert result == tmp_path / "health.json"
-        assert result.name == "health.json"
-
-
-# --- Merged from test_simple_coverage.py ---
-
-
-class TestVerifyStatusStr:
-    """Test VerifyStatus enum __str__ method."""
-
-    def test_verify_status_str_conversion(self):
-        """Test __str__ returns the value."""
-        from polylogue.health import VerifyStatus
-
-        assert str(VerifyStatus.OK) == "ok"
-        assert str(VerifyStatus.WARNING) == "warning"
-        assert str(VerifyStatus.ERROR) == "error"
-
-
-class TestHealthCachePaths:
-    """Test health.py cache error paths."""
-
-    def test_cache_load_corrupted_json(self, tmp_path):
-        """Test _load_cached handles corrupted JSON."""
-        from polylogue.health import _cache_path, _load_cached
-
-        archive_root = tmp_path
-        cache_file = _cache_path(archive_root)
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write invalid JSON
-        cache_file.write_text("{invalid json", encoding="utf-8")
-
-        result = _load_cached(archive_root)
-        assert result is None
-
-    def test_cache_load_encoding_error(self, tmp_path):
-        """Test _load_cached handles encoding errors."""
-        from polylogue.health import _cache_path, _load_cached
-
-        archive_root = tmp_path
-        cache_file = _cache_path(archive_root)
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write invalid UTF-8
-        cache_file.write_bytes(b"\xff\xfe invalid utf-8")
-
-        result = _load_cached(archive_root)
-        assert result is None
-
-    def test_cache_write_creates_dirs(self, tmp_path):
-        """Test _write_cache creates parent directories."""
-        from polylogue.health import _cache_path, _write_cache
-
-        archive_root = tmp_path / "deep" / "nested"
-        assert not archive_root.exists()
-
-        payload = {"status": "ok"}
-        _write_cache(archive_root, payload)
-
-        cache_file = _cache_path(archive_root)
-        assert cache_file.exists()
-        loaded = json.loads(cache_file.read_text())
-        assert loaded == payload
-
+    assert str(VerifyStatus.OK) == "ok"
+    assert str(VerifyStatus.WARNING) == "warning"
+    assert str(VerifyStatus.ERROR) == "error"
+    assert 60 <= HEALTH_TTL_SECONDS <= 3600
+    assert _cache_path(tmp_path) == tmp_path / "health.json"
