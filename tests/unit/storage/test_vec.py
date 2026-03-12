@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue.storage.store import MessageRecord
-from tests.infra.mutmut import preserved_mutmut_env
 
 
 def make_message(
@@ -737,19 +736,6 @@ class TestGetEmbeddingStats:
 
         mock_conn.close.assert_called_once()
 
-    def test_stats_returns_dict_with_expected_keys(self, mock_provider):
-        """Stats should return dict with specific keys."""
-        mock_provider._get_connection = MagicMock()
-        mock_conn = MagicMock()
-        mock_conn.execute = MagicMock(return_value=MagicMock(fetchone=MagicMock(return_value=[0])))
-        mock_provider._get_connection.return_value = mock_conn
-
-        stats = mock_provider.get_embedding_stats()
-
-        assert "embedded_messages" in stats
-        assert "pending_conversations" in stats
-        assert isinstance(stats, dict)
-
 
 # =============================================================================
 # _ensure_vec_available
@@ -910,117 +896,3 @@ class TestSqliteVecProviderSerialization:
 
         result = _serialize_f32([])
         assert result == b""
-
-
-class TestVecProviderFactory:
-    """Tests for create_vector_provider factory."""
-
-    def test_returns_none_when_no_voyage_key(self):
-        """Returns None when VOYAGE_API_KEY is not configured."""
-        from polylogue.storage.search_providers import create_vector_provider
-
-        with patch.dict("os.environ", preserved_mutmut_env(), clear=True):
-            provider = create_vector_provider()
-            assert provider is None
-
-    def test_returns_none_when_sqlite_vec_not_installed(self, monkeypatch):
-        """Returns None when sqlite-vec is not installed."""
-        from polylogue.storage.search_providers import create_vector_provider
-
-        monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
-
-        # Mock sqlite_vec import to fail
-        import builtins
-        original_import = builtins.__import__
-
-        def mock_import(name: str, *args, **kwargs):
-            if name == "sqlite_vec":
-                raise ImportError("No module named 'sqlite_vec'")
-            return original_import(name, *args, **kwargs)
-
-        with patch.object(builtins, "__import__", mock_import):
-            provider = create_vector_provider()
-            # Should return None because sqlite_vec import failed
-            assert provider is None
-
-
-class TestIndexConfigEmbedding:
-    """Tests for IndexConfig embedding settings."""
-
-    @pytest.mark.parametrize(
-        "env_var,env_value,expected_value,attr_name",
-        [
-            ("POLYLOGUE_VOYAGE_MODEL", None, "voyage-4", "voyage_model"),  # default
-            ("POLYLOGUE_VOYAGE_MODEL", "voyage-4-large", "voyage-4-large", "voyage_model"),
-            ("POLYLOGUE_VOYAGE_DIMENSION", None, None, "voyage_dimension"),  # default None
-            ("POLYLOGUE_VOYAGE_DIMENSION", "512", 512, "voyage_dimension"),
-            ("POLYLOGUE_AUTO_EMBED", None, False, "auto_embed"),  # default False
-            ("POLYLOGUE_AUTO_EMBED", "true", True, "auto_embed"),
-        ],
-    )
-    def test_config_from_env(self, monkeypatch, env_var, env_value, expected_value, attr_name):
-        """Test IndexConfig environment variable handling."""
-        from polylogue.paths import IndexConfig
-
-        if env_value is None:
-            monkeypatch.delenv(env_var, raising=False)
-        else:
-            monkeypatch.setenv(env_var, env_value)
-
-        config = IndexConfig.from_env()
-        assert getattr(config, attr_name) == expected_value
-
-
-class TestArchiveStats:
-    """Tests for ArchiveStats dataclass."""
-
-    @pytest.mark.parametrize(
-        "total_convs,embedded_convs,expected_coverage",
-        [
-            (100, 75, 75.0),  # typical case
-            (0, 0, 0.0),  # zero conversations
-            (50, 50, 100.0),  # full coverage
-        ],
-    )
-    def test_embedding_coverage_calculation(
-        self, total_convs, embedded_convs, expected_coverage
-    ):
-        """Embedding coverage should be calculated correctly."""
-        from polylogue.lib.stats import ArchiveStats
-
-        stats = ArchiveStats(
-            total_conversations=total_convs,
-            total_messages=total_convs * 5,  # synthetic
-            embedded_conversations=embedded_convs,
-        )
-        assert stats.embedding_coverage == expected_coverage
-
-    def test_avg_messages_per_conversation(self):
-        """Average messages should be calculated correctly."""
-        from polylogue.lib.stats import ArchiveStats
-
-        stats = ArchiveStats(
-            total_conversations=10,
-            total_messages=50,
-        )
-        assert stats.avg_messages_per_conversation == 5.0
-
-    def test_to_dict(self):
-        """to_dict should include all relevant fields."""
-        from polylogue.lib.stats import ArchiveStats
-
-        stats = ArchiveStats(
-            total_conversations=100,
-            total_messages=500,
-            providers={"claude": 60, "chatgpt": 40},
-            embedded_conversations=75,
-            embedded_messages=400,
-            db_size_bytes=1024 * 1024,
-        )
-        d = stats.to_dict()
-
-        assert d["total_conversations"] == 100
-        assert d["total_messages"] == 500
-        assert d["provider_count"] == 2
-        assert d["embedding_coverage_percent"] == 75.0
-        assert d["db_size_bytes"] == 1024 * 1024

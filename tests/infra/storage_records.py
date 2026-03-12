@@ -93,11 +93,12 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             sort_key,
             content_hash,
             provider_meta,
+            metadata,
             version,
             parent_conversation_id,
             branch_type,
             raw_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
             title = excluded.title,
             created_at = excluded.created_at,
@@ -105,6 +106,7 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             sort_key = excluded.sort_key,
             content_hash = excluded.content_hash,
             provider_meta = excluded.provider_meta,
+            metadata = excluded.metadata,
             parent_conversation_id = excluded.parent_conversation_id,
             branch_type = excluded.branch_type,
             raw_id = COALESCE(excluded.raw_id, conversations.raw_id)
@@ -114,6 +116,7 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             OR IFNULL(created_at, '') != IFNULL(excluded.created_at, '')
             OR IFNULL(updated_at, '') != IFNULL(excluded.updated_at, '')
             OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
+            OR IFNULL(metadata, '') != IFNULL(excluded.metadata, '')
             OR IFNULL(parent_conversation_id, '') != IFNULL(excluded.parent_conversation_id, '')
             OR IFNULL(branch_type, '') != IFNULL(excluded.branch_type, '')
             OR IFNULL(raw_id, '') != IFNULL(excluded.raw_id, '')
@@ -128,6 +131,7 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             record.sort_key,
             record.content_hash,
             _json_or_none(record.provider_meta),
+            _json_or_none(record.metadata),
             record.version,
             record.parent_conversation_id,
             record.branch_type,
