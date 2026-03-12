@@ -9,6 +9,16 @@ from hypothesis import HealthCheck, settings
 from polylogue.lib.messages import MessageCollection
 
 # ---------------------------------------------------------------------------
+# Scale markers for data-gravity and long-haul validation (Workstream H)
+# ---------------------------------------------------------------------------
+
+
+def pytest_configure(config):
+    """Register custom markers for scale and benchmark tests."""
+    config.addinivalue_line("markers", "scale(level): parametric scale marker (small/medium/large/stretch)")
+
+
+# ---------------------------------------------------------------------------
 # Hypothesis profiles: `--hypothesis-profile ci` uses fewer examples for speed
 # ---------------------------------------------------------------------------
 settings.register_profile("ci", max_examples=30, suppress_health_check=[HealthCheck.too_slow])
@@ -19,7 +29,7 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 
 @pytest.fixture(autouse=True)
-def _clear_polylogue_env(monkeypatch):
+def _clear_polylogue_env(monkeypatch, tmp_path):
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.
     from polylogue.storage.backends.connection import _clear_connection_cache
@@ -51,11 +61,15 @@ def _clear_polylogue_env(monkeypatch):
         # Clear Drive credentials to ensure test isolation
         "POLYLOGUE_CREDENTIAL_PATH",
         "POLYLOGUE_TOKEN_PATH",
-        # Don't inherit real user's XDG directories
         "XDG_DATA_HOME",
         "XDG_STATE_HOME",
+        "XDG_CONFIG_HOME",
     ):
         monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
 
 
 @pytest.fixture
@@ -335,7 +349,7 @@ def db_path(workspace_env):
         def test_something(db_path):
             builder = ConversationBuilder(db_path, "test-conv")
     """
-    from tests.infra.helpers import db_setup
+    from tests.infra.storage_records import db_setup
 
     return db_setup(workspace_env)
 
@@ -350,7 +364,7 @@ def conversation_builder(db_path):
                    .add_message("m1", text="Hello")
                    .save())
     """
-    from tests.infra.helpers import ConversationBuilder
+    from tests.infra.storage_records import ConversationBuilder
 
     def _builder(conversation_id: str = "test-conv"):
         return ConversationBuilder(db_path, conversation_id)
@@ -608,6 +622,9 @@ def raw_synthetic_samples():
 # =============================================================================
 # SYNTHETIC SOURCE FIXTURE (replaces FIXTURES_DIR-based sources)
 # =============================================================================
+
+
+from tests.infra.corpus_fixtures import corpus_seeded_db  # noqa: F401
 
 
 @pytest.fixture

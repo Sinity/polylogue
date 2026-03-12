@@ -10,7 +10,7 @@ from polylogue.sources.parsers.chatgpt import _coerce_float, extract_messages_fr
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.claude import looks_like_ai, looks_like_code
-from tests.infra.helpers import make_chatgpt_node
+from tests.infra.source_builders import make_chatgpt_node
 
 # =============================================================================
 # CHATGPT PARSER TESTS
@@ -303,7 +303,7 @@ def test_parse_conversation(parse_fn, conv_data, check_type, desc):
     elif check_type == "fallback":
         assert result.provider_conversation_id == "fallback-id", f"Failed {desc}"
     elif check_type == "provider":
-        assert result.provider_name in ["claude", "claude-code"], f"Failed {desc}"
+        assert result.provider_name in ["claude-ai", "claude-code"], f"Failed {desc}"
 
 
 # -----------------------------------------------------------------------------

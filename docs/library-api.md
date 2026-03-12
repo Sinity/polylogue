@@ -15,7 +15,7 @@ backend = SQLiteBackend()
 repo = ConversationRepository(backend=backend)
 
 # Search
-results = await ConversationFilter(repo).contains("error").provider("claude").list()
+results = await ConversationFilter(repo).contains("error").provider("claude-ai").list()
 for conv in results:
     print(f"{conv.id}: {conv.display_title}")
 
@@ -30,7 +30,7 @@ conv = await ConversationFilter(repo).id("abc123").first()
 results = await (ConversationFilter(repo)
     .contains("error")
     .contains("python")             # AND
-    .provider("claude", "chatgpt")  # OR
+    .provider("claude-ai", "chatgpt")  # OR
     .since("2025-01-01")
     .has("thinking")
     .limit(10)
@@ -46,12 +46,12 @@ results = await (ConversationFilter(repo)
 
 # Lightweight summaries (no message loading)
 summaries = await (ConversationFilter(repo)
-    .provider("claude")
+    .provider("claude-ai")
     .since("2025-01-01")
     .list_summaries())              # Returns ConversationSummary (no messages)
 
 # Check if summaries are sufficient
-f = ConversationFilter(repo).provider("claude")
+f = ConversationFilter(repo).provider("claude-ai")
 if f.can_use_summaries():
     results = f.list_summaries()    # Fast path
 else:
@@ -138,7 +138,7 @@ async def main():
         stats, recent, claude = await asyncio.gather(
             archive.stats(),
             archive.list_conversations(limit=10),
-            archive.list_conversations(provider="claude"),
+            archive.list_conversations(provider="claude-ai"),
         )
 
         print(f"Total: {stats.conversation_count} conversations")
@@ -156,7 +156,7 @@ async def main():
         result = await archive.parse_file("chatgpt_export.json")
 
         # Fluent filter (terminals are async)
-        convs = await archive.filter().provider("claude").contains("error").limit(10).list()
+        convs = await archive.filter().provider("claude-ai").contains("error").limit(10).list()
 
         # Rebuild search index
         await archive.rebuild_index()

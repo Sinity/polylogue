@@ -25,6 +25,8 @@ except ImportError:
 
 import pytest
 
+from tests.infra.adversarial_cases import PATH_TRAVERSAL_CORPUS_BYTES
+
 
 def fuzz_path_sanitizer(data: bytes) -> None:
     """Fuzz the path sanitizer with arbitrary byte sequences."""
@@ -116,38 +118,12 @@ def fuzz_name_sanitizer(data: bytes) -> None:
 class TestPathSanitizerFuzz:
     """Pytest-compatible fuzz tests using seed corpus."""
 
-    TRAVERSAL_CORPUS = [
-        b"../../../etc/passwd",
-        b"..\\..\\windows\\system32",
-        b"foo/../../../bar",
-        b"/etc/passwd",
-        b"C:\\Windows\\System32",
-        b"~/.ssh/id_rsa",
-        b"$HOME/.bashrc",
-        b"file.txt\x00.jpg",
-        b"../\x00",
-        b".hidden/../../../etc/passwd",
-        b"%2e%2e/",
-        b"..%2f",
-        b"..%c0%af",
-        b"a" * 10000 + b"/../etc/passwd",
-        b"\x00\x01\x02\x03\x04\x05",
-        b"\x7f\x80\x81\x82",
-        b"valid_file.txt",
-        b"/tmp/safe/path",
-        b"symlink/../../../etc/passwd",
-        # Unicode normalization attacks
-        b"\u002e\u002e/",
-        # Mixed encoding
-        b"..%252f",
-    ]
-
-    @pytest.mark.parametrize("data", TRAVERSAL_CORPUS)
+    @pytest.mark.parametrize("data", PATH_TRAVERSAL_CORPUS_BYTES)
     def test_path_sanitizer_corpus(self, data: bytes):
         """Run path sanitizer fuzz with seed corpus."""
         fuzz_path_sanitizer(data)
 
-    @pytest.mark.parametrize("data", TRAVERSAL_CORPUS)
+    @pytest.mark.parametrize("data", PATH_TRAVERSAL_CORPUS_BYTES)
     def test_name_sanitizer_corpus(self, data: bytes):
         """Run name sanitizer fuzz with seed corpus."""
         fuzz_name_sanitizer(data)

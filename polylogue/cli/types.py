@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from polylogue.config import Config
+from polylogue.operations import ArchiveOperations
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -29,3 +30,7 @@ class AppEnv:
     @property
     def repository(self) -> ConversationRepository:
         return self.services.get_repository()
+
+    @property
+    def operations(self) -> ArchiveOperations:
+        return ArchiveOperations.from_services(self.services)

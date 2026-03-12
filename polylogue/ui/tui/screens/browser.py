@@ -50,7 +50,7 @@ class Browser(Container):
             providers = sorted(stats.providers.keys()) if stats.providers else []
 
             if not providers:
-                providers = ["chatgpt", "claude"]  # Fallback for empty DB
+                providers = ["chatgpt", "claude-ai"]  # Fallback for empty DB
 
             # Collect tree data: list of (provider_label, [(title, conv_id), ...])
             tree_data: list[tuple[str, list[tuple[str, str]]]] = []

@@ -16,8 +16,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from polylogue.lib.log import get_logger
-from polylogue.lib.provider_identity import canonical_runtime_provider
+from polylogue.logging import get_logger
+from polylogue.lib.provider_identity import canonical_acquisition_provider
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.sources.source import iter_source_raw_data
@@ -48,7 +48,6 @@ class ScanResult:
     """Result of scanning raw payloads from sources without persisting them."""
 
     def __init__(self) -> None:
-        self.records: list[RawConversationRecord] = []
         self.counts: dict[str, int] = {
             "scanned": 0,
             "errors": 0,
@@ -99,32 +98,6 @@ class AcquisitionService:
             )
             result.counts["errors"] += 1
 
-    async def scan_sources(
-        self,
-        sources: list[Source],
-        *,
-        progress_callback: ProgressCallback | None = None,
-        ui: object | None = None,
-        drive_config: DriveConfig | None = None,
-        progress_label: str = "Scanning",
-    ) -> ScanResult:
-        """Scan raw payloads from sources without writing them."""
-        result = ScanResult()
-        async def _collect(record: RawConversationRecord) -> None:
-            result.records.append(record)
-
-        visited = await self.visit_sources(
-            sources,
-            progress_callback=progress_callback,
-            ui=ui,
-            drive_config=drive_config,
-            progress_label=progress_label,
-            on_record=_collect,
-        )
-        result.counts = visited.counts
-        result.cursors = visited.cursors
-        return result
-
     async def visit_sources(
         self,
         sources: list[Source],
@@ -137,7 +110,7 @@ class AcquisitionService:
     ) -> ScanResult:
         """Visit source raw payloads incrementally without forcing list materialization."""
         result = ScanResult()
-        known_mtimes = await self.backend.get_known_source_mtimes()
+        known_mtimes = await self.backend.queries.get_known_source_mtimes()
 
         async def _consume(record: RawConversationRecord) -> None:
             if on_record is not None:
@@ -220,36 +193,6 @@ class AcquisitionService:
                 on_record=_store,
             )
             result.counts["errors"] += visit_result.counts["errors"]
-
-        return result
-
-    async def store_records(
-        self,
-        records: list[RawConversationRecord],
-    ) -> AcquireResult:
-        """Persist scanned raw records without rescanning sources."""
-        result = AcquireResult()
-
-        # Use a single persistent connection with batched commits for the
-        # entire acquisition phase.  This avoids fd/WAL exhaustion from
-        # connection-per-INSERT and eliminates per-item fsync overhead.
-        flush_interval = 500
-        items_since_flush = 0
-
-        async with self.backend.bulk_connection():
-            for record in records:
-                await self._persist_record(record, result=result)
-                items_since_flush += 1
-                if items_since_flush >= flush_interval:
-                    await self.backend.bulk_flush()
-                    items_since_flush = 0
-
-        logger.info(
-            "Acquisition complete",
-            acquired=result.counts["acquired"],
-            skipped=result.counts["skipped"],
-            errors=result.counts["errors"],
-        )
 
         return result
 
@@ -385,14 +328,14 @@ class AcquisitionService:
 
         raw_id = hashlib.sha256(raw_data.raw_bytes).hexdigest()
         acquired_at = datetime.now(timezone.utc).isoformat()
+        provider_name = canonical_acquisition_provider(
+            str(raw_data.provider_hint) if raw_data.provider_hint is not None else None,
+            source_name=source_name,
+        )
 
         return RawConversationRecord(
             raw_id=raw_id,
-            provider_name=canonical_runtime_provider(
-                raw_data.provider_hint or source_name,
-                preserve_unknown=True,
-                default=source_name,
-            ),
+            provider_name=provider_name,
             source_name=source_name,  # Config source name, distinct from provider
             source_path=raw_data.source_path,
             source_index=raw_data.source_index,

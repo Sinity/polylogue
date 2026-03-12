@@ -32,7 +32,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from polylogue.errors import PolylogueError
-from polylogue.lib.theme import rich_theme_styles
+from polylogue.ui.theme import rich_theme_styles
 
 
 class UIError(PolylogueError):

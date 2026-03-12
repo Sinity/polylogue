@@ -23,6 +23,8 @@ from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 
+pytestmark = pytest.mark.slow
+
 # =============================================================================
 # FIXTURES
 # =============================================================================
@@ -108,7 +110,7 @@ async def test_full_workflow_per_provider(provider, synthetic_source, temp_confi
     from polylogue.storage.search import search_messages
 
     convs = await conv_repo.list()
-    provider_names = {"claude-ai": "claude"}  # provider name mapping in parser
+    provider_names = {"claude-ai": "claude-ai"}  # provider name mapping in parser
     expected_provider = provider_names.get(provider, provider)
     convs = [c for c in convs if c.provider == expected_provider]
     assert len(convs) > 0, f"No conversations found for {provider}"

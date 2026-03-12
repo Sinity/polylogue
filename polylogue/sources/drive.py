@@ -7,11 +7,14 @@ from typing import Any
 
 from ..assets import asset_path
 from ..config import Source
-from ..lib.log import get_logger
+from polylogue.logging import get_logger
+from polylogue.types import Provider
 from ..paths import safe_path_component
-from .drive_client import DriveClient, _parse_modified_time
+from .drive_client import DriveClient
+from .drive_source import DriveSourceAPI, _parse_modified_time
+from .dispatch import parse_drive_payload
 from .parsers.base import RawConversationData
-from .source import ParsedConversation, detect_provider, parse_drive_payload
+from .source import ParsedConversation
 
 logger = get_logger(__name__)
 
@@ -34,7 +37,7 @@ def drive_cache_file_path(dest_dir: Path, name: str) -> Path:
 
 
 def download_drive_files(
-    client: DriveClient,
+    client: DriveSourceAPI,
     folder_id: str,
     dest_dir: Path,
 ) -> DriveDownloadResult:
@@ -80,7 +83,7 @@ def download_drive_files(
 def _apply_drive_attachments(
     *,
     convo: ParsedConversation,
-    client: DriveClient,
+    client: DriveSourceAPI,
     archive_root: Path,
     download_assets: bool,
 ) -> None:
@@ -111,7 +114,7 @@ def iter_drive_conversations(
     source: Source,
     archive_root: Path,
     ui: object | None = None,
-    client: DriveClient | None = None,
+    client: DriveSourceAPI | None = None,
     download_assets: bool = True,
     cursor_state: dict[str, Any] | None = None,
     drive_config: object | None = None,
@@ -161,12 +164,18 @@ def iter_drive_raw_data(
     *,
     source: Source,
     ui: object | None = None,
-    client: DriveClient | None = None,
+    client: DriveSourceAPI | None = None,
     cursor_state: dict[str, Any] | None = None,
     drive_config: object | None = None,
     known_mtimes: dict[str, str] | None = None,
 ) -> Iterable[RawConversationData]:
-    """Iterate Drive payloads as raw bytes without writing a local cache."""
+    """Iterate Drive payloads as raw bytes without writing a local cache.
+
+    Note: googleapiclient / httplib2 are not thread-safe — a single service
+    object cannot be shared across threads.  Downloads remain sequential.
+    Parallelism would require per-thread client construction from credentials,
+    which is a larger refactor deferred until the Drive client supports it.
+    """
     if not source.folder:
         return
 
@@ -210,7 +219,7 @@ def iter_drive_raw_data(
             )
             continue
 
-        provider_hint = detect_provider(None, Path(file_meta.name)) or source.name
+        provider_hint = Provider.from_string(source.name)
         yield RawConversationData(
             raw_bytes=raw_bytes,
             source_path=source_path,

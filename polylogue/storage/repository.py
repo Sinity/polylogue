@@ -3,7 +3,7 @@
 Provides async/await interface for storing and retrieving conversations.
 Wraps SQLiteBackend for parallel operations.
 
-All methods are async and use eager loading (Conversation.from_records)
+All methods are async and use eager loading (conversation_from_records)
 instead of lazy loading, since async I/O already enables efficient parallel
 fetching of conversations, messages, and attachments together.
 """
@@ -15,9 +15,15 @@ import builtins
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.hydrators import (
+    conversation_from_records,
+    conversation_summary_from_record,
+    message_from_record,
+)
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
@@ -33,6 +39,7 @@ if TYPE_CHECKING:
 
     from polylogue.lib import filters
     from polylogue.lib.stats import ArchiveStats
+    from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 from polylogue.protocols import ConversationReader, SearchStore, TagStore, VectorProvider
 
@@ -45,7 +52,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
     Wraps SQLiteBackend to provide high-level async storage interface with
     full feature parity to sync ConversationRepository.
 
-    All methods are async. Eager loading (Conversation.from_records) is used
+    All methods are async. Eager loading (conversation_from_records) is used
     for fetching conversations, enabling efficient parallel I/O via asyncio.gather()
     for conversations, messages, and attachments.
 
@@ -54,7 +61,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
 
     Example:
         async with ConversationRepository() as repo:
-            conv = await repo.get("claude:abc123")
+            conv = await repo.get("claude-ai:abc123")
             convs = await repo.list(limit=10)
             await repo.save_conversation(conv_rec, msgs, atts)
     """
@@ -75,6 +82,42 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         else:
             self._backend = SQLiteBackend(db_path=db_path)
 
+    @staticmethod
+    def _conversation_filter_kwargs(
+        *,
+        provider: str | None = None,
+        providers: builtins.list[str] | None = None,
+        source: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
+    ) -> dict[str, object]:
+        """Build the canonical conversation-filter kwargs for backend queries."""
+        return {
+            "provider": provider,
+            "providers": providers,
+            "source": source,
+            "since": since,
+            "until": until,
+            "title_contains": title_contains,
+            "has_tool_use": has_tool_use,
+            "has_thinking": has_thinking,
+            "min_messages": min_messages,
+            "max_messages": max_messages,
+            "min_words": min_words,
+            "has_file_ops": has_file_ops,
+            "has_git_ops": has_git_ops,
+            "has_subagent": has_subagent,
+        }
+
     async def __aenter__(self) -> ConversationRepository:
         """Enter async context manager."""
         return self
@@ -87,6 +130,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
     def backend(self) -> SQLiteBackend:
         """Access the underlying async storage backend."""
         return self._backend
+
+    @property
+    def queries(self) -> SQLiteQueryStore:
+        """Access the canonical low-level query surface."""
+        return self._backend.queries
 
     async def close(self) -> None:
         """Close database connections and release resources."""
@@ -103,7 +151,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             Full ConversationId if resolved, None if ambiguous or not found
         """
-        resolved = await self._backend.resolve_id(id_prefix)
+        resolved = await self.queries.resolve_id(id_prefix)
         return ConversationId(resolved) if resolved else None
 
     async def get(self, conversation_id: str) -> Conversation | None:
@@ -117,26 +165,26 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             Conversation with all data loaded, or None if not found
         """
-        conv_record = await self._backend.get_conversation(conversation_id)
+        conv_record = await self.queries.get_conversation(conversation_id)
         if not conv_record:
             return None
 
         # Fetch messages and attachments in parallel
         msg_records, att_records = await asyncio.gather(
-            self._backend.get_messages(conversation_id),
+            self.queries.get_messages(conversation_id),
             self._backend.get_attachments(conversation_id),
         )
 
-        return Conversation.from_records(conv_record, msg_records, att_records)
+        return conversation_from_records(conv_record, msg_records, att_records)
 
     async def get_render_projection(self, conversation_id: str) -> ConversationRenderProjection | None:
         """Fetch repository-owned render projection with raw attachment layout preserved."""
-        conv_record = await self._backend.get_conversation(conversation_id)
+        conv_record = await self.queries.get_conversation(conversation_id)
         if not conv_record:
             return None
 
         msg_records, att_records = await asyncio.gather(
-            self._backend.get_messages(conversation_id),
+            self.queries.get_messages(conversation_id),
             self._backend.get_attachments(conversation_id),
         )
         return ConversationRenderProjection(
@@ -172,17 +220,6 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         """
         return await self.get(conversation_id)
 
-    async def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
-        """Get conversation record by ID.
-
-        Args:
-            conversation_id: Full conversation ID
-
-        Returns:
-            ConversationRecord or None if not found
-        """
-        return await self._backend.get_conversation(conversation_id)
-
     async def _hydrate_conversations(
         self,
         conversation_records: builtins.list[ConversationRecord],
@@ -200,28 +237,17 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             return []
 
         msgs_by_id, atts_by_id = await asyncio.gather(
-            self._backend.get_messages_batch(present_ids),
+            self.queries.get_messages_batch(present_ids),
             self._backend.get_attachments_batch(present_ids),
         )
         return [
-            Conversation.from_records(
+            conversation_from_records(
                 by_id[conversation_id],
                 msgs_by_id.get(conversation_id, []),
                 atts_by_id.get(conversation_id, []),
             )
             for conversation_id in present_ids
         ]
-
-    async def conversation_exists(self, content_hash: str) -> bool:
-        """Check if conversation with given content hash exists.
-
-        Args:
-            content_hash: SHA-256 hash of conversation content
-
-        Returns:
-            True if conversation exists, False otherwise
-        """
-        return await self._backend.conversation_exists_by_hash(content_hash)
 
     async def get_summary(self, conversation_id: str) -> ConversationSummary | None:
         """Get a conversation summary without loading messages.
@@ -232,10 +258,10 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             ConversationSummary, or None if not found
         """
-        conv_record = await self._backend.get_conversation(conversation_id)
+        conv_record = await self.queries.get_conversation(conversation_id)
         if not conv_record:
             return None
-        return ConversationSummary.from_record(conv_record)
+        return conversation_summary_from_record(conv_record)
 
     async def list_summaries(
         self,
@@ -279,25 +305,27 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             List of ConversationSummary objects
         """
-        conv_records = await self._backend.list_conversations(
-            source=source,
-            provider=provider,
-            providers=providers,
+        conv_records = await self.queries.list_conversations(
             limit=limit,
             offset=offset,
-            since=since,
-            until=until,
-            title_contains=title_contains,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            has_file_ops=has_file_ops,
-            has_git_ops=has_git_ops,
-            has_subagent=has_subagent,
+            **self._conversation_filter_kwargs(
+                source=source,
+                provider=provider,
+                providers=providers,
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            ),
         )
-        return [ConversationSummary.from_record(rec) for rec in conv_records]
+        return [conversation_summary_from_record(rec) for rec in conv_records]
 
     async def iter_summary_pages(
         self,
@@ -386,22 +414,24 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             List of Conversation objects with all data eager-loaded
         """
-        conv_records = await self._backend.list_conversations(
-            provider=provider,
-            providers=providers,
+        conv_records = await self.queries.list_conversations(
             limit=limit,
             offset=offset,
-            since=since,
-            until=until,
-            title_contains=title_contains,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            has_file_ops=has_file_ops,
-            has_git_ops=has_git_ops,
-            has_subagent=has_subagent,
+            **self._conversation_filter_kwargs(
+                provider=provider,
+                providers=providers,
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            ),
         )
 
         return await self._hydrate_conversations(conv_records)
@@ -442,7 +472,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             Count of matching conversations
         """
-        return await self._backend.count_conversations(
+        filters = self._conversation_filter_kwargs(
             provider=provider,
             providers=providers,
             since=since,
@@ -457,36 +487,8 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             has_git_ops=has_git_ops,
             has_subagent=has_subagent,
         )
-
-    async def aggregate_message_stats(
-        self,
-        conversation_ids: builtins.list[str] | None = None,
-    ) -> dict[str, int]:
-        """Compute aggregate message statistics via SQL.
-
-        Args:
-            conversation_ids: Optional list of IDs to scope stats to.
-                If None, computes stats across all conversations.
-
-        Returns:
-            Dict with keys: total, user, assistant, system, words_approx,
-            attachments, min_sort_key, max_sort_key.
-        """
-        return await self._backend.aggregate_message_stats(conversation_ids)
-
-    async def get_source_conversations(self, provider: str) -> builtins.list[str]:
-        """Get all conversation IDs for a given provider.
-
-        Args:
-            provider: Provider name to filter by
-
-        Returns:
-            List of conversation IDs from that provider
-        """
-        return [
-            conversation_id
-            async for conversation_id in self._backend.iter_conversation_ids(source_names=[provider])
-        ]
+        filters.pop("source")
+        return await self.queries.count_conversations(**filters)
 
     async def get_parent(self, conversation_id: str) -> Conversation | None:
         """Get the parent conversation if it exists.
@@ -497,9 +499,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             Parent Conversation, or None if no parent
         """
-        conv = await self.get(conversation_id)
-        if conv and conv.parent_id:
-            return await self.get(str(conv.parent_id))
+        conv_record = await self.queries.get_conversation(conversation_id)
+        if conv_record and conv_record.parent_conversation_id:
+            return await self.get(str(conv_record.parent_conversation_id))
         return None
 
     async def get_children(self, conversation_id: str) -> builtins.list[Conversation]:
@@ -511,10 +513,23 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             List of child Conversation objects with all data eager-loaded
         """
-        child_records = await self._backend.list_conversations(parent_id=conversation_id)
+        child_records = await self.queries.list_conversations(parent_id=conversation_id)
         if not child_records:
             return []
         return await self._hydrate_conversations(child_records)
+
+    async def _get_root_record(self, conversation_id: str) -> ConversationRecord:
+        """Resolve the root conversation record without hydrating messages repeatedly."""
+        current = await self.queries.get_conversation(conversation_id)
+        if not current:
+            raise ValueError(f"Conversation {conversation_id} not found")
+
+        while current.parent_conversation_id:
+            parent = await self.queries.get_conversation(str(current.parent_conversation_id))
+            if not parent:
+                break
+            current = parent
+        return current
 
     async def get_root(self, conversation_id: str) -> Conversation:
         """Walk up the parent chain to find the root conversation.
@@ -528,16 +543,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Raises:
             ValueError: If the conversation is not found
         """
-        current = await self.get(conversation_id)
-        if not current:
+        root_record = await self._get_root_record(conversation_id)
+        root = await self.get(root_record.conversation_id)
+        if root is None:
             raise ValueError(f"Conversation {conversation_id} not found")
-
-        while current.parent_id:
-            parent = await self.get(str(current.parent_id))
-            if not parent:
-                break
-            current = parent
-        return current
+        return root
 
     async def get_session_tree(self, conversation_id: str) -> builtins.list[Conversation]:
         """Get all conversations in the session tree (root + all descendants).
@@ -548,18 +558,21 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             List of all Conversation objects in tree (breadth-first order)
         """
-        root = await self.get_root(conversation_id)
+        root_record = await self._get_root_record(conversation_id)
 
-        tree = []
-        queue = [root]
+        tree_records: builtins.list[ConversationRecord] = []
+        queue: builtins.list[ConversationRecord] = [root_record]
 
         while queue:
             current = queue.pop(0)
-            tree.append(current)
-            children = await self.get_children(str(current.id))
+            tree_records.append(current)
+            children = await self.queries.list_conversations(parent_id=current.conversation_id)
             queue.extend(children)
 
-        return tree
+        return await self._hydrate_conversations(
+            tree_records,
+            ordered_ids=[record.conversation_id for record in tree_records],
+        )
 
     async def search_summaries(
         self,
@@ -577,13 +590,10 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             List of ConversationSummary objects matching the query
         """
-        ids = await self._backend.search_conversations(query, limit=limit, providers=providers)
+        ids, records = await self._search_records(query, limit=limit, providers=providers)
         if not ids:
             return []
-
-        # Fetch all matching conversations in parallel
-        records = await self._backend.get_conversations_batch(ids)
-        return [ConversationSummary.from_record(rec) for rec in records]
+        return [conversation_summary_from_record(rec) for rec in records]
 
     async def search(
         self,
@@ -601,8 +611,23 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             List of Conversation objects with all data eager-loaded
         """
-        ids = await self._backend.search_conversations(query, limit=limit, providers=providers)
-        return await self.get_many(ids)
+        ids, records = await self._search_records(query, limit=limit, providers=providers)
+        return await self._hydrate_conversations(records, ordered_ids=ids)
+
+    async def _search_records(
+        self,
+        query: str,
+        *,
+        limit: int,
+        providers: builtins.list[str] | None,
+    ) -> tuple[builtins.list[str], builtins.list[ConversationRecord]]:
+        """Resolve ranked search IDs once and fetch the corresponding records."""
+        ids = await self.queries.search_conversations(query, limit=limit, providers=providers)
+        if not ids:
+            return [], []
+        records = await self.queries.get_conversations_batch(ids)
+        by_id = {record.conversation_id: record for record in records}
+        return ids, [by_id[conversation_id] for conversation_id in ids if conversation_id in by_id]
 
     async def get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
         """Bulk fetch conversations with eager-loaded messages and attachments.
@@ -620,31 +645,8 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         if not conversation_ids:
             return []
 
-        records = await self._backend.get_conversations_batch(conversation_ids)
+        records = await self.queries.get_conversations_batch(conversation_ids)
         return await self._hydrate_conversations(records, ordered_ids=conversation_ids)
-
-    async def get_conversation_stats(self, conversation_id: str) -> dict[str, int] | None:
-        """Get message counts without loading messages.
-
-        Args:
-            conversation_id: Conversation ID
-
-        Returns:
-            Dict with counts (total_messages, dialogue_messages, tool_messages),
-            or None if conversation not found
-        """
-        conv_record = await self._backend.get_conversation(conversation_id)
-        if not conv_record:
-            return None
-        return await self._backend.get_conversation_stats(conversation_id)
-
-    async def get_message_counts_batch(self, conversation_ids: builtins.list[str]) -> dict[str, int]:
-        """Get message counts for multiple conversations."""
-        return await self._backend.get_message_counts_batch(conversation_ids)
-
-    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
-        """Get conversation counts grouped by provider, month, or year."""
-        return await self._backend.get_stats_by(group_by)
 
     async def iter_messages(
         self,
@@ -665,14 +667,14 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Yields:
             Message objects one at a time
         """
-        conv_record = await self._backend.get_conversation(conversation_id)
+        conv_record = await self.queries.get_conversation(conversation_id)
         provider_name = conv_record.provider_name if conv_record else None
         async for record in self._backend.iter_messages(
             conversation_id,
             dialogue_only=dialogue_only,
             limit=limit,
         ):
-            yield Message.from_record(record, attachments=[], provider=provider_name)
+            yield message_from_record(record, attachments=[], provider=provider_name)
 
     async def search_similar(
         self,
@@ -696,7 +698,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         if not vector_provider:
             raise ValueError("Semantic search requires a vector provider.")
 
-        results = vector_provider.query(text, limit=limit * 3)
+        results = await asyncio.to_thread(
+            vector_provider.query,
+            text,
+            limit=limit * 3,
+        )
         if not results:
             return []
 
@@ -803,16 +809,13 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
 
         # Try to extract provider_id from canonical id (format: provider:id)
         # Fallback to whole ID if pattern doesn't match
-        provider_id = str(conversation.id)
-        if ":" in provider_id and conversation.provider:
-            prefix = f"{conversation.provider}:"
-            if provider_id.startswith(prefix):
-                provider_id = provider_id[len(prefix) :]
-
         return ConversationRecord(
             conversation_id=cast(ConversationId, str(conversation.id)),
             provider_name=conversation.provider,
-            provider_conversation_id=provider_id,
+            provider_conversation_id=_provider_conversation_id(
+                conversation_id=str(conversation.id),
+                provider=conversation.provider,
+            ),
             title=conversation.title or "",
             created_at=created_at_str,
             updated_at=updated_at_str,
@@ -918,6 +921,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
                     await backend.save_attachments(attachments)
                     counts["attachments"] = len(attachments)
 
+        invalidate_search_cache()
         return counts
 
     async def record_run(self, record: RunRecord) -> None:
@@ -1009,7 +1013,10 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             True if deleted, False if not found
         """
-        return await self._backend.delete_conversation(conversation_id)
+        deleted = await self._backend.delete_conversation(conversation_id)
+        if deleted:
+            invalidate_search_cache()
+        return deleted
 
     # --- Vector Search Methods ---
 
@@ -1030,19 +1037,20 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Raises:
             ValueError: If no vector provider available
         """
-        if vector_provider is None:
-            from polylogue.storage.search_providers import create_vector_provider
-
-            vector_provider = create_vector_provider()
+        vector_provider = _resolve_optional_vector_provider(vector_provider)
 
         if vector_provider is None:
             raise ValueError("No vector provider available. Set VOYAGE_API_KEY.")
 
-        messages = await self._backend.get_messages(conversation_id)
+        messages = await self.queries.get_messages(conversation_id)
         if not messages:
             return 0
 
-        vector_provider.upsert(conversation_id, messages)
+        await asyncio.to_thread(
+            vector_provider.upsert,
+            conversation_id,
+            messages,
+        )
         return len(messages)
 
     async def similarity_search(
@@ -1059,20 +1067,22 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             vector_provider: Optional vector provider
 
         Returns:
-            List of (conversation_id, message_id, distance) tuples
+            List of (conversation_id, message_id, distance) tuples derived from
+            synchronous vector-provider `(message_id, distance)` results
 
         Raises:
             ValueError: If no vector provider configured
         """
-        if vector_provider is None:
-            from polylogue.storage.search_providers import create_vector_provider
-
-            vector_provider = create_vector_provider()
+        vector_provider = _resolve_optional_vector_provider(vector_provider)
 
         if vector_provider is None:
             raise ValueError("No vector provider configured")
 
-        results = vector_provider.query(query, limit=limit)
+        results = await asyncio.to_thread(
+            vector_provider.query,
+            query,
+            limit=limit,
+        )
         if not results:
             return []
 
@@ -1158,7 +1168,27 @@ def _records_to_conversation(
 
     Used by facades and internal migration tools.
     """
-    return Conversation.from_records(conversation, messages, attachments)
+    return conversation_from_records(conversation, messages, attachments)
+
+
+def _provider_conversation_id(conversation_id: str, provider: str | None) -> str:
+    """Strip only the canonical provider prefix from conversation IDs."""
+    if not provider:
+        return conversation_id
+    prefix = f"{provider}:"
+    return conversation_id[len(prefix) :] if conversation_id.startswith(prefix) else conversation_id
+
+
+def _resolve_optional_vector_provider(
+    vector_provider: VectorProvider | None,
+) -> VectorProvider | None:
+    """Resolve the explicitly supplied provider or create the default one."""
+    if vector_provider is not None:
+        return vector_provider
+
+    from polylogue.storage.search_providers import create_vector_provider
+
+    return create_vector_provider()
 
 
 __all__ = ["ConversationRepository"]

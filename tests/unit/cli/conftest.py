@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from polylogue.storage.index import rebuild_index
-from tests.infra.helpers import DbFactory
+from tests.infra.storage_records import DbFactory
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def search_workspace(cli_workspace, monkeypatch):
     # Conversation 2: JavaScript content, older
     factory.create_conversation(
         id="conv2",
-        provider="claude",
+        provider="claude-ai",
         title="JavaScript Async Patterns",
         messages=[
             {"id": "m3", "role": "user", "text": "Explain async/await in JavaScript"},

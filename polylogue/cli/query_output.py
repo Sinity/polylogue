@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
-from polylogue.cli.query_helpers import summary_to_dict
-from polylogue.lib.formatting import format_conversation
-from polylogue.lib.log import get_logger
+from polylogue.cli.query_helpers import no_results, summary_to_dict
+from polylogue.rendering.formatting import format_conversation
+from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 
-async def _output_stats_sql(
+async def output_stats_sql(
     env: AppEnv,
     filter_chain: ConversationFilter,
     repo: ConversationRepository,
@@ -53,7 +53,7 @@ async def _output_stats_sql(
             env.ui.console.print("No conversations in archive.")
             return
 
-    stats = await repo.aggregate_message_stats(conv_ids)
+    stats = await repo.queries.aggregate_message_stats(conv_ids)
 
     date_range = ""
     if stats["min_sort_key"] and stats["max_sort_key"]:
@@ -83,7 +83,7 @@ async def _output_stats_sql(
         out(f"Date range: {date_range}")
 
 
-def _output_stats_by_summaries(
+def output_stats_by_summaries(
     env: AppEnv,
     summaries: list,
     msg_counts: dict[str, int],
@@ -94,7 +94,7 @@ def _output_stats_by_summaries(
 
     from rich.table import Table
 
-    from polylogue.lib.theme import provider_color
+    from polylogue.ui.theme import provider_color
 
     if not summaries:
         env.ui.console.print("No conversations matched.")
@@ -150,7 +150,7 @@ def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -
 
     from rich.table import Table
 
-    from polylogue.lib.theme import provider_color
+    from polylogue.ui.theme import provider_color
 
     if not results:
         env.ui.console.print("No conversations matched.")
@@ -204,16 +204,14 @@ def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -
     env.ui.console.print(table)
 
 
-def _output_results(
+def output_results(
     env: AppEnv,
     results: list[Conversation],
     params: dict[str, Any],
 ) -> None:
     """Output query results."""
-    from polylogue.cli.query import _no_results
-
     if not results:
-        _no_results(env, params)
+        no_results(env, params)
 
     output_format = params.get("output_format", "markdown")
     output_dest = params.get("output", "stdout")
@@ -240,7 +238,7 @@ def _format_list(
     fields: str | None,
 ) -> str:
     """Format a list of conversations for output."""
-    from polylogue.lib.formatting import _conv_to_dict
+    from polylogue.rendering.formatting import _conv_to_dict
 
     if output_format == "json":
         return json.dumps([_conv_to_dict(c, fields) for c in results], indent=2)
@@ -272,7 +270,7 @@ async def _output_summary_list(
     msg_counts: dict[str, int] = {}
     if repo:
         ids = [str(s.id) for s in summaries]
-        msg_counts = await repo.get_message_counts_batch(ids)
+        msg_counts = await repo.queries.get_message_counts_batch(ids)
 
     fields = params.get("fields")
     selected: set[str] | None = None
@@ -314,7 +312,7 @@ async def _output_summary_list(
                 tags_str,
                 s.summary or "",
             ])
-        click.echo(buf.getvalue().rstrip())
+        click.echo(buf.getvalue().rstrip("\r\n"))
         return
 
     if env.ui.plain:
@@ -329,7 +327,7 @@ async def _output_summary_list(
     from rich.table import Table
     from rich.text import Text
 
-    from polylogue.lib.theme import provider_color
+    from polylogue.ui.theme import provider_color
 
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False, show_edge=False)
     table.add_column("ID", style="dim", max_width=24, no_wrap=True)
@@ -383,7 +381,7 @@ def _render_conversation_rich(env: AppEnv, conv: Conversation) -> None:
     from rich.panel import Panel
     from rich.text import Text
 
-    from polylogue.lib.theme import THINKING_STYLE, provider_color, role_color
+    from polylogue.ui.theme import THINKING_STYLE, provider_color, role_color
 
     console = env.ui.console
     title = conv.display_title or conv.id
@@ -442,12 +440,12 @@ async def stream_conversation(
     message_limit: int | None = None,
 ) -> int:
     """Stream conversation messages to stdout without buffering."""
-    conv_record = await repo.get_conversation(conversation_id)
+    conv_record = await repo.queries.get_conversation(conversation_id)
     if not conv_record:
         click.echo(f"Conversation not found: {conversation_id}", err=True)
         raise SystemExit(1)
 
-    stats = await repo.get_conversation_stats(conversation_id)
+    stats = await repo.queries.get_conversation_stats(conversation_id)
 
     if output_format == "markdown":
         title = conv_record.title or conversation_id[:24]
@@ -553,7 +551,7 @@ def _open_in_browser(
 
     if output_format != "html":
         if conv:
-            from polylogue.lib.formatting import _conv_to_html
+            from polylogue.rendering.formatting import _conv_to_html
 
             content = _conv_to_html(conv)
         else:

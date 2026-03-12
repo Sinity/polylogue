@@ -239,6 +239,40 @@ def test_unicode_normalization_comprehensive(text, test_type, desc):
         assert hash_normal != hash_zwj, f"Failed {desc}"
 
 
+
+
+@given(st.text())
+def test_hash_text_deterministic_property(text: str) -> None:
+    assert hash_text(text) == hash_text(text)
+
+
+@given(st.text())
+def test_hash_text_length_invariant(text: str) -> None:
+    assert len(hash_text(text)) == 64
+
+
+@given(st.text(), st.integers(min_value=1, max_value=64))
+def test_hash_text_short_is_prefix_property(text: str, length: int) -> None:
+    full = hash_text(text)
+    short = hash_text_short(text, length)
+    assert full.startswith(short)
+    assert len(short) == length
+
+
+@given(st.dictionaries(st.text(min_size=1, max_size=10), st.integers()))
+def test_hash_payload_order_independent_property(payload: dict[str, int]) -> None:
+    if not payload:
+        return
+    reversed_payload = {key: payload[key] for key in reversed(list(payload))}
+    assert hash_payload(payload) == hash_payload(reversed_payload)
+
+
+@given(st.text())
+def test_hash_text_hex_characters_property(text: str) -> None:
+    result = hash_text(text)
+    assert all(char in "0123456789abcdef" for char in result)
+
+
 @given(st.text())
 def test_hash_text_unicode_normalization_invariant(text: str):
     """Hash MUST be invariant under Unicode normalization."""

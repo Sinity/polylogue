@@ -1,6 +1,6 @@
 # Claude with Thinking
 
-Provider: claude
+Provider: claude-ai
 Conversation ID: golden-claude-thinking
 
 ## user

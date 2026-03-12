@@ -56,7 +56,7 @@ class TestResetCommandSubprocess:
 
     def test_reset_force_database(self, tmp_path):
         """reset --database --yes deletes database."""
-        from tests.infra.helpers import GenericConversationBuilder
+        from tests.infra.source_builders import GenericConversationBuilder
 
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]

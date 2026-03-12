@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from polylogue.sources.drive_client import DriveNotFoundError
+from polylogue.sources.drive_types import DriveError, DriveNotFoundError
 
 
 @dataclass
@@ -282,6 +282,69 @@ class MockDriveService:
     def files(self) -> MockFilesResource:
         """Return mock files() resource."""
         return self._files_resource
+
+
+class FakeDriveServiceGateway:
+    """Lightweight DriveServiceGateway substitute for DriveSourceClient tests.
+
+    Wraps MockDriveService and exposes the same interface as DriveServiceGateway
+    without requiring a real auth manager or network access.
+    """
+
+    def __init__(
+        self,
+        mock_service: MockDriveService | None = None,
+        file_content: dict[str, bytes] | None = None,
+        download_error: Exception | None = None,
+    ) -> None:
+        self._mock_service = mock_service or MockDriveService(file_content=file_content)
+        self._service = self._mock_service
+        self._download_error = download_error
+
+    def call_with_retry(self, func: Any, *args: Any, **kwargs: Any) -> Any:
+        return func(*args, **kwargs)
+
+    def _service_handle(self) -> MockDriveService:
+        return self._mock_service
+
+    def get_file(self, file_id: str, fields: str) -> dict[str, Any]:
+        return self._mock_service.files().get(fileId=file_id, fields=fields).execute()
+
+    def list_files(
+        self,
+        *,
+        q: str,
+        fields: str,
+        page_token: str | None,
+        page_size: int,
+    ) -> dict[str, Any]:
+        return self._mock_service.files().list(
+            q=q, fields=fields, pageToken=page_token, pageSize=page_size
+        ).execute()
+
+    def download_file(self, file_id: str, handle: Any) -> None:
+        if self._download_error is not None:
+            raise self._download_error
+        content = self._mock_service.files().get_media(fileId=file_id).execute()
+        handle.write(content)
+
+    def _download_request(
+        self,
+        request: Any,
+        handle: Any,
+        downloader_cls: Any,
+        *,
+        file_id: str,
+    ) -> None:
+        downloader = downloader_cls(handle, request)
+        done = False
+        max_chunks = 10_000
+        chunks = 0
+        while not done:
+            _, done = downloader.next_chunk()
+            chunks += 1
+            if chunks >= max_chunks:
+                raise DriveError(f"Download exceeded {max_chunks} chunks for file {file_id}")
 
 
 def mock_drive_file(

@@ -1,0 +1,45 @@
+name: Research or Decision
+description: Investigate a question, compare approaches, or drive an architectural decision.
+title: "[research] "
+labels:
+  - question
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question to resolve
+      description: What exactly needs a recommendation or decision?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why is this decision coming up now?
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options or candidate directions
+      description: List known options, if any.
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and evaluation criteria
+      description: What requirements or invariants should guide the decision?
+  - type: textarea
+    id: deliverable
+    attributes:
+      label: Expected deliverable
+      description: What should the output look like?
+      placeholder: Recommendation memo, comparison table, prototype, ADR, implementation plan.
+    validations:
+      required: true
+  - type: textarea
+    id: closure
+    attributes:
+      label: Closure criteria
+      description: What must be answered before this can be closed?
+    validations:
+      required: true

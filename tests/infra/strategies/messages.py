@@ -65,6 +65,16 @@ def tool_result_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 @st.composite
+def code_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
+    """Generate a code content block."""
+    return {
+        "type": "code",
+        "text": draw(st.text(min_size=1, max_size=500)),
+        "language": draw(st.one_of(st.none(), st.sampled_from(["python", "bash", "json"]))),
+    }
+
+
+@st.composite
 def content_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
     """Generate any type of content block."""
     return draw(st.one_of(
@@ -72,6 +82,7 @@ def content_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
         thinking_block_strategy(),
         tool_use_block_strategy(),
         tool_result_block_strategy(),
+        code_block_strategy(),
     ))
 
 
@@ -129,140 +140,6 @@ def message_strategy(
     return msg
 
 
-@st.composite
-def parsed_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
-    """Generate a ParsedMessage-compatible dict."""
-    return {
-        "provider_message_id": draw(st.uuids()).hex[:12],
-        "role": draw(st.sampled_from(["user", "assistant", "system"])),
-        "text": draw(st.text(min_size=1, max_size=500)),
-        "timestamp": draw(st.datetimes(
-            min_value=datetime(2020, 1, 1),
-            max_value=datetime(2030, 1, 1),
-            timezones=st.just(timezone.utc),
-        )).isoformat(),
-        "provider_meta": draw(st.none() | st.fixed_dictionaries({
-            "raw": st.dictionaries(
-                keys=st.text(min_size=1, max_size=10),
-                values=st.text(max_size=50),
-                max_size=3,
-            ),
-        })),
-    }
-
-
-# =============================================================================
-# Typed Strategies (return actual model instances)
-# =============================================================================
-
-
-@st.composite
-def parsed_message_model_strategy(draw: st.DrawFn):
-    """Generate a ParsedMessage model instance for property testing."""
-    from polylogue.sources.parsers.base import ParsedMessage
-
-    return ParsedMessage(
-        provider_message_id=draw(st.uuids()).hex[:12],
-        role=draw(st.sampled_from(["user", "assistant", "system"])),
-        text=draw(st.text(min_size=0, max_size=500)),
-        timestamp=draw(st.one_of(
-            st.none(),
-            st.datetimes(
-                min_value=datetime(2020, 1, 1),
-                max_value=datetime(2030, 1, 1),
-                timezones=st.just(timezone.utc),
-            ).map(lambda dt: dt.isoformat()),
-        )),
-    )
-
-
-@st.composite
-def parsed_attachment_model_strategy(draw: st.DrawFn):
-    """Generate a ParsedAttachment model instance for property testing."""
-    from polylogue.sources.parsers.base import ParsedAttachment
-
-    return ParsedAttachment(
-        provider_attachment_id=draw(st.uuids()).hex[:12],
-        message_provider_id=draw(st.uuids()).hex[:12],
-        name=draw(st.one_of(st.none(), st.text(min_size=1, max_size=50))),
-        mime_type=draw(st.one_of(
-            st.none(),
-            st.sampled_from([
-                "text/plain",
-                "application/pdf",
-                "image/png",
-                "image/jpeg",
-                "application/json",
-            ]),
-        )),
-        size_bytes=draw(st.one_of(st.none(), st.integers(min_value=0, max_value=100_000_000))),
-    )
-
-
-@st.composite
-def parsed_conversation_model_strategy(
-    draw: st.DrawFn,
-    min_messages: int = 0,
-    max_messages: int = 10,
-    with_attachments: bool = False,
-):
-    """Generate a ParsedConversation model instance for property testing.
-
-    This strategy creates actual ParsedConversation objects (not dicts),
-    enabling property-based testing of pipeline hashing functions.
-
-    Args:
-        min_messages: Minimum number of messages
-        max_messages: Maximum number of messages
-        with_attachments: Whether to include attachments
-    """
-    from polylogue.sources.parsers.base import ParsedConversation
-
-    providers = ["chatgpt", "claude", "claude-code", "codex", "gemini"]
-
-    messages = draw(st.lists(
-        parsed_message_model_strategy(),
-        min_size=min_messages,
-        max_size=max_messages,
-    ))
-
-    # Ensure alternating user/assistant for realism
-    for i, msg in enumerate(messages):
-        object.__setattr__(msg, "role", "user" if i % 2 == 0 else "assistant")
-
-    attachments = []
-    if with_attachments:
-        attachments = draw(st.lists(
-            parsed_attachment_model_strategy(),
-            min_size=0,
-            max_size=3,
-        ))
-
-    return ParsedConversation(
-        provider_name=draw(st.sampled_from(providers)),
-        provider_conversation_id=draw(st.uuids()).hex,
-        title=draw(st.one_of(st.none(), st.text(min_size=1, max_size=100))),
-        created_at=draw(st.one_of(
-            st.none(),
-            st.datetimes(
-                min_value=datetime(2020, 1, 1),
-                max_value=datetime(2030, 1, 1),
-                timezones=st.just(timezone.utc),
-            ).map(lambda dt: dt.isoformat()),
-        )),
-        updated_at=draw(st.one_of(
-            st.none(),
-            st.datetimes(
-                min_value=datetime(2020, 1, 1),
-                max_value=datetime(2030, 1, 1),
-                timezones=st.just(timezone.utc),
-            ).map(lambda dt: dt.isoformat()),
-        )),
-        messages=messages,
-        attachments=attachments,
-    )
-
-
 # =============================================================================
 # Conversation Strategies
 # =============================================================================
@@ -283,7 +160,7 @@ def conversation_strategy(
         providers: Allowed provider names
     """
     if providers is None:
-        providers = ["chatgpt", "claude", "claude-code", "codex"]
+        providers = ["chatgpt", "claude-ai", "claude-code", "codex"]
 
     messages = draw(st.lists(
         message_strategy(),
@@ -311,6 +188,8 @@ def conversation_strategy(
 # =============================================================================
 # Model Instance Strategies (return actual Message/Conversation model objects)
 # =============================================================================
+# Dict-based strategies above: raw JSON structures for parser/wire-format testing.
+# Model-based strategies below: typed domain objects for business-logic testing.
 
 
 @st.composite
@@ -350,6 +229,30 @@ def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Messa
 
 
 @st.composite
+def parsed_attachment_model_strategy(draw: st.DrawFn):
+    """Generate a ParsedAttachment model instance for property testing."""
+    from polylogue.sources.parsers.base import ParsedAttachment
+
+    return ParsedAttachment(
+        provider_attachment_id=draw(st.uuids()).hex[:12],
+        message_provider_id=draw(st.one_of(st.none(), st.uuids().map(lambda u: u.hex[:12]))),
+        name=draw(st.one_of(st.none(), st.text(min_size=1, max_size=50))),
+        mime_type=draw(st.one_of(
+            st.none(),
+            st.sampled_from([
+                "text/plain",
+                "application/pdf",
+                "image/png",
+                "image/jpeg",
+                "application/json",
+            ]),
+        )),
+        size_bytes=draw(st.one_of(st.none(), st.integers(min_value=0, max_value=100_000_000))),
+        path=draw(st.one_of(st.none(), st.text(min_size=1, max_size=100))),
+    )
+
+
+@st.composite
 def conversation_model_strategy(draw: st.DrawFn, *, min_messages: int = 0, max_messages: int = 10) -> Conversation:
     """Generate a Conversation model instance with arbitrary messages."""
     from polylogue.lib.messages import MessageCollection
@@ -358,6 +261,6 @@ def conversation_model_strategy(draw: st.DrawFn, *, min_messages: int = 0, max_m
     messages = draw(st.lists(message_model_strategy(), min_size=min_messages, max_size=max_messages))
     return ConversationModel(
         id=draw(st.text(min_size=1, max_size=40, alphabet=st.characters(whitelist_categories=("L", "N")))),
-        provider=draw(st.sampled_from(["chatgpt", "claude", "claude-code", "codex", "gemini"])),
+        provider=draw(st.sampled_from(["chatgpt", "claude-ai", "claude-code", "codex", "gemini"])),
         messages=MessageCollection(messages=messages),
     )

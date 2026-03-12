@@ -11,18 +11,18 @@ from functools import lru_cache
 from pathlib import Path
 
 from polylogue.errors import DatabaseError
-from polylogue.lib.log import get_logger
-from polylogue.render_paths import render_root
+from polylogue.logging import get_logger
+from polylogue.paths import conversation_render_root
 
-from .backends.connection import _build_source_scope_filter, open_connection
+from .backends.connection import _build_provider_scope_filter, open_connection
 from .search_cache import SearchCacheKey
 
 logger = get_logger(__name__)
 
 # FTS5 special characters that need escaping or quoting.
 # Includes documented operators (" : * ^ ( ) { } [ ] | & ! + -) plus characters
-# that are syntactically problematic in FTS5 queries (' \ ; % =).
-_FTS5_SPECIAL = re.compile(r'''['":*^(){}\[\]|&!+\-\\;%=,]''')
+# that are syntactically problematic in FTS5 queries (' \ ; % = $ , < > @ # ` ~).
+_FTS5_SPECIAL = re.compile(r'''['":*^(){}\[\]|&!+\-\\;%=$,<>@#`~]''')
 # FTS5 boolean/special operators that should be treated as literals when alone
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 # Pattern to detect queries that are only asterisks (dangerous wildcard-only)
@@ -79,14 +79,14 @@ def _resolve_conversation_path(
     Args:
         archive_root: Root directory for archived conversations
         render_root_path: Optional override for render output root
-        provider_name: Provider name (e.g., "claude", "chatgpt")
+        provider_name: Provider name (e.g., "claude-ai", "chatgpt")
         conversation_id: Unique conversation identifier
 
     Returns:
         Path to the conversation's rendered markdown file
     """
     output_root = render_root_path or (archive_root / "render")
-    safe_root = render_root(output_root, provider_name, conversation_id)
+    safe_root = conversation_render_root(output_root, provider_name, conversation_id)
     return safe_root / "conversation.md"
 
 
@@ -203,10 +203,9 @@ def build_ranked_conversation_search_query(
     params: list[object] = [fts_query]
 
     if scope_names:
-        scope_sql, scope_params = _build_source_scope_filter(
+        scope_sql, scope_params = _build_provider_scope_filter(
             scope_names,
             provider_column="conversations.provider_name",
-            source_column="conversations.source_name",
         )
         sql += f" AND {scope_sql}"
         params.extend(scope_params)

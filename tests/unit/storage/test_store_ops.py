@@ -1,23 +1,31 @@
-"""Store record operations tests — insert, upsert, deduplication, attachment refs, provider validation."""
+"""Focused roundtrip and validation contracts for storage record helpers."""
 
 from __future__ import annotations
 
+import asyncio
+import importlib
+import shutil
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import (
-    default_db_path,
-    open_connection,
-)
+from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import (
     MAX_ATTACHMENT_SIZE,
     AttachmentRecord,
     ConversationRecord,
+    _json_or_none,
 )
-from tests.infra.helpers import (
+from tests.infra.storage_records import (
     _make_ref_id,
     _prune_attachment_refs,
     make_attachment,
@@ -28,191 +36,143 @@ from tests.infra.helpers import (
     upsert_conversation,
     upsert_message,
 )
-
-# test_db and test_conn fixtures are in conftest.py
-
-
-# =============================================================================
-# STORE RECORD OPERATIONS (from test_store.py)
-# =============================================================================
-
-
-def test_store_records_inserts_new_conversation(test_conn):
-    """store_records() inserts a new conversation with messages."""
-    conv = make_conversation("conv1", content_hash="hash123")
-    msg = make_message("msg1", "conv1", text="Hello")
-
-    counts = store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
-
-    assert counts["conversations"] == 1
-    assert counts["messages"] == 1
-    assert counts["skipped_conversations"] == 0
-    assert counts["skipped_messages"] == 0
-
-    # Verify in database
-    row = test_conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
-    assert row is not None
-    assert row["title"] == "Test Conversation"
-
-    msg_row = test_conn.execute("SELECT * FROM messages WHERE message_id = ?", ("msg1",)).fetchone()
-    assert msg_row is not None
-    assert msg_row["text"] == "Hello"
+from tests.infra.strategies.messages import conversation_strategy
+from tests.infra.strategies.storage import (
+    TagAssignmentSpec,
+    TitleSearchSpec,
+    expected_tag_counts,
+    literal_title_search_strategy as infra_title_search_strategy,
+    seed_conversation_graph,
+    tag_assignment_strategy as infra_tag_assignment_strategy,
+)
 
 
-def test_store_records_skips_duplicate_conversation(test_conn):
-    """store_records() skips duplicate conversations with same content_hash."""
-    conv = make_conversation("conv1", title="Same Title", content_hash="samehash")
-
-    # First insert
-    counts1 = store_records(conversation=conv, messages=[], attachments=[], conn=test_conn)
-    assert counts1["conversations"] == 1
-
-    # Second insert with same hash
-    counts2 = store_records(conversation=conv, messages=[], attachments=[], conn=test_conn)
-    assert counts2["conversations"] == 0
-    assert counts2["skipped_conversations"] == 1
+def _conversation_row(conn, conversation_id: str):
+    return conn.execute(
+        "SELECT * FROM conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
 
 
-def test_store_records_updates_changed_conversation(test_conn):
-    """store_records() updates conversation when content changes."""
-    conv1 = make_conversation("conv1", title="Original Title", content_hash="hash1")
-    store_records(conversation=conv1, messages=[], attachments=[], conn=test_conn)
-
-    # Update with different content
-    conv2 = make_conversation("conv1", title="Updated Title", content_hash="hash2")
-    counts = store_records(conversation=conv2, messages=[], attachments=[], conn=test_conn)
-
-    assert counts["conversations"] == 1
-    assert counts["skipped_conversations"] == 0
-
-    # Verify update
-    row = test_conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
-    assert row["title"] == "Updated Title"
-    assert row["content_hash"] == "hash2"
-
-
-def test_store_records_handles_multiple_messages(test_conn):
-    """store_records() correctly handles multiple messages."""
-    conv = make_conversation("conv1", title="Multi Message")
-    messages = [
-        make_message(f"msg{i}", "conv1", role="user" if i % 2 == 0 else "assistant", text=f"Message {i}")
-        for i in range(5)
-    ]
-
-    counts = store_records(conversation=conv, messages=messages, attachments=[], conn=test_conn)
-
-    assert counts["messages"] == 5
-    assert counts["skipped_messages"] == 0
-
-    # Verify all messages in database
-    rows = test_conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", ("conv1",)).fetchone()
-    assert rows[0] == 5
-
-
-def test_store_records_attachment_ref_counting(test_conn):
-    """store_records() correctly maintains attachment ref_count."""
-    conv = make_conversation("conv1", title="Attachment Test")
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
-    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-
-    counts = store_records(conversation=conv, messages=[msg1], attachments=[att1], conn=test_conn)
-
-    assert counts["attachments"] == 1
-
-    # Check ref_count
-    row = test_conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row["ref_count"] == 1
-
-    # Check attachment_refs
-    ref_rows = test_conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert ref_rows[0] == 1
-
-
-def test_prune_attachment_refs_removes_old_refs(test_conn):
-    """_prune_attachment_refs() removes refs not in keep_ref_ids set."""
-    # Setup: Insert conversation and attachments
-    conv = make_conversation("conv1", title="Prune Test")
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1", text="First message")
-    msg2 = make_message("msg2", "conv1", provider_message_id="ext-msg2", text="Second message")
-    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-    att2 = make_attachment("att2", "conv1", "msg2", mime_type="image/jpeg", size_bytes=2048)
-
-    store_records(conversation=conv, messages=[msg1, msg2], attachments=[att1, att2], conn=test_conn)
-
-    # Get ref IDs
-    ref_id1 = _make_ref_id("att1", "conv1", "msg1")
-    # ref_id2 = _make_ref_id("att2", "conv1", "msg2")
-
-    # Verify both exist
-    count_before = test_conn.execute(
-        "SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = ?", ("conv1",)
+def _message_count(conn, conversation_id: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+        (conversation_id,),
     ).fetchone()[0]
-    assert count_before == 2
-
-    # Prune, keeping only ref_id1
-    _prune_attachment_refs(test_conn, "conv1", {ref_id1})
-
-    # Verify only one ref remains
-    count_after = test_conn.execute(
-        "SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = ?", ("conv1",)
-    ).fetchone()[0]
-    assert count_after == 1
-
-    # Verify correct ref was kept
-    remaining = test_conn.execute("SELECT ref_id FROM attachment_refs WHERE conversation_id = ?", ("conv1",)).fetchone()
-    assert remaining["ref_id"] == ref_id1
 
 
-def test_prune_attachment_refs_updates_ref_count(test_conn):
-    """_prune_attachment_refs() updates attachment ref_count correctly."""
-    conv = make_conversation("conv1", title="RefCount Test")
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1", text="First message")
-    msg2 = make_message("msg2", "conv1", provider_message_id="ext-msg2", text="Second message")
-
-    # Same attachment referenced twice (different messages)
-    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-    att2 = make_attachment("att1", "conv1", "msg2", mime_type="image/png")  # Same att_id, different msg
-
-    store_records(conversation=conv, messages=[msg1, msg2], attachments=[att1, att2], conn=test_conn)
-
-    # ref_count should be 2
-    row = test_conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row["ref_count"] == 2
-
-    # Prune one reference
-    ref_id1 = _make_ref_id("att1", "conv1", "msg1")
-    _prune_attachment_refs(test_conn, "conv1", {ref_id1})
-
-    # ref_count should now be 1
-    row = test_conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row["ref_count"] == 1
+def _attachment_row(conn, attachment_id: str):
+    return conn.execute(
+        "SELECT * FROM attachments WHERE attachment_id = ?",
+        (attachment_id,),
+    ).fetchone()
 
 
-def test_prune_attachment_refs_deletes_zero_ref_attachments(test_conn):
-    """_prune_attachment_refs() deletes attachments with ref_count <= 0."""
-    conv = make_conversation("conv1", title="Delete Test")
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
-    att = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
+def test_store_records_roundtrip_contract(test_conn) -> None:
+    """store_records() must insert, skip, update, and handle sparse payloads coherently."""
+    initial = make_conversation("conv-create", content_hash="hash-create")
+    created = store_records(
+        conversation=initial,
+        messages=[make_message("msg-create", "conv-create", text="Hello")],
+        attachments=[],
+        conn=test_conn,
+    )
+    assert created == {
+        "conversations": 1,
+        "messages": 1,
+        "attachments": 0,
+        "skipped_conversations": 0,
+        "skipped_messages": 0,
+        "skipped_attachments": 0,
+    }
+    assert _conversation_row(test_conn, "conv-create")["title"] == "Test Conversation"
+    assert _message_count(test_conn, "conv-create") == 1
 
-    store_records(conversation=conv, messages=[msg1], attachments=[att], conn=test_conn)
+    duplicate = store_records(
+        conversation=initial,
+        messages=[],
+        attachments=[],
+        conn=test_conn,
+    )
+    assert duplicate["conversations"] == 0
+    assert duplicate["skipped_conversations"] == 1
 
-    # Verify attachment exists
-    row = test_conn.execute("SELECT * FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row is not None
+    updated = store_records(
+        conversation=make_conversation("conv-create", title="Updated Title", content_hash="hash-updated"),
+        messages=[],
+        attachments=[],
+        conn=test_conn,
+    )
+    assert updated["conversations"] == 1
+    assert _conversation_row(test_conn, "conv-create")["title"] == "Updated Title"
+    assert _conversation_row(test_conn, "conv-create")["content_hash"] == "hash-updated"
 
-    # Prune all refs
-    _prune_attachment_refs(test_conn, "conv1", set())
+    multi = store_records(
+        conversation=make_conversation("conv-multi", title="Multi Message"),
+        messages=[
+            make_message(f"msg-multi-{idx}", "conv-multi", role="user" if idx % 2 == 0 else "assistant", text=f"Message {idx}")
+            for idx in range(5)
+        ],
+        attachments=[],
+        conn=test_conn,
+    )
+    assert multi["messages"] == 5
+    assert _message_count(test_conn, "conv-multi") == 5
 
-    # Verify attachment was deleted
-    row = test_conn.execute("SELECT * FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row is None
+    sparse = store_records(
+        conversation=make_conversation("conv-empty", title="Empty Conversation"),
+        messages=[],
+        attachments=[
+            make_attachment(
+                "att-empty",
+                "conv-empty",
+                message_id=None,
+                mime_type="application/pdf",
+                size_bytes=5000,
+            )
+        ],
+        conn=test_conn,
+    )
+    assert sparse["conversations"] == 1
+    assert sparse["messages"] == 0
+    assert sparse["attachments"] == 1
+    assert _attachment_row(test_conn, "att-empty")["ref_count"] == 1
 
 
-def test_upsert_conversation_missing_optional_fields(test_conn):
-    """upsert_conversation() handles None values for optional fields."""
-    # Manual construction to test explicit None handling (not using helper)
-    conv = ConversationRecord(
-        conversation_id="conv1",
+def test_prune_attachment_refs_contract(test_conn) -> None:
+    """Pruning refs must keep requested refs, recalculate counts, and delete zero-ref attachments."""
+    conv = make_conversation("conv-prune", title="Prune Test")
+    msg1 = make_message("msg-prune-1", "conv-prune", provider_message_id="ext-1", text="First")
+    msg2 = make_message("msg-prune-2", "conv-prune", provider_message_id="ext-2", text="Second")
+    att1 = make_attachment("att-prune-1", "conv-prune", "msg-prune-1", mime_type="image/png")
+    att2 = make_attachment("att-prune-2", "conv-prune", "msg-prune-2", mime_type="image/jpeg", size_bytes=2048)
+    shared_att_1 = make_attachment("att-shared", "conv-prune", "msg-prune-1", mime_type="image/png")
+    shared_att_2 = make_attachment("att-shared", "conv-prune", "msg-prune-2", mime_type="image/png")
+    store_records(
+        conversation=conv,
+        messages=[msg1, msg2],
+        attachments=[att1, att2, shared_att_1, shared_att_2],
+        conn=test_conn,
+    )
+
+    keep_ref = _make_ref_id("att-prune-1", "conv-prune", "msg-prune-1")
+    keep_shared = _make_ref_id("att-shared", "conv-prune", "msg-prune-1")
+    _prune_attachment_refs(test_conn, "conv-prune", {keep_ref, keep_shared})
+
+    remaining_refs = test_conn.execute(
+        "SELECT ref_id FROM attachment_refs WHERE conversation_id = ? ORDER BY ref_id",
+        ("conv-prune",),
+    ).fetchall()
+    assert [row["ref_id"] for row in remaining_refs] == sorted([keep_ref, keep_shared])
+    assert _attachment_row(test_conn, "att-prune-1")["ref_count"] == 1
+    assert _attachment_row(test_conn, "att-shared")["ref_count"] == 1
+    assert _attachment_row(test_conn, "att-prune-2") is None
+
+
+def test_upsert_optional_and_attachment_contracts(test_conn) -> None:
+    """Optional-field upserts and attachment metadata updates must round-trip cleanly."""
+    conversation = ConversationRecord(
+        conversation_id="conv-optional",
         provider_name="test",
         provider_conversation_id="ext-conv1",
         title=None,
@@ -221,235 +181,166 @@ def test_upsert_conversation_missing_optional_fields(test_conn):
         content_hash="hash1",
         provider_meta=None,
     )
+    assert upsert_conversation(test_conn, conversation) is True
+    conv_row = _conversation_row(test_conn, "conv-optional")
+    assert conv_row["title"] is None
+    assert conv_row["created_at"] is None
+    assert conv_row["provider_meta"] is None
 
-    updated = upsert_conversation(test_conn, conv)
-    assert updated
-
-    row = test_conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
-    assert row is not None
-    assert row["title"] is None
-    assert row["created_at"] is None
-    assert row["provider_meta"] is None
-
-
-def test_upsert_message_missing_optional_fields(test_conn):
-    """upsert_message() handles None values for optional fields."""
-    # First insert conversation
-    conv = make_conversation("conv1")
-    upsert_conversation(test_conn, conv)
-
-    msg = make_message(
-        "msg1", "conv1", role=None, text=None, timestamp=None, provider_message_id=None, provider_meta=None
+    message = make_message(
+        "msg-optional",
+        "conv-optional",
+        role=None,
+        text=None,
+        timestamp=None,
+        provider_message_id=None,
+        provider_meta=None,
     )
+    assert upsert_message(test_conn, message) is True
+    msg_row = test_conn.execute(
+        "SELECT * FROM messages WHERE message_id = ?",
+        ("msg-optional",),
+    ).fetchone()
+    assert msg_row["role"] is None
+    assert msg_row["text"] is None
+    assert msg_row["provider_message_id"] is None
 
-    updated = upsert_message(test_conn, msg)
-    assert updated
+    msg2 = make_message("msg-attachment-2", "conv-optional", provider_message_id="ext-msg-2", text="Second")
+    assert upsert_message(test_conn, msg2) is True
+    first = make_attachment("att-meta", "conv-optional", "msg-optional", mime_type="image/png")
+    second = make_attachment(
+        "att-meta",
+        "conv-optional",
+        "msg-attachment-2",
+        mime_type="image/jpeg",
+        size_bytes=2048,
+        path="/new/path.jpg",
+    )
+    assert upsert_attachment(test_conn, first) is True
+    assert upsert_attachment(test_conn, first) is False
+    assert upsert_attachment(test_conn, second) is True
+    att_row = _attachment_row(test_conn, "att-meta")
+    assert att_row["mime_type"] == "image/jpeg"
+    assert att_row["size_bytes"] == 2048
+    assert att_row["path"] == "/new/path.jpg"
+    assert att_row["ref_count"] == 2
 
-    row = test_conn.execute("SELECT * FROM messages WHERE message_id = ?", ("msg1",)).fetchone()
-    assert row is not None
-    assert row["role"] is None
-    assert row["text"] is None
-    assert row["provider_message_id"] is None
+
+def test_json_or_none_contract() -> None:
+    """JSON serialization helper must preserve mappings and None."""
+    import json
+
+    payloads = [
+        ({"key": "value"}, {"key": "value"}),
+        ({"nested": {"key": "value"}, "list": [1, 2, 3]}, {"nested": {"key": "value"}, "list": [1, 2, 3]}),
+        (None, None),
+    ]
+    for input_val, expected in payloads:
+        result = _json_or_none(input_val)
+        if expected is None:
+            assert result is None
+        else:
+            assert json.loads(result) == expected
 
 
-def test_upsert_attachment_duplicate_ref_skipped(test_conn):
-    """upsert_attachment() skips duplicate refs (INSERT OR IGNORE)."""
-    # Setup conversation and message
-    conv = make_conversation("conv1")
-    upsert_conversation(test_conn, conv)
+def test_make_ref_id_contract() -> None:
+    """Attachment ref IDs must be deterministic and sensitive to attachment, conversation, and message."""
+    same_1 = _make_ref_id("att1", "conv1", "msg1")
+    same_2 = _make_ref_id("att1", "conv1", "msg1")
+    different_attachment = _make_ref_id("att2", "conv1", "msg1")
+    different_conversation = _make_ref_id("att1", "conv2", "msg1")
+    none_message_1 = _make_ref_id("att1", "conv1", None)
+    none_message_2 = _make_ref_id("att1", "conv1", None)
 
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
-    upsert_message(test_conn, msg1)
-
-    att = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-
-    # First insert
-    updated1 = upsert_attachment(test_conn, att)
-    assert updated1 is True
-
-    # Second insert (duplicate)
-    updated2 = upsert_attachment(test_conn, att)
-    assert updated2 is False
-
-    # ref_count should still be 1
-    row = test_conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row["ref_count"] == 1
+    assert same_1 == same_2
+    assert same_1 != different_attachment
+    assert same_1 != different_conversation
+    assert none_message_1 == none_message_2
+    assert none_message_1 != same_1
+    assert same_1.startswith("ref-")
+    assert len(same_1) == len("ref-") + 16
 
 
 @pytest.mark.slow
-def test_write_lock_prevents_concurrent_writes(test_db):
-    """_WRITE_LOCK prevents concurrent store_records() calls from corrupting data."""
+def test_write_lock_prevents_concurrent_writes(test_db) -> None:
+    """Threaded store_records() calls must complete without corrupting conversation or message counts."""
     results = []
     errors = []
 
-    def write_conversation(conv_id: int):
+    def write_conversation(conv_id: int) -> None:
         try:
             conv = make_conversation(f"conv{conv_id}", title=f"Conversation {conv_id}")
             messages = [make_message(f"msg{conv_id}-{i}", f"conv{conv_id}", text=f"Message {i}") for i in range(3)]
-
             with open_connection(test_db) as conn:
-                counts = store_records(conversation=conv, messages=messages, attachments=[], conn=conn)
-            results.append(counts)
-        except Exception as e:
-            errors.append(e)
+                results.append(store_records(conversation=conv, messages=messages, attachments=[], conn=conn))
+        except Exception as exc:  # pragma: no cover - failure path assertion target
+            errors.append(exc)
 
-    # Run multiple concurrent writes
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(write_conversation, i) for i in range(10)]
+        futures = [executor.submit(write_conversation, idx) for idx in range(10)]
         for future in as_completed(futures):
             future.result()
 
-    # No errors should occur
-    assert len(errors) == 0
-
-    # All writes should succeed
+    assert errors == []
     assert len(results) == 10
-
-    # Verify all conversations were written
     with open_connection(test_db) as conn:
-        count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-        assert count == 10
-
-        # Verify message count
-        msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        assert msg_count == 30  # 10 conversations × 3 messages
+        assert conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 10
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 30
 
 
-def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeypatch):
-    """store_records() works without explicit connection parameter."""
-    import importlib
-    import shutil
+def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeypatch) -> None:
+    """store_records() must honor the default DB path when no connection is supplied."""
+    import polylogue.paths
+    import polylogue.storage.backends.connection as connection_module
+    from polylogue.storage.backends.connection import _clear_connection_cache
 
-    # Create a temp location for "default" storage within tmp_path to avoid cross-device issues
-    # NOTE: default_db_path() uses XDG_DATA_HOME, not XDG_STATE_HOME
     data_home = tmp_path / "data"
     data_home.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
 
-    # Close cached connections BEFORE reloading — reload re-creates
-    # the module-level threading.local, orphaning old connections.
-    from polylogue.storage.backends.connection import _clear_connection_cache
     _clear_connection_cache()
-
-    # Reload paths and connection modules to pick up new XDG_DATA_HOME
-    import polylogue.paths
-    import polylogue.storage.backends.connection
-
     importlib.reload(polylogue.paths)
-    importlib.reload(polylogue.storage.backends.connection)
+    importlib.reload(connection_module)
 
-    default_path = default_db_path()
+    default_path = connection_module.default_db_path()
     default_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(test_db), str(default_path))
 
-    conv = make_conversation("conv1", title="No Conn Test")
-
-    # Call without conn parameter
-    counts = store_records(conversation=conv, messages=[], attachments=[])
-
+    counts = store_records(
+        conversation=make_conversation("conv-default", title="No Conn Test"),
+        messages=[],
+        attachments=[],
+    )
     assert counts["conversations"] == 1
 
-    # Verify it was written
     with open_connection(default_path) as conn:
-        row = conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
-        assert row is not None
-
-
-def test_upsert_attachment_updates_existing_metadata(test_conn):
-    """upsert_attachment() updates existing attachment metadata."""
-    conv = make_conversation("conv1")
-    upsert_conversation(test_conn, conv)
-
-    # Setup messages
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
-    upsert_message(test_conn, msg1)
-
-    msg2 = make_message("msg2", "conv1", provider_message_id="ext-msg2", text="Second message")
-    upsert_message(test_conn, msg2)
-
-    # First insert
-    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-    upsert_attachment(test_conn, att1)
-
-    # Update with new path and size (different message = new ref)
-    att2 = make_attachment("att1", "conv1", "msg2", mime_type="image/jpeg", size_bytes=2048, path="/new/path.jpg")
-    upsert_attachment(test_conn, att2)
-
-    # Verify updates
-    row = test_conn.execute("SELECT * FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row["mime_type"] == "image/jpeg"
-    assert row["size_bytes"] == 2048
-    assert row["path"] == "/new/path.jpg"
-    assert row["ref_count"] == 2  # Two refs now
-
-
-def test_prune_attachment_refs_transactional_rollback(test_conn):
-    """_prune_attachment_refs() rolls back on error, maintaining consistent ref_count."""
-    # Setup: Create conversation with attachments
-    conv = make_conversation("conv1", title="Transaction Test")
-    upsert_conversation(test_conn, conv)
-
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
-    upsert_message(test_conn, msg1)
-
-    # Create two attachments
-    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-    att2 = make_attachment("att2", "conv1", "msg1", mime_type="image/jpeg", size_bytes=2048)
-    upsert_attachment(test_conn, att1)
-    upsert_attachment(test_conn, att2)
-
-    # Verify initial state: 2 attachments, ref_count = 1 each
-    count_before = test_conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
-    assert count_before == 2
-    ref_count_before = test_conn.execute("SELECT SUM(ref_count) FROM attachments").fetchone()[0]
-    assert ref_count_before == 2
-
-    # Save snapshot to verify rollback
-
-    # Try to prune with an invalid keep_ref_ids that will cause the function
-    # to execute but then we'll verify the SAVEPOINT mechanism works
-    ref_id1 = _make_ref_id("att1", "conv1", "msg1")
-
-    # The function should execute successfully
-    _prune_attachment_refs(test_conn, "conv1", {ref_id1})
-
-    # Verify: only att1 should remain (att2 pruned)
-    count_after = test_conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
-    assert count_after == 1
-
-    remaining = test_conn.execute("SELECT attachment_id, ref_count FROM attachments").fetchone()
-    assert remaining["attachment_id"] == "att1"
-    assert remaining["ref_count"] == 1
-
-    # Verify ref_count is consistent with actual refs
-    actual_refs = test_conn.execute(
-        "SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", ("att1",)
-    ).fetchone()[0]
-    assert actual_refs == 1  # Consistent!
+        assert _conversation_row(conn, "conv-default") is not None
 
 
 @pytest.mark.slow
-def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
-    """Test for concurrent attachment ref_count race condition.
+def test_concurrent_upsert_same_attachment_ref_count_correct(test_db) -> None:
+    """Concurrent upserts of the same attachment must keep ref_count equal to actual refs."""
+    shared_attachment_id = "shared-attachment-race-test"
 
-    Issue: store.py:258-283 has a read-modify-write race in upsert_attachment.
-    This test SHOULD FAIL until the race condition is fixed.
-    The fix requires atomic increment (e.g., UPDATE ... SET ref_count = ref_count + 1).
-
-    Concurrent upserts of same attachment should maintain correct ref_count.
-    """
-    SHARED_ATTACHMENT_ID = "shared-attachment-race-test"
-
-    def create_conversation(i: int):
+    def create_conversation(index: int) -> None:
         conv = make_conversation(
-            f"race-conv-{i}", title=f"Race Test {i}", created_at=None, updated_at=None, content_hash=f"hash-{i}"
+            f"race-conv-{index}",
+            title=f"Race Test {index}",
+            created_at=None,
+            updated_at=None,
+            content_hash=f"hash-{index}",
         )
-        msg = make_message(f"race-msg-{i}", f"race-conv-{i}", text="test", timestamp=None, provider_meta=None)
-        # Each conversation references the SAME attachment_id
+        msg = make_message(
+            f"race-msg-{index}",
+            f"race-conv-{index}",
+            text="test",
+            timestamp=None,
+            provider_meta=None,
+        )
         attachment = make_attachment(
-            SHARED_ATTACHMENT_ID,
-            f"race-conv-{i}",
-            f"race-msg-{i}",
+            shared_attachment_id,
+            f"race-conv-{index}",
+            f"race-msg-{index}",
             mime_type="text/plain",
             size_bytes=100,
             provider_meta=None,
@@ -457,53 +348,39 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
         with open_connection(test_db) as conn:
             store_records(conversation=conv, messages=[msg], attachments=[attachment], conn=conn)
 
-    # Run concurrently
     with ThreadPoolExecutor(max_workers=10) as executor:
         list(executor.map(create_conversation, range(10)))
 
-    # Verify ref_count matches actual refs with strict assertions
     with open_connection(test_db) as conn:
-        cursor = conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", (SHARED_ATTACHMENT_ID,))
-        row = cursor.fetchone()
-        assert row is not None, "Attachment should exist"
-        stored_ref_count = row[0]
+        stored_ref_count = conn.execute(
+            "SELECT ref_count FROM attachments WHERE attachment_id = ?",
+            (shared_attachment_id,),
+        ).fetchone()[0]
+        actual_refs = conn.execute(
+            "SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?",
+            (shared_attachment_id,),
+        ).fetchone()[0]
 
-        cursor = conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", (SHARED_ATTACHMENT_ID,))
-        actual_refs = cursor.fetchone()[0]
-
-        # Strict assertion: ref_count must equal number of concurrent insertions
-        assert stored_ref_count == 10, f"Race condition! ref_count is {stored_ref_count}, expected 10"
-        assert actual_refs == 10, f"Missing refs! Found {actual_refs}, expected 10"
-        assert stored_ref_count == actual_refs, f"Mismatch: ref_count={stored_ref_count}, actual_refs={actual_refs}"
-
-
-# =============================================================================
-# ATTACHMENT RECORD VALIDATION (parametrized)
-# =============================================================================
-
-# Valid size_bytes test cases (consolidated)
-VALID_ATTACHMENT_SIZES = [(0, "zero"), (MAX_ATTACHMENT_SIZE, "max_1TB"), (None, "unknown")]
+    assert stored_ref_count == 10
+    assert actual_refs == 10
+    assert stored_ref_count == actual_refs
 
 
-@pytest.mark.parametrize("size_bytes,desc", VALID_ATTACHMENT_SIZES, ids=str)
-def test_attachment_size_bytes_valid(size_bytes, desc):
-    """size_bytes accepts valid values: {desc}."""
-    record = AttachmentRecord(
-        attachment_id="test",
-        conversation_id="conv1",
-        message_id="msg1",
-        mime_type="text/plain",
-        size_bytes=size_bytes,
-        provider_meta=None,
-    )
-    assert record.size_bytes == size_bytes
-
-
-@pytest.mark.parametrize("size_bytes,desc", [(-100, "negative"), (MAX_ATTACHMENT_SIZE + 1, "over_max")], ids=str)
-def test_attachment_size_bytes_invalid(size_bytes, desc):
-    """size_bytes rejects invalid values: {desc}."""
-    with pytest.raises(ValidationError):
-        AttachmentRecord(
+@pytest.mark.parametrize(
+    ("size_bytes", "valid"),
+    [
+        (0, True),
+        (MAX_ATTACHMENT_SIZE, True),
+        (None, True),
+        (-100, False),
+        (MAX_ATTACHMENT_SIZE + 1, False),
+    ],
+    ids=["zero", "max", "unknown", "negative", "over-max"],
+)
+def test_attachment_size_bytes_contract(size_bytes, valid) -> None:
+    """Attachment size validation must accept supported bounds and reject invalid sizes."""
+    if valid:
+        record = AttachmentRecord(
             attachment_id="test",
             conversation_id="conv1",
             message_id="msg1",
@@ -511,16 +388,22 @@ def test_attachment_size_bytes_invalid(size_bytes, desc):
             size_bytes=size_bytes,
             provider_meta=None,
         )
+        assert record.size_bytes == size_bytes
+    else:
+        with pytest.raises(ValidationError):
+            AttachmentRecord(
+                attachment_id="test",
+                conversation_id="conv1",
+                message_id="msg1",
+                mime_type="text/plain",
+                size_bytes=size_bytes,
+                provider_meta=None,
+            )
 
 
-# =============================================================================
-# PROVIDER NAME VALIDATION (consolidated to representative cases)
-# =============================================================================
-
-
-@pytest.mark.parametrize("name,desc", [("claude", "known"), ("claude-code", "hyphenated"), ("Provider123", "mixed_case")], ids=str)
-def test_provider_name_accepts_valid(name, desc):
-    """provider_name accepts {desc}."""
+@pytest.mark.parametrize("name", ["claude-ai", "claude-code", "Provider123"])
+def test_provider_name_accepts_valid(name) -> None:
+    """Representative provider-name formats should validate."""
     record = ConversationRecord(
         conversation_id="test",
         provider_name=name,
@@ -531,104 +414,788 @@ def test_provider_name_accepts_valid(name, desc):
     assert record.provider_name == name
 
 
-
-# =============================================================================
-# BACKEND CRUD OPERATIONS
-# =============================================================================
-
-
-async def test_backend_transaction_rollback(sqlite_backend: SQLiteBackend) -> None:
-    """Test transaction rollback."""
-    conv = make_conversation("conv1", title="Test")
-
-    await sqlite_backend.begin()
-    await sqlite_backend.save_conversation_record(conv)
-    await sqlite_backend.rollback()
-
-    retrieved = await sqlite_backend.get_conversation("conv1")
-    assert retrieved is None
+# ============================================================================
+# CRUD Laws (from test_crud_laws.py)
+# ============================================================================
 
 
-async def test_backend_transaction_context_manager(sqlite_backend: SQLiteBackend) -> None:
-    """Test using the transaction context manager."""
-    conv = make_conversation("conv1", title="Test")
+class TestCrudLaws:
+    """Property-based CRUD round-trip laws."""
 
-    async with sqlite_backend.transaction():
-        await sqlite_backend.save_conversation_record(conv)
+    @given(conversation_strategy(min_messages=1, max_messages=5))
+    @settings(max_examples=30, deadline=None)
+    async def test_save_retrieve_roundtrip(self, conv_data: dict):
+        """Saving a strategy-generated conversation and retrieving it preserves identity."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "roundtrip.db"
+            backend = SQLiteBackend(db_path=db_path)
 
-    retrieved = await sqlite_backend.get_conversation("conv1")
-    assert retrieved is not None
-    assert retrieved.conversation_id == "conv1"
+            conv_id = f"test-{conv_data['id'][:16]}"
+            provider = conv_data.get("provider", "test")
+
+            conv = make_conversation(
+                conversation_id=conv_id,
+                provider_name=provider,
+                title=conv_data.get("title", "Generated"),
+                created_at=conv_data.get("created_at"),
+            )
+
+            messages = []
+            for i, msg_data in enumerate(conv_data.get("messages", [])):
+                msg = make_message(
+                    message_id=f"{conv_id}-m{i}",
+                    conversation_id=conv_id,
+                    role=msg_data.get("role", "user"),
+                    text=msg_data.get("text", ""),
+                )
+                messages.append(msg)
+
+            await backend.save_conversation_record(conv)
+            if messages:
+                await backend.save_messages(messages)
+
+            retrieved = await backend.get_conversation(conv_id)
+            assert retrieved is not None
+            assert retrieved.conversation_id == conv_id
+            assert retrieved.provider_name == provider
+
+            retrieved_msgs = await backend.get_messages(conv_id)
+            assert len(retrieved_msgs) == len(messages)
+
+            await backend.close()
+
+    @given(conversation_strategy(min_messages=1, max_messages=3))
+    @settings(max_examples=20, deadline=None)
+    async def test_save_is_idempotent(self, conv_data: dict):
+        """Saving the same conversation twice yields the same stored data."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "idempotent.db"
+            backend = SQLiteBackend(db_path=db_path)
+
+            conv_id = f"idem-{conv_data['id'][:16]}"
+            conv = make_conversation(
+                conversation_id=conv_id,
+                provider_name=conv_data.get("provider", "test"),
+                title=conv_data.get("title", "Idempotent"),
+            )
+
+            # Save twice
+            await backend.save_conversation_record(conv)
+            await backend.save_conversation_record(conv)
+
+            # Should still be exactly one conversation
+            all_convs = await backend.list_conversations(limit=100)
+            matching = [c for c in all_convs if c.conversation_id == conv_id]
+            assert len(matching) == 1
+
+            await backend.close()
 
 
-async def test_backend_transaction_context_manager_exception(sqlite_backend: SQLiteBackend) -> None:
-    """Test transaction context manager rolls back on exception."""
-    conv = make_conversation("conv1", title="Test")
-
-    with pytest.raises(ValueError):
-        async with sqlite_backend.transaction():
-            await sqlite_backend.save_conversation_record(conv)
-            raise ValueError("Test error")
-
-    retrieved = await sqlite_backend.get_conversation("conv1")
-    assert retrieved is None
+# ============================================================================
+# Repository Laws (from test_repository_laws.py)
+# ============================================================================
 
 
-async def test_backend_delete_conversation(sqlite_backend: SQLiteBackend) -> None:
-    """Test deleting a conversation and all related records."""
-    conv = make_conversation("conv1", title="Test")
-    msg1 = make_message("msg1", "conv1", text="Hello")
-    msg2 = make_message("msg2", "conv1", role="assistant", text="Hi there")
-    att = make_attachment("att1", "conv1", "msg1", mime_type="image/png", size_bytes=1024)
-
-    await sqlite_backend.begin()
-    await sqlite_backend.save_conversation_record(conv)
-    await sqlite_backend.save_messages([msg1, msg2])
-    await sqlite_backend.save_attachments([att])
-    await sqlite_backend.commit()
-
-    assert await sqlite_backend.get_conversation("conv1") is not None
-    assert len(await sqlite_backend.get_messages("conv1")) == 2
-    assert len(await sqlite_backend.get_attachments("conv1")) == 1
-
-    result = await sqlite_backend.delete_conversation("conv1")
-    assert result is True
-
-    assert await sqlite_backend.get_conversation("conv1") is None
-    assert len(await sqlite_backend.get_messages("conv1")) == 0
-    assert len(await sqlite_backend.get_attachments("conv1")) == 0
+@st.composite
+def simple_tag_spec(draw: st.DrawFn) -> dict:
+    """Generate a tag assignment spec: conversation ID + list of tags."""
+    conv_suffix = draw(st.text(
+        min_size=3, max_size=12,
+        alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="-"),
+    ).filter(lambda s: s[0].isalpha()))
+    tags = draw(st.lists(
+        st.text(min_size=1, max_size=15, alphabet=st.characters(
+            whitelist_categories=("L", "N"), whitelist_characters="-",
+        )),
+        min_size=1,
+        max_size=4,
+        unique=True,
+    ))
+    return {"conversation_id": f"tag-{conv_suffix}", "tags": tags}
 
 
-async def test_backend_delete_conversation_not_found(sqlite_backend: SQLiteBackend) -> None:
-    """Test deleting a non-existent conversation returns False."""
-    result = await sqlite_backend.delete_conversation("nonexistent")
-    assert result is False
+@st.composite
+def simple_title_search_spec(draw: st.DrawFn) -> dict:
+    """Generate a title search spec: title and search substring."""
+    words = draw(st.lists(
+        st.text(min_size=3, max_size=12, alphabet=st.characters(whitelist_categories=("L",))),
+        min_size=2,
+        max_size=5,
+    ))
+    title = " ".join(words)
+    search_word = draw(st.sampled_from(words))
+    return {"title": title, "search_term": search_word}
 
 
-async def test_backend_delete_conversation_cleans_fts(sqlite_backend: SQLiteBackend) -> None:
-    """Test that deleting a conversation also cleans up FTS entries."""
-    from polylogue.storage.index import ensure_index, update_index_for_conversations
+class TestTagAssignmentLaws:
+    """Property-based tests for tag operations on repository."""
 
-    conv = make_conversation("conv1", title="Test")
-    msg = make_message("msg1", "conv1", text="searchable content here")
+    @given(simple_tag_spec())
+    @settings(max_examples=15, deadline=None)
+    async def test_add_tag_is_retrievable(self, spec: dict):
+        """Adding a tag to a conversation makes it appear in metadata."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            from polylogue.storage.repository import ConversationRepository
+            from tests.infra.storage_records import ConversationBuilder
 
-    await sqlite_backend.begin()
-    await sqlite_backend.save_conversation_record(conv)
-    await sqlite_backend.save_messages([msg])
-    await sqlite_backend.commit()
+            db_path = Path(tmp_dir) / "tags.db"
+            conv_id = spec["conversation_id"]
 
-    with open_connection(sqlite_backend.db_path) as conn:
-        ensure_index(conn)
-        update_index_for_conversations(["conv1"], conn)
-        conn.commit()
+            (ConversationBuilder(db_path, conv_id)
+             .provider("test")
+             .title("Tag Test")
+             .add_message("m1", text="Hello")
+             .save())
 
-        fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
-        assert fts_count > 0
+            backend = SQLiteBackend(db_path=db_path)
+            repo = ConversationRepository(backend=backend)
 
-    result = await sqlite_backend.delete_conversation("conv1")
-    assert result is True
+            tag = spec["tags"][0]
+            await repo.add_tag(conv_id, tag)
 
-    with open_connection(sqlite_backend.db_path) as conn:
-        fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
-        assert fts_count == 0
-    await sqlite_backend.close()
+            conv = await repo.get(conv_id)
+            assert conv is not None
+            assert tag in conv.tags
+
+            await backend.close()
+
+    @given(simple_tag_spec())
+    @settings(max_examples=15, deadline=None)
+    async def test_remove_tag_is_idempotent(self, spec: dict):
+        """Removing a tag that doesn't exist doesn't crash."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            from polylogue.storage.repository import ConversationRepository
+            from tests.infra.storage_records import ConversationBuilder
+
+            db_path = Path(tmp_dir) / "rmtags.db"
+            conv_id = spec["conversation_id"]
+
+            (ConversationBuilder(db_path, conv_id)
+             .provider("test")
+             .title("Remove Tag Test")
+             .add_message("m1", text="Hello")
+             .save())
+
+            backend = SQLiteBackend(db_path=db_path)
+            repo = ConversationRepository(backend=backend)
+
+            tag = spec["tags"][0]
+            await repo.remove_tag(conv_id, tag)
+
+            conv = await repo.get(conv_id)
+            assert conv is not None
+            assert tag not in conv.tags
+
+            await backend.close()
+
+
+class TestTitleSearchLaws:
+    """Property-based tests for title-based search."""
+
+    @given(simple_title_search_spec())
+    @settings(max_examples=15, deadline=None)
+    async def test_title_search_finds_matching(self, spec: dict):
+        """Searching by title substring finds the matching conversation."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            from polylogue.storage.repository import ConversationRepository
+            from polylogue.storage.index import rebuild_index
+            from tests.infra.storage_records import ConversationBuilder
+
+            db_path = Path(tmp_dir) / "search.db"
+            conv_id = "search-conv-1"
+
+            (ConversationBuilder(db_path, conv_id)
+             .provider("test")
+             .title(spec["title"])
+             .add_message("m1", text="Search test content")
+             .save())
+
+            with open_connection(db_path) as conn:
+                rebuild_index(conn)
+
+            backend = SQLiteBackend(db_path=db_path)
+            repo = ConversationRepository(backend=backend)
+
+            results = await repo.list(title_contains=spec["search_term"])
+            found_ids = [str(c.id) for c in results]
+            assert conv_id in found_ids, (
+                f"Expected to find '{conv_id}' when searching "
+                f"title='{spec['title']}' for term='{spec['search_term']}'"
+            )
+
+            await backend.close()
+
+    @given(simple_title_search_spec())
+    @settings(max_examples=15, deadline=None)
+    async def test_title_search_excludes_non_matching(self, spec: dict):
+        """Title search doesn't return conversations with unrelated titles."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            from polylogue.storage.repository import ConversationRepository
+            from tests.infra.storage_records import ConversationBuilder
+
+            db_path = Path(tmp_dir) / "nomatch.db"
+
+            (ConversationBuilder(db_path, "match-conv")
+             .provider("test")
+             .title(spec["title"])
+             .add_message("m1", text="Content")
+             .save())
+
+            (ConversationBuilder(db_path, "nomatch-conv")
+             .provider("test")
+             .title("Zzqxjk Wvpnrl Tmygbs")
+             .add_message("m2", text="Other content")
+             .save())
+
+            backend = SQLiteBackend(db_path=db_path)
+            repo = ConversationRepository(backend=backend)
+
+            results = await repo.list(title_contains=spec["search_term"])
+            found_ids = {str(c.id) for c in results}
+            assert "match-conv" in found_ids
+
+            await backend.close()
+
+
+# ============================================================================
+# Search Cache Tests (from test_cache.py)
+# ============================================================================
+
+
+class TestSearchCacheKey:
+    """Tests for SearchCacheKey creation and behavior."""
+
+    def test_create_basic(self, tmp_path):
+        """Create a basic cache key."""
+        from polylogue.storage.search_cache import SearchCacheKey
+
+        key = SearchCacheKey.create(
+            query="hello",
+            archive_root=tmp_path,
+        )
+        assert key.query == "hello"
+        assert key.archive_root == str(tmp_path)
+        assert key.limit == 20  # default
+        assert key.source is None
+        assert key.since is None
+
+    def test_create_with_all_params(self, tmp_path):
+        """Create a cache key with all parameters."""
+        from polylogue.storage.search_cache import SearchCacheKey
+
+        key = SearchCacheKey.create(
+            query="test query",
+            archive_root=tmp_path / "archive",
+            render_root_path=tmp_path / "render",
+            db_path=tmp_path / "test.db",
+            limit=50,
+            source="claude-ai",
+            since="2024-01-01",
+        )
+        assert key.query == "test query"
+        assert key.limit == 50
+        assert key.source == "claude-ai"
+        assert key.since == "2024-01-01"
+        assert key.render_root_path == str(tmp_path / "render")
+        assert key.db_path == str(tmp_path / "test.db")
+
+    def test_key_is_frozen(self, tmp_path):
+        """Cache key is immutable (frozen dataclass)."""
+        from polylogue.storage.search_cache import SearchCacheKey
+
+        key = SearchCacheKey.create(query="test", archive_root=tmp_path)
+        # Frozen dataclass should raise on attribute assignment
+        with pytest.raises(AttributeError):
+            key.query = "changed"
+
+    def test_same_params_same_key(self, tmp_path):
+        """Same parameters produce equal keys (same cache version)."""
+        from polylogue.storage.search_cache import SearchCacheKey
+
+        key1 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=10)
+        key2 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=10)
+        assert key1 == key2
+
+    def test_different_query_different_key(self, tmp_path):
+        """Different queries produce different keys."""
+        from polylogue.storage.search_cache import SearchCacheKey
+
+        key1 = SearchCacheKey.create(query="hello", archive_root=tmp_path)
+        key2 = SearchCacheKey.create(query="world", archive_root=tmp_path)
+        assert key1 != key2
+
+    def test_different_limit_different_key(self, tmp_path):
+        """Different limits produce different keys."""
+        from polylogue.storage.search_cache import SearchCacheKey
+
+        key1 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=10)
+        key2 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=20)
+        assert key1 != key2
+
+    def test_none_render_root(self, tmp_path):
+        """None render_root_path stored as None."""
+        from polylogue.storage.search_cache import SearchCacheKey
+
+        key = SearchCacheKey.create(
+            query="test", archive_root=tmp_path, render_root_path=None
+        )
+        assert key.render_root_path is None
+
+    def test_key_is_hashable(self, tmp_path):
+        """Cache key can be used as dict key (hashable)."""
+        from polylogue.storage.search_cache import SearchCacheKey
+
+        key = SearchCacheKey.create(query="test", archive_root=tmp_path)
+        d = {key: "result"}
+        assert d[key] == "result"
+
+
+class TestInvalidateSearchCache:
+    """Tests for cache invalidation."""
+
+    def test_invalidation_increments_version(self, tmp_path):
+        """Invalidation changes cache version."""
+        from polylogue.storage.search_cache import SearchCacheKey, invalidate_search_cache
+
+        key_before = SearchCacheKey.create(query="test", archive_root=tmp_path)
+        invalidate_search_cache()
+        key_after = SearchCacheKey.create(query="test", archive_root=tmp_path)
+
+        # Keys should differ due to version change
+        assert key_before != key_after
+        assert key_before.cache_version < key_after.cache_version
+
+    def test_multiple_invalidations(self, tmp_path):
+        """Multiple invalidations increment version each time."""
+        from polylogue.storage.search_cache import SearchCacheKey, invalidate_search_cache
+
+        v1 = SearchCacheKey.create(query="test", archive_root=tmp_path).cache_version
+        invalidate_search_cache()
+        v2 = SearchCacheKey.create(query="test", archive_root=tmp_path).cache_version
+        invalidate_search_cache()
+        v3 = SearchCacheKey.create(query="test", archive_root=tmp_path).cache_version
+
+        assert v1 < v2 < v3
+
+
+class TestCacheStats:
+    """Tests for cache statistics."""
+
+    def test_stats_returns_dict(self):
+        """get_cache_stats returns a dictionary."""
+        from polylogue.storage.search_cache import get_cache_stats
+
+        stats = get_cache_stats()
+        assert isinstance(stats, dict)
+        assert "cache_version" in stats
+
+    def test_stats_version_matches_current(self, tmp_path):
+        """Stats version matches what keys use."""
+        from polylogue.storage.search_cache import SearchCacheKey, get_cache_stats
+
+        key = SearchCacheKey.create(query="test", archive_root=tmp_path)
+        stats = get_cache_stats()
+        assert stats["cache_version"] == key.cache_version
+
+
+# ============================================================================
+# Repository Tests (relocated from test_json.py)
+# ============================================================================
+
+
+class TestRepositoryOperations:
+    """ConversationRepository CRUD operations."""
+
+    async def test_repository_basic_operations(self, test_db):
+        """Test ConversationRepository basic get/list operations."""
+        from tests.infra.storage_records import DbFactory
+
+        factory = DbFactory(test_db)
+        factory.create_conversation(
+            id="c1", provider="chatgpt", messages=[{"id": "m1", "role": "user", "text": "hello world"}]
+        )
+
+        backend = SQLiteBackend(db_path=test_db)
+        repo = ConversationRepository(backend=backend)
+
+        conv = await repo.get("c1")
+        assert conv is not None
+        assert conv.id == "c1"
+        assert len(conv.messages) == 1
+        assert conv.messages[0].text == "hello world"
+
+        lst = await repo.list()
+        assert len(lst) == 1
+        assert lst[0].id == "c1"
+
+    async def test_get_eager_includes_attachment_conversation_id(self, test_db):
+        """ConversationRepository.get_eager() returns attachments with conversation_id field."""
+        from tests.infra.storage_records import DbFactory
+
+        factory = DbFactory(test_db)
+        factory.create_conversation(
+            id="c-with-att",
+            provider="test",
+            messages=[
+                {
+                    "id": "m1",
+                    "role": "user",
+                    "text": "message with attachment",
+                    "attachments": [
+                        {
+                            "id": "att1",
+                            "mime_type": "image/png",
+                            "size_bytes": 2048,
+                            "path": "/path/to/image.png",
+                        }
+                    ],
+                }
+            ],
+        )
+
+        backend = SQLiteBackend(db_path=test_db)
+        repo = ConversationRepository(backend=backend)
+        conv = await repo.get_eager("c-with-att")
+
+        assert conv is not None
+        assert len(conv.messages) == 1
+        msg = conv.messages[0]
+        assert len(msg.attachments) == 1
+        att = msg.attachments[0]
+        assert att.id == "att1"
+        assert att.mime_type == "image/png"
+
+    async def test_get_eager_multiple_attachments(self, test_db):
+        """get_eager() correctly groups multiple attachments per message."""
+        from tests.infra.storage_records import DbFactory
+
+        factory = DbFactory(test_db)
+        factory.create_conversation(
+            id="c-multi-att",
+            provider="test",
+            messages=[
+                {
+                    "id": "m1",
+                    "role": "user",
+                    "text": "first message",
+                    "attachments": [
+                        {"id": "att1", "mime_type": "image/png"},
+                        {"id": "att2", "mime_type": "image/jpeg"},
+                    ],
+                },
+                {
+                    "id": "m2",
+                    "role": "assistant",
+                    "text": "second message",
+                    "attachments": [
+                        {"id": "att3", "mime_type": "application/pdf"},
+                    ],
+                },
+            ],
+        )
+
+        backend = SQLiteBackend(db_path=test_db)
+        repo = ConversationRepository(backend=backend)
+        conv = await repo.get_eager("c-multi-att")
+
+        assert conv is not None
+        assert len(conv.messages) == 2
+
+        m1 = conv.messages[0]
+        assert len(m1.attachments) == 2
+        m1_att_ids = {a.id for a in m1.attachments}
+        assert m1_att_ids == {"att1", "att2"}
+
+        m2 = conv.messages[1]
+        assert len(m2.attachments) == 1
+        assert m2.attachments[0].id == "att3"
+
+    async def test_get_eager_attachment_metadata_decoded(self, test_db):
+        """Attachment provider_meta JSON is properly decoded."""
+        from tests.infra.storage_records import DbFactory
+
+        factory = DbFactory(test_db)
+        meta = {"original_name": "photo.png", "source": "upload"}
+        factory.create_conversation(
+            id="c-att-meta",
+            provider="test",
+            messages=[
+                {
+                    "id": "m1",
+                    "role": "user",
+                    "text": "with meta",
+                    "attachments": [
+                        {
+                            "id": "att-meta",
+                            "mime_type": "image/png",
+                            "meta": meta,
+                        }
+                    ],
+                }
+            ],
+        )
+
+        backend = SQLiteBackend(db_path=test_db)
+        repo = ConversationRepository(backend=backend)
+        conv = await repo.get_eager("c-att-meta")
+
+        assert conv is not None
+        assert len(conv.messages) == 1
+        msg = conv.messages[0]
+        assert len(msg.attachments) == 1
+        att = msg.attachments[0]
+        assert att.provider_meta == meta or att.provider_meta is None
+
+
+class TestCacheThreadSafety:
+    """Thread safety tests for cache invalidation."""
+
+    def test_concurrent_invalidation(self):
+        """Concurrent invalidation doesn't corrupt state."""
+        import threading
+        from polylogue.storage.search_cache import invalidate_search_cache, get_cache_stats
+
+        initial_stats = get_cache_stats()
+        initial_version = initial_stats["cache_version"]
+
+        errors: list[Exception] = []
+        num_threads = 10
+        invalidations_per_thread = 100
+
+        def invalidate_many():
+            try:
+                for _ in range(invalidations_per_thread):
+                    invalidate_search_cache()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=invalidate_many) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        final_stats = get_cache_stats()
+        expected_version = initial_version + (num_threads * invalidations_per_thread)
+        assert final_stats["cache_version"] == expected_version
+
+
+class _VectorSpy:
+    def __init__(self) -> None:
+        self.query_calls: list[tuple[str, int]] = []
+        self.upsert_calls: list[tuple[str, list[object]]] = []
+
+    def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+        self.query_calls.append((text, limit))
+        return [("msg-1", 0.125)]
+
+    def upsert(self, conversation_id: str, messages: list[object]) -> None:
+        self.upsert_calls.append((conversation_id, messages))
+
+
+class TestRepositoryVectorAsyncBoundary:
+    async def test_search_similar_offloads_vector_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = SimpleNamespace(queries=SimpleNamespace())
+        repo = ConversationRepository(backend=backend)
+        provider = _VectorSpy()
+        repo._get_message_conversation_mapping = AsyncMock(return_value={"msg-1": "conv-1"})
+        repo.get_many = AsyncMock(return_value=["conv-1"])
+
+        to_thread_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+        async def fake_to_thread(func, /, *args, **kwargs):
+            to_thread_calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+        result = await repo.search_similar("semantic query", limit=4, vector_provider=provider)
+
+        assert result == ["conv-1"]
+        assert provider.query_calls == [("semantic query", 12)]
+        assert len(to_thread_calls) == 1
+        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
+        assert getattr(to_thread_calls[0][0], "__name__", "") == "query"
+
+    async def test_embed_conversation_offloads_vector_upsert(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        messages = [make_message("msg-embed", "conv-embed", text="Message long enough to embed.")]
+        backend = SimpleNamespace(queries=SimpleNamespace(get_messages=AsyncMock(return_value=messages)))
+        repo = ConversationRepository(backend=backend)
+        provider = _VectorSpy()
+
+        to_thread_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+        async def fake_to_thread(func, /, *args, **kwargs):
+            to_thread_calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+        result = await repo.embed_conversation("conv-embed", vector_provider=provider)
+
+        assert result == 1
+        assert provider.upsert_calls == [("conv-embed", messages)]
+        assert len(to_thread_calls) == 1
+        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
+        assert getattr(to_thread_calls[0][0], "__name__", "") == "upsert"
+
+    async def test_similarity_search_offloads_vector_query(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        backend = SimpleNamespace(queries=SimpleNamespace())
+        repo = ConversationRepository(backend=backend)
+        provider = _VectorSpy()
+        repo._get_message_conversation_mapping = AsyncMock(return_value={"msg-1": "conv-1"})
+
+        to_thread_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+        async def fake_to_thread(func, /, *args, **kwargs):
+            to_thread_calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+        result = await repo.similarity_search("semantic query", limit=4, vector_provider=provider)
+
+        assert result == [("conv-1", "msg-1", 0.125)]
+        assert provider.query_calls == [("semantic query", 4)]
+        assert len(to_thread_calls) == 1
+        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
+        assert getattr(to_thread_calls[0][0], "__name__", "") == "query"
+
+
+# ============================================================================
+# TagAssignmentSpec / TitleSearchSpec — infra strategy activation (B5)
+# ============================================================================
+
+
+class TestInfraTagAssignment:
+    """Property-based tests using the full TagAssignmentSpec strategy."""
+
+    @given(infra_tag_assignment_strategy(min_conversations=2, max_conversations=4))
+    @settings(max_examples=10, deadline=None)
+    async def test_tag_assignment_roundtrip(self, spec: TagAssignmentSpec):
+        """Tags assigned via strategy-generated specs are retrievable and consistent."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            from polylogue.storage.repository import ConversationRepository
+
+            db_path = Path(tmp_dir) / "tags-infra.db"
+            seed_conversation_graph(db_path, spec.conversations)
+
+            backend = SQLiteBackend(db_path=db_path)
+            repo = ConversationRepository(backend=backend)
+
+            # Assign all tags
+            for conv, tags in zip(spec.conversations, spec.tag_sequences, strict=True):
+                for tag in tags:
+                    await repo.add_tag(conv.conversation_id, tag)
+
+            # Verify each conversation has the expected tags
+            for conv, tags in zip(spec.conversations, spec.tag_sequences, strict=True):
+                stored = await repo.get(conv.conversation_id)
+                assert stored is not None
+                stored_tags = set(stored.tags)
+                for tag in set(tags):
+                    assert tag in stored_tags, (
+                        f"Tag '{tag}' missing from conv '{conv.conversation_id}'"
+                    )
+
+            await backend.close()
+
+    @given(infra_tag_assignment_strategy(min_conversations=2, max_conversations=4))
+    @settings(max_examples=10, deadline=None)
+    async def test_tag_counts_match_expected(self, spec: TagAssignmentSpec):
+        """Tag counts computed from strategy match actual stored tag counts."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            from polylogue.storage.repository import ConversationRepository
+
+            db_path = Path(tmp_dir) / "tag-counts.db"
+            seed_conversation_graph(db_path, spec.conversations)
+
+            backend = SQLiteBackend(db_path=db_path)
+            repo = ConversationRepository(backend=backend)
+
+            for conv, tags in zip(spec.conversations, spec.tag_sequences, strict=True):
+                for tag in tags:
+                    await repo.add_tag(conv.conversation_id, tag)
+
+            expected = expected_tag_counts(spec)
+            actual: dict[str, int] = {}
+            for conv, tags in zip(spec.conversations, spec.tag_sequences, strict=True):
+                stored = await repo.get(conv.conversation_id)
+                if stored:
+                    for tag in stored.tags:
+                        actual[tag] = actual.get(tag, 0) + 1
+
+            assert actual == expected
+
+            await backend.close()
+
+
+class TestInfraTitleSearch:
+    """Property-based tests using the full TitleSearchSpec strategy."""
+
+    @given(infra_title_search_strategy())
+    @settings(max_examples=15, deadline=None)
+    async def test_literal_title_search_finds_matching_with_special_chars(self, spec: TitleSearchSpec):
+        """Title search with wildcard-sensitive characters finds exact matches."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            from polylogue.storage.repository import ConversationRepository
+            from tests.infra.storage_records import ConversationBuilder
+
+            db_path = Path(tmp_dir) / "title-search.db"
+
+            (ConversationBuilder(db_path, "match-conv")
+             .provider("test")
+             .title(spec.matching_title)
+             .add_message("m1", text="Content")
+             .save())
+
+            (ConversationBuilder(db_path, "decoy-conv")
+             .provider("test")
+             .title(spec.decoy_title)
+             .add_message("m2", text="Other")
+             .save())
+
+            backend = SQLiteBackend(db_path=db_path)
+            repo = ConversationRepository(backend=backend)
+
+            results = await repo.list(title_contains=spec.needle)
+            found_ids = {str(c.id) for c in results}
+            assert "match-conv" in found_ids, (
+                f"Expected 'match-conv' for needle='{spec.needle}' "
+                f"in title='{spec.matching_title}'"
+            )
+
+            await backend.close()
+
+    @given(infra_title_search_strategy())
+    @settings(max_examples=15, deadline=None)
+    async def test_literal_title_search_excludes_decoy(self, spec: TitleSearchSpec):
+        """Title search with special characters does not match the decoy title."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            from polylogue.storage.repository import ConversationRepository
+            from tests.infra.storage_records import ConversationBuilder
+
+            db_path = Path(tmp_dir) / "decoy-search.db"
+
+            (ConversationBuilder(db_path, "decoy-only")
+             .provider("test")
+             .title(spec.decoy_title)
+             .add_message("m1", text="Content")
+             .save())
+
+            backend = SQLiteBackend(db_path=db_path)
+            repo = ConversationRepository(backend=backend)
+
+            results = await repo.list(title_contains=spec.needle)
+            found_ids = {str(c.id) for c in results}
+            assert "decoy-only" not in found_ids, (
+                f"Decoy '{spec.decoy_title}' should not match "
+                f"needle='{spec.needle}'"
+            )

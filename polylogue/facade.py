@@ -14,7 +14,7 @@ Example:
         stats, recent, claude = await asyncio.gather(
             archive.stats(),
             archive.filter().limit(10).list(),
-            archive.filter().provider("claude").list()
+            archive.filter().provider("claude-ai").list()
         )
 
         # Parallel batch retrieval
@@ -24,113 +24,20 @@ Example:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import structlog
-
 from polylogue.config import Config, Source
-from polylogue.render_paths import render_root
+from polylogue.operations import ArchiveOperations, ArchiveStats
+from polylogue.services import build_runtime_services
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.search import SearchHit, SearchResult
-
-logger = structlog.get_logger(__name__)
-
-
-def _build_search_snippet(text: str, query: str) -> str:
-    """Create a deterministic snippet around the earliest query-term match."""
-    if not text:
-        return ""
-
-    terms = [term.lower() for term in query.split() if term.strip()]
-    lowered = text.lower()
-    positions = [lowered.find(term) for term in terms if lowered.find(term) >= 0]
-    anchor = min(positions) if positions else 0
-    start = max(0, anchor - 60)
-    end = min(len(text), anchor + 140)
-    snippet = text[start:end].strip()
-    if start > 0:
-        snippet = f"...{snippet}"
-    if end < len(text):
-        snippet = f"{snippet}..."
-    return snippet
-
-
-def _conversation_search_hit(
-    conversation: Conversation,
-    *,
-    query: str,
-    render_root_path: Path,
-) -> SearchHit:
-    """Adapt a canonical conversation result into the SearchResult surface."""
-    terms = [term.lower() for term in query.split() if term.strip()]
-    matching_message = next(
-        (
-            msg
-            for msg in conversation.messages
-            if msg.text and any(term in msg.text.lower() for term in terms)
-        ),
-        next((msg for msg in conversation.messages if msg.text), None),
-    )
-    message_id = str(matching_message.id) if matching_message else ""
-    timestamp = matching_message.timestamp.isoformat() if matching_message and matching_message.timestamp else None
-    snippet = _build_search_snippet(matching_message.text or "", query) if matching_message else ""
-    conversation_path = render_root(render_root_path, conversation.provider, str(conversation.id)) / "conversation.md"
-    return SearchHit(
-        conversation_id=str(conversation.id),
-        provider_name=conversation.provider,
-        source_name=None,
-        message_id=message_id,
-        title=conversation.display_title,
-        timestamp=timestamp,
-        snippet=snippet,
-        conversation_path=conversation_path,
-    )
 
 if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation
     from polylogue.pipeline.services.parsing import ParseResult
-
-
-class ArchiveStats:
-    """Statistics about the archive (facade-level).
-
-    Attributes:
-        conversation_count: Total number of conversations
-        message_count: Total number of messages
-        word_count: Total word count across all messages
-        providers: Provider name -> count mapping
-        tags: Tag name -> count mapping
-        last_sync: Timestamp of last sync operation
-        recent: List of 5 most recent conversations
-    """
-
-    def __init__(
-        self,
-        conversation_count: int,
-        message_count: int,
-        word_count: int,
-        providers: dict[str, int],
-        tags: dict[str, int],
-        last_sync: str | None,
-        recent: list[Conversation],
-    ):
-        self.conversation_count = conversation_count
-        self.message_count = message_count
-        self.word_count = word_count
-        self.providers = providers
-        self.tags = tags
-        self.last_sync = last_sync
-        self.recent = recent
-
-    def __repr__(self) -> str:
-        return (
-            f"ArchiveStats(conversations={self.conversation_count}, "
-            f"messages={self.message_count}, providers={list(self.providers.keys())})"
-        )
+    from polylogue.storage.search import SearchResult
 
 
 class Polylogue:
@@ -180,10 +87,8 @@ class Polylogue:
             render_root=render_root(),
             sources=[],
         )
-
-        # Create async backend
-        self._backend = SQLiteBackend(db_path=db_path)
-        self._repository = ConversationRepository(backend=self._backend)
+        self._services = build_runtime_services(config=self._config, db_path=db_path)
+        self._operations = ArchiveOperations.from_services(self._services)
 
     async def __aenter__(self) -> Polylogue:
         """Enter async context manager."""
@@ -195,7 +100,7 @@ class Polylogue:
 
     async def close(self) -> None:
         """Close database connections and release resources."""
-        await self._repository.close()
+        await self._services.close()
 
     @property
     def config(self) -> Config:
@@ -210,12 +115,17 @@ class Polylogue:
     @property
     def backend(self) -> SQLiteBackend:
         """Get the archive backend."""
-        return self._backend
+        return self._services.get_backend()
 
     @property
     def repository(self) -> ConversationRepository:
         """Get the archive repository."""
-        return self._repository
+        return self._services.get_repository()
+
+    @property
+    def operations(self) -> ArchiveOperations:
+        """Get canonical archive operations bound to this facade."""
+        return self._operations
 
     async def get_conversation(self, conversation_id: str) -> Conversation | None:
         """Get a conversation by ID.
@@ -231,10 +141,10 @@ class Polylogue:
             Conversation object or None if not found
 
         Example:
-            conv = await archive.get_conversation("claude:abc123")
+            conv = await archive.get_conversation("claude-ai:abc123")
             conv = await archive.get_conversation("abc12345")  # prefix match
         """
-        return await self._repository.view(conversation_id)
+        return await self.operations.get_conversation(conversation_id)
 
     async def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
         """Get multiple conversations by ID using batch queries.
@@ -252,7 +162,7 @@ class Polylogue:
             ids = ["id1", "id2", "id3", "id4", "id5"]
             convs = await archive.get_conversations(ids)
         """
-        return await self._repository.get_many(conversation_ids)
+        return await self.operations.get_conversations(conversation_ids)
 
     async def list_conversations(
         self,
@@ -271,9 +181,9 @@ class Polylogue:
             List of Conversation objects
 
         Example:
-            convs = await archive.list_conversations(provider="claude", limit=10)
+            convs = await archive.list_conversations(provider="claude-ai", limit=10)
         """
-        return await self._repository.list(
+        return await self.operations.list_conversations(
             provider=provider,
             limit=limit,
         )
@@ -302,24 +212,11 @@ class Polylogue:
             for hit in results.hits:
                 print(f"{hit.title}: {hit.snippet}")
         """
-        from polylogue.lib.query_spec import ConversationQuerySpec
-
-        spec = ConversationQuerySpec(
-            query_terms=(query,),
-            providers=(source,) if source else (),
-            since=since,
+        return await self.operations.search(
+            query,
             limit=limit,
-        )
-        conversations = await spec.build_filter(self._repository).list()
-        return SearchResult(
-            hits=[
-                _conversation_search_hit(
-                    conversation,
-                    query=query,
-                    render_root_path=self._config.render_root,
-                )
-                for conversation in conversations
-            ]
+            source=source,
+            since=since,
         )
 
     async def parse_file(
@@ -346,7 +243,7 @@ class Polylogue:
         """
         from polylogue.pipeline.services.parsing import ParsingService
         parsing_service = ParsingService(
-            repository=self._repository,
+            repository=self.repository,
             archive_root=self._config.archive_root,
             config=self._config,
         )
@@ -382,7 +279,7 @@ class Polylogue:
         """
         from polylogue.pipeline.services.parsing import ParsingService
         parsing_service = ParsingService(
-            repository=self._repository,
+            repository=self.repository,
             archive_root=self._config.archive_root,
             config=self._config,
         )
@@ -407,7 +304,7 @@ class Polylogue:
         """
         from polylogue.pipeline.services.indexing import IndexService
 
-        index_service = IndexService(config=self._config, backend=self._backend)
+        index_service = IndexService(config=self._config, backend=self.backend)
         return await index_service.rebuild_index()
 
     def filter(self) -> ConversationFilter:
@@ -419,7 +316,7 @@ class Polylogue:
             ConversationFilter for building queries
 
         Example:
-            convs = await archive.filter().provider("claude").contains("error").limit(10).list()
+            convs = await archive.filter().provider("claude-ai").contains("error").limit(10).list()
         """
         from polylogue.lib.filters import ConversationFilter
 
@@ -431,7 +328,7 @@ class Polylogue:
         except (ValueError, ImportError):
             pass
 
-        return ConversationFilter(self._repository, vector_provider=vector_provider)
+        return ConversationFilter(self.repository, vector_provider=vector_provider)
 
     async def stats(self) -> ArchiveStats:
         """Get statistics about the archive.
@@ -445,42 +342,7 @@ class Polylogue:
             for provider, count in stats.providers.items():
                 print(f"  {provider}: {count}")
         """
-        conversations = await self.list_conversations(limit=None)
-
-        providers: dict[str, int] = {}
-        tags: dict[str, int] = {}
-        total_messages = 0
-        total_words = 0
-
-        for conv in conversations:
-            providers[conv.provider] = providers.get(conv.provider, 0) + 1
-            for tag in conv.tags:
-                tags[tag] = tags.get(tag, 0) + 1
-            total_messages += len(conv.messages)
-            total_words += sum(m.word_count for m in conv.messages)
-
-        _epoch = datetime.min.replace(tzinfo=timezone.utc)
-        recent = sorted(
-            conversations,
-            key=lambda c: c.updated_at or c.created_at or _epoch,
-            reverse=True,
-        )[:5]
-
-        last_sync = None
-        try:
-            last_sync = await self._backend.get_last_sync_timestamp()
-        except Exception as exc:
-            logger.debug("failed to query last sync timestamp", error=str(exc))
-
-        return ArchiveStats(
-            conversation_count=len(conversations),
-            message_count=total_messages,
-            word_count=total_words,
-            providers=providers,
-            tags=tags,
-            last_sync=last_sync,
-            recent=recent,
-        )
+        return await self.operations.summary_stats()
 
     def __repr__(self) -> str:
         """Return string representation."""

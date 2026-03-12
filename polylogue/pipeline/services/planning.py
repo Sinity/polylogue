@@ -54,7 +54,7 @@ class PlanningService:
         """Collect unvalidated/unparsed raw IDs for the scoped sources."""
         exclude = set(exclude_raw_ids or [])
         backlog_validate_ids: list[str] = []
-        async for raw_id in self.backend.iter_raw_ids(
+        async for raw_id in self.backend.queries.iter_raw_ids(
             source_names=source_names,
             require_unparsed=True,
             require_unvalidated=True,
@@ -72,7 +72,7 @@ class PlanningService:
         """Collect parsed-ready raw IDs for the scoped sources."""
         exclude = set(exclude_raw_ids or [])
         backlog_parse_ids: list[str] = []
-        async for raw_id in self.backend.iter_raw_ids(
+        async for raw_id in self.backend.queries.iter_raw_ids(
             source_names=source_names,
             require_unparsed=True,
             validation_statuses=["passed", "skipped"],
@@ -94,7 +94,7 @@ class PlanningService:
         db_scope_names = source_names or None
 
         if stage == "render":
-            render_count = await self.backend.count_conversation_ids(source_names=db_scope_names)
+            render_count = await self.backend.queries.count_conversation_ids(source_names=db_scope_names)
             return IngestPlan(
                 summary=PlanResult(
                     timestamp=int(time.time()),
@@ -108,7 +108,7 @@ class PlanningService:
             )
 
         if stage == "index":
-            index_count = await self.backend.count_conversation_ids(source_names=db_scope_names)
+            index_count = await self.backend.queries.count_conversation_ids(source_names=db_scope_names)
             return IngestPlan(
                 summary=PlanResult(
                     timestamp=int(time.time()),

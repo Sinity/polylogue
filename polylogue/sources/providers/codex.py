@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from polylogue.lib.provider_semantics import extract_codex_text
 from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
@@ -23,6 +24,7 @@ from polylogue.lib.viewports import (
     ContentType,
     MessageMeta,
     ReasoningTrace,
+    ToolCall,
 )
 
 
@@ -148,13 +150,7 @@ class CodexRecord(BaseModel):
     @property
     def text_content(self) -> str:
         """Extract plain text from any format."""
-        texts = []
-        for block in self.effective_content:
-            if isinstance(block, dict):
-                text = block.get("text") or block.get("input_text") or block.get("output_text")
-                if text:
-                    texts.append(text)
-        return "\n".join(texts)
+        return extract_codex_text(self.effective_content)
 
     @property
     def parsed_timestamp(self) -> datetime | None:
@@ -213,4 +209,8 @@ class CodexRecord(BaseModel):
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
         """Extract reasoning traces (Codex does not expose reasoning; returns empty list)."""
+        return []
+
+    def extract_tool_calls(self) -> list[ToolCall]:
+        """Extract tool calls (Codex export message model does not expose them here)."""
         return []

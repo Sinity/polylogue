@@ -2,24 +2,34 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.roles import Role
 from polylogue.sources.providers.gemini import GeminiMessage
 from polylogue.types import Provider
 
-from .base import ParsedAttachment, ParsedConversation, ParsedMessage
+from .base import ParsedAttachment, ParsedContentBlock, ParsedConversation, ParsedMessage
 
 _logger = get_logger(__name__)
 
 
-def extract_text_from_chunk(chunk: dict[str, object]) -> str | None:
+def extract_text_from_chunk(chunk: object) -> str | None:
+    if not isinstance(chunk, dict):
+        return None
     for key in ("text", "content", "message", "markdown", "data"):
         value = chunk.get(key)
         if isinstance(value, str):
             return value
     parts = chunk.get("parts")
     if isinstance(parts, list):
-        return "\n".join(str(part) for part in parts if part)
+        texts: list[str] = []
+        for part in parts:
+            if isinstance(part, str) and part:
+                texts.append(part)
+            elif isinstance(part, dict):
+                part_text = part.get("text")
+                if isinstance(part_text, str) and part_text:
+                    texts.append(part_text)
+        return "\n".join(texts) or None
     return None
 
 
@@ -76,6 +86,30 @@ def _attachment_from_doc(doc: dict[str, object] | str, message_id: str | None) -
         path=None,
         provider_meta=doc,
     )
+
+
+def _parsed_content_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
+    if not isinstance(blocks, list):
+        return []
+    parsed: list[ParsedContentBlock] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if not isinstance(block_type, str) or not block_type:
+            continue
+        metadata: dict[str, object] | None = None
+        language = block.get("language")
+        if isinstance(language, str) and language:
+            metadata = {"language": language}
+        parsed.append(
+            ParsedContentBlock(
+                type=block_type,
+                text=block.get("text") if isinstance(block.get("text"), str) else None,
+                metadata=metadata,
+            )
+        )
+    return parsed
 
 
 def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], fallback_id: str) -> ParsedConversation:
@@ -172,16 +206,26 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
             if token_count:
                 meta["tokenCount"] = token_count
             block_type = "thinking" if chunk_obj.get("isThought") else "text"
-            meta["content_blocks"] = [{"type": block_type, "text": text}]
+            content_blocks = [{"type": block_type, "text": text}]
             exec_code = chunk_obj.get("executableCode")
             if isinstance(exec_code, dict) and exec_code:
                 meta["executableCode"] = exec_code
+                code = exec_code.get("code")
+                if isinstance(code, str) and code:
+                    content_blocks.append({"type": "code", "text": code})
             exec_result = chunk_obj.get("codeExecutionResult")
             if isinstance(exec_result, dict) and exec_result:
                 meta["codeExecutionResult"] = exec_result
+                output = exec_result.get("output")
+                outcome = exec_result.get("outcome")
+                if isinstance(output, str) and output:
+                    content_blocks.append({"type": "tool_result", "text": output})
+                elif isinstance(outcome, str) and outcome:
+                    content_blocks.append({"type": "tool_result", "text": f"[{outcome}]"})
             error_msg = chunk_obj.get("errorMessage")
             if isinstance(error_msg, str) and error_msg:
                 meta["errorMessage"] = error_msg
+            meta["content_blocks"] = content_blocks
 
         messages.append(
             ParsedMessage(
@@ -189,6 +233,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
                 role=role,
                 text=text,
                 timestamp=default_timestamp,
+                content_blocks=_parsed_content_blocks_from_meta(meta.get("content_blocks")),
                 provider_meta=meta,
             )
         )

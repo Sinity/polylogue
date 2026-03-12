@@ -7,7 +7,8 @@ from pathlib import Path
 import click
 
 from polylogue.cli.types import AppEnv
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
+from polylogue.sources.drive_auth import DriveAuthManager
 
 logger = get_logger(__name__)
 
@@ -39,14 +40,13 @@ def auth_command(env: AppEnv, service: str, refresh: bool, revoke: bool) -> None
         _refresh_drive_token(env)
         return
 
-    # Interactive OAuth flow
     _drive_oauth_flow(env)
 
 
 def _get_drive_paths(env: AppEnv) -> tuple[Path, Path]:
     """Get credentials and token paths from config or defaults."""
     from polylogue.cli.helpers import load_effective_config
-    from polylogue.sources.drive_client import default_credentials_path, default_token_path
+    from polylogue.sources.drive_auth import default_credentials_path, default_token_path
 
     try:
         config = load_effective_config(env)
@@ -68,7 +68,6 @@ def _drive_oauth_flow(env: AppEnv, retry_on_failure: bool = True) -> None:
         click.echo("Download OAuth credentials from Google Cloud Console.", err=True)
         raise SystemExit(1)
 
-    # Check if we have a valid token already
     has_token = token_path.exists()
 
     env.ui.console.print("Starting Google Drive OAuth flow...")
@@ -76,15 +75,12 @@ def _drive_oauth_flow(env: AppEnv, retry_on_failure: bool = True) -> None:
         env.ui.console.print("A browser window will open for authentication.")
 
     try:
-        from polylogue.sources.drive_client import DriveClient
-
-        client = DriveClient(
+        auth_manager = DriveAuthManager(
+            ui=env.ui,
             credentials_path=credentials_path,
             token_path=token_path,
-            ui=env.ui,
         )
-        # Trigger auth by resolving root folder (forces credential load)
-        client.resolve_folder_id("root")
+        auth_manager.load_credentials()
 
         if has_token:
             click.echo("✓ Using cached credentials")
@@ -95,7 +91,6 @@ def _drive_oauth_flow(env: AppEnv, retry_on_failure: bool = True) -> None:
         click.echo("Download OAuth credentials from Google Cloud Console.", err=True)
         raise SystemExit(1) from exc
     except Exception as exc:
-        # If token refresh failed and we haven't retried yet, delete token and retry
         if retry_on_failure and token_path.exists() and "refresh" in str(exc).lower():
             click.echo("Token expired or revoked. Removing and re-authenticating...")
             token_path.unlink()
@@ -109,24 +104,18 @@ def _refresh_drive_token(env: AppEnv) -> None:
     """Force refresh of Drive OAuth token by re-authenticating."""
     credentials_path, token_path = _get_drive_paths(env)
 
-    # Delete existing token to force re-auth
     if token_path.exists():
         token_path.unlink()
         env.ui.console.print(f"Removed existing token: {token_path}")
 
-    # Run OAuth flow again
     _drive_oauth_flow(env)
 
 
 def _revoke_drive_credentials(env: AppEnv) -> None:
     """Revoke stored Drive credentials."""
     _, token_path = _get_drive_paths(env)
-
-    if token_path.exists():
-        token_path.unlink()
-        click.echo(f"Removed token file: {token_path}")
-    else:
-        click.echo("No token file found.")
+    auth_manager = DriveAuthManager(token_path=token_path)
+    auth_manager.revoke()
 
     click.echo("Credentials revoked.")
     click.echo("Run `polylogue auth` to re-authenticate.")
