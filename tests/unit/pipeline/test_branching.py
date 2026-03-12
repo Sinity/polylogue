@@ -29,7 +29,7 @@ from polylogue.sources import iter_source_conversations
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
-from tests.infra.helpers import ConversationBuilder, db_setup
+from tests.infra.storage_records import ConversationBuilder, db_setup
 
 
 def _make_test_repository(db_path: Path) -> ConversationRepository:

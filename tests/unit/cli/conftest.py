@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from polylogue.storage.index import rebuild_index
-from tests.infra.helpers import DbFactory
+from tests.infra.storage_records import DbFactory
 
 
 @pytest.fixture

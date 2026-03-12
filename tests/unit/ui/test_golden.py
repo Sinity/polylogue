@@ -20,7 +20,7 @@ import pytest
 from polylogue.rendering.core import ConversationFormatter
 from polylogue.rendering.renderers.markdown import MarkdownRenderer
 from tests.infra import GOLDEN_DIR
-from tests.infra.helpers import DbFactory
+from tests.infra.storage_records import DbFactory
 
 
 def normalize_markdown(text: str) -> str:

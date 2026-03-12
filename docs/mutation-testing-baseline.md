@@ -47,7 +47,7 @@ nix develop -c python -m devtools.mutmut_campaign index
 
 ## Latest Non-Mutation Baseline
 
-Recorded on `2026-03-11`.
+Recorded on `2026-03-12`.
 
 ### Repo-Wide Lint
 
@@ -57,7 +57,7 @@ Recorded on `2026-03-11`.
 ### Full Test Suite
 
 - Command: `nix develop -c pytest -q -n 0`
-- Result: `4273 passed, 1 warning in 298.07s`
+- Result: `3917 passed, 1 warning in 244.35s`
 - Note: repo-wide pytest defaults still enable `-n auto`; use `-n 0` here for
   stable mutation-comparison timing.
 
@@ -111,23 +111,23 @@ the follow-up source/helper/query pass.
 
 | Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| `cli-query` | `e058c8240959` | 935 | 1007 | 20 | 0 | Clean post-concentration rerun: helper ownership is cleaner and survivors are still concentrated in `_async_execute_query` routing plus mutation-heavy modifier/delete paths. |
+| `cli-query` | `a3440a0f1a4b` | 961 | 989 | 12 | 0 | Clean post-entrypoint concentration rerun: duplicate formatting noise is gone, kill count improved, and the remaining survivor mass is now even more concentrated in `_async_execute_query` routing and the new `_create_query_vector_provider` seam. |
 | `drive-client` | `37e26aba2d3d` | 581 | 299 | 3 | 0 | Clean post-tightening rerun improved kill rate again; the remaining residue is now mostly concentrated in credential loading, folder resolution, and metadata/download helpers rather than broad reach gaps. |
-| `repository` | `b1f1d35bee28` | 568 | 74 | 66 | 0 | The concentrated read-model laws fixed the helper blind spot and cut survivor density sharply; the main remaining issue is timeout-heavy hydration/archive-stat coverage, not reach. |
+| `repository` | `027519a11118` | 535 | 102 | 72 | 0 | Clean post-concentration rerun after collapsing repository ownership into `test_repository_laws.py`: reach stayed complete and ownership is much tighter, but kill density regressed versus the broader older surface and the clean timeout profile is slightly worse than the optimistic dirty rerun suggested. The remaining survivor and timeout mass is now concentrated in archive stats, save/search similarity, and list/hydration/read-model seams. |
 | `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
-| `source-detection` | `e058c8240959` | 702 | 445 | 4 | 0 | Clean post-concentration rerun after pruning edge-test duplication; reach is still complete, but survivors remain concentrated in ZIP filtering, emit paths, and provider sniffing. |
-| `providers-semantics` | `c0596770631e` | 805 | 504 | 2 | 0 | First focused concentration rerun after source semantic test collapse; reach is still clean and survivor mass remains concentrated in `extract_content_blocks`, `to_meta`, and fallback Claude Code harmonization. |
-| `sources-parse` | `c0596770631e` | 3455 | 2482 | 10 | 0 | First focused concentration rerun after source semantic test collapse; the broad source surface remains fully reachable, with remaining work concentrated in drive-client seams and provider semantic survivor mass. |
+| `source-detection` | `844d52ee925d` | 825 | 324 | 2 | 0 | Clean post-concentration rerun after collapsing scattered source-iteration examples into `test_source_laws.py`; reach stayed complete, kill count improved, and timeout noise dropped while survivor mass remained concentrated in ZIP filtering, emit paths, and provider sniffing. |
+| `providers-semantics` | `315beb0f19f1` | 819 | 455 | 2 | 0 | Clean rerun after consolidating semantic-law ownership and refactoring `schemas.unified` dispatch into explicit adapter/fallback maps. Reach stayed complete, but kill count regressed, which means the suite is more concentrated yet still underspecified around `extract_content_blocks`, `to_meta`, fallback Claude Code extraction, and harmonization edge cases. |
+| `sources-parse` | `47a9b1cff33f` | 3597 | 2319 | 31 | 0 | Clean post-drive-parser concentration rerun improved kill and survivor counts again while keeping reach complete; the remaining debt is now more sharply concentrated in `schemas.unified`, Drive auth/filter helpers, and timeout-heavy `content_blocks_from_segments` coverage. |
 
 ### Readiness Call
 
 - `004` is complete, and the immediate follow-up reruns are complete.
-- The first post-`005` focused concentration rerun wave is also complete on clean SHA `c0596770631e`.
+- The first post-`005` focused concentration rerun wave is complete on clean SHAs `c0596770631e`, `47a9b1cff33f`, `a3440a0f1a4b`, and `027519a11118`.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
   1. `sources-parse`
-  2. `providers-semantics`
-  3. `cli-query`
+  2. `cli-query`
+  3. `providers-semantics`
   4. `source-detection`
   5. `drive-client`
   6. `repository`
@@ -135,12 +135,17 @@ the follow-up source/helper/query pass.
   The reruns removed reach failures, but they did not saturate the semantic space.
 - The dominant structural issues are now:
   - survivor concentration in `polylogue.schemas.unified` and provider viewport shaping,
-  - high survivor density in source parsing/detection and query orchestration,
-  - source detection still carrying a broad survivor cluster around ZIP filtering, emit paths, and provider sniffing,
+  - `providers-semantics` concentration reduced duplication but also revealed lost mutation signal around adapter content-block/meta extraction,
+  - high survivor density in source parsing and query orchestration,
+  - source parsing now carrying a clearer timeout cluster in `content_blocks_from_segments`,
+  - source detection still carrying a narrower but still meaningful survivor cluster around ZIP filtering, emit paths, and provider sniffing,
   - drive-client transport/auth behavior still carrying a narrower but meaningful survivor cluster in auth/load/download helpers.
 - Additional mutmut infrastructure work is not the bottleneck now. The next
   gains come from stronger laws, better generators/oracles, and code
   refactors that collapse duplicated semantic authority.
+- The three-front concentration wave (`source-detection`, `providers-semantics`,
+  `repository`) is now fully closed. The next execution wave should target
+  survivor density, not reach restoration.
 
 ### Comparison Rule For Future Waves
 

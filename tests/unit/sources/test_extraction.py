@@ -1,128 +1,10 @@
-"""Focused regression contracts for unified extraction bridges and stored viewport recovery."""
+"""Seeded-db regressions for unified extraction output."""
 
 from __future__ import annotations
 
 import sqlite3
-from types import SimpleNamespace
 
 import pytest
-
-from polylogue.schemas.unified import (
-    bulk_harmonize,
-    extract_from_provider_meta,
-    harmonize_parsed_message,
-)
-
-
-class TestHarmonizeParsedMessage:
-    """Direct contracts for ParsedMessage -> HarmonizedMessage bridging."""
-
-    def test_returns_none_for_missing_provider_meta(self) -> None:
-        assert harmonize_parsed_message("claude-ai", None) is None
-
-    def test_skips_non_message_claude_code_records(self) -> None:
-        assert harmonize_parsed_message("claude-code", {"type": "progress"}) is None
-
-    def test_overlays_database_fields_for_raw_payloads(self) -> None:
-        provider_meta = {"raw": {"sender": "human", "text": ""}}
-
-        msg = harmonize_parsed_message(
-            "claude-ai",
-            provider_meta,
-            message_id="db-id",
-            role="user",
-            text="db text",
-            timestamp="2024-01-15T10:30:00Z",
-        )
-
-        assert msg is not None
-        assert msg.id == "db-id"
-        assert msg.role == "user"
-        assert msg.text == "db text"
-        assert msg.timestamp is not None
-        assert msg.provider == "claude"
-
-    def test_reuses_extracted_viewports_when_raw_is_absent(self) -> None:
-        provider_meta = {
-            "content_blocks": [
-                {"type": "text", "text": "Assistant answer"},
-                {"type": "thinking", "text": "Internal trace"},
-            ],
-            "reasoning_traces": [],
-            "tool_calls": [],
-        }
-
-        msg = harmonize_parsed_message(
-            "claude-code",
-            provider_meta,
-            message_id="view-id",
-            role="assistant",
-            timestamp="2024-01-15T10:30:00Z",
-        )
-
-        assert msg is not None
-        assert msg.id == "view-id"
-        assert msg.role == "assistant"
-        assert msg.text == "Assistant answer\nInternal trace"
-        assert msg.timestamp is not None
-        assert [trace.text for trace in msg.reasoning_traces] == ["Internal trace"]
-
-    def test_falls_back_to_provider_meta_harmonization_for_malformed_payloads(self) -> None:
-        provider_meta = {
-            "sender": "assistant",
-            "text": "Fallback text",
-            "created_at": "2024-01-15T10:30:00Z",
-        }
-
-        msg = harmonize_parsed_message("claude-ai", provider_meta)
-
-        assert msg is not None
-        assert msg.role == "assistant"
-        assert msg.text == "Fallback text"
-        assert msg.timestamp is not None
-
-
-class TestBulkHarmonize:
-    """Contracts for bulk ParsedMessage harmonization."""
-
-    def test_skips_entries_without_provider_meta_or_non_messages(self) -> None:
-        parsed_messages = [
-            SimpleNamespace(provider_meta=None),
-            SimpleNamespace(provider_meta={"type": "progress"}),
-            SimpleNamespace(
-                provider_meta={"sender": "assistant", "text": "Kept"},
-                provider_message_id="kept-id",
-                role="assistant",
-                text="Kept",
-                timestamp="2024-01-15T10:30:00Z",
-            ),
-        ]
-
-        result = bulk_harmonize("claude-code", parsed_messages)
-
-        assert len(result) == 1
-        assert result[0].id == "kept-id"
-        assert result[0].role == "assistant"
-        assert result[0].text == "Kept"
-
-    def test_passes_database_context_through_to_harmonized_messages(self) -> None:
-        parsed_messages = [
-            SimpleNamespace(
-                provider_meta={"sender": "human", "text": ""},
-                provider_message_id="db-id",
-                role="user",
-                text="db text",
-                timestamp="2024-01-15T10:30:00Z",
-            )
-        ]
-
-        result = bulk_harmonize("claude-ai", parsed_messages)
-
-        assert len(result) == 1
-        assert result[0].id == "db-id"
-        assert result[0].role == "user"
-        assert result[0].text == "db text"
-        assert result[0].timestamp is not None
 
 
 class TestDatabaseIntegration:
@@ -177,52 +59,7 @@ class TestDatabaseIntegration:
 
 
 class TestExtractedProviderMetaFallbackText:
-    """Recovery of display text from stored structured viewports."""
-
-    def test_extract_from_provider_meta_rebuilds_text_from_supported_content_blocks(self) -> None:
-        provider_meta = {
-            "content_blocks": [
-                {"type": "text", "text": "plain text"},
-                {"type": "code", "text": "print(x)", "language": "python"},
-                {"type": "tool_result", "text": "tool output"},
-                {"type": "thinking", "text": "private reasoning"},
-                {"type": "tool_use", "text": "ignored tool use"},
-                {"type": "text", "text": ""},
-                "ignored non-dict",
-            ]
-        }
-
-        msg = extract_from_provider_meta(
-            "claude-code",
-            provider_meta,
-            message_id="msg-1",
-            role="assistant",
-        )
-
-        assert msg.id == "msg-1"
-        assert msg.role == "assistant"
-        assert msg.text == "plain text\nprint(x)\ntool output\nprivate reasoning"
-
-    def test_extract_from_provider_meta_ignores_nonsensical_content_blocks_for_text(self) -> None:
-        provider_meta = {
-            "content_blocks": [
-                {"type": "tool_use", "text": "ignored"},
-                {"type": "image", "text": "ignored"},
-                {"type": "text", "text": None},
-                123,
-            ]
-        }
-
-        msg = extract_from_provider_meta(
-            "claude-code",
-            provider_meta,
-            message_id="msg-2",
-            role="assistant",
-        )
-
-        assert msg.id == "msg-2"
-        assert msg.role == "assistant"
-        assert msg.text == ""
+    """Database-backed content block semantics still deserve a seeded regression check."""
 
     def test_content_blocks_have_semantic_types(self, seeded_db) -> None:
         conn = sqlite3.connect(seeded_db)
