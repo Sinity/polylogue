@@ -621,7 +621,7 @@ class TestRepairFunctions:
         """repair_orphaned_messages deletes orphaned messages."""
         from polylogue.config import Config
         from polylogue.storage.backends.connection import open_connection
-        from tests.infra.helpers import db_setup
+        from tests.infra.storage_records import db_setup
 
         db_path = db_setup(workspace_env)
 
@@ -650,7 +650,7 @@ class TestRepairFunctions:
         """repair_empty_conversations deletes empty conversations."""
         from polylogue.config import Config
         from polylogue.storage.backends.connection import open_connection
-        from tests.infra.helpers import db_setup
+        from tests.infra.storage_records import db_setup
 
         db_path = db_setup(workspace_env)
 
@@ -679,7 +679,7 @@ class TestRepairFunctions:
         """repair_dangling_fts handles missing FTS table gracefully."""
         from polylogue.config import Config
         from polylogue.storage.backends.connection import open_connection
-        from tests.infra.helpers import db_setup
+        from tests.infra.storage_records import db_setup
 
         db_path = db_setup(workspace_env)
 
@@ -698,7 +698,7 @@ class TestRepairFunctions:
         """repair_orphaned_attachments cleans up orphaned attachments."""
         from polylogue.config import Config
         from polylogue.storage.backends.connection import open_connection
-        from tests.infra.helpers import db_setup
+        from tests.infra.storage_records import db_setup
 
         db_path = db_setup(workspace_env)
 

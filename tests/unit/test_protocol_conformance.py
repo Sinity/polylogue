@@ -141,7 +141,7 @@ class TestOutputRendererConformance:
         """render() must write a non-empty output file for a seeded conversation."""
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.store import ConversationRecord, MessageRecord
-        from tests.infra.helpers import upsert_conversation, upsert_message
+        from tests.infra.storage_records import upsert_conversation, upsert_message
 
         db_path = tmp_path / "test.db"
         conv_id = "smoke-conv-0001"

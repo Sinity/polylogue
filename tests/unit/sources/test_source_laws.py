@@ -48,7 +48,7 @@ from polylogue.sources.source import (
     parse_payload,
 )
 from polylogue.types import Provider
-from tests.infra.helpers import GenericConversationBuilder, make_claude_chat_message
+from tests.infra.source_builders import GenericConversationBuilder, make_claude_chat_message
 from tests.infra.strategies import (
     conversations_wrapper_bytes_strategy,
     json_array_bytes_strategy,

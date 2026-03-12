@@ -9,7 +9,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from tests.infra.helpers import make_conversation
+from tests.infra.storage_records import make_conversation
 from tests.infra.strategies import (
     conversation_graph_strategy,
     expected_sorted_ids,

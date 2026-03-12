@@ -11,7 +11,7 @@ from polylogue.storage.store import (
     ConversationRecord,
     MessageRecord,
 )
-from tests.infra.helpers import (
+from tests.infra.storage_records import (
     make_attachment,
     make_conversation,
     make_message,

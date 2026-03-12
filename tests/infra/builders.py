@@ -3,7 +3,8 @@
 These factories build polylogue.lib.models instances with sensible defaults,
 suitable for unit tests that operate on domain models rather than storage records.
 
-For storage-layer helpers (ConversationRecord, MessageRecord), see helpers.py.
+For storage-layer helpers (ConversationRecord, MessageRecord), see
+tests.infra.storage_records.
 
 Usage:
     from tests.infra.builders import make_msg, make_conv

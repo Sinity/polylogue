@@ -23,7 +23,7 @@ from polylogue.pipeline.observers import (
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import PlanResult, RunResult
-from tests.infra.helpers import (
+from tests.infra.source_builders import (
     ChatGPTExportBuilder,
     GenericConversationBuilder,
     InboxBuilder,
@@ -504,8 +504,8 @@ def test_store_records_commits_within_lock(monkeypatch):
 	"""Verify store_records commits while _WRITE_LOCK is held."""
 	from contextlib import contextmanager
 
-	import tests.infra.helpers as helpers
-	from tests.infra.helpers import make_conversation, make_message
+	import tests.infra.storage_records as storage_helpers
+	from tests.infra.storage_records import make_conversation, make_message
 
 	class TrackingLock:
 		def __init__(self) -> None:
@@ -534,16 +534,16 @@ def test_store_records_commits_within_lock(monkeypatch):
 	def fake_connection_context(passed_conn):
 		yield passed_conn
 
-	monkeypatch.setattr(helpers, "_WRITE_LOCK", lock)
-	monkeypatch.setattr(helpers, "connection_context", fake_connection_context)
-	monkeypatch.setattr(helpers, "upsert_conversation", lambda *_: True)
-	monkeypatch.setattr(helpers, "upsert_message", lambda *_: True)
-	monkeypatch.setattr(helpers, "upsert_attachment", lambda *_: True)
-	monkeypatch.setattr(helpers, "_prune_attachment_refs", lambda *_: None)
+	monkeypatch.setattr(storage_helpers, "_WRITE_LOCK", lock)
+	monkeypatch.setattr(storage_helpers, "connection_context", fake_connection_context)
+	monkeypatch.setattr(storage_helpers, "upsert_conversation", lambda *_: True)
+	monkeypatch.setattr(storage_helpers, "upsert_message", lambda *_: True)
+	monkeypatch.setattr(storage_helpers, "upsert_attachment", lambda *_: True)
+	monkeypatch.setattr(storage_helpers, "_prune_attachment_refs", lambda *_: None)
 
 	record = make_conversation("test:1", title="Test", content_hash="abc123")
 	messages = [make_message("test:1:msg1", "test:1", text="Hello")]
-	result = helpers.store_records(
+	result = storage_helpers.store_records(
 		conversation=record,
 		messages=messages,
 		attachments=[],
@@ -558,7 +558,7 @@ def test_store_records_commits_within_lock(monkeypatch):
 def test_concurrent_store_records_no_deadlock(workspace_env):
 	"""Verify concurrent store_records calls don't deadlock."""
 	from polylogue.storage.backends.connection import open_connection
-	from tests.infra.helpers import make_conversation, make_message, store_records
+	from tests.infra.storage_records import make_conversation, make_message, store_records
 
 	# Initialize the database using workspace_env fixture (sets up proper env vars)
 	with open_connection(None):

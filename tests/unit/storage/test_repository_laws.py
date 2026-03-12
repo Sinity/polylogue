@@ -24,7 +24,7 @@ from polylogue.storage.store import (
     MessageRecord,
     RunRecord,
 )
-from tests.infra.helpers import make_message
+from tests.infra.storage_records import make_message
 from tests.infra.strategies import (
     ConversationSpec,
     MessageSpec,
