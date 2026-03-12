@@ -57,7 +57,7 @@ Recorded on `2026-03-12`.
 ### Full Test Suite
 
 - Command: `nix develop -c pytest -q -n 0`
-- Result: `2925 passed, 1 warning in 204.59s`
+- Result: `2792 passed, 1 warning in 203.30s`
 - Note: repo-wide pytest defaults still enable `-n auto`; use `-n 0` here for
   stable mutation-comparison timing.
 
@@ -160,37 +160,58 @@ confuse them with clean post-commit baselines.
 | `providers-semantics` | `eb43cfd48e98` | 778 | 496 | 2 | 0 | Slight regression with the same overall story: reach is complete, but `polylogue.schemas.unified` still carries too much semantic authority. Shared block/meta/reasoning extraction remains under-specified. |
 | `sources-parse` | `eb43cfd48e98` | 3531 | 2366 | 15 | 0 | Broad source reach remains complete, but this pass did not improve the broad source frontier overall. The main survivor mass is still shared semantic extraction plus Drive auth/filter/file iteration helpers, with modest timeout growth. |
 
+### Maximal Remaining-Owner Compaction Pre-Commit Baselines
+
+These are the latest post-edit reruns from the maximal remaining-owner
+compaction pass. They were recorded before committing the test rewrite batch, so
+the campaign artifacts correctly report `Dirty = yes` and commit
+`c1fd5ce60e82` even though the measured tree is exactly the one that passed the
+repo-wide verification baseline above.
+
+Use these as the current empirical state of the touched fronts.
+
+| Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `ui-core` | `c1fd5ce60e82` | 11 | 15 | 0 | 0 | Flat overall. The suite owner is smaller, but `PlainConsole.print` still dominates the remaining survivor mass. This is now a tiny focused projection-contract problem. |
+| `cli-query` | `c1fd5ce60e82` | 1013 | 935 | 14 | 0 | Material improvement over the earlier concentrated baseline. The owner rewrite reduced survivors while keeping full reach; the remaining frontier is still `_async_execute_query` and modifier/delete action flow. |
+| `drive-client` | `c1fd5ce60e82` | 584 | 296 | 3 | 0 | Slight improvement again. The remaining weak cluster is still credential loading, folder resolution, metadata/download helpers, and retry/auth transport behavior. |
+| `source-detection` | `c1fd5ce60e82` | 934 | 217 | 0 | 0 | Strong improvement. The compacted source-owner contracts substantially improved kill density and removed timeout noise; the remaining cluster is concentrated in `filter_entries`, `_emit_individual`, and Drive payload sniffing. |
+| `providers-semantics` | `c1fd5ce60e82` | 784 | 489 | 3 | 0 | Essentially flat to slightly worse than the previous pre-commit state. The suite is still fully reaching the surface, but `extract_content_blocks`, `to_meta`, and fallback Claude Code harmonization remain the dominant semantic weak spots. |
+| `sources-parse` | `c1fd5ce60e82` | 3886 | 2019 | 7 | 0 | Strong improvement on the broadest source front. Kills increased substantially, survivors dropped materially, and timeout mass stayed low. The remaining frontier is now sharply concentrated in shared semantic extraction, Drive credential/transport helpers, file iteration, and content-block/reasoning helpers. |
+
 ### Readiness Call
 
 - `004` is complete, and the immediate follow-up reruns are complete.
 - The first post-`005` focused concentration rerun wave is complete on clean SHAs `c0596770631e`, `47a9b1cff33f`, `a3440a0f1a4b`, and `027519a11118`.
 - The bulk second concentration-program reruns are complete on clean SHA `e07c4baebfe6`.
-- The whole-suite densification pass is also measured, but only as a dirty
-  pre-commit rerun set on `eb43cfd48e98`. That is current evidence, not yet a
-  clean replacement baseline.
+- The whole-suite densification pass is also measured as a dirty pre-commit
+  rerun set on `eb43cfd48e98`.
+- The maximal remaining-owner compaction pass is now measured as a newer dirty
+  pre-commit rerun set on `c1fd5ce60e82`.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
   1. `providers-semantics`
-  2. `sources-parse`
-  3. `repository`
+  2. `repository`
+  3. `filters`
   4. `models`
-  5. `filters`
-  6. `source-detection`
+  5. `cli-run`
+  6. `drive-client`
   7. `cli-query`
-  8. `drive-client`
-  9. `cli-run`
+  8. `sources-parse`
+  9. `source-detection`
   10. `ui-core`
 - We are not ready to claim source/provider/harmonization semantics are exhaustively specified.
   The reruns removed reach failures, but they did not saturate the semantic space.
 - The dominant structural issues are now:
   - survivor concentration in `polylogue.schemas.unified` and provider viewport shaping,
   - `providers-semantics` concentration reduced duplication but also revealed lost mutation signal around adapter content-block/meta extraction,
-  - high survivor density in source parsing and query orchestration,
+  - query orchestration still carrying a large but now sharper survivor frontier,
+  - source parsing no longer looks like a reach problem; it is a concentrated semantic-utility problem,
   - the whole-suite densification pass improved suite size and runtime more than mutation density in source/semantic fronts, so the next pass should bias toward stronger semantic oracles rather than further deletions alone,
   - rich/plain CLI progress observer behavior is now isolated enough to target directly,
   - `filters` concentration removed ownership noise but left a smaller, sharper `pick`/sort/loading survivor cluster,
-  - source parsing now carrying a clearer timeout cluster in `content_blocks_from_segments`,
-  - source detection still carrying a narrower but still meaningful survivor cluster around ZIP filtering, emit paths, and provider sniffing,
+  - source parsing now carrying a clearer residual cluster in shared extraction helpers plus a small timeout cluster around ChatGPT pair iteration / Drive transport,
+  - source detection now carries a much narrower residual cluster around ZIP filtering, emit paths, and provider sniffing,
   - drive-client transport/auth behavior still carrying a narrower but meaningful survivor cluster in auth/load/download helpers.
 - Additional mutmut infrastructure work is not the bottleneck now. The next
   gains come from stronger laws, better generators/oracles, and code
