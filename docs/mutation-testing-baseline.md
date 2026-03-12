@@ -73,6 +73,7 @@ ledger now mixes four clean baselines:
 - the follow-up source/query/repository reruns on commits `7e7c310037f9`,
   `a27de694650d`, and `3bdd3f02dc87`
 - the clean post-`005` rerun wave on commit `e759af23458d`
+- the clean Phase-5 CLI/site concentration reruns on commit `58264c2c47be`
 
 `004`, its follow-up reruns, and the first focused post-`005` source/provider
 concentration reruns are now complete. The tables below are the current durable
@@ -90,7 +91,7 @@ guards during future waves rather than first-line remediation targets.
 | `fts5` | `147e689d15ca` | 41 | 7 | 0 | 0 | Good search-law signal with a small survivor tail. |
 | `hybrid` | `147e689d15ca` | 112 | 21 | 0 | 3 | Strong enough to guide later search refactors. |
 | `models` | `147e689d15ca` | 129 | 20 | 3 | 14 | Good semantic signal; not a blocking blind spot. |
-| `cli-run` | `2bdb267e93b7` | 183 | 92 | 0 | 8 | `004` improved this from `121/99/0/63` to `183/92/0/8`; it is now a maintenance surface, not the next law-wave priority. |
+| `cli-run` | `58264c2c47be` | 167 | 21 | 87 | 8 | Phase 5 concentrated the owner files sharply, but the clean rerun exposed heavy timeout mass in observer/display paths. It remains usable, but no longer belongs in the "healthy" bucket without follow-up runtime-contract work. |
 
 ### Schema / Pipeline Follow-Up Baselines
 
@@ -112,10 +113,10 @@ the follow-up source/helper/query pass.
 
 | Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| `cli-query` | `a3440a0f1a4b` | 961 | 989 | 12 | 0 | Clean post-entrypoint concentration rerun: duplicate formatting noise is gone, kill count improved, and the remaining survivor mass is now even more concentrated in `_async_execute_query` routing and the new `_create_query_vector_provider` seam. |
+| `cli-query` | `58264c2c47be` | 954 | 985 | 23 | 0 | Clean Phase-5 rerun after replacing the mixed CLI owner files: concentration held, survivor density stayed essentially flat, and timeout mass shifted into `query_actions` modifier/delete flows instead of broad routing blindness. |
 | `drive-client` | `37e26aba2d3d` | 581 | 299 | 3 | 0 | Clean post-tightening rerun improved kill rate again; the remaining residue is now mostly concentrated in credential loading, folder resolution, and metadata/download helpers rather than broad reach gaps. |
 | `repository` | `3bdd3f02dc87` | 538 | 94 | 77 | 0 | Clean rerun after fixing mutation-artifact path anchoring and re-running the concentrated repository surface from a clean worktree: reach stayed complete, survivor count improved modestly, and the remaining debt is concentrated in archive stats, conversation-record conversion, save/search similarity, and render/session-tree hydration seams. Timeout mass remains real, especially around session-tree/render-projection paths. |
-| `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
+| `site-builder` | `58264c2c47be` | 240 | 224 | 10 | 0 | Clean Phase-5 rerun after owner concentration: survivor counts improved slightly, but timeout mass grew around archive scanning and root/provider index generation. The area is still concentrated, but not "set and forget." |
 | `source-detection` | `844d52ee925d` | 825 | 324 | 2 | 0 | Clean post-concentration rerun after collapsing scattered source-iteration examples into `test_source_laws.py`; reach stayed complete, kill count improved, and timeout noise dropped while survivor mass remained concentrated in ZIP filtering, emit paths, and provider sniffing. |
 | `providers-semantics` | `315beb0f19f1` | 819 | 455 | 2 | 0 | Clean rerun after consolidating semantic-law ownership and refactoring `schemas.unified` dispatch into explicit adapter/fallback maps. Reach stayed complete, but kill count regressed, which means the suite is more concentrated yet still underspecified around `extract_content_blocks`, `to_meta`, fallback Claude Code extraction, and harmonization edge cases. |
 | `sources-parse` | `47a9b1cff33f` | 3597 | 2319 | 31 | 0 | Clean post-drive-parser concentration rerun improved kill and survivor counts again while keeping reach complete; the remaining debt is now more sharply concentrated in `schemas.unified`, Drive auth/filter helpers, and timeout-heavy `content_blocks_from_segments` coverage. |
@@ -127,11 +128,11 @@ the follow-up source/helper/query pass.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
   1. `sources-parse`
-  2. `cli-query`
-  3. `providers-semantics`
-  4. `source-detection`
-  5. `drive-client`
-  6. `repository`
+  2. `providers-semantics`
+  3. `source-detection`
+  4. `drive-client`
+  5. `repository`
+  6. `cli-query`
 - We are not ready to claim source/provider/harmonization semantics are exhaustively specified.
   The reruns removed reach failures, but they did not saturate the semantic space.
 - The dominant structural issues are now:
@@ -144,6 +145,9 @@ the follow-up source/helper/query pass.
 - Additional mutmut infrastructure work is not the bottleneck now. The next
   gains come from stronger laws, better generators/oracles, and code
   refactors that collapse duplicated semantic authority.
+- Phase 5 succeeded at structural concentration, but its reruns also showed
+  that CLI/site areas still carry meaningful timeout-heavy blind spots. Those
+  are now execution-contract problems, not file-ownership problems.
 - The three-front concentration wave (`source-detection`, `providers-semantics`,
   `repository`) is now fully closed. The next execution wave should target
   survivor density, not reach restoration.
