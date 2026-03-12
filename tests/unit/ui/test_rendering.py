@@ -215,6 +215,28 @@ class TestHTMLRenderer:
         assert "Python testing" in content
         assert "query" in content  # JSON content present
 
+    @pytest.mark.asyncio
+    async def test_render_escapes_html_content(self, workspace_env):
+        """HTMLRenderer must escape raw HTML in titles and message content."""
+        db_path = db_setup(workspace_env)
+        conv_id = "escaped-html-conv"
+        (
+            ConversationBuilder(db_path, conv_id)
+            .title("<script>alert('xss')</script>")
+            .add_message("m1", role="user", text="<img src=x onerror='alert(1)'>")
+            .save()
+        )
+
+        renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
+        output_path = workspace_env["archive_root"] / "render"
+        result_path = await renderer.render(conv_id, output_path)
+        content = result_path.read_text()
+
+        assert "<script>" not in content
+        assert "&lt;script&gt;" in content
+        assert "<img" not in content
+        assert "&lt;img" in content
+
 
 class TestRendererFactory:
     """Tests for renderer factory functions."""
