@@ -1151,86 +1151,6 @@ class ChatGPTExportBuilder:
         return path
 
 
-class ClaudeExportBuilder:
-    """Builder for Claude AI export format.
-
-    Example:
-        export = (ClaudeExportBuilder("conv1")
-                  .name("My Claude Chat")
-                  .add_message("human", "Hello")
-                  .add_message("assistant", "Hi!", attachments=[...])
-                  .build())
-    """
-
-    def __init__(self, conv_id: str):
-        self.conv_id = conv_id
-        self._name: str | None = None
-        self._messages: list[dict] = []
-        self._msg_counter = 0
-        self._wrap_in_conversations = True
-
-    def name(self, name: str) -> ClaudeExportBuilder:
-        self._name = name
-        return self
-
-    def unwrapped(self) -> ClaudeExportBuilder:
-        """Don't wrap in {"conversations": [...]} structure."""
-        self._wrap_in_conversations = False
-        return self
-
-    def add_message(
-        self,
-        sender: str,
-        text: str,
-        uuid: str | None = None,
-        attachments: list[dict] | None = None,
-        files: list[dict] | None = None,
-        timestamp: str | None = None,
-    ) -> ClaudeExportBuilder:
-        """Add a chat message."""
-        self._msg_counter += 1
-        msg_uuid = uuid or f"msg-{self._msg_counter}"
-
-        msg = make_claude_chat_message(
-            msg_uuid,
-            sender,
-            text,
-            attachments=attachments,
-            files=files,
-            timestamp=timestamp,
-        )
-        self._messages.append(msg)
-        return self
-
-    def add_human(self, text: str, **kwargs) -> ClaudeExportBuilder:
-        """Shorthand for add_message with sender='human'."""
-        return self.add_message("human", text, **kwargs)
-
-    def add_assistant(self, text: str, **kwargs) -> ClaudeExportBuilder:
-        """Shorthand for add_message with sender='assistant'."""
-        return self.add_message("assistant", text, **kwargs)
-
-    def build(self) -> dict[str, Any]:
-        """Build the Claude export structure."""
-        conversation = {
-            "id": self.conv_id,
-            "chat_messages": self._messages,
-        }
-        if self._name:
-            conversation["name"] = self._name
-
-        if self._wrap_in_conversations:
-            return {"conversations": [conversation]}
-        return conversation
-
-    def write_to(self, path: Path) -> Path:
-        """Build and write to file."""
-        import json
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.build(), indent=2), encoding="utf-8")
-        return path
-
-
 class GenericConversationBuilder:
     """Builder for simple/Codex format conversations.
 
@@ -1300,7 +1220,6 @@ class GenericConversationBuilder:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.build(), indent=2), encoding="utf-8")
         return path
-
 
 
 
