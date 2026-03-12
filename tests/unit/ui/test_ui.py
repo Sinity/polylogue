@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import fields
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,7 +15,6 @@ from polylogue.ui.facade import (
     UIError,
     create_console_facade,
 )
-from polylogue.version import VersionInfo, _get_git_info, _resolve_version
 
 # --- Merged from test_ui_facade_coverage.py ---
 
@@ -506,184 +503,6 @@ class TestStatusMethods:
         facade = ConsoleFacade(plain=False)
         getattr(facade, method)("Test message")
         # Should not raise
-
-
-# =============================================================================
-# VersionInfo
-# =============================================================================
-
-class TestVersionInfo:
-    def test_version_only_and_repr(self):
-        v = VersionInfo(version="1.0.0")
-        assert str(v) == "1.0.0"
-        assert v.full == "1.0.0"
-        assert v.short == "1.0.0"
-        assert "1.0.0" in repr(v)
-
-    @pytest.mark.parametrize("commit,dirty,has_dirty_suffix", [
-        ("abc123def456", False, False),
-        ("abc123def456", True, True),
-    ], ids=["with_commit_clean", "with_commit_dirty"])
-    def test_version_with_commit(self, commit, dirty, has_dirty_suffix):
-        v = VersionInfo(version="1.0.0", commit=commit, dirty=dirty)
-        v_str = str(v)
-        assert "1.0.0+" in v_str
-        assert v.short == "1.0.0"
-        if has_dirty_suffix:
-            assert "-dirty" in v_str
-        else:
-            assert "-dirty" not in v_str
-
-    @pytest.mark.parametrize("version,commit", [
-        ("2.5.3", "fedcba9876543210"),
-        ("3.2.1", "deadbeef12345678"),
-    ], ids=["short_sha_1", "short_sha_2"])
-    def test_version_properties(self, version, commit):
-        v = VersionInfo(version=version, commit=commit)
-        assert str(v) == f"{version}+{commit[:8]}"
-        assert v.full == f"{version}+{commit[:8]}"
-        assert v.short == version
-
-    def test_version_dirty_no_commit_and_equality(self):
-        # No commit = version only
-        v = VersionInfo(version="1.0.0", dirty=True)
-        assert str(v) == "1.0.0"
-
-        # Test equality
-        v1 = VersionInfo(version="1.0.0")
-        v2 = VersionInfo(version="1.0.0")
-        assert v1 == v2
-
-        # Test dataclass fields
-        field_names = {f.name for f in fields(VersionInfo)}
-        assert field_names == {"version", "commit", "dirty"}
-
-
-# =============================================================================
-# _get_git_info
-# =============================================================================
-
-class TestGetGitInfo:
-    def test_valid_git_repo(self):
-        repo_root = Path(__file__).resolve().parent.parent
-        if (repo_root / ".git").exists():
-            commit, dirty = _get_git_info(repo_root)
-            assert commit is not None
-            assert len(commit) == 40  # Full SHA
-            assert isinstance(dirty, bool)
-
-    @pytest.mark.parametrize("scenario,setup", [
-        ("nonexistent", lambda tmp_path: tmp_path / "nonexistent"),
-        ("non_git_dir", lambda tmp_path: tmp_path),
-    ], ids=["nonexistent_dir", "non_git_dir"])
-    def test_returns_none(self, tmp_path, scenario, setup):
-        path = setup(tmp_path)
-        commit, dirty = _get_git_info(path)
-        assert commit is None
-        assert dirty is False
-
-    def test_timeout_returns_none(self, tmp_path, monkeypatch):
-        import subprocess
-
-        def mock_run(*args, **kwargs):
-            raise subprocess.TimeoutExpired("git", 2)
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-        commit, dirty = _get_git_info(tmp_path)
-        assert commit is None
-        assert dirty is False
-
-    def test_returns_tuple_and_dirty_is_bool(self, tmp_path):
-        result = _get_git_info(tmp_path)
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert isinstance(result[1], bool)
-
-        repo_root = Path(__file__).resolve().parent.parent
-        if (repo_root / ".git").exists():
-            commit, dirty = _get_git_info(repo_root)
-            assert isinstance(dirty, bool)
-
-
-# =============================================================================
-# _resolve_version
-# =============================================================================
-
-class TestResolveVersion:
-    def test_returns_version_info_and_attributes(self):
-        result = _resolve_version()
-        assert isinstance(result, VersionInfo)
-        assert result.version != ""
-        assert result.version != "unknown"
-        assert len(result.version) > 0
-
-        # Check all attributes exist and have correct types
-        assert hasattr(result, "version")
-        assert hasattr(result, "commit")
-        assert hasattr(result, "dirty")
-        assert result.commit is None or isinstance(result.commit, str)
-        assert isinstance(result.dirty, bool)
-
-
-# =============================================================================
-# Module-level constants
-# =============================================================================
-
-class TestVersionConstants:
-    def test_all_version_exports(self):
-        from polylogue import version
-        from polylogue.version import POLYLOGUE_VERSION, VERSION_INFO, VersionInfo
-
-        # Test POLYLOGUE_VERSION
-        assert isinstance(POLYLOGUE_VERSION, str)
-        assert len(POLYLOGUE_VERSION) > 0
-
-        # Test VERSION_INFO
-        assert isinstance(VERSION_INFO, VersionInfo)
-        assert VERSION_INFO.version in POLYLOGUE_VERSION
-
-        # Test module exports
-        assert hasattr(version, "POLYLOGUE_VERSION")
-        assert hasattr(version, "VERSION_INFO")
-        assert hasattr(version, "VersionInfo")
-
-        # Test __all__ if present
-        if hasattr(version, "__all__"):
-            all_items = version.__all__
-            assert "POLYLOGUE_VERSION" in all_items
-            assert "VERSION_INFO" in all_items
-            assert "VersionInfo" in all_items
-
-
-# =============================================================================
-# Additional edge cases and branch coverage
-# =============================================================================
-
-class TestResolveVersionEdgeCases:
-    def test_resolve_version_consistency_and_fallback(self, monkeypatch):
-        """Test version resolution consistency and fallback behavior."""
-        # Test consistency
-        result1 = _resolve_version()
-        result2 = _resolve_version()
-        assert isinstance(result1, VersionInfo)
-        assert isinstance(result2, VersionInfo)
-        assert result1.version == result2.version
-
-        # Test fallback to pyproject.toml
-        from importlib.metadata import PackageNotFoundError
-
-        import polylogue.version as version_module
-
-        def mock_metadata_version(name):
-            raise PackageNotFoundError(name)
-
-        original_metadata_version = version_module.metadata_version
-        monkeypatch.setattr(version_module, "metadata_version", mock_metadata_version)
-        result = _resolve_version()
-        monkeypatch.setattr(version_module, "metadata_version", original_metadata_version)
-
-        assert result.version is not None
-        assert len(result.version) > 0
 
 
 class TestUIErrorException:

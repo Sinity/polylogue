@@ -11,8 +11,11 @@ from polylogue.lib.models import DialoguePair, Message
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     attachment_from_meta,
+    content_blocks_from_segments,
+    extract_messages_from_list,
 )
 from polylogue.sources.parsers.claude import (
+    extract_messages_from_chat_messages,
     extract_text_from_segments,
     parse_ai,
     parse_code,
@@ -58,6 +61,107 @@ def test_extract_text_from_segments_serializes_structured_segments() -> None:
 def test_extract_text_from_segments_ignores_empty_and_unknown_segments() -> None:
     """Claude segment flattening should return None when no usable text exists."""
     assert extract_text_from_segments(["", {"text": None}, {"content": None}, {}, 0, None]) is None
+
+
+def test_content_blocks_from_segments_classifies_code_and_tool_blocks() -> None:
+    """Shared segment parsing must preserve semantic block kinds and order."""
+    blocks = content_blocks_from_segments(
+        [
+            {"type": "text", "text": "plain"},
+            {"type": "thinking", "thinking": "reason"},
+            {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"path": "README.md"}},
+            {"type": "tool_result", "tool_use_id": "tool-1", "content": [{"type": "text", "text": "done"}]},
+            {"type": "code", "code": "print('ok')", "language": "python"},
+            {"type": "document", "media_type": "application/pdf", "title": "Spec"},
+        ]
+    )
+
+    assert [block.type for block in blocks] == [
+        "text",
+        "thinking",
+        "tool_use",
+        "tool_result",
+        "code",
+        "document",
+    ]
+    assert blocks[2].tool_name == "Read"
+    assert blocks[2].tool_input == {"path": "README.md"}
+    assert blocks[3].tool_id == "tool-1"
+    assert blocks[3].text == "done"
+    assert blocks[4].text == "print('ok')"
+    assert blocks[4].metadata == {"language": "python"}
+    assert blocks[5].media_type == "application/pdf"
+
+
+def test_extract_messages_from_list_preserves_wrapped_segment_semantics() -> None:
+    """List extraction must preserve wrapped roles, text, and code/thinking blocks."""
+    messages = extract_messages_from_list(
+        [
+            {
+                "message": {
+                    "id": "m-assistant",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "reason"},
+                        {"type": "code", "code": "print('ok')", "language": "python"},
+                    ],
+                },
+                "timestamp": "2025-01-01T00:00:00Z",
+            },
+            {
+                "id": "m-user",
+                "sender": "human",
+                "content": {"parts": ["question", "more context"]},
+            },
+        ]
+    )
+
+    assert [message.provider_message_id for message in messages] == ["m-assistant", "m-user"]
+    assert [message.role.value for message in messages] == ["assistant", "user"]
+    assert messages[0].text == "reason\nprint('ok')"
+    assert [block.type for block in messages[0].content_blocks] == ["thinking", "code"]
+    assert messages[0].content_blocks[1].metadata == {"language": "python"}
+    assert messages[1].text == "question\nmore context"
+    assert [block.type for block in messages[1].content_blocks] == ["text", "text"]
+    assert [block.text for block in messages[1].content_blocks] == ["question", "more context"]
+
+
+def test_extract_messages_from_chat_messages_preserves_structured_segments_and_attachments() -> None:
+    """Claude chat extraction must keep structured blocks and attachment metadata."""
+    messages, attachments = extract_messages_from_chat_messages(
+        [
+            {
+                "uuid": "assistant-1",
+                "sender": "assistant",
+                "created_at": "2025-01-01T00:00:00Z",
+                "content": [
+                    {"type": "thinking", "thinking": "reason"},
+                    {"type": "tool_result", "tool_use_id": "tool-1", "content": [{"type": "text", "text": "done"}]},
+                    {"type": "code", "code": "print('ok')", "language": "python"},
+                ],
+                "attachments": [{"id": "att-1", "name": "spec.pdf", "mime_type": "application/pdf", "size": 12}],
+            },
+            {
+                "uuid": "user-1",
+                "sender": "human",
+                "text": "question",
+            },
+        ]
+    )
+
+    assert [message.provider_message_id for message in messages] == ["assistant-1", "user-1"]
+    assert [message.role.value for message in messages] == ["assistant", "user"]
+    assert messages[0].text == (
+        "<thinking>reason</thinking>\n"
+        "{\"content\": [{\"text\": \"done\", \"type\": \"text\"}], "
+        "\"tool_use_id\": \"tool-1\", \"type\": \"tool_result\"}"
+    )
+    assert [block.type for block in messages[0].content_blocks] == ["thinking", "tool_result", "code"]
+    assert messages[0].content_blocks[2].metadata == {"language": "python"}
+    assert len(attachments) == 1
+    assert attachments[0].provider_attachment_id == "att-1"
+    assert attachments[0].mime_type == "application/pdf"
+    assert attachments[0].size_bytes == 12
 
 
 
