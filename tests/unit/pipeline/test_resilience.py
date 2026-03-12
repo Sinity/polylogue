@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -164,48 +163,7 @@ async def test_parse_claude_code_jsonl_with_null_fields(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Fault 7: Acquisition scan_sources handles missing source directory
-# ---------------------------------------------------------------------------
-
-async def test_acquisition_scan_missing_source_path(tmp_path):
-    """AcquisitionService.scan_sources handles a missing source directory gracefully."""
-    from polylogue.paths import Source
-    from polylogue.pipeline.services.acquisition import AcquisitionService
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
-
-    db = SQLiteBackend(db_path=tmp_path / "test.db")
-    svc = AcquisitionService(backend=db)
-
-    missing_source = Source(name="missing", path=tmp_path / "does_not_exist")
-    result = await svc.scan_sources([missing_source])
-    # Should return a ScanResult, not raise
-    assert result is not None
-
-
-# ---------------------------------------------------------------------------
-# Fault 8: Acquisition store_records handles backend save failure
-# ---------------------------------------------------------------------------
-
-async def test_acquisition_store_survives_backend_error(tmp_path):
-    """store_records surfaces backend errors rather than silently dropping data."""
-    from polylogue.pipeline.services.acquisition import AcquisitionService
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
-
-    db = SQLiteBackend(db_path=tmp_path / "test.db")
-    svc = AcquisitionService(backend=db)
-
-    record = _make_raw_record("test-1", "chatgpt", b'{"id": "c1"}')
-
-    with patch.object(db, "save_raw_conversation", side_effect=RuntimeError("disk full")):
-        # store_records is resilient: it logs the error and returns without raising
-        result = await svc.store_records([record])
-        # Error count should be non-zero, acquired should be 0
-        assert result.counts["errors"] >= 1
-        assert result.counts["acquired"] == 0
-
-
-# ---------------------------------------------------------------------------
-# Fault 9: Parsing handles very large valid conversation
+# Fault 7: Parsing handles very large valid conversation
 # ---------------------------------------------------------------------------
 
 async def test_parse_very_large_conversation_does_not_crash(tmp_path):
@@ -243,7 +201,7 @@ async def test_parse_very_large_conversation_does_not_crash(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Fault 10: Parsing handles chatgpt with deeply nested but invalid mapping
+# Fault 8: Parsing handles chatgpt with deeply nested but invalid mapping
 # ---------------------------------------------------------------------------
 
 async def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path):

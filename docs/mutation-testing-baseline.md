@@ -71,7 +71,7 @@ ledger now mixes four clean baselines:
 - the schema/pipeline rerun wave on commit `d1e704d7a2ba`
 - the post-`004` law-wave baselines on commit `2bdb267e93b7`
 - the follow-up source/query/repository reruns on commits `7e7c310037f9`,
-  `a27de694650d`, and `b1f1d35bee28`
+  `a27de694650d`, and `3bdd3f02dc87`
 - the clean post-`005` rerun wave on commit `e759af23458d`
 
 `004`, its follow-up reruns, and the first focused post-`005` source/provider
@@ -113,7 +113,7 @@ the follow-up source/helper/query pass.
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | `cli-query` | `a3440a0f1a4b` | 961 | 989 | 12 | 0 | Clean post-entrypoint concentration rerun: duplicate formatting noise is gone, kill count improved, and the remaining survivor mass is now even more concentrated in `_async_execute_query` routing and the new `_create_query_vector_provider` seam. |
 | `drive-client` | `37e26aba2d3d` | 581 | 299 | 3 | 0 | Clean post-tightening rerun improved kill rate again; the remaining residue is now mostly concentrated in credential loading, folder resolution, and metadata/download helpers rather than broad reach gaps. |
-| `repository` | `027519a11118` | 535 | 102 | 72 | 0 | Clean post-concentration rerun after collapsing repository ownership into `test_repository_laws.py`: reach stayed complete and ownership is much tighter, but kill density regressed versus the broader older surface and the clean timeout profile is slightly worse than the optimistic dirty rerun suggested. The remaining survivor and timeout mass is now concentrated in archive stats, save/search similarity, and list/hydration/read-model seams. |
+| `repository` | `3bdd3f02dc87` | 538 | 94 | 77 | 0 | Clean rerun after fixing mutation-artifact path anchoring and re-running the concentrated repository surface from a clean worktree: reach stayed complete, survivor count improved modestly, and the remaining debt is concentrated in archive stats, conversation-record conversion, save/search similarity, and render/session-tree hydration seams. Timeout mass remains real, especially around session-tree/render-projection paths. |
 | `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
 | `source-detection` | `844d52ee925d` | 825 | 324 | 2 | 0 | Clean post-concentration rerun after collapsing scattered source-iteration examples into `test_source_laws.py`; reach stayed complete, kill count improved, and timeout noise dropped while survivor mass remained concentrated in ZIP filtering, emit paths, and provider sniffing. |
 | `providers-semantics` | `315beb0f19f1` | 819 | 455 | 2 | 0 | Clean rerun after consolidating semantic-law ownership and refactoring `schemas.unified` dispatch into explicit adapter/fallback maps. Reach stayed complete, but kill count regressed, which means the suite is more concentrated yet still underspecified around `extract_content_blocks`, `to_meta`, fallback Claude Code extraction, and harmonization edge cases. |
