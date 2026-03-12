@@ -788,11 +788,17 @@ def cmd_list(_args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     campaign = CAMPAIGNS[args.campaign]
+    json_out = None if args.json_out is None else (args.json_out if args.json_out.is_absolute() else ROOT / args.json_out)
+    markdown_out = (
+        None
+        if args.markdown_out is None
+        else (args.markdown_out if args.markdown_out.is_absolute() else ROOT / args.markdown_out)
+    )
     result = run_campaign(
         campaign,
         repo_root=ROOT,
-        json_out=args.json_out,
-        markdown_out=args.markdown_out,
+        json_out=json_out,
+        markdown_out=markdown_out,
         keep_workspace=args.keep_workspace,
     )
     print(format_markdown(result))
@@ -800,10 +806,12 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_index(args: argparse.Namespace) -> int:
-    results = load_results(args.campaign_dir)
+    campaign_dir = args.campaign_dir if args.campaign_dir.is_absolute() else ROOT / args.campaign_dir
+    out = args.out if args.out.is_absolute() else ROOT / args.out
+    results = load_results(campaign_dir)
     rendered = format_index(results)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(rendered)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(rendered)
     print(rendered)
     return 0
 
