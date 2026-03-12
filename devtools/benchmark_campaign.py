@@ -237,10 +237,9 @@ def run_campaign(
             "-m",
             "pytest",
             "-q",
+            "--override-ini=addopts=-ra",
             "-n",
             "0",
-            "-p",
-            "no:xdist",
             "-p",
             "no:randomly",
             "--benchmark-enable",
@@ -250,6 +249,8 @@ def run_campaign(
         start = time.monotonic()
         completed = subprocess.run(command, cwd=ROOT)
         runtime_seconds = time.monotonic() - start
+        if completed.returncode != 0 and (not raw_json.exists() or raw_json.stat().st_size == 0):
+            raise SystemExit(completed.returncode)
         if not raw_json.exists():
             raise SystemExit(f"Benchmark run for {campaign.name} produced no JSON artifact")
         payload = json.loads(raw_json.read_text())
