@@ -27,7 +27,7 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.backends.schema import _ensure_schema
 from polylogue.storage.store import ConversationRecord
-from tests.infra.helpers import make_hash
+from tests.infra.storage_records import make_hash
 
 
 class TestEnsureVec0Table:

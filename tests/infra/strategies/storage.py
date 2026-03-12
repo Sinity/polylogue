@@ -11,7 +11,7 @@ from hypothesis import strategies as st
 
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
-from tests.infra.helpers import ConversationBuilder
+from tests.infra.storage_records import ConversationBuilder
 
 _PROVIDERS: Final[tuple[str, ...]] = ("claude", "chatgpt", "codex", "claude-code")
 _ROLES: Final[tuple[str, ...]] = ("user", "assistant", "system")

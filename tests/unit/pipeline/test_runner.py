@@ -24,7 +24,7 @@ from polylogue.pipeline.runner import (
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import PlanResult
-from tests.infra.helpers import make_conversation, make_message, store_records
+from tests.infra.storage_records import make_conversation, make_message, store_records
 
 
 class TestRenderFailureTracking:
