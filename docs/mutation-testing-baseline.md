@@ -47,7 +47,7 @@ nix develop -c python -m devtools.mutmut_campaign index
 
 ## Latest Non-Mutation Baseline
 
-Recorded on `2026-03-12`.
+Recorded on `2026-03-13`.
 
 ### Repo-Wide Lint
 
@@ -57,7 +57,7 @@ Recorded on `2026-03-12`.
 ### Full Test Suite
 
 - Command: `nix develop -c pytest -q -n 0`
-- Result: `2792 passed, 1 warning in 203.30s`
+- Result: `2791 passed, 1 warning in 193.09s`
 - Note: repo-wide pytest defaults still enable `-n auto`; use `-n 0` here for
   stable mutation-comparison timing.
 
@@ -179,6 +179,18 @@ Use these as the current empirical state of the touched fronts.
 | `providers-semantics` | `c1fd5ce60e82` | 784 | 489 | 3 | 0 | Essentially flat to slightly worse than the previous pre-commit state. The suite is still fully reaching the surface, but `extract_content_blocks`, `to_meta`, and fallback Claude Code harmonization remain the dominant semantic weak spots. |
 | `sources-parse` | `c1fd5ce60e82` | 3886 | 2019 | 7 | 0 | Strong improvement on the broadest source front. Kills increased substantially, survivors dropped materially, and timeout mass stayed low. The remaining frontier is now sharply concentrated in shared semantic extraction, Drive credential/transport helpers, file iteration, and content-block/reasoning helpers. |
 
+### Refactor-First Follow-Up Pre-Commit Baselines
+
+These are the latest focused reruns after frontloading production refactors in
+`ConversationFilter` and `DriveClient`, then realigning the owner tests around
+those seams. The artifacts were recorded before committing the batch, so they
+correctly report `Dirty = yes` on commit `033d5d6f3130`.
+
+| Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `filters` | `033d5d6f3130` | 457 | 45 | 97 | 0 | Modest but real improvement over the previous clean follow-up (`457/50/106/0`). The new execution-plan seam did not change reach, but it sharpened the remaining frontier into `pick`, `has_branches`, `count`, summary sorting, and description rendering rather than diffuse planner blindness. Timeout mass is still the main remaining cost center. |
+| `drive-client` | `033d5d6f3130` | 564 | 286 | 0 | 0 | Strong improvement over the prior follow-up (`560/340/0/0`). Splitting cached-token loading, refresh transitions, folder-resolution helpers, and `DriveFile` construction reduced survivor density without introducing new runtime cost. The remaining cluster is narrower: `_load_credentials`, `resolve_folder_id`, `iter_json_files`, auth/manual flow, and service retry wiring. |
+
 ### Readiness Call
 
 - `004` is complete, and the immediate follow-up reruns are complete.
@@ -188,6 +200,8 @@ Use these as the current empirical state of the touched fronts.
   rerun set on `eb43cfd48e98`.
 - The maximal remaining-owner compaction pass is now measured as a newer dirty
   pre-commit rerun set on `c1fd5ce60e82`.
+- The refactor-first follow-up pass is now measured as the newest dirty
+  pre-commit rerun set on `033d5d6f3130`.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
   1. `providers-semantics`

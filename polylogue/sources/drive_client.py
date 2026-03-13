@@ -64,6 +64,11 @@ class _CachedCredentialState:
     had_invalid_token_path: bool
 
 
+def _build_folder_lookup_query(folder_ref: str) -> str:
+    escaped = folder_ref.replace("'", "\\'")
+    return f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
+
+
 def default_credentials_path(config: object | None = None) -> Path:
     """Get default credentials path, optionally from DriveConfig."""
     if config is not None and hasattr(config, "credentials_path"):
@@ -319,6 +324,17 @@ class DriveClient:
             had_invalid_token_path=had_invalid_token_path,
         )
 
+    @staticmethod
+    def _build_drive_file(meta: dict[str, Any], *, file_id_fallback: str = "") -> DriveFile:
+        file_id = meta.get("id", file_id_fallback)
+        return DriveFile(
+            file_id=file_id,
+            name=meta.get("name") or file_id or file_id_fallback,
+            mime_type=meta.get("mimeType") or "",
+            modified_time=meta.get("modifiedTime"),
+            size_bytes=_parse_size(meta.get("size")),
+        )
+
     def _refresh_credentials_if_needed(self, creds: Any, token_path: Path) -> Any:
         if creds and creds.expired and creds.refresh_token:
             try:
@@ -423,16 +439,34 @@ class DriveClient:
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
         return self._service
 
+    def _resolve_folder_by_id(self, service: Any, folder_ref: str) -> str | None:
+        file_meta: dict[str, Any] = self._call_with_retry(
+            lambda: service.files().get(fileId=folder_ref, fields="id,name,mimeType").execute()
+        )
+        if file_meta and file_meta.get("mimeType") == FOLDER_MIME_TYPE:
+            return str(file_meta["id"])
+        return None
+
+    def _resolve_folder_by_name(self, service: Any, folder_ref: str) -> str:
+        response: dict[str, Any] = self._call_with_retry(
+            lambda: service.files().list(
+                q=_build_folder_lookup_query(folder_ref),
+                fields="files(id,name)",
+            ).execute()
+        )
+        matches = response.get("files", [])
+        if not matches:
+            raise DriveNotFoundError(f"Folder not found: {folder_ref}")
+        return str(matches[0]["id"])
+
     def resolve_folder_id(self, folder_ref: str) -> str:
         http_error_cls = _import_module("googleapiclient.errors").HttpError
         service = self._service_handle()
         if _looks_like_id(folder_ref):
             try:
-                file_meta: dict[str, Any] = self._call_with_retry(
-                    lambda: service.files().get(fileId=folder_ref, fields="id,name,mimeType").execute()
-                )
-                if file_meta and file_meta.get("mimeType") == FOLDER_MIME_TYPE:
-                    return str(file_meta["id"])
+                resolved = self._resolve_folder_by_id(service, folder_ref)
+                if resolved is not None:
+                    return resolved
             except Exception as exc:
                 # File not found or permission denied - try by name
                 # Keep broad exception here as google-api errors vary
@@ -441,14 +475,7 @@ class DriveClient:
                         logger.warning("Unexpected Drive API error resolving %s: %s", folder_ref, exc)
                 else:
                     logger.warning("Error resolving folder ID %s: %s", folder_ref, exc)
-                pass
-        escaped = folder_ref.replace("'", "\\'")
-        query = f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
-        response: dict[str, Any] = self._call_with_retry(lambda: service.files().list(q=query, fields="files(id,name)").execute())
-        matches = response.get("files", [])
-        if not matches:
-            raise DriveNotFoundError(f"Folder not found: {folder_ref}")
-        return str(matches[0]["id"])
+        return self._resolve_folder_by_name(service, folder_ref)
 
     def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
         service = self._service_handle()
@@ -464,13 +491,7 @@ class DriveClient:
                 mime_type = item.get("mimeType") or ""
                 if not _is_supported_drive_payload(name, mime_type):
                     continue
-                file_obj = DriveFile(
-                    file_id=item.get("id", ""),
-                    name=name,
-                    mime_type=item.get("mimeType") or "",
-                    modified_time=item.get("modifiedTime"),
-                    size_bytes=_parse_size(item.get("size")),
-                )
+                file_obj = self._build_drive_file(item)
                 if file_obj.file_id:
                     self._meta_cache[file_obj.file_id] = file_obj
                     yield file_obj
@@ -515,13 +536,7 @@ class DriveClient:
         meta: dict[str, Any] = self._call_with_retry(
             lambda: service.files().get(fileId=file_id, fields="id,name,mimeType,modifiedTime,size").execute()
         )
-        file_obj = DriveFile(
-            file_id=meta.get("id", file_id),
-            name=meta.get("name") or file_id,
-            mime_type=meta.get("mimeType") or "",
-            modified_time=meta.get("modifiedTime"),
-            size_bytes=_parse_size(meta.get("size")),
-        )
+        file_obj = self._build_drive_file(meta, file_id_fallback=file_id)
         self._meta_cache[file_id] = file_obj
         return file_obj
 

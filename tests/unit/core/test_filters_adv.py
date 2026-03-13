@@ -199,7 +199,7 @@ def filter_db_with_branches(tmp_path):
         .parent_conversation("root-conv")
         .branch_type("sidechain")
         .add_message("m5", role="user", text="Different direction")
-        .add_message("m6", role="assistant", text="Sidechain answer")
+        .add_message("m6", role="assistant", text="Sidechain answer", branch_index=1)
         .save()
     )
     with open_connection(db_path) as conn:
@@ -220,7 +220,7 @@ BRANCH_CASES = [
     ("not-root", lambda f: f.is_root(False), {"continuation-conv", "sidechain-conv"}),
     ("not-continuation", lambda f: f.is_continuation(False), {"root-conv", "sidechain-conv"}),
     ("not-sidechain", lambda f: f.is_sidechain(False), {"continuation-conv", "root-conv"}),
-    ("has-branches", lambda f: f.has_branches(), set()),
+    ("has-branches", lambda f: f.has_branches(), {"sidechain-conv"}),
 ]
 
 
