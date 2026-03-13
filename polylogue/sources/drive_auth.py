@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..lib.log import get_logger
+from polylogue.logging import get_logger
 from ..paths import drive_credentials_path, drive_token_path
 from .drive_types import SCOPES, CachedCredentialState, DriveAuthError
 from .token_store import TokenStore, create_token_store
