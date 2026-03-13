@@ -16,7 +16,7 @@ from typing import IO, TYPE_CHECKING
 
 from jinja2 import DictLoader, Environment, Template, select_autoescape
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.paths import safe_path_component
 from polylogue.rendering.core import build_rendered_message_payload
 from polylogue.rendering.renderers.html import MarkdownRenderer, PygmentsHighlighter

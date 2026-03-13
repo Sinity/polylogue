@@ -6,7 +6,7 @@ import sqlite3
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 
 if TYPE_CHECKING:
     from polylogue.config import Config

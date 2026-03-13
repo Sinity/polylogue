@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 import orjson
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records

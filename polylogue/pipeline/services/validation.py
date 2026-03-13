@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.provider_identity import canonical_runtime_provider
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.protocols import ProgressCallback
