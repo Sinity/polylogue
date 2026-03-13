@@ -72,9 +72,7 @@ def simple_conversation() -> Conversation:
 class TestQueryTools:
     @pytest.mark.parametrize(("tool_name", "args", "expected_calls"), QUERY_TOOL_CASES)
     @pytest.mark.asyncio
-    async def test_query_tool_filter_contract(self, simple_conversation, tool_name, args, expected_calls):
-        from polylogue.mcp.server import _build_server
-
+    async def test_query_tool_filter_contract(self, simple_conversation, tool_name, args, expected_calls, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.search.return_value = [simple_conversation]
@@ -85,8 +83,7 @@ class TestQueryTools:
                 filter_instance = make_mock_filter(results=[simple_conversation])
                 mock_filter_cls.return_value = filter_instance
 
-                server = _build_server()
-                raw = await server._tool_manager._tools[tool_name].fn(**args)
+                raw = await mcp_server._tool_manager._tools[tool_name].fn(**args)
 
         payload = json.loads(raw)
         assert isinstance(payload, list)
@@ -96,9 +93,7 @@ class TestQueryTools:
             getattr(filter_instance, method_name).assert_called_once_with(*method_args)
 
     @pytest.mark.asyncio
-    async def test_search_with_empty_query(self):
-        from polylogue.mcp.server import _build_server
-
+    async def test_search_with_empty_query(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo, patch(
             "polylogue.lib.filters.ConversationFilter"
         ) as mock_filter_cls:
@@ -107,47 +102,38 @@ class TestQueryTools:
             mock_get_repo.return_value = mock_repo
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
-            server = _build_server()
-            result = await invoke_surface_async(server._tool_manager._tools["search"].fn, query="", limit=10)
+            result = await invoke_surface_async(mcp_server._tool_manager._tools["search"].fn, query="", limit=10)
 
         parsed = json.loads(result)
         assert isinstance(parsed, (list, dict))
 
 
 class TestGetConversationTool:
-    def test_get_returns_conversation(self, simple_conversation):
-        from polylogue.mcp.server import _build_server
-
+    def test_get_returns_conversation(self, simple_conversation, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = simple_conversation
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["get_conversation"].fn, id="test:conv-123")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_conversation"].fn, id="test:conv-123")
 
         conv = json.loads(result)
         assert conv["id"] == "test:conv-123"
         assert len(conv["messages"]) == 2
 
-    def test_get_not_found(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_get_not_found(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["get_conversation"].fn, id="nonexistent")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_conversation"].fn, id="nonexistent")
 
         parsed = json.loads(result)
         assert "error" in parsed
         assert "not found" in parsed["error"].lower()
 
-    def test_get_returns_full_messages(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_get_returns_full_messages(self, mcp_server):
         long_text = "A" * 2000
         conv = Conversation(
             id="test:long",
@@ -161,22 +147,18 @@ class TestGetConversationTool:
             mock_repo.view.return_value = conv
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["get_conversation"].fn, id="test:long")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_conversation"].fn, id="test:long")
 
         assert json.loads(result)["messages"][0]["text"] == long_text
 
     @pytest.mark.asyncio
-    async def test_get_with_nonexistent_id(self):
-        from polylogue.mcp.server import _build_server
-
+    async def test_get_with_nonexistent_id(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = await invoke_surface_async(server._tool_manager._tools["get_conversation"].fn, id="nonexistent-id-xyz")
+            result = await invoke_surface_async(mcp_server._tool_manager._tools["get_conversation"].fn, id="nonexistent-id-xyz")
 
         assert isinstance(json.loads(result), dict)
 
@@ -203,9 +185,8 @@ class TestStatsTool:
         embedded_msgs,
         db_size,
         expected_mb,
+        mcp_server,
     ):
-        from polylogue.mcp.server import _build_server
-
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.get_archive_stats.return_value = ArchiveStats(
@@ -218,8 +199,7 @@ class TestStatsTool:
             )
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["stats"].fn)
+            result = invoke_surface(mcp_server._tool_manager._tools["stats"].fn)
 
         data = json.loads(result)
         assert data["total_conversations"] == total_conversations
@@ -228,114 +208,90 @@ class TestStatsTool:
 
 
 class TestMutationTools:
-    def test_add_tag_success(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_add_tag_success(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.add_tag.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="important")
+            result = invoke_surface(mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="important")
 
         parsed = json.loads(result)
         assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
         mock_repo.add_tag.assert_called_once_with("test:conv-123", "important")
 
-    def test_add_tag_error(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_add_tag_error(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.add_tag.side_effect = ValueError("Invalid tag")
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="invalid")
+            result = invoke_surface(mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="invalid")
 
         parsed = json.loads(result)
         assert "Invalid tag" in parsed["error"]
 
-    def test_remove_tag_success(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_remove_tag_success(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.remove_tag.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important")
+            result = invoke_surface(mcp_server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important")
 
         parsed = json.loads(result)
         assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
         mock_repo.remove_tag.assert_called_once_with("test:conv-123", "important")
 
-    def test_remove_tag_error(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_remove_tag_error(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.remove_tag.side_effect = RuntimeError("Backend error")
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important")
+            result = invoke_surface(mcp_server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important")
 
         assert "error" in json.loads(result)
 
-    def test_list_tags_returns_counts(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_list_tags_returns_counts(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.list_tags.return_value = {"bug": 3, "feature": 5, "urgent": 1}
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["list_tags"].fn)
+            result = invoke_surface(mcp_server._tool_manager._tools["list_tags"].fn)
 
         assert json.loads(result) == {"bug": 3, "feature": 5, "urgent": 1}
 
-    def test_list_tags_with_provider(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_list_tags_with_provider(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.list_tags.return_value = {"claude": 2}
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["list_tags"].fn, provider="claude")
+            result = invoke_surface(mcp_server._tool_manager._tools["list_tags"].fn, provider="claude")
 
         assert json.loads(result) == {"claude": 2}
         mock_repo.list_tags.assert_called_once_with(provider="claude")
 
-    def test_get_metadata_success(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_get_metadata_success(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.get_metadata.return_value = {"key": "value", "count": 42}
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["get_metadata"].fn, conversation_id="test:conv-123")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_metadata"].fn, conversation_id="test:conv-123")
 
         assert json.loads(result) == {"key": "value", "count": 42}
 
-    def test_set_metadata_string_value(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_set_metadata_string_value(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.update_metadata.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
             result = invoke_surface(
-                server._tool_manager._tools["set_metadata"].fn,
+                mcp_server._tool_manager._tools["set_metadata"].fn,
                 conversation_id="test:conv-123",
                 key="author",
                 value="john",
@@ -344,17 +300,14 @@ class TestMutationTools:
         assert json.loads(result)["status"] == "ok"
         mock_repo.update_metadata.assert_called_once_with("test:conv-123", "author", "john")
 
-    def test_set_metadata_json_value(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_set_metadata_json_value(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.update_metadata.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
             result = invoke_surface(
-                server._tool_manager._tools["set_metadata"].fn,
+                mcp_server._tool_manager._tools["set_metadata"].fn,
                 conversation_id="test:conv-123",
                 key="config",
                 value='{"nested": true}',
@@ -363,17 +316,14 @@ class TestMutationTools:
         assert json.loads(result)["status"] == "ok"
         mock_repo.update_metadata.assert_called_once_with("test:conv-123", "config", {"nested": True})
 
-    def test_delete_metadata_success(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_delete_metadata_success(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.delete_metadata.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
             result = invoke_surface(
-                server._tool_manager._tools["delete_metadata"].fn,
+                mcp_server._tool_manager._tools["delete_metadata"].fn,
                 conversation_id="test:conv-123",
                 key="author",
             )
@@ -383,16 +333,13 @@ class TestMutationTools:
         assert parsed["key"] == "author"
         mock_repo.delete_metadata.assert_called_once_with("test:conv-123", "author")
 
-    def test_delete_requires_confirm(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_delete_requires_confirm(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
             result = invoke_surface(
-                server._tool_manager._tools["delete_conversation"].fn,
+                mcp_server._tool_manager._tools["delete_conversation"].fn,
                 conversation_id="test:conv-123",
                 confirm=False,
             )
@@ -401,17 +348,14 @@ class TestMutationTools:
         assert "confirm=true" in parsed["error"]
         mock_repo.delete_conversation.assert_not_called()
 
-    def test_delete_with_confirm(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_delete_with_confirm(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.delete_conversation.return_value = True
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
             result = invoke_surface(
-                server._tool_manager._tools["delete_conversation"].fn,
+                mcp_server._tool_manager._tools["delete_conversation"].fn,
                 conversation_id="test:conv-123",
                 confirm=True,
             )
@@ -419,26 +363,21 @@ class TestMutationTools:
         assert json.loads(result)["status"] == "deleted"
         mock_repo.delete_conversation.assert_called_once_with("test:conv-123")
 
-    def test_delete_not_found(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_delete_not_found(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.delete_conversation.return_value = False
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
             result = invoke_surface(
-                server._tool_manager._tools["delete_conversation"].fn,
+                mcp_server._tool_manager._tools["delete_conversation"].fn,
                 conversation_id="nonexistent",
                 confirm=True,
             )
 
         assert json.loads(result)["status"] == "not_found"
 
-    def test_summary_returns_metadata(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_summary_returns_metadata(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_summary = ConversationSummary(
@@ -454,8 +393,7 @@ class TestMutationTools:
             mock_repo.get_conversation_stats.return_value = {"total_messages": 5}
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["get_conversation_summary"].fn, id="test:conv-123")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_conversation_summary"].fn, id="test:conv-123")
 
         parsed = json.loads(result)
         assert parsed["id"] == "test:conv-123"
@@ -463,30 +401,24 @@ class TestMutationTools:
         assert parsed["title"] == "Test Conv"
         assert parsed["message_count"] == 5
 
-    def test_summary_not_found(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_summary_not_found(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.resolve_id.return_value = None
             mock_repo.get_summary.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["get_conversation_summary"].fn, id="nonexistent")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_conversation_summary"].fn, id="nonexistent")
 
         assert "not found" in json.loads(result)["error"].lower()
 
-    def test_session_tree_returns_list(self, simple_conversation):
-        from polylogue.mcp.server import _build_server
-
+    def test_session_tree_returns_list(self, simple_conversation, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.get_session_tree.return_value = [simple_conversation]
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["get_session_tree"].fn, conversation_id="test:conv-123")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_session_tree"].fn, conversation_id="test:conv-123")
 
         parsed = json.loads(result)
         assert isinstance(parsed, list)
@@ -499,22 +431,17 @@ class TestMutationTools:
             ("month", {"2024-01": 15, "2024-02": 20}),
         ],
     )
-    def test_stats_by_group(self, group_by, expected):
-        from polylogue.mcp.server import _build_server
-
+    def test_stats_by_group(self, group_by, expected, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.get_stats_by.return_value = expected
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["get_stats_by"].fn, group_by=group_by)
+            result = invoke_surface(mcp_server._tool_manager._tools["get_stats_by"].fn, group_by=group_by)
 
         assert json.loads(result) == expected
 
-    def test_health_check_success(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_health_check_success(self, mcp_server):
         mock_check = MagicMock()
         mock_check.name = "database"
         mock_check.status.value = "ok"
@@ -532,16 +459,13 @@ class TestMutationTools:
             mock_get_config.return_value = MagicMock()
             mock_get_health.return_value = mock_report
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["health_check"].fn)
+            result = invoke_surface(mcp_server._tool_manager._tools["health_check"].fn)
 
         parsed = json.loads(result)
         assert parsed["summary"] == "Healthy"
         assert parsed["checks"][0]["name"] == "database"
 
-    def test_rebuild_index_success(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_rebuild_index_success(self, mcp_server):
         with patch("polylogue.mcp.server._get_config") as mock_get_config, patch(
             "polylogue.mcp.server._get_repo"
         ) as mock_get_repo, patch("polylogue.pipeline.services.indexing.IndexService") as mock_service_cls:
@@ -552,17 +476,14 @@ class TestMutationTools:
             mock_service.get_index_status = AsyncMock(return_value={"exists": True, "count": 500})
             mock_service_cls.return_value = mock_service
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["rebuild_index"].fn)
+            result = invoke_surface(mcp_server._tool_manager._tools["rebuild_index"].fn)
 
         parsed = json.loads(result)
         assert parsed["status"] == "ok"
         assert parsed["index_exists"] is True
         assert parsed["indexed_messages"] == 500
 
-    def test_update_index_success(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_update_index_success(self, mcp_server):
         with patch("polylogue.mcp.server._get_config") as mock_get_config, patch(
             "polylogue.mcp.server._get_repo"
         ) as mock_get_repo, patch("polylogue.pipeline.services.indexing.IndexService") as mock_service_cls:
@@ -572,9 +493,8 @@ class TestMutationTools:
             mock_service.update_index = AsyncMock(return_value=True)
             mock_service_cls.return_value = mock_service
 
-            server = _build_server()
             result = invoke_surface(
-                server._tool_manager._tools["update_index"].fn,
+                mcp_server._tool_manager._tools["update_index"].fn,
                 conversation_ids=["test:conv-1", "test:conv-2"],
             )
 

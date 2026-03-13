@@ -14,6 +14,12 @@ import pytest
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, ConversationSummary, Message
 from polylogue.lib.viewports import ToolCall, classify_tool
+from polylogue.storage.hydrators import (
+    attachment_from_record,
+    conversation_from_records,
+    conversation_summary_from_record,
+    message_from_record,
+)
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 TOOL_FILE_OPS = [
@@ -190,7 +196,7 @@ class TestAttachmentFromRecord:
             conversation_id="c1",
             provider_meta=provider_meta,
         )
-        attachment = Attachment.from_record(record)
+        attachment = attachment_from_record(record)
         assert attachment.name == expected_name
 
 
@@ -205,7 +211,7 @@ class TestMessageFromRecord:
             timestamp="2024-01-01T00:00:00Z",
             content_hash="hash1",
         )
-        message = Message.from_record(record, [])
+        message = message_from_record(record, [])
         assert message.role == expected_role
 
 
@@ -222,7 +228,7 @@ class TestConversationSummaryFromRecord:
             provider_meta={"key": "value"},
             metadata={"tags": ["test"], "summary": "summary"},
         )
-        summary = ConversationSummary.from_record(record)
+        summary = conversation_summary_from_record(record)
         assert summary.id == "c1"
         assert summary.provider == "claude"
         assert summary.title == "Test"
@@ -254,7 +260,7 @@ class TestConversationFromRecords:
             provider_meta={"name": "file.txt"},
         )
 
-        conversation = Conversation.from_records(conversation_record, [message_record], [attachment_record])
+        conversation = conversation_from_records(conversation_record, [message_record], [attachment_record])
 
         assert conversation.id == "c1"
         assert conversation.provider == "claude"

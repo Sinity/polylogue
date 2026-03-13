@@ -380,7 +380,7 @@ class TestConversationFilterSQL:
         _build_conversation_filters returns (where_clause_str, params_list).
         It uses parameterized queries, so special chars in input are safe.
         """
-        from polylogue.storage.backends.connection import _build_conversation_filters
+        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
 
         # Provider name with quotes
         where_clause, params = _build_conversation_filters(provider="test'provider")
@@ -393,7 +393,7 @@ class TestConversationFilterSQL:
 
     def test_build_filters_with_empty_provider(self):
         """Empty provider should still produce valid SQL."""
-        from polylogue.storage.backends.connection import _build_conversation_filters
+        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
 
         where_clause, params = _build_conversation_filters(provider="")
         assert isinstance(where_clause, str)
@@ -401,7 +401,7 @@ class TestConversationFilterSQL:
 
     def test_build_filters_with_no_args(self):
         """No filters should produce empty/trivial WHERE clause."""
-        from polylogue.storage.backends.connection import _build_conversation_filters
+        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
 
         where_clause, params = _build_conversation_filters()
         assert isinstance(where_clause, str)
@@ -410,7 +410,7 @@ class TestConversationFilterSQL:
 
     def test_build_filters_with_title_contains_special(self):
         """Title search with SQL LIKE special characters must be safe."""
-        from polylogue.storage.backends.connection import _build_conversation_filters
+        from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
 
         where_clause, params = _build_conversation_filters(title_contains="100% done")
         assert isinstance(where_clause, str)

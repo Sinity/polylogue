@@ -196,7 +196,7 @@ def test_get_health_contract(cli_workspace, deep: bool, monkeypatch: pytest.Monk
         (
             json.dumps(
                 {
-                    "timestamp": int(time.time()),
+                    "timestamp": 1700000000,
                     "summary": {"ok": 2, "warning": 1, "error": 1},
                     "checks": [
                         {"name": "check1", "status": "ok", "detail": "ok"},

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from io import StringIO
 
-from polylogue.lib.log import _StderrProxy, configure_logging, get_logger
+from polylogue.logging import _StderrProxy, configure_logging, get_logger
 
 
 def test_configure_logging_accepts_verbose_mode() -> None:

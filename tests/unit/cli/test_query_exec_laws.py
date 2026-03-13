@@ -15,13 +15,13 @@ import yaml
 from hypothesis import HealthCheck, given, settings
 from rich.console import Console
 
-from polylogue.cli.query import _async_execute_query, _project_query_results
-from polylogue.cli.query_actions import _apply_modifiers, _apply_transform, _delete_conversations
+from polylogue.cli.query import async_execute_query, project_query_results
+from polylogue.cli.query_actions import apply_modifiers, apply_transform, delete_conversations
 from polylogue.cli.query_helpers import no_results, summary_to_dict
 from polylogue.cli.query_output import (
-    _output_results,
-    _output_stats_by_summaries,
-    _output_stats_sql,
+    output_results,
+    output_stats_by_summaries,
+    output_stats_sql,
     _output_summary_list,
     _render_conversation_rich,
     _send_output,
@@ -211,7 +211,7 @@ def test_apply_modifiers_contract(case) -> None:
     }
 
     with patch("click.echo") as mock_echo:
-        asyncio.run(_apply_modifiers(env, results, params, repo))
+        asyncio.run(apply_modifiers(env, results, params, repo))
 
     should_confirm = len(results) > 10 and not case.force and not case.dry_run
     if should_confirm:
@@ -251,7 +251,7 @@ def test_delete_conversations_contract(case) -> None:
     params = {"dry_run": case.dry_run, "force": case.force}
 
     with patch("click.echo") as mock_echo:
-        asyncio.run(_delete_conversations(env, results, params, repo))
+        asyncio.run(delete_conversations(env, results, params, repo))
 
     should_confirm = not case.force and not case.dry_run
     if should_confirm:
@@ -382,7 +382,7 @@ def test_output_stats_by_summaries_contract(case) -> None:
     summaries = [build_conversation_summary(spec) for spec in case.summaries]
     msg_counts = build_message_counts(case.summaries)
 
-    _output_stats_by_summaries(env, summaries, msg_counts, case.dimension)
+    output_stats_by_summaries(env, summaries, msg_counts, case.dimension)
 
     rendered = buffer.getvalue()
     assert f"Matched: {len(case.summaries)} conversations (by {case.dimension})" in rendered
@@ -413,7 +413,7 @@ def test_output_results_no_results_contract() -> None:
         patch("polylogue.cli.query_output.format_conversation") as mock_format,
         pytest.raises(SystemExit) as exc_info,
     ):
-        _output_results(env, [], {})
+        output_results(env, [], {})
 
     assert exc_info.value.code == 2
     mock_no_results.assert_called_once_with(env, {})
@@ -458,7 +458,7 @@ def test_output_results_projection_contract(label: str, plain: bool, conversatio
         patch("polylogue.cli.query_output.format_conversation", return_value="<html>ok</html>") as mock_format,
         patch("polylogue.cli.query_output._format_list", return_value="formatted-list") as mock_format_list,
     ):
-        _output_results(env, conversations, params)
+        output_results(env, conversations, params)
 
     if expected == "render-rich":
         mock_render.assert_called_once_with(env, conversations[0])
@@ -515,7 +515,7 @@ def test_project_query_results_contract() -> None:
     )
     conversation = _sample_conversation()
 
-    projected = _project_query_results([conversation], plan)
+    projected = project_query_results([conversation], plan)
 
     assert [message.id for message in projected[0].messages] == ["m-user", "m-assistant"]
     assert [message.id for message in conversation.messages] == [
@@ -558,18 +558,18 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("click.echo") as mock_echo,
         patch("polylogue.cli.query_output._output_summary_list", new_callable=AsyncMock) as mock_output_summary_list,
-        patch("polylogue.cli.query_output._output_stats_sql", new_callable=AsyncMock) as mock_output_stats_sql,
-        patch("polylogue.cli.query_output._output_stats_by_summaries") as mock_output_stats_by_summaries,
+        patch("polylogue.cli.query_output.output_stats_sql", new_callable=AsyncMock) as mock_output_stats_sql,
+        patch("polylogue.cli.query_output.output_stats_by_summaries") as mock_output_stats_by_summaries,
         patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
-        patch("polylogue.cli.query_actions._apply_modifiers", new_callable=AsyncMock) as mock_apply_modifiers,
-        patch("polylogue.cli.query_actions._delete_conversations", new_callable=AsyncMock) as mock_delete_conversations,
+        patch("polylogue.cli.query_actions.apply_modifiers", new_callable=AsyncMock) as mock_apply_modifiers,
+        patch("polylogue.cli.query_actions.delete_conversations", new_callable=AsyncMock) as mock_delete_conversations,
         patch("polylogue.cli.query_output._open_result") as mock_open_result,
-        patch("polylogue.cli.query_output._output_results") as mock_output_results,
+        patch("polylogue.cli.query_output.output_results") as mock_output_results,
         patch("polylogue.cli.query_actions.resolve_stream_target", new_callable=AsyncMock, return_value="conv-stream") as mock_stream_target,
         patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock) as mock_stream_conversation,
     ):
         repo.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
-        asyncio.run(_async_execute_query(env, {"limit": 7}))
+        asyncio.run(async_execute_query(env, {"limit": 7}))
 
     plan.selection.build_filter.assert_called_once_with(repo, vector_provider=None)
 
@@ -639,9 +639,9 @@ def test_async_execute_query_stats_by_falls_back_to_full_results_without_summari
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
         patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
-        patch("polylogue.cli.query_output._output_stats_by_summaries") as mock_output_stats_by_summaries,
+        patch("polylogue.cli.query_output.output_stats_by_summaries") as mock_output_stats_by_summaries,
     ):
-        asyncio.run(_async_execute_query(env, {}))
+        asyncio.run(async_execute_query(env, {}))
 
     filter_chain.list.assert_awaited_once()
     filter_chain.list_summaries.assert_not_called()
@@ -664,7 +664,7 @@ def test_async_execute_query_summary_list_no_results_contract() -> None:
         patch("polylogue.cli.query.no_results", side_effect=SystemExit(2)) as mock_no_results,
         pytest.raises(SystemExit) as exc_info,
     ):
-        asyncio.run(_async_execute_query(env, {}))
+        asyncio.run(async_execute_query(env, {}))
 
     assert exc_info.value.code == 2
     mock_no_results.assert_called_once_with(env, plan.selection)
@@ -682,7 +682,7 @@ def test_async_execute_query_query_spec_error_contract() -> None:
         patch("click.echo") as mock_echo,
         pytest.raises(SystemExit) as exc_info,
     ):
-        asyncio.run(_async_execute_query(env, {}))
+        asyncio.run(async_execute_query(env, {}))
 
     assert exc_info.value.code == 1
     assert [call.args[0] for call in mock_echo.call_args_list if call.args] == [
@@ -710,9 +710,9 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query_output._output_results") as mock_output_results,
+        patch("polylogue.cli.query_output.output_results") as mock_output_results,
     ):
-        asyncio.run(_async_execute_query(env, {}))
+        asyncio.run(async_execute_query(env, {}))
 
     projected_results = mock_output_results.call_args.args[1]
     assert [message.id for message in projected_results[0].messages] == ["m-user", "m-assistant"]
@@ -758,7 +758,7 @@ def test_no_results_contract(params, expected_lines) -> None:
 def test_apply_transform_contract(transform: str, expected_ids: list[str]) -> None:
     conversation = _sample_conversation()
 
-    transformed = _apply_transform([conversation], transform)
+    transformed = apply_transform([conversation], transform)
 
     assert [message.id for message in transformed[0].messages] == expected_ids
     assert [message.id for message in conversation.messages] == [
@@ -813,7 +813,7 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
     filter_chain.can_use_summaries.return_value = True
     filter_chain.list_summaries = AsyncMock(return_value=summaries)
 
-    await _output_stats_sql(env, filter_chain, repo)
+    await output_stats_sql(env, filter_chain, repo)
 
     filter_chain.list_summaries.assert_awaited_once()
     filter_chain.count.assert_not_called()
@@ -848,7 +848,7 @@ async def test_output_stats_sql_empty_paths_contract(described: list[str], can_u
     filter_chain.list_summaries = AsyncMock(return_value=[])
     filter_chain.count = AsyncMock(return_value=0)
 
-    await _output_stats_sql(env, filter_chain, repo)
+    await output_stats_sql(env, filter_chain, repo)
 
     env.ui.console.print.assert_called_once_with(expected_message)
     repo.aggregate_message_stats.assert_not_called()

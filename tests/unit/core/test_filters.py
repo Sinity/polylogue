@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from polylogue.cli.filter_picker import _pick_index, pick_filter
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -274,12 +275,12 @@ class TestConversationFilterFoundations:
             ConversationFilter(filter_repo).since("not-a-date")
 
     def test_pick_index_contract(self) -> None:
-        assert ConversationFilter._pick_index("", 3) == 0
-        assert ConversationFilter._pick_index("1", 3) == 0
-        assert ConversationFilter._pick_index("3", 3) == 2
-        assert ConversationFilter._pick_index("0", 3) is None
-        assert ConversationFilter._pick_index("4", 3) is None
-        assert ConversationFilter._pick_index("oops", 3) is None
+        assert _pick_index("", 3) == 0
+        assert _pick_index("1", 3) == 0
+        assert _pick_index("3", 3) == 2
+        assert _pick_index("0", 3) is None
+        assert _pick_index("4", 3) is None
+        assert _pick_index("oops", 3) is None
 
     @pytest.mark.asyncio
     async def test_terminal_methods_contract(self, filter_repo):
@@ -330,28 +331,28 @@ class TestConversationFilterFoundations:
 
     @pytest.mark.asyncio
     async def test_pick_contract_matrix(self, filter_repo_pick_many, monkeypatch, capsys):
-        assert await ConversationFilter(filter_repo_pick_many).provider("nonexistent").pick() is None
+        assert await pick_filter(ConversationFilter(filter_repo_pick_many).provider("nonexistent")) is None
 
         with patch("sys.stdout.isatty", return_value=False):
-            selected = await ConversationFilter(filter_repo_pick_many).sort("date").pick()
+            selected = await pick_filter(ConversationFilter(filter_repo_pick_many).sort("date"))
         assert selected is not None and selected.id == "pick-24"
 
         with patch("sys.stdout.isatty", return_value=True), patch("builtins.input", return_value="2"):
-            selected = await ConversationFilter(filter_repo_pick_many).sort("date").pick()
+            selected = await pick_filter(ConversationFilter(filter_repo_pick_many).sort("date"))
         assert selected is not None and selected.id == "pick-23"
 
         with patch("sys.stdout.isatty", return_value=True), patch("builtins.input", return_value=""):
-            first = await ConversationFilter(filter_repo_pick_many).sort("date").pick()
+            first = await pick_filter(ConversationFilter(filter_repo_pick_many).sort("date"))
         assert first is not None and first.id == "pick-24"
 
         with patch("sys.stdout.isatty", return_value=True), patch("builtins.input", return_value="999"):
-            assert await ConversationFilter(filter_repo_pick_many).sort("date").pick() is None
+            assert await pick_filter(ConversationFilter(filter_repo_pick_many).sort("date")) is None
 
         with patch("sys.stdout.isatty", return_value=True), patch("builtins.input", return_value="oops"):
-            assert await ConversationFilter(filter_repo_pick_many).sort("date").pick() is None
+            assert await pick_filter(ConversationFilter(filter_repo_pick_many).sort("date")) is None
 
         with patch("sys.stdout.isatty", return_value=True), patch("builtins.input", side_effect=EOFError):
-            assert await ConversationFilter(filter_repo_pick_many).sort("date").pick() is None
+            assert await pick_filter(ConversationFilter(filter_repo_pick_many).sort("date")) is None
 
         output = capsys.readouterr().out
         numbered_lines = [line for line in output.splitlines() if re.match(r"\s+\d+\.\s", line)]

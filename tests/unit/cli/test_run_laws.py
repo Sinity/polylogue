@@ -16,10 +16,12 @@ from hypothesis import strategies as st
 
 from polylogue.cli.commands.run import (
     _display_result,
-    _format_elapsed,
-    _PlainProgressObserver,
     _run_sync_once,
     run_command,
+)
+from polylogue.cli.run_observers import (
+    PlainProgressObserver as _PlainProgressObserver,
+    _format_elapsed,
 )
 from polylogue.config import Config, get_config
 from polylogue.storage.store import RunResult
