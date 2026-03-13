@@ -9,7 +9,8 @@ from ..assets import asset_path
 from ..config import Source
 from ..lib.log import get_logger
 from ..paths import safe_path_component
-from .drive_client import DriveClient, _parse_modified_time
+from .drive_client import DriveClient
+from .drive_source import DriveSourceAPI, _parse_modified_time
 from .parsers.base import RawConversationData
 from .source import ParsedConversation, detect_provider, parse_drive_payload
 
@@ -34,7 +35,7 @@ def drive_cache_file_path(dest_dir: Path, name: str) -> Path:
 
 
 def download_drive_files(
-    client: DriveClient,
+    client: DriveSourceAPI,
     folder_id: str,
     dest_dir: Path,
 ) -> DriveDownloadResult:
@@ -80,7 +81,7 @@ def download_drive_files(
 def _apply_drive_attachments(
     *,
     convo: ParsedConversation,
-    client: DriveClient,
+    client: DriveSourceAPI,
     archive_root: Path,
     download_assets: bool,
 ) -> None:
@@ -111,7 +112,7 @@ def iter_drive_conversations(
     source: Source,
     archive_root: Path,
     ui: object | None = None,
-    client: DriveClient | None = None,
+    client: DriveSourceAPI | None = None,
     download_assets: bool = True,
     cursor_state: dict[str, Any] | None = None,
     drive_config: object | None = None,
@@ -161,7 +162,7 @@ def iter_drive_raw_data(
     *,
     source: Source,
     ui: object | None = None,
-    client: DriveClient | None = None,
+    client: DriveSourceAPI | None = None,
     cursor_state: dict[str, Any] | None = None,
     drive_config: object | None = None,
     known_mtimes: dict[str, str] | None = None,

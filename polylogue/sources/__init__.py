@@ -10,13 +10,13 @@ from __future__ import annotations
 
 # Drive integration
 from .drive import download_drive_files, iter_drive_conversations
-from .drive_client import (
+from .drive_types import (
     DriveAuthError,
-    DriveClient,
     DriveError,
     DriveFile,
     DriveNotFoundError,
 )
+from .drive_client import DriveClient
 
 # Core parsing
 from .source import (
