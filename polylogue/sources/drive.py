@@ -7,7 +7,7 @@ from typing import Any
 
 from ..assets import asset_path
 from ..config import Source
-from ..lib.log import get_logger
+from polylogue.logging import get_logger
 from ..paths import safe_path_component
 from .drive_client import DriveClient
 from .drive_source import DriveSourceAPI, _parse_modified_time

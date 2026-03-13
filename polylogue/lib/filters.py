@@ -27,12 +27,12 @@ from __future__ import annotations
 import builtins
 import random
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from polylogue.lib.dates import parse_date
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
+from polylogue.lib.filter_executor import _ExecutionPlan, build_execution_plan, sql_pushdown_params
 from polylogue.types import Provider
 
 logger = get_logger(__name__)
@@ -46,16 +46,6 @@ if TYPE_CHECKING:
 SortField = Literal["date", "tokens", "messages", "words", "longest", "random"]
 
 _T = TypeVar("_T")
-
-
-@dataclass(frozen=True)
-class _ExecutionPlan:
-    sql_params: dict[str, object]
-    fetch_limit: int | None
-    has_post_filters: bool
-    needs_content_loading: bool
-    can_use_summaries: bool
-    sql_pushed: bool
 
 
 def _conversation_has_branches(conversation: Conversation) -> bool:
@@ -417,42 +407,6 @@ class ConversationFilter:
 
         return self._apply_sort_generic(conversations, sort_key)
 
-    def _sql_pushdown_params(self) -> dict[str, object]:
-        """Build kwargs for repository list/list_summaries that push filters to SQL.
-
-        Returns dict with keys matching the repository's list() parameters.
-        Only includes non-None values for filters that can be pushed down.
-        """
-        params: dict[str, object] = {}
-        if self._providers:
-            if len(self._providers) == 1:
-                params["provider"] = self._providers[0]
-            else:
-                params["providers"] = self._providers
-        if self._since_date:
-            params["since"] = self._since_date.isoformat()
-        if self._until_date:
-            params["until"] = self._until_date.isoformat()
-        if self._title_pattern:
-            params["title_contains"] = self._title_pattern
-        if self._filter_has_tool_use:
-            params["has_tool_use"] = True
-        if self._filter_has_thinking:
-            params["has_thinking"] = True
-        if self._min_messages is not None:
-            params["min_messages"] = self._min_messages
-        if self._max_messages is not None:
-            params["max_messages"] = self._max_messages
-        if self._min_words is not None:
-            params["min_words"] = self._min_words
-        if self._filter_has_file_ops:
-            params["has_file_ops"] = True
-        if self._filter_has_git_ops:
-            params["has_git_ops"] = True
-        if self._filter_has_subagent:
-            params["has_subagent"] = True
-        return params
-
     def _describe_active_filters(self) -> list[str]:
         """Return descriptions of all active filters (empty if no filters set)."""
         parts: list[str] = []
@@ -555,17 +509,11 @@ class ConversationFilter:
 
     def _build_execution_plan(self) -> _ExecutionPlan:
         """Build the canonical internal execution plan for this filter."""
-        needs_content_loading = self._needs_content_loading()
-        has_post_filters = self._has_post_filters()
-        sql_params = self._sql_pushdown_params()
-        return _ExecutionPlan(
-            sql_params=sql_params,
-            fetch_limit=self._effective_fetch_limit(),
-            has_post_filters=has_post_filters,
-            needs_content_loading=needs_content_loading,
-            can_use_summaries=not needs_content_loading,
-            sql_pushed=not self._fts_terms and not self._id_prefix,
-        )
+        return build_execution_plan(self)
+
+    def _sql_pushdown_params(self) -> dict[str, object]:
+        """Build kwargs for repository list/list_summaries that push filters to SQL."""
+        return sql_pushdown_params(self)
 
     async def _fetch_generic(
         self,
@@ -700,57 +648,6 @@ class ConversationFilter:
                 deleted_count += 1
 
         return deleted_count
-
-    async def pick(self) -> Conversation | None:
-        """Interactive picker for matching conversations.
-
-        If running in a TTY, presents a menu to select from matches.
-        Otherwise returns first match.
-
-        Returns:
-            Selected Conversation or None if no matches
-        """
-        import sys
-
-        results = await self.list()
-        if not results:
-            return None
-
-        if not sys.stdout.isatty():
-            return results[0]
-
-        # Simple interactive picker
-        print(f"\n{len(results)} matching conversations:\n")
-        for i, conv in enumerate(results[:20], 1):  # Show max 20
-            title = conv.display_title[:50]
-            date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else "unknown"
-            print(f"  {i:2}. [{conv.provider}] {title} ({date})")
-
-        if len(results) > 20:
-            print(f"\n  ... and {len(results) - 20} more")
-
-        try:
-            choice = input("\nSelect number (or Enter for first): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-
-        idx = self._pick_index(choice, len(results))
-        if idx is not None:
-            return results[idx]
-
-        return None
-
-    @staticmethod
-    def _pick_index(choice: str, total_results: int) -> int | None:
-        if not choice:
-            return 0
-        try:
-            idx = int(choice) - 1
-        except ValueError:
-            return None
-        if 0 <= idx < total_results:
-            return idx
-        return None
 
     # --- Lightweight summary methods (memory-efficient) ---
 

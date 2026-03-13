@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..lib.log import get_logger
+from polylogue.logging import get_logger
 from .drive_gateway import DriveServiceGateway
 from .drive_types import (
     FOLDER_MIME_TYPE,

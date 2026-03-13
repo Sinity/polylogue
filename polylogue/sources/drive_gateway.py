@@ -12,7 +12,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from ..lib.log import get_logger
+from polylogue.logging import get_logger
 from .drive_types import DriveAuthError, DriveError, DriveNotFoundError
 
 logger = get_logger(__name__)

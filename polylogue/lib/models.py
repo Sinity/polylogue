@@ -41,13 +41,11 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from polylogue.lib.branch_type import BranchType
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.schemas.unified import extract_from_provider_meta
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
-from polylogue.types import ConversationId, MessageId, Provider
+from polylogue.types import ConversationId, Provider
 
 if TYPE_CHECKING:
     from polylogue.lib.projections import ConversationProjection
@@ -62,19 +60,6 @@ class Attachment(BaseModel):
     size_bytes: int | None = None
     path: str | None = None
     provider_meta: dict[str, object] | None = None
-
-    @classmethod
-    def from_record(cls, record: AttachmentRecord) -> Attachment:
-        name = record.provider_meta.get("name") if record.provider_meta else None
-        return cls(
-            id=record.attachment_id,
-            name=name if isinstance(name, str) else record.attachment_id,
-            mime_type=record.mime_type,
-            size_bytes=record.size_bytes,
-            path=record.path,
-            provider_meta=record.provider_meta,
-        )
-
 
 # Patterns for context dump detection (kept for is_context_dump).
 # Only patterns NOT already handled by fast inline checks in is_context_dump.
@@ -113,40 +98,6 @@ class Message(BaseModel):
             return v
         return Provider.from_string(str(v))
 
-    @classmethod
-    def from_record(
-        cls,
-        record: MessageRecord,
-        attachments: list[AttachmentRecord],
-        *,
-        provider: Provider | str | None = None,
-    ) -> Message:
-        # Reconstruct timestamp from sort_key (numeric epoch seconds)
-        ts = None
-        if record.sort_key is not None:
-            from datetime import datetime, timezone
-            try:
-                ts = datetime.fromtimestamp(record.sort_key, tz=timezone.utc)
-            except (ValueError, OSError):
-                ts = None
-        # Build content_blocks dict list from ContentBlockRecord objects
-        blocks = [
-            {"type": b.type, "text": b.text, "tool_name": b.tool_name, "tool_id": b.tool_id}
-            for b in record.content_blocks
-        ]
-        return cls(
-            id=record.message_id,
-            role=(record.role or "").strip() or "unknown",
-            text=record.text,
-            timestamp=ts,
-            provider=provider,
-            attachments=[Attachment.from_record(a) for a in attachments],
-            provider_meta=None,  # No longer stored in messages table
-            content_blocks=blocks,
-            parent_id=record.parent_message_id,
-            branch_index=record.branch_index,
-        )
-
     # --- Branching properties ---
 
     @property
@@ -184,6 +135,7 @@ class Message(BaseModel):
         if not self.provider or not self.provider_meta:
             return None
         try:
+            from polylogue.schemas.unified import extract_from_provider_meta  # lazy: models must not import schemas at module level
             return extract_from_provider_meta(
                 self.provider,
                 self.provider_meta,
@@ -433,21 +385,6 @@ class ConversationSummary(BaseModel):
     message_count: int | None = None
     dialogue_count: int | None = None
 
-    @classmethod
-    def from_record(cls, record: ConversationRecord) -> ConversationSummary:
-        """Create summary from ConversationRecord without loading messages."""
-        return cls(
-            id=record.conversation_id,
-            provider=record.provider_name,
-            title=record.title,
-            created_at=parse_timestamp(record.created_at),
-            updated_at=parse_timestamp(record.updated_at),
-            provider_meta=record.provider_meta,
-            metadata=record.metadata or {},
-            parent_id=record.parent_conversation_id,
-            branch_type=record.branch_type,
-        )
-
     @property
     def display_date(self) -> datetime | None:
         """Best available date: updated_at > created_at > None."""
@@ -494,8 +431,8 @@ class Conversation(BaseModel):
     """A conversation with messages and metadata.
 
     The `messages` field is a `MessageCollection` which supports both lazy
-    eager loading. Messages are pre-loaded in memory via `Conversation.from_records()`
-    or filter operations.
+    eager loading. Messages are pre-loaded in memory via
+    `polylogue.storage.hydrators.conversation_from_records()` or filter operations.
 
     You can also pass a list of Message objects directly — Pydantic coercion
     will auto-wrap them in an eager MessageCollection.
@@ -526,54 +463,6 @@ class Conversation(BaseModel):
     def display_date(self) -> datetime | None:
         """Best available date: updated_at > created_at > None."""
         return self.updated_at or self.created_at
-
-    @classmethod
-    def from_records(
-        cls,
-        conversation: ConversationRecord,
-        messages: list[MessageRecord],
-        attachments: list[AttachmentRecord],
-    ) -> Conversation:
-        """Create a Conversation with eager-loaded messages.
-
-        This is the traditional constructor that loads all messages into memory.
-        Used for filtered views, tests, and when full message access is needed.
-
-        Args:
-            conversation: Conversation metadata record
-            messages: List of message records
-            attachments: List of attachment records
-
-        Returns:
-            Conversation with messages in eager mode
-        """
-        att_map: dict[MessageId, list[AttachmentRecord]] = {}
-        for att in attachments:
-            if att.message_id:
-                att_map.setdefault(att.message_id, []).append(att)
-
-        conv_provider = Provider.from_string(conversation.provider_name)
-        rich_messages = [
-            Message.from_record(
-                msg,
-                att_map.get(msg.message_id, []),
-                provider=conv_provider,
-            )
-            for msg in messages
-        ]
-
-        return cls(
-            id=conversation.conversation_id,
-            provider=conv_provider,
-            title=conversation.title,
-            messages=MessageCollection(messages=rich_messages),
-            created_at=parse_timestamp(conversation.created_at),
-            updated_at=parse_timestamp(conversation.updated_at),
-            provider_meta=conversation.provider_meta,
-            metadata=conversation.metadata or {},
-            parent_id=conversation.parent_conversation_id,
-            branch_type=conversation.branch_type,
-        )
 
     # --- Branching properties ---
 

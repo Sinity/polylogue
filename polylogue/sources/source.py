@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from polylogue.config import Source
 from polylogue.lib.json import dumps as json_dumps
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.types import Provider
 
 from ..storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
