@@ -1,267 +1,56 @@
+"""Drive client — thin composition root over auth, gateway, and source layers.
+
+For new code, prefer depending on DriveSourceAPI (protocol) from drive_source.py
+rather than the concrete DriveClient. The concrete class exists for backwards
+compatibility of instantiation sites and as the default construction path.
+"""
 from __future__ import annotations
 
-import contextlib
-import importlib
-import io
-import json
-import os
-import shutil
-import tempfile
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
-from datetime import datetime
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, TypeVar
 
-from tenacity import (
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
+from .drive_auth import (
+    DriveAuthManager,
+    _resolve_credentials_path,
+    _resolve_token_path,
+    default_credentials_path,
+    default_token_path,
 )
-
-from ..errors import PolylogueError
-from ..lib.log import get_logger
-from ..paths import drive_credentials_path, drive_token_path
-from .token_store import TokenStore, create_token_store
-
-T = TypeVar("T")
-
-logger = get_logger(__name__)
-
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
-FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
-GEMINI_PROMPT_MIME_TYPE = "application/vnd.google-makersuite.prompt"
-DEFAULT_DRIVE_RETRIES = 3
-DEFAULT_DRIVE_RETRY_BASE = 0.5
-ENV_DRIVE_RETRIES = "POLYLOGUE_DRIVE_RETRIES"
-ENV_DRIVE_RETRY_BASE = "POLYLOGUE_DRIVE_RETRY_BASE"
-
-
-class DriveError(PolylogueError):
-    pass
-
-
-class DriveAuthError(DriveError):
-    pass
-
-
-class DriveNotFoundError(DriveError):
-    pass
-
-
-@dataclass
-class DriveFile:
-    file_id: str
-    name: str
-    mime_type: str
-    modified_time: str | None
-    size_bytes: int | None
-
-
-@dataclass(frozen=True)
-class _CachedCredentialState:
-    creds: Any | None
-    had_invalid_token_path: bool
-
-
-def _build_folder_lookup_query(folder_ref: str) -> str:
-    escaped = folder_ref.replace("'", "\\'")
-    return f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
-
-
-def default_credentials_path(config: object | None = None) -> Path:
-    """Get default credentials path, optionally from DriveConfig."""
-    if config is not None and hasattr(config, "credentials_path"):
-        cred_path = getattr(config, "credentials_path", None)
-        if cred_path:
-            return Path(cred_path)
-    return drive_credentials_path()
-
-
-def default_token_path(config: object | None = None) -> Path:
-    """Get default token path, optionally from DriveConfig."""
-    if config is not None and hasattr(config, "token_path"):
-        token_path = getattr(config, "token_path", None)
-        if token_path:
-            return Path(token_path)
-    return drive_token_path()
-
-
-def _import_module(name: str) -> Any:
-    try:
-        return importlib.import_module(name)
-    except ModuleNotFoundError as exc:
-        raise DriveAuthError(
-            "Drive dependencies are not available. "
-            "Install google-api-python-client + google-auth-oauthlib "
-            "or run Polylogue from a Nix build/dev shell."
-        ) from exc
-
-
-def _parse_modified_time(raw: str | None) -> float | None:
-    if not raw:
-        return None
-    try:
-        if raw.endswith("Z"):
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
-        return datetime.fromisoformat(raw).timestamp()
-    except ValueError:
-        return None
-
-
-def _parse_size(raw: str | int | None) -> int | None:
-    if raw is None:
-        return None
-    if isinstance(raw, int):
-        return raw
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
-def _looks_like_id(value: str) -> bool:
-    if not value or " " in value:
-        return False
-    return all(ch.isalnum() or ch in "-_" for ch in value)
-
-
-def _resolve_credentials_path(ui: object | None, config: object | None = None) -> Path:
-    """Resolve credentials path from config, environment, or defaults."""
-    # First check config
-    if config is not None and hasattr(config, "credentials_path"):
-        cred_path = getattr(config, "credentials_path", None)
-        if cred_path:
-            return Path(cred_path)
-
-    # Then environment variable
-    env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
-    if env_path:
-        return Path(env_path).expanduser()
-
-    # Then default path
-    default_path = default_credentials_path(config)
-    if default_path.exists():
-        return default_path
-
-    # Interactive prompt if UI available
-    if ui is not None and not getattr(ui, "plain", True):
-        prompt = f"Path to Google OAuth client JSON (default {default_path}):"
-        response = getattr(ui, "input", lambda p, default: None)(prompt, default=str(default_path))
-        if response:
-            candidate = Path(response).expanduser()
-            if candidate.exists():
-                default_path.parent.mkdir(parents=True, exist_ok=True)
-                if candidate != default_path:
-                    shutil.copy(candidate, default_path)
-                return default_path
-
-    raise DriveAuthError(
-        f"Drive credentials not found. Set POLYLOGUE_CREDENTIAL_PATH or place a client JSON at {default_path}."
-    )
-
-
-def _resolve_token_path(config: object | None = None) -> Path:
-    """Resolve token path from config, environment, or defaults."""
-    # First check config
-    if config is not None and hasattr(config, "token_path"):
-        token_path = getattr(config, "token_path", None)
-        if token_path:
-            return Path(token_path)
-
-    # Then environment variable
-    env_path = os.environ.get("POLYLOGUE_TOKEN_PATH")
-    if env_path:
-        return Path(env_path).expanduser()
-
-    # Then default
-    return default_token_path(config)
-
-
-def _resolve_retries(value: int | None, config: object | None = None) -> int:
-    """Resolve retry count from explicit value, config, environment, or default."""
-    if value is not None:
-        return max(0, int(value))
-
-    # Check config
-    if config is not None and hasattr(config, "retry_count"):
-        return max(0, int(config.retry_count))
-
-    # Check environment
-    env_value = os.environ.get(ENV_DRIVE_RETRIES)
-    if env_value:
-        try:
-            return max(0, int(env_value))
-        except ValueError:
-            pass
-
-    return DEFAULT_DRIVE_RETRIES
-
-
-def _resolve_retry_base(value: float | None) -> float:
-    if value is not None:
-        return max(0.0, float(value))
-    env_value = os.environ.get(ENV_DRIVE_RETRY_BASE)
-    if env_value:
-        try:
-            return max(0.0, float(env_value))
-        except ValueError:
-            pass
-    return DEFAULT_DRIVE_RETRY_BASE
-
-
-def _is_newline_delimited_json_name(name: str) -> bool:
-    name_lower = name.lower()
-    return (
-        name_lower.endswith(".jsonl")
-        or name_lower.endswith(".jsonl.txt")
-        or name_lower.endswith(".ndjson")
-    )
-
-
-def _is_supported_drive_payload(name: str, mime_type: str) -> bool:
-    """Return whether a Drive file should be treated as a JSON payload export."""
-    return name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")) or mime_type == GEMINI_PROMPT_MIME_TYPE
-
-
-def _parse_downloaded_json_payload(raw: bytes, *, name: str) -> object:
-    if _is_newline_delimited_json_name(name):
-        items = []
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                items.append(json.loads(line))
-            except json.JSONDecodeError as exc:
-                logger.warning("Skipping invalid JSON line in Drive file %s: %s", name, exc)
-                continue
-        return items
-
-    try:
-        return json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return json.loads(raw.decode("utf-8", errors="replace"))
-
-
-def _needs_download(meta: DriveFile, dest: Path) -> bool:
-    """Return whether a Drive file should be downloaded to the destination path."""
-    if not dest.exists():
-        return True
-
-    try:
-        stat = dest.stat()
-    except OSError:
-        return True
-
-    if meta.size_bytes is not None and stat.st_size != meta.size_bytes:
-        return True
-
-    modified_timestamp = _parse_modified_time(meta.modified_time)
-    return modified_timestamp is not None and abs(stat.st_mtime - modified_timestamp) > 1
+from .drive_gateway import (
+    DEFAULT_DRIVE_RETRIES,
+    DEFAULT_DRIVE_RETRY_BASE,
+    DriveServiceGateway,
+    _import_module,
+    _resolve_retries,
+    _resolve_retry_base,
+)
+from .drive_source import (
+    DriveSourceClient,
+    _build_folder_lookup_query,
+    _is_supported_drive_payload,
+    _looks_like_id,
+    _needs_download,
+    _parse_downloaded_json_payload,
+    _parse_modified_time,
+    _parse_size,
+)
+from .drive_types import (
+    GEMINI_PROMPT_MIME_TYPE,
+    SCOPES,
+    DriveAuthError,
+    DriveError,
+    DriveFile,
+    DriveNotFoundError,
+)
 
 
 class DriveClient:
+    """Composition root: auth + gateway + source client in one object.
+
+    Callers that need only the source operations should accept DriveSourceAPI
+    (a protocol) instead of this concrete class.
+    """
+
     def __init__(
         self,
         *,
@@ -272,314 +61,131 @@ class DriveClient:
         retry_base: float | None = None,
         config: object | None = None,
     ) -> None:
-        self._ui = ui
-        self._credentials_path = credentials_path
-        self._token_path = token_path
-        self._config = config
-        self._service = None
-        self._meta_cache: dict[str, DriveFile] = {}
-        self._retries = _resolve_retries(retries, config)
-        self._retry_base = _resolve_retry_base(retry_base)
-
-        # Initialize token store
-        resolved_token_path = token_path or _resolve_token_path(config)
-        self._token_store: TokenStore = create_token_store(resolved_token_path.parent)
-
-    def _call_with_retry(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-        from tenacity import Retrying, retry_if_not_exception_type
-
-        retryer = Retrying(
-            stop=stop_after_attempt(max(self._retries, 0) + 1),
-            wait=wait_exponential(multiplier=self._retry_base, min=self._retry_base, max=10),
-            retry=retry_if_exception_type(Exception)
-            & retry_if_not_exception_type((DriveAuthError, DriveNotFoundError)),
-            reraise=True,
+        self._auth_manager = DriveAuthManager(
+            ui=ui,
+            credentials_path=credentials_path,
+            token_path=token_path,
+            config=config,
         )
-        return retryer(func, *args, **kwargs)
-
-    def _load_cached_credentials(
-        self,
-        credentials_cls: Any,
-        token_path: Path,
-    ) -> _CachedCredentialState:
-        creds = None
-        had_invalid_token_path = False
-
-        token_data = self._token_store.load("drive_token")
-        if token_data:
-            try:
-                creds = credentials_cls.from_authorized_user_info(json.loads(token_data), SCOPES)
-            except (OSError, ValueError, json.JSONDecodeError):
-                creds = None
-
-        if creds is None and token_path.exists():
-            try:
-                creds = credentials_cls.from_authorized_user_file(str(token_path), SCOPES)
-            except (OSError, ValueError):
-                had_invalid_token_path = True
-                creds = None
-
-        return _CachedCredentialState(
-            creds=creds,
-            had_invalid_token_path=had_invalid_token_path,
+        resolved_retries = _resolve_retries(retries, config)
+        resolved_retry_base = _resolve_retry_base(retry_base)
+        self._gateway = DriveServiceGateway(
+            auth_manager=self._auth_manager,
+            retries=resolved_retries,
+            retry_base=resolved_retry_base,
         )
+        self._source = DriveSourceClient(gateway=self._gateway)
+
+    # ------------------------------------------------------------------
+    # Expose internals that tests still reach into (kept for compatibility)
+    # ------------------------------------------------------------------
+
+    @property
+    def _service(self):
+        return self._gateway._service
+
+    @_service.setter
+    def _service(self, value):
+        self._gateway._service = value
+
+    @property
+    def _meta_cache(self):
+        return self._source._meta_cache
+
+    @property
+    def _token_store(self):
+        return self._auth_manager._token_store
+
+    @_token_store.setter
+    def _token_store(self, value):
+        self._auth_manager._token_store = value
+
+    # ------------------------------------------------------------------
+    # Methods delegated to inner layers (kept for call-site compatibility)
+    # ------------------------------------------------------------------
+
+    def _call_with_retry(self, func, *args, **kwargs):
+        return self._gateway.call_with_retry(func, *args, **kwargs)
+
+    def _load_credentials(self):
+        return self._auth_manager.load_credentials()
+
+    def _load_cached_credentials(self, credentials_cls, token_path):
+        return self._auth_manager._load_cached_credentials(credentials_cls, token_path)
+
+    def _refresh_credentials_if_needed(self, creds, token_path):
+        return self._auth_manager._refresh_credentials_if_needed(creds, token_path)
+
+    def _run_manual_auth_flow(self, flow):
+        return self._auth_manager._run_manual_auth_flow(flow)
+
+    def _persist_token(self, creds, token_path):
+        return self._auth_manager._persist_token(creds, token_path)
+
+    def _service_handle(self):
+        return self._gateway._service_handle()
 
     @staticmethod
-    def _build_drive_file(meta: dict[str, Any], *, file_id_fallback: str = "") -> DriveFile:
-        file_id = meta.get("id", file_id_fallback)
-        return DriveFile(
-            file_id=file_id,
-            name=meta.get("name") or file_id or file_id_fallback,
-            mime_type=meta.get("mimeType") or "",
-            modified_time=meta.get("modifiedTime"),
-            size_bytes=_parse_size(meta.get("size")),
-        )
+    def _build_drive_file(meta, *, file_id_fallback=""):
+        from .drive_source import _build_drive_file
+        return _build_drive_file(meta, file_id_fallback=file_id_fallback)
 
-    def _refresh_credentials_if_needed(self, creds: Any, token_path: Path) -> Any:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                import google.auth.transport.requests as _gtr
-                transport = _gtr.Request()
-                transport.session.timeout = 30
-                creds.refresh(transport)
-            except Exception as exc:
-                raise DriveAuthError(
-                    f"Failed to refresh OAuth token: {exc}. "
-                    "Try re-authenticating with 'polylogue auth'."
-                ) from exc
+    def _resolve_folder_by_id(self, service, folder_ref):
+        # service arg ignored — gateway manages the service handle internally
+        return self._source._resolve_folder_by_id(folder_ref)
 
-        if creds and creds.valid:
-            self._persist_token(creds, token_path)
-            return creds
+    def _resolve_folder_by_name(self, service, folder_ref):
+        # service arg ignored — gateway manages the service handle internally
+        return self._source._resolve_folder_by_name(folder_ref)
 
-        if creds and not creds.valid and not creds.refresh_token:
-            raise DriveAuthError(
-                f"Drive token at {token_path} is invalid and cannot be refreshed "
-                "(no refresh token). Delete it and re-run with --interactive to re-authorize."
-            )
+    def _download_request(self, request, handle, downloader_cls, *, file_id):
+        return self._gateway._download_request(request, handle, downloader_cls, file_id=file_id)
 
-        return creds
-
-    def _load_credentials(self) -> Any:
-        credentials_cls = _import_module("google.oauth2.credentials").Credentials
-        installed_app_flow_cls = _import_module("google_auth_oauthlib.flow").InstalledAppFlow
-
-        token_path = self._token_path or _resolve_token_path(self._config)
-        cached = self._load_cached_credentials(credentials_cls, token_path)
-        creds = self._refresh_credentials_if_needed(cached.creds, token_path)
-        if creds and creds.valid:
-            return creds
-        if cached.had_invalid_token_path and (self._ui is None or getattr(self._ui, "plain", True)):
-            raise DriveAuthError(
-                f"Drive token at {token_path} is invalid or expired. "
-                "Delete it and re-run with --interactive to re-authorize."
-            )
-
-        credentials_path = self._credentials_path or _resolve_credentials_path(self._ui, self._config)
-        if not credentials_path.exists():
-            raise DriveAuthError(f"Drive credentials not found: {credentials_path}")
-        if self._ui is None or getattr(self._ui, "plain", True):
-            raise DriveAuthError(
-                "Drive authorization required but no interactive UI is available. "
-                "Run with --interactive or set POLYLOGUE_TOKEN_PATH with a valid token."
-            )
-        flow = installed_app_flow_cls.from_client_secrets_file(str(credentials_path), SCOPES)
-        try:
-            creds = flow.run_local_server(open_browser=False, port=0)
-        except OSError as exc:
-            # Local server auth failed - try manual flow
-            logger.info("Local server auth unavailable (%s). Using manual flow.", exc)
-            creds = self._run_manual_auth_flow(flow)
-        except Exception as exc:
-            # Other unexpected errors - try manual flow
-            # Keep broad exception here as google-auth can raise various errors
-            logger.warning("Unexpected auth error: %s. Falling back to manual flow.", exc)
-            creds = self._run_manual_auth_flow(flow)
-        self._persist_token(creds, token_path)
-        return creds
-
-    def _run_manual_auth_flow(self, flow: Any) -> Any:
-        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-        console = getattr(self._ui, "console", None)
-        if console:
-            getattr(console, "print", print)("Open this URL in your browser to authorize Drive access:")
-            getattr(console, "print", print)(auth_url)
-        code = getattr(self._ui, "input", lambda x: None)("Paste the authorization code")
-        if not code:
-            raise DriveAuthError("Drive authorization cancelled.") from None
-        try:
-            flow.fetch_token(code=code)
-        except Exception as exc:
-            raise DriveAuthError(f"Drive authorization failed: {exc}") from exc
-        return flow.credentials
-
-    def _persist_token(self, creds: Any, token_path: Path) -> None:
-        # Save to token store (keyring or file)
-        self._token_store.save("drive_token", creds.to_json())
-
-        # Also save to file path as a fallback credential source
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(creds.to_json(), encoding="utf-8")
-        token_path.chmod(0o600)
-
-    def _service_handle(self) -> Any:
-        if self._service is not None:
-            # Check if credentials have expired (long-running --watch sessions)
-            creds = getattr(self._service, "_http", None)
-            if creds is not None:
-                http_creds = getattr(creds, "credentials", None)
-                if http_creds is not None and getattr(http_creds, "expired", False):
-                    logger.info("Cached service credentials expired, re-authenticating")
-                    self._service = None
-                    return self._service_handle()
-            return self._service
-        build = _import_module("googleapiclient.discovery").build
-
-        creds = self._load_credentials()
-        self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
-        return self._service
-
-    def _resolve_folder_by_id(self, service: Any, folder_ref: str) -> str | None:
-        file_meta: dict[str, Any] = self._call_with_retry(
-            lambda: service.files().get(fileId=folder_ref, fields="id,name,mimeType").execute()
-        )
-        if file_meta and file_meta.get("mimeType") == FOLDER_MIME_TYPE:
-            return str(file_meta["id"])
-        return None
-
-    def _resolve_folder_by_name(self, service: Any, folder_ref: str) -> str:
-        response: dict[str, Any] = self._call_with_retry(
-            lambda: service.files().list(
-                q=_build_folder_lookup_query(folder_ref),
-                fields="files(id,name)",
-            ).execute()
-        )
-        matches = response.get("files", [])
-        if not matches:
-            raise DriveNotFoundError(f"Folder not found: {folder_ref}")
-        return str(matches[0]["id"])
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def resolve_folder_id(self, folder_ref: str) -> str:
-        http_error_cls = _import_module("googleapiclient.errors").HttpError
-        service = self._service_handle()
-        if _looks_like_id(folder_ref):
-            try:
-                resolved = self._resolve_folder_by_id(service, folder_ref)
-                if resolved is not None:
-                    return resolved
-            except Exception as exc:
-                # File not found or permission denied - try by name
-                # Keep broad exception here as google-api errors vary
-                if isinstance(exc, http_error_cls):
-                    if exc.resp.status not in (404, 403):
-                        logger.warning("Unexpected Drive API error resolving %s: %s", folder_ref, exc)
-                else:
-                    logger.warning("Error resolving folder ID %s: %s", folder_ref, exc)
-        return self._resolve_folder_by_name(service, folder_ref)
+        return self._source.resolve_folder_id(folder_ref)
 
     def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
-        service = self._service_handle()
-        page_token: str | None = None
-        query = f"'{folder_id}' in parents and trashed = false"
-        fields = "nextPageToken, files(id,name,mimeType,modifiedTime,size)"
-        while True:
-            response: dict[str, Any] = self._call_with_retry(
-                lambda t=page_token: service.files().list(q=query, fields=fields, pageToken=t, pageSize=1000).execute()
-            )
-            for item in response.get("files", []):
-                name = item.get("name") or ""
-                mime_type = item.get("mimeType") or ""
-                if not _is_supported_drive_payload(name, mime_type):
-                    continue
-                file_obj = self._build_drive_file(item)
-                if file_obj.file_id:
-                    self._meta_cache[file_obj.file_id] = file_obj
-                    yield file_obj
-            page_token = response.get("nextPageToken")
-            if not page_token:
-                break
-
-    def download_bytes(self, file_id: str) -> bytes:
-        media_io_base_download_cls = _import_module("googleapiclient.http").MediaIoBaseDownload
-
-        def _download() -> bytes:
-            service = self._service_handle()
-            request = service.files().get_media(fileId=file_id)
-            buffer = io.BytesIO()
-            self._download_request(request, buffer, media_io_base_download_cls, file_id=file_id)
-            return buffer.getvalue()
-
-        return self._call_with_retry(_download)
-
-    def _download_request(
-        self,
-        request: Any,
-        handle: Any,
-        downloader_cls: Any,
-        *,
-        file_id: str,
-    ) -> None:
-        downloader = downloader_cls(handle, request)
-        done = False
-        max_chunks = 10_000
-        chunks = 0
-        while not done:
-            _, done = downloader.next_chunk()
-            chunks += 1
-            if chunks >= max_chunks:
-                raise DriveError(f"Download exceeded {max_chunks} chunks for file {file_id}")
+        return self._source.iter_json_files(folder_id)
 
     def get_metadata(self, file_id: str) -> DriveFile:
-        if file_id in self._meta_cache:
-            return self._meta_cache[file_id]
-        service = self._service_handle()
-        meta: dict[str, Any] = self._call_with_retry(
-            lambda: service.files().get(fileId=file_id, fields="id,name,mimeType,modifiedTime,size").execute()
-        )
-        file_obj = self._build_drive_file(meta, file_id_fallback=file_id)
-        self._meta_cache[file_id] = file_obj
-        return file_obj
+        return self._source.get_metadata(file_id)
+
+    def download_bytes(self, file_id: str) -> bytes:
+        return self._source.download_bytes(file_id)
 
     def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
-        media_io_base_download_cls = _import_module("googleapiclient.http").MediaIoBaseDownload
-
-        meta = self.get_metadata(file_id)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        needs_download = _needs_download(meta, dest)
-        if needs_download:
-
-            def _download_once() -> None:
-                tmp_path: Path | None = None
-                try:
-                    service = self._service_handle()
-                    request = service.files().get_media(fileId=file_id)
-                    with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as handle:
-                        tmp_path = Path(handle.name)
-                        self._download_request(request, handle, media_io_base_download_cls, file_id=file_id)
-                    tmp_path.replace(dest)
-                except Exception:
-                    if tmp_path is not None:
-                        with contextlib.suppress(OSError):
-                            tmp_path.unlink()
-                    raise
-
-            self._call_with_retry(_download_once)
-        modified_timestamp = _parse_modified_time(meta.modified_time)
-        if modified_timestamp is not None:
-            os.utime(dest, (modified_timestamp, modified_timestamp))
-        return meta
+        return self._source.download_to_path(file_id, dest)
 
     def download_json_payload(self, file_id: str, *, name: str) -> object:
-        raw = self.download_bytes(file_id)
-        return _parse_downloaded_json_payload(raw, name=name)
+        return self._source.download_json_payload(file_id, name=name)
 
 
 __all__ = [
+    "DEFAULT_DRIVE_RETRIES",
+    "DEFAULT_DRIVE_RETRY_BASE",
     "DriveAuthError",
     "DriveClient",
     "DriveError",
     "DriveFile",
     "DriveNotFoundError",
+    "GEMINI_PROMPT_MIME_TYPE",
+    "SCOPES",
+    "_build_folder_lookup_query",
+    "_import_module",
+    "_is_supported_drive_payload",
+    "_looks_like_id",
+    "_needs_download",
+    "_parse_downloaded_json_payload",
+    "_parse_modified_time",
+    "_parse_size",
+    "_resolve_credentials_path",
+    "_resolve_retries",
+    "_resolve_retry_base",
+    "_resolve_token_path",
     "default_credentials_path",
     "default_token_path",
 ]
