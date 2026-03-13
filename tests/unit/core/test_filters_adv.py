@@ -1,7 +1,7 @@
-"""Advanced ConversationFilter owner tests.
+"""Advanced ConversationFilter contracts.
 
-This file owns advanced content-aware filters, summary-path edge cases,
-branching relations, delete cascades, and semantic content-block filters.
+This owner file covers content-aware filters, sorting projections, summary-path
+edge cases, branch relations, delete cascades, and semantic capability filters.
 """
 
 from __future__ import annotations
@@ -46,7 +46,6 @@ def filter_db_advanced(tmp_path):
         .metadata({"tags": ["math", "complex"], "summary": "Math problem solving"})
         .save()
     )
-
     (
         ConversationBuilder(db_path, "conv-tools")
         .provider("claude")
@@ -63,7 +62,6 @@ def filter_db_advanced(tmp_path):
         .metadata({"tags": ["api", "integration"]})
         .save()
     )
-
     (
         ConversationBuilder(db_path, "conv-attachments")
         .provider("chatgpt")
@@ -74,7 +72,6 @@ def filter_db_advanced(tmp_path):
         .metadata({"tags": ["documents"]})
         .save()
     )
-
     (
         ConversationBuilder(db_path, "conv-summary-only")
         .provider("claude")
@@ -84,7 +81,6 @@ def filter_db_advanced(tmp_path):
         .metadata({"summary": "Brief greeting exchange", "tags": ["greeting"]})
         .save()
     )
-
     (
         ConversationBuilder(db_path, "conv-multi-attach")
         .provider("chatgpt")
@@ -97,7 +93,6 @@ def filter_db_advanced(tmp_path):
         .metadata({"tags": ["analysis"]})
         .save()
     )
-
     (
         ConversationBuilder(db_path, "conv-long-messages")
         .provider("claude")
@@ -115,7 +110,6 @@ def filter_db_advanced(tmp_path):
         .metadata({"tags": ["quantum"]})
         .save()
     )
-
     (
         ConversationBuilder(db_path, "conv-plain")
         .provider("codex")
@@ -141,57 +135,21 @@ def filter_repo_empty(filter_db_empty):
     return ConversationRepository(backend=SQLiteBackend(db_path=filter_db_empty))
 
 
-ADVANCED_CASES = [
-    (
-        "has-thinking",
-        lambda f: f.has("thinking"),
-        {"conv-thinking"},
-    ),
-    (
-        "has-tools",
-        lambda f: f.has("tools"),
-        {"conv-tools"},
-    ),
-    (
-        "has-attachments",
-        lambda f: f.has("attachments"),
-        {"conv-attachments", "conv-multi-attach"},
-    ),
-    (
-        "has-summary",
-        lambda f: f.has("summary"),
-        {"conv-summary-only", "conv-thinking"},
-    ),
-    (
-        "provider-and-thinking",
-        lambda f: f.provider("claude").has("thinking"),
-        {"conv-thinking"},
-    ),
-    (
-        "exclude-provider-with-attachments",
-        lambda f: f.exclude_provider("claude").has("attachments"),
-        {"conv-attachments", "conv-multi-attach"},
-    ),
-    (
-        "contradictory-thinking-provider",
-        lambda f: f.has("thinking").exclude_provider("claude"),
-        set(),
-    ),
+ADVANCED_SELECTION_CASES = [
+    ("has-thinking", lambda f: f.has("thinking"), {"conv-thinking"}),
+    ("has-tools", lambda f: f.has("tools"), {"conv-tools"}),
+    ("has-attachments", lambda f: f.has("attachments"), {"conv-attachments", "conv-multi-attach"}),
+    ("has-summary", lambda f: f.has("summary"), {"conv-summary-only", "conv-thinking"}),
+    ("provider-and-thinking", lambda f: f.provider("claude").has("thinking"), {"conv-thinking"}),
+    ("exclude-provider-with-attachments", lambda f: f.exclude_provider("claude").has("attachments"), {"conv-attachments", "conv-multi-attach"}),
+    ("contradictory-thinking-provider", lambda f: f.has("thinking").exclude_provider("claude"), set()),
 ]
 
 
-SORT_FIELDS = {
-    "tokens": lambda conv: sum(len(message.text or "") for message in conv.messages) // 4,
-    "words": lambda conv: sum(message.word_count for message in conv.messages),
-    "longest": lambda conv: max((message.word_count for message in conv.messages), default=0),
-    "messages": lambda conv: len(conv.messages),
-}
-
-
 SUMMARY_CASES = [
-    ("provider", lambda f: f.provider("claude"), ["conv-long-messages", "conv-summary-only", "conv-thinking", "conv-tools"]),
+    ("provider", lambda f: f.provider("claude"), ["conv-long-messages", "conv-summary-only", "conv-tools", "conv-thinking"]),
     ("tag", lambda f: f.tag("analysis"), ["conv-multi-attach"]),
-    ("exclude-tag", lambda f: f.exclude_tag("simple"), ["conv-attachments", "conv-long-messages", "conv-multi-attach", "conv-summary-only", "conv-thinking", "conv-tools"]),
+    ("exclude-tag", lambda f: f.exclude_tag("simple"), ["conv-long-messages", "conv-multi-attach", "conv-summary-only", "conv-attachments", "conv-tools", "conv-thinking"]),
     ("title", lambda f: f.title("Complex"), ["conv-thinking"]),
     ("has-summary", lambda f: f.has("summary"), ["conv-summary-only", "conv-thinking"]),
 ]
@@ -205,151 +163,17 @@ INVALID_SUMMARY_FILTERS = [
 ]
 
 
-def _assert_monotonic(values: list[int], *, ascending: bool) -> None:
-    for index in range(len(values) - 1):
-        if ascending:
-            assert values[index] <= values[index + 1]
-        else:
-            assert values[index] >= values[index + 1]
-
-
-class TestAdvancedConversationFilterContracts:
-    @pytest.mark.parametrize(("case_name", "build_filter", "expected_ids"), ADVANCED_CASES)
-    @pytest.mark.asyncio
-    async def test_content_capability_matrix(self, filter_repo_advanced, case_name, build_filter, expected_ids):
-        result = await build_filter(ConversationFilter(filter_repo_advanced)).list()
-        assert {conversation.id for conversation in result} == expected_ids, case_name
-
-    @pytest.mark.asyncio
-    async def test_unknown_has_type_is_a_noop(self, filter_repo_advanced):
-        result = await ConversationFilter(filter_repo_advanced).has("nonexistent_type").list()
-        baseline = await ConversationFilter(filter_repo_advanced).list()
-        assert [conversation.id for conversation in result] == [conversation.id for conversation in baseline]
-
-    @pytest.mark.parametrize(
-        ("sample_size", "build_filter"),
-        [
-            (0, lambda f: f),
-            (1, lambda f: f),
-            (2, lambda f: f.provider("claude")),
-            (9999, lambda f: f),
-        ],
-    )
-    @pytest.mark.asyncio
-    async def test_sample_contract_matrix(self, filter_repo_advanced, sample_size, build_filter):
-        base_filter = build_filter(ConversationFilter(filter_repo_advanced))
-        population = await build_filter(ConversationFilter(filter_repo_advanced)).list()
-        sampled = await base_filter.sample(sample_size).list()
-
-        assert len(sampled) <= min(sample_size, len(population))
-        assert {conversation.id for conversation in sampled}.issubset({conversation.id for conversation in population})
-
-    @pytest.mark.parametrize(("sort_field", "reverse"), [(field, reverse) for field in SORT_FIELDS for reverse in (False, True)])
-    @pytest.mark.asyncio
-    async def test_sort_projection_contract_matrix(self, filter_repo_advanced, sort_field, reverse):
-        filter_obj = ConversationFilter(filter_repo_advanced).sort(sort_field)
-        if reverse:
-            filter_obj = filter_obj.reverse()
-
-        result = await filter_obj.list()
-        metrics = [SORT_FIELDS[sort_field](conversation) for conversation in result]
-        _assert_monotonic(metrics, ascending=reverse)
-
-    @pytest.mark.parametrize(
-        "build_filter",
-        [
-            lambda f: f.limit(0).sample(5),
-            lambda f: f.sample(5).limit(0),
-            lambda f: f.sort("messages").limit(0),
-            lambda f: f.provider("claude").tag("quantum").sort("date").sample(10).limit(0),
-        ],
-    )
-    @pytest.mark.asyncio
-    async def test_limit_zero_short_circuits_pipeline(self, filter_repo_advanced, build_filter):
-        assert await build_filter(ConversationFilter(filter_repo_advanced)).list() == []
-
-    @pytest.mark.parametrize(("case_name", "build_filter", "expected_ids"), SUMMARY_CASES)
-    @pytest.mark.asyncio
-    async def test_list_summaries_contract_matrix(self, filter_repo_advanced, case_name, build_filter, expected_ids):
-        summaries = await build_filter(ConversationFilter(filter_repo_advanced)).list_summaries()
-        assert {summary.id for summary in summaries} == set(expected_ids), case_name
-        assert all(isinstance(summary, ConversationSummary) for summary in summaries)
-
-    @pytest.mark.asyncio
-    async def test_list_summaries_preserves_sample_and_limit_bounds(self, filter_repo_advanced):
-        sampled = await ConversationFilter(filter_repo_advanced).sample(2).list_summaries()
-        limited = await ConversationFilter(filter_repo_advanced).limit(2).list_summaries()
-        assert len(sampled) <= 2
-        assert len(limited) <= 2
-
-    @pytest.mark.parametrize(("build_filter", "error_match"), INVALID_SUMMARY_FILTERS)
-    @pytest.mark.asyncio
-    async def test_list_summaries_rejects_content_dependent_filters(self, filter_repo_advanced, build_filter, error_match):
-        with pytest.raises(ValueError, match=error_match):
-            await build_filter(ConversationFilter(filter_repo_advanced)).list_summaries()
-
-    @pytest.mark.asyncio
-    async def test_list_summaries_rejection_message_is_exact(self, filter_repo_advanced):
-        with pytest.raises(ValueError) as exc_info:
-            await ConversationFilter(filter_repo_advanced).has("thinking").list_summaries()
-
-        assert str(exc_info.value) == (
-            "Cannot use list_summaries() with content-dependent filters "
-            "(regex, has:thinking, has:tools, etc.). Use list() instead."
-        )
-
-    def test_apply_summary_filters_default_keeps_sql_unpushed_filters(self, filter_repo_advanced):
-        filter_obj = ConversationFilter(filter_repo_advanced).provider("claude")
-        summaries = [
-            ConversationSummary(id="claude-hit", provider="claude"),
-            ConversationSummary(id="chatgpt-hit", provider="chatgpt"),
-        ]
-        assert [summary.id for summary in filter_obj._apply_summary_filters(summaries)] == ["claude-hit"]
-
-    @pytest.mark.asyncio
-    async def test_list_summaries_applies_provider_filter_after_summary_search(self, filter_repo_advanced):
-        filter_obj = ConversationFilter(filter_repo_advanced).contains("needle").provider("claude")
-        filter_obj._fetch_summary_candidates = AsyncMock(  # type: ignore[method-assign]
-            return_value=[
-                ConversationSummary(id="claude-hit", provider="claude"),
-                ConversationSummary(id="chatgpt-hit", provider="chatgpt"),
-            ]
-        )
-        result = await filter_obj.list_summaries()
-        assert [summary.id for summary in result] == ["claude-hit"]
-
-    @pytest.mark.parametrize(
-        ("method_name", "expected"),
-        [
-            ("list", []),
-            ("list_summaries", []),
-            ("first", None),
-            ("count", 0),
-            ("delete", 0),
-            ("pick", None),
-        ],
-    )
-    @pytest.mark.asyncio
-    async def test_empty_repository_terminal_contract(self, filter_repo_empty, method_name, expected):
-        result = await getattr(ConversationFilter(filter_repo_empty), method_name)()
-        assert result == expected
-
-    @pytest.mark.asyncio
-    async def test_empty_repository_with_filters_stays_empty(self, filter_repo_empty):
-        result = await (
-            ConversationFilter(filter_repo_empty)
-            .provider("claude")
-            .tag("python")
-            .has("thinking")
-            .list()
-        )
-        assert result == []
+SORT_FIELDS = {
+    "tokens": lambda conv: sum(len(message.text or "") for message in conv.messages) // 4,
+    "words": lambda conv: sum(message.word_count for message in conv.messages),
+    "longest": lambda conv: max((message.word_count for message in conv.messages), default=0),
+    "messages": lambda conv: len(conv.messages),
+}
 
 
 @pytest.fixture
 def filter_db_with_branches(tmp_path):
     db_path = tmp_path / "filter_branches.db"
-
     (
         ConversationBuilder(db_path, "root-conv")
         .provider("claude")
@@ -378,10 +202,8 @@ def filter_db_with_branches(tmp_path):
         .add_message("m6", role="assistant", text="Sidechain answer")
         .save()
     )
-
     with open_connection(db_path) as conn:
         rebuild_index(conn)
-
     return db_path
 
 
@@ -391,23 +213,15 @@ def filter_repo_branches(filter_db_with_branches):
 
 
 BRANCH_CASES = [
-    ("root", lambda f: f.is_root(), ["root-conv"]),
-    ("continuation", lambda f: f.is_continuation(), ["continuation-conv"]),
-    ("sidechain", lambda f: f.is_sidechain(), ["sidechain-conv"]),
-    ("parent", lambda f: f.parent("root-conv"), ["continuation-conv", "sidechain-conv"]),
-    ("not-root", lambda f: f.is_root(False), ["continuation-conv", "sidechain-conv"]),
-    ("not-continuation", lambda f: f.is_continuation(False), ["root-conv", "sidechain-conv"]),
-    ("not-sidechain", lambda f: f.is_sidechain(False), ["continuation-conv", "root-conv"]),
-    ("has-branches", lambda f: f.has_branches(), []),
+    ("root", lambda f: f.is_root(), {"root-conv"}),
+    ("continuation", lambda f: f.is_continuation(), {"continuation-conv"}),
+    ("sidechain", lambda f: f.is_sidechain(), {"sidechain-conv"}),
+    ("parent", lambda f: f.parent("root-conv"), {"continuation-conv", "sidechain-conv"}),
+    ("not-root", lambda f: f.is_root(False), {"continuation-conv", "sidechain-conv"}),
+    ("not-continuation", lambda f: f.is_continuation(False), {"root-conv", "sidechain-conv"}),
+    ("not-sidechain", lambda f: f.is_sidechain(False), {"continuation-conv", "root-conv"}),
+    ("has-branches", lambda f: f.has_branches(), set()),
 ]
-
-
-class TestBranchingContracts:
-    @pytest.mark.parametrize(("case_name", "build_filter", "expected_ids"), BRANCH_CASES)
-    @pytest.mark.asyncio
-    async def test_branching_contract_matrix(self, filter_repo_branches, case_name, build_filter, expected_ids):
-        result = await build_filter(ConversationFilter(filter_repo_branches)).list()
-        assert {conversation.id for conversation in result} == set(expected_ids), case_name
 
 
 @pytest.fixture
@@ -424,31 +238,12 @@ def populated_db(tmp_path):
     )
     with open_connection(db_path) as conn:
         rebuild_index(conn)
-    repo = ConversationRepository(backend=SQLiteBackend(db_path=db_path))
-    return db_path, repo
-
-
-class TestDeleteMutationContracts:
-    @pytest.mark.asyncio
-    async def test_delete_cascade_contract(self, populated_db):
-        db_path, repo = populated_db
-        deleted = await ConversationFilter(repo).id("cascade-conv").delete()
-        assert deleted == 1
-
-        with open_connection(db_path) as conn:
-            counts = {
-                "messages": conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = 'cascade-conv'").fetchone()[0],
-                "refs": conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = 'cascade-conv'").fetchone()[0],
-                "fts": conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = 'cascade-conv'").fetchone()[0],
-                "attachments": conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'att1'").fetchone()[0],
-            }
-        assert counts == {"messages": 0, "refs": 0, "fts": 0, "attachments": 0}
+    return db_path, ConversationRepository(backend=SQLiteBackend(db_path=db_path))
 
 
 @pytest.fixture
 def filter_db_semantic(tmp_path):
     db_path = tmp_path / "filter_semantic.db"
-
     (
         ConversationBuilder(db_path, "conv-file-ops")
         .provider("claude-code")
@@ -524,10 +319,8 @@ def filter_db_semantic(tmp_path):
         )
         .save()
     )
-
     with open_connection(db_path) as conn:
         rebuild_index(conn)
-
     return db_path
 
 
@@ -546,7 +339,151 @@ SEMANTIC_CASES = [
 ]
 
 
-class TestSemanticFilterContracts:
+class TestAdvancedConversationFilterContracts:
+    @pytest.mark.parametrize(("case_name", "build_filter", "expected_ids"), ADVANCED_SELECTION_CASES)
+    @pytest.mark.asyncio
+    async def test_advanced_selection_matrix(self, filter_repo_advanced, case_name, build_filter, expected_ids):
+        result = await build_filter(ConversationFilter(filter_repo_advanced)).list()
+        assert {conversation.id for conversation in result} == expected_ids, case_name
+
+    @pytest.mark.asyncio
+    async def test_unknown_has_type_is_a_noop(self, filter_repo_advanced):
+        result = await ConversationFilter(filter_repo_advanced).has("nonexistent_type").list()
+        baseline = await ConversationFilter(filter_repo_advanced).list()
+        assert [conversation.id for conversation in result] == [conversation.id for conversation in baseline]
+
+    @pytest.mark.parametrize(("sort_field", "reverse"), [(field, reverse) for field in SORT_FIELDS for reverse in (False, True)])
+    @pytest.mark.asyncio
+    async def test_sort_projection_contract_matrix(self, filter_repo_advanced, sort_field, reverse):
+        filter_obj = ConversationFilter(filter_repo_advanced).sort(sort_field)
+        if reverse:
+            filter_obj = filter_obj.reverse()
+
+        result = await filter_obj.list()
+        metrics = [SORT_FIELDS[sort_field](conversation) for conversation in result]
+        comparator = all(metrics[index] <= metrics[index + 1] for index in range(len(metrics) - 1)) if reverse else all(
+            metrics[index] >= metrics[index + 1] for index in range(len(metrics) - 1)
+        )
+        assert comparator
+
+    @pytest.mark.parametrize(
+        ("sample_size", "build_filter"),
+        [
+            (0, lambda f: f),
+            (1, lambda f: f),
+            (2, lambda f: f.provider("claude")),
+            (9999, lambda f: f),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_sample_contract_matrix(self, filter_repo_advanced, sample_size, build_filter):
+        population = await build_filter(ConversationFilter(filter_repo_advanced)).list()
+        sampled = await build_filter(ConversationFilter(filter_repo_advanced)).sample(sample_size).list()
+        assert len(sampled) <= min(sample_size, len(population))
+        assert {conversation.id for conversation in sampled}.issubset({conversation.id for conversation in population})
+
+    @pytest.mark.parametrize(
+        "build_filter",
+        [
+            lambda f: f.limit(0).sample(5),
+            lambda f: f.sample(5).limit(0),
+            lambda f: f.sort("messages").limit(0),
+            lambda f: f.provider("claude").tag("quantum").sort("date").sample(10).limit(0),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_limit_zero_short_circuits_pipeline(self, filter_repo_advanced, build_filter):
+        assert await build_filter(ConversationFilter(filter_repo_advanced)).list() == []
+
+    @pytest.mark.parametrize(("case_name", "build_filter", "expected_ids"), SUMMARY_CASES)
+    @pytest.mark.asyncio
+    async def test_list_summaries_contract_matrix(self, filter_repo_advanced, case_name, build_filter, expected_ids):
+        summaries = await build_filter(ConversationFilter(filter_repo_advanced)).list_summaries()
+        assert [summary.id for summary in summaries] == expected_ids, case_name
+        assert all(isinstance(summary, ConversationSummary) for summary in summaries)
+
+    @pytest.mark.asyncio
+    async def test_list_summaries_preserves_sample_and_limit_bounds(self, filter_repo_advanced):
+        sampled = await ConversationFilter(filter_repo_advanced).sample(2).list_summaries()
+        limited = await ConversationFilter(filter_repo_advanced).limit(2).list_summaries()
+        assert len(sampled) <= 2
+        assert len(limited) <= 2
+
+    @pytest.mark.parametrize(("build_filter", "error_match"), INVALID_SUMMARY_FILTERS)
+    @pytest.mark.asyncio
+    async def test_list_summaries_rejects_content_dependent_filters(self, filter_repo_advanced, build_filter, error_match):
+        with pytest.raises(ValueError, match=error_match):
+            await build_filter(ConversationFilter(filter_repo_advanced)).list_summaries()
+
+    @pytest.mark.asyncio
+    async def test_list_summaries_rejection_message_is_exact(self, filter_repo_advanced):
+        with pytest.raises(ValueError) as exc_info:
+            await ConversationFilter(filter_repo_advanced).has("thinking").list_summaries()
+
+        assert str(exc_info.value) == (
+            "Cannot use list_summaries() with content-dependent filters "
+            "(regex, has:thinking, has:tools, etc.). Use list() instead."
+        )
+
+    def test_apply_summary_filters_contract(self, filter_repo_advanced):
+        filter_obj = ConversationFilter(filter_repo_advanced).provider("claude")
+        summaries = [
+            ConversationSummary(id="claude-hit", provider="claude"),
+            ConversationSummary(id="chatgpt-hit", provider="chatgpt"),
+        ]
+        assert [summary.id for summary in filter_obj._apply_summary_filters(summaries)] == ["claude-hit"]
+
+    @pytest.mark.asyncio
+    async def test_list_summaries_applies_provider_filter_after_summary_search(self, filter_repo_advanced):
+        filter_obj = ConversationFilter(filter_repo_advanced).contains("needle").provider("claude")
+        filter_obj._fetch_summary_candidates = AsyncMock(return_value=[ConversationSummary(id="claude-hit", provider="claude"), ConversationSummary(id="chatgpt-hit", provider="chatgpt")])  # type: ignore[method-assign]
+        result = await filter_obj.list_summaries()
+        assert [summary.id for summary in result] == ["claude-hit"]
+
+    @pytest.mark.parametrize(
+        ("method_name", "expected"),
+        [
+            ("list", []),
+            ("list_summaries", []),
+            ("first", None),
+            ("count", 0),
+            ("delete", 0),
+            ("pick", None),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_empty_repository_terminal_contract(self, filter_repo_empty, method_name, expected):
+        result = await getattr(ConversationFilter(filter_repo_empty), method_name)()
+        assert result == expected
+
+    @pytest.mark.asyncio
+    async def test_empty_repository_with_filters_stays_empty(self, filter_repo_empty):
+        result = await ConversationFilter(filter_repo_empty).provider("claude").tag("python").has("thinking").list()
+        assert result == []
+
+
+class TestBranchingAndMutationContracts:
+    @pytest.mark.parametrize(("case_name", "build_filter", "expected_ids"), BRANCH_CASES)
+    @pytest.mark.asyncio
+    async def test_branching_contract_matrix(self, filter_repo_branches, case_name, build_filter, expected_ids):
+        result = await build_filter(ConversationFilter(filter_repo_branches)).list()
+        assert {conversation.id for conversation in result} == expected_ids, case_name
+
+    @pytest.mark.asyncio
+    async def test_delete_cascade_contract(self, populated_db):
+        db_path, repo = populated_db
+        deleted = await ConversationFilter(repo).id("cascade-conv").delete()
+        assert deleted == 1
+
+        with open_connection(db_path) as conn:
+            counts = {
+                "messages": conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = 'cascade-conv'").fetchone()[0],
+                "refs": conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = 'cascade-conv'").fetchone()[0],
+                "fts": conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = 'cascade-conv'").fetchone()[0],
+                "attachments": conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'att1'").fetchone()[0],
+            }
+        assert counts == {"messages": 0, "refs": 0, "fts": 0, "attachments": 0}
+
     @pytest.mark.parametrize(("case_name", "build_filter", "expected_ids"), SEMANTIC_CASES)
     @pytest.mark.asyncio
     async def test_semantic_filter_contract_matrix(self, filter_repo_semantic, case_name, build_filter, expected_ids):
