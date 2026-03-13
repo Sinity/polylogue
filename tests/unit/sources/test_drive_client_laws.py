@@ -341,6 +341,48 @@ def test_load_credentials_state_machine(case: AuthLoadCase, monkeypatch: pytest.
         creds.refresh.assert_called_once()
 
 
+def test_load_cached_credentials_prefers_store_then_file(tmp_path: Path) -> None:
+    token_path = tmp_path / "token.json"
+    token_path.write_text('{"token":"from-file"}', encoding="utf-8")
+    credentials_cls = MagicMock()
+    from_store = _creds(valid=True, expired=False, token_json='{"token":"from-store"}')
+    credentials_cls.from_authorized_user_info.return_value = from_store
+    client = DriveClient(ui=None, token_path=token_path)
+    client._token_store = MagicMock()
+    client._token_store.load.return_value = '{"token":"from-store"}'
+
+    state = client._load_cached_credentials(credentials_cls, token_path)
+
+    assert state.creds is from_store
+    assert state.had_invalid_token_path is False
+    credentials_cls.from_authorized_user_info.assert_called_once()
+    credentials_cls.from_authorized_user_file.assert_not_called()
+
+
+def test_refresh_credentials_if_needed_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    token_path = tmp_path / "token.json"
+    client = DriveClient(ui=None, token_path=token_path)
+    client._token_store = MagicMock()
+    creds = _creds(valid=False, expired=True, token_json='{"token":"fresh"}')
+    request = SimpleNamespace(session=SimpleNamespace(timeout=None))
+
+    def refresh(_request) -> None:
+        creds.valid = True
+        creds.expired = False
+
+    creds.refresh.side_effect = refresh
+    monkeypatch.setattr(
+        "polylogue.sources.drive_client._import_module",
+        lambda name: SimpleNamespace(Request=lambda: request) if name == "google.auth.transport.requests" else (_ for _ in ()).throw(AssertionError(name)),
+    )
+
+    result = client._refresh_credentials_if_needed(creds, token_path)
+
+    assert result is creds
+    creds.refresh.assert_called_once()
+    client._token_store.save.assert_called_once_with("drive_token", '{"token":"fresh"}')
+
+
 def test_load_credentials_uses_manual_flow_when_local_server_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     credentials_path = tmp_path / "client.json"
     credentials_path.write_text('{"installed":{}}', encoding="utf-8")
@@ -437,6 +479,23 @@ def test_resolve_folder_id_contract(case: FolderResolutionCase, monkeypatch: pyt
         assert resource.list.call_args.kwargs["q"] == case.expected_query
 
 
+def test_resolve_folder_helper_contracts() -> None:
+    client = DriveClient(retries=0, retry_base=0.0)
+    service = MockDriveService()
+    service._files_resource.get = MagicMock(
+        return_value=SimpleNamespace(execute=lambda: {"id": "folder-1", "mimeType": "application/vnd.google-apps.folder"})
+    )
+    service._files_resource.list = MagicMock(
+        return_value=SimpleNamespace(execute=lambda: {"files": [{"id": "folder-2", "name": "Inbox"}]})
+    )
+
+    assert client._resolve_folder_by_id(service, "folder-1") == "folder-1"
+    assert client._resolve_folder_by_name(service, "Inbox") == "folder-2"
+    assert service._files_resource.list.call_args.kwargs["q"] == (
+        "name = 'Inbox' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    )
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -473,6 +532,7 @@ def test_download_to_path_contract(case: DownloadCase, monkeypatch: pytest.Monke
     assert result.file_id == case.metadata.file_id
     if case.expect_write:
         assert dest.read_bytes() == case.service_bytes
+        assert abs(dest.stat().st_mtime - 1735689600.0) < 1
     else:
         client.get_metadata.assert_called_once_with(case.metadata.file_id)
 
@@ -557,3 +617,19 @@ def test_get_metadata_and_iteration_cache_contract() -> None:
     assert second is first
     assert [file.file_id for file in files] == ["f1", "f2", "f3"]
     assert list(client._meta_cache) == ["file-1", "f1", "f2", "f3"]
+
+
+def test_get_metadata_builds_file_with_fallback_id() -> None:
+    client = DriveClient(retries=0, retry_base=0.0)
+    service = MockDriveService(
+        files_data={"file-9": mock_drive_file(file_id="file-9", name="", mime_type="application/json", size=7)}
+    )
+    service._http = None
+    client._service = service
+
+    meta = client.get_metadata("file-9")
+
+    assert meta.file_id == "file-9"
+    assert meta.name == "file-9"
+    assert meta.mime_type == "application/json"
+    assert meta.size_bytes == 7

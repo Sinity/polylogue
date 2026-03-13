@@ -273,6 +273,14 @@ class TestConversationFilterFoundations:
         with pytest.raises(ValueError, match="Cannot parse date"):
             ConversationFilter(filter_repo).since("not-a-date")
 
+    def test_pick_index_contract(self) -> None:
+        assert ConversationFilter._pick_index("", 3) == 0
+        assert ConversationFilter._pick_index("1", 3) == 0
+        assert ConversationFilter._pick_index("3", 3) == 2
+        assert ConversationFilter._pick_index("0", 3) is None
+        assert ConversationFilter._pick_index("4", 3) is None
+        assert ConversationFilter._pick_index("oops", 3) is None
+
     @pytest.mark.asyncio
     async def test_terminal_methods_contract(self, filter_repo):
         listed = await ConversationFilter(filter_repo).list()
@@ -333,6 +341,12 @@ class TestConversationFilterFoundations:
         assert first is not None and first.id == "pick-24"
 
         with patch("sys.stdout.isatty", return_value=True), patch("builtins.input", return_value="999"):
+            assert await ConversationFilter(filter_repo_pick_many).sort("date").pick() is None
+
+        with patch("sys.stdout.isatty", return_value=True), patch("builtins.input", return_value="oops"):
+            assert await ConversationFilter(filter_repo_pick_many).sort("date").pick() is None
+
+        with patch("sys.stdout.isatty", return_value=True), patch("builtins.input", side_effect=EOFError):
             assert await ConversationFilter(filter_repo_pick_many).sort("date").pick() is None
 
         output = capsys.readouterr().out
@@ -484,9 +498,11 @@ class TestConversationFilterExecutionContracts:
 
         fast = ConversationFilter(mock_repo).provider("claude")
         assert await fast.count() == 7
+        assert fast._can_count_in_sql() is True
         mock_repo.count.assert_awaited_once_with(provider=fast._providers[0])
 
         summary_count = ConversationFilter(mock_repo).tag("python")
         summary_count.list_summaries = AsyncMock(return_value=[ConversationSummary(id="one", provider="claude")])  # type: ignore[method-assign]
         assert await summary_count.count() == 1
+        assert summary_count._can_count_in_sql() is False
         summary_count.list_summaries.assert_awaited_once()

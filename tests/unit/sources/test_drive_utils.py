@@ -12,6 +12,7 @@ from polylogue.sources import DriveAuthError
 from polylogue.sources.drive_client import (
     DEFAULT_DRIVE_RETRIES,
     DEFAULT_DRIVE_RETRY_BASE,
+    _build_folder_lookup_query,
     _looks_like_id,
     _parse_modified_time,
     _parse_size,
@@ -85,6 +86,17 @@ def test_parse_size_contract(raw: str | int | None, expected: int | None) -> Non
 )
 def test_looks_like_id_contract(value: str, expected: bool) -> None:
     assert _looks_like_id(value) is expected
+
+
+@pytest.mark.parametrize(
+    ("folder_ref", "expected"),
+    [
+        ("Inbox", "name = 'Inbox' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"),
+        ("O'Hare Folder", "name = 'O\\'Hare Folder' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"),
+    ],
+)
+def test_build_folder_lookup_query_contract(folder_ref: str, expected: str) -> None:
+    assert _build_folder_lookup_query(folder_ref) == expected
 
 
 @pytest.mark.parametrize(

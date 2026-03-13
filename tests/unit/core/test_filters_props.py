@@ -256,6 +256,16 @@ def test_sql_pushdown_only_filters_stay_summary_compatible(summary_filter_repo) 
     assert incompatible_plan.needs_content_loading is True
 
 
+def test_count_fast_path_contract(summary_filter_repo) -> None:
+    sql_only = ConversationFilter(summary_filter_repo).provider("claude").since("2024-01-01")
+    post_filtered = ConversationFilter(summary_filter_repo).provider("claude").tag("science")
+    content_filtered = ConversationFilter(summary_filter_repo).exclude_text("beta")
+
+    assert sql_only._can_count_in_sql() is True
+    assert post_filtered._can_count_in_sql() is False
+    assert content_filtered._can_count_in_sql() is False
+
+
 @given(
     st.lists(st.sampled_from(["chatgpt", "claude", "codex"]), min_size=1, max_size=3),
     st.lists(st.sampled_from(["chatgpt", "claude", "codex"]), min_size=0, max_size=2),

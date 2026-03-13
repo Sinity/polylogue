@@ -58,6 +58,10 @@ class _ExecutionPlan:
     sql_pushed: bool
 
 
+def _conversation_has_branches(conversation: Conversation) -> bool:
+    return any(message.branch_index > 0 for message in conversation.messages)
+
+
 class ConversationFilter:
     """Fluent filter builder for conversation-level queries.
 
@@ -286,9 +290,9 @@ class ConversationFilter:
     def has_branches(self, value: bool = True) -> ConversationFilter:
         """Filter to conversations that have branching messages."""
         if value:
-            self._predicates.append(lambda c: any(m.branch_index > 0 for m in c.messages))
+            self._predicates.append(_conversation_has_branches)
         else:
-            self._predicates.append(lambda c: not any(m.branch_index > 0 for m in c.messages))
+            self._predicates.append(lambda c: not _conversation_has_branches(c))
         return self
 
     # --- Terminal methods (execute query) ---
@@ -496,6 +500,19 @@ class ConversationFilter:
             parts.append(f"similar: {self._similar_text[:30]}")
         return parts
 
+    def _can_count_in_sql(self) -> bool:
+        return not (
+            self._fts_terms
+            or self._id_prefix
+            or self._similar_text
+            or self._predicates
+            or self._has_types
+            or self._negative_fts_terms
+            or self._excluded_providers
+            or self._tags
+            or self._excluded_tags
+        )
+
     def describe(self) -> list[str]:
         """Return human-readable descriptions of active filters."""
         return self._describe_active_filters()
@@ -642,17 +659,7 @@ class ConversationFilter:
             Number of matching conversations
         """
         # Fast path: pure SQL count for simple filter combos (no FTS, no content filters)
-        if (
-            not self._fts_terms
-            and not self._id_prefix
-            and not self._similar_text
-            and not self._predicates
-            and not self._has_types
-            and not self._negative_fts_terms
-            and not self._excluded_providers
-            and not self._tags
-            and not self._excluded_tags
-        ):
+        if self._can_count_in_sql():
             return await self._repo.count(**self._sql_pushdown_params())
 
         # Medium path: use summaries (lightweight) if possible
@@ -724,14 +731,25 @@ class ConversationFilter:
 
         try:
             choice = input("\nSelect number (or Enter for first): ").strip()
-            if not choice:
-                return results[0]
-            idx = int(choice) - 1
-            if 0 <= idx < len(results):
-                return results[idx]
-        except (ValueError, EOFError, KeyboardInterrupt):
-            pass
+        except (EOFError, KeyboardInterrupt):
+            return None
 
+        idx = self._pick_index(choice, len(results))
+        if idx is not None:
+            return results[idx]
+
+        return None
+
+    @staticmethod
+    def _pick_index(choice: str, total_results: int) -> int | None:
+        if not choice:
+            return 0
+        try:
+            idx = int(choice) - 1
+        except ValueError:
+            return None
+        if 0 <= idx < total_results:
+            return idx
         return None
 
     # --- Lightweight summary methods (memory-efficient) ---
