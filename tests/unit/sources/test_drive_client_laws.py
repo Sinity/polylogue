@@ -185,6 +185,23 @@ def test_run_manual_auth_flow_contract(code: str, fetch_error: Exception | None,
     ui.console.print.assert_any_call("https://accounts.example/authorize")
 
 
+def test_run_manual_auth_flow_without_console_uses_plain_print(monkeypatch: pytest.MonkeyPatch) -> None:
+    creds = object()
+    flow = _StubFlow(credentials=creds)
+    ui = MagicMock()
+    ui.console = None
+    ui.input.return_value = "auth-code"
+    client = DriveClient(ui=ui)
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda message: printed.append(message))
+
+    result = client._run_manual_auth_flow(flow)
+
+    assert result is creds
+    assert printed == []
+    assert flow.fetch_codes == ["auth-code"]
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -242,6 +259,29 @@ def test_service_handle_contract(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("polylogue.sources.drive_client._import_module", fake_import)
     assert client._service_handle() is rebuilt
+    client._load_credentials.assert_called_once_with()
+    build.assert_called_once_with("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def test_service_handle_builds_and_caches_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = DriveClient()
+    creds = object()
+    built = object()
+    client._load_credentials = MagicMock(return_value=creds)
+    build = MagicMock(return_value=built)
+
+    def fake_import(name: str):
+        if name == "googleapiclient.discovery":
+            return MagicMock(build=build)
+        raise AssertionError(name)
+
+    monkeypatch.setattr("polylogue.sources.drive_client._import_module", fake_import)
+
+    first = client._service_handle()
+    second = client._service_handle()
+
+    assert first is built
+    assert second is built
     client._load_credentials.assert_called_once_with()
     build.assert_called_once_with("drive", "v3", credentials=creds, cache_discovery=False)
 
@@ -411,6 +451,36 @@ def test_load_credentials_uses_manual_flow_when_local_server_fails(monkeypatch: 
     assert result is manual_creds
     client._run_manual_auth_flow.assert_called_once_with(flow)
     client._token_store.save.assert_called_once_with("drive_token", '{"token":"manual"}')
+
+
+def test_load_credentials_returns_local_server_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    credentials_path = tmp_path / "client.json"
+    credentials_path.write_text('{"installed":{}}', encoding="utf-8")
+    token_path = tmp_path / "token.json"
+    server_creds = _creds(valid=True, expired=False, token_json='{"token":"server"}')
+    flow = MagicMock()
+    flow.run_local_server.return_value = server_creds
+    installed_app_flow_cls = MagicMock()
+    installed_app_flow_cls.from_client_secrets_file.return_value = flow
+
+    def fake_import(name: str):
+        if name == "google.oauth2.credentials":
+            return MagicMock(Credentials=MagicMock())
+        if name == "google_auth_oauthlib.flow":
+            return MagicMock(InstalledAppFlow=installed_app_flow_cls)
+        raise AssertionError(name)
+
+    client = DriveClient(ui=MagicMock(plain=False), credentials_path=credentials_path, token_path=token_path)
+    client._token_store = MagicMock()
+    client._token_store.load.return_value = None
+    client._run_manual_auth_flow = MagicMock(side_effect=AssertionError("manual flow should not run"))
+    monkeypatch.setattr("polylogue.sources.drive_client._import_module", fake_import)
+
+    result = client._load_credentials()
+
+    assert result is server_creds
+    flow.run_local_server.assert_called_once_with(open_browser=False, port=0)
+    client._token_store.save.assert_called_once_with("drive_token", '{"token":"server"}')
 
 
 @pytest.mark.parametrize(

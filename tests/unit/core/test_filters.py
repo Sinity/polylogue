@@ -292,6 +292,10 @@ class TestConversationFilterFoundations:
         assert count == 4
 
     @pytest.mark.asyncio
+    async def test_first_returns_none_for_empty_result(self, filter_repo):
+        assert await ConversationFilter(filter_repo).provider("nonexistent").first() is None
+
+    @pytest.mark.asyncio
     async def test_sort_and_reverse_contract(self, filter_repo):
         default_order = await ConversationFilter(filter_repo).sort("date").list()
         reversed_order = await ConversationFilter(filter_repo).sort("date").reverse().list()
@@ -366,6 +370,13 @@ class TestConversationFilterExecutionContracts:
         assert {summary.id for summary in summaries} == {"claude-1", "claude-2"}
 
     @pytest.mark.asyncio
+    async def test_list_summaries_sort_contract(self, filter_repo):
+        summaries = await ConversationFilter(filter_repo).provider("claude").sort("date").list_summaries()
+        reversed_summaries = await ConversationFilter(filter_repo).provider("claude").sort("date").reverse().list_summaries()
+        assert [summary.id for summary in summaries] == ["claude-2", "claude-1"]
+        assert [summary.id for summary in reversed_summaries] == ["claude-1", "claude-2"]
+
+    @pytest.mark.asyncio
     async def test_list_summaries_rejects_content_filters(self, filter_repo):
         with pytest.raises(ValueError, match="Cannot use list_summaries"):
             await ConversationFilter(filter_repo).has("thinking").list_summaries()
@@ -429,6 +440,10 @@ class TestConversationFilterExecutionContracts:
 
         result = filter_obj._apply_common_filters(summaries, sql_pushed=False)
         assert [summary.id for summary in result] == ["conv-alpha"]
+
+    def test_describe_tracks_branch_filter(self, mock_repo):
+        filter_obj = ConversationFilter(mock_repo).has_branches()
+        assert filter_obj.describe() == ["custom predicates: 1"]
 
     @pytest.mark.asyncio
     async def test_fetch_generic_contracts(self, mock_repo):
@@ -506,3 +521,9 @@ class TestConversationFilterExecutionContracts:
         assert await summary_count.count() == 1
         assert summary_count._can_count_in_sql() is False
         summary_count.list_summaries.assert_awaited_once()
+
+        content_count = ConversationFilter(mock_repo).exclude_text("secret")
+        content_count.list = AsyncMock(return_value=[Conversation(id="one", provider="claude", messages=[])])  # type: ignore[method-assign]
+        content_count.list_summaries = AsyncMock(side_effect=AssertionError("summary path should not run"))  # type: ignore[method-assign]
+        assert await content_count.count() == 1
+        content_count.list.assert_awaited_once()
