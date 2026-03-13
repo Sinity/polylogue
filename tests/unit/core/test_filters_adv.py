@@ -470,6 +470,11 @@ class TestBranchingAndMutationContracts:
         assert {conversation.id for conversation in result} == expected_ids, case_name
 
     @pytest.mark.asyncio
+    async def test_has_branches_false_contract(self, filter_repo_branches):
+        result = await ConversationFilter(filter_repo_branches).has_branches(False).list()
+        assert {conversation.id for conversation in result} == {"root-conv", "continuation-conv"}
+
+    @pytest.mark.asyncio
     async def test_delete_cascade_contract(self, populated_db):
         db_path, repo = populated_db
         deleted = await ConversationFilter(repo).id("cascade-conv").delete()

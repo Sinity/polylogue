@@ -57,7 +57,7 @@ Recorded on `2026-03-13`.
 ### Full Test Suite
 
 - Command: `nix develop -c pytest -q -n 0`
-- Result: `2791 passed, 1 warning in 193.09s`
+- Result: `2798 passed, 1 warning in 198.33s`
 - Note: repo-wide pytest defaults still enable `-n auto`; use `-n 0` here for
   stable mutation-comparison timing.
 
@@ -191,6 +191,19 @@ correctly report `Dirty = yes` on commit `033d5d6f3130`.
 | `filters` | `033d5d6f3130` | 457 | 45 | 97 | 0 | Modest but real improvement over the previous clean follow-up (`457/50/106/0`). The new execution-plan seam did not change reach, but it sharpened the remaining frontier into `pick`, `has_branches`, `count`, summary sorting, and description rendering rather than diffuse planner blindness. Timeout mass is still the main remaining cost center. |
 | `drive-client` | `033d5d6f3130` | 564 | 286 | 0 | 0 | Strong improvement over the prior follow-up (`560/340/0/0`). Splitting cached-token loading, refresh transitions, folder-resolution helpers, and `DriveFile` construction reduced survivor density without introducing new runtime cost. The remaining cluster is narrower: `_load_credentials`, `resolve_folder_id`, `iter_json_files`, auth/manual flow, and service retry wiring. |
 
+### Targeted Tightening Pre-Commit Baselines
+
+These are the latest focused reruns after tightening the remaining
+`ConversationFilter` picker/count/summary contracts and Drive auth/service
+contracts on top of the refactor-first seams. The artifacts were recorded
+before committing the batch, so they correctly report `Dirty = yes` on commit
+`122d78613e3f`.
+
+| Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `filters` | `122d78613e3f` | 470 | 38 | 91 | 0 | Best focused result so far on this front. Reach stays complete, survivors dropped again, and timeout mass shrank modestly. The remaining weak cluster is now sharply centered on `pick`, `_describe_active_filters`, `count`, `list_summaries`, and a smaller summary-sort tail. |
+| `drive-client` | `122d78613e3f` | 571 | 279 | 0 | 0 | Another real improvement. Reach is complete, kills increased, and survivors fell again without any timeout cost. The remaining residue is mostly `_load_credentials`, `resolve_folder_id`, `iter_json_files`, `_load_cached_credentials`, `_run_manual_auth_flow`, `_refresh_credentials_if_needed`, and `_service_handle`. |
+
 ### Readiness Call
 
 - `004` is complete, and the immediate follow-up reruns are complete.
@@ -200,8 +213,8 @@ correctly report `Dirty = yes` on commit `033d5d6f3130`.
   rerun set on `eb43cfd48e98`.
 - The maximal remaining-owner compaction pass is now measured as a newer dirty
   pre-commit rerun set on `c1fd5ce60e82`.
-- The refactor-first follow-up pass is now measured as the newest dirty
-  pre-commit rerun set on `033d5d6f3130`.
+- The refactor-first follow-up pass is now superseded by a newer targeted
+  tightening rerun set on `122d78613e3f`.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
   1. `providers-semantics`
@@ -227,6 +240,9 @@ correctly report `Dirty = yes` on commit `033d5d6f3130`.
   - source parsing now carrying a clearer residual cluster in shared extraction helpers plus a small timeout cluster around ChatGPT pair iteration / Drive transport,
   - source detection now carries a much narrower residual cluster around ZIP filtering, emit paths, and provider sniffing,
   - drive-client transport/auth behavior still carrying a narrower but meaningful survivor cluster in auth/load/download helpers.
+  - the latest tightening pass substantially improved `filters` and
+    `drive-client`, but both still have sharply concentrated semantic survivor
+    tails rather than broad reach gaps.
 - Additional mutmut infrastructure work is not the bottleneck now. The next
   gains come from stronger laws, better generators/oracles, and code
   refactors that collapse duplicated semantic authority.
