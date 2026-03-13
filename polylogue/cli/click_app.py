@@ -197,7 +197,7 @@ def mcp_command(env: AppEnv, transport: str) -> None:
         from polylogue.mcp.server import serve_stdio
     except ImportError as exc:
         env.ui.console.print(f"MCP dependencies not installed: {exc}")
-        env.ui.console.print("Install with: pip install polylogue[mcp]")
+        env.ui.console.print("Install the base polylogue package in an environment that includes its runtime dependencies.")
         raise SystemExit(1) from None
 
     serve_stdio(env.services)
