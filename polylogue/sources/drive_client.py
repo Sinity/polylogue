@@ -58,6 +58,12 @@ class DriveFile:
     size_bytes: int | None
 
 
+@dataclass(frozen=True)
+class _CachedCredentialState:
+    creds: Any | None
+    had_invalid_token_path: bool
+
+
 def default_credentials_path(config: object | None = None) -> Path:
     """Get default credentials path, optionally from DriveConfig."""
     if config is not None and hasattr(config, "credentials_path"):
@@ -286,30 +292,34 @@ class DriveClient:
         )
         return retryer(func, *args, **kwargs)
 
-    def _load_credentials(self) -> Any:
-        credentials_cls = _import_module("google.oauth2.credentials").Credentials
-        installed_app_flow_cls = _import_module("google_auth_oauthlib.flow").InstalledAppFlow
-
-        token_path = self._token_path or _resolve_token_path(self._config)
+    def _load_cached_credentials(
+        self,
+        credentials_cls: Any,
+        token_path: Path,
+    ) -> _CachedCredentialState:
         creds = None
+        had_invalid_token_path = False
 
-        # Try loading from token store first (keyring or file)
         token_data = self._token_store.load("drive_token")
         if token_data:
             try:
                 creds = credentials_cls.from_authorized_user_info(json.loads(token_data), SCOPES)
             except (OSError, ValueError, json.JSONDecodeError):
-                # Token data corrupt or invalid
                 creds = None
 
-        # Fall back to file-based token if token store is empty
-        # (first run after fresh install, or token store cleared)
         if creds is None and token_path.exists():
             try:
                 creds = credentials_cls.from_authorized_user_file(str(token_path), SCOPES)
             except (OSError, ValueError):
-                # Token file corrupt or invalid
+                had_invalid_token_path = True
                 creds = None
+
+        return _CachedCredentialState(
+            creds=creds,
+            had_invalid_token_path=had_invalid_token_path,
+        )
+
+    def _refresh_credentials_if_needed(self, creds: Any, token_path: Path) -> Any:
         if creds and creds.expired and creds.refresh_token:
             try:
                 import google.auth.transport.requests as _gtr
@@ -317,21 +327,33 @@ class DriveClient:
                 transport.session.timeout = 30
                 creds.refresh(transport)
             except Exception as exc:
-                # Token refresh failed - expose the error to the user instead of silently
-                # falling back to re-authentication, so they know what went wrong
                 raise DriveAuthError(
                     f"Failed to refresh OAuth token: {exc}. "
                     "Try re-authenticating with 'polylogue auth'."
                 ) from exc
+
         if creds and creds.valid:
             self._persist_token(creds, token_path)
             return creds
+
         if creds and not creds.valid and not creds.refresh_token:
             raise DriveAuthError(
                 f"Drive token at {token_path} is invalid and cannot be refreshed "
                 "(no refresh token). Delete it and re-run with --interactive to re-authorize."
             )
-        if creds is None and token_path.exists() and (self._ui is None or getattr(self._ui, "plain", True)):
+
+        return creds
+
+    def _load_credentials(self) -> Any:
+        credentials_cls = _import_module("google.oauth2.credentials").Credentials
+        installed_app_flow_cls = _import_module("google_auth_oauthlib.flow").InstalledAppFlow
+
+        token_path = self._token_path or _resolve_token_path(self._config)
+        cached = self._load_cached_credentials(credentials_cls, token_path)
+        creds = self._refresh_credentials_if_needed(cached.creds, token_path)
+        if creds and creds.valid:
+            return creds
+        if cached.had_invalid_token_path and (self._ui is None or getattr(self._ui, "plain", True)):
             raise DriveAuthError(
                 f"Drive token at {token_path} is invalid or expired. "
                 "Delete it and re-run with --interactive to re-authorize."

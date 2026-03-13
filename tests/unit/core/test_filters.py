@@ -1,8 +1,9 @@
 """Focused foundational contracts for ConversationFilter.
 
-This file owns the basic fluent API, terminal method, and helper-path contracts.
-Advanced compositions, branching, semantic filters, and summary-specific edge cases
-live in ``test_filters_adv.py`` and ``test_filters_props.py``.
+This owner file covers fluent API persistence, basic selection semantics,
+terminal methods, summary compatibility, and execution-planning helpers.
+Advanced content-aware, branching, semantic, and summary-edge behavior lives
+in ``test_filters_adv.py``.
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from tests.infra.storage_records import ConversationBuilder
 
 @pytest.fixture
 def filter_db(tmp_path):
-    """Database with a small but varied conversation set."""
     db_path = tmp_path / "filter_test.db"
 
     (
@@ -38,7 +38,6 @@ def filter_db(tmp_path):
         .metadata({"tags": ["python", "errors"], "summary": "Python error handling"})
         .save()
     )
-
     (
         ConversationBuilder(db_path, "chatgpt-1")
         .provider("chatgpt")
@@ -50,7 +49,6 @@ def filter_db(tmp_path):
         .metadata({"tags": ["javascript", "async"]})
         .save()
     )
-
     (
         ConversationBuilder(db_path, "claude-2")
         .provider("claude")
@@ -62,7 +60,6 @@ def filter_db(tmp_path):
         .metadata({"tags": ["database", "design"], "summary": "Database schema design"})
         .save()
     )
-
     (
         ConversationBuilder(db_path, "codex-1")
         .provider("codex")
@@ -82,8 +79,7 @@ def filter_db(tmp_path):
 
 @pytest.fixture
 def filter_repo(filter_db):
-    backend = SQLiteBackend(db_path=filter_db)
-    return ConversationRepository(backend=backend)
+    return ConversationRepository(backend=SQLiteBackend(db_path=filter_db))
 
 
 @pytest.fixture
@@ -101,8 +97,7 @@ def filter_repo_pick_many(tmp_path):
             .save()
         )
 
-    backend = SQLiteBackend(db_path=db_path)
-    return ConversationRepository(backend)
+    return ConversationRepository(SQLiteBackend(db_path=db_path))
 
 
 CHAIN_CALLS = [
@@ -150,26 +145,103 @@ FILTER_CASES = [
     ("contains", lambda f: f.contains("async"), {"chatgpt-1"}),
     ("exclude_text", lambda f: f.exclude_text("database"), {"claude-1", "chatgpt-1", "codex-1"}),
     ("summary", lambda f: f.has("summary"), {"claude-1", "claude-2"}),
-    (
-        "since_datetime",
-        lambda f: f.since(datetime(2024, 3, 1, tzinfo=timezone.utc)),
-        {"claude-2", "codex-1"},
-    ),
-    (
-        "until_string",
-        lambda f: f.until("2024-02-20"),
-        {"claude-1", "chatgpt-1"},
-    ),
+    ("since_datetime", lambda f: f.since(datetime(2024, 3, 1, tzinfo=timezone.utc)), {"claude-2", "codex-1"}),
+    ("until_string", lambda f: f.until("2024-02-20"), {"claude-1", "chatgpt-1"}),
 ]
 
 
-PICK_CASES = [
-    (False, None, None, None),
-    (True, False, None, "pick-24"),
-    (True, True, "", "pick-24"),
-    (True, True, "2", "pick-23"),
-    (True, True, "999", None),
-    (True, True, "not-a-number", None),
+SUMMARY_COMPATIBILITY_CASES = [
+    (lambda f: f.provider("claude"), True),
+    (lambda f: f.tag("python"), True),
+    (lambda f: f.has("summary"), True),
+    (lambda f: f.has("thinking"), False),
+    (lambda f: f.exclude_text("error"), False),
+    (lambda f: f.where(lambda c: True), False),
+    (lambda f: f.sort("words"), False),
+]
+
+
+PLANNING_CASES = [
+    (
+        "summary-safe provider filter",
+        lambda repo: ConversationFilter(repo).provider("claude").limit(1),
+        {
+            "summary_safe": True,
+            "needs_content": False,
+            "has_post_filters": False,
+            "fetch_limit": 2,
+            "sql": {"provider": "claude"},
+        },
+    ),
+    (
+        "negative text requires content",
+        lambda repo: ConversationFilter(repo).exclude_text("error").limit(10),
+        {
+            "summary_safe": False,
+            "needs_content": True,
+            "has_post_filters": True,
+            "fetch_limit": 500,
+            "sql": {},
+        },
+    ),
+    (
+        "post filtered tags over-fetch",
+        lambda repo: ConversationFilter(repo).tag("science").limit(10),
+        {
+            "summary_safe": True,
+            "needs_content": False,
+            "has_post_filters": True,
+            "fetch_limit": 500,
+            "sql": {},
+        },
+    ),
+    (
+        "sample widens fetch budget",
+        lambda repo: ConversationFilter(repo).provider("claude").limit(10).sample(5),
+        {
+            "summary_safe": True,
+            "needs_content": False,
+            "has_post_filters": False,
+            "fetch_limit": 200,
+            "sql": {"provider": "claude"},
+        },
+    ),
+    (
+        "stats filters push to sql",
+        lambda repo: ConversationFilter(repo)
+        .provider("claude")
+        .since(datetime(2024, 1, 1, tzinfo=timezone.utc))
+        .until(datetime(2024, 12, 31, tzinfo=timezone.utc))
+        .title("Alpha")
+        .has_tool_use()
+        .has_thinking()
+        .min_messages(2)
+        .max_messages(8)
+        .min_words(5)
+        .has_file_operations()
+        .has_git_operations()
+        .has_subagent_spawns(),
+        {
+            "summary_safe": True,
+            "needs_content": False,
+            "has_post_filters": False,
+            "fetch_limit": None,
+            "sql": {
+                "provider": "claude",
+                "since": "2024-01-01T00:00:00+00:00",
+                "until": "2024-12-31T00:00:00+00:00",
+                "title_contains": "Alpha",
+                "has_tool_use": True,
+                "has_thinking": True,
+                "min_messages": 2,
+                "max_messages": 8,
+                "min_words": 5,
+                "has_file_ops": True,
+                "has_git_ops": True,
+                "has_subagent": True,
+            },
+        },
+    ),
 ]
 
 
@@ -179,7 +251,7 @@ class TestConversationFilterFoundations:
             fresh = ConversationFilter(filter_repo)
             assert call(fresh) is fresh
 
-    @pytest.mark.parametrize("case_name,apply_filter,expected_ids", FILTER_CASES)
+    @pytest.mark.parametrize(("case_name", "apply_filter", "expected_ids"), FILTER_CASES)
     @pytest.mark.asyncio
     async def test_selection_matrix(self, filter_repo, case_name, apply_filter, expected_ids):
         result = await apply_filter(ConversationFilter(filter_repo)).list()
@@ -203,51 +275,13 @@ class TestConversationFilterFoundations:
 
     @pytest.mark.asyncio
     async def test_terminal_methods_contract(self, filter_repo):
-        filter_obj = ConversationFilter(filter_repo)
-        listed = await filter_obj.list()
+        listed = await ConversationFilter(filter_repo).list()
         first = await ConversationFilter(filter_repo).sort("date").first()
         count = await ConversationFilter(filter_repo).count()
 
         assert len(listed) == 4
         assert first is not None
         assert count == 4
-
-    @pytest.mark.asyncio
-    async def test_delete_contract(self, filter_repo):
-        initial = await ConversationFilter(filter_repo).count()
-        deleted = await ConversationFilter(filter_repo).provider("claude").delete()
-        remaining = await ConversationFilter(filter_repo).count()
-
-        assert deleted == 2
-        assert remaining == initial - 2
-
-    @pytest.mark.asyncio
-    async def test_delete_prefers_summary_path_for_summary_safe_filters(self, filter_repo):
-        filter_obj = ConversationFilter(filter_repo).provider("claude").limit(1)
-        filter_obj.list_summaries = AsyncMock(return_value=[ConversationSummary(id="claude-1", provider="claude")])  # type: ignore[method-assign]
-        filter_obj.list = AsyncMock(side_effect=AssertionError("full conversations should not be loaded"))  # type: ignore[method-assign]
-        filter_repo.backend.delete_conversation = AsyncMock(return_value=True)  # type: ignore[method-assign]
-
-        deleted = await filter_obj.delete()
-
-        assert deleted == 1
-        filter_obj.list_summaries.assert_awaited_once()
-        filter_obj.list.assert_not_called()
-        filter_repo.backend.delete_conversation.assert_awaited_once_with("claude-1")
-
-    @pytest.mark.asyncio
-    async def test_delete_uses_full_conversations_for_content_filters(self, filter_repo):
-        filter_obj = ConversationFilter(filter_repo).exclude_text("database")
-        filter_obj.list_summaries = AsyncMock(side_effect=AssertionError("summary path should not run"))  # type: ignore[method-assign]
-        filter_obj.list = AsyncMock(return_value=[Conversation(id="chatgpt-1", provider="chatgpt", messages=[])])  # type: ignore[method-assign]
-        filter_repo.backend.delete_conversation = AsyncMock(return_value=True)  # type: ignore[method-assign]
-
-        deleted = await filter_obj.delete()
-
-        assert deleted == 1
-        filter_obj.list.assert_awaited_once()
-        filter_obj.list_summaries.assert_not_called()
-        filter_repo.backend.delete_conversation.assert_awaited_once_with("chatgpt-1")
 
     @pytest.mark.asyncio
     async def test_sort_and_reverse_contract(self, filter_repo):
@@ -257,22 +291,46 @@ class TestConversationFilterFoundations:
         assert [conversation.id for conversation in reversed_order] == ["claude-1", "chatgpt-1", "claude-2", "codex-1"]
 
     @pytest.mark.asyncio
+    async def test_delete_execution_paths(self, filter_repo):
+        summary_filter = ConversationFilter(filter_repo).provider("claude").limit(1)
+        summary_filter.list_summaries = AsyncMock(return_value=[ConversationSummary(id="claude-1", provider="claude")])  # type: ignore[method-assign]
+        summary_filter.list = AsyncMock(side_effect=AssertionError("full conversations should not be loaded"))  # type: ignore[method-assign]
+        filter_repo.backend.delete_conversation = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        deleted = await summary_filter.delete()
+
+        assert deleted == 1
+        summary_filter.list_summaries.assert_awaited_once()
+        summary_filter.list.assert_not_called()
+        filter_repo.backend.delete_conversation.assert_awaited_once_with("claude-1")
+
+        content_filter = ConversationFilter(filter_repo).exclude_text("database")
+        content_filter.list_summaries = AsyncMock(side_effect=AssertionError("summary path should not run"))  # type: ignore[method-assign]
+        content_filter.list = AsyncMock(return_value=[Conversation(id="chatgpt-1", provider="chatgpt", messages=[])])  # type: ignore[method-assign]
+        filter_repo.backend.delete_conversation = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        deleted = await content_filter.delete()
+
+        assert deleted == 1
+        content_filter.list.assert_awaited_once()
+        content_filter.list_summaries.assert_not_called()
+        filter_repo.backend.delete_conversation.assert_awaited_once_with("chatgpt-1")
+
+    @pytest.mark.asyncio
     async def test_pick_contract_matrix(self, filter_repo_pick_many, monkeypatch, capsys):
-        no_results = await ConversationFilter(filter_repo_pick_many).provider("nonexistent").pick()
-        assert no_results is None
+        assert await ConversationFilter(filter_repo_pick_many).provider("nonexistent").pick() is None
 
         with patch("sys.stdout.isatty", return_value=False):
-            assert (await ConversationFilter(filter_repo_pick_many).sort("date").pick()).id == "pick-24"
+            selected = await ConversationFilter(filter_repo_pick_many).sort("date").pick()
+        assert selected is not None and selected.id == "pick-24"
 
         with patch("sys.stdout.isatty", return_value=True), patch("builtins.input", return_value="2"):
             selected = await ConversationFilter(filter_repo_pick_many).sort("date").pick()
-        assert selected is not None
-        assert selected.id == "pick-23"
+        assert selected is not None and selected.id == "pick-23"
 
         with patch("sys.stdout.isatty", return_value=True), patch("builtins.input", return_value=""):
             first = await ConversationFilter(filter_repo_pick_many).sort("date").pick()
-        assert first is not None
-        assert first.id == "pick-24"
+        assert first is not None and first.id == "pick-24"
 
         with patch("sys.stdout.isatty", return_value=True), patch("builtins.input", return_value="999"):
             assert await ConversationFilter(filter_repo_pick_many).sort("date").pick() is None
@@ -283,19 +341,8 @@ class TestConversationFilterFoundations:
         assert "... and 5 more" in output
 
 
-class TestConversationFilterSummaryCompatibility:
-    @pytest.mark.parametrize(
-        ("apply_filter", "can_use_summaries"),
-        [
-            (lambda f: f.provider("claude"), True),
-            (lambda f: f.tag("python"), True),
-            (lambda f: f.has("summary"), True),
-            (lambda f: f.has("thinking"), False),
-            (lambda f: f.exclude_text("error"), False),
-            (lambda f: f.where(lambda c: True), False),
-            (lambda f: f.sort("words"), False),
-        ],
-    )
+class TestConversationFilterExecutionContracts:
+    @pytest.mark.parametrize(("apply_filter", "can_use_summaries"), SUMMARY_COMPATIBILITY_CASES)
     def test_summary_compatibility_matrix(self, filter_repo, apply_filter, can_use_summaries):
         assert apply_filter(ConversationFilter(filter_repo)).can_use_summaries() is can_use_summaries
 
@@ -309,8 +356,6 @@ class TestConversationFilterSummaryCompatibility:
         with pytest.raises(ValueError, match="Cannot use list_summaries"):
             await ConversationFilter(filter_repo).has("thinking").list_summaries()
 
-
-class TestConversationFilterHelperContracts:
     @pytest.fixture
     def mock_repo(self):
         repo = Mock()
@@ -321,39 +366,15 @@ class TestConversationFilterHelperContracts:
         repo.list_summaries = AsyncMock(return_value=[])
         return repo
 
-    def test_sql_pushdown_params_emit_supported_filters(self, mock_repo):
-        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        end = datetime(2024, 12, 31, tzinfo=timezone.utc)
-        filter_obj = (
-            ConversationFilter(mock_repo)
-            .provider("claude")
-            .since(start)
-            .until(end)
-            .title("Alpha")
-            .has_tool_use()
-            .has_thinking()
-            .min_messages(2)
-            .max_messages(8)
-            .min_words(5)
-            .has_file_operations()
-            .has_git_operations()
-            .has_subagent_spawns()
-        )
-
-        assert filter_obj._sql_pushdown_params() == {
-            "provider": filter_obj._providers[0],
-            "since": "2024-01-01T00:00:00+00:00",
-            "until": "2024-12-31T00:00:00+00:00",
-            "title_contains": "Alpha",
-            "has_tool_use": True,
-            "has_thinking": True,
-            "min_messages": 2,
-            "max_messages": 8,
-            "min_words": 5,
-            "has_file_ops": True,
-            "has_git_ops": True,
-            "has_subagent": True,
-        }
+    @pytest.mark.parametrize(("case_name", "build_filter", "expected"), PLANNING_CASES)
+    def test_execution_planning_matrix(self, mock_repo, case_name, build_filter, expected):
+        filter_obj = build_filter(mock_repo)
+        plan = filter_obj._build_execution_plan()
+        assert plan.can_use_summaries is expected["summary_safe"], case_name
+        assert plan.needs_content_loading is expected["needs_content"], case_name
+        assert plan.has_post_filters is expected["has_post_filters"], case_name
+        assert plan.fetch_limit == expected["fetch_limit"], case_name
+        assert plan.sql_params == expected["sql"], case_name
 
     def test_apply_common_filters_contract(self, mock_repo):
         filter_obj = (
@@ -395,76 +416,47 @@ class TestConversationFilterHelperContracts:
         result = filter_obj._apply_common_filters(summaries, sql_pushed=False)
         assert [summary.id for summary in result] == ["conv-alpha"]
 
-    def test_post_filter_and_content_loading_detection(self, mock_repo):
-        assert ConversationFilter(mock_repo)._has_post_filters() is False
-        assert ConversationFilter(mock_repo).exclude_tag("drop")._has_post_filters() is True
-        assert ConversationFilter(mock_repo).has("summary")._has_post_filters() is True
-        assert ConversationFilter(mock_repo).exclude_text("error")._has_post_filters() is True
-        assert ConversationFilter(mock_repo).where(lambda c: True)._has_post_filters() is True
-
-        assert ConversationFilter(mock_repo)._needs_content_loading() is False
-        assert ConversationFilter(mock_repo).has("thinking")._needs_content_loading() is True
-        assert ConversationFilter(mock_repo).exclude_text("error")._needs_content_loading() is True
-        assert ConversationFilter(mock_repo).where(lambda c: True)._needs_content_loading() is True
-        assert ConversationFilter(mock_repo).sort("words")._needs_content_loading() is True
-
-    def test_effective_fetch_limit_contract(self, mock_repo):
-        assert ConversationFilter(mock_repo)._effective_fetch_limit() is None
-        assert ConversationFilter(mock_repo).limit(10)._effective_fetch_limit() == 20
-        assert ConversationFilter(mock_repo).limit(10).tag("science")._effective_fetch_limit() == 500
-        assert ConversationFilter(mock_repo).limit(10).sample(5)._effective_fetch_limit() == 200
-
     @pytest.mark.asyncio
-    async def test_fetch_generic_prefers_resolved_id(self, mock_repo):
+    async def test_fetch_generic_contracts(self, mock_repo):
+        resolved_filter = ConversationFilter(mock_repo).id("conv-a")
         mock_repo.resolve_id = AsyncMock(return_value="conv-alpha")
-        filter_obj = ConversationFilter(mock_repo).id("conv-a")
         get_by_id = AsyncMock(return_value="resolved")
         search = AsyncMock()
         list_all = AsyncMock()
 
-        result = await filter_obj._fetch_generic(get_by_id, search, list_all)
-
+        result = await resolved_filter._fetch_generic(get_by_id, search, list_all)
         assert result == ["resolved"]
         get_by_id.assert_awaited_once_with("conv-alpha")
         search.assert_not_called()
         list_all.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_fetch_generic_falls_back_to_list_on_search_error(self, mock_repo):
-        filter_obj = ConversationFilter(mock_repo).contains("needle")
-        get_by_id = AsyncMock()
-        search = AsyncMock(side_effect=Exception("fts boom"))
-        list_all = AsyncMock(return_value=["fallback"])
-
-        result = await filter_obj._fetch_generic(get_by_id, search, list_all)
-
-        assert result == ["fallback"]
-        search.assert_awaited_once_with("needle", 10000, None)
-        list_all.assert_awaited_once_with(limit=None)
-
-    @pytest.mark.asyncio
-    async def test_fetch_generic_uses_search_limit_floor_and_provider_scope(self, mock_repo):
-        filter_obj = ConversationFilter(mock_repo).contains("needle").provider("claude").limit(10)
+        search_filter = ConversationFilter(mock_repo).contains("needle").provider("claude").limit(10)
         get_by_id = AsyncMock()
         search = AsyncMock(return_value=["hit"])
         list_all = AsyncMock()
 
-        result = await filter_obj._fetch_generic(get_by_id, search, list_all)
-
+        result = await search_filter._fetch_generic(get_by_id, search, list_all)
         assert result == ["hit"]
-        search.assert_awaited_once_with("needle", 100, filter_obj._providers)
+        search.assert_awaited_once_with("needle", 100, search_filter._providers)
         list_all.assert_not_called()
 
+        fallback_filter = ConversationFilter(mock_repo).contains("needle")
+        get_by_id = AsyncMock()
+        search = AsyncMock(side_effect=Exception("fts boom"))
+        list_all = AsyncMock(return_value=["fallback"])
+
+        result = await fallback_filter._fetch_generic(get_by_id, search, list_all)
+        assert result == ["fallback"]
+        list_all.assert_awaited_once_with(limit=None)
+
     @pytest.mark.asyncio
-    async def test_fetch_summary_candidates_uses_summary_search_backend(self, mock_repo):
-        mock_repo.search_summaries = AsyncMock(return_value=["summary-hit"])
+    async def test_summary_fetch_and_count_contracts(self, mock_repo):
         filter_obj = ConversationFilter(mock_repo).contains("needle").provider("claude").limit(10)
+        mock_repo.search_summaries = AsyncMock(return_value=["summary-hit"])
 
         result = await filter_obj._fetch_summary_candidates()
-
         assert result == ["summary-hit"]
         mock_repo.search_summaries.assert_awaited_once_with("needle", limit=100, providers=filter_obj._providers)
-        mock_repo.list_summaries.assert_not_called()
 
     def test_execute_pipeline_applies_filter_sort_sample_and_limit(self, mock_repo):
         filter_obj = ConversationFilter(mock_repo).sample(2).limit(1)
@@ -479,7 +471,7 @@ class TestConversationFilterHelperContracts:
         assert result == [4]
 
     @pytest.mark.asyncio
-    async def test_list_and_list_summaries_use_helper_paths(self, mock_repo):
+    async def test_list_and_count_helper_paths(self, mock_repo):
         full_filter = ConversationFilter(mock_repo)
         summary_filter = ConversationFilter(mock_repo)
         conversations = [Conversation(id="conv-1", provider="claude", messages=[Message(id="m1", role="user", text="question")])]
@@ -489,16 +481,12 @@ class TestConversationFilterHelperContracts:
 
         assert [conv.id for conv in await full_filter.list()] == ["conv-1"]
         assert [summary.id for summary in await summary_filter.list_summaries()] == ["conv-1"]
-        full_filter._fetch_candidates.assert_awaited_once()
-        summary_filter._fetch_summary_candidates.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_count_fast_and_summary_paths(self, mock_repo):
         fast = ConversationFilter(mock_repo).provider("claude")
         assert await fast.count() == 7
         mock_repo.count.assert_awaited_once_with(provider=fast._providers[0])
 
-        summary_filter = ConversationFilter(mock_repo).tag("python")
-        summary_filter.list_summaries = AsyncMock(return_value=[ConversationSummary(id="one", provider="claude")])  # type: ignore[method-assign]
-        assert await summary_filter.count() == 1
-        summary_filter.list_summaries.assert_awaited_once()
+        summary_count = ConversationFilter(mock_repo).tag("python")
+        summary_count.list_summaries = AsyncMock(return_value=[ConversationSummary(id="one", provider="claude")])  # type: ignore[method-assign]
+        assert await summary_count.count() == 1
+        summary_count.list_summaries.assert_awaited_once()

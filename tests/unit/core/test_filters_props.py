@@ -248,9 +248,12 @@ def test_sql_pushdown_only_filters_stay_summary_compatible(summary_filter_repo) 
         .where(lambda c: True)
     )
 
-    assert compatible._needs_content_loading() is False
-    assert compatible._has_post_filters() is True
-    assert incompatible._needs_content_loading() is True
+    compatible_plan = compatible._build_execution_plan()
+    incompatible_plan = incompatible._build_execution_plan()
+
+    assert compatible_plan.needs_content_loading is False
+    assert compatible_plan.has_post_filters is True
+    assert incompatible_plan.needs_content_loading is True
 
 
 @given(

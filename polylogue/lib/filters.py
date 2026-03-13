@@ -27,6 +27,7 @@ from __future__ import annotations
 import builtins
 import random
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
@@ -45,6 +46,16 @@ if TYPE_CHECKING:
 SortField = Literal["date", "tokens", "messages", "words", "longest", "random"]
 
 _T = TypeVar("_T")
+
+
+@dataclass(frozen=True)
+class _ExecutionPlan:
+    sql_params: dict[str, object]
+    fetch_limit: int | None
+    has_post_filters: bool
+    needs_content_loading: bool
+    can_use_summaries: bool
+    sql_pushed: bool
 
 
 class ConversationFilter:
@@ -525,6 +536,20 @@ class ConversationFilter:
         # a factor-of-2 safety margin is enough — no arbitrary minimum needed.
         return max(self._limit_count * 2, 2)
 
+    def _build_execution_plan(self) -> _ExecutionPlan:
+        """Build the canonical internal execution plan for this filter."""
+        needs_content_loading = self._needs_content_loading()
+        has_post_filters = self._has_post_filters()
+        sql_params = self._sql_pushdown_params()
+        return _ExecutionPlan(
+            sql_params=sql_params,
+            fetch_limit=self._effective_fetch_limit(),
+            has_post_filters=has_post_filters,
+            needs_content_loading=needs_content_loading,
+            can_use_summaries=not needs_content_loading,
+            sql_pushed=not self._fts_terms and not self._id_prefix,
+        )
+
     async def _fetch_generic(
         self,
         get_by_id: Callable[[str], Awaitable[_T | None]],
@@ -543,18 +568,17 @@ class ConversationFilter:
                 item = await get_by_id(str(resolved_id))
                 return [item] if item else []
 
-        fetch_limit = self._effective_fetch_limit()
+        plan = self._build_execution_plan()
 
         if self._fts_terms:
             query = " ".join(self._fts_terms)
             try:
-                search_limit = max(fetch_limit, 100) if fetch_limit is not None else 10000
+                search_limit = max(plan.fetch_limit, 100) if plan.fetch_limit is not None else 10000
                 return await search(query, search_limit, self._providers or None)
             except Exception as exc:
                 logger.debug("FTS search failed, falling back to list: %s", exc)
 
-        sql_params = self._sql_pushdown_params()
-        return await list_all(limit=fetch_limit, **sql_params)
+        return await list_all(limit=plan.fetch_limit, **plan.sql_params)
 
     async def _fetch_candidates(self) -> builtins.list[Conversation]:
         """Fetch candidate conversations from repository."""
@@ -571,8 +595,8 @@ class ConversationFilter:
         apply_sort: Callable[[builtins.list[_T]], builtins.list[_T]],
     ) -> builtins.list[_T]:
         """Run the shared filter → sort → sample → limit pipeline."""
-        sql_pushed = not self._fts_terms and not self._id_prefix
-        filtered = apply_filters(candidates, sql_pushed)
+        plan = self._build_execution_plan()
+        filtered = apply_filters(candidates, plan.sql_pushed)
         sorted_results = apply_sort(filtered)
 
         if self._sample_count is not None and self._sample_count < len(sorted_results):
@@ -632,7 +656,8 @@ class ConversationFilter:
             return await self._repo.count(**self._sql_pushdown_params())
 
         # Medium path: use summaries (lightweight) if possible
-        if self.can_use_summaries():
+        plan = self._build_execution_plan()
+        if plan.can_use_summaries:
             saved_limit, self._limit_count = self._limit_count, None
             try:
                 results = await self.list_summaries()
@@ -656,7 +681,7 @@ class ConversationFilter:
         Returns:
             Number of conversations deleted
         """
-        if self.can_use_summaries():
+        if self._build_execution_plan().can_use_summaries:
             results: list[Conversation | ConversationSummary] = await self.list_summaries()
         else:
             results = await self.list()
@@ -767,7 +792,8 @@ class ConversationFilter:
         Memory-efficient alternative to list() for cases where you don't need
         message content. Raises ValueError if content-dependent filters are set.
         """
-        if self._needs_content_loading():
+        plan = self._build_execution_plan()
+        if plan.needs_content_loading:
             raise ValueError(
                 "Cannot use list_summaries() with content-dependent filters "
                 "(regex, has:thinking, has:tools, etc.). Use list() instead."
@@ -785,7 +811,7 @@ class ConversationFilter:
 
         Returns True if list_summaries() would work, False if list() is required.
         """
-        return not self._needs_content_loading()
+        return self._build_execution_plan().can_use_summaries
 
 
 __all__ = ["ConversationFilter", "SortField"]
