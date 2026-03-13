@@ -9,7 +9,7 @@ from textual.containers import Container, Grid
 from textual.widgets import Static
 
 from polylogue.config import Config
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.ui.tui.widgets.stats import StatCard
 
 if TYPE_CHECKING:

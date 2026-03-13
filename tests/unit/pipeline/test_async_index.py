@@ -18,7 +18,7 @@ class TestAsyncEnsureIndex:
 
     @pytest.mark.asyncio
     async def test_creates_fts_table(self):
-        from polylogue.storage.async_index import ensure_index, index_status
+        from polylogue.pipeline.services.indexing import ensure_index, index_status
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
@@ -30,7 +30,7 @@ class TestAsyncEnsureIndex:
 
     @pytest.mark.asyncio
     async def test_idempotent(self):
-        from polylogue.storage.async_index import ensure_index
+        from polylogue.pipeline.services.indexing import ensure_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
@@ -45,7 +45,7 @@ class TestAsyncRebuildIndex:
 
     @pytest.mark.asyncio
     async def test_populates_from_messages(self):
-        from polylogue.storage.async_index import index_status, rebuild_index
+        from polylogue.pipeline.services.indexing import index_status, rebuild_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
@@ -79,7 +79,7 @@ class TestAsyncRebuildIndex:
 
     @pytest.mark.asyncio
     async def test_rebuild_clears_stale_entries(self):
-        from polylogue.storage.async_index import index_status, rebuild_index
+        from polylogue.pipeline.services.indexing import index_status, rebuild_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
@@ -120,7 +120,7 @@ class TestAsyncUpdateIndex:
 
     @pytest.mark.asyncio
     async def test_incremental_update(self):
-        from polylogue.storage.async_index import index_status, update_index_for_conversations
+        from polylogue.pipeline.services.indexing import index_status, update_index_for_conversations
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
@@ -156,7 +156,7 @@ class TestAsyncUpdateIndex:
 
     @pytest.mark.asyncio
     async def test_update_empty_list(self):
-        from polylogue.storage.async_index import update_index_for_conversations
+        from polylogue.pipeline.services.indexing import update_index_for_conversations
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
@@ -170,7 +170,7 @@ class TestAsyncIndexStatus:
 
     @pytest.mark.asyncio
     async def test_reports_exists_and_count(self):
-        from polylogue.storage.async_index import index_status
+        from polylogue.pipeline.services.indexing import index_status
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")

@@ -13,17 +13,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import orjson
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
-from polylogue.pipeline.services.ingest_state import IngestState
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.source import parse_payload
 from polylogue.storage.search_cache import invalidate_search_cache
@@ -38,6 +39,81 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
+
+
+class IngestPhase(str, Enum):
+    """Phases for acquire → validate → parse orchestration."""
+
+    INIT = "init"
+    ACQUIRED = "acquired"
+    VALIDATED = "validated"
+    PARSED = "parsed"
+
+
+def _dedupe_ids(raw_ids: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(raw_ids))
+
+
+@dataclass(slots=True)
+class IngestState:
+    """Tracks ingest-state transitions and validates phase ordering."""
+
+    source_names: tuple[str, ...]
+    parse_requested: bool
+    phase: IngestPhase = IngestPhase.INIT
+    acquired_raw_ids: list[str] = field(default_factory=list)
+    validation_raw_ids: list[str] = field(default_factory=list)
+    parseable_raw_ids: list[str] = field(default_factory=list)
+    parse_raw_ids: list[str] = field(default_factory=list)
+
+    def record_acquired(self, raw_ids: Iterable[str]) -> None:
+        self._expect_phase(IngestPhase.INIT, "record acquired raw IDs")
+        self.acquired_raw_ids = _dedupe_ids(raw_ids)
+        self.phase = IngestPhase.ACQUIRED
+
+    def record_validation_candidates(self, raw_ids: Iterable[str]) -> None:
+        self._expect_phase(IngestPhase.ACQUIRED, "record validation candidates")
+        self.validation_raw_ids = _dedupe_ids(raw_ids)
+
+    def record_validation_result(self, parseable_raw_ids: Iterable[str] | None) -> None:
+        self._expect_phase(IngestPhase.ACQUIRED, "record validation result")
+        parseable = _dedupe_ids(parseable_raw_ids or [])
+        allowed = set(self.validation_raw_ids)
+        unexpected = [raw_id for raw_id in parseable if raw_id not in allowed]
+        if unexpected:
+            raise ValueError(
+                "Validation result contains raw IDs outside validation candidates: "
+                + ", ".join(unexpected[:5])
+            )
+        self.parseable_raw_ids = parseable
+        self.phase = IngestPhase.VALIDATED
+
+    def record_parse_candidates(
+        self,
+        raw_ids: Iterable[str],
+        *,
+        persisted_validated_raw_ids: Iterable[str] = (),
+    ) -> None:
+        self._expect_phase(IngestPhase.VALIDATED, "record parse candidates")
+        parse_ids = _dedupe_ids(raw_ids)
+        allowed = set(self.validation_raw_ids) | set(persisted_validated_raw_ids)
+        unexpected = [raw_id for raw_id in parse_ids if raw_id not in allowed]
+        if unexpected:
+            raise ValueError(
+                "Parse candidates contain raw IDs outside validation candidates: "
+                + ", ".join(unexpected[:5])
+            )
+        self.parse_raw_ids = parse_ids
+
+    def record_parse_completed(self) -> None:
+        self._expect_phase(IngestPhase.VALIDATED, "record parse completion")
+        self.phase = IngestPhase.PARSED
+
+    def _expect_phase(self, expected: IngestPhase, action: str) -> None:
+        if self.phase != expected:
+            raise RuntimeError(
+                f"Cannot {action}: expected phase {expected.value}, got {self.phase.value}"
+            )
 
 
 class ParseResult:

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -167,7 +167,7 @@ def _embed_single(
         conv = await repo.view(conversation_id)  # view() resolves partial IDs
         if conv is None:
             return None
-        messages = await repo.backend.get_messages(str(conv.id))
+        messages = await repo.get_messages(str(conv.id))
         return conv, messages
 
     result = asyncio.run(_fetch())

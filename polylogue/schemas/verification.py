@@ -15,7 +15,7 @@ from typing import Any
 from polylogue.lib.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.schemas.validator import SchemaValidator
-from polylogue.storage.backends.connection import default_db_path
+from polylogue.paths import db_path as default_db_path
 
 
 @dataclass

@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from polylogue.config import Config, Source
 from polylogue.lib.json import dumps
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.metrics import PipelineMetrics
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.backends import SQLiteBackend, create_backend

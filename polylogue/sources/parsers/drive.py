@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.roles import Role
 from polylogue.sources.providers.gemini import GeminiMessage
 from polylogue.types import Provider

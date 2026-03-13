@@ -103,6 +103,7 @@ CAMPAIGNS: dict[str, Campaign] = {
         tests=(
             "tests/unit/core/test_models.py",
             "tests/unit/core/test_message_laws.py",
+            "tests/unit/core/test_conversation_semantics.py",
         ),
     ),
     "json": Campaign(
@@ -218,6 +219,18 @@ CAMPAIGNS: dict[str, Campaign] = {
             "tests/unit/cli/test_run_laws.py",
         ),
     ),
+    "ui-core": Campaign(
+        name="ui-core",
+        description="UI prompt, progress, and facade interaction contracts",
+        paths_to_mutate=(
+            "polylogue/ui/__init__.py",
+            "polylogue/ui/facade.py",
+        ),
+        tests=(
+            "tests/unit/ui/test_ui.py",
+            "tests/unit/ui/test_rendering.py",
+        ),
+    ),
     "site-builder": Campaign(
         name="site-builder",
         description="Static-site builder and CLI archive contracts",
@@ -258,7 +271,7 @@ CAMPAIGNS: dict[str, Campaign] = {
             "tests/unit/sources/test_source_laws.py",
             "tests/unit/sources/test_parsers.py",
             "tests/unit/sources/test_parsers_base.py",
-            "tests/unit/sources/test_parser_misc.py",
+            "tests/unit/sources/test_edge_cases.py",
             "tests/unit/sources/test_parser_edge.py",
             "tests/unit/sources/test_parsers_chatgpt.py",
             "tests/unit/sources/test_parsers_props.py",
@@ -274,7 +287,7 @@ CAMPAIGNS: dict[str, Campaign] = {
         ),
         tests=(
             "tests/unit/sources/test_parse_laws.py",
-            "tests/unit/sources/test_harmonization_contracts.py",
+            "tests/unit/sources/test_content_extraction.py",
             "tests/unit/sources/test_extraction.py",
             "tests/unit/sources/test_unified_semantic_laws.py",
             "tests/unit/sources/test_null_guard_properties.py",
@@ -292,13 +305,13 @@ CAMPAIGNS: dict[str, Campaign] = {
         tests=(
             "tests/unit/sources/test_parse_laws.py",
             "tests/unit/sources/test_parsers_props.py",
-            "tests/unit/sources/test_harmonization_contracts.py",
+            "tests/unit/sources/test_content_extraction.py",
             "tests/unit/sources/test_source_laws.py",
             "tests/unit/sources/test_extraction.py",
             "tests/unit/sources/test_unified_semantic_laws.py",
             "tests/unit/sources/test_parsers.py",
             "tests/unit/sources/test_parsers_base.py",
-            "tests/unit/sources/test_parser_misc.py",
+            "tests/unit/sources/test_edge_cases.py",
             "tests/unit/sources/test_parser_edge.py",
             "tests/unit/sources/test_parsers_chatgpt.py",
             "tests/unit/sources/test_parsers_drive.py",
@@ -385,7 +398,14 @@ def patch_mutmut_section(
 
 
 def copy_workspace(src: Path, dst: Path) -> None:
-    shutil.copytree(src, dst, ignore=DEFAULT_IGNORE_PATTERNS, dirs_exist_ok=True)
+    shutil.copytree(
+        src,
+        dst,
+        ignore=DEFAULT_IGNORE_PATTERNS,
+        dirs_exist_ok=True,
+        symlinks=True,
+        ignore_dangling_symlinks=True,
+    )
 
 
 def git_commit_sha(cwd: Path) -> str:

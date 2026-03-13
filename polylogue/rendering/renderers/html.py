@@ -14,7 +14,7 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.util import ClassNotFound
 
-from polylogue.render_paths import render_root
+from polylogue.paths import conversation_render_root
 from polylogue.rendering.core import (
     ConversationFormatter,
     FormattedConversation,
@@ -349,7 +349,7 @@ class HTMLRenderer:
         )
 
         # Phase 3: File writes in thread pool
-        render_root_path = render_root(output_path, formatted.provider, conversation_id)
+        render_root_path = conversation_render_root(output_path, formatted.provider, conversation_id)
 
         def _write_files() -> None:
             render_root_path.mkdir(parents=True, exist_ok=True)
