@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 SCHEMA_VERSION = 4

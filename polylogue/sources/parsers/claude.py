@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from polylogue.lib.branch_type import BranchType
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.roles import Role
 from polylogue.sources.providers.claude_ai import ClaudeAIConversation
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord

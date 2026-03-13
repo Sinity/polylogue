@@ -1,13 +1,7 @@
-"""Property-based tests for filter and RRF modules.
+"""Property and exact contracts for metadata-only ConversationFilter behavior.
 
-These tests verify mathematical properties of filter composition
-and Reciprocal Rank Fusion scoring.
-
-Key properties tested:
-1. Filter monotonicity - adding filters never increases result count
-2. RRF score bounds - scores are always in (0, 1/k)
-3. RRF symmetry - swapping input lists doesn't change final scores
-4. RRF monotonicity - higher rank in more lists = higher score
+This file owns summary-compatible filter laws and exact description contracts.
+Non-core RRF coverage lives with hybrid search under ``tests/unit/storage``.
 """
 
 from __future__ import annotations
@@ -15,258 +9,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from polylogue.lib.filters import ConversationFilter
-from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
-
-# =============================================================================
-# RRF Score Bound Properties
-# =============================================================================
-
-
-@given(
-    st.lists(
-        st.tuples(st.uuids().map(str), st.floats(min_value=0, max_value=1)),
-        min_size=1,
-        max_size=100,
-    ),
-    st.integers(min_value=1, max_value=200),
-)
-def test_rrf_scores_bounded_single_list(
-    results: list[tuple[str, float]],
-    k: int,
-):
-    """RRF scores from a single list are bounded by 1/(k+1)."""
-    fused = reciprocal_rank_fusion(results, k=k)
-
-    # Maximum possible score is 1/(k+1) for rank 1
-    max_score = 1.0 / (k + 1)
-
-    for _item_id, score in fused:
-        assert score <= max_score + 1e-10  # Allow small float error
-        assert score > 0
-
-
-@given(
-    st.lists(
-        st.tuples(st.uuids().map(str), st.floats(min_value=0, max_value=1)),
-        min_size=1,
-        max_size=50,
-    ),
-    st.lists(
-        st.tuples(st.uuids().map(str), st.floats(min_value=0, max_value=1)),
-        min_size=1,
-        max_size=50,
-    ),
-    st.integers(min_value=1, max_value=100),
-)
-@settings(max_examples=50)
-def test_rrf_scores_bounded_two_lists(
-    results1: list[tuple[str, float]],
-    results2: list[tuple[str, float]],
-    k: int,
-):
-    """RRF scores from two lists are bounded by 2/(k+1)."""
-    fused = reciprocal_rank_fusion(results1, results2, k=k)
-
-    # Maximum possible score is 2/(k+1) if item is rank 1 in both lists
-    max_score = 2.0 / (k + 1)
-
-    for _item_id, score in fused:
-        assert score <= max_score + 1e-10
-        assert score > 0
-
-
-# =============================================================================
-# RRF Symmetry Properties
-# =============================================================================
-
-
-@given(
-    st.lists(
-        st.tuples(st.uuids().map(str), st.floats(min_value=0, max_value=1)),
-        min_size=1,
-        max_size=30,
-    ),
-    st.lists(
-        st.tuples(st.uuids().map(str), st.floats(min_value=0, max_value=1)),
-        min_size=1,
-        max_size=30,
-    ),
-    st.integers(min_value=1, max_value=100),
-)
-@settings(max_examples=30)
-def test_rrf_symmetric_scores(
-    results1: list[tuple[str, float]],
-    results2: list[tuple[str, float]],
-    k: int,
-):
-    """RRF(A, B) produces same scores as RRF(B, A)."""
-    fused_ab = reciprocal_rank_fusion(results1, results2, k=k)
-    fused_ba = reciprocal_rank_fusion(results2, results1, k=k)
-
-    # Convert to dicts for comparison (order might differ)
-    scores_ab = dict(fused_ab)
-    scores_ba = dict(fused_ba)
-
-    # Same items should have same scores
-    for item_id in scores_ab:
-        assert abs(scores_ab[item_id] - scores_ba.get(item_id, 0)) < 1e-10
-
-
-@given(
-    st.lists(
-        st.tuples(st.uuids().map(str), st.floats(min_value=0, max_value=1)),
-        min_size=1,
-        max_size=20,
-    ),
-)
-def test_rrf_single_list_preserves_order(results: list[tuple[str, float]]):
-    """For a single list, RRF preserves the original ranking order."""
-    # Filter out duplicates since RRF deduplicates
-    seen = set()
-    unique_results = []
-    for item_id, score in results:
-        if item_id not in seen:
-            seen.add(item_id)
-            unique_results.append((item_id, score))
-
-    fused = reciprocal_rank_fusion(unique_results)
-
-    # RRF order should match original order (first item has highest score)
-    fused_order = [item_id for item_id, _ in fused]
-    original_order = [item_id for item_id, _ in unique_results]
-
-    assert fused_order == original_order
-
-
-# =============================================================================
-# RRF Monotonicity Properties
-# =============================================================================
-
-
-@given(st.integers(min_value=1, max_value=100))
-def test_rrf_rank_decreases_score(k: int):
-    """Lower rank (further from top) produces lower score."""
-    # Create a simple ordered list
-    results = [(f"item_{i}", 0.0) for i in range(10)]
-
-    fused = reciprocal_rank_fusion(results, k=k)
-    scores = dict(fused)
-
-    # Verify scores decrease with rank
-    for i in range(len(results) - 1):
-        current_id = f"item_{i}"
-        next_id = f"item_{i + 1}"
-        assert scores[current_id] > scores[next_id]
-
-
-@given(st.integers(min_value=1, max_value=100))
-def test_rrf_appearing_in_both_lists_increases_score(k: int):
-    """Items appearing in both lists score higher than single-list items."""
-    # Item appears in both lists
-    list1 = [("common", 1.0), ("only_list1", 0.9)]
-    list2 = [("common", 0.95), ("only_list2", 0.85)]
-
-    fused = reciprocal_rank_fusion(list1, list2, k=k)
-    scores = dict(fused)
-
-    # Common item should have higher score than items in single list
-    assert scores["common"] > scores["only_list1"]
-    assert scores["common"] > scores["only_list2"]
-
-
-# =============================================================================
-# RRF Edge Cases
-# =============================================================================
-
-
-def test_rrf_empty_lists():
-    """RRF handles empty input gracefully."""
-    result = reciprocal_rank_fusion()
-    assert result == []
-
-
-def test_rrf_empty_list_in_args():
-    """RRF handles empty list mixed with non-empty."""
-    results = [("item1", 1.0), ("item2", 0.9)]
-    empty: list[tuple[str, float]] = []
-
-    fused = reciprocal_rank_fusion(results, empty)
-
-    # Should still produce results from non-empty list
-    assert len(fused) == 2
-
-
-def test_rrf_duplicate_items_same_list():
-    """RRF handles duplicate items in same list (uses first occurrence)."""
-    results = [("item1", 1.0), ("item2", 0.9), ("item1", 0.5)]
-
-    fused = reciprocal_rank_fusion(results)
-
-    # Each item appears once in output
-    item_ids = [item_id for item_id, _ in fused]
-    assert len(set(item_ids)) == len(item_ids)
-
-
-@given(
-    st.lists(
-        st.tuples(st.text(min_size=1, max_size=20), st.floats(min_value=0, max_value=1)),
-        min_size=0,
-        max_size=50,
-    ),
-)
-def test_rrf_never_crashes(results: list[tuple[str, float]]):
-    """RRF handles any valid input without crashing."""
-    fused = reciprocal_rank_fusion(results)
-    assert isinstance(fused, list)
-
-
-# =============================================================================
-# RRF Formula Verification
-# =============================================================================
-
-
-def test_rrf_formula_correctness():
-    """Verify RRF formula: score = 1/(k + rank)."""
-    k = 60
-    results = [("a", 0.0), ("b", 0.0), ("c", 0.0)]
-
-    fused = reciprocal_rank_fusion(results, k=k)
-    scores = dict(fused)
-
-    # Expected: rank 1 -> 1/61, rank 2 -> 1/62, rank 3 -> 1/63
-    assert abs(scores["a"] - 1/61) < 1e-10
-    assert abs(scores["b"] - 1/62) < 1e-10
-    assert abs(scores["c"] - 1/63) < 1e-10
-
-
-def test_rrf_combined_formula():
-    """Verify combined RRF scores from multiple lists."""
-    k = 60
-
-    # a is rank 1 in list1, rank 2 in list2
-    # b is rank 2 in list1, rank 1 in list2
-    list1 = [("a", 0.0), ("b", 0.0)]
-    list2 = [("b", 0.0), ("a", 0.0)]
-
-    fused = reciprocal_rank_fusion(list1, list2, k=k)
-    scores = dict(fused)
-
-    # a: 1/61 + 1/62 = (61 + 62) / (61 * 62)
-    expected_a = 1/61 + 1/62
-    assert abs(scores["a"] - expected_a) < 1e-10
-
-    # b: 1/62 + 1/61 = same as a
-    expected_b = 1/62 + 1/61
-    assert abs(scores["b"] - expected_b) < 1e-10
-
-
-# =============================================================================
-# ConversationFilter metadata contracts
-# =============================================================================
 
 
 @pytest.fixture
@@ -348,7 +94,6 @@ def _apply_summary_filter_spec(
     filter_obj: ConversationFilter,
     spec: dict[str, object],
 ) -> ConversationFilter:
-    """Apply a summary-compatible filter spec to a ConversationFilter."""
     providers = spec.get("providers", [])
     excluded_providers = spec.get("excluded_providers", [])
     tag = spec.get("tag")
@@ -382,12 +127,11 @@ def _apply_summary_filter_spec(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("case_name", "spec"), SUMMARY_FILTER_SPECS)
-async def test_summary_filter_count_matches_list_and_list_summaries(
+async def test_summary_filter_terminal_views_agree(
     summary_filter_repo,
     case_name: str,
     spec: dict[str, object],
 ) -> None:
-    """Metadata-only filters must agree across count/list/list_summaries."""
     list_filter = _apply_summary_filter_spec(ConversationFilter(summary_filter_repo), spec)
     summary_filter = _apply_summary_filter_spec(ConversationFilter(summary_filter_repo), spec)
     count_filter = _apply_summary_filter_spec(ConversationFilter(summary_filter_repo), spec)
@@ -396,180 +140,156 @@ async def test_summary_filter_count_matches_list_and_list_summaries(
     summaries = await summary_filter.list_summaries()
     count = await count_filter.count()
 
-    assert [conv.id for conv in conversations] == [summary.id for summary in summaries]
-    assert count == len(conversations) == len(summaries)
+    assert [conv.id for conv in conversations] == [summary.id for summary in summaries], case_name
+    assert count == len(conversations) == len(summaries), case_name
 
 
-def test_describe_reports_every_active_filter_kind(summary_filter_repo) -> None:
-    """describe() should expose every active filter without dropping entries."""
-    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    end = datetime(2024, 12, 31, tzinfo=timezone.utc)
+DESCRIBE_CASES = [
+    (
+        "every-active-filter-kind",
+        lambda repo: (
+            ConversationFilter(repo)
+            .contains("python")
+            .provider("claude", "chatgpt")
+            .exclude_provider("codex")
+            .tag("science")
+            .exclude_tag("drop")
+            .has("summary")
+            .has_tool_use()
+            .has_thinking()
+            .has_file_operations()
+            .has_git_operations()
+            .has_subagent_spawns()
+            .min_messages(2)
+            .max_messages(8)
+            .min_words(5)
+            .since(datetime(2024, 1, 1, tzinfo=timezone.utc))
+            .until(datetime(2024, 12, 31, tzinfo=timezone.utc))
+            .title("Alpha")
+            .id("conv")
+            .exclude_text("rust")
+            .where(lambda c: True)
+            .similar("semantic query")
+        ),
+        [
+            "contains: python",
+            "provider: claude, chatgpt",
+            "exclude provider: codex",
+            "tag: science",
+            "exclude tag: drop",
+            "has: summary",
+            "has_tool_use",
+            "has_thinking",
+            "has_file_ops",
+            "has_git_ops",
+            "has_subagent",
+            "min_messages: 2",
+            "max_messages: 8",
+            "min_words: 5",
+            "since: 2024-01-01T00:00:00+00:00",
+            "until: 2024-12-31T00:00:00+00:00",
+            "title: Alpha",
+            "id: conv",
+            "exclude text: rust",
+            "custom predicates: 1",
+            "similar: semantic query",
+        ],
+    ),
+    (
+        "contains-joins-exactly",
+        lambda repo: ConversationFilter(repo).contains("python").contains("rust"),
+        ["contains: python, rust"],
+    ),
+    (
+        "multi-value-joins-and-truncates-similar",
+        lambda repo: (
+            ConversationFilter(repo)
+            .provider("claude", "chatgpt")
+            .exclude_provider("codex", "gemini")
+            .tag("science")
+            .exclude_tag("drop")
+            .similar("x" * 90)
+        ),
+        [
+            "provider: claude, chatgpt",
+            "exclude provider: codex, gemini",
+            "tag: science",
+            "exclude tag: drop",
+            f"similar: {'x' * 30}",
+        ],
+    ),
+]
 
-    parts = (
-        ConversationFilter(summary_filter_repo)
-        .contains("python")
-        .provider("claude", "chatgpt")
-        .exclude_provider("codex")
-        .tag("science")
-        .exclude_tag("drop")
-        .has("summary")
-        .has_tool_use()
-        .has_thinking()
-        .has_file_operations()
-        .has_git_operations()
-        .has_subagent_spawns()
-        .min_messages(2)
-        .max_messages(8)
-        .min_words(5)
-        .since(start)
-        .until(end)
-        .title("Alpha")
-        .id("conv")
-        .exclude_text("rust")
-        .where(lambda c: True)
-        .similar("semantic query")
-        .describe()
-    )
 
-    assert parts == [
-        "contains: python",
-        "provider: claude, chatgpt",
-        "exclude provider: codex",
-        "tag: science",
-        "exclude tag: drop",
-        "has: summary",
-        "has_tool_use",
-        "has_thinking",
-        "has_file_ops",
-        "has_git_ops",
-        "has_subagent",
-        "min_messages: 2",
-        "max_messages: 8",
-        "min_words: 5",
-        "since: 2024-01-01T00:00:00+00:00",
-        "until: 2024-12-31T00:00:00+00:00",
-        "title: Alpha",
-        "id: conv",
-        "exclude text: rust",
-        "custom predicates: 1",
-        "similar: semantic query",
-    ]
-
-
-def test_describe_joins_multiple_fts_terms_exactly(summary_filter_repo) -> None:
-    """describe() should preserve the exact delimiter for multiple FTS terms."""
-    parts = (
-        ConversationFilter(summary_filter_repo)
-        .contains("python")
-        .contains("rust")
-        .describe()
-    )
-
-    assert parts == ["contains: python, rust"]
-
-
-def test_describe_joins_multi_value_filters_and_truncates_similarity(summary_filter_repo) -> None:
-    """describe() should preserve exact delimiters for every multi-value filter kind."""
-    parts = (
-        ConversationFilter(summary_filter_repo)
-        .exclude_provider("claude", "codex")
-        .tag("science", "math")
-        .exclude_tag("drop", "noise")
-        .has("summary", "thinking")
-        .exclude_text("rust")
-        .exclude_text("sql")
-        .similar("abcdefghijklmnopqrstuvwxyz1234567890")
-        .describe()
-    )
-
-    assert parts == [
-        "exclude provider: claude, codex",
-        "tag: science, math",
-        "exclude tag: drop, noise",
-        "has: summary, thinking",
-        "exclude text: rust, sql",
-        "similar: abcdefghijklmnopqrstuvwxyz1234",
-    ]
+@pytest.mark.parametrize(("case_name", "build_filter", "expected_parts"), DESCRIBE_CASES)
+def test_describe_contract_matrix(summary_filter_repo, case_name, build_filter, expected_parts) -> None:
+    assert build_filter(summary_filter_repo).describe() == expected_parts, case_name
 
 
 def test_sql_pushdown_only_filters_stay_summary_compatible(summary_filter_repo) -> None:
-    """SQL-pushdown filters should not force full message loading."""
-    filter_obj = (
+    compatible = (
         ConversationFilter(summary_filter_repo)
-        .has_tool_use()
+        .provider("claude")
+        .exclude_provider("codex")
+        .tag("science")
+        .exclude_tag("drop")
+        .title("Alpha")
+        .id("conv")
+        .has("summary")
+        .since("2024-01-01")
+        .until("2024-12-31")
+    )
+    incompatible = (
+        ConversationFilter(summary_filter_repo)
+        .provider("claude")
+        .exclude_text("beta")
         .has_thinking()
-        .min_messages(1)
-        .max_messages(10)
-        .min_words(1)
+        .sort("words")
+        .where(lambda c: True)
     )
 
-    assert filter_obj.can_use_summaries() is True
-    assert filter_obj.describe() == [
-        "has_tool_use",
-        "has_thinking",
-        "min_messages: 1",
-        "max_messages: 10",
-        "min_words: 1",
-    ]
+    compatible_plan = compatible._build_execution_plan()
+    incompatible_plan = incompatible._build_execution_plan()
+
+    assert compatible_plan.needs_content_loading is False
+    assert compatible_plan.has_post_filters is True
+    assert incompatible_plan.needs_content_loading is True
 
 
-# =============================================================================
-# Conversation Filter Properties (Mock-based)
-# =============================================================================
+def test_count_fast_path_contract(summary_filter_repo) -> None:
+    sql_only = ConversationFilter(summary_filter_repo).provider("claude").since("2024-01-01")
+    post_filtered = ConversationFilter(summary_filter_repo).provider("claude").tag("science")
+    content_filtered = ConversationFilter(summary_filter_repo).exclude_text("beta")
+
+    assert sql_only._can_count_in_sql() is True
+    assert post_filtered._can_count_in_sql() is False
+    assert content_filtered._can_count_in_sql() is False
 
 
 @given(
     st.lists(st.sampled_from(["chatgpt", "claude", "codex"]), min_size=1, max_size=3),
     st.lists(st.sampled_from(["chatgpt", "claude", "codex"]), min_size=0, max_size=2),
 )
-def test_provider_filter_exclusion_disjoint(
+def test_provider_filter_exclusion_is_disjoint(
     include_providers: list[str],
     exclude_providers: list[str],
-):
-    """Provider inclusion and exclusion should be mutually exclusive.
-
-    If a provider is in both include and exclude, exclude takes precedence.
-    This tests the filter logic property, not the actual implementation.
-    """
-    # Simulate filter logic
+) -> None:
     included = set(include_providers)
     excluded = set(exclude_providers)
-
-    # Result should not contain excluded items
-    result = included - excluded
-
-    for provider in result:
-        assert provider not in excluded
+    remaining = included - excluded
+    assert remaining.isdisjoint(excluded)
 
 
 @given(
     st.integers(min_value=0, max_value=100),
-    st.integers(min_value=1, max_value=50),
-)
-def test_limit_respects_bound(total_items: int, limit: int):
-    """Limit filter produces at most `limit` items."""
-    # Simulate having total_items conversations
-    items = list(range(total_items))
-
-    # Apply limit
-    limited = items[:limit]
-
-    assert len(limited) <= limit
-
-
-@given(
     st.integers(min_value=0, max_value=50),
-    st.integers(min_value=0, max_value=100),
+    st.integers(min_value=0, max_value=50),
 )
-def test_offset_skips_correctly(offset: int, total_items: int):
-    """Offset filter skips the first `offset` items."""
+def test_limit_and_offset_form_a_valid_window(total_items: int, limit: int, offset: int) -> None:
     items = list(range(total_items))
-
-    # Apply offset
-    offset_items = items[offset:]
-
-    expected_count = max(0, total_items - offset)
-    assert len(offset_items) == expected_count
+    window = items[offset : offset + limit]
+    assert len(window) <= limit
+    assert window == items[offset:][:limit]
 
 
 @given(
@@ -584,83 +304,14 @@ def test_offset_skips_correctly(offset: int, total_items: int):
         timezones=st.just(timezone.utc),
     ),
 )
-def test_date_range_logic(since: datetime, until: datetime):
-    """Date range filter is a valid interval (since <= until)."""
-    # Ensure valid range
+def test_date_range_forms_a_valid_interval(since: datetime, until: datetime) -> None:
     if since > until:
         since, until = until, since
 
-    # A timestamp within range should pass
     mid = since + (until - since) / 2
-    assert since <= mid <= until
-
-    # A timestamp outside should fail
     before = since - timedelta(days=1)
     after = until + timedelta(days=1)
 
+    assert since <= mid <= until
     assert before < since
     assert after > until
-
-
-# =============================================================================
-# Filter Composition Properties
-# =============================================================================
-
-
-@given(
-    st.lists(st.integers(min_value=0, max_value=100), min_size=0, max_size=50),
-    st.integers(min_value=0, max_value=100),
-    st.integers(min_value=0, max_value=100),
-)
-def test_filter_composition_monotonic(
-    items: list[int],
-    threshold1: int,
-    threshold2: int,
-):
-    """Composing filters never increases result count.
-
-    filter(A).filter(B).count() <= filter(A).count()
-    """
-    # Simulate two filters: > threshold1 and > threshold2
-    filtered_once = [x for x in items if x > threshold1]
-    filtered_twice = [x for x in filtered_once if x > threshold2]
-
-    assert len(filtered_twice) <= len(filtered_once)
-
-
-@given(
-    st.lists(st.integers(min_value=0, max_value=100), min_size=0, max_size=50),
-    st.integers(min_value=0, max_value=100),
-)
-def test_filter_idempotent(items: list[int], threshold: int):
-    """Applying the same filter twice has no additional effect.
-
-    filter(A).filter(A) == filter(A)
-    """
-    filtered_once = [x for x in items if x > threshold]
-    filtered_twice = [x for x in filtered_once if x > threshold]
-
-    assert filtered_once == filtered_twice
-
-
-@given(
-    st.lists(st.integers(min_value=0, max_value=100), min_size=0, max_size=50),
-    st.integers(min_value=0, max_value=100),
-    st.integers(min_value=0, max_value=100),
-)
-def test_filter_order_independent(
-    items: list[int],
-    threshold1: int,
-    threshold2: int,
-):
-    """For commutative filters, order doesn't affect result count.
-
-    filter(A).filter(B).count() == filter(B).filter(A).count()
-    """
-    # Filter A: > threshold1
-    # Filter B: > threshold2
-    filtered_ab = [x for x in items if x > threshold1 and x > threshold2]
-    filtered_ba = [x for x in items if x > threshold2 and x > threshold1]
-
-    # Same result (order of application doesn't matter for AND)
-    assert filtered_ab == filtered_ba

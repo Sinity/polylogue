@@ -18,7 +18,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
@@ -142,7 +142,7 @@ def _get_config():
 # ---------------------------------------------------------------------------
 
 
-def _build_server() -> FastMCP:
+def build_server() -> FastMCP:
     """Construct the FastMCP server with all tools, resources, and prompts."""
     from mcp.server.fastmcp import FastMCP
 
@@ -592,7 +592,7 @@ def _build_server() -> FastMCP:
             format: Output format ('markdown', 'json', 'html', 'yaml', 'plaintext', 'csv', 'obsidian', 'org')
         """
         async def _run() -> str:
-            from polylogue.lib.formatting import format_conversation
+            from polylogue.rendering.formatting import format_conversation
 
             repo = _get_repo()
             conv = await repo.view(id)
@@ -906,7 +906,7 @@ def _get_server(services: RuntimeServices | None = None) -> FastMCP:
     if services is not None:
         _set_runtime_services(services)
     if _server_instance is None:
-        _server_instance = _build_server()
+        _server_instance = build_server()
     return _server_instance
 
 

@@ -73,7 +73,7 @@ class TestLoadSamples:
             yield {"id": "two"}
             raise AssertionError("iterator should not be exhausted past the limit")
 
-        monkeypatch.setattr("polylogue.schemas.schema_inference._iter_samples_from_db", _iter)
+        monkeypatch.setattr("polylogue.schemas.sampling._iter_samples_from_db", _iter)
         samples = load_samples_from_db("chatgpt", db_path=db_path, max_samples=2)
         assert samples == [{"id": "one"}, {"id": "two"}]
 
@@ -244,7 +244,7 @@ class TestGenerateAllSchemas:
         output_dir = tmp_path / "schemas" / "nested"
         fake_result = GenerationResult(provider="test", sample_count=1, schema={"type": "object"}, error=None)
 
-        with patch("polylogue.schemas.schema_inference.generate_provider_schema", return_value=fake_result):
+        with patch("polylogue.schemas.schema_generation.generate_provider_schema", return_value=fake_result):
             results = generate_all_schemas(output_dir, providers=["test"])
 
         assert output_dir.exists()
@@ -254,7 +254,7 @@ class TestGenerateAllSchemas:
     def test_skips_failed_schemas(self, tmp_path):
         failed_result = GenerationResult(provider="broken", sample_count=0, schema=None, error="No samples")
 
-        with patch("polylogue.schemas.schema_inference.generate_provider_schema", return_value=failed_result):
+        with patch("polylogue.schemas.schema_generation.generate_provider_schema", return_value=failed_result):
             results = generate_all_schemas(tmp_path, providers=["broken"])
 
         assert not (tmp_path / "broken.schema.json.gz").exists()

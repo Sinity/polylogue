@@ -33,7 +33,7 @@ def test_execute_query_runs_async_core() -> None:
     params = {"query": ("hello",)}
 
     with (
-        patch("polylogue.cli.query._async_execute_query", new_callable=AsyncMock) as mock_async_execute,
+        patch("polylogue.cli.query.async_execute_query", new_callable=AsyncMock) as mock_async_execute,
         patch("asyncio.run") as mock_asyncio_run,
     ):
         execute_query(env, params)
@@ -73,7 +73,7 @@ def test_create_query_vector_provider_logs_unexpected_failure() -> None:
 
 
 def test_async_execute_query_fails_on_config_error() -> None:
-    from polylogue.cli.query import _async_execute_query
+    from polylogue.cli.query import async_execute_query
 
     env = _make_env()
 
@@ -82,13 +82,13 @@ def test_async_execute_query_fails_on_config_error() -> None:
         patch("polylogue.cli.helpers.fail", side_effect=SystemExit("query: bad config")) as mock_fail,
         pytest.raises(SystemExit, match="query: bad config"),
     ):
-        asyncio.run(_async_execute_query(env, {}))
+        asyncio.run(async_execute_query(env, {}))
 
     mock_fail.assert_called_once_with("query", "bad config")
 
 
 def test_async_execute_query_reports_query_plan_error() -> None:
-    from polylogue.cli.query import _async_execute_query
+    from polylogue.cli.query import async_execute_query
     from polylogue.cli.query_plan import QueryPlanError
 
     env = _make_env()
@@ -103,14 +103,14 @@ def test_async_execute_query_reports_query_plan_error() -> None:
         patch("click.echo") as mock_echo,
         pytest.raises(SystemExit) as exc_info,
     ):
-        asyncio.run(_async_execute_query(env, {}))
+        asyncio.run(async_execute_query(env, {}))
 
     assert exc_info.value.code == 1
     mock_echo.assert_called_once_with("Error: bad query plan", err=True)
 
 
 def test_async_execute_query_passes_vector_provider_into_filter_build() -> None:
-    from polylogue.cli.query import _async_execute_query
+    from polylogue.cli.query import async_execute_query
     from polylogue.cli.query_plan import QueryAction, QueryExecutionPlan, QueryMutationSpec, QueryOutputSpec
     from polylogue.lib.query_spec import ConversationQuerySpec
 
@@ -132,9 +132,9 @@ def test_async_execute_query_passes_vector_provider_into_filter_build() -> None:
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.cli.query._create_query_vector_provider", return_value=vector_provider),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query_output._output_results") as mock_output_results,
+        patch("polylogue.cli.query_output.output_results") as mock_output_results,
     ):
-        asyncio.run(_async_execute_query(env, {}))
+        asyncio.run(async_execute_query(env, {}))
 
     selection.build_filter.assert_called_once_with(env.repository, vector_provider=vector_provider)
     mock_output_results.assert_called_once_with(env, [], {})

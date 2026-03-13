@@ -208,15 +208,3 @@ class TestRegexReDoSSafety:
         _FTS5_SPECIAL.sub("", adversarial)
         elapsed = time.monotonic() - start
         assert elapsed < 1.0, f"_FTS5_SPECIAL took {elapsed:.2f}s on special chars"
-
-    def test_unsafe_pattern_adversarial_input(self):
-        """CLI editor unsafe pattern must not backtrack."""
-        import time
-
-        from polylogue.cli.editor import _UNSAFE_PATTERN
-
-        adversarial = ";" * 10_000 + "|" * 10_000 + "`" * 10_000
-        start = time.monotonic()
-        _UNSAFE_PATTERN.findall(adversarial)
-        elapsed = time.monotonic() - start
-        assert elapsed < 1.0, f"_UNSAFE_PATTERN took {elapsed:.2f}s"

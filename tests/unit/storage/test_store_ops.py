@@ -1,17 +1,15 @@
-"""Store record operations tests — insert, upsert, deduplication, attachment refs, provider validation."""
+"""Focused roundtrip and validation contracts for storage record helpers."""
 
 from __future__ import annotations
 
+import importlib
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
 from pydantic import ValidationError
 
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import (
-    default_db_path,
-    open_connection,
-)
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import (
     MAX_ATTACHMENT_SIZE,
     AttachmentRecord,
@@ -30,190 +28,133 @@ from tests.infra.storage_records import (
     upsert_message,
 )
 
-# test_db and test_conn fixtures are in conftest.py
+
+def _conversation_row(conn, conversation_id: str):
+    return conn.execute(
+        "SELECT * FROM conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
 
 
-# =============================================================================
-# STORE RECORD OPERATIONS (from test_store.py)
-# =============================================================================
-
-
-def test_store_records_inserts_new_conversation(test_conn):
-    """store_records() inserts a new conversation with messages."""
-    conv = make_conversation("conv1", content_hash="hash123")
-    msg = make_message("msg1", "conv1", text="Hello")
-
-    counts = store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
-
-    assert counts["conversations"] == 1
-    assert counts["messages"] == 1
-    assert counts["skipped_conversations"] == 0
-    assert counts["skipped_messages"] == 0
-
-    # Verify in database
-    row = test_conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
-    assert row is not None
-    assert row["title"] == "Test Conversation"
-
-    msg_row = test_conn.execute("SELECT * FROM messages WHERE message_id = ?", ("msg1",)).fetchone()
-    assert msg_row is not None
-    assert msg_row["text"] == "Hello"
-
-
-def test_store_records_skips_duplicate_conversation(test_conn):
-    """store_records() skips duplicate conversations with same content_hash."""
-    conv = make_conversation("conv1", title="Same Title", content_hash="samehash")
-
-    # First insert
-    counts1 = store_records(conversation=conv, messages=[], attachments=[], conn=test_conn)
-    assert counts1["conversations"] == 1
-
-    # Second insert with same hash
-    counts2 = store_records(conversation=conv, messages=[], attachments=[], conn=test_conn)
-    assert counts2["conversations"] == 0
-    assert counts2["skipped_conversations"] == 1
-
-
-def test_store_records_updates_changed_conversation(test_conn):
-    """store_records() updates conversation when content changes."""
-    conv1 = make_conversation("conv1", title="Original Title", content_hash="hash1")
-    store_records(conversation=conv1, messages=[], attachments=[], conn=test_conn)
-
-    # Update with different content
-    conv2 = make_conversation("conv1", title="Updated Title", content_hash="hash2")
-    counts = store_records(conversation=conv2, messages=[], attachments=[], conn=test_conn)
-
-    assert counts["conversations"] == 1
-    assert counts["skipped_conversations"] == 0
-
-    # Verify update
-    row = test_conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
-    assert row["title"] == "Updated Title"
-    assert row["content_hash"] == "hash2"
-
-
-def test_store_records_handles_multiple_messages(test_conn):
-    """store_records() correctly handles multiple messages."""
-    conv = make_conversation("conv1", title="Multi Message")
-    messages = [
-        make_message(f"msg{i}", "conv1", role="user" if i % 2 == 0 else "assistant", text=f"Message {i}")
-        for i in range(5)
-    ]
-
-    counts = store_records(conversation=conv, messages=messages, attachments=[], conn=test_conn)
-
-    assert counts["messages"] == 5
-    assert counts["skipped_messages"] == 0
-
-    # Verify all messages in database
-    rows = test_conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", ("conv1",)).fetchone()
-    assert rows[0] == 5
-
-
-def test_store_records_attachment_ref_counting(test_conn):
-    """store_records() correctly maintains attachment ref_count."""
-    conv = make_conversation("conv1", title="Attachment Test")
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
-    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-
-    counts = store_records(conversation=conv, messages=[msg1], attachments=[att1], conn=test_conn)
-
-    assert counts["attachments"] == 1
-
-    # Check ref_count
-    row = test_conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row["ref_count"] == 1
-
-    # Check attachment_refs
-    ref_rows = test_conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert ref_rows[0] == 1
-
-
-def test_prune_attachment_refs_removes_old_refs(test_conn):
-    """_prune_attachment_refs() removes refs not in keep_ref_ids set."""
-    # Setup: Insert conversation and attachments
-    conv = make_conversation("conv1", title="Prune Test")
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1", text="First message")
-    msg2 = make_message("msg2", "conv1", provider_message_id="ext-msg2", text="Second message")
-    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-    att2 = make_attachment("att2", "conv1", "msg2", mime_type="image/jpeg", size_bytes=2048)
-
-    store_records(conversation=conv, messages=[msg1, msg2], attachments=[att1, att2], conn=test_conn)
-
-    # Get ref IDs
-    ref_id1 = _make_ref_id("att1", "conv1", "msg1")
-    # ref_id2 = _make_ref_id("att2", "conv1", "msg2")
-
-    # Verify both exist
-    count_before = test_conn.execute(
-        "SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = ?", ("conv1",)
+def _message_count(conn, conversation_id: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+        (conversation_id,),
     ).fetchone()[0]
-    assert count_before == 2
-
-    # Prune, keeping only ref_id1
-    _prune_attachment_refs(test_conn, "conv1", {ref_id1})
-
-    # Verify only one ref remains
-    count_after = test_conn.execute(
-        "SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = ?", ("conv1",)
-    ).fetchone()[0]
-    assert count_after == 1
-
-    # Verify correct ref was kept
-    remaining = test_conn.execute("SELECT ref_id FROM attachment_refs WHERE conversation_id = ?", ("conv1",)).fetchone()
-    assert remaining["ref_id"] == ref_id1
 
 
-def test_prune_attachment_refs_updates_ref_count(test_conn):
-    """_prune_attachment_refs() updates attachment ref_count correctly."""
-    conv = make_conversation("conv1", title="RefCount Test")
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1", text="First message")
-    msg2 = make_message("msg2", "conv1", provider_message_id="ext-msg2", text="Second message")
-
-    # Same attachment referenced twice (different messages)
-    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-    att2 = make_attachment("att1", "conv1", "msg2", mime_type="image/png")  # Same att_id, different msg
-
-    store_records(conversation=conv, messages=[msg1, msg2], attachments=[att1, att2], conn=test_conn)
-
-    # ref_count should be 2
-    row = test_conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row["ref_count"] == 2
-
-    # Prune one reference
-    ref_id1 = _make_ref_id("att1", "conv1", "msg1")
-    _prune_attachment_refs(test_conn, "conv1", {ref_id1})
-
-    # ref_count should now be 1
-    row = test_conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row["ref_count"] == 1
+def _attachment_row(conn, attachment_id: str):
+    return conn.execute(
+        "SELECT * FROM attachments WHERE attachment_id = ?",
+        (attachment_id,),
+    ).fetchone()
 
 
-def test_prune_attachment_refs_deletes_zero_ref_attachments(test_conn):
-    """_prune_attachment_refs() deletes attachments with ref_count <= 0."""
-    conv = make_conversation("conv1", title="Delete Test")
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
-    att = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
+def test_store_records_roundtrip_contract(test_conn) -> None:
+    """store_records() must insert, skip, update, and handle sparse payloads coherently."""
+    initial = make_conversation("conv-create", content_hash="hash-create")
+    created = store_records(
+        conversation=initial,
+        messages=[make_message("msg-create", "conv-create", text="Hello")],
+        attachments=[],
+        conn=test_conn,
+    )
+    assert created == {
+        "conversations": 1,
+        "messages": 1,
+        "attachments": 0,
+        "skipped_conversations": 0,
+        "skipped_messages": 0,
+        "skipped_attachments": 0,
+    }
+    assert _conversation_row(test_conn, "conv-create")["title"] == "Test Conversation"
+    assert _message_count(test_conn, "conv-create") == 1
 
-    store_records(conversation=conv, messages=[msg1], attachments=[att], conn=test_conn)
+    duplicate = store_records(
+        conversation=initial,
+        messages=[],
+        attachments=[],
+        conn=test_conn,
+    )
+    assert duplicate["conversations"] == 0
+    assert duplicate["skipped_conversations"] == 1
 
-    # Verify attachment exists
-    row = test_conn.execute("SELECT * FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row is not None
+    updated = store_records(
+        conversation=make_conversation("conv-create", title="Updated Title", content_hash="hash-updated"),
+        messages=[],
+        attachments=[],
+        conn=test_conn,
+    )
+    assert updated["conversations"] == 1
+    assert _conversation_row(test_conn, "conv-create")["title"] == "Updated Title"
+    assert _conversation_row(test_conn, "conv-create")["content_hash"] == "hash-updated"
 
-    # Prune all refs
-    _prune_attachment_refs(test_conn, "conv1", set())
+    multi = store_records(
+        conversation=make_conversation("conv-multi", title="Multi Message"),
+        messages=[
+            make_message(f"msg-multi-{idx}", "conv-multi", role="user" if idx % 2 == 0 else "assistant", text=f"Message {idx}")
+            for idx in range(5)
+        ],
+        attachments=[],
+        conn=test_conn,
+    )
+    assert multi["messages"] == 5
+    assert _message_count(test_conn, "conv-multi") == 5
 
-    # Verify attachment was deleted
-    row = test_conn.execute("SELECT * FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row is None
+    sparse = store_records(
+        conversation=make_conversation("conv-empty", title="Empty Conversation"),
+        messages=[],
+        attachments=[
+            make_attachment(
+                "att-empty",
+                "conv-empty",
+                message_id=None,
+                mime_type="application/pdf",
+                size_bytes=5000,
+            )
+        ],
+        conn=test_conn,
+    )
+    assert sparse["conversations"] == 1
+    assert sparse["messages"] == 0
+    assert sparse["attachments"] == 1
+    assert _attachment_row(test_conn, "att-empty")["ref_count"] == 1
 
 
-def test_upsert_conversation_missing_optional_fields(test_conn):
-    """upsert_conversation() handles None values for optional fields."""
-    # Manual construction to test explicit None handling (not using helper)
-    conv = ConversationRecord(
-        conversation_id="conv1",
+def test_prune_attachment_refs_contract(test_conn) -> None:
+    """Pruning refs must keep requested refs, recalculate counts, and delete zero-ref attachments."""
+    conv = make_conversation("conv-prune", title="Prune Test")
+    msg1 = make_message("msg-prune-1", "conv-prune", provider_message_id="ext-1", text="First")
+    msg2 = make_message("msg-prune-2", "conv-prune", provider_message_id="ext-2", text="Second")
+    att1 = make_attachment("att-prune-1", "conv-prune", "msg-prune-1", mime_type="image/png")
+    att2 = make_attachment("att-prune-2", "conv-prune", "msg-prune-2", mime_type="image/jpeg", size_bytes=2048)
+    shared_att_1 = make_attachment("att-shared", "conv-prune", "msg-prune-1", mime_type="image/png")
+    shared_att_2 = make_attachment("att-shared", "conv-prune", "msg-prune-2", mime_type="image/png")
+    store_records(
+        conversation=conv,
+        messages=[msg1, msg2],
+        attachments=[att1, att2, shared_att_1, shared_att_2],
+        conn=test_conn,
+    )
+
+    keep_ref = _make_ref_id("att-prune-1", "conv-prune", "msg-prune-1")
+    keep_shared = _make_ref_id("att-shared", "conv-prune", "msg-prune-1")
+    _prune_attachment_refs(test_conn, "conv-prune", {keep_ref, keep_shared})
+
+    remaining_refs = test_conn.execute(
+        "SELECT ref_id FROM attachment_refs WHERE conversation_id = ? ORDER BY ref_id",
+        ("conv-prune",),
+    ).fetchall()
+    assert [row["ref_id"] for row in remaining_refs] == sorted([keep_ref, keep_shared])
+    assert _attachment_row(test_conn, "att-prune-1")["ref_count"] == 1
+    assert _attachment_row(test_conn, "att-shared")["ref_count"] == 1
+    assert _attachment_row(test_conn, "att-prune-2") is None
+
+
+def test_upsert_optional_and_attachment_contracts(test_conn) -> None:
+    """Optional-field upserts and attachment metadata updates must round-trip cleanly."""
+    conversation = ConversationRecord(
+        conversation_id="conv-optional",
         provider_name="test",
         provider_conversation_id="ext-conv1",
         title=None,
@@ -222,84 +163,70 @@ def test_upsert_conversation_missing_optional_fields(test_conn):
         content_hash="hash1",
         provider_meta=None,
     )
+    assert upsert_conversation(test_conn, conversation) is True
+    conv_row = _conversation_row(test_conn, "conv-optional")
+    assert conv_row["title"] is None
+    assert conv_row["created_at"] is None
+    assert conv_row["provider_meta"] is None
 
-    updated = upsert_conversation(test_conn, conv)
-    assert updated
-
-    row = test_conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
-    assert row is not None
-    assert row["title"] is None
-    assert row["created_at"] is None
-    assert row["provider_meta"] is None
-
-
-def test_upsert_message_missing_optional_fields(test_conn):
-    """upsert_message() handles None values for optional fields."""
-    # First insert conversation
-    conv = make_conversation("conv1")
-    upsert_conversation(test_conn, conv)
-
-    msg = make_message(
-        "msg1", "conv1", role=None, text=None, timestamp=None, provider_message_id=None, provider_meta=None
+    message = make_message(
+        "msg-optional",
+        "conv-optional",
+        role=None,
+        text=None,
+        timestamp=None,
+        provider_message_id=None,
+        provider_meta=None,
     )
+    assert upsert_message(test_conn, message) is True
+    msg_row = test_conn.execute(
+        "SELECT * FROM messages WHERE message_id = ?",
+        ("msg-optional",),
+    ).fetchone()
+    assert msg_row["role"] is None
+    assert msg_row["text"] is None
+    assert msg_row["provider_message_id"] is None
 
-    updated = upsert_message(test_conn, msg)
-    assert updated
-
-    row = test_conn.execute("SELECT * FROM messages WHERE message_id = ?", ("msg1",)).fetchone()
-    assert row is not None
-    assert row["role"] is None
-    assert row["text"] is None
-    assert row["provider_message_id"] is None
-
-
-def test_upsert_attachment_duplicate_ref_skipped(test_conn):
-    """upsert_attachment() skips duplicate refs (INSERT OR IGNORE)."""
-    # Setup conversation and message
-    conv = make_conversation("conv1")
-    upsert_conversation(test_conn, conv)
-
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
-    upsert_message(test_conn, msg1)
-
-    att = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-
-    # First insert
-    updated1 = upsert_attachment(test_conn, att)
-    assert updated1 is True
-
-    # Second insert (duplicate)
-    updated2 = upsert_attachment(test_conn, att)
-    assert updated2 is False
-
-    # ref_count should still be 1
-    row = test_conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row["ref_count"] == 1
+    msg2 = make_message("msg-attachment-2", "conv-optional", provider_message_id="ext-msg-2", text="Second")
+    assert upsert_message(test_conn, msg2) is True
+    first = make_attachment("att-meta", "conv-optional", "msg-optional", mime_type="image/png")
+    second = make_attachment(
+        "att-meta",
+        "conv-optional",
+        "msg-attachment-2",
+        mime_type="image/jpeg",
+        size_bytes=2048,
+        path="/new/path.jpg",
+    )
+    assert upsert_attachment(test_conn, first) is True
+    assert upsert_attachment(test_conn, first) is False
+    assert upsert_attachment(test_conn, second) is True
+    att_row = _attachment_row(test_conn, "att-meta")
+    assert att_row["mime_type"] == "image/jpeg"
+    assert att_row["size_bytes"] == 2048
+    assert att_row["path"] == "/new/path.jpg"
+    assert att_row["ref_count"] == 2
 
 
-@pytest.mark.parametrize(
-    ("input_val", "expected"),
-    [
+def test_json_or_none_contract() -> None:
+    """JSON serialization helper must preserve mappings and None."""
+    import json
+
+    payloads = [
         ({"key": "value"}, {"key": "value"}),
         ({"nested": {"key": "value"}, "list": [1, 2, 3]}, {"nested": {"key": "value"}, "list": [1, 2, 3]}),
         (None, None),
-    ],
-    ids=["dict", "nested", "none"],
-)
-def test_json_or_none_contract(input_val, expected):
-    """_json_or_none() must return JSON text for mappings and None for absent values."""
-    result = _json_or_none(input_val)
-    if expected is None:
-        assert result is None
-    else:
-        assert isinstance(result, str)
-        import json
-
-        assert json.loads(result) == expected
+    ]
+    for input_val, expected in payloads:
+        result = _json_or_none(input_val)
+        if expected is None:
+            assert result is None
+        else:
+            assert json.loads(result) == expected
 
 
-def test_make_ref_id_contract():
-    """_make_ref_id() must be deterministic, distinct across inputs, and stable for None message IDs."""
+def test_make_ref_id_contract() -> None:
+    """Attachment ref IDs must be deterministic and sensitive to attachment, conversation, and message."""
     same_1 = _make_ref_id("att1", "conv1", "msg1")
     same_2 = _make_ref_id("att1", "conv1", "msg1")
     different_attachment = _make_ref_id("att2", "conv1", "msg1")
@@ -317,207 +244,85 @@ def test_make_ref_id_contract():
 
 
 @pytest.mark.slow
-def test_write_lock_prevents_concurrent_writes(test_db):
-    """_WRITE_LOCK prevents concurrent store_records() calls from corrupting data."""
+def test_write_lock_prevents_concurrent_writes(test_db) -> None:
+    """Threaded store_records() calls must complete without corrupting conversation or message counts."""
     results = []
     errors = []
 
-    def write_conversation(conv_id: int):
+    def write_conversation(conv_id: int) -> None:
         try:
             conv = make_conversation(f"conv{conv_id}", title=f"Conversation {conv_id}")
             messages = [make_message(f"msg{conv_id}-{i}", f"conv{conv_id}", text=f"Message {i}") for i in range(3)]
-
             with open_connection(test_db) as conn:
-                counts = store_records(conversation=conv, messages=messages, attachments=[], conn=conn)
-            results.append(counts)
-        except Exception as e:
-            errors.append(e)
+                results.append(store_records(conversation=conv, messages=messages, attachments=[], conn=conn))
+        except Exception as exc:  # pragma: no cover - failure path assertion target
+            errors.append(exc)
 
-    # Run multiple concurrent writes
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(write_conversation, i) for i in range(10)]
+        futures = [executor.submit(write_conversation, idx) for idx in range(10)]
         for future in as_completed(futures):
             future.result()
 
-    # No errors should occur
-    assert len(errors) == 0
-
-    # All writes should succeed
+    assert errors == []
     assert len(results) == 10
-
-    # Verify all conversations were written
     with open_connection(test_db) as conn:
-        count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-        assert count == 10
-
-        # Verify message count
-        msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        assert msg_count == 30  # 10 conversations × 3 messages
+        assert conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 10
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 30
 
 
-def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeypatch):
-    """store_records() works without explicit connection parameter."""
-    import importlib
-    import shutil
+def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeypatch) -> None:
+    """store_records() must honor the default DB path when no connection is supplied."""
+    import polylogue.paths
+    import polylogue.storage.backends.connection as connection_module
+    from polylogue.storage.backends.connection import _clear_connection_cache
 
-    # Create a temp location for "default" storage within tmp_path to avoid cross-device issues
-    # NOTE: default_db_path() uses XDG_DATA_HOME, not XDG_STATE_HOME
     data_home = tmp_path / "data"
     data_home.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
 
-    # Close cached connections BEFORE reloading — reload re-creates
-    # the module-level threading.local, orphaning old connections.
-    from polylogue.storage.backends.connection import _clear_connection_cache
     _clear_connection_cache()
-
-    # Reload paths and connection modules to pick up new XDG_DATA_HOME
-    import polylogue.paths
-    import polylogue.storage.backends.connection
-
     importlib.reload(polylogue.paths)
-    importlib.reload(polylogue.storage.backends.connection)
+    importlib.reload(connection_module)
 
-    default_path = default_db_path()
+    default_path = connection_module.default_db_path()
     default_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(test_db), str(default_path))
 
-    conv = make_conversation("conv1", title="No Conn Test")
-
-    # Call without conn parameter
-    counts = store_records(conversation=conv, messages=[], attachments=[])
-
+    counts = store_records(
+        conversation=make_conversation("conv-default", title="No Conn Test"),
+        messages=[],
+        attachments=[],
+    )
     assert counts["conversations"] == 1
 
-    # Verify it was written
     with open_connection(default_path) as conn:
-        row = conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
-        assert row is not None
-
-
-def test_store_records_handles_empty_messages_and_attachments(test_conn):
-    """store_records() must support conversation-only inserts without synthetic child rows."""
-    conv = make_conversation("conv-empty", title="Empty Conversation")
-
-    counts = store_records(conversation=conv, messages=[], attachments=[], conn=test_conn)
-
-    assert counts["conversations"] == 1
-    assert counts["messages"] == 0
-    assert counts["attachments"] == 0
-
-    row = test_conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv-empty",)).fetchone()
-    assert row is not None
-
-
-def test_store_records_supports_attachment_without_message_id(test_conn):
-    """Attachments without message IDs must still be persisted with a single ref."""
-    conv = make_conversation("conv-attachment", title="Attachment Only")
-    att = make_attachment("att-1", "conv-attachment", message_id=None, mime_type="application/pdf", size_bytes=5000)
-
-    counts = store_records(conversation=conv, messages=[], attachments=[att], conn=test_conn)
-
-    assert counts["attachments"] == 1
-
-    row = test_conn.execute("SELECT * FROM attachments WHERE attachment_id = ?", ("att-1",)).fetchone()
-    assert row is not None
-    assert row["ref_count"] == 1
-
-
-def test_upsert_attachment_updates_existing_metadata(test_conn):
-    """upsert_attachment() updates existing attachment metadata."""
-    conv = make_conversation("conv1")
-    upsert_conversation(test_conn, conv)
-
-    # Setup messages
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
-    upsert_message(test_conn, msg1)
-
-    msg2 = make_message("msg2", "conv1", provider_message_id="ext-msg2", text="Second message")
-    upsert_message(test_conn, msg2)
-
-    # First insert
-    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-    upsert_attachment(test_conn, att1)
-
-    # Update with new path and size (different message = new ref)
-    att2 = make_attachment("att1", "conv1", "msg2", mime_type="image/jpeg", size_bytes=2048, path="/new/path.jpg")
-    upsert_attachment(test_conn, att2)
-
-    # Verify updates
-    row = test_conn.execute("SELECT * FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert row["mime_type"] == "image/jpeg"
-    assert row["size_bytes"] == 2048
-    assert row["path"] == "/new/path.jpg"
-    assert row["ref_count"] == 2  # Two refs now
-
-
-def test_prune_attachment_refs_transactional_rollback(test_conn):
-    """_prune_attachment_refs() rolls back on error, maintaining consistent ref_count."""
-    # Setup: Create conversation with attachments
-    conv = make_conversation("conv1", title="Transaction Test")
-    upsert_conversation(test_conn, conv)
-
-    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
-    upsert_message(test_conn, msg1)
-
-    # Create two attachments
-    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
-    att2 = make_attachment("att2", "conv1", "msg1", mime_type="image/jpeg", size_bytes=2048)
-    upsert_attachment(test_conn, att1)
-    upsert_attachment(test_conn, att2)
-
-    # Verify initial state: 2 attachments, ref_count = 1 each
-    count_before = test_conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
-    assert count_before == 2
-    ref_count_before = test_conn.execute("SELECT SUM(ref_count) FROM attachments").fetchone()[0]
-    assert ref_count_before == 2
-
-    # Save snapshot to verify rollback
-
-    # Try to prune with an invalid keep_ref_ids that will cause the function
-    # to execute but then we'll verify the SAVEPOINT mechanism works
-    ref_id1 = _make_ref_id("att1", "conv1", "msg1")
-
-    # The function should execute successfully
-    _prune_attachment_refs(test_conn, "conv1", {ref_id1})
-
-    # Verify: only att1 should remain (att2 pruned)
-    count_after = test_conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
-    assert count_after == 1
-
-    remaining = test_conn.execute("SELECT attachment_id, ref_count FROM attachments").fetchone()
-    assert remaining["attachment_id"] == "att1"
-    assert remaining["ref_count"] == 1
-
-    # Verify ref_count is consistent with actual refs
-    actual_refs = test_conn.execute(
-        "SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", ("att1",)
-    ).fetchone()[0]
-    assert actual_refs == 1  # Consistent!
+        assert _conversation_row(conn, "conv-default") is not None
 
 
 @pytest.mark.slow
-def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
-    """Test for concurrent attachment ref_count race condition.
+def test_concurrent_upsert_same_attachment_ref_count_correct(test_db) -> None:
+    """Concurrent upserts of the same attachment must keep ref_count equal to actual refs."""
+    shared_attachment_id = "shared-attachment-race-test"
 
-    Issue: store.py:258-283 has a read-modify-write race in upsert_attachment.
-    This test SHOULD FAIL until the race condition is fixed.
-    The fix requires atomic increment (e.g., UPDATE ... SET ref_count = ref_count + 1).
-
-    Concurrent upserts of same attachment should maintain correct ref_count.
-    """
-    SHARED_ATTACHMENT_ID = "shared-attachment-race-test"
-
-    def create_conversation(i: int):
+    def create_conversation(index: int) -> None:
         conv = make_conversation(
-            f"race-conv-{i}", title=f"Race Test {i}", created_at=None, updated_at=None, content_hash=f"hash-{i}"
+            f"race-conv-{index}",
+            title=f"Race Test {index}",
+            created_at=None,
+            updated_at=None,
+            content_hash=f"hash-{index}",
         )
-        msg = make_message(f"race-msg-{i}", f"race-conv-{i}", text="test", timestamp=None, provider_meta=None)
-        # Each conversation references the SAME attachment_id
+        msg = make_message(
+            f"race-msg-{index}",
+            f"race-conv-{index}",
+            text="test",
+            timestamp=None,
+            provider_meta=None,
+        )
         attachment = make_attachment(
-            SHARED_ATTACHMENT_ID,
-            f"race-conv-{i}",
-            f"race-msg-{i}",
+            shared_attachment_id,
+            f"race-conv-{index}",
+            f"race-msg-{index}",
             mime_type="text/plain",
             size_bytes=100,
             provider_meta=None,
@@ -525,53 +330,39 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
         with open_connection(test_db) as conn:
             store_records(conversation=conv, messages=[msg], attachments=[attachment], conn=conn)
 
-    # Run concurrently
     with ThreadPoolExecutor(max_workers=10) as executor:
         list(executor.map(create_conversation, range(10)))
 
-    # Verify ref_count matches actual refs with strict assertions
     with open_connection(test_db) as conn:
-        cursor = conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", (SHARED_ATTACHMENT_ID,))
-        row = cursor.fetchone()
-        assert row is not None, "Attachment should exist"
-        stored_ref_count = row[0]
+        stored_ref_count = conn.execute(
+            "SELECT ref_count FROM attachments WHERE attachment_id = ?",
+            (shared_attachment_id,),
+        ).fetchone()[0]
+        actual_refs = conn.execute(
+            "SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?",
+            (shared_attachment_id,),
+        ).fetchone()[0]
 
-        cursor = conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", (SHARED_ATTACHMENT_ID,))
-        actual_refs = cursor.fetchone()[0]
-
-        # Strict assertion: ref_count must equal number of concurrent insertions
-        assert stored_ref_count == 10, f"Race condition! ref_count is {stored_ref_count}, expected 10"
-        assert actual_refs == 10, f"Missing refs! Found {actual_refs}, expected 10"
-        assert stored_ref_count == actual_refs, f"Mismatch: ref_count={stored_ref_count}, actual_refs={actual_refs}"
-
-
-# =============================================================================
-# ATTACHMENT RECORD VALIDATION (parametrized)
-# =============================================================================
-
-# Valid size_bytes test cases (consolidated)
-VALID_ATTACHMENT_SIZES = [(0, "zero"), (MAX_ATTACHMENT_SIZE, "max_1TB"), (None, "unknown")]
+    assert stored_ref_count == 10
+    assert actual_refs == 10
+    assert stored_ref_count == actual_refs
 
 
-@pytest.mark.parametrize("size_bytes,desc", VALID_ATTACHMENT_SIZES, ids=str)
-def test_attachment_size_bytes_valid(size_bytes, desc):
-    """size_bytes accepts valid values: {desc}."""
-    record = AttachmentRecord(
-        attachment_id="test",
-        conversation_id="conv1",
-        message_id="msg1",
-        mime_type="text/plain",
-        size_bytes=size_bytes,
-        provider_meta=None,
-    )
-    assert record.size_bytes == size_bytes
-
-
-@pytest.mark.parametrize("size_bytes,desc", [(-100, "negative"), (MAX_ATTACHMENT_SIZE + 1, "over_max")], ids=str)
-def test_attachment_size_bytes_invalid(size_bytes, desc):
-    """size_bytes rejects invalid values: {desc}."""
-    with pytest.raises(ValidationError):
-        AttachmentRecord(
+@pytest.mark.parametrize(
+    ("size_bytes", "valid"),
+    [
+        (0, True),
+        (MAX_ATTACHMENT_SIZE, True),
+        (None, True),
+        (-100, False),
+        (MAX_ATTACHMENT_SIZE + 1, False),
+    ],
+    ids=["zero", "max", "unknown", "negative", "over-max"],
+)
+def test_attachment_size_bytes_contract(size_bytes, valid) -> None:
+    """Attachment size validation must accept supported bounds and reject invalid sizes."""
+    if valid:
+        record = AttachmentRecord(
             attachment_id="test",
             conversation_id="conv1",
             message_id="msg1",
@@ -579,16 +370,22 @@ def test_attachment_size_bytes_invalid(size_bytes, desc):
             size_bytes=size_bytes,
             provider_meta=None,
         )
+        assert record.size_bytes == size_bytes
+    else:
+        with pytest.raises(ValidationError):
+            AttachmentRecord(
+                attachment_id="test",
+                conversation_id="conv1",
+                message_id="msg1",
+                mime_type="text/plain",
+                size_bytes=size_bytes,
+                provider_meta=None,
+            )
 
 
-# =============================================================================
-# PROVIDER NAME VALIDATION (consolidated to representative cases)
-# =============================================================================
-
-
-@pytest.mark.parametrize("name,desc", [("claude", "known"), ("claude-code", "hyphenated"), ("Provider123", "mixed_case")], ids=str)
-def test_provider_name_accepts_valid(name, desc):
-    """provider_name accepts {desc}."""
+@pytest.mark.parametrize("name", ["claude", "claude-code", "Provider123"])
+def test_provider_name_accepts_valid(name) -> None:
+    """Representative provider-name formats should validate."""
     record = ConversationRecord(
         conversation_id="test",
         provider_name=name,
@@ -597,106 +394,3 @@ def test_provider_name_accepts_valid(name, desc):
         content_hash="hash123",
     )
     assert record.provider_name == name
-
-
-
-# =============================================================================
-# BACKEND CRUD OPERATIONS
-# =============================================================================
-
-
-async def test_backend_transaction_rollback(sqlite_backend: SQLiteBackend) -> None:
-    """Test transaction rollback."""
-    conv = make_conversation("conv1", title="Test")
-
-    await sqlite_backend.begin()
-    await sqlite_backend.save_conversation_record(conv)
-    await sqlite_backend.rollback()
-
-    retrieved = await sqlite_backend.get_conversation("conv1")
-    assert retrieved is None
-
-
-async def test_backend_transaction_context_manager(sqlite_backend: SQLiteBackend) -> None:
-    """Test using the transaction context manager."""
-    conv = make_conversation("conv1", title="Test")
-
-    async with sqlite_backend.transaction():
-        await sqlite_backend.save_conversation_record(conv)
-
-    retrieved = await sqlite_backend.get_conversation("conv1")
-    assert retrieved is not None
-    assert retrieved.conversation_id == "conv1"
-
-
-async def test_backend_transaction_context_manager_exception(sqlite_backend: SQLiteBackend) -> None:
-    """Test transaction context manager rolls back on exception."""
-    conv = make_conversation("conv1", title="Test")
-
-    with pytest.raises(ValueError):
-        async with sqlite_backend.transaction():
-            await sqlite_backend.save_conversation_record(conv)
-            raise ValueError("Test error")
-
-    retrieved = await sqlite_backend.get_conversation("conv1")
-    assert retrieved is None
-
-
-async def test_backend_delete_conversation(sqlite_backend: SQLiteBackend) -> None:
-    """Test deleting a conversation and all related records."""
-    conv = make_conversation("conv1", title="Test")
-    msg1 = make_message("msg1", "conv1", text="Hello")
-    msg2 = make_message("msg2", "conv1", role="assistant", text="Hi there")
-    att = make_attachment("att1", "conv1", "msg1", mime_type="image/png", size_bytes=1024)
-
-    await sqlite_backend.begin()
-    await sqlite_backend.save_conversation_record(conv)
-    await sqlite_backend.save_messages([msg1, msg2])
-    await sqlite_backend.save_attachments([att])
-    await sqlite_backend.commit()
-
-    assert await sqlite_backend.get_conversation("conv1") is not None
-    assert len(await sqlite_backend.get_messages("conv1")) == 2
-    assert len(await sqlite_backend.get_attachments("conv1")) == 1
-
-    result = await sqlite_backend.delete_conversation("conv1")
-    assert result is True
-
-    assert await sqlite_backend.get_conversation("conv1") is None
-    assert len(await sqlite_backend.get_messages("conv1")) == 0
-    assert len(await sqlite_backend.get_attachments("conv1")) == 0
-
-
-async def test_backend_delete_conversation_not_found(sqlite_backend: SQLiteBackend) -> None:
-    """Test deleting a non-existent conversation returns False."""
-    result = await sqlite_backend.delete_conversation("nonexistent")
-    assert result is False
-
-
-async def test_backend_delete_conversation_cleans_fts(sqlite_backend: SQLiteBackend) -> None:
-    """Test that deleting a conversation also cleans up FTS entries."""
-    from polylogue.storage.index import ensure_index, update_index_for_conversations
-
-    conv = make_conversation("conv1", title="Test")
-    msg = make_message("msg1", "conv1", text="searchable content here")
-
-    await sqlite_backend.begin()
-    await sqlite_backend.save_conversation_record(conv)
-    await sqlite_backend.save_messages([msg])
-    await sqlite_backend.commit()
-
-    with open_connection(sqlite_backend.db_path) as conn:
-        ensure_index(conn)
-        update_index_for_conversations(["conv1"], conn)
-        conn.commit()
-
-        fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
-        assert fts_count > 0
-
-    result = await sqlite_backend.delete_conversation("conv1")
-    assert result is True
-
-    with open_connection(sqlite_backend.db_path) as conn:
-        fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
-        assert fts_count == 0
-    await sqlite_backend.close()

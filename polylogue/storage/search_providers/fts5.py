@@ -44,7 +44,8 @@ class FTS5Provider:
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 message_id UNINDEXED,
                 conversation_id UNINDEXED,
-                content
+                text,
+                tokenize='unicode61'
             );
             """
         )

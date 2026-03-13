@@ -265,11 +265,6 @@ def test_is_message_record_contract(provider: str, raw: dict[str, object], expec
     assert is_message_record(provider, raw) is expected
 
 
-def test_missing_role_contract() -> None:
-    with pytest.raises(ValueError, match="Message has no role"):
-        _missing_role()
-
-
 @given(st.sampled_from(["user", "assistant", "system", "tool", "unknown", "human", "model", "ASSISTANT", "SYSTEM", "USER"]))
 def test_harmonized_message_role_coercion_contract(role_str: str) -> None:
     msg = HarmonizedMessage(role=role_str, text="test", provider="claude-code")
@@ -282,9 +277,21 @@ def test_harmonized_message_provider_coercion_contract(provider_str: str) -> Non
     assert msg.provider.value == provider_str
 
 
-def test_extract_harmonized_message_invalid_provider_contract() -> None:
-    with pytest.raises(ValueError, match="Unknown provider"):
-        extract_harmonized_message("unknown_provider", {})
+@pytest.mark.parametrize(
+    ("label", "action", "match"),
+    [
+        ("missing-role", lambda: _missing_role(), "Message has no role"),
+        ("unknown-provider", lambda: extract_harmonized_message("unknown_provider", {}), "Unknown provider"),
+        (
+            "claude-code-empty-message",
+            lambda: extract_harmonized_message("claude-code", {"uuid": "m1", "type": "human", "message": {}}),
+            "no role",
+        ),
+    ],
+)
+def test_invalid_semantic_surface_contract(label: str, action, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        action()
 
 
 @given(
@@ -1052,11 +1059,6 @@ def test_extract_harmonized_message_claude_code_type_fallback_contract(
 
     assert msg.role.value == expected_role
     assert msg.id == "m1"
-
-
-def test_extract_harmonized_message_claude_code_empty_message_raises_contract() -> None:
-    with pytest.raises(ValueError, match="no role"):
-        extract_harmonized_message("claude-code", {"uuid": "m1", "type": "human", "message": {}})
 
 
 @pytest.mark.parametrize(

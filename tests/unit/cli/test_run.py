@@ -1,10 +1,11 @@
-"""Tests for CLI run command."""
+"""Focused CLI command contracts for run, tags, and embed."""
 
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -18,24 +19,22 @@ from tests.infra.storage_records import DbFactory
 
 @pytest.fixture
 def runner():
-    """Click test runner."""
     return CliRunner()
 
 
 @pytest.fixture
 def mock_plan_result():
-    """Mock PlanResult for preview mode."""
     return PlanResult(
         timestamp=1234567890,
         counts={"conversations": 5, "messages": 50, "attachments": 2},
         sources=["test-inbox"],
-        cursors={},
+        cursors={"test-inbox": {"path": "/tmp/inbox"}},
+        details={"new": 2, "existing": 3},
     )
 
 
 @pytest.fixture
 def mock_run_result():
-    """Mock RunResult for sync mode."""
     return RunResult(
         run_id="run-123",
         counts={"conversations": 3, "messages": 30, "attachments": 1},
@@ -47,78 +46,52 @@ def mock_run_result():
     )
 
 
-# ============================================================================
-# Parametrization tables (module-level constants)
-# ============================================================================
-
-PREVIEW_MODE_CASES = [
-    ("calls_plan_sources", None, None),
-    ("displays_plan_snapshot", ["test-inbox"], "Preview"),
-    ("with_plain_mode_skips_confirm", None, "exit_code_0"),
+RUN_CASES = [
+    (
+        "preview_default",
+        ["run", "--preview"],
+        True,
+        None,
+        "all",
+        "html",
+    ),
+    (
+        "preview_parse_source",
+        ["run", "--preview", "--stage", "parse", "--source", "test-inbox"],
+        True,
+        ["test-inbox"],
+        "parse",
+        "html",
+    ),
+    (
+        "run_default",
+        ["run"],
+        False,
+        None,
+        "all",
+        "html",
+    ),
+    (
+        "run_render_markdown_source",
+        ["run", "--stage", "render", "--format", "markdown", "--source", "drive"],
+        False,
+        ["drive"],
+        "render",
+        "markdown",
+    ),
 ]
 
-PREVIEW_ERROR_CASES = [
-    ("drive_error_fails", ["google-drive"], "OAuth token expired"),
+
+EMBED_BATCH_CASES = [
+    (["embed", "--rebuild"], {"rebuild": True, "limit": None}, None),
+    (["embed", "--limit", "50"], {"rebuild": False, "limit": 50}, None),
+    (["embed", "--model", "voyage-4-large"], {"rebuild": False, "limit": None}, "voyage-4-large"),
 ]
 
-NON_PREVIEW_MODE_CASES = [
-    ("calls_run_sources", None),
-    ("displays_duration", "1500ms"),
-    ("displays_counts", "Counts"),
-]
 
-NON_PREVIEW_ERROR_CASES = [
-    ("drive_error_fails", "Drive API rate limit"),
-]
-
-STAGE_OPTION_CASES = [
-    ("validate", "validate"),
-    ("parse", "parse"),
-    ("render", "render"),
-    ("index", "index"),
-    ("all_default", "all", []),  # no args passed
-]
-
-STAGE_DISPLAY_CASES = [
-    ("index_displays_index_status", "index", True, "format_index_status"),
-]
-
-SOURCE_OPTION_CASES = [
-    ("single", ("test-inbox",), ["test-inbox"]),
-    ("multiple", ("test-inbox", "drive"), ["test-inbox", "drive"]),
-    ("displays_in_title", ("my-source",), ["my-source"]),
-]
-
-FORMAT_OPTION_CASES = [
-    ("markdown", "markdown", "markdown"),
-    ("html_default", None, "html"),
-]
-
-INDEX_ERROR_CASES = [
-    ("displays_error_with_hint", "FTS5 index error", True, "format_counts"),
-    ("stage_index_displays_error", "Vector database unavailable", False, "format_index_status"),
-]
-
-RENDER_OUTPUT_CASES = [
-    ("displays_latest_for_render_stage", "all", True),
-    ("skips_latest_for_non_render_stage", "index", False),
-]
-
-TITLE_CASES = [
-    ("includes_stage_when_not_all", "render", "stage"),
-    ("includes_sources_when_filtered", "test_source", "source"),
-]
-
-FLAG_COMBO_CASES = [
-    ("preview_with_stage", ["run", "--preview", "--stage", "parse"], "plan_sources"),
-    ("preview_with_format", ["run", "--preview", "--format", "markdown"], "plan_sources"),
-    ("stage_render_with_source", ["run", "--stage", "render", "--source", "test"], "run_sources"),
-]
-
-RENDER_FAILURE_CASES = [
-    ("displays_render_failures", 1, 5, True, "Render failures (1)", None),
-    ("displays_truncated", 15, 5, False, "Render failures (15)", None),
-    ("no_section_when_empty", 0, 0, False, None, False),
+STATUS_ROWS = [
+    ("tags", ["important", "5", "review", "3", "3 total"], {"important": 5, "review": 3, "draft": 1}, []),
+    ("tags_provider", ["claude-tag"], {"claude-tag": 3}, ["-p", "claude"]),
 ]
 
 
@@ -128,7 +101,6 @@ def _seed_tag_counts(
     *,
     provider: str = "chatgpt",
 ) -> None:
-    """Seed an isolated CLI database with tagged conversations."""
     factory = DbFactory(db_path)
     backend = SQLiteBackend(db_path=db_path)
 
@@ -149,747 +121,337 @@ def _seed_tag_counts(
     asyncio.run(_seed())
 
 
-# ============================================================================
-# Test Classes
-# ============================================================================
+def _close_coroutine(coro: object) -> None:
+    close = getattr(coro, "close", None)
+    if callable(close):
+        close()
 
 
-class TestRunCommandPreviewMode:
-    """Tests for --preview flag."""
-
-    @pytest.mark.parametrize("case_name,resolved_sources,check_output", PREVIEW_MODE_CASES)
-    def test_run_preview(self, runner, cli_workspace, mock_plan_result, case_name, resolved_sources, check_output):
-        """Preview mode variations."""
-        from unittest.mock import patch
-
+def _invoke_run_direct(
+    runner: CliRunner,
+    args: list[str],
+    *,
+    plan_result: PlanResult,
+    run_result: RunResult,
+    selected_sources: list[str] | None,
+    plan_side_effect: Exception | None = None,
+    run_side_effect: Exception | None = None,
+) -> tuple[object, dict[str, object]]:
+    with ExitStack() as stack:
         mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.plan_sources") as mock_plan:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=resolved_sources):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=resolved_sources):
-                        with patch("polylogue.cli.commands.run.format_counts", return_value="5 conversations, 50 messages"):
-                            with patch("polylogue.cli.commands.run.format_cursors", return_value=""):
-                                mock_plan.return_value = mock_plan_result
+        mock_config.render_root = Path("/render")
+        stack.enter_context(patch("polylogue.config.get_config", return_value=mock_config))
+        mock_plan = stack.enter_context(patch("polylogue.cli.commands.run.plan_sources"))
+        mock_run = stack.enter_context(patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock))
+        mock_resolve = stack.enter_context(patch("polylogue.cli.commands.run.resolve_sources", return_value=selected_sources))
+        mock_prompt = stack.enter_context(patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=selected_sources))
+        stack.enter_context(patch("polylogue.cli.commands.run.format_plan_counts", return_value="5 conversations, 50 messages"))
+        stack.enter_context(patch("polylogue.cli.commands.run.format_plan_details", return_value="new=2, existing=3"))
+        stack.enter_context(patch("polylogue.cli.commands.run.format_cursors", return_value="cursor snapshot"))
+        stack.enter_context(patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations, 30 messages"))
+        stack.enter_context(patch("polylogue.cli.commands.run.format_run_details", return_value=["Indexed: yes"]))
+        mock_format_index = stack.enter_context(patch("polylogue.cli.commands.run.format_index_status", return_value="Index status: indexed"))
+        mock_latest = stack.enter_context(patch("polylogue.cli.helpers.latest_render_path", return_value=Path("/render/latest/conversation.html")))
 
-                                result = runner.invoke(cli, ["run", "--preview"])
+        mock_plan.return_value = plan_result
+        mock_run.return_value = run_result
+        if plan_side_effect is not None:
+            mock_plan.side_effect = plan_side_effect
+        if run_side_effect is not None:
+            mock_run.side_effect = run_side_effect
+
+        result = runner.invoke(cli, args)
+
+    return result, {
+        "plan": mock_plan,
+        "run": mock_run,
+        "resolve": mock_resolve,
+        "prompt": mock_prompt,
+        "format_index": mock_format_index,
+        "latest_render": mock_latest,
+    }
+
+
+def _invoke_embed_batch(runner: CliRunner, args: list[str]):
+    with ExitStack() as stack:
+        mock_backend_class = stack.enter_context(patch("polylogue.storage.backends.async_sqlite.SQLiteBackend"))
+        mock_repo_class = stack.enter_context(patch("polylogue.storage.repository.ConversationRepository"))
+        mock_create = stack.enter_context(patch("polylogue.storage.search_providers.create_vector_provider"))
+        mock_batch = stack.enter_context(patch("polylogue.cli.commands.embed._embed_batch"))
+        mock_backend = MagicMock()
+        mock_repo = MagicMock()
+        mock_provider = MagicMock()
+        mock_backend_class.return_value = mock_backend
+        mock_repo_class.return_value = mock_repo
+        mock_create.return_value = mock_provider
+
+        result = runner.invoke(
+            cli,
+            args,
+            env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
+        )
+
+    return result, {"backend": mock_backend, "repo": mock_repo, "provider": mock_provider, "batch": mock_batch, "create": mock_create}
+
+
+class TestRunCommand:
+    @pytest.mark.parametrize(
+        ("case_name", "cli_args", "preview", "selected_sources", "expected_stage", "expected_format"),
+        RUN_CASES,
+    )
+    def test_run_dispatch_matrix(
+        self,
+        runner,
+        cli_workspace,
+        mock_plan_result,
+        mock_run_result,
+        case_name,
+        cli_args,
+        preview,
+        selected_sources,
+        expected_stage,
+        expected_format,
+    ):
+        result, mocks = _invoke_run_direct(
+            runner,
+            cli_args,
+            plan_result=mock_plan_result,
+            run_result=mock_run_result,
+            selected_sources=selected_sources,
+        )
+
+        assert result.exit_code == 0, case_name
+        if preview:
+            mocks["plan"].assert_called_once()
+            mocks["run"].assert_not_called()
+        else:
+            mocks["run"].assert_called_once()
+            kwargs = mocks["run"].call_args.kwargs
+            assert kwargs["stage"] == expected_stage
+            assert kwargs["render_format"] == expected_format
+            assert kwargs["source_names"] == selected_sources
+
+    def test_preview_summary_contract(self, runner, cli_workspace, mock_plan_result):
+        result, mocks = _invoke_run_direct(
+            runner,
+            ["run", "--preview", "--source", "test-inbox"],
+            plan_result=mock_plan_result,
+            run_result=RunResult(run_id="unused", counts={}, drift={}, indexed=False, index_error=None, duration_ms=0),
+            selected_sources=["test-inbox"],
+        )
 
         assert result.exit_code == 0
-        if case_name == "calls_plan_sources":
-            mock_plan.assert_called_once()
-        elif case_name == "displays_plan_snapshot":
-            assert "Preview" in result.output or "preview" in result.output.lower()
-        elif case_name == "with_plain_mode_skips_confirm":
-            assert result.exit_code == 0
-
-    @pytest.mark.parametrize("case_name,resolved_sources,error_msg", PREVIEW_ERROR_CASES)
-    def test_run_preview_error(self, runner, cli_workspace, case_name, resolved_sources, error_msg):
-        """Preview mode error handling."""
-        from unittest.mock import patch
-
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.plan_sources") as mock_plan:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=resolved_sources):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=resolved_sources):
-                        mock_plan.side_effect = DriveError(error_msg)
-
-                        result = runner.invoke(cli, ["run", "--preview"])
-
-        assert result.exit_code != 0
-        assert error_msg in result.output
-
-
-class TestRunCommandNonPreviewMode:
-    """Tests for normal (non-preview) sync mode."""
-
-    @pytest.mark.parametrize("case_name,check_output", NON_PREVIEW_MODE_CASES)
-    def test_run_non_preview(self, runner, cli_workspace, mock_run_result, case_name, check_output):
-        """Non-preview mode variations."""
-        from unittest.mock import patch
-
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
-                        with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations, 30 messages"):
-                            mock_run.return_value = mock_run_result
-
-                            result = runner.invoke(cli, ["run"])
-
-        assert result.exit_code == 0
-        if case_name == "calls_run_sources":
-            mock_run.assert_called_once()
-        elif case_name == "displays_duration":
-            assert "Duration" in result.output or "duration" in result.output.lower()
-            assert check_output in result.output
-        elif case_name == "displays_counts":
-            assert check_output in result.output or "counts" in result.output.lower()
-
-    @pytest.mark.parametrize("case_name,error_msg", NON_PREVIEW_ERROR_CASES)
-    def test_run_non_preview_error(self, runner, cli_workspace, case_name, error_msg):
-        """Non-preview mode error handling."""
-        from unittest.mock import patch
-
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=["google-drive"]):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["google-drive"]):
-                        mock_run.side_effect = DriveError(error_msg)
-
-                        result = runner.invoke(cli, ["run"])
-
-        assert result.exit_code != 0
-        assert error_msg in result.output
-
-
-class TestRunCommandStageOption:
-    """Tests for --stage flag."""
+        assert "Preview" in result.output
+        assert "Sources: test-inbox" in result.output
+        assert "Work: 5 conversations, 50 messages" in result.output
+        assert "State: new=2, existing=3" in result.output
+        assert "Cursors: cursor snapshot" in result.output
+        mocks["plan"].assert_called_once()
 
     @pytest.mark.parametrize(
-        "stage,expected_stage,extra_args",
+        ("preview", "stage", "run_result", "expected_tokens", "expect_latest_render", "expect_format_index"),
         [
-            ("validate", "validate", ["--stage", "validate"]),
-            ("parse", "parse", ["--stage", "parse"]),
-            ("render", "render", ["--stage", "render"]),
-            ("index", "index", ["--stage", "index"]),
-            ("all_default", "all", []),
+            (False, "index", RunResult(run_id="run-idx", counts={"conversations": 0}, drift={}, indexed=True, index_error=None, duration_ms=800), ["Sync (index)", "Index status: indexed", "Duration: 800ms"], False, True),
+            (False, "render", RunResult(run_id="run-render", counts={"conversations": 3}, drift={}, indexed=True, index_error=None, duration_ms=1200), ["Sync (render)", "Latest render:"], True, False),
+            (False, "all", RunResult(run_id="run-all", counts={"conversations": 2}, drift={}, indexed=False, index_error="Vector database unavailable", duration_ms=900, render_failures=[{"conversation_id": "conv-1", "error": "boom"}]), ["Sync", "Render failures (1)", "Index error: Vector database unavailable"], True, True),
         ],
+        ids=["index_stage", "render_stage", "full_run_warnings"],
     )
-    def test_run_stage_option(self, runner, cli_workspace, mock_run_result, stage, expected_stage, extra_args):
-        """Stage option passed correctly."""
-        from unittest.mock import patch
-
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
-                        with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_run.return_value = mock_run_result
-
-                            result = runner.invoke(cli, ["run"] + extra_args)
-
-        assert result.exit_code == 0
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["stage"] == expected_stage
-
-    def test_run_stage_index_displays_index_status(self, runner, cli_workspace):
-        """--stage index displays index status instead of counts."""
-        from unittest.mock import patch
-
-        result_indexed = RunResult(
-            run_id="run-idx",
-            counts={"conversations": 0},
-            drift={},
-            indexed=True,
-            index_error=None,
-            duration_ms=800,
+    def test_run_output_contract(
+        self,
+        runner,
+        cli_workspace,
+        mock_plan_result,
+        preview,
+        stage,
+        run_result,
+        expected_tokens,
+        expect_latest_render,
+        expect_format_index,
+    ):
+        result, mocks = _invoke_run_direct(
+            runner,
+            ["run", "--stage", stage],
+            plan_result=mock_plan_result,
+            run_result=run_result,
+            selected_sources=None,
         )
 
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
-                        with patch("polylogue.cli.commands.run.format_index_status") as mock_format_idx:
-                            mock_run.return_value = result_indexed
-                            mock_format_idx.return_value = "Index status: indexed"
-
-                            result = runner.invoke(cli, ["run", "--stage", "index"])
-
         assert result.exit_code == 0
-        mock_format_idx.assert_called_once()
+        for token in expected_tokens:
+            assert token in result.output
+        assert bool(mocks["latest_render"].call_count) is expect_latest_render
+        assert bool(mocks["format_index"].call_count) is expect_format_index
 
-
-class TestRunCommandSourceOption:
-    """Tests for --source flag."""
-
-    @pytest.mark.parametrize(
-        "case_name,sources,resolved_sources",
-        SOURCE_OPTION_CASES,
-    )
-    def test_run_source_option(self, runner, cli_workspace, mock_run_result, case_name, sources, resolved_sources):
-        """Source option variations."""
-        from unittest.mock import patch
-
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                with patch("polylogue.cli.commands.run.resolve_sources") as mock_resolve:
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=resolved_sources):
-                        with patch("polylogue.cli.commands.run.format_counts", return_value="3+ conversations"):
-                            mock_resolve.return_value = resolved_sources
-                            mock_run.return_value = mock_run_result
-
-                            cli_args = ["run"]
-                            for source in sources:
-                                cli_args.extend(["--source", source])
-
-                            result = runner.invoke(cli, cli_args)
-
-        assert result.exit_code == 0
-        if case_name == "single" or case_name == "multiple":
-            call_args = mock_resolve.call_args
-            for source in sources:
-                assert source in call_args[0][1]
-        elif case_name == "displays_in_title":
-            assert resolved_sources[0] in result.output or "Run" in result.output
-
-
-class TestRunCommandFormatOption:
-    """Tests for --format flag."""
-
-    @pytest.mark.parametrize(
-        "case_name,format_arg,expected_format",
-        FORMAT_OPTION_CASES,
-    )
-    def test_run_format_option(self, runner, cli_workspace, mock_run_result, case_name, format_arg, expected_format):
-        """Format option variations."""
-        from unittest.mock import patch
-
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
-                        with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_run.return_value = mock_run_result
-
-                            cli_args = ["run"]
-                            if format_arg:
-                                cli_args.extend(["--format", format_arg])
-
-                            result = runner.invoke(cli, cli_args)
-
-        assert result.exit_code == 0
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["render_format"] == expected_format
-
-
-class TestRunCommandProgressOutput:
-    """Tests for progress display."""
-
-    def test_run_plain_mode_shows_progress(self, runner, cli_workspace, mock_run_result):
-        """Plain mode displays periodic progress updates."""
-        from unittest.mock import patch
-
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
-                        with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_run.return_value = mock_run_result
-
-                            result = runner.invoke(cli, ["run"])
-
-        assert result.exit_code == 0
-
-
-class TestRunCommandIndexError:
-    """Tests for index error handling."""
-
-    @pytest.mark.parametrize(
-        "case_name,error_msg,full_run,format_func",
-        INDEX_ERROR_CASES,
-    )
-    def test_run_index_error(self, runner, cli_workspace, case_name, error_msg, full_run, format_func):
-        """Index error handling variations."""
-        from unittest.mock import patch
-
-        result_with_error = RunResult(
-            run_id="run-err",
-            counts={"conversations": 2},
-            drift={},
-            indexed=False,
-            index_error=error_msg,
-            duration_ms=1200,
+    def test_run_preview_drive_error_contract(self, runner, cli_workspace, mock_plan_result, mock_run_result):
+        result, _ = _invoke_run_direct(
+            runner,
+            ["run", "--preview"],
+            plan_result=mock_plan_result,
+            run_result=mock_run_result,
+            selected_sources=["google-drive"],
+            plan_side_effect=DriveError("OAuth token expired"),
         )
+        assert result.exit_code != 0
+        assert "OAuth token expired" in result.output
 
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
-                        with patch(f"polylogue.cli.commands.run.{format_func}") as mock_format:
-                            mock_run.return_value = result_with_error
-                            mock_format.return_value = f"Index error: {error_msg}"
-
-                            cli_args = ["run"]
-                            if not full_run:
-                                cli_args.extend(["--stage", "index"])
-
-                            result = runner.invoke(cli, cli_args)
-
-        assert result.exit_code == 0
-        if not full_run:
-            mock_format.assert_called_once()
-        else:
-            assert error_msg in result.output or "Index error" in result.output
-
-
-class TestRunCommandRenderOutput:
-    """Tests for render output display."""
-
-    @pytest.mark.parametrize(
-        "case_name,stage,should_call_latest",
-        RENDER_OUTPUT_CASES,
-    )
-    def test_run_render_output(self, runner, cli_workspace, mock_run_result, case_name, stage, should_call_latest):
-        """Render output path display."""
-        from unittest.mock import patch
-
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
-                        with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            with patch("polylogue.cli.commands.run.format_index_status", return_value="Indexed"):
-                                with patch("polylogue.cli.helpers.latest_render_path") as mock_latest:
-                                    mock_config.render_root = Path("/render")
-                                    mock_run.return_value = mock_run_result
-                                    mock_latest.return_value = Path("/render/conv1/conversation.html")
-
-                                    result = runner.invoke(cli, ["run", "--stage", stage])
-
-        assert result.exit_code == 0
-        if should_call_latest:
-            mock_latest.assert_called_once()
-        else:
-            mock_latest.assert_not_called()
-
-
-class TestRunCommandTitle:
-    """Tests for run output title."""
-
-    @pytest.mark.parametrize(
-        "case_name,stage_or_source,title_element",
-        TITLE_CASES,
-    )
-    def test_run_title(self, runner, cli_workspace, mock_run_result, case_name, stage_or_source, title_element):
-        """Title includes stage or source information."""
-        from unittest.mock import patch
-
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=[stage_or_source] if title_element == "source" else None):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=[stage_or_source] if title_element == "source" else None):
-                        with patch("polylogue.cli.commands.run.format_counts", return_value="5 conversations"):
-                            mock_run.return_value = mock_run_result
-
-                            cli_args = ["run"]
-                            if title_element == "stage":
-                                cli_args.extend(["--stage", stage_or_source])
-                            else:
-                                cli_args.extend(["--source", stage_or_source])
-
-                            result = runner.invoke(cli, cli_args)
-
-        assert result.exit_code == 0
-        if title_element == "stage":
-            assert stage_or_source in result.output.lower() or "Run" in result.output
-        else:
-            assert stage_or_source in result.output or "Run" in result.output
-
-
-class TestRunCommandCombinations:
-    """Tests for flag combinations."""
-
-    @pytest.mark.parametrize(
-        "case_name,cli_args,mock_func",
-        FLAG_COMBO_CASES,
-    )
-    def test_run_flag_combinations(self, runner, cli_workspace, mock_plan_result, mock_run_result, case_name, cli_args, mock_func):
-        """Flag combinations work together."""
-        from unittest.mock import patch
-
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.plan_sources") as mock_plan:
-                with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                    with patch("polylogue.cli.commands.run.resolve_sources") as mock_resolve:
-                        with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["test"] if "--source" in cli_args else None):
-                            with patch("polylogue.cli.commands.run.format_counts", return_value="5 conversations"):
-                                mock_plan.return_value = mock_plan_result
-                                mock_run.return_value = mock_run_result
-                                mock_resolve.return_value = ["test"] if "--source" in cli_args else None
-
-                                result = runner.invoke(cli, cli_args)
-
-        assert result.exit_code == 0
-        if mock_func == "plan_sources":
-            mock_plan.assert_called_once()
-        else:
-            mock_run.assert_called_once()
-
-
-class TestRunCommandRenderFailures:
-    """Tests for render failure handling in run output."""
-
-    @pytest.mark.parametrize(
-        "case_name,num_failures,show_count,show_heading_as_text,expected_in_output,not_expected",
-        RENDER_FAILURE_CASES,
-    )
-    def test_run_render_failures(self, runner, cli_workspace, case_name, num_failures, show_count, show_heading_as_text, expected_in_output, not_expected):
-        """Render failure display variations."""
-        from unittest.mock import patch
-
-        if num_failures > 0:
-            failures = [
-                {"conversation_id": f"conv-{i}", "error": f"Error {i}"}
-                for i in range(1, num_failures + 1)
-            ]
-        else:
-            failures = []
-
-        result_with_failures = RunResult(
-            run_id="run-fail",
-            counts={"conversations": num_failures},
-            drift={},
-            indexed=True,
-            index_error=None,
-            duration_ms=1500,
-            render_failures=failures,
+    def test_run_execution_drive_error_contract(self, runner, cli_workspace, mock_plan_result, mock_run_result):
+        result, _ = _invoke_run_direct(
+            runner,
+            ["run"],
+            plan_result=mock_plan_result,
+            run_result=mock_run_result,
+            selected_sources=["google-drive"],
+            run_side_effect=DriveError("Drive API rate limit"),
         )
+        assert result.exit_code != 0
+        assert "Drive API rate limit" in result.output
 
-        mock_config = MagicMock(sources=[])
-        with patch("polylogue.config.get_config", return_value=mock_config):
-            with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-                with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
-                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
-                        with patch("polylogue.cli.commands.run.format_counts", return_value=f"{num_failures} conversation(s)"):
-                            mock_run.return_value = result_with_failures
+    def test_run_reparse_contract(self, runner, cli_workspace, mock_plan_result, mock_run_result):
+        run_results = iter([7, mock_run_result])
 
-                            result = runner.invoke(cli, ["run"])
+        def _run_async(coro):
+            try:
+                return next(run_results)
+            finally:
+                _close_coroutine(coro)
+
+        with patch("polylogue.cli.commands.run.asyncio.run", side_effect=_run_async) as mock_asyncio_run, patch(
+            "polylogue.config.get_config", return_value=MagicMock(sources=[], render_root=Path("/render"))
+        ), patch("polylogue.cli.commands.run.resolve_sources", return_value=None), patch(
+            "polylogue.cli.commands.run.maybe_prompt_sources", return_value=None
+        ), patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations, 30 messages"), patch(
+            "polylogue.cli.commands.run.format_run_details", return_value=["Indexed: yes"]
+        ), patch("polylogue.cli.commands.run.format_index_status", return_value="Index status: indexed"), patch(
+            "polylogue.cli.commands.run.run_sources", new_callable=AsyncMock, return_value=mock_run_result
+        ):
+            result = runner.invoke(cli, ["run", "--reparse"])
 
         assert result.exit_code == 0
-
-        # Check expected content
-        if isinstance(expected_in_output, str):
-            assert expected_in_output in result.output
-
-        # Check for content that should NOT appear
-        if not_expected is False:
-            assert "Render failures" not in result.output
-        elif isinstance(not_expected, str):
-            assert not_expected not in result.output
+        assert "Reset parse status for 7 raw records." in result.output
+        assert mock_asyncio_run.call_count == 2
 
 
 class TestTagsCommand:
-    """Tests for the polylogue tags subcommand."""
-
-    def test_tags_list_all(self, runner, cli_workspace):
-        """Tags command displays all tags with counts."""
-        _seed_tag_counts(cli_workspace["db_path"], {"important": 5, "review": 3, "draft": 1})
-        result = runner.invoke(cli, ["tags"])
-
+    @pytest.mark.parametrize(("tag_counts", "extra_args", "expected", "provider"), [({"important": 5, "review": 3, "draft": 1}, [], ["important", "5", "review", "3", "3 total"], "chatgpt"), ({"claude-tag": 3}, ["-p", "claude"], ["claude-tag"], "claude")])
+    def test_tags_plain_output_matrix(self, runner, cli_workspace, tag_counts, extra_args, expected, provider):
+        _seed_tag_counts(cli_workspace["db_path"], tag_counts, provider=provider)
+        if extra_args == ["-p", "claude"]:
+            _seed_tag_counts(cli_workspace["db_path"], {"chatgpt-tag": 4}, provider="chatgpt")
+        result = runner.invoke(cli, ["tags", *extra_args])
         assert result.exit_code == 0
-        assert "important" in result.output
-        assert "5" in result.output
-        assert "review" in result.output
-        assert "3" in result.output
-        assert "3 total" in result.output
+        for token in expected:
+            assert token in result.output
+        if extra_args:
+            assert "chatgpt-tag" not in result.output
 
     def test_tags_json_output(self, runner, cli_workspace):
-        """Tags --json outputs valid JSON dict."""
         import json
 
         _seed_tag_counts(cli_workspace["db_path"], {"tag1": 10, "tag2": 2})
         result = runner.invoke(cli, ["tags", "--json"])
-
         assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data == {"tag1": 10, "tag2": 2}
+        assert json.loads(result.output) == {"tag1": 10, "tag2": 2}
 
-    def test_tags_provider_filter(self, runner, cli_workspace):
-        """Tags -p passes provider to list_tags."""
-        _seed_tag_counts(cli_workspace["db_path"], {"claude-tag": 3}, provider="claude")
-        _seed_tag_counts(cli_workspace["db_path"], {"chatgpt-tag": 4}, provider="chatgpt")
-        result = runner.invoke(cli, ["tags", "-p", "claude"])
-
-        assert result.exit_code == 0
-        assert "claude-tag" in result.output
-        assert "chatgpt-tag" not in result.output
-
-    def test_tags_count_limit(self, runner, cli_workspace):
-        """Tags -n truncates to top N."""
+    def test_tags_limit_and_empty_hints(self, runner, cli_workspace):
         _seed_tag_counts(cli_workspace["db_path"], {"a": 10, "b": 5, "c": 1})
         result = runner.invoke(cli, ["tags", "-n", "2"])
-
         assert result.exit_code == 0
-        assert "a" in result.output
-        assert "b" in result.output
-        assert "c" not in result.output
+        assert "a" in result.output and "b" in result.output and "c" not in result.output
 
-    def test_tags_empty(self, runner, cli_workspace):
-        """Tags with no tags shows hint."""
+        empty_provider = runner.invoke(cli, ["tags", "-p", "gemini"])
+        assert empty_provider.exit_code == 0
+        assert "No tags found for provider 'gemini'" in empty_provider.output
+
+    def test_tags_empty_hints(self, runner, cli_workspace):
         result = runner.invoke(cli, ["tags"])
-
         assert result.exit_code == 0
         assert "No tags found" in result.output
         assert "--add-tag" in result.output
 
-    def test_tags_empty_with_provider_filter(self, runner, cli_workspace):
-        """Tags with provider filter and no tags shows provider-specific hint."""
-        result = runner.invoke(cli, ["tags", "-p", "chatgpt"])
 
-        assert result.exit_code == 0
-        assert "No tags found for provider 'chatgpt'" in result.output
-        assert "--add-tag" in result.output
+class TestEmbedCommand:
+    def test_embed_requires_api_key_unless_stats(self, runner, cli_workspace):
+        with patch.dict("os.environ", {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""}, clear=False):
+            result = runner.invoke(cli, ["embed"])
+        assert result.exit_code != 0
+        assert "VOYAGE_API_KEY" in result.output
 
-
-class TestRunEmbedCommand:
-    """Tests for the polylogue embed subcommand."""
-
-    def test_embed_no_api_key(self, runner, cli_workspace):
-        """Embed without VOYAGE_API_KEY should print error and abort."""
-        from unittest.mock import patch
-
-        # Ensure both env vars are unset
-        with patch.dict(
+    @pytest.mark.parametrize("stats_rows", [[5, 3, 45, 2], [10, 7, 100, 3]])
+    def test_embed_stats_contract(self, runner, cli_workspace, stats_rows):
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open, patch.dict(
             "os.environ",
             {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
             clear=False,
         ):
-            result = runner.invoke(cli, ["embed"])
-
-        assert result.exit_code != 0
-        assert "VOYAGE_API_KEY" in result.output or "not set" in result.output.lower()
-
-    def test_embed_stats_no_api_key(self, runner, cli_workspace):
-        """--stats flag should work WITHOUT an API key."""
-        from unittest.mock import patch
-
-        # Mock open_connection to return mock database with stats
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=None)
-
-        # Mock execute results for three COUNT queries
-        # Total conversations
-        mock_result_1 = MagicMock()
-        mock_result_1.fetchone.return_value = (5,)
-
-        # Embedded conversations
-        mock_result_2 = MagicMock()
-        mock_result_2.fetchone.return_value = (3,)
-
-        # Embedded messages
-        mock_result_3 = MagicMock()
-        mock_result_3.fetchone.return_value = (45,)
-
-        # Pending conversations
-        mock_result_4 = MagicMock()
-        mock_result_4.fetchone.return_value = (2,)
-
-        # Mock execute to return results in sequence
-        mock_conn.execute.side_effect = [
-            mock_result_1,
-            mock_result_2,
-            mock_result_3,
-            mock_result_4,
-        ]
-
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
+            mock_conn = MagicMock()
+            mock_conn.__enter__.return_value = mock_conn
+            mock_conn.__exit__.return_value = None
+            mock_conn.execute.side_effect = [MagicMock(fetchone=MagicMock(return_value=(value,))) for value in stats_rows]
             mock_open.return_value = mock_conn
-            # Ensure API key is not set
-            with patch.dict(
-                "os.environ",
-                {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
-                clear=False,
-            ):
-                result = runner.invoke(cli, ["embed", "--stats"])
+            result = runner.invoke(cli, ["embed", "--stats"])
 
         assert result.exit_code == 0
         assert "Embedding Statistics" in result.output
+        assert str(stats_rows[0]) in result.output
+        assert str(stats_rows[1]) in result.output
+        assert str(stats_rows[2]) in result.output
+        assert str(stats_rows[3]) in result.output
 
-    def test_embed_stats_output(self, runner, cli_workspace):
-        """Verify --stats output includes correct labels and values."""
-        from unittest.mock import patch
-
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=None)
-
-        # Setup mock results for stats
-        results = [
-            MagicMock(fetchone=MagicMock(return_value=(10,))),  # Total conversations
-            MagicMock(fetchone=MagicMock(return_value=(7,))),   # Embedded conversations
-            MagicMock(fetchone=MagicMock(return_value=(100,))), # Embedded messages
-            MagicMock(fetchone=MagicMock(return_value=(3,))),   # Pending conversations
-        ]
-        mock_conn.execute.side_effect = results
-
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
-            mock_open.return_value = mock_conn
-            with patch.dict(
-                "os.environ",
-                {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
-                clear=False,
-            ):
-                result = runner.invoke(cli, ["embed", "--stats"])
-
-        assert result.exit_code == 0
-        assert "Embedding Statistics" in result.output
-        assert "Total conversations" in result.output
-        assert "10" in result.output
-        assert "Embedded conversations" in result.output
-        assert "7" in result.output
-        assert "Coverage" in result.output
-        assert "Embedded messages" in result.output
-        assert "100" in result.output
-        assert "Pending" in result.output
-        assert "3" in result.output
-
-    def test_embed_no_sqlite_vec(self, runner, cli_workspace):
-        """With API key set but no sqlite-vec, should print error."""
-        from unittest.mock import patch
-
-        with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
-            mock_create.return_value = None
-
-            result = runner.invoke(
-                cli, ["embed"], env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"}
-            )
-
+    def test_embed_no_sqlite_vec_contract(self, runner, cli_workspace):
+        with patch("polylogue.storage.search_providers.create_vector_provider", return_value=None):
+            result = runner.invoke(cli, ["embed"], env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"})
         assert result.exit_code != 0
         assert "sqlite-vec" in result.output.lower()
-        assert "not available" in result.output.lower()
 
-    def test_embed_single_not_found(self, runner, cli_workspace):
-        """--conversation with nonexistent ID should print error."""
-        from unittest.mock import patch
+    def test_embed_single_not_found_contract(self, runner, cli_workspace):
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class, patch(
+            "polylogue.storage.repository.ConversationRepository"
+        ) as mock_repo_class, patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
+            mock_backend = MagicMock()
+            mock_repo = MagicMock()
+            mock_provider = MagicMock()
+            mock_backend_class.return_value = mock_backend
+            mock_repo_class.return_value = mock_repo
+            mock_repo.view = AsyncMock(return_value=None)
+            mock_create.return_value = mock_provider
 
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
-            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
-                with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
-                    mock_backend = MagicMock()
-                    mock_backend_class.return_value = mock_backend
-                    mock_repo = MagicMock()
-                    mock_repo_class.return_value = mock_repo
-                    mock_repo.view = AsyncMock(return_value=None)
-                    mock_provider = MagicMock()
-                    mock_create.return_value = mock_provider
-
-                    result = runner.invoke(
-                        cli,
-                        ["embed", "--conversation", "nonexistent-id"],
-                        env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
-                    )
+            result = runner.invoke(
+                cli,
+                ["embed", "--conversation", "nonexistent-id"],
+                env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
+            )
 
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
         assert "nonexistent-id" in result.output
 
-    def test_embed_rebuild_flag(self, runner, cli_workspace):
-        """--rebuild flag is passed to _embed_batch."""
-        from unittest.mock import patch
+    @pytest.mark.parametrize(("cli_args", "expected_batch_kwargs", "expected_model"), EMBED_BATCH_CASES)
+    def test_embed_batch_dispatch_matrix(self, runner, cli_workspace, cli_args, expected_batch_kwargs, expected_model):
+        result, mocks = _invoke_embed_batch(runner, cli_args)
+        assert result.exit_code == 0
+        mocks["batch"].assert_called_once()
+        kwargs = mocks["batch"].call_args.kwargs
+        assert kwargs["rebuild"] is expected_batch_kwargs["rebuild"]
+        assert kwargs["limit"] == expected_batch_kwargs["limit"]
+        if expected_model is not None:
+            assert mocks["provider"].model == expected_model
 
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
-            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
-                with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
-                    with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
-                        mock_backend = MagicMock()
-                        mock_backend_class.return_value = mock_backend
-                        mock_repo = MagicMock()
-                        mock_repo_class.return_value = mock_repo
-                        mock_provider = MagicMock()
-                        mock_create.return_value = mock_provider
+    def test_embed_alt_api_key_env_contract(self, runner, cli_workspace):
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class, patch(
+            "polylogue.storage.repository.ConversationRepository"
+        ) as mock_repo_class, patch("polylogue.storage.search_providers.create_vector_provider") as mock_create, patch(
+            "polylogue.cli.commands.embed._embed_batch"
+        ):
+            mock_backend_class.return_value = MagicMock()
+            mock_repo_class.return_value = MagicMock()
+            mock_create.return_value = MagicMock()
 
-                        result = runner.invoke(
-                            cli,
-                            ["embed", "--rebuild"],
-                            env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
-                        )
+            result = runner.invoke(
+                cli,
+                ["embed"],
+                env={"POLYLOGUE_VOYAGE_API_KEY": "alt-test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
+            )
 
         assert result.exit_code == 0
-        mock_batch.assert_called_once()
-        # Verify rebuild=True was passed
-        call_kwargs = mock_batch.call_args[1]
-        assert call_kwargs["rebuild"] is True
-
-    def test_embed_limit_flag(self, runner, cli_workspace):
-        """--limit flag is passed to _embed_batch."""
-        from unittest.mock import patch
-
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
-            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
-                with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
-                    with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
-                        mock_backend = MagicMock()
-                        mock_backend_class.return_value = mock_backend
-                        mock_repo = MagicMock()
-                        mock_repo_class.return_value = mock_repo
-                        mock_provider = MagicMock()
-                        mock_create.return_value = mock_provider
-
-                        result = runner.invoke(
-                            cli,
-                            ["embed", "--limit", "50"],
-                            env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
-                        )
-
-        assert result.exit_code == 0
-        mock_batch.assert_called_once()
-        # Verify limit was passed
-        call_kwargs = mock_batch.call_args[1]
-        assert call_kwargs["limit"] == 50
-
-    def test_embed_model_choice(self, runner, cli_workspace):
-        """--model flag selects embedding model."""
-        from unittest.mock import patch
-
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
-            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
-                with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
-                    with patch("polylogue.cli.commands.embed._embed_batch"):
-                        mock_backend = MagicMock()
-                        mock_backend_class.return_value = mock_backend
-                        mock_repo = MagicMock()
-                        mock_repo_class.return_value = mock_repo
-                        mock_provider = MagicMock()
-                        mock_create.return_value = mock_provider
-
-                        result = runner.invoke(
-                            cli,
-                            ["embed", "--model", "voyage-4-large"],
-                            env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
-                        )
-
-        assert result.exit_code == 0
-        # Verify model was set on provider
-        assert mock_provider.model == "voyage-4-large"
-
-    def test_embed_voyage_api_key_alt_env(self, runner, cli_workspace):
-        """POLYLOGUE_VOYAGE_API_KEY env var is accepted as fallback."""
-        from unittest.mock import patch
-
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
-            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
-                with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
-                    with patch("polylogue.cli.commands.embed._embed_batch"):
-                        mock_backend = MagicMock()
-                        mock_backend_class.return_value = mock_backend
-                        mock_repo = MagicMock()
-                        mock_repo_class.return_value = mock_repo
-                        mock_provider = MagicMock()
-                        mock_create.return_value = mock_provider
-
-                        result = runner.invoke(
-                            cli,
-                            ["embed"],
-                            env={
-                                "POLYLOGUE_VOYAGE_API_KEY": "alt-test-key",
-                                "POLYLOGUE_FORCE_PLAIN": "1",
-                            },
-                        )
-
-        assert result.exit_code == 0
-        # Verify create_vector_provider was called with the key
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["voyage_api_key"] == "alt-test-key"
+        assert mock_create.call_args.kwargs["voyage_api_key"] == "alt-test-key"

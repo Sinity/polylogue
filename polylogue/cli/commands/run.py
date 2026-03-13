@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 
 import click
 
@@ -23,6 +21,10 @@ from polylogue.cli.helpers import (
     maybe_prompt_sources,
     resolve_sources,
 )
+from polylogue.cli.run_observers import (
+    _format_elapsed,
+    progress_observer as _progress_observer,
+)
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
@@ -37,114 +39,6 @@ from polylogue.pipeline.runner import RUN_STAGE_CHOICES, plan_sources, run_sourc
 from polylogue.protocols import ProgressCallback
 from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
-
-
-def _format_elapsed(seconds: float) -> str:
-    """Format elapsed seconds as a compact duration string."""
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    minutes = int(seconds // 60)
-    secs = int(seconds % 60)
-    if minutes < 60:
-        return f"{minutes}m{secs:02d}s"
-    hours = minutes // 60
-    mins = minutes % 60
-    return f"{hours}h{mins:02d}m{secs:02d}s"
-
-
-class _PlainProgressObserver(RunObserver):
-    """Plain-text progress output for non-TTY runs."""
-
-    def __init__(self, *, banner: str = "Syncing...") -> None:
-        self.pipeline_start = time.time()
-        self.stage_start = self.pipeline_start
-        self.last_update = self.pipeline_start
-        self.stage_processed = 0
-        self.last_desc = ""
-        self.last_stage = ""
-        print(banner, flush=True)
-
-    def _stage_key(self, desc: str) -> str:
-        return desc.split(":")[0].split("[")[0].strip()
-
-    def on_progress(self, amount: int, desc: str | None = None) -> None:
-        self.stage_processed += amount
-        now = time.time()
-        current_stage = self._stage_key(desc) if desc else self.last_stage
-        is_stage_change = current_stage != self.last_stage and current_stage
-        if is_stage_change:
-            if self.last_stage:
-                prev_elapsed = now - self.stage_start
-                print(
-                    f"  {self.last_stage}: done ({self.stage_processed - amount:,}"
-                    f" in {_format_elapsed(prev_elapsed)})",
-                    flush=True,
-                )
-            self.last_stage = current_stage
-            self.stage_start = now
-            self.stage_processed = amount
-        if desc:
-            self.last_desc = desc
-        if is_stage_change or now - self.last_update >= 1:
-            elapsed = now - self.stage_start
-            total_elapsed = now - self.pipeline_start
-            rate = self.stage_processed / elapsed if elapsed > 0.5 else 0
-            rate_str = f" ({rate:,.0f}/s)" if rate > 0 else ""
-            print(
-                f"  {self.last_desc or 'Processing'}: {self.stage_processed:,}{rate_str}"
-                f" [{_format_elapsed(total_elapsed)} total]...",
-                flush=True,
-            )
-            self.last_update = now
-
-    def on_completed(self, result: RunResult) -> None:
-        total_elapsed = time.time() - self.pipeline_start
-        count_summary = format_counts(result.counts)
-        if count_summary:
-            print(f"  Counts: {count_summary}", flush=True)
-        print(f"  Pipeline complete in {_format_elapsed(total_elapsed)}", flush=True)
-
-
-class _RichProgressObserver(RunObserver):
-    """Rich progress bridge for TTY runs."""
-
-    __slots__ = ("_progress", "_task_id")
-
-    def __init__(self, progress: object, task_id: object) -> None:
-        self._progress = progress
-        self._task_id = task_id
-
-    def on_progress(self, amount: int, desc: str | None = None) -> None:
-        if desc:
-            self._progress.update(self._task_id, description=desc)
-        self._progress.update(self._task_id, advance=amount)
-
-
-@contextmanager
-def _progress_observer(
-    env: AppEnv,
-    *,
-    initial_desc: str = "Syncing sources...",
-    plain_banner: str = "Syncing...",
-) -> Iterator[RunObserver]:
-    """Yield a progress observer appropriate for the active UI."""
-    if env.ui.plain:
-        yield _PlainProgressObserver(banner=plain_banner)
-        return
-
-    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TimeRemainingColumn(),
-        console=env.ui.console,  # type: ignore[arg-type]
-        transient=True,
-    ) as progress:
-        task_id = progress.add_task(initial_desc, total=None)
-        yield _RichProgressObserver(progress, task_id)
 
 
 def _execute_sync_once(
@@ -289,6 +183,33 @@ def _display_result(
         click.echo(hint_line, err=True)
 
 
+class _WatchDisplayObserver(RunObserver):
+    """Prints result summary when new conversations arrive in watch mode."""
+
+    def __init__(self, env: AppEnv, cfg: Config, stage: str, selected_sources: list[str] | None) -> None:
+        self._env = env
+        self._cfg = cfg
+        self._stage = stage
+        self._selected_sources = selected_sources
+
+    def on_completed(self, result: RunResult) -> None:
+        if result.counts.get("conversations", 0) > 0:
+            _display_result(self._env, self._cfg, result, self._stage, self._selected_sources)
+
+
+class _WatchStatusObserver(RunObserver):
+    """Prints idle and error status in watch mode."""
+
+    def on_idle(self, result: RunResult) -> None:
+        click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
+
+    def on_error(self, exc: Exception) -> None:
+        if isinstance(exc, DriveError):
+            click.echo(f"Sync error: {exc}", err=True)
+        else:
+            click.echo(f"Unexpected error during sync: {exc}", err=True)
+
+
 @click.command("run")
 @click.option("--preview", is_flag=True, help="Preview work without writing")
 @click.option(
@@ -346,7 +267,7 @@ def run_command(
 
     # Reset parse tracking if --reparse was requested
     if reparse:
-        reset_count = asyncio.run(env.backend.reset_parse_status())
+        reset_count = asyncio.run(env.repository.reset_parse_status())
         click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
 
     # Preview mode
@@ -393,24 +314,10 @@ def run_command(
     if watch:
         from polylogue.pipeline.watch import WatchRunner
 
-        observers: list[RunObserver] = []
-
-        class _DisplayObserver(RunObserver):
-            def on_completed(self, result: RunResult) -> None:
-                if result.counts.get("conversations", 0) > 0:
-                    _display_result(env, cfg, result, stage, selected_sources)
-
-        class _StatusObserver(RunObserver):
-            def on_idle(self, result: RunResult) -> None:
-                click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
-
-            def on_error(self, exc: Exception) -> None:
-                if isinstance(exc, DriveError):
-                    click.echo(f"Sync error: {exc}", err=True)
-                else:
-                    click.echo(f"Unexpected error during sync: {exc}", err=True)
-
-        observers.extend([_DisplayObserver(), _StatusObserver()])
+        observers: list[RunObserver] = [
+            _WatchDisplayObserver(env, cfg, stage, selected_sources),
+            _WatchStatusObserver(),
+        ]
 
         if notify:
             observers.append(NotificationObserver())

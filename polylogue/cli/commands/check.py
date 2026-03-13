@@ -9,7 +9,8 @@ import click
 
 from polylogue.cli.helpers import fail, load_effective_config
 from polylogue.cli.types import AppEnv
-from polylogue.health import VerifyStatus, get_health, run_all_repairs
+from polylogue.health import VerifyStatus, get_health
+from polylogue.storage.repair import run_all_repairs
 
 
 @click.command("check")

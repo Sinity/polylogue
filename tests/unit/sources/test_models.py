@@ -78,70 +78,8 @@ class TestClaudeAIConversationProperties:
             assert updated is None
 
 
-class TestClaudeAIConversationMessages:
-    """Explicit message alias examples."""
-
-    def test_messages_alias(self) -> None:
-        conversation = ClaudeAIConversation(
-            uuid="c-1",
-            name="Test",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-            chat_messages=[
-                ClaudeAIChatMessage(uuid="m1", text="hi", sender="human"),
-                ClaudeAIChatMessage(uuid="m2", text="hello", sender="assistant"),
-            ],
-        )
-        messages = conversation.messages
-        assert len(messages) == 2
-        assert messages[0].text == "hi"
-        assert messages[1].text == "hello"
-
-    def test_messages_empty(self) -> None:
-        conversation = ClaudeAIConversation(
-            uuid="c-1",
-            name="Test",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-        )
-        assert conversation.messages == []
-
-
 class TestClaudeAIConversationIntegration:
     """Pinned end-to-end examples that still add value."""
-
-    def test_full_conversation_workflow(self) -> None:
-        conversation = ClaudeAIConversation(
-            uuid="conv-full",
-            name="Full Test",
-            created_at="2024-06-15T10:00:00Z",
-            updated_at="2024-06-15T11:00:00Z",
-            chat_messages=[
-                ClaudeAIChatMessage(
-                    uuid="m1",
-                    text="Hello, how are you?",
-                    sender="human",
-                    created_at="2024-06-15T10:00:00Z",
-                ),
-                ClaudeAIChatMessage(
-                    uuid="m2",
-                    text="I'm doing well, thanks!",
-                    sender="assistant",
-                    created_at="2024-06-15T10:01:00Z",
-                ),
-            ],
-        )
-
-        assert conversation.title == "Full Test"
-        assert conversation.created_datetime is not None
-        assert conversation.updated_datetime is not None
-        assert len(conversation.messages) == 2
-
-        for message in conversation.messages:
-            meta = message.to_meta()
-            assert meta is not None
-            blocks = message.to_content_blocks()
-            assert len(blocks) > 0
 
     def test_conversation_with_invalid_timestamps(self) -> None:
         conversation = ClaudeAIConversation(

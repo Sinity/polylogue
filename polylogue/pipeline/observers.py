@@ -9,7 +9,7 @@ import socket
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 
 if TYPE_CHECKING:
     from polylogue.storage.store import RunResult
