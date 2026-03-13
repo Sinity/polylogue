@@ -22,7 +22,7 @@ from tenacity import (
 )
 
 from polylogue.errors import DatabaseError
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.storage.backends.connection import DB_TIMEOUT
 from polylogue.storage.store import MessageRecord
 
