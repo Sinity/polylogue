@@ -26,7 +26,7 @@ from rich.console import Console
 
 from polylogue.cli.query_helpers import describe_query_filters
 from polylogue.cli.query_output import _format_list, _output_stats_by, _write_message_streaming
-from polylogue.lib.formatting import _conv_to_dict, _yaml_safe, format_conversation
+from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_conversation
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 

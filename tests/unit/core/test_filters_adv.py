@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from polylogue.cli.filter_picker import pick_filter
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import ConversationSummary
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -448,13 +449,17 @@ class TestAdvancedConversationFilterContracts:
             ("first", None),
             ("count", 0),
             ("delete", 0),
-            ("pick", None),
         ],
     )
     @pytest.mark.asyncio
     async def test_empty_repository_terminal_contract(self, filter_repo_empty, method_name, expected):
         result = await getattr(ConversationFilter(filter_repo_empty), method_name)()
         assert result == expected
+
+    @pytest.mark.asyncio
+    async def test_pick_filter_empty_repository(self, filter_repo_empty):
+        result = await pick_filter(ConversationFilter(filter_repo_empty))
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_empty_repository_with_filters_stays_empty(self, filter_repo_empty):

@@ -89,14 +89,11 @@ def simple_conversation() -> Conversation:
 class TestServerSurfaceRegistration:
     """Server registration should expose the documented MCP surfaces."""
 
-    def test_build_server_exposes_managers(self):
-        from polylogue.mcp.server import _build_server
-
-        server = _build_server()
-        assert server is not None
-        assert hasattr(server, "_tool_manager")
-        assert hasattr(server, "_resource_manager")
-        assert hasattr(server, "_prompt_manager")
+    def testbuild_server_exposes_managers(self, mcp_server):
+        assert mcp_server is not None
+        assert hasattr(mcp_server, "_tool_manager")
+        assert hasattr(mcp_server, "_resource_manager")
+        assert hasattr(mcp_server, "_prompt_manager")
 
     @pytest.mark.parametrize(
         ("surface_attr", "actual_getter", "expected"),
@@ -111,19 +108,15 @@ class TestServerSurfaceRegistration:
             ("prompts", lambda server: set(server._prompt_manager._prompts.keys()), EXPECTED_PROMPT_NAMES),
         ],
     )
-    def test_server_surface_contract(self, surface_attr, actual_getter, expected):
-        from polylogue.mcp.server import _build_server
-
-        server = _build_server()
-        actual = actual_getter(server)
+    def test_server_surface_contract(self, surface_attr, actual_getter, expected, mcp_server):
+        actual = actual_getter(mcp_server)
         missing = expected - actual
         assert not missing, f"Missing {surface_attr}: {sorted(missing)}"
 
 
 class TestResourceSurfaces:
-    def test_stats_returns_archive_statistics(self):
+    def test_stats_returns_archive_statistics(self, mcp_server):
         from polylogue.lib.stats import ArchiveStats
-        from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
@@ -136,17 +129,14 @@ class TestResourceSurfaces:
             )
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._resource_manager._resources["polylogue://stats"].fn)
+            result = invoke_surface(mcp_server._resource_manager._resources["polylogue://stats"].fn)
 
         stats = json.loads(result)
         assert stats["total_conversations"] == 2
         assert stats["total_messages"] == 4
 
     @pytest.mark.asyncio
-    async def test_conversations_resource_returns_list(self, simple_conversation):
-        from polylogue.mcp.server import _build_server
-
+    async def test_conversations_resource_returns_list(self, simple_conversation, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
             mock_repo.list.return_value = [simple_conversation]
@@ -155,24 +145,20 @@ class TestResourceSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
 
-                server = _build_server()
-                result = await invoke_surface_async(server._resource_manager._resources["polylogue://conversations"].fn)
+                result = await invoke_surface_async(mcp_server._resource_manager._resources["polylogue://conversations"].fn)
 
         convs = json.loads(result)
         assert len(convs) == 1
         assert convs[0]["id"] == simple_conversation.id
 
-    def test_single_conversation_resource(self, simple_conversation):
-        from polylogue.mcp.server import _build_server
-
+    def test_single_conversation_resource(self, simple_conversation, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
             mock_repo.get = AsyncMock(return_value=simple_conversation)
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
             result = invoke_surface(
-                server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
+                mcp_server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
                 conv_id="test:conv-123",
             )
 
@@ -180,40 +166,32 @@ class TestResourceSurfaces:
         assert conv["id"] == "test:conv-123"
         assert "messages" in conv
 
-    def test_conversation_resource_not_found(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_conversation_resource_not_found(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
             mock_repo.get = AsyncMock(return_value=None)
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
             result = invoke_surface(
-                server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
+                mcp_server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
                 conv_id="nonexistent",
             )
 
         result_dict = json.loads(result)
         assert "error" in result_dict
 
-    def test_tags_resource(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_tags_resource(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.list_tags.return_value = {"feature": 10, "bug": 5}
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._resource_manager._resources["polylogue://tags"].fn)
+            result = invoke_surface(mcp_server._resource_manager._resources["polylogue://tags"].fn)
 
         parsed = json.loads(result)
         assert parsed == {"feature": 10, "bug": 5}
 
-    def test_health_resource(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_health_resource(self, mcp_server):
         mock_check = MagicMock()
         mock_check.name = "database"
         mock_check.status.value = "ok"
@@ -228,8 +206,7 @@ class TestResourceSurfaces:
             mock_get_config.return_value = MagicMock()
             mock_get_health.return_value = mock_report
 
-            server = _build_server()
-            result = invoke_surface(server._resource_manager._resources["polylogue://health"].fn)
+            result = invoke_surface(mcp_server._resource_manager._resources["polylogue://health"].fn)
 
         parsed = json.loads(result)
         assert len(parsed["checks"]) == 1
@@ -238,9 +215,7 @@ class TestResourceSurfaces:
 
 class TestPromptSurfaces:
     @pytest.mark.asyncio
-    async def test_analyze_errors_with_conversations(self, simple_conversation):
-        from polylogue.mcp.server import _build_server
-
+    async def test_analyze_errors_with_conversations(self, simple_conversation, mcp_server):
         simple_conversation.messages[0].text = "Got an error while running"
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
@@ -251,16 +226,13 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
 
-                server = _build_server()
-                result = await server._prompt_manager._prompts["analyze_errors"].fn()
+                result = await mcp_server._prompt_manager._prompts["analyze_errors"].fn()
 
         assert isinstance(result, str)
         assert "error" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_analyze_errors_limits_error_contexts_to_20(self):
-        from polylogue.mcp.server import _build_server
-
+    async def test_analyze_errors_limits_error_contexts_to_20(self, mcp_server):
         msgs = [
             Message(
                 id=f"m{i}",
@@ -280,15 +252,12 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[big_conv])
 
-                server = _build_server()
-                result = await server._prompt_manager._prompts["analyze_errors"].fn()
+                result = await mcp_server._prompt_manager._prompts["analyze_errors"].fn()
 
         assert "20 error instances" in result
 
     @pytest.mark.asyncio
-    async def test_analyze_errors_no_matches(self):
-        from polylogue.mcp.server import _build_server
-
+    async def test_analyze_errors_no_matches(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
             mock_repo.list.return_value = []
@@ -297,15 +266,12 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[])
 
-                server = _build_server()
-                result = await server._prompt_manager._prompts["analyze_errors"].fn()
+                result = await mcp_server._prompt_manager._prompts["analyze_errors"].fn()
 
         assert "0 conversations" in result
 
     @pytest.mark.asyncio
-    async def test_summarize_week_empty(self):
-        from polylogue.mcp.server import _build_server
-
+    async def test_summarize_week_empty(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
             mock_repo.list.return_value = []
@@ -314,16 +280,13 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[])
 
-                server = _build_server()
-                result = await server._prompt_manager._prompts["summarize_week"].fn()
+                result = await mcp_server._prompt_manager._prompts["summarize_week"].fn()
 
         assert "0 conversations" in result
         assert "0 messages" in result
 
     @pytest.mark.asyncio
-    async def test_extract_code_no_code_blocks(self):
-        from polylogue.mcp.server import _build_server
-
+    async def test_extract_code_no_code_blocks(self, mcp_server):
         conv = Conversation(
             id="nocode",
             provider="test",
@@ -339,15 +302,12 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
-                server = _build_server()
-                result = await server._prompt_manager._prompts["extract_code"].fn()
+                result = await mcp_server._prompt_manager._prompts["extract_code"].fn()
 
         assert "0 code blocks" in result
 
     @pytest.mark.asyncio
-    async def test_extract_code_with_language_filter(self):
-        from polylogue.mcp.server import _build_server
-
+    async def test_extract_code_with_language_filter(self, mcp_server):
         conv = Conversation(
             id="code",
             provider="test",
@@ -369,15 +329,12 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
-                server = _build_server()
-                result = await server._prompt_manager._prompts["extract_code"].fn(language="python")
+                result = await mcp_server._prompt_manager._prompts["extract_code"].fn(language="python")
 
         assert "python" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_extract_code_null_message_text(self):
-        from polylogue.mcp.server import _build_server
-
+    async def test_extract_code_null_message_text(self, mcp_server):
         conv = Conversation(
             id="nulltext",
             provider="test",
@@ -393,22 +350,18 @@ class TestPromptSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
-                server = _build_server()
-                result = await server._prompt_manager._prompts["extract_code"].fn()
+                result = await mcp_server._prompt_manager._prompts["extract_code"].fn()
 
         assert isinstance(result, str)
 
-    def test_compare_conversations_prompt(self, simple_conversation):
-        from polylogue.mcp.server import _build_server
-
+    def test_compare_conversations_prompt(self, simple_conversation, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.view.side_effect = [simple_conversation, simple_conversation]
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
             result = invoke_surface(
-                server._prompt_manager._prompts["compare_conversations"].fn,
+                mcp_server._prompt_manager._prompts["compare_conversations"].fn,
                 id1="test:conv-1",
                 id2="test:conv-2",
             )
@@ -418,9 +371,7 @@ class TestPromptSurfaces:
         assert "Conversation 2" in result
 
     @pytest.mark.asyncio
-    async def test_extract_patterns_prompt(self, simple_conversation):
-        from polylogue.mcp.server import _build_server
-
+    async def test_extract_patterns_prompt(self, simple_conversation, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo, patch(
             "polylogue.lib.filters.ConversationFilter"
         ) as mock_filter_cls:
@@ -428,28 +379,24 @@ class TestPromptSurfaces:
             mock_get_repo.return_value = mock_repo
             mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
 
-            server = _build_server()
-            result = await invoke_surface_async(server._prompt_manager._prompts["extract_patterns"].fn)
+            result = await invoke_surface_async(mcp_server._prompt_manager._prompts["extract_patterns"].fn)
 
         assert isinstance(result, str)
         assert "patterns" in result.lower()
 
 
 class TestExportConversationTool:
-    def test_export_markdown(self, simple_conversation):
-        from polylogue.mcp.server import _build_server
-
+    def test_export_markdown(self, simple_conversation, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo, patch(
-            "polylogue.lib.formatting.format_conversation"
+            "polylogue.rendering.formatting.format_conversation"
         ) as mock_format:
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = simple_conversation
             mock_get_repo.return_value = mock_repo
             mock_format.return_value = "# Test Conversation\n\nFormatted content"
 
-            server = _build_server()
             result = invoke_surface(
-                server._tool_manager._tools["export_conversation"].fn,
+                mcp_server._tool_manager._tools["export_conversation"].fn,
                 id="test:conv-123",
                 format="markdown",
             )
@@ -460,35 +407,29 @@ class TestExportConversationTool:
         assert call_args[0][0] == simple_conversation
         assert call_args[0][1] == "markdown"
 
-    def test_export_not_found(self):
-        from polylogue.mcp.server import _build_server
-
+    def test_export_not_found(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            server = _build_server()
-            result = invoke_surface(server._tool_manager._tools["export_conversation"].fn, id="nonexistent")
+            result = invoke_surface(mcp_server._tool_manager._tools["export_conversation"].fn, id="nonexistent")
 
         parsed = json.loads(result)
         assert "error" in parsed
         assert "not found" in parsed["error"].lower()
 
-    def test_export_invalid_format_falls_back_to_markdown(self, simple_conversation):
-        from polylogue.mcp.server import _build_server
-
+    def test_export_invalid_format_falls_back_to_markdown(self, simple_conversation, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo, patch(
-            "polylogue.lib.formatting.format_conversation"
+            "polylogue.rendering.formatting.format_conversation"
         ) as mock_format:
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = simple_conversation
             mock_get_repo.return_value = mock_repo
             mock_format.return_value = "# Content"
 
-            server = _build_server()
             invoke_surface(
-                server._tool_manager._tools["export_conversation"].fn,
+                mcp_server._tool_manager._tools["export_conversation"].fn,
                 id="test:conv-123",
                 format="invalid_format",
             )
