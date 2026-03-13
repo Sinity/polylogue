@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.lib.json import dumps as json_dumps
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.viewports import classify_tool
 from polylogue.pipeline.ids import (
     attachment_content_id,
@@ -35,6 +35,7 @@ from polylogue.storage.store import (
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
 if TYPE_CHECKING:
+    from polylogue.sources.parsers.types import ParsedConversation
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
 
@@ -167,105 +168,52 @@ def _plan_attachment_materialization(
     return AttachmentMaterializationPlan(move_before_save=[(source, target)])
 
 
-async def prepare_records(
-    convo,
+@dataclass
+class TransformResult:
+    """Output of transform_to_records: pure records derived from a ParsedConversation."""
+
+    bundle: RecordBundle
+    materialization_plan: AttachmentMaterializationPlan
+    content_hash: str
+    candidate_cid: ConversationId
+    # provider_message_id → MessageId mapping built from the transform
+    message_id_map: dict[str, MessageId]
+
+
+@dataclass
+class EnrichedBundle:
+    """Output of enrich_bundle_from_db: bundle with DB-resolved IDs and change flag."""
+
+    bundle: RecordBundle
+    materialization_plan: AttachmentMaterializationPlan
+    cid: ConversationId
+    changed: bool
+
+
+def transform_to_records(
+    convo: ParsedConversation,
     source_name: str,
     *,
     archive_root: Path,
-    backend: SQLiteBackend | None = None,
-    repository: ConversationRepository | None = None,
-    raw_id: str | None = None,
-    cache: PrepareCache | None = None,
-) -> tuple[str, dict[str, int], bool]:
-    """Async version of prepare_records for converting ParsedConversation to records.
+) -> TransformResult:
+    """Build all storage records from a ParsedConversation without any DB access.
 
-    Args:
-        convo: ParsedConversation to prepare
-        source_name: Name of the source
-        archive_root: Root directory for archived conversations
-        backend: SQLiteBackend for database lookups
-        repository: ConversationRepository for saving
-        raw_id: Optional raw conversation ID
-        cache: Optional PrepareCache for batch lookups (avoids per-conversation queries)
-
-    Returns:
-        Tuple of (conversation_id, result_counts, content_changed)
+    All IDs are freshly computed (no stable-ID reuse from the DB).
+    The returned TransformResult carries enough context for enrich_bundle_from_db
+    to apply DB-derived ID mappings and determine the change flag.
     """
-    if repository is None and backend is None:
-        raise ValueError("prepare_records requires a repository or backend")
-    if repository is None:
-        from polylogue.storage.repository import ConversationRepository
-
-        repository = ConversationRepository(backend=backend)
-    if backend is None:
-        backend = repository.backend
-
-    # Skip conversations with no messages — these are empty shells from
-    # parse filtering (e.g. JSONL files with only metadata records)
-    if not convo.messages:
-        cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
-        logger.debug("Skipping empty conversation (no messages)", conversation_id=cid)
-        return (
-            cid,
-            {"conversations": 0, "messages": 0, "attachments": 0,
-             "skipped_conversations": 1, "skipped_messages": 0, "skipped_attachments": 0},
-            False,
-        )
-
     content_hash = conversation_content_hash(convo)
     candidate_cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
-
-    # Look up existing conversation — use batch cache if available, else query DB
-    existing = None
-    if cache is not None:
-        existing = cache.existing.get(candidate_cid)
-    elif backend:
-        async with backend.connection() as conn:
-            cursor = await conn.execute(
-                """
-                SELECT conversation_id, content_hash
-                FROM conversations
-                WHERE conversation_id = ?
-                LIMIT 1
-                """,
-                (candidate_cid,),
-            )
-            row = await cursor.fetchone()
-        if row:
-            existing = ExistingConversation(conversation_id=row["conversation_id"], content_hash=row["content_hash"])
-
-    if existing:
-        cid: ConversationId = ConversationId(existing.conversation_id)
-        changed = existing.content_hash != content_hash
-    else:
-        cid = candidate_cid
-        changed = False
-
-    # Resolve parent conversation ID if present (provider ID → internal polylogue ID)
-    # Only set FK if the parent conversation already exists in the database,
-    # otherwise the FK constraint fails when child is parsed before parent.
-    parent_conversation_id = None
-    if convo.parent_conversation_provider_id:
-        candidate_parent = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
-        if cache is not None:
-            if candidate_parent in cache.known_ids:
-                parent_conversation_id = candidate_parent
-        elif backend:
-            async with backend.connection() as conn:
-                cursor = await conn.execute(
-                    "SELECT 1 FROM conversations WHERE conversation_id = ?",
-                    (candidate_parent,),
-                )
-                if await cursor.fetchone():
-                    parent_conversation_id = candidate_parent
 
     # Merge source into provider_meta rather than overwriting
     merged_provider_meta: dict[str, object] = {"source": source_name}
     if convo.provider_meta:
         merged_provider_meta.update(convo.provider_meta)
 
+    # Build placeholder conversation record; cid and parent_conversation_id are
+    # refined by enrich_bundle_from_db after DB lookups.
     conversation_record = ConversationRecord(
-        conversation_id=cid,
+        conversation_id=candidate_cid,
         provider_name=convo.provider_name,
         provider_conversation_id=convo.provider_conversation_id,
         title=convo.title,
@@ -274,50 +222,31 @@ async def prepare_records(
         sort_key=_timestamp_sort_key(convo.updated_at),
         content_hash=content_hash,
         provider_meta=merged_provider_meta,
-        parent_conversation_id=parent_conversation_id,
+        parent_conversation_id=None,
         branch_type=convo.branch_type,
-        raw_id=raw_id,
+        raw_id=None,
     )
+
+    # First pass: build complete message_ids mapping (needed for parent resolution)
+    message_id_map: dict[str, MessageId] = {}
+    for idx, msg in enumerate(convo.messages, start=1):
+        provider_message_id = msg.provider_message_id or f"msg-{idx}"
+        mid: MessageId = make_message_id(candidate_cid, provider_message_id)
+        message_id_map[str(provider_message_id)] = mid
 
     messages: list[MessageRecord] = []
     content_block_records: list[ContentBlockRecord] = []
-    message_ids: dict[str, MessageId] = {}
-
-    # Retrieve existing message ID mapping — use batch cache if available
-    existing_message_ids: dict[str, MessageId] = {}
-    if cache is not None:
-        existing_message_ids = cache.message_ids.get(cid, {})
-    elif backend:
-        async with backend.connection() as conn:
-            cursor = await conn.execute(
-                """
-                SELECT provider_message_id, message_id
-                FROM messages
-                WHERE conversation_id = ? AND provider_message_id IS NOT NULL
-                """,
-                (cid,),
-            )
-            rows = await cursor.fetchall()
-        existing_message_ids = {
-            str(row["provider_message_id"]): MessageId(row["message_id"]) for row in rows if row["provider_message_id"]
-        }
-
-    # First pass: build complete message_ids mapping (needed for parent resolution)
-    for idx, msg in enumerate(convo.messages, start=1):
-        provider_message_id = msg.provider_message_id or f"msg-{idx}"
-        mid: MessageId = existing_message_ids.get(provider_message_id) or make_message_id(cid, provider_message_id)
-        message_ids[str(provider_message_id)] = mid
 
     # Second pass: create MessageRecords with resolved parent IDs
     for idx, msg in enumerate(convo.messages, start=1):
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
-        mid = message_ids[str(provider_message_id)]
+        mid = message_id_map[str(provider_message_id)]
         message_hash = message_content_hash(msg, provider_message_id)
 
         # Resolve parent message ID if present
         parent_message_id: MessageId | None = None
         if msg.parent_message_provider_id:
-            parent_message_id = message_ids.get(str(msg.parent_message_provider_id))
+            parent_message_id = message_id_map.get(str(msg.parent_message_provider_id))
 
         # Precompute analytics fields from parsed content blocks
         _block_types = {blk.type for blk in msg.content_blocks}
@@ -328,7 +257,7 @@ async def prepare_records(
         messages.append(
             MessageRecord(
                 message_id=mid,
-                conversation_id=cid,
+                conversation_id=candidate_cid,
                 provider_message_id=provider_message_id,
                 role=msg.role,
                 text=msg.text,
@@ -379,7 +308,7 @@ async def prepare_records(
                 ContentBlockRecord(
                     block_id=ContentBlockRecord.make_id(mid, block_idx),
                     message_id=MessageId(mid),
-                    conversation_id=cid,
+                    conversation_id=candidate_cid,
                     block_index=block_idx,
                     type=block.type,
                     text=block.text,
@@ -396,7 +325,6 @@ async def prepare_records(
     materialization_plan = AttachmentMaterializationPlan()
     for att in convo.attachments:
         aid, updated_meta, updated_path = attachment_content_id(convo.provider_name, att, archive_root=archive_root)
-        # Merge updated metadata with provider_id if present
         meta: dict[str, object] = dict(updated_meta or {})
         if att.provider_attachment_id:
             meta.setdefault("provider_id", att.provider_attachment_id)
@@ -404,12 +332,12 @@ async def prepare_records(
         materialization_plan.move_before_save.extend(attachment_plan.move_before_save)
         materialization_plan.delete_after_save.extend(attachment_plan.delete_after_save)
         message_id_val: MessageId | None = (
-            message_ids.get(att.message_provider_id or "") if att.message_provider_id else None
+            message_id_map.get(att.message_provider_id or "") if att.message_provider_id else None
         )
         attachments.append(
             AttachmentRecord(
                 attachment_id=AttachmentId(aid),
-                conversation_id=cid,
+                conversation_id=candidate_cid,
                 message_id=message_id_val,
                 mime_type=att.mime_type,
                 size_bytes=att.size_bytes,
@@ -418,33 +346,263 @@ async def prepare_records(
             )
         )
 
+    bundle = RecordBundle(
+        conversation=conversation_record,
+        messages=messages,
+        attachments=attachments,
+        content_blocks=content_block_records,
+    )
+    return TransformResult(
+        bundle=bundle,
+        materialization_plan=materialization_plan,
+        content_hash=content_hash,
+        candidate_cid=candidate_cid,
+        message_id_map=message_id_map,
+    )
+
+
+def enrich_bundle_from_db(
+    convo: ParsedConversation,
+    source_name: str,
+    transform: TransformResult,
+    cache: PrepareCache,
+    *,
+    raw_id: str | None = None,
+) -> EnrichedBundle:
+    """Apply DB-derived lookups to a TransformResult, producing a save-ready EnrichedBundle.
+
+    Uses the pre-loaded PrepareCache — no writes, no async I/O.
+    Resolves: stable conversation/message IDs, parent FKs, change detection.
+    """
+    candidate_cid = transform.candidate_cid
+    content_hash = transform.content_hash
+
+    # Resolve conversation identity and change flag from cache
+    existing = cache.existing.get(candidate_cid)
+    if existing:
+        cid: ConversationId = ConversationId(existing.conversation_id)
+        changed = existing.content_hash != content_hash
+    else:
+        cid = candidate_cid
+        changed = False
+
+    # Resolve parent conversation ID FK
+    parent_conversation_id = None
+    if convo.parent_conversation_provider_id:
+        candidate_parent = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
+        if candidate_parent in cache.known_ids:
+            parent_conversation_id = candidate_parent
+
+    # Build stable message ID map (existing DB IDs take priority)
+    existing_message_ids = cache.message_ids.get(cid, {})
+    stable_message_id_map: dict[str, MessageId] = {}
+    for idx, msg in enumerate(convo.messages, start=1):
+        provider_message_id = msg.provider_message_id or f"msg-{idx}"
+        key = str(provider_message_id)
+        stable_message_id_map[key] = existing_message_ids.get(key) or transform.message_id_map[key]
+
+    # Patch the conversation record with enriched fields
+    merged_provider_meta: dict[str, object] = {"source": source_name}
+    if convo.provider_meta:
+        merged_provider_meta.update(convo.provider_meta)
+
+    conversation_record = ConversationRecord(
+        conversation_id=cid,
+        provider_name=convo.provider_name,
+        provider_conversation_id=convo.provider_conversation_id,
+        title=convo.title,
+        created_at=convo.created_at,
+        updated_at=convo.updated_at,
+        sort_key=_timestamp_sort_key(convo.updated_at),
+        content_hash=content_hash,
+        provider_meta=merged_provider_meta,
+        parent_conversation_id=parent_conversation_id,
+        branch_type=convo.branch_type,
+        raw_id=raw_id,
+    )
+
+    # Patch messages: stable IDs, corrected conversation_id and parent_message_id
+    patched_messages: list[MessageRecord] = []
+    for idx, (msg_rec, msg) in enumerate(zip(transform.bundle.messages, convo.messages, strict=True), start=1):
+        provider_message_id = msg.provider_message_id or f"msg-{idx}"
+        key = str(provider_message_id)
+        mid = stable_message_id_map[key]
+
+        parent_message_id: MessageId | None = None
+        if msg.parent_message_provider_id:
+            parent_message_id = stable_message_id_map.get(str(msg.parent_message_provider_id))
+
+        patched_messages.append(
+            MessageRecord(
+                message_id=mid,
+                conversation_id=cid,
+                provider_message_id=msg_rec.provider_message_id,
+                role=msg_rec.role,
+                text=msg_rec.text,
+                sort_key=msg_rec.sort_key,
+                content_hash=msg_rec.content_hash,
+                parent_message_id=parent_message_id,
+                branch_index=msg_rec.branch_index,
+                provider_name=msg_rec.provider_name,
+                word_count=msg_rec.word_count,
+                has_tool_use=msg_rec.has_tool_use,
+                has_thinking=msg_rec.has_thinking,
+            )
+        )
+
+    # Patch content blocks: stable message_id and conversation_id
+    patched_blocks: list[ContentBlockRecord] = []
+    for block_rec in transform.bundle.content_blocks:
+        # Find which message this block belongs to by block_index within conversation
+        # The block's message_id in the transform used candidate_cid; patch it to cid
+        # and remap through the stable message map.
+        # We identify the message by its provider_message_id via the message index.
+        # Since blocks were created in order with the same message_id from transform,
+        # we map old message_id → new stable message_id.
+        old_mid = block_rec.message_id
+        # Find provider_message_id for this message via transform map
+        # transform.message_id_map: provider_msg_id → old_mid
+        # Build reverse map once
+        # (built lazily below)
+        patched_blocks.append(block_rec)
+
+    # Build reverse map: old_mid → stable_mid
+    reverse_mid: dict[MessageId, MessageId] = {}
+    for idx, msg in enumerate(convo.messages, start=1):
+        provider_message_id = msg.provider_message_id or f"msg-{idx}"
+        key = str(provider_message_id)
+        old = transform.message_id_map[key]
+        new = stable_message_id_map[key]
+        reverse_mid[old] = new
+
+    patched_blocks = [
+        ContentBlockRecord(
+            block_id=ContentBlockRecord.make_id(reverse_mid.get(b.message_id, b.message_id), b.block_index),
+            message_id=reverse_mid.get(b.message_id, b.message_id),
+            conversation_id=cid,
+            block_index=b.block_index,
+            type=b.type,
+            text=b.text,
+            tool_name=b.tool_name,
+            tool_id=b.tool_id,
+            tool_input=b.tool_input,
+            media_type=b.media_type,
+            metadata=b.metadata,
+            semantic_type=b.semantic_type,
+        )
+        for b in transform.bundle.content_blocks
+    ]
+
+    # Patch attachments: stable cid and message_id
+    patched_attachments: list[AttachmentRecord] = []
+    for att_rec in transform.bundle.attachments:
+        att_message_id: MessageId | None = None
+        if att_rec.message_id is not None:
+            att_message_id = reverse_mid.get(att_rec.message_id, att_rec.message_id)
+        patched_attachments.append(
+            AttachmentRecord(
+                attachment_id=att_rec.attachment_id,
+                conversation_id=cid,
+                message_id=att_message_id,
+                mime_type=att_rec.mime_type,
+                size_bytes=att_rec.size_bytes,
+                path=att_rec.path,
+                provider_meta=att_rec.provider_meta,
+            )
+        )
+
+    enriched_bundle = RecordBundle(
+        conversation=conversation_record,
+        messages=patched_messages,
+        attachments=patched_attachments,
+        content_blocks=patched_blocks,
+    )
+    return EnrichedBundle(
+        bundle=enriched_bundle,
+        materialization_plan=transform.materialization_plan,
+        cid=cid,
+        changed=changed,
+    )
+
+
+async def prepare_records(
+    convo,
+    source_name: str,
+    *,
+    archive_root: Path,
+    backend: SQLiteBackend | None = None,
+    repository: ConversationRepository | None = None,
+    raw_id: str | None = None,
+    cache: PrepareCache | None = None,
+) -> tuple[str, dict[str, int], bool]:
+    """Convert a ParsedConversation to storage records and persist them.
+
+    Thin orchestration: delegates pure transformation to transform_to_records,
+    DB-dependent enrichment to enrich_bundle_from_db, then saves.
+
+    Args:
+        convo: ParsedConversation to prepare
+        source_name: Name of the source
+        archive_root: Root directory for archived conversations
+        backend: SQLiteBackend for database lookups
+        repository: ConversationRepository for saving
+        raw_id: Optional raw conversation ID
+        cache: Optional PrepareCache for batch lookups (avoids per-conversation queries)
+
+    Returns:
+        Tuple of (conversation_id, result_counts, content_changed)
+    """
+    if repository is None and backend is None:
+        raise ValueError("prepare_records requires a repository or backend")
+    if repository is None:
+        from polylogue.storage.repository import ConversationRepository
+
+        repository = ConversationRepository(backend=backend)
+    if backend is None:
+        backend = repository.backend
+
+    # Skip conversations with no messages — these are empty shells from
+    # parse filtering (e.g. JSONL files with only metadata records)
+    if not convo.messages:
+        cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
+        logger.debug("Skipping empty conversation (no messages)", conversation_id=cid)
+        return (
+            cid,
+            {"conversations": 0, "messages": 0, "attachments": 0,
+             "skipped_conversations": 1, "skipped_messages": 0, "skipped_attachments": 0},
+            False,
+        )
+
+    # Pure transform — no DB
+    transform = transform_to_records(convo, source_name, archive_root=archive_root)
+
+    # Build or supplement the cache for single-conversation use (no cache provided)
+    if cache is None:
+        cache = await _build_single_cache(backend, convo, transform.candidate_cid, transform.candidate_cid)
+
+    # DB-enriched bundle — no writes
+    enriched = enrich_bundle_from_db(convo, source_name, transform, cache, raw_id=raw_id)
+
+    # Execute filesystem moves and save to DB
     applied_moves: list[tuple[Path, Path]] = []
     try:
-        for source_path, target_path in materialization_plan.move_before_save:
+        for source_path, target_path in enriched.materialization_plan.move_before_save:
             materialize_attachment_path(source_path, target_path)
             applied_moves.append((source_path, target_path))
 
-        result = await save_bundle(
-            RecordBundle(
-                conversation=conversation_record,
-                messages=messages,
-                attachments=attachments,
-                content_blocks=content_block_records,
-            ),
-            repository=repository,
-        )
+        result = await save_bundle(enriched.bundle, repository=repository)
     except Exception:
         for source_path, target_path in reversed(applied_moves):
             if target_path.exists():
                 move_attachment_to_archive(target_path, source_path)
         raise
 
-    for duplicate_source in materialization_plan.delete_after_save:
+    for duplicate_source in enriched.materialization_plan.delete_after_save:
         if duplicate_source.exists():
             duplicate_source.unlink()
 
     return (
-        cid,
+        enriched.cid,
         {
             "conversations": result.conversations,
             "messages": result.messages,
@@ -453,12 +611,67 @@ async def prepare_records(
             "skipped_messages": result.skipped_messages,
             "skipped_attachments": result.skipped_attachments,
         },
-        changed,
+        enriched.changed,
     )
+
+
+async def _build_single_cache(
+    backend: SQLiteBackend,
+    convo,
+    candidate_cid: ConversationId,
+    _unused: ConversationId,
+) -> PrepareCache:
+    """Build a PrepareCache for a single conversation without a pre-loaded batch cache."""
+    cache = PrepareCache()
+
+    async with backend.connection() as conn:
+        cursor = await conn.execute(
+            "SELECT conversation_id, content_hash FROM conversations WHERE conversation_id = ? LIMIT 1",
+            (candidate_cid,),
+        )
+        row = await cursor.fetchone()
+    if row:
+        cid = row["conversation_id"]
+        cache.existing[cid] = ExistingConversation(conversation_id=cid, content_hash=row["content_hash"])
+        cache.known_ids.add(cid)
+
+    if convo.parent_conversation_provider_id:
+        from polylogue.pipeline.ids import conversation_id as make_conv_id
+
+        candidate_parent = make_conv_id(convo.provider_name, convo.parent_conversation_provider_id)
+        async with backend.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                (candidate_parent,),
+            )
+            if await cursor.fetchone():
+                cache.known_ids.add(candidate_parent)
+
+    # Retrieve existing message IDs for this conversation
+    existing_cid = candidate_cid if candidate_cid in cache.known_ids else None
+    if existing_cid:
+        async with backend.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT provider_message_id, message_id FROM messages "
+                "WHERE conversation_id = ? AND provider_message_id IS NOT NULL",
+                (existing_cid,),
+            )
+            rows = await cursor.fetchall()
+        cache.message_ids[existing_cid] = {
+            str(r["provider_message_id"]): MessageId(r["message_id"])
+            for r in rows
+            if r["provider_message_id"]
+        }
+
+    return cache
 
 
 __all__ = [
     "PrepareCache",
+    "TransformResult",
+    "EnrichedBundle",
     "_timestamp_sort_key",
+    "transform_to_records",
+    "enrich_bundle_from_db",
     "prepare_records",
 ]

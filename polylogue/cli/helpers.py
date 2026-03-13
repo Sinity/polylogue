@@ -12,8 +12,8 @@ from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.health import cached_health_summary, get_health
-from polylogue.lib.log import get_logger
-from polylogue.lib.theme import provider_color
+from polylogue.logging import get_logger
+from polylogue.ui.theme import provider_color
 from polylogue.pipeline.runner import latest_run
 
 logger = get_logger(__name__)

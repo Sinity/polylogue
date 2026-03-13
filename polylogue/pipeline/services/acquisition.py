@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.provider_identity import canonical_runtime_provider
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.parsers.base import RawConversationData

@@ -7,7 +7,7 @@ from pathlib import Path
 import click
 
 from polylogue.cli.types import AppEnv
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.sources.drive_auth import DriveAuthManager
 
 logger = get_logger(__name__)

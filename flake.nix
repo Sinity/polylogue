@@ -20,8 +20,9 @@
         };
         python = pkgs.python313;
 
-        # Build polylogue package
-        polylogue = pkgs.python313Packages.buildPythonApplication {
+        # Build polylogue package as an importable library that also exposes the
+        # project console script from pyproject entry points.
+        polylogue = pkgs.python313Packages.buildPythonPackage {
           pname = "polylogue";
           version = "0.1.0";
           pyproject = true;
@@ -66,10 +67,19 @@
 
           # Skip tests in build (run in checks instead)
           doCheck = false;
+          pythonImportsCheck = [ "polylogue" ];
+          dontCheckRuntimeDeps = true;
+
+          meta = {
+            description = "Polylogue archive Python package and CLI";
+            mainProgram = "polylogue";
+          };
         };
+        polylogueApiPython = python.withPackages (_: [ polylogue ]);
       in
       {
         packages.default = polylogue;
+        packages.api-python = polylogueApiPython;
 
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [

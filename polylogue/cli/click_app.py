@@ -24,7 +24,7 @@ from polylogue.cli.commands.site import site_command
 from polylogue.cli.commands.tags import tags_command
 from polylogue.cli.formatting import announce_plain_mode, plain_forced_by_env, should_use_plain
 from polylogue.cli.types import AppEnv
-from polylogue.lib.log import configure_logging
+from polylogue.logging import configure_logging
 from polylogue.ui import create_ui
 from polylogue.version import POLYLOGUE_VERSION
 
