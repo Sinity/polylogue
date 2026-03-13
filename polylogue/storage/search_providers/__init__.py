@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.hybrid import (
     HybridSearchProvider,

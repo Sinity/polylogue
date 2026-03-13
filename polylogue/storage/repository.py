@@ -3,7 +3,7 @@
 Provides async/await interface for storing and retrieving conversations.
 Wraps SQLiteBackend for parallel operations.
 
-All methods are async and use eager loading (Conversation.from_records)
+All methods are async and use eager loading (conversation_from_records)
 instead of lazy loading, since async I/O already enables efficient parallel
 fetching of conversations, messages, and attachments together.
 """
@@ -15,9 +15,14 @@ import builtins
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.hydrators import (
+    conversation_from_records,
+    conversation_summary_from_record,
+    message_from_record,
+)
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
@@ -45,7 +50,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
     Wraps SQLiteBackend to provide high-level async storage interface with
     full feature parity to sync ConversationRepository.
 
-    All methods are async. Eager loading (Conversation.from_records) is used
+    All methods are async. Eager loading (conversation_from_records) is used
     for fetching conversations, enabling efficient parallel I/O via asyncio.gather()
     for conversations, messages, and attachments.
 
@@ -163,7 +168,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             self._backend.get_attachments(conversation_id),
         )
 
-        return Conversation.from_records(conv_record, msg_records, att_records)
+        return conversation_from_records(conv_record, msg_records, att_records)
 
     async def get_render_projection(self, conversation_id: str) -> ConversationRenderProjection | None:
         """Fetch repository-owned render projection with raw attachment layout preserved."""
@@ -240,7 +245,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             self._backend.get_attachments_batch(present_ids),
         )
         return [
-            Conversation.from_records(
+            conversation_from_records(
                 by_id[conversation_id],
                 msgs_by_id.get(conversation_id, []),
                 atts_by_id.get(conversation_id, []),
@@ -271,7 +276,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         conv_record = await self._backend.get_conversation(conversation_id)
         if not conv_record:
             return None
-        return ConversationSummary.from_record(conv_record)
+        return conversation_summary_from_record(conv_record)
 
     async def list_summaries(
         self,
@@ -335,7 +340,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
                 has_subagent=has_subagent,
             ),
         )
-        return [ConversationSummary.from_record(rec) for rec in conv_records]
+        return [conversation_summary_from_record(rec) for rec in conv_records]
 
     async def iter_summary_pages(
         self,
@@ -633,7 +638,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         ids, records = await self._search_records(query, limit=limit, providers=providers)
         if not ids:
             return []
-        return [ConversationSummary.from_record(rec) for rec in records]
+        return [conversation_summary_from_record(rec) for rec in records]
 
     async def search(
         self,
@@ -707,6 +712,10 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         """Get message counts for multiple conversations."""
         return await self._backend.get_message_counts_batch(conversation_ids)
 
+    async def get_messages(self, conversation_id: str) -> builtins.list[MessageRecord]:
+        """Get raw message records for a conversation."""
+        return await self._backend.get_messages(conversation_id)
+
     async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
         """Get conversation counts grouped by provider, month, or year."""
         return await self._backend.get_stats_by(group_by)
@@ -737,7 +746,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             dialogue_only=dialogue_only,
             limit=limit,
         ):
-            yield Message.from_record(record, attachments=[], provider=provider_name)
+            yield message_from_record(record, attachments=[], provider=provider_name)
 
     async def search_similar(
         self,
@@ -990,6 +999,10 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         """
         await self._backend.record_run(record)
 
+    async def reset_parse_status(self, *, provider: str | None = None) -> int:
+        """Reset parse tracking for raw conversations, returning the count reset."""
+        return await self._backend.reset_parse_status(provider=provider)
+
     # --- Metadata CRUD ---
 
     async def get_metadata(self, conversation_id: str) -> dict[str, object]:
@@ -1214,7 +1227,7 @@ def _records_to_conversation(
 
     Used by facades and internal migration tools.
     """
-    return Conversation.from_records(conversation, messages, attachments)
+    return conversation_from_records(conversation, messages, attachments)
 
 
 def _provider_conversation_id(conversation_id: str, provider: str | None) -> str:

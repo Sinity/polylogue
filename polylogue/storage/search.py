@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from polylogue.errors import DatabaseError
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.paths import conversation_render_root
 
 from .backends.connection import _build_source_scope_filter, open_connection
