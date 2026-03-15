@@ -1,0 +1,27 @@
+Usage: cli run [OPTIONS]
+
+  Run pipeline stages on configured sources.
+
+Options:
+  --preview                       Preview work without writing
+  --stage [acquire|validate|parse|render|index|generate-schemas|all]
+                                  Pipeline stage: acquire (store raw), validate
+                                  (schema check raw payloads), parse (extract
+                                  conversations), render (output), index
+                                  (search), generate-schemas, or all  [default:
+                                  all]
+  --source TEXT                   Limit to source name (repeatable). 'last' =
+                                  previously synced source. List with: polylogue
+                                  sources
+  --format [markdown|html]        Output format for rendering (markdown or html)
+                                  [default: html]
+  --watch                         Watch sources for changes and run continuously
+  --notify                        Desktop notification on new conversations
+                                  (requires --watch)
+  --exec TEXT                     Execute command on new conversations (requires
+                                  --watch)
+  --webhook TEXT                  Call webhook URL on new conversations
+                                  (requires --watch)
+  --reparse                       Force re-parsing of all raw conversations
+                                  (clears parse tracking)
+  -h, --help                      Show this message and exit.

@@ -1,0 +1,31 @@
+{
+  "status": "ok",
+  "result": {
+    "sources": [
+      {
+        "name": "inbox",
+        "path": "/home/sinity/.local/share/polylogue/inbox",
+        "folder": null,
+        "kind": "path"
+      },
+      {
+        "name": "claude-code",
+        "path": "/home/sinity/.claude/projects",
+        "folder": null,
+        "kind": "path"
+      },
+      {
+        "name": "codex",
+        "path": "/home/sinity/.codex/sessions",
+        "folder": null,
+        "kind": "path"
+      },
+      {
+        "name": "gemini",
+        "path": "/home/sinity/.local/share/polylogue/drive-cache/gemini",
+        "folder": "Google AI Studio",
+        "kind": "drive"
+      }
+    ]
+  }
+}
