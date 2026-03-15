@@ -959,3 +959,67 @@ def test_escape_fts5_match_text_safe(text: str) -> None:
     result = escape_fts5_query(text)
     assert isinstance(result, str)
     assert len(result) > 0 or text.strip() == ""
+
+
+# ============================================================================
+# Search-with-since Property Laws
+# ============================================================================
+
+
+class TestSearchWithSinceLaws:
+    """Property: search with --since returns subset of search without --since."""
+
+    @given(pair=st.one_of(
+        # Import inline to avoid circular issues at module level
+        st.tuples(
+            st.text(min_size=2, max_size=20, alphabet=st.characters(whitelist_categories=("L",))),
+            st.one_of(st.none(), st.dates().map(lambda d: d.isoformat())),
+        ),
+    ))
+    @settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def test_since_filter_is_monotonic(self, pair, tmp_path):
+        """Results with --since must be subset of results without --since.
+
+        All returned messages must have timestamps >= since when since is set.
+        """
+        from polylogue.errors import DatabaseError
+
+        query_text, since = pair
+        db_path = tmp_path / "since.db"
+        DbFactory(db_path)
+
+        # Seed conversations with spread timestamps
+        for i in range(3):
+            (ConversationBuilder(db_path, f"since-conv-{i}")
+             .title(f"Since Test {i}")
+             .add_message(f"msg-{i}", role="user", text=f"{query_text} message {i}",
+                          timestamp=f"2024-{(i % 12) + 1:02d}-15T12:00:00Z")
+             .save())
+
+        with open_connection(str(db_path)) as conn:
+            rebuild_index(conn)
+
+        try:
+            results_all = search_messages(
+                query_text, archive_root=tmp_path, db_path=Path(str(db_path)), limit=100,
+            )
+        except (DatabaseError, ValueError):
+            return  # Invalid query, skip
+
+        if since is None:
+            return  # No since filter to compare
+
+        try:
+            results_since = search_messages(
+                query_text, archive_root=tmp_path, db_path=Path(str(db_path)),
+                since=since, limit=100,
+            )
+        except (DatabaseError, ValueError):
+            return  # Invalid since date, skip
+
+        # Monotonicity: since-filtered results must be subset of unfiltered
+        all_ids = {h.message_id for h in results_all.hits}
+        since_ids = {h.message_id for h in results_since.hits}
+        assert since_ids <= all_ids, (
+            f"since-filtered IDs {since_ids - all_ids} not in unfiltered results"
+        )

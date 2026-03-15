@@ -31,6 +31,12 @@ def filter_type_strategy(draw: st.DrawFn) -> str:
         "has_attachments",
         "min_words",
         "max_words",
+        "has_tool_use",
+        "has_thinking",
+        "min_messages",
+        "max_messages",
+        "tag",
+        "exclude_tag",
     ]))
 
 
@@ -117,6 +123,65 @@ def word_count_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 # =============================================================================
+# Analytics & Tag Filter Strategies
+# =============================================================================
+
+
+def has_tool_use_filter_arg_strategy() -> st.SearchStrategy[dict[str, Any]]:
+    """Generate arguments for has_tool_use filter."""
+    return st.just({"type": "has_tool_use"})
+
+
+def has_thinking_filter_arg_strategy() -> st.SearchStrategy[dict[str, Any]]:
+    """Generate arguments for has_thinking filter."""
+    return st.just({"type": "has_thinking"})
+
+
+@st.composite
+def min_messages_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+    """Generate arguments for min_messages filter."""
+    return {
+        "type": "min_messages",
+        "value": draw(st.integers(min_value=1, max_value=100)),
+    }
+
+
+@st.composite
+def max_messages_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+    """Generate arguments for max_messages filter."""
+    return {
+        "type": "max_messages",
+        "value": draw(st.integers(min_value=1, max_value=500)),
+    }
+
+
+@st.composite
+def tag_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+    """Generate arguments for tag filter."""
+    return {
+        "type": "tag",
+        "value": draw(st.text(
+            min_size=1,
+            max_size=20,
+            alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="-_"),
+        )),
+    }
+
+
+@st.composite
+def exclude_tag_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
+    """Generate arguments for exclude_tag filter."""
+    return {
+        "type": "exclude_tag",
+        "value": draw(st.text(
+            min_size=1,
+            max_size=20,
+            alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="-_"),
+        )),
+    }
+
+
+# =============================================================================
 # Composite Filter Strategies
 # =============================================================================
 
@@ -133,6 +198,12 @@ def filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
         sort_filter_arg_strategy(),
         role_filter_arg_strategy(),
         word_count_filter_arg_strategy(),
+        has_tool_use_filter_arg_strategy(),
+        has_thinking_filter_arg_strategy(),
+        min_messages_filter_arg_strategy(),
+        max_messages_filter_arg_strategy(),
+        tag_filter_arg_strategy(),
+        exclude_tag_filter_arg_strategy(),
     ))
 
 
