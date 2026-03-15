@@ -104,17 +104,6 @@ def chatgpt_message_node_strategy(
 
 
 @st.composite
-def claude_ai_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
-    """Generate a single Claude AI chat_messages entry."""
-    export = draw(claude_ai_export_strategy(min_messages=2, max_messages=6))
-    messages = export.get("chat_messages", [])
-    if not messages:
-        return {"uuid": "fallback", "sender": "human", "text": "test"}
-    idx = draw(st.integers(min_value=0, max_value=len(messages) - 1))
-    return messages[idx]
-
-
-@st.composite
 def claude_ai_export_strategy(
     draw: st.DrawFn,
     min_messages: int = 1,

@@ -1,15 +1,18 @@
-"""Tests for configuration classes.
+"""Tests for configuration classes and logging infrastructure.
 
-Consolidated from test_config.py.
+Consolidated from test_config.py and test_logging.py.
 """
 
 from __future__ import annotations
 
+import sys
+from io import StringIO
 from pathlib import Path
 
 import pytest
 
 from polylogue.config import Config, ConfigError
+from polylogue.logging import _StderrProxy, configure_logging, get_logger
 from polylogue.paths import DriveConfig, IndexConfig, Source
 
 
@@ -214,3 +217,80 @@ class TestXDGPaths:
 
         assert "polylogue" in str(polylogue.paths.db_path())
         assert polylogue.paths.db_path().name == "polylogue.db"
+
+
+# =============================================================================
+# Merged from test_logging.py (2024-03-15)
+# =============================================================================
+
+
+# =============================================================================
+# Runtime Services Tests (relocated from test_json.py)
+# =============================================================================
+
+
+class TestRuntimeServices:
+    def test_repository_is_cached_per_runtime_scope(self, workspace_env):
+        from polylogue.services import build_runtime_services
+
+        services = build_runtime_services()
+        repo1 = services.get_repository()
+        repo2 = services.get_repository()
+        assert repo1 is repo2
+
+    def test_backend_is_cached_per_runtime_scope(self, workspace_env):
+        from polylogue.services import build_runtime_services
+
+        services = build_runtime_services()
+        backend1 = services.get_backend()
+        backend2 = services.get_backend()
+        assert backend1 is backend2
+
+    def test_repository_uses_runtime_backend(self, workspace_env):
+        from polylogue.services import build_runtime_services
+
+        services = build_runtime_services()
+        repo = services.get_repository()
+        assert repo.backend is services.get_backend()
+
+    def test_distinct_runtime_scopes_do_not_share_instances(self, workspace_env):
+        from polylogue.services import build_runtime_services
+
+        services1 = build_runtime_services()
+        services2 = build_runtime_services()
+        assert services1.get_repository() is not services2.get_repository()
+        assert services1.get_backend() is not services2.get_backend()
+
+
+# =============================================================================
+# Merged from test_logging.py (2024-03-15)
+# =============================================================================
+
+
+def test_configure_logging_accepts_verbose_mode() -> None:
+    configure_logging(verbose=True, json_logs=False)
+
+
+def test_configure_logging_accepts_json_mode() -> None:
+    configure_logging(verbose=False, json_logs=True)
+
+
+def test_get_logger_returns_structlog_logger() -> None:
+    assert get_logger("test.module") is not None
+
+
+def test_stderr_proxy_write_delegates_to_current_stderr() -> None:
+    proxy = _StderrProxy()
+    original_stderr = sys.stderr
+    try:
+        sys.stderr = StringIO()
+        proxy.write("test message")
+        assert sys.stderr.getvalue() == "test message"
+    finally:
+        sys.stderr = original_stderr
+
+
+def test_stderr_proxy_exposes_terminal_capabilities() -> None:
+    proxy = _StderrProxy()
+    assert isinstance(proxy.isatty(), bool)
+    assert isinstance(proxy.fileno(), int)
