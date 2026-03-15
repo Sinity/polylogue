@@ -13,7 +13,6 @@ import copy
 import gzip
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -153,18 +152,27 @@ class TestWireFormatFallback:
     """Verify wire-format fixups produce parseable output without annotations."""
 
     @pytest.mark.parametrize("provider", SyntheticCorpus.available_providers())
-    def test_generation_without_annotations_still_parses(self, provider: str, synthetic_source) -> None:
+    def test_generation_without_annotations_still_parses(self, provider: str, tmp_path: Path) -> None:
         """Stripping semantic annotations from schema still produces parseable output."""
+        from polylogue.paths import Source
         from polylogue.sources import iter_source_conversations
 
-        # Generate with a corpus that has annotations stripped
+        # Build corpus with annotations stripped
         corpus = SyntheticCorpus.for_provider(provider)
         stripped = copy.deepcopy(corpus.schema)
         _strip_semantic_roles(stripped)
         corpus.schema = stripped
 
-        # Write to temp files and parse through the full pipeline
-        source = synthetic_source(provider, count=2, seed=77)
+        # Generate data using the stripped corpus directly
+        ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
+        raw_items = corpus.generate(count=2, seed=77, messages_per_conversation=range(4, 12))
+
+        provider_dir = tmp_path / "synthetic" / provider
+        provider_dir.mkdir(parents=True, exist_ok=True)
+        for idx, raw_bytes in enumerate(raw_items):
+            (provider_dir / f"synth-{idx:02d}{ext}").write_bytes(raw_bytes)
+
+        source = Source(name=f"{provider}-test", path=provider_dir / f"synth-00{ext}")
         convos = list(iter_source_conversations(source))
         assert convos, f"No conversations parsed without annotations for {provider}"
 

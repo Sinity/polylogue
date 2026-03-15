@@ -11,9 +11,7 @@ against stored baselines to detect unintentional CLI changes.
 from __future__ import annotations
 
 import difflib
-import json
 import sys
-import tempfile
 from pathlib import Path
 
 from polylogue.showcase.exercises import EXERCISES, Exercise
@@ -25,9 +23,23 @@ BASELINE_DIR = Path(__file__).resolve().parent.parent / "tests" / "baselines" / 
 TIER_0_GROUPS = frozenset({"structural", "sources"})
 
 
+# Exercises whose output depends on runtime environment (absolute paths, git
+# SHAs, etc.) and therefore cannot be compared against committed baselines.
+_ENV_DEPENDENT: frozenset[str] = frozenset({"sources-list", "sources-json", "version"})
+
+
 def get_tier_0_exercises() -> list[Exercise]:
-    """Return all tier-0 exercises (structural + sources, no data needed)."""
-    return [ex for ex in EXERCISES if ex.group in TIER_0_GROUPS and not ex.needs_data]
+    """Return all tier-0 exercises (structural + sources, no data needed).
+
+    Excludes exercises whose output depends on the runtime environment
+    (machine-specific paths, git SHAs) — they cannot have stable baselines.
+    """
+    return [
+        ex for ex in EXERCISES
+        if ex.group in TIER_0_GROUPS
+        and not ex.needs_data
+        and ex.name not in _ENV_DEPENDENT
+    ]
 
 
 def run_tier_0() -> dict[str, str]:

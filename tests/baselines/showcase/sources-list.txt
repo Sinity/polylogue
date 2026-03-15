@@ -1,5 +1,0 @@
--- Sources --
-inbox: /home/sinity/.local/share/polylogue/inbox
-claude-code: /home/sinity/.claude/projects
-codex: /home/sinity/.codex/sessions
-gemini: drive folder 'Google AI Studio'
