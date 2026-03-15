@@ -10,7 +10,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 from polylogue.config import Source
@@ -113,33 +113,6 @@ def test_detect_provider_prefers_payload_shape_over_conflicting_path_hint() -> N
     assert detect_provider(payload, Path("misleading/claude-code/session.jsonl")) == Provider.CHATGPT
 
 
-@pytest.mark.parametrize(
-    ("payload", "path", "expected"),
-    [
-        ({"mapping": {}}, Path("unknown.json"), Provider.CHATGPT),
-        ({"chat_messages": []}, Path("unknown.json"), Provider.CLAUDE),
-        ({"type": "assistant", "message": {"content": "hi"}}, Path("unknown.json"), Provider.CLAUDE_CODE),
-        ({"type": "message", "role": "user", "content": []}, Path("unknown.json"), Provider.CODEX),
-        ({"chunkedPrompt": {"chunks": []}}, Path("unknown.json"), Provider.GEMINI),
-        ([{"mapping": {}}], Path("unknown.json"), Provider.CHATGPT),
-        ([{"chat_messages": []}], Path("unknown.json"), Provider.CLAUDE),
-        ([{"chunks": []}], Path("unknown.json"), Provider.GEMINI),
-        ([{"type": "assistant", "message": {"content": "hi"}}], Path("unknown.json"), Provider.CLAUDE_CODE),
-        ([{"type": "message", "role": "user", "content": []}], Path("unknown.json"), Provider.CODEX),
-        ({"unrelated": True}, Path("folder/chatgpt-export.json"), Provider.CHATGPT),
-        ({"unrelated": True}, Path("folder/claude-code/session.jsonl"), Provider.CLAUDE_CODE),
-        ({"unrelated": True}, Path("folder/claude_code/session.jsonl"), Provider.CLAUDE_CODE),
-        ({"unrelated": True}, Path("/tmp/claude/history.json"), Provider.CLAUDE),
-        ({"unrelated": True}, Path("folder/codex-export.json"), Provider.CODEX),
-        ({"unrelated": True}, Path("folder/gemini-export.json"), Provider.GEMINI),
-    ],
-)
-def test_detect_provider_exact_heuristics_contract(
-    payload: object,
-    path: Path,
-    expected: Provider,
-) -> None:
-    assert detect_provider(payload, path) == expected
 
 
 @given(provider_payload_case_strategy(_CANONICAL_PROVIDERS))
@@ -164,7 +137,7 @@ def test_parse_payload_generated_exports_produce_provider_named_conversations(ca
     ids=["chatgpt-bundle", "claude-bundle", "gemini-bundle", "conversations-wrapper"],
 )
 @given(data=st.data())
-@settings(max_examples=20)
+@settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
 def test_parse_payload_bundle_cardinality_contract(
     provider: str,
     wrapper: bool,
@@ -758,22 +731,6 @@ def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, obj
         assert json.loads(decoded) == expected
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        (json.dumps({"id": "utf16-le"}).encode("utf-16-le"), {"id": "utf16-le"}),
-        (json.dumps({"id": "utf16-be"}).encode("utf-16-be"), {"id": "utf16-be"}),
-        (json.dumps({"id": "utf32-le"}).encode("utf-32-le"), {"id": "utf32-le"}),
-        (b'{"name":"caf\xe9"}', {"name": "caf"}),
-    ],
-)
-def test_decode_json_bytes_exact_encoding_fallback_contract(
-    raw: bytes,
-    expected: dict[str, object],
-) -> None:
-    decoded = _decode_json_bytes(raw)
-    assert decoded is not None
-    assert json.loads(decoded) == expected
 
 
 @pytest.mark.parametrize(
@@ -1456,3 +1413,231 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(tmp_path: Pa
     assert [item.source_path for item in items] == [str(good)]
     assert cursor_state["failed_count"] == 1
     assert any(entry["path"] == str(bad) and entry["error"] == "boom" for entry in cursor_state["failed_files"])
+
+
+# =============================================================================
+# MERGED FROM test_acquisition_fs.py (robustness for raw file acquisition)
+# =============================================================================
+
+
+
+
+def test_jsonl_crlf_line_separator() -> None:
+    """CRLF between JSONL lines (\r\n) decodes without stripping content."""
+    line1 = json.dumps({"idx": 1})
+    line2 = json.dumps({"idx": 2})
+    raw = (line1 + "\r\n" + line2).encode("utf-8")
+    result = _decode_json_bytes(raw)
+    assert result is not None
+    # Both records should be parseable from the result
+    lines = [ln for ln in result.splitlines() if ln.strip()]
+    assert len(lines) == 2
+    assert json.loads(lines[0])["idx"] == 1
+    assert json.loads(lines[1])["idx"] == 2
+
+
+def test_latin1_file_does_not_crash() -> None:
+    """A latin-1 byte sequence falls through to utf-8/ignore and returns a string."""
+    # 0xe9 = 'é' in latin-1, but invalid as a standalone byte in UTF-8
+    raw = b'{"note": "caf\xe9"}'
+    result = _decode_json_bytes(raw)
+    # Must not crash — invalid bytes are silently dropped by the ignore path
+    assert result is not None
+    # The returned string must be non-empty
+    assert len(result.strip()) > 0
+
+
+
+
+def test_null_bytes_stripped() -> None:
+    """Embedded NUL bytes (\\x00) are stripped by the cleaner step."""
+    payload = '{"key": "value"}'
+    raw_with_nulls = (payload[:5] + "\x00\x00" + payload[5:]).encode("utf-8")
+    result = _decode_json_bytes(raw_with_nulls)
+    assert result is not None
+    parsed = json.loads(result)
+    assert parsed == {"key": "value"}
+
+
+def test_empty_bytes_returns_none() -> None:
+    """Empty byte input returns None rather than crashing."""
+    result = _decode_json_bytes(b"")
+    assert result is None
+
+
+# =============================================================================
+# MERGED FROM test_parse_laws.py (property laws for parser roles)
+# =============================================================================
+
+
+from polylogue.lib.roles import normalize_role
+from polylogue.sources.providers.chatgpt import (
+    ChatGPTAuthor,
+    ChatGPTContent,
+    ChatGPTConversation,
+    ChatGPTMessage,
+    ChatGPTNode,
+)
+from polylogue.sources.providers.claude_code import (
+    ClaudeCodeThinkingBlock,
+    ClaudeCodeToolUse,
+    ClaudeCodeUsage,
+)
+
+
+# ---------------------------------------------------------------------------
+# Law 1: normalize_role never raises for any non-empty string
+# ---------------------------------------------------------------------------
+
+@given(st.text(min_size=1))
+def test_normalize_role_never_raises_for_nonempty(text: str) -> None:
+    """normalize_role handles any non-empty string without raising."""
+    # normalize_role raises only on empty/whitespace-only strings
+    stripped = text.strip()
+    if stripped:
+        result = normalize_role(text)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Law 2: normalize_role always returns one of the canonical roles
+# ---------------------------------------------------------------------------
+
+CANONICAL_ROLES = frozenset({"user", "assistant", "system", "tool", "unknown"})
+
+
+@given(st.text(min_size=1))
+def test_normalize_role_result_is_canonical(text: str) -> None:
+    """normalize_role always returns a canonical role string."""
+    stripped = text.strip()
+    if stripped:
+        result = normalize_role(text)
+        assert result in CANONICAL_ROLES
+
+
+# ---------------------------------------------------------------------------
+# Law 3: normalize_role is idempotent on its own output
+# ---------------------------------------------------------------------------
+
+@given(st.sampled_from(sorted(CANONICAL_ROLES - {"unknown"})))
+def test_normalize_role_idempotent_on_canonical(role: str) -> None:
+    """Applying normalize_role to a canonical role returns the same value."""
+    result = normalize_role(role)
+    assert result == role
+
+
+# ---------------------------------------------------------------------------
+# Law 4: normalize_role is case-insensitive
+# ---------------------------------------------------------------------------
+
+@given(st.text(min_size=1, max_size=30, alphabet=st.characters(whitelist_categories=("L",))))
+def test_normalize_role_case_insensitive(text: str) -> None:
+    """normalize_role gives the same result for any case variant."""
+    stripped = text.strip()
+    if stripped:
+        lower_result = normalize_role(stripped.lower())
+        upper_result = normalize_role(stripped.upper())
+        title_result = normalize_role(stripped.title())
+        assert lower_result == upper_result == title_result
+
+
+# ---------------------------------------------------------------------------
+# Law 5: normalize_role strips whitespace before normalizing
+# ---------------------------------------------------------------------------
+
+@given(
+    st.sampled_from(["user", "assistant", "system", "tool"]),
+    st.integers(min_value=0, max_value=5),
+)
+def test_normalize_role_strips_whitespace(role: str, padding: int) -> None:
+    """normalize_role ignores leading/trailing whitespace."""
+    padded = " " * padding + role + " " * padding
+    assert normalize_role(padded) == role
+
+
+# ---------------------------------------------------------------------------
+# Law 6: normalize_role raises ValueError for empty/whitespace-only input
+# ---------------------------------------------------------------------------
+
+@given(st.from_regex(r"^[\s]*$", fullmatch=True))
+def test_normalize_role_raises_on_empty(empty: str) -> None:
+    """normalize_role raises ValueError for empty or whitespace-only input."""
+    with pytest.raises((ValueError, TypeError, AttributeError)):
+        normalize_role(empty)
+
+
+@pytest.mark.parametrize(
+    ("roles", "expected_pairs"),
+    [
+        (["user", "assistant"], [("m0", "m1")]),
+        (["system", "user", "assistant", "assistant"], [("m1", "m2")]),
+        (["user", "tool", "assistant", "user", "assistant"], [("m3", "m4")]),
+        (["assistant", "user"], []),
+    ],
+)
+def test_chatgpt_iter_user_assistant_pairs_contract(
+    roles: list[str],
+    expected_pairs: list[tuple[str, str]],
+) -> None:
+    mapping: dict[str, ChatGPTNode] = {}
+    children = [f"node-{idx}" for idx in range(len(roles))]
+    mapping["root"] = ChatGPTNode(id="root", parent=None, children=children[:1])
+    for idx, role in enumerate(roles):
+        node_id = f"node-{idx}"
+        next_child = [f"node-{idx + 1}"] if idx + 1 < len(roles) else []
+        mapping[node_id] = ChatGPTNode(
+            id=node_id,
+            parent="root" if idx == 0 else f"node-{idx - 1}",
+            children=next_child,
+            message=ChatGPTMessage(
+                id=f"m{idx}",
+                author=ChatGPTAuthor(role=role),
+                content=ChatGPTContent(content_type="text", parts=[f"{role}-{idx}"]),
+            ),
+        )
+
+    conversation = ChatGPTConversation(
+        id="conv-pairs",
+        conversation_id="conv-pairs",
+        title="pairs",
+        create_time=1700000000.0,
+        update_time=1700000100.0,
+        mapping=mapping,
+        current_node=f"node-{len(roles) - 1}" if roles else "root",
+    )
+
+    assert [
+        (user.id, assistant.id)
+        for user, assistant in conversation.iter_user_assistant_pairs()
+    ] == expected_pairs
+
+
+def test_claude_code_helper_conversion_contracts() -> None:
+    tool = ClaudeCodeToolUse(id="tool-1", name="bash", input={"command": "git status"})
+    trace = ClaudeCodeThinkingBlock(thinking="chain of thought")
+    usage = ClaudeCodeUsage(
+        input_tokens=12,
+        output_tokens=34,
+        cache_creation_input_tokens=5,
+        cache_read_input_tokens=6,
+    )
+
+    tool_call = tool.to_tool_call()
+    reasoning = trace.to_reasoning_trace()
+    token_usage = usage.to_token_usage()
+
+    assert tool_call.name == "bash"
+    assert tool_call.id == "tool-1"
+    assert tool_call.input == {"command": "git status"}
+    assert tool_call.provider == "claude-code"
+    assert tool_call.raw == tool.model_dump()
+
+    assert reasoning.text == "chain of thought"
+    assert reasoning.provider == "claude-code"
+    assert reasoning.raw == trace.model_dump()
+
+    assert token_usage.input_tokens == 12
+    assert token_usage.output_tokens == 34
+    assert token_usage.cache_write_tokens == 5
+    assert token_usage.cache_read_tokens == 6

@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from hypothesis import given, settings, HealthCheck
+import hypothesis.strategies as st
 
 from polylogue.config import Config, IndexConfig
 from polylogue.sources import RecordBundle, save_bundle
@@ -22,6 +24,7 @@ from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from tests.infra.mutmut import preserved_mutmut_env
 from tests.infra.storage_records import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
+from tests.infra.strategies import fts5_match_text_strategy, search_query_strategy
 
 # ============================================================================
 # Tests for search_messages()
@@ -315,11 +318,8 @@ async def test_batch_index_search_returns_correct_provider(workspace_env, storag
     ("AND", False),  # Operator as literal
     ("quoted", True),  # Part of text with quotes
 ])
-def test_search_messages_escaping_integration(query, should_find, tmp_path):
-    """Integration test for search with various queries.
-
-    Replaces ~10 individual integration tests.
-    """
+def test_search_messages_known_cases(query, should_find, tmp_path):
+    """Integration test for known search cases with specific assertions."""
     # Setup database with test data
     db_path = tmp_path / "test.db"
     DbFactory(db_path)
@@ -348,6 +348,43 @@ def test_search_messages_escaping_integration(query, should_find, tmp_path):
         # Either no results or results don't match the query
         # The important thing is no SQL errors occur
         assert isinstance(results.hits, list)
+
+
+@given(query=search_query_strategy())
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
+def test_search_messages_escaping_never_crashes(query, tmp_path):
+    """Property: search_messages handles any query with controlled error handling.
+
+    Tests FTS5 escaping and query handling with arbitrary inputs.
+    Invalid FTS5 syntax raises DatabaseError (controlled), not unrecoverable crash.
+    """
+    from polylogue.errors import DatabaseError
+
+    db_path = tmp_path / "test.db"
+    DbFactory(db_path)
+
+    # Insert test conversation using builder
+    (ConversationBuilder(db_path, "test1")
+     .title("Test Conversation")
+     .add_message("msg1", role="user", text='This is a test message with "quoted text" inside.')
+     .save())
+
+    # Build search index
+    with open_connection(str(db_path)) as conn:
+        rebuild_index(conn)
+
+    # The critical property: any query should either succeed or raise controlled DatabaseError
+    try:
+        results = search_messages(
+            query,
+            archive_root=tmp_path,
+            db_path=Path(str(db_path)),
+            limit=10,
+        )
+        assert isinstance(results.hits, list)
+    except DatabaseError:
+        # Controlled error for invalid FTS5 queries is acceptable
+        pass
 
 
 # ============================================================================
@@ -902,3 +939,23 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
         search_messages("hello", archive_root=archive_root, limit=5)
     assert exc_info.type.__name__ == "DatabaseError"
     assert "Search index not built" in str(exc_info.value)
+
+
+# ============================================================================
+# Property Laws (from test_fts5_laws.py)
+# ============================================================================
+
+
+@given(st.text())
+def test_escape_fts5_query_never_crashes(text: str) -> None:
+    """escape_fts5_query handles any Unicode input without raising, always returns str."""
+    result = escape_fts5_query(text)
+    assert isinstance(result, str)
+
+
+@given(text=fts5_match_text_strategy())
+def test_escape_fts5_match_text_safe(text: str) -> None:
+    """FTS5 match text from strategy is safely escaped."""
+    result = escape_fts5_query(text)
+    assert isinstance(result, str)
+    assert len(result) > 0 or text.strip() == ""
