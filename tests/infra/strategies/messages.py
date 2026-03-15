@@ -188,6 +188,8 @@ def conversation_strategy(
 # =============================================================================
 # Model Instance Strategies (return actual Message/Conversation model objects)
 # =============================================================================
+# Dict-based strategies above: raw JSON structures for parser/wire-format testing.
+# Model-based strategies below: typed domain objects for business-logic testing.
 
 
 @st.composite
@@ -223,6 +225,30 @@ def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Messa
         role=role_val,
         text=text,
         provider_meta=provider_meta,
+    )
+
+
+@st.composite
+def parsed_attachment_model_strategy(draw: st.DrawFn):
+    """Generate a ParsedAttachment model instance for property testing."""
+    from polylogue.sources.parsers.base import ParsedAttachment
+
+    return ParsedAttachment(
+        provider_attachment_id=draw(st.uuids()).hex[:12],
+        message_provider_id=draw(st.one_of(st.none(), st.uuids().map(lambda u: u.hex[:12]))),
+        name=draw(st.one_of(st.none(), st.text(min_size=1, max_size=50))),
+        mime_type=draw(st.one_of(
+            st.none(),
+            st.sampled_from([
+                "text/plain",
+                "application/pdf",
+                "image/png",
+                "image/jpeg",
+                "application/json",
+            ]),
+        )),
+        size_bytes=draw(st.one_of(st.none(), st.integers(min_value=0, max_value=100_000_000))),
+        path=draw(st.one_of(st.none(), st.text(min_size=1, max_size=100))),
     )
 
 

@@ -494,7 +494,7 @@ class TestCrudLaws:
 
 
 @st.composite
-def tag_assignment_strategy(draw: st.DrawFn) -> dict:
+def simple_tag_spec(draw: st.DrawFn) -> dict:
     """Generate a tag assignment spec: conversation ID + list of tags."""
     conv_suffix = draw(st.text(
         min_size=3, max_size=12,
@@ -512,7 +512,7 @@ def tag_assignment_strategy(draw: st.DrawFn) -> dict:
 
 
 @st.composite
-def literal_title_search_strategy(draw: st.DrawFn) -> dict:
+def simple_title_search_spec(draw: st.DrawFn) -> dict:
     """Generate a title search spec: title and search substring."""
     words = draw(st.lists(
         st.text(min_size=3, max_size=12, alphabet=st.characters(whitelist_categories=("L",))),
@@ -527,7 +527,7 @@ def literal_title_search_strategy(draw: st.DrawFn) -> dict:
 class TestTagAssignmentLaws:
     """Property-based tests for tag operations on repository."""
 
-    @given(tag_assignment_strategy())
+    @given(simple_tag_spec())
     @settings(max_examples=15, deadline=None)
     async def test_add_tag_is_retrievable(self, spec: dict):
         """Adding a tag to a conversation makes it appear in metadata."""
@@ -556,7 +556,7 @@ class TestTagAssignmentLaws:
 
             await backend.close()
 
-    @given(tag_assignment_strategy())
+    @given(simple_tag_spec())
     @settings(max_examples=15, deadline=None)
     async def test_remove_tag_is_idempotent(self, spec: dict):
         """Removing a tag that doesn't exist doesn't crash."""
@@ -589,7 +589,7 @@ class TestTagAssignmentLaws:
 class TestTitleSearchLaws:
     """Property-based tests for title-based search."""
 
-    @given(literal_title_search_strategy())
+    @given(simple_title_search_spec())
     @settings(max_examples=15, deadline=None)
     async def test_title_search_finds_matching(self, spec: dict):
         """Searching by title substring finds the matching conversation."""
@@ -622,7 +622,7 @@ class TestTitleSearchLaws:
 
             await backend.close()
 
-    @given(literal_title_search_strategy())
+    @given(simple_title_search_spec())
     @settings(max_examples=15, deadline=None)
     async def test_title_search_excludes_non_matching(self, spec: dict):
         """Title search doesn't return conversations with unrelated titles."""
