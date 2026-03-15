@@ -26,202 +26,45 @@ from __future__ import annotations
 import json
 import random
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from polylogue.schemas.registry import SchemaRegistry, canonical_schema_provider
-
-# =============================================================================
-# Wire Format Configuration
-# =============================================================================
-
-
-@dataclass(frozen=True)
-class TreeConfig:
-    """Configuration for tree-structured message formats."""
-
-    container_path: str | None = None  # Top-level key containing the tree dict
-    key_field: str = "id"
-    parent_field: str = "parent"
-    children_field: str | None = None
-    session_field: str | None = None
-
-
-@dataclass(frozen=True)
-class WireFormat:
-    """Wire format configuration for a provider's export format."""
-
-    encoding: str  # "json" | "jsonl"
-    tree: TreeConfig | None = None
-    messages_path: str | None = None  # Dot-path to messages array
-
-
-@dataclass(frozen=True)
-class ConversationTheme:
-    """Narrative theme for visually coherent synthetic conversations."""
-
-    title: str
-    instructions: str
-    user_turns: tuple[str, ...]
-    assistant_turns: tuple[str, ...]
-
-
-# Per-provider wire format configs — the only manual piece (~50 lines).
-# Describes HOW the format is structured, not WHAT conversations say.
-PROVIDER_WIRE_FORMATS: dict[str, WireFormat] = {
-    "chatgpt": WireFormat(
-        encoding="json",
-        tree=TreeConfig(
-            container_path="mapping",
-            key_field="id",
-            parent_field="parent",
-            children_field="children",
-        ),
-    ),
-    "claude-code": WireFormat(
-        encoding="jsonl",
-        tree=TreeConfig(
-            key_field="uuid",
-            parent_field="parentUuid",
-            session_field="sessionId",
-        ),
-    ),
-    "claude-ai": WireFormat(
-        encoding="json",
-        messages_path="chat_messages",
-    ),
-    "codex": WireFormat(
-        encoding="jsonl",
-    ),
-    "gemini": WireFormat(
-        encoding="json",
-        messages_path="chunkedPrompt.chunks",
-    ),
-}
-
-
-# =============================================================================
-# Placeholder Text
-# =============================================================================
-
-# Minimal plausible text per role — parsers don't validate content, but
-# having non-empty text ensures the parser doesn't skip the message.
-_ROLE_TEXTS: dict[str, list[str]] = {
-    "user": [
-        "Can you help me debug this issue?",
-        "I need to implement a function that processes this data.",
-        "What's the best approach for handling errors here?",
-        "Could you review this code for potential issues?",
-    ],
-    "assistant": [
-        "I'll analyze the issue. Looking at the code structure...",
-        "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
-        "After reviewing, I found several areas for improvement.",
-        "The module structure looks good. A few suggestions:",
-    ],
-    "system": ["You are a helpful programming assistant."],
-    "human": ["Can you explain how this works?", "I'm trying to understand the architecture."],
-    "model": ["I'll explain step by step.", "Here's a breakdown of the architecture."],
-    "tool": ["Function executed successfully.", "Error: resource not found."],
-}
-
-_SHOWCASE_THEMES: tuple[ConversationTheme, ...] = (
-    ConversationTheme(
-        title="Debugging flaky async pipeline tests",
-        instructions="You are a coding assistant focused on debugging async Python services.",
-        user_turns=(
-            "Our async pipeline test is flaky in CI. Locally it usually passes, but CI fails around 1 in 6 runs.",
-            "The failure is around a race between acquisition and parse workers. We see duplicate writes occasionally.",
-            "I added timestamps and correlation IDs. The duplicate writes happen when retries overlap with stale tasks.",
-            "Would you enforce idempotency at storage or add stricter queue coordination first?",
-            "Great. I implemented idempotent upserts and the flake rate dropped to zero in 200 CI runs.",
-        ),
-        assistant_turns=(
-            "Start by capturing a deterministic trace: per-task IDs, queue depth, retry count, and commit boundaries.",
-            "That pattern suggests retry re-entry without a completed marker. Guard writes with a stable content key and upsert semantics.",
-            "Do both, but prioritize storage idempotency first. Queue coordination reduces load; idempotency guarantees correctness.",
-            "Add a regression test that injects delayed worker scheduling and verifies single-write invariants under retries.",
-            "Excellent result. Keep the stress test in CI and expose duplicate-write counters in your health metrics.",
-        ),
-    ),
-    ConversationTheme(
-        title="Designing schema validation stages",
-        instructions="You are a systems assistant specializing in data contracts and pipeline reliability.",
-        user_turns=(
-            "We split our ingestion into acquire, validate, and parse stages. I want strong guarantees without huge overhead.",
-            "Right now we persist raw payloads and parse status, but validation metadata is incomplete.",
-            "Should strict validation be default, with an explicit opt-out for advisory mode?",
-            "How do we avoid re-validating unchanged payloads every run?",
-            "Done. We now persist validation status and only parse rows marked passed or skipped.",
-        ),
-        assistant_turns=(
-            "That stage split is correct. Validation should produce an explicit status artifact consumed by parse.",
-            "Persist validated_at, status, error, drift_count, and validation_mode so state survives reruns and compaction.",
-            "Yes. Make strict the default and reserve advisory/off for deliberate local workflows or troubleshooting.",
-            "Use raw content hash IDs and validate only pending records. Keep a reset path for forced revalidation.",
-            "Perfect. Add tests for pending-validation selection and parse gating to protect the contract long-term.",
-        ),
-    ),
-    ConversationTheme(
-        title="Improving search index performance",
-        instructions="You are a performance-focused assistant for storage and indexing systems.",
-        user_turns=(
-            "Search index rebuilds are slow after large imports. We need a strategy that scales with conversation growth.",
-            "Current profile shows heavy time in repeated per-conversation metadata queries.",
-            "I can batch those lookups. Any guidance on cache boundaries?",
-            "We also need better observability for stage-level throughput and bottlenecks.",
-            "Implemented batch lookup + stage metrics. End-to-end index time improved by 38 percent.",
-        ),
-        assistant_turns=(
-            "First remove N+1 patterns: batch metadata loads and reuse immutable data across worker tasks.",
-            "Great target. Build a prepare cache keyed by conversation IDs and warm it per processing batch.",
-            "Cache per-run, scoped to candidate IDs only. Avoid global caches that can leak stale rows between runs.",
-            "Emit per-stage counters, durations, and throughput. Include queue lag and retry/error distributions.",
-            "Strong improvement. Add a benchmark regression gate so future refactors cannot silently erode performance.",
-        ),
-    ),
+from polylogue.schemas.synthetic.relations import RelationConstraintSolver
+from polylogue.schemas.synthetic.semantic_values import (
+    SemanticValueGenerator,
+    _text_for_role,
 )
-
-
-def _text_for_role(
-    rng: random.Random,
-    role: str,
-    *,
-    turn_index: int | None = None,
-    theme: ConversationTheme | None = None,
-) -> str:
-    """Generate plausible text content for a given role."""
-    if theme is not None and turn_index is not None:
-        exchange_idx = max(turn_index, 0) // 2
-        if role in {"user", "human"} and theme.user_turns:
-            return theme.user_turns[exchange_idx % len(theme.user_turns)]
-        if role in {"assistant", "model"} and theme.assistant_turns:
-            return theme.assistant_turns[exchange_idx % len(theme.assistant_turns)]
-    texts = _ROLE_TEXTS.get(role, _ROLE_TEXTS["user"])
-    return rng.choice(texts)
-
-
-# =============================================================================
-# Core Generator
-# =============================================================================
+from polylogue.schemas.synthetic.showcase import ConversationTheme, _SHOWCASE_THEMES
+from polylogue.schemas.synthetic.wire_formats import (
+    PROVIDER_WIRE_FORMATS,
+    TreeConfig,
+    WireFormat,
+)
 
 
 class SyntheticCorpus:
     """Generate synthetic provider data from annotated schemas.
 
-    The generator works in two layers:
-    1. **Schema-driven**: Recursively generates data matching the JSON schema
+    The generator works in three layers:
+    1. **Semantic-role-driven**: Fields with ``x-polylogue-semantic-role``
+       annotations are generated using contextually appropriate values.
+    2. **Schema-driven**: Recursively generates data matching the JSON schema
        structure, using ``x-polylogue-*`` annotations for realistic values
        (enum selection, UUID generation, timestamp ranges, etc.)
-    2. **Wire format fixup**: Ensures parser-essential fields have known-good
+    3. **Wire format fixup**: Ensures parser-essential fields have known-good
        values (correct roles, valid tree linkage, proper timestamps).
+
+    Relational constraints (``x-polylogue-foreign-keys``,
+    ``x-polylogue-mutually-exclusive``, ``x-polylogue-string-lengths``)
+    are enforced across the generated data for structural consistency.
     """
 
     def __init__(self, schema: dict[str, Any], wire_format: WireFormat, provider: str):
         self.schema = schema
         self.wire_format = wire_format
         self.provider = provider
+        self._relation_solver = RelationConstraintSolver(schema)
 
     @classmethod
     def for_provider(cls, provider: str) -> SyntheticCorpus:
@@ -279,7 +122,7 @@ class SyntheticCorpus:
             results.append(raw)
         return results
 
-    # ── Conversation-level dispatch ──────────────────────────────────────
+    # -- Conversation-level dispatch ---------------------------------------
 
     def _generate_conversation(
         self,
@@ -303,7 +146,7 @@ class SyntheticCorpus:
         # Fallback: pure schema-driven
         return self._generate_from_schema(self.schema, rng)
 
-    # ── JSON with tree structure (ChatGPT) ──────────────────────────────
+    # -- JSON with tree structure (ChatGPT) --------------------------------
 
     def _generate_tree_json(
         self,
@@ -360,7 +203,7 @@ class SyntheticCorpus:
             self._fix_message_fields(node, role, rng, i, base_ts=base_ts, theme=theme)
             nodes.append(node)
 
-        # Build mapping dict (UUID → node)
+        # Build mapping dict (UUID -> node)
         mapping = {n[tree_cfg.key_field]: n for n in nodes}
         top[tree_cfg.container_path] = mapping
 
@@ -373,7 +216,7 @@ class SyntheticCorpus:
 
         return top
 
-    # ── JSON with linear messages (Claude AI, Gemini) ───────────────────
+    # -- JSON with linear messages (Claude AI, Gemini) ---------------------
 
     def _generate_linear_json(
         self,
@@ -389,8 +232,8 @@ class SyntheticCorpus:
 
         # Navigate schema to find the item schema for messages.
         # Two cases:
-        #   1. Schema describes full file (Claude AI) — navigate to items schema
-        #   2. Schema describes individual items (Gemini) — use schema directly
+        #   1. Schema describes full file (Claude AI) -- navigate to items schema
+        #   2. Schema describes individual items (Gemini) -- use schema directly
         msgs_schema = self.schema
         schema_has_path = True
         for part in parts:
@@ -405,7 +248,7 @@ class SyntheticCorpus:
             # Generate top-level from full schema, skipping the messages root key
             top = self._generate_from_schema(self.schema, rng, skip_keys={parts[0]})
         else:
-            # Schema describes individual items — generate bare wrapper
+            # Schema describes individual items -- generate bare wrapper
             item_schema = self.schema
             top = {}
 
@@ -439,7 +282,7 @@ class SyntheticCorpus:
 
         return top
 
-    # ── JSONL records (Claude Code, Codex) ──────────────────────────────
+    # -- JSONL records (Claude Code, Codex) --------------------------------
 
     def _generate_jsonl_records(
         self,
@@ -489,7 +332,7 @@ class SyntheticCorpus:
 
         return records
 
-    # ── Provider role patterns ──────────────────────────────────────────
+    # -- Provider role patterns --------------------------------------------
 
     def _role_cycle(self) -> list[str]:
         """Role alternation pattern for this provider."""
@@ -507,7 +350,7 @@ class SyntheticCorpus:
             case _:
                 return ["user", "assistant"]
 
-    # ── Parser-essential field fixup ────────────────────────────────────
+    # -- Parser-essential field fixup --------------------------------------
 
     def _fix_message_fields(
         self,
@@ -551,7 +394,7 @@ class SyntheticCorpus:
     ) -> None:
         msg = data.get("message")
         if not isinstance(msg, dict):
-            # Schema might generate null message — force a valid one
+            # Schema might generate null message -- force a valid one
             msg = {"id": str(uuid.UUID(int=rng.getrandbits(128), version=4))}
             data["message"] = msg
 
@@ -631,7 +474,7 @@ class SyntheticCorpus:
         data.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
         if "timestamp" not in data:
             data["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-        # Remove payload key — its presence triggers "envelope" format detection,
+        # Remove payload key -- its presence triggers "envelope" format detection,
         # which expects the message inside payload rather than at top level
         data.pop("payload", None)
 
@@ -648,7 +491,7 @@ class SyntheticCorpus:
         if not data.get("text"):
             data["text"] = _text_for_role(rng, role, turn_index=index, theme=theme)
 
-    # ── Recursive schema-to-data generation ─────────────────────────────
+    # -- Recursive schema-to-data generation -------------------------------
 
     def _generate_from_schema(
         self,
@@ -658,15 +501,25 @@ class SyntheticCorpus:
         skip_keys: set[str] | None = None,
         depth: int = 0,
         max_depth: int = 6,
+        path: str = "$",
     ) -> Any:
         """Recursively generate data matching a JSON schema node.
 
         Uses ``x-polylogue-*`` annotations for realistic values when available,
         falls back to sensible defaults otherwise. Depth-limited to prevent
         unbounded recursion in deeply nested schemas.
+
+        The ``path`` parameter tracks the current position in the schema tree
+        for matching against relational constraint paths.
         """
         if depth > max_depth or not isinstance(schema, dict):
             return None
+
+        # Check for semantic role annotation first
+        if schema.get("x-polylogue-semantic-role") and hasattr(self, '_semantic_gen') and self._semantic_gen is not None:
+            handled, value = self._semantic_gen.try_generate(schema)
+            if handled:
+                return value
 
         # Handle polymorphic types (anyOf/oneOf)
         for keyword in ("anyOf", "oneOf"):
@@ -679,7 +532,8 @@ class SyntheticCorpus:
                 ]
                 chosen = rng.choice(non_null) if non_null else rng.choice(variants)
                 return self._generate_from_schema(
-                    chosen, rng, skip_keys=skip_keys, depth=depth, max_depth=max_depth
+                    chosen, rng, skip_keys=skip_keys, depth=depth, max_depth=max_depth,
+                    path=path,
                 )
 
         schema_type = schema.get("type")
@@ -697,25 +551,35 @@ class SyntheticCorpus:
         match schema_type:
             case "object":
                 return self._generate_object(
-                    schema, rng, skip_keys=skip_keys, depth=depth, max_depth=max_depth
+                    schema, rng, skip_keys=skip_keys, depth=depth, max_depth=max_depth,
+                    path=path,
                 )
             case "string":
-                return self._generate_string(schema, rng)
+                value = self._generate_string(schema, rng)
+                # Apply string length constraints from relational annotations
+                value = self._relation_solver.generate_string_with_length(path, rng, value)
+                # Register as potential FK target
+                fmt = schema.get("x-polylogue-format")
+                if fmt in {"uuid4", "uuid", "hex-id"}:
+                    self._relation_solver.register_generated_id(path, value)
+                return value
             case "number":
                 return self._generate_number(schema, rng, is_int=False)
             case "integer":
                 return self._generate_number(schema, rng, is_int=True)
             case "array":
-                return self._generate_array(schema, rng, depth=depth, max_depth=max_depth)
+                return self._generate_array(schema, rng, depth=depth, max_depth=max_depth,
+                                            path=path)
             case "boolean":
                 return rng.choice([True, False])
             case "null":
                 return None
             case _:
-                # No type but has properties → implicit object
+                # No type but has properties -> implicit object
                 if "properties" in schema:
                     return self._generate_object(
-                        schema, rng, skip_keys=skip_keys, depth=depth, max_depth=max_depth
+                        schema, rng, skip_keys=skip_keys, depth=depth, max_depth=max_depth,
+                        path=path,
                     )
                 return None
 
@@ -727,25 +591,50 @@ class SyntheticCorpus:
         skip_keys: set[str] | None = None,
         depth: int = 0,
         max_depth: int = 6,
+        path: str = "$",
     ) -> dict:
         """Generate an object from schema properties."""
         obj: dict[str, Any] = {}
-        for prop_name, prop_schema in schema.get("properties", {}).items():
-            if skip_keys and prop_name in skip_keys:
+        properties = schema.get("properties", {})
+
+        # Determine which fields to generate
+        candidate_keys = set(properties.keys())
+        if skip_keys:
+            candidate_keys -= skip_keys
+
+        # Apply mutual exclusion constraints
+        if self._relation_solver.mutual_exclusions:
+            candidate_keys = self._relation_solver.filter_mutually_exclusive(
+                path, candidate_keys, rng,
+            )
+
+        for prop_name in properties:
+            if prop_name not in candidate_keys:
                 continue
+
+            prop_schema = properties[prop_name]
 
             # Skip low-frequency fields probabilistically
             freq = prop_schema.get("x-polylogue-frequency", 1.0)
             if freq < 1.0 and rng.random() > freq:
                 continue
 
+            child_path = f"{path}.{prop_name}"
+
+            # Try foreign-key resolution first
+            ref = self._relation_solver.resolve_foreign_key(child_path, rng)
+            if ref is not None:
+                obj[prop_name] = ref
+                continue
+
             value = self._generate_from_schema(
-                prop_schema, rng, depth=depth + 1, max_depth=max_depth
+                prop_schema, rng, depth=depth + 1, max_depth=max_depth,
+                path=child_path,
             )
             if value is not None:
                 obj[prop_name] = value
 
-        # Don't generate additionalProperties — tree/container generation
+        # Don't generate additionalProperties -- tree/container generation
         # handles dynamic keys separately
         return obj
 
@@ -802,6 +691,7 @@ class SyntheticCorpus:
         *,
         depth: int = 0,
         max_depth: int = 6,
+        path: str = "$",
     ) -> list:
         """Generate an array from schema items definition."""
         item_schema = schema.get("items", {})
@@ -816,11 +706,14 @@ class SyntheticCorpus:
             n = rng.randint(1, 3)
 
         return [
-            self._generate_from_schema(item_schema, rng, depth=depth + 1, max_depth=max_depth)
+            self._generate_from_schema(
+                item_schema, rng, depth=depth + 1, max_depth=max_depth,
+                path=f"{path}[*]",
+            )
             for _ in range(n)
         ]
 
-    # ── Wire format serialization ───────────────────────────────────────
+    # -- Wire format serialization -----------------------------------------
 
     def _serialize(self, data: Any) -> bytes:
         """Serialize generated data to wire-format bytes."""
@@ -830,3 +723,8 @@ class SyntheticCorpus:
             return ("\n".join(lines) + "\n").encode("utf-8")
         else:
             return json.dumps(data, indent=2).encode("utf-8")
+
+
+__all__ = [
+    "SyntheticCorpus",
+]

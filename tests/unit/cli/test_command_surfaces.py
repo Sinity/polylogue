@@ -44,7 +44,8 @@ class TestSourcesCommand:
         monkeypatch.setenv("XDG_DATA_HOME", str(cli_workspace["data_root"]))
         result = cli_runner.invoke(click_cli, ["sources", "--json"])
         assert result.exit_code == 0
-        assert isinstance(json.loads(result.output), list)
+        envelope = json.loads(result.output)
+        assert isinstance(envelope.get("result", {}).get("sources", envelope), list)
 
 
 class TestCompletionsCommand:

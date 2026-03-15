@@ -351,7 +351,8 @@ class TestTagsCommand:
         _seed_tag_counts(cli_workspace["db_path"], {"tag1": 10, "tag2": 2})
         result = runner.invoke(cli, ["tags", "--json"])
         assert result.exit_code == 0
-        assert json.loads(result.output) == {"tag1": 10, "tag2": 2}
+        envelope = json.loads(result.output)
+        assert envelope["result"]["tags"] == {"tag1": 10, "tag2": 2}
 
     def test_tags_limit_and_empty_hints(self, runner, cli_workspace):
         _seed_tag_counts(cli_workspace["db_path"], {"a": 10, "b": 5, "c": 1})

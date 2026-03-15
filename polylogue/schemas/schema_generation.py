@@ -31,6 +31,9 @@ from polylogue.schemas.privacy import (
     _is_content_field,
     _is_safe_enum_value,
 )
+from polylogue.schemas.relational_inference import (
+    infer_relations,
+)
 from polylogue.schemas.sampling import (
     PROVIDERS,
     ProviderConfig,
@@ -38,6 +41,10 @@ from polylogue.schemas.sampling import (
     _iter_samples_from_sessions,
     load_samples_from_db,
     load_samples_from_sessions,
+)
+from polylogue.schemas.semantic_inference import (
+    infer_semantic_roles,
+    select_best_roles,
 )
 from polylogue.paths import db_path as default_db_path
 
@@ -334,6 +341,108 @@ def _annotate_schema(
     return schema
 
 
+def _annotate_semantic_and_relational(
+    schema: dict[str, Any],
+    field_stats: dict[str, FieldStats],
+) -> dict[str, Any]:
+    """Attach semantic role and relational annotations to a schema.
+
+    This is called after ``_annotate_schema()`` to layer on semantic and
+    relational intelligence without modifying the base annotation pass.
+
+    Semantic annotations are attached at the field level:
+        - x-polylogue-semantic-role
+        - x-polylogue-confidence
+        - x-polylogue-evidence
+
+    Relational annotations are attached at the schema root:
+        - x-polylogue-foreign-keys
+        - x-polylogue-time-deltas
+        - x-polylogue-mutually-exclusive
+        - x-polylogue-string-lengths
+    """
+    # --- Semantic roles ---
+    candidates = infer_semantic_roles(field_stats)
+    best_roles = select_best_roles(candidates)
+
+    # Map role assignments back to their schema paths
+    role_by_path: dict[str, tuple[str, float, dict]] = {}
+    for role, candidate in best_roles.items():
+        role_by_path[candidate.path] = (role, candidate.confidence, candidate.evidence)
+
+    # Walk schema and attach semantic annotations
+    def _attach_semantic(s: dict[str, Any], path: str = "$") -> None:
+        if not isinstance(s, dict):
+            return
+        if path in role_by_path:
+            role, confidence, evidence = role_by_path[path]
+            s["x-polylogue-semantic-role"] = role
+            s["x-polylogue-confidence"] = round(confidence, 3)
+            s["x-polylogue-evidence"] = evidence
+
+        if "properties" in s:
+            for prop_name, prop_schema in s["properties"].items():
+                _attach_semantic(prop_schema, f"{path}.{prop_name}")
+        if isinstance(s.get("additionalProperties"), dict):
+            _attach_semantic(s["additionalProperties"], f"{path}.*")
+        if isinstance(s.get("items"), dict):
+            _attach_semantic(s["items"], f"{path}[*]")
+        for keyword in ("anyOf", "oneOf", "allOf"):
+            if keyword in s:
+                for sub in s[keyword]:
+                    _attach_semantic(sub, path)
+
+    _attach_semantic(schema)
+
+    # --- Relational annotations ---
+    relations = infer_relations(field_stats)
+
+    if relations.foreign_keys:
+        schema["x-polylogue-foreign-keys"] = [
+            {
+                "source": fk.source_path,
+                "target": fk.target_path,
+                "match_ratio": round(fk.match_ratio, 3),
+            }
+            for fk in relations.foreign_keys
+        ]
+
+    if relations.time_deltas:
+        schema["x-polylogue-time-deltas"] = [
+            {
+                "field_a": td.field_a,
+                "field_b": td.field_b,
+                "min_delta": round(td.min_delta, 1),
+                "max_delta": round(td.max_delta, 1),
+                "avg_delta": round(td.avg_delta, 1),
+            }
+            for td in relations.time_deltas
+        ]
+
+    if relations.mutual_exclusions:
+        schema["x-polylogue-mutually-exclusive"] = [
+            {
+                "parent": me.parent_path,
+                "fields": sorted(me.field_names),
+            }
+            for me in relations.mutual_exclusions
+        ]
+
+    if relations.string_lengths:
+        schema["x-polylogue-string-lengths"] = [
+            {
+                "path": sl.path,
+                "min": sl.min_length,
+                "max": sl.max_length,
+                "avg": round(sl.avg_length, 1),
+                "stddev": round(sl.stddev, 1),
+            }
+            for sl in relations.string_lengths
+        ]
+
+    return schema
+
+
 # =============================================================================
 # Schema Generation
 # =============================================================================
@@ -407,6 +516,7 @@ def generate_schema_from_samples(
 
         field_stats = _collect_field_stats(stats_samples)
         schema = _annotate_schema(schema, field_stats)
+        schema = _annotate_semantic_and_relational(schema, field_stats)
 
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
 
@@ -524,6 +634,7 @@ def generate_provider_schema(
 
             field_stats = _collect_field_stats(reservoir)
             schema = _annotate_schema(schema, field_stats)
+            schema = _annotate_semantic_and_relational(schema, field_stats)
 
             schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -397,6 +398,166 @@ def get_health(config: Config, *, deep: bool = False) -> HealthReport:
     return report
 
 
+def run_runtime_health(config: Config) -> HealthReport:
+    """Run runtime environment health checks.
+
+    These checks verify the runtime environment is correctly configured
+    and operational, complementing the data-quality checks in run_health().
+    """
+    checks: list[HealthCheck] = []
+
+    # 1. Database path writability
+    db = config.db_path
+    if db.exists():
+        try:
+            # Test writable by opening in append mode
+            with open(db, "a"):
+                pass
+            checks.append(HealthCheck("db_writable", VerifyStatus.OK, detail=f"Writable: {db}"))
+        except OSError as exc:
+            checks.append(HealthCheck("db_writable", VerifyStatus.ERROR, detail=f"Not writable: {exc}"))
+    else:
+        # Check parent directory writability
+        parent = db.parent
+        if parent.exists():
+            writable = os.access(parent, os.W_OK)
+            if writable:
+                checks.append(HealthCheck("db_writable", VerifyStatus.OK, detail=f"Parent writable, DB will be created: {db}"))
+            else:
+                checks.append(HealthCheck("db_writable", VerifyStatus.ERROR, detail=f"Parent not writable: {parent}"))
+        else:
+            checks.append(HealthCheck("db_writable", VerifyStatus.WARNING, detail=f"Parent missing: {parent}"))
+
+    # 2. Schema version
+    try:
+        from polylogue.storage.backends.schema import SCHEMA_VERSION
+
+        with open_connection(None) as conn:
+            current = conn.execute("PRAGMA user_version").fetchone()[0]
+            if current == SCHEMA_VERSION:
+                checks.append(HealthCheck("schema_version", VerifyStatus.OK, detail=f"v{current} (current)"))
+            elif current == 0:
+                checks.append(HealthCheck("schema_version", VerifyStatus.WARNING, detail="Uninitialized (v0)"))
+            else:
+                checks.append(HealthCheck(
+                    "schema_version",
+                    VerifyStatus.ERROR,
+                    detail=f"v{current} (expected v{SCHEMA_VERSION})",
+                ))
+    except Exception as exc:
+        checks.append(HealthCheck("schema_version", VerifyStatus.ERROR, detail=f"Cannot check: {exc}"))
+
+    # 3. FTS tables health
+    try:
+        with connection_context(None) as conn:
+            fts = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+            ).fetchone()
+            if fts:
+                # Verify FTS integrity via simple query
+                conn.execute("SELECT * FROM messages_fts LIMIT 0")
+                checks.append(HealthCheck("fts_tables", VerifyStatus.OK, detail="FTS5 table present and queryable"))
+            else:
+                checks.append(HealthCheck("fts_tables", VerifyStatus.WARNING, detail="FTS5 table not found"))
+    except Exception as exc:
+        checks.append(HealthCheck("fts_tables", VerifyStatus.ERROR, detail=f"FTS check failed: {exc}"))
+
+    # 4. sqlite-vec availability
+    try:
+        import sqlite_vec  # noqa: F401
+        checks.append(HealthCheck("sqlite_vec", VerifyStatus.OK, detail="sqlite-vec extension available"))
+    except ImportError:
+        checks.append(HealthCheck("sqlite_vec", VerifyStatus.WARNING, detail="sqlite-vec not installed (vector search unavailable)"))
+
+    # 5. Archive and render root writability
+    for label, path in [("archive_root", config.archive_root), ("render_root", config.render_root)]:
+        if path.exists():
+            writable = os.access(path, os.W_OK)
+            status = VerifyStatus.OK if writable else VerifyStatus.ERROR
+            detail = f"Writable: {path}" if writable else f"Not writable: {path}"
+        else:
+            # Can parent be created?
+            parent = path.parent
+            if parent.exists() and os.access(parent, os.W_OK):
+                status = VerifyStatus.OK
+                detail = f"Will be created: {path}"
+            else:
+                status = VerifyStatus.WARNING
+                detail = f"Missing and parent not writable: {path}"
+        checks.append(HealthCheck(f"{label}_writable", status, detail=detail))
+
+    # 6. Config paths
+    from polylogue.paths import config_home
+
+    cfg_home = config_home()
+    if cfg_home.exists():
+        checks.append(HealthCheck("config_path", VerifyStatus.OK, detail=str(cfg_home)))
+    else:
+        checks.append(HealthCheck("config_path", VerifyStatus.OK, detail=f"Not yet created: {cfg_home}"))
+
+    # 7. Google credentials (if Drive sources configured)
+    drive_sources = [s for s in config.sources if s.is_drive]
+    if drive_sources and config.drive_config:
+        from polylogue.sources.drive_client import default_credentials_path, default_token_path
+
+        cred = default_credentials_path(config.drive_config)
+        token = default_token_path(config.drive_config)
+        if cred.exists():
+            checks.append(HealthCheck("drive_credentials", VerifyStatus.OK, detail=str(cred)))
+        else:
+            checks.append(HealthCheck("drive_credentials", VerifyStatus.WARNING, detail=f"Missing: {cred}"))
+        if token.exists():
+            checks.append(HealthCheck("drive_token", VerifyStatus.OK, detail=str(token)))
+        else:
+            checks.append(HealthCheck("drive_token", VerifyStatus.WARNING, detail=f"Missing (auth required): {token}"))
+
+    # 8. Terminal capabilities
+    import shutil
+    import sys
+
+    term = os.environ.get("TERM", "unknown")
+    cols, rows = shutil.get_terminal_size()
+    is_tty = sys.stdout.isatty()
+    force_plain = os.environ.get("POLYLOGUE_FORCE_PLAIN", "")
+
+    term_detail = f"TERM={term}, {cols}x{rows}, tty={is_tty}"
+    if force_plain:
+        term_detail += ", POLYLOGUE_FORCE_PLAIN=1"
+    checks.append(HealthCheck("terminal", VerifyStatus.OK, detail=term_detail))
+
+    # Rich/Textual availability
+    try:
+        import rich  # noqa: F401
+        rich_ok = True
+    except ImportError:
+        rich_ok = False
+    try:
+        import textual  # noqa: F401
+        textual_ok = True
+    except ImportError:
+        textual_ok = False
+    checks.append(HealthCheck(
+        "ui_libraries",
+        VerifyStatus.OK if rich_ok else VerifyStatus.WARNING,
+        detail=f"Rich={'yes' if rich_ok else 'no'}, Textual={'yes' if textual_ok else 'no'}",
+    ))
+
+    # 9. VHS availability
+    vhs_available = shutil.which("vhs") is not None
+    checks.append(HealthCheck(
+        "vhs",
+        VerifyStatus.OK if vhs_available else VerifyStatus.WARNING,
+        detail="VHS available" if vhs_available else "VHS not found (showcase capture unavailable)",
+    ))
+
+    # Build summary
+    summary = {"ok": 0, "warning": 0, "error": 0}
+    for check in checks:
+        summary[check.status.value] += 1
+
+    return HealthReport(checks=checks, summary=summary)
+
+
 def cached_health_summary(archive_root: Path) -> str:
     """Get a concise summary of the cached health state."""
     cached_data = _load_cached(archive_root)
@@ -421,6 +582,7 @@ def cached_health_summary(archive_root: Path) -> str:
 __all__ = [
     "get_health",
     "run_health",
+    "run_runtime_health",
     "HealthCheck",
     "HealthReport",
     "VerifyStatus",

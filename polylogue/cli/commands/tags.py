@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
-
 import click
 
+from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.types import AppEnv
 
 
@@ -38,7 +37,7 @@ def tags_command(
         tags = dict(list(tags.items())[:count])
 
     if json_mode:
-        click.echo(json.dumps(tags, indent=2))
+        emit_success({"tags": tags})
         return
 
     if not tags:

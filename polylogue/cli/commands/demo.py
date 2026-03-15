@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from collections.abc import Iterator
@@ -58,6 +59,15 @@ def _temporary_env(updates: dict[str, str]) -> Iterator[None]:
     "--audit-dir", type=click.Path(path_type=Path), default=None,
     help="Write a QA session JSON record to this directory (only with --showcase)",
 )
+@click.option(
+    "--capture",
+    type=click.Choice(["none", "vhs", "all"], case_sensitive=False),
+    default="none",
+    show_default=True,
+    help="Capture mode: none, vhs (generate VHS tapes and record), or all",
+)
+@click.option("--qa-markdown", is_flag=True, help="Emit stable Markdown QA report to output dir")
+@click.option("--manifest", "emit_manifest", is_flag=True, help="Emit artifact manifest JSON to output dir")
 @click.pass_obj
 def demo_command(
     env: AppEnv,
@@ -73,6 +83,9 @@ def demo_command(
     showcase_verbose: bool,
     tier_filter: int | None,
     audit_dir: Path | None,
+    capture: str,
+    qa_markdown: bool,
+    emit_manifest: bool,
 ) -> None:
     """Generate synthetic conversations for demos, testing, and inspection.
 
@@ -110,6 +123,9 @@ def demo_command(
             count,
             tier_filter,
             audit_dir,
+            capture=capture.lower(),
+            qa_markdown=qa_markdown,
+            emit_manifest=emit_manifest,
         )
         return
 
@@ -148,10 +164,15 @@ def _do_showcase(
     synthetic_count: int,
     tier_filter: int | None = None,
     audit_dir: Path | None = None,
+    capture: str = "none",
+    qa_markdown: bool = False,
+    emit_manifest: bool = False,
 ) -> None:
     """Exercise all CLI commands and generate reports."""
     from polylogue.showcase.report import (
         generate_json_report,
+        generate_manifest,
+        generate_qa_markdown,
         generate_summary,
         save_reports,
         write_qa_session,
@@ -170,6 +191,51 @@ def _do_showcase(
 
     result = runner.run()
     save_reports(result)
+
+    # VHS capture
+    if capture in ("vhs", "all") and result.output_dir:
+        from polylogue.showcase.vhs import (
+            check_vhs_available,
+            generate_all_tapes,
+            run_vhs_capture,
+        )
+
+        tapes_dir = result.output_dir / "tapes"
+        captures_dir = result.output_dir / "captures"
+        captures_dir.mkdir(parents=True, exist_ok=True)
+
+        tapes = generate_all_tapes(output_dir=tapes_dir)
+
+        if check_vhs_available():
+            for name in tapes:
+                tape_path = tapes_dir / f"{name}.tape"
+                gif_path = captures_dir / f"{name}.gif"
+                ok = run_vhs_capture(tape_path, gif_path)
+                if not json_output:
+                    status = "ok" if ok else "FAILED"
+                    env.ui.console.print(f"  VHS {name}: {status}")
+        elif not json_output:
+            env.ui.console.print(
+                f"VHS binary not found — {len(tapes)} tape(s) generated in {tapes_dir} but not recorded"
+            )
+
+    # Explicit QA markdown output
+    if qa_markdown and result.output_dir:
+        md = generate_qa_markdown(result)
+        md_path = result.output_dir / "showcase-session.md"
+        md_path.write_text(md)
+        if not json_output:
+            env.ui.console.print(f"QA markdown written: {md_path}")
+
+    # Explicit manifest output
+    if emit_manifest and result.output_dir:
+        manifest = generate_manifest(result, include_hashes=True)
+        manifest_path = result.output_dir / "showcase-manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True)
+        )
+        if not json_output:
+            env.ui.console.print(f"Manifest written: {manifest_path}")
 
     if audit_dir is not None:
         written = write_qa_session(result, audit_dir)
