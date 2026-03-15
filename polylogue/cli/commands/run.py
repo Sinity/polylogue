@@ -16,6 +16,7 @@ from polylogue.cli.formatting import (
     format_plan_details,
     format_run_details,
 )
+from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.helpers import (
     fail,
     maybe_prompt_sources,
@@ -373,7 +374,7 @@ def sources_command(env: AppEnv, json_output: bool) -> None:
             }
             for source in cfg.sources
         ]
-        click.echo(json.dumps(payload, indent=2))
+        emit_success({"sources": payload})
         return
     lines = []
     for source in cfg.sources:

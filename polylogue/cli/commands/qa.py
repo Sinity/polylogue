@@ -11,6 +11,7 @@ from pathlib import Path
 import click
 
 from polylogue.cli.helpers import fail, load_effective_config
+from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.types import AppEnv
 from polylogue.paths import safe_path_component
 
@@ -82,6 +83,12 @@ def _update_latest_symlink(output_root: Path, snapshot_dir: Path) -> None:
     help="Snapshot root directory (default: <archive_root>/qa/snapshots).",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable summary JSON")
+@click.option(
+    "--from-showcase",
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    default=None,
+    help="Import a showcase output directory as a QA snapshot (reads showcase-manifest.json).",
+)
 @click.pass_obj
 def qa_command(
     env: AppEnv,
@@ -89,9 +96,16 @@ def qa_command(
     name: str,
     output_root: Path | None,
     json_output: bool,
+    from_showcase: Path | None,
 ) -> None:
     """Snapshot and index QA artifacts to a reproducible archive path."""
     config = load_effective_config(env)
+
+    # --from-showcase: import a showcase output directory as a QA snapshot
+    if from_showcase is not None:
+        _do_from_showcase(env, from_showcase, name, output_root, json_output, config)
+        return
+
     source_dirs = list(sources) if sources else _default_qa_sources(Path.cwd())
     if not source_dirs:
         fail("qa", "No QA sources found. Provide --source or create qa_outputs/qa_archive.")
@@ -137,20 +151,88 @@ def qa_command(
     _update_latest_symlink(root, snapshot_dir)
 
     if json_output:
-        click.echo(
-            json.dumps(
-                {
-                    "snapshot_dir": str(snapshot_dir),
-                    "entry_count": len(entries),
-                    "sources": [str(path) for path in source_dirs],
-                },
-                indent=2,
-            )
-        )
+        emit_success({
+            "snapshot_dir": str(snapshot_dir),
+            "entry_count": len(entries),
+            "sources": [str(path) for path in source_dirs],
+        })
         return
 
     env.ui.console.print(f"QA snapshot created: {snapshot_dir}")
     env.ui.console.print(f"Files captured: {len(entries)}")
+    env.ui.console.print("Artifacts:")
+    env.ui.console.print(f"  - {snapshot_dir / 'manifest.json'}")
+    env.ui.console.print(f"  - {snapshot_dir / 'INDEX.md'}")
+
+
+def _do_from_showcase(
+    env: AppEnv,
+    showcase_dir: Path,
+    name: str,
+    output_root: Path | None,
+    json_output: bool,
+    config: object,
+) -> None:
+    """Import a showcase output directory as a QA snapshot."""
+    manifest_path = showcase_dir / "showcase-manifest.json"
+    showcase_manifest: dict | None = None
+    if manifest_path.exists():
+        showcase_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    label = safe_path_component(name, fallback="showcase")
+    root = output_root or (config.archive_root / "qa" / "snapshots")  # type: ignore[union-attr]
+    snapshot_dir = root / f"{stamp}-{label}"
+    snapshot_dir.mkdir(parents=True, exist_ok=False)
+
+    entries: list[dict[str, object]] = []
+    for src_file in _iter_files(showcase_dir):
+        rel = src_file.relative_to(showcase_dir)
+        dst_file = snapshot_dir / rel
+        dst_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_file, dst_file)
+        entries.append(
+            {
+                "relative_path": str(rel),
+                "source_path": str(src_file),
+                "size_bytes": dst_file.stat().st_size,
+                "sha256": _sha256(dst_file),
+            }
+        )
+
+    manifest: dict[str, object] = {
+        "snapshot": snapshot_dir.name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source_dirs": [str(showcase_dir)],
+        "entry_count": len(entries),
+        "entries": entries,
+        "source_type": "showcase",
+    }
+    if showcase_manifest is not None:
+        manifest["showcase_manifest"] = showcase_manifest
+
+    (snapshot_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    _write_index(snapshot_dir, entries)
+    _update_latest_symlink(root, snapshot_dir)
+
+    if json_output:
+        emit_success({
+            "snapshot_dir": str(snapshot_dir),
+            "entry_count": len(entries),
+            "sources": [str(showcase_dir)],
+            "source_type": "showcase",
+        })
+        return
+
+    env.ui.console.print(f"QA snapshot created from showcase: {snapshot_dir}")
+    env.ui.console.print(f"Files captured: {len(entries)}")
+    if showcase_manifest:
+        env.ui.console.print(
+            f"Showcase artifacts: {showcase_manifest.get('entry_count', '?')} entries"
+        )
     env.ui.console.print("Artifacts:")
     env.ui.console.print(f"  - {snapshot_dir / 'manifest.json'}")
     env.ui.console.print(f"  - {snapshot_dir / 'INDEX.md'}")

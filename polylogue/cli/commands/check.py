@@ -8,8 +8,9 @@ from typing import Any
 import click
 
 from polylogue.cli.helpers import fail, load_effective_config
+from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.types import AppEnv
-from polylogue.health import VerifyStatus, get_health
+from polylogue.health import VerifyStatus, get_health, run_runtime_health
 from polylogue.storage.repair import run_all_repairs
 
 
@@ -20,6 +21,7 @@ from polylogue.storage.repair import run_all_repairs
 @click.option("--preview", is_flag=True, help="Preview repairs without executing (requires --repair)")
 @click.option("--vacuum", is_flag=True, help="Reclaim unused space after repair (requires --repair)")
 @click.option("--deep", is_flag=True, help="Run SQLite integrity check (slow on large databases)")
+@click.option("--runtime", is_flag=True, help="Run environment and runtime verification checks")
 @click.option("--schemas", "check_schemas", is_flag=True, help="Run raw-corpus schema verification (non-mutating)")
 @click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)")
 @click.option(
@@ -55,6 +57,7 @@ def check_command(
     preview: bool,
     vacuum: bool,
     deep: bool,
+    runtime: bool,
     check_schemas: bool,
     schema_providers: tuple[str, ...],
     schema_samples: str,
@@ -84,6 +87,9 @@ def check_command(
 
     config = load_effective_config(env)
     report = get_health(config, deep=deep)
+    runtime_report = None
+    if runtime:
+        runtime_report = run_runtime_health(config)
     schema_report = None
     if check_schemas:
         from polylogue.schemas.verification import verify_raw_corpus
@@ -115,13 +121,15 @@ def check_command(
 
     if json_output:
         out = report.to_dict()
+        if runtime_report is not None:
+            out["runtime"] = runtime_report.to_dict()
         if schema_report is not None:
             out["schema_verification"] = schema_report.to_dict()
         if repair_results is not None:
             out["repairs"] = [r.to_dict() for r in repair_results]
         if vacuum_result is not None:
             out["vacuum"] = vacuum_result
-        click.echo(json.dumps(out, indent=2))
+        emit_success(out)
         return
 
     lines = []
@@ -166,6 +174,28 @@ def check_command(
                     f"drift={stats.drift_records:,} skipped={stats.skipped_no_schema:,} "
                     f"decode_errors={stats.decode_errors:,} quarantined={stats.quarantined_records:,}"
                 )
+
+    if runtime_report is not None:
+        lines.append("")
+        lines.append("Runtime Environment:")
+        for check in runtime_report.checks:
+            status_icon = {
+                VerifyStatus.OK: "[green]✓[/green]",
+                VerifyStatus.WARNING: "[yellow]![/yellow]",
+                VerifyStatus.ERROR: "[red]✗[/red]",
+            }.get(check.status, "?")
+            if env.ui.plain:
+                status_icon = {
+                    VerifyStatus.OK: "OK",
+                    VerifyStatus.WARNING: "WARN",
+                    VerifyStatus.ERROR: "ERR",
+                }.get(check.status, "?")
+            lines.append(f"  {status_icon} {check.name}: {check.detail}")
+        rt_summary = runtime_report.summary
+        lines.append(
+            f"  Runtime: {rt_summary.get('ok', 0)} ok, {rt_summary.get('warning', 0)} warnings, "
+            f"{rt_summary.get('error', 0)} errors"
+        )
 
     env.ui.summary("Health Check", lines)
 

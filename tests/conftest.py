@@ -9,6 +9,16 @@ from hypothesis import HealthCheck, settings
 from polylogue.lib.messages import MessageCollection
 
 # ---------------------------------------------------------------------------
+# Scale markers for data-gravity and long-haul validation (Workstream H)
+# ---------------------------------------------------------------------------
+
+
+def pytest_configure(config):
+    """Register custom markers for scale and benchmark tests."""
+    config.addinivalue_line("markers", "scale(level): parametric scale marker (small/medium/large/stretch)")
+
+
+# ---------------------------------------------------------------------------
 # Hypothesis profiles: `--hypothesis-profile ci` uses fewer examples for speed
 # ---------------------------------------------------------------------------
 settings.register_profile("ci", max_examples=30, suppress_health_check=[HealthCheck.too_slow])

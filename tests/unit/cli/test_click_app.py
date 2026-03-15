@@ -348,6 +348,7 @@ class TestCliMetadata:
             "demo",
             "embed",
             "qa",
+            "schema",
             "site",
             "tags",
         }

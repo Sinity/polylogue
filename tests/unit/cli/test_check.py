@@ -21,14 +21,18 @@ def cli_runner():
 
 
 def _extract_json(output: str) -> dict:
-    """Extract JSON from CLI output, skipping non-JSON lines."""
+    """Extract JSON from CLI output, unwrapping the success envelope."""
     lines = output.strip().split("\n")
     # Find first line that starts with { and join all subsequent lines
     json_start = next((i for i, line in enumerate(lines) if line.strip().startswith("{")), None)
     if json_start is None:
         raise ValueError(f"No JSON found in output: {output}")
     json_str = "\n".join(lines[json_start:])
-    return json.loads(json_str)
+    data = json.loads(json_str)
+    # Unwrap success envelope
+    if isinstance(data, dict) and data.get("status") == "ok" and "result" in data:
+        return data["result"]
+    return data
 
 
 class TestHealthReportConstruction:
@@ -416,7 +420,8 @@ class TestCheckCommandSupplementary:
         runner = CliRunner()
         result = runner.invoke(cli, ["check", "--json", "--repair", "--preview"])
         assert result.exit_code == 0
-        data = json.loads(result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output)
+        envelope = json.loads(result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output)
+        data = envelope.get("result", envelope)
         assert "repairs" in data
 
     def test_repair_with_no_issues_shows_message(self, cli_workspace):
@@ -451,7 +456,8 @@ class TestCheckCommandSupplementary:
         result = runner.invoke(cli, ["--plain", "check", "--json", "--repair", "--preview", "--vacuum"])
 
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        envelope = json.loads(result.output)
+        data = envelope.get("result", envelope)
         assert "repairs" in data
         assert data["vacuum"]["ok"] is True
         assert data["vacuum"]["preview"] is True

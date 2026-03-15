@@ -61,6 +61,7 @@ def test_qa_json_output(cli_runner) -> None:
             },
         )
         assert result.exit_code == 0
-        payload = json.loads(result.output)
+        envelope = json.loads(result.output)
+        payload = envelope.get("result", envelope)
         assert payload["entry_count"] == 1
         assert "snapshot_dir" in payload

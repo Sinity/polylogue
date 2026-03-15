@@ -35,6 +35,9 @@ class Exercise:
     tier: int = 1  # Complexity tier: 0=fast/structural, 1=basic, 2=advanced
     env: str = "any"  # "any" | "seeded" (skip in live mode) | "live" (skip in seeded mode)
     timeout_s: float = 120.0  # Per-exercise timeout in seconds
+    vhs_capture: bool = False  # Whether this exercise should be captured as VHS recording
+    artifact_class: str = "text"  # "text" | "json" | "visual" | "bundle"
+    capture_steps: tuple[str, ...] = ()  # Optional VHS interaction steps for complex scenarios
 
 
 # =============================================================================
@@ -113,7 +116,7 @@ EXERCISES: tuple[Exercise, ...] = (
     # structural (8) — tier 0: no data, tests CLI plumbing, <1s each
     # =========================================================================
     _E("help-main", "structural", "Main help screen",
-       ["--help"], _V(stdout_contains=("polylogue",)), tier=0),
+       ["--help"], _V(stdout_contains=("polylogue",)), tier=0, vhs_capture=True),
     _E("help-run", "structural", "Run subcommand help",
        ["run", "--help"], _V(stdout_contains=("--stage",)), tier=0),
     _E("help-check", "structural", "Check subcommand help",
@@ -144,7 +147,8 @@ EXERCISES: tuple[Exercise, ...] = (
     # =========================================================================
     # Preview is read-only (no DB mutations): runs in both seeded and live modes
     _E("run-preview", "pipeline", "Preview pipeline plan (seeded fixtures)",
-       ["run", "--preview", "--source", "inbox"], writes=False, env="seeded", tier=1),
+       ["run", "--preview", "--source", "inbox"], writes=False, env="seeded", tier=1,
+       vhs_capture=True),
     _E("run-preview-live", "pipeline", "Preview pipeline against live sources",
        ["run", "--preview"], writes=False, env="live", tier=1,
        timeout_s=600.0,  # preview of real data can take minutes
@@ -162,11 +166,11 @@ EXERCISES: tuple[Exercise, ...] = (
     # query-read — tier 1: basic queries requiring seeded/live data
     # =========================================================================
     _E("stats-default", "query-read", "Default archive statistics",
-       [], _V(stdout_contains=("Archive",)), needs_data=True, tier=1),
+       [], _V(stdout_contains=("Archive",)), needs_data=True, tier=1, vhs_capture=True),
     _E("stats-verbose", "query-read", "Verbose statistics",
        ["-v"], needs_data=True, tier=1),
     _E("query-list", "query-read", "List conversations",
-       ["--list"], _V(stdout_min_lines=1), needs_data=True, tier=1),
+       ["--list"], _V(stdout_min_lines=1), needs_data=True, tier=1, vhs_capture=True),
     _E("query-list-json", "query-read", "List conversations as JSON",
        ["--list", "-f", "json"], _V(custom=_is_valid_json_array),
        needs_data=True, output_ext=".json", tier=1),
@@ -185,7 +189,7 @@ EXERCISES: tuple[Exercise, ...] = (
        needs_data=True, output_ext=".json", tier=1),
     _E("query-latest-md", "query-read", "Latest conversation as Markdown",
        ["--latest", "-f", "markdown"], _V(stdout_contains=("#",)),
-       needs_data=True, output_ext=".md", tier=1),
+       needs_data=True, output_ext=".md", tier=1, vhs_capture=True),
     _E("query-latest-html", "query-read", "Latest conversation as HTML",
        ["--latest", "-f", "html"], _V(stdout_contains=("<",)),
        needs_data=True, output_ext=".html", tier=1),
@@ -256,7 +260,7 @@ EXERCISES: tuple[Exercise, ...] = (
     # subcommands (6) — tier 1: read-only health/stats; tier 2: site generation
     # =========================================================================
     _E("check-health", "subcommands", "Health check",
-       ["check"], _V(stdout_contains=("ok",)), needs_data=True, tier=1),
+       ["check"], _V(stdout_contains=("ok",)), needs_data=True, tier=1, vhs_capture=True),
     _E("check-json", "subcommands", "Health check as JSON",
        ["check", "--json"], _V(stdout_is_valid_json=True),
        needs_data=True, output_ext=".json", tier=1),
@@ -310,6 +314,11 @@ def exercises_by_group() -> dict[str, list[Exercise]]:
     for ex in EXERCISES:
         result[ex.group].append(ex)
     return result
+
+
+def vhs_exercises() -> list[Exercise]:
+    """Return only exercises where vhs_capture is True."""
+    return [e for e in EXERCISES if e.vhs_capture]
 
 
 def topological_order(exercises: list[Exercise]) -> list[Exercise]:
