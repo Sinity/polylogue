@@ -226,7 +226,14 @@ def test_claude_code_message_type_contract(msg: dict[str, Any]) -> None:
     if not result.messages:
         return
     parsed = result.messages[0]
-    if msg.get("type") == "user":
+    # ClaudeCodeRecord.role precedence: message.role > type field.
+    # When message.role is present and valid, it overrides the type field.
+    inner_role = None
+    if isinstance(msg.get("message"), dict):
+        inner_role = msg["message"].get("role")
+    if isinstance(inner_role, str) and inner_role in {"user", "assistant", "system", "tool"}:
+        assert parsed.role == inner_role
+    elif msg.get("type") == "user":
         assert parsed.role == "user"
     elif msg.get("type") == "assistant":
         assert parsed.role == "assistant"
