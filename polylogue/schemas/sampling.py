@@ -106,13 +106,21 @@ def _iter_samples_from_db(
     *,
     db_path: Path,
     config: ProviderConfig,
+    with_conv_ids: bool = False,
 ) -> Any:
+    """Yield samples from the database.
+
+    When *with_conv_ids* is True, yields ``(sample_dict, conversation_id)``
+    tuples instead of bare dicts.  The conversation_id is the ``raw_id``
+    column from ``raw_conversations`` — a stable per-conversation identifier
+    used by the cross-conversation privacy threshold.
+    """
     conn = sqlite3.connect(db_path)
     try:
         where_clause, where_params = _sample_provider_where_clause(provider_name)
         cursor = conn.execute(
             f"""
-            SELECT raw_content, source_path, provider_name, payload_provider
+            SELECT raw_content, source_path, provider_name, payload_provider, raw_id
             FROM raw_conversations
             WHERE {where_clause}
             ORDER BY acquired_at DESC
@@ -136,12 +144,17 @@ def _iter_samples_from_db(
                     continue
                 if envelope.provider != provider_name:
                     continue
-                yield from extract_payload_samples(
+                raw_id = row[4]
+                for sample in extract_payload_samples(
                     envelope.payload,
                     sample_granularity=config.sample_granularity,
                     max_samples=None,
                     record_type_key=config.record_type_key,
-                )
+                ):
+                    if with_conv_ids:
+                        yield sample, raw_id
+                    else:
+                        yield sample
     finally:
         conn.close()
 

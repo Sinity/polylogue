@@ -1,67 +1,134 @@
-"""Tests for the `polylogue qa` command."""
+"""Tests for showcase QA report and JSON envelope contracts.
+
+Validates that showcase results produce valid JSON reports
+and that output directories can be customized.
+"""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from polylogue.cli.click_app import cli as click_cli
+import pytest
+
+from polylogue.showcase.exercises import EXERCISES, Exercise, Validation
+from polylogue.showcase.report import (
+    generate_cookbook,
+    generate_json_report,
+    generate_summary,
+    save_reports,
+)
+from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
 
-def test_qa_fails_without_sources(cli_runner) -> None:
-    with cli_runner.isolated_filesystem():
-        result = cli_runner.invoke(click_cli, ["qa"])
-        assert result.exit_code != 0
-        assert "No QA sources found" in result.output
+def _make_result(exercises: list[Exercise] | None = None) -> ShowcaseResult:
+    """Build a ShowcaseResult with predictable test data."""
+    if exercises is None:
+        exercises = [
+            Exercise("test-1", "structural", "Test one", ["--help"],
+                     Validation(stdout_contains=("polylogue",))),
+            Exercise("test-2", "sources", "Test two", ["sources"]),
+        ]
+
+    result = ShowcaseResult()
+    result.results = [
+        ExerciseResult(
+            exercise=exercises[0],
+            passed=True,
+            exit_code=0,
+            output="Usage: polylogue\n",
+            duration_ms=10.0,
+        ),
+        ExerciseResult(
+            exercise=exercises[1],
+            passed=False,
+            exit_code=1,
+            output="error\n",
+            error="exit code 1, expected 0",
+            duration_ms=20.0,
+        ),
+    ]
+    result.total_duration_ms = 30.0
+    return result
 
 
-def test_qa_snapshots_default_sources(cli_runner) -> None:
-    with cli_runner.isolated_filesystem():
-        cwd = Path.cwd()
-        (cwd / "qa_outputs").mkdir()
-        (cwd / "qa_outputs" / "Q01.txt").write_text("hello", encoding="utf-8")
-        (cwd / "qa_archive").mkdir()
-        (cwd / "qa_archive" / "A01.txt").write_text("world", encoding="utf-8")
+class TestJsonEnvelopeValidation:
+    """JSON report has correct envelope structure."""
 
-        archive_root = cwd / ".archive"
-        result = cli_runner.invoke(
-            click_cli,
-            ["qa", "--name", "nightly"],
-            env={
-                "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-                "POLYLOGUE_FORCE_PLAIN": "1",
-            },
-        )
-        assert result.exit_code == 0
-        snapshots_root = archive_root / "qa" / "snapshots"
-        snapshots = [p for p in snapshots_root.iterdir() if p.is_dir() and p.name != "latest"]
-        assert len(snapshots) == 1
-        snapshot = snapshots[0]
-        assert (snapshot / "manifest.json").exists()
-        assert (snapshot / "INDEX.md").exists()
-        assert (snapshot / "qa_outputs" / "Q01.txt").read_text(encoding="utf-8") == "hello"
-        assert (snapshot / "qa_archive" / "A01.txt").read_text(encoding="utf-8") == "world"
-        assert (snapshots_root / "latest").exists()
+    def test_json_report_is_valid_json(self):
+        """generate_json_report produces parseable JSON."""
+        result = _make_result()
+        report_json = generate_json_report(result)
+        data = json.loads(report_json)
+        assert isinstance(data, dict)
+
+    def test_json_report_has_required_fields(self):
+        """JSON report contains total, passed, failed, skipped, exercises."""
+        result = _make_result()
+        data = json.loads(generate_json_report(result))
+
+        for field in ("total", "passed", "failed", "skipped", "exercises", "total_duration_ms"):
+            assert field in data, f"Missing field: {field}"
+
+    def test_json_report_exercise_entries(self):
+        """Each exercise entry has required keys."""
+        result = _make_result()
+        data = json.loads(generate_json_report(result))
+
+        required_keys = {"name", "group", "description", "passed", "exit_code", "duration_ms"}
+        for entry in data["exercises"]:
+            assert required_keys <= set(entry.keys()), (
+                f"Entry {entry['name']} missing keys: {required_keys - set(entry.keys())}"
+            )
+
+    def test_json_report_counts_match(self):
+        """Report counts match actual results."""
+        result = _make_result()
+        data = json.loads(generate_json_report(result))
+
+        assert data["total"] == 2
+        assert data["passed"] == 1
+        assert data["failed"] == 1
+        assert data["skipped"] == 0
 
 
-def test_qa_json_output(cli_runner) -> None:
-    with cli_runner.isolated_filesystem():
-        cwd = Path.cwd()
-        custom = cwd / "custom-qa"
-        custom.mkdir()
-        (custom / "result.log").write_text("ok", encoding="utf-8")
+class TestCustomOutputRoot:
+    """Reports can be saved to a custom output directory."""
 
-        archive_root = cwd / ".archive"
-        result = cli_runner.invoke(
-            click_cli,
-            ["qa", "--source", str(custom), "--json"],
-            env={
-                "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-                "POLYLOGUE_FORCE_PLAIN": "1",
-            },
-        )
-        assert result.exit_code == 0
-        envelope = json.loads(result.output)
-        payload = envelope.get("result", envelope)
-        assert payload["entry_count"] == 1
-        assert "snapshot_dir" in payload
+    def test_save_reports_creates_files(self, tmp_path):
+        """save_reports writes all three report files."""
+        result = _make_result()
+        result.output_dir = tmp_path
+
+        save_reports(result)
+
+        assert (tmp_path / "showcase-summary.txt").exists()
+        assert (tmp_path / "showcase-report.json").exists()
+        assert (tmp_path / "showcase-cookbook.md").exists()
+
+    def test_save_reports_json_is_valid(self, tmp_path):
+        """Saved JSON report is parseable."""
+        result = _make_result()
+        result.output_dir = tmp_path
+
+        save_reports(result)
+
+        data = json.loads((tmp_path / "showcase-report.json").read_text())
+        assert data["total"] == 2
+
+    def test_summary_contains_group_counts(self):
+        """Summary text includes group-level pass/fail counts."""
+        result = _make_result()
+        summary = generate_summary(result)
+
+        assert "structural" in summary
+        assert "sources" in summary
+        assert "TOTAL" in summary
+
+    def test_cookbook_includes_exercise_output(self):
+        """Cookbook contains exercise descriptions and commands."""
+        result = _make_result()
+        cookbook = generate_cookbook(result)
+
+        assert "Test one" in cookbook
+        assert "polylogue" in cookbook

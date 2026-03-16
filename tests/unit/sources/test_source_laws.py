@@ -164,7 +164,7 @@ def test_decode_json_bytes_round_trips_supported_encodings(document: dict[str, o
 
 
 @given(json_array_bytes_strategy())
-@settings(max_examples=30)
+@settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
 def test_iter_json_stream_root_list_round_trips_documents(case: tuple[list[dict[str, object]], bytes]) -> None:
     """Streaming a root JSON array yields the original item sequence."""
     documents, raw = case
@@ -196,23 +196,30 @@ def test_iter_json_stream_jsonl_preserves_valid_records_with_blank_lines(case: t
 
 
 def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 4 broken lines: first 3 (non-trailing) get warning, last gets debug (truncation tolerance)
     raw = b'{"id": 1}\n{broken}\n{broken}\n{broken}\n{broken}\n'
     warnings: list[str] = []
+    debugs: list[str] = []
 
     monkeypatch.setattr(
         source_module.logger,
         "warning",
         lambda message, *args: warnings.append(message % args if args else message),
     )
+    monkeypatch.setattr(
+        source_module.logger,
+        "debug",
+        lambda message, *args: debugs.append(message % args if args else message),
+    )
 
     items = list(_iter_json_stream(BytesIO(raw), "test.jsonl"))
 
     assert items == [{"id": 1}]
-    assert warnings[:3] == [
-        "Skipping invalid JSON line in test.jsonl: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
-    ] * 3
-    assert warnings[3] == "Skipping further invalid JSON lines in test.jsonl..."
-    assert warnings[4] == "Skipped 4 invalid JSON lines in test.jsonl"
+    # First 3 non-trailing broken lines get warning level
+    assert len(warnings) == 3
+    assert all("Skipping invalid JSON line in test.jsonl" in w for w in warnings)
+    # Trailing broken line gets debug (in-progress file truncation tolerance)
+    assert any("Skipping truncated trailing line in test.jsonl" in d for d in debugs)
 
 
 def test_iter_json_stream_falls_back_to_full_json_load_when_streaming_fails(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import click
@@ -23,6 +24,15 @@ def schema_command(ctx: click.Context) -> None:
 @click.option("--cluster", is_flag=True, help="Cluster samples by structural fingerprint")
 @click.option("--max-samples", type=int, default=None, help="Limit samples for inference")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option(
+    "--privacy",
+    type=click.Choice(["strict", "standard", "permissive"], case_sensitive=False),
+    default=None,
+    help="Privacy preset level (default: standard)",
+)
+@click.option("--privacy-config", "privacy_config_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to TOML privacy config overrides")
+@click.option("--report", is_flag=True, help="Write a redaction report alongside the schema")
 @click.pass_obj
 def schema_infer(
     env: AppEnv,
@@ -30,19 +40,49 @@ def schema_infer(
     cluster: bool,
     max_samples: int | None,
     json_output: bool,
+    privacy: str | None,
+    privacy_config_path: Path | None,
+    report: bool,
 ) -> None:
     """Infer schema from provider data, optionally clustering by structure."""
+    from polylogue.schemas.privacy_config import PrivacyConfig, load_privacy_config
     from polylogue.schemas.registry import SchemaRegistry
     from polylogue.schemas.schema_generation import generate_provider_schema
+
+    # Build privacy config from cascade
+    cli_overrides: dict[str, Any] = {}
+    if privacy:
+        cli_overrides["level"] = privacy
+    if privacy_config_path:
+        p_config = load_privacy_config(
+            cli_overrides=cli_overrides,
+            project_path=privacy_config_path.parent,
+        )
+    elif cli_overrides:
+        p_config = PrivacyConfig(**cli_overrides)
+    else:
+        p_config = None
 
     result = generate_provider_schema(
         provider,
         db_path=env.config.db_path,
         max_samples=max_samples,
+        privacy_config=p_config,
     )
 
     if not result.success:
         fail("schema infer", result.error or "Schema generation failed")
+
+    # Redaction report (when --report is set)
+    if report and result.redaction_report:
+        import sys
+
+        click.echo(result.redaction_report.format_summary(), err=True)
+        if not json_output:
+            report_md = result.redaction_report.format_markdown()
+            report_path = Path(f"{provider}-redaction-report.md")
+            report_path.write_text(report_md)
+            click.echo(f"  Redaction report: {report_path}", err=True)
 
     registry = SchemaRegistry()
 
@@ -278,12 +318,14 @@ def schema_promote(
 @click.option("--provider", required=True, help="Provider name")
 @click.option("--version", "version", default="latest", help="Schema version (default: latest)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option("--verbose", "-v", is_flag=True, help="Show semantic roles, privacy summary, annotation coverage")
 @click.pass_obj
 def schema_explain(
     env: AppEnv,
     provider: str,
     version: str,
     json_output: bool,
+    verbose: bool,
 ) -> None:
     """Explain a schema version with annotations and metadata."""
     from polylogue.schemas.registry import SchemaRegistry
@@ -298,8 +340,50 @@ def schema_explain(
         click.echo(json.dumps(schema, indent=2))
         return
 
-    # Human-readable explanation
+    # Count annotations for summary line
+    props = schema.get("properties", {})
+    n_semantic = 0
+    n_format = 0
+    n_values = 0
+    total_enum_values = 0
+
+    def _count_annotations(s: dict[str, Any]) -> None:
+        nonlocal n_semantic, n_format, n_values, total_enum_values
+        if not isinstance(s, dict):
+            return
+        if "x-polylogue-semantic-role" in s:
+            n_semantic += 1
+        if "x-polylogue-format" in s:
+            n_format += 1
+        if "x-polylogue-values" in s:
+            n_values += 1
+            total_enum_values += len(s["x-polylogue-values"])
+        for sub in s.get("properties", {}).values():
+            _count_annotations(sub)
+        if isinstance(s.get("items"), dict):
+            _count_annotations(s["items"])
+        if isinstance(s.get("additionalProperties"), dict):
+            _count_annotations(s["additionalProperties"])
+        for kw in ("anyOf", "oneOf", "allOf"):
+            for sub in s.get(kw, []):
+                _count_annotations(sub)
+
+    _count_annotations(schema)
+
+    # Summary header
+    sample_count = schema.get("x-polylogue-sample-count", "?")
     click.echo(f"Schema: {provider} {version}")
+    click.echo(
+        f"  {len(props)} properties, {sample_count} samples, "
+        f"{n_semantic} semantic roles, {n_format} format annotations"
+    )
+    click.echo(
+        f"  Privacy: standard ({n_values} fields with enums, "
+        f"{total_enum_values} values included)"
+    )
+    click.echo()
+
+    # Basic metadata
     click.echo(f"  $id: {schema.get('$id', 'N/A')}")
     click.echo(f"  Title: {schema.get('title', 'N/A')}")
     click.echo(f"  Description: {schema.get('description', 'N/A')}")
@@ -324,7 +408,6 @@ def schema_explain(
             click.echo(f"    {label}: {val}")
 
     # Properties
-    props = schema.get("properties", {})
     click.echo(f"\n  Properties ({len(props)}):")
     for name, prop_schema in sorted(props.items()):
         type_str = prop_schema.get("type", "?")
@@ -352,6 +435,107 @@ def schema_explain(
             click.echo(f"\n  {key}:")
             for entry in val:
                 click.echo(f"    {json.dumps(entry)}")
+
+    # Verbose mode: additional detail
+    if verbose:
+        click.echo()
+        _explain_verbose(schema)
+
+
+def _explain_verbose(schema: dict[str, Any]) -> None:
+    """Print verbose explain sections: semantic roles, annotation coverage."""
+    # Semantic role assignments
+    roles: list[tuple[str, str, float, dict]] = []
+
+    def _collect_roles(s: dict[str, Any], path: str = "$") -> None:
+        if not isinstance(s, dict):
+            return
+        role = s.get("x-polylogue-semantic-role")
+        if role:
+            confidence = s.get("x-polylogue-confidence", 0.0)
+            evidence = s.get("x-polylogue-evidence", {})
+            roles.append((path, role, confidence, evidence))
+        for name, prop in s.get("properties", {}).items():
+            _collect_roles(prop, f"{path}.{name}")
+        if isinstance(s.get("items"), dict):
+            _collect_roles(s["items"], f"{path}[*]")
+        if isinstance(s.get("additionalProperties"), dict):
+            _collect_roles(s["additionalProperties"], f"{path}.*")
+        for kw in ("anyOf", "oneOf", "allOf"):
+            for sub in s.get(kw, []):
+                _collect_roles(sub, path)
+
+    _collect_roles(schema)
+
+    if roles:
+        click.echo("  Semantic Roles:")
+        for path, role, confidence, evidence in sorted(roles, key=lambda r: -r[2]):
+            evidence_str = ", ".join(f"{k}={v}" for k, v in evidence.items())
+            click.echo(f"    {role} → {path} (confidence={confidence:.3f})")
+            if evidence_str:
+                click.echo(f"      evidence: {evidence_str}")
+
+    # Annotation coverage
+    total = 0
+    with_format = 0
+    with_values = 0
+    with_role = 0
+
+    def _count_coverage(s: dict[str, Any]) -> None:
+        nonlocal total, with_format, with_values, with_role
+        if not isinstance(s, dict):
+            return
+        for prop in s.get("properties", {}).values():
+            if isinstance(prop, dict):
+                total += 1
+                if "x-polylogue-format" in prop:
+                    with_format += 1
+                if "x-polylogue-values" in prop:
+                    with_values += 1
+                if "x-polylogue-semantic-role" in prop:
+                    with_role += 1
+                _count_coverage(prop)
+        if isinstance(s.get("items"), dict):
+            _count_coverage(s["items"])
+        if isinstance(s.get("additionalProperties"), dict):
+            _count_coverage(s["additionalProperties"])
+        for kw in ("anyOf", "oneOf", "allOf"):
+            for sub in s.get(kw, []):
+                _count_coverage(sub)
+
+    _count_coverage(schema)
+
+    if total:
+        click.echo(f"\n  Annotation Coverage ({total} fields):")
+        click.echo(f"    Format:        {with_format}/{total} ({with_format/total*100:.0f}%)")
+        click.echo(f"    Enum values:   {with_values}/{total} ({with_values/total*100:.0f}%)")
+        click.echo(f"    Semantic role:  {with_role}/{total} ({with_role/total*100:.0f}%)")
+
+
+@schema_command.command("audit")
+@click.option("--provider", default=None, help="Audit a specific provider (default: all)")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_obj
+def schema_audit(
+    env: AppEnv,
+    provider: str | None,
+    json_output: bool,
+) -> None:
+    """Run automated quality checks on committed schemas."""
+    from polylogue.schemas.audit import audit_all_providers, audit_provider
+
+    if provider:
+        report = audit_provider(provider)
+    else:
+        report = audit_all_providers()
+
+    if json_output:
+        click.echo(json.dumps(report.to_json(), indent=2))
+    else:
+        click.echo(report.format_text())
+
+    if not report.all_passed:
+        raise SystemExit(1)
 
 
 __all__ = ["schema_command"]

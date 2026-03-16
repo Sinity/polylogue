@@ -1,4 +1,4 @@
-"""Exercise types and the full catalog for ``polylogue demo --showcase``."""
+"""Exercise types and the full catalog for ``polylogue qa``."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 class Validation:
     """Expected outcome for an exercise."""
 
-    exit_code: int = 0
+    exit_code: int | None = 0  # None = delegated to custom validator
     stdout_contains: tuple[str, ...] = ()
     stdout_not_contains: tuple[str, ...] = ()
     stdout_is_valid_json: bool = False
@@ -103,6 +103,13 @@ def _json_only_fields(*allowed: str) -> Callable[[str, int], str | None]:
     return check
 
 
+def _search_exit_ok(output: str, exit_code: int) -> str | None:
+    """Search exercises accept exit 0 (results found) or 2 (no results)."""
+    if exit_code not in (0, 2):
+        return f"unexpected exit code {exit_code} (expected 0 or 2)"
+    return None
+
+
 # =============================================================================
 # Exercise catalog
 # =============================================================================
@@ -121,8 +128,10 @@ EXERCISES: tuple[Exercise, ...] = (
        ["run", "--help"], _V(stdout_contains=("--stage",)), tier=0),
     _E("help-check", "structural", "Check subcommand help",
        ["check", "--help"], _V(stdout_contains=("--repair",)), tier=0),
-    _E("help-demo", "structural", "Demo subcommand help",
-       ["demo", "--help"], _V(stdout_contains=("--seed",)), tier=0),
+    _E("help-generate", "structural", "Generate subcommand help",
+       ["generate", "--help"], _V(stdout_contains=("--seed",)), tier=0),
+    _E("help-qa", "structural", "QA subcommand help",
+       ["qa", "--help"], _V(stdout_contains=("--live",)), tier=0),
     _E("help-tags", "structural", "Tags subcommand help",
        ["tags", "--help"], _V(stdout_contains=("--json",)), tier=0),
     _E("help-embed", "structural", "Embed subcommand help",
@@ -297,7 +306,9 @@ EXERCISES: tuple[Exercise, ...] = (
     _E("sample-random", "advanced", "Random sample of conversations",
        ["--sample", "2", "--list"], needs_data=True, tier=2),
     _E("query-search-term", "advanced", "Full-text search",
-       ["debug", "--list"], needs_data=True, tier=2),
+       ["implementation", "--list"],
+       _V(exit_code=None, custom=_search_exit_ok),
+       needs_data=True, tier=2),
 )
 
 EXERCISE_INDEX: dict[str, Exercise] = {e.name: e for e in EXERCISES}

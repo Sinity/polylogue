@@ -57,27 +57,43 @@ def _decode_json_bytes(blob: bytes) -> str | None:
 def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists: bool = True) -> Iterable[Any]:
     if path_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
         error_count = 0
+        # One-ahead buffer: process `pending` only when we know it's NOT the last line.
+        # Truncated trailing lines (from in-progress session files) are debug-logged only.
+        pending: bytes | str | None = None
+
+        def _yield_pending(raw_pending: bytes | str, *, is_last: bool) -> Iterable[Any]:
+            nonlocal error_count
+            if isinstance(raw_pending, bytes):
+                decoded: str | None = _decode_json_bytes(raw_pending)
+                if not decoded:
+                    if is_last:
+                        logger.debug("Skipping undecodable trailing line from %s", path_name)
+                    else:
+                        logger.warning("Skipping undecodable line from %s", path_name)
+                    return
+            else:
+                decoded = raw_pending
+            try:
+                yield json.loads(decoded)
+            except json.JSONDecodeError as exc:
+                if is_last:
+                    logger.debug("Skipping truncated trailing line in %s: %s", path_name, exc)
+                else:
+                    error_count += 1
+                    if error_count <= 3:
+                        logger.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
+                    elif error_count == 4:
+                        logger.warning("Skipping further invalid JSON lines in %s...", path_name)
+
         for line in handle:
             raw = line.strip()
             if not raw:
                 continue
-            if isinstance(raw, bytes):
-                decoded = _decode_json_bytes(raw)
-                if not decoded:
-                    logger.warning("Skipping undecodable line from %s", path_name)
-                    continue
-            else:
-                decoded = raw
-            try:
-                yield json.loads(decoded)
-            except json.JSONDecodeError as exc:
-                # Log first few errors, then summarize
-                error_count += 1
-                if error_count <= 3:
-                    logger.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
-                elif error_count == 4:
-                    logger.warning("Skipping further invalid JSON lines in %s...", path_name)
-                continue
+            if pending is not None:
+                yield from _yield_pending(pending, is_last=False)
+            pending = raw
+        if pending is not None:
+            yield from _yield_pending(pending, is_last=True)
         if error_count > 3:
             logger.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
         return

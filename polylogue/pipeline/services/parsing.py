@@ -246,29 +246,42 @@ class ParsingService:
         ui: object | None = None,
         progress_callback: ProgressCallback | None = None,
         parse_records: bool = True,
+        skip_acquire: bool = False,
+        skip_validate: bool = False,
     ) -> IngestResult:
         """Canonical ingestion orchestration for runtime callers.
 
         Flow:
         1. Acquire raw payloads directly into ``raw_conversations`` (streaming)
+           — skipped when ``skip_acquire=True`` (stage=="validate"|"parse")
         2. Collect pending validation backlog scoped to the selected sources
         3. Validate pending raw payloads (new + backlog)
+           — skipped when ``skip_validate=True`` (stage=="parse")
         4. Optionally parse validated raw payloads
+
+        Stage independence:
+        - ``stage=="validate"``: ``skip_acquire=True`` — validates backlog without re-acquiring
+        - ``stage=="parse"``: ``skip_acquire=True, skip_validate=True`` — parses backlog without re-running predecessors
+        - ``stage=="all"``: full pipeline (default, no skips)
         """
-        from polylogue.pipeline.services.acquisition import AcquisitionService
+        from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
         from polylogue.pipeline.services.planning import PlanningService
         from polylogue.pipeline.services.validation import ValidationService
 
         backend = self._require_backend()
-
-        acquire_service = AcquisitionService(backend=backend)
-        acquire_result = await acquire_service.acquire_sources(
-            sources,
-            ui=ui,
-            progress_callback=progress_callback,
-            drive_config=self.config.drive_config,
-        )
         source_names = [source.name for source in sources]
+
+        # --- Acquire ---
+        if skip_acquire:
+            acquire_result = AcquireResult()
+        else:
+            acquire_service = AcquisitionService(backend=backend)
+            acquire_result = await acquire_service.acquire_sources(
+                sources,
+                ui=ui,
+                progress_callback=progress_callback,
+                drive_config=self.config.drive_config,
+            )
         ingest_state = IngestState(
             source_names=tuple(source_names),
             parse_requested=parse_records,
@@ -276,26 +289,34 @@ class ParsingService:
         ingest_state.record_acquired(acquire_result.raw_ids)
 
         planning_service = PlanningService(backend=backend, config=self.config)
-        validation_ids = list(acquire_result.raw_ids)
-        if stage in {"validate", "parse", "all"}:
-            validation_ids.extend(
-                await planning_service.collect_validation_backlog(
-                    source_names=source_names or None,
-                    exclude_raw_ids=validation_ids,
-                )
-            )
-        ingest_state.record_validation_candidates(validation_ids)
 
+        # --- Validate ---
         validation_result = None
-        if validation_ids:
-            validation_service = ValidationService(backend=backend)
-            validation_result = await validation_service.validate_raw_ids(
-                raw_ids=validation_ids,
-                progress_callback=progress_callback,
+        validation_ids: list[str] = []
+        if skip_validate:
+            # Advance IngestState through validation phases with empty data
+            ingest_state.record_validation_candidates([])
+            ingest_state.record_validation_result([])
+        else:
+            validation_ids = list(acquire_result.raw_ids)
+            if stage in {"validate", "parse", "all"}:
+                validation_ids.extend(
+                    await planning_service.collect_validation_backlog(
+                        source_names=source_names or None,
+                        exclude_raw_ids=validation_ids,
+                    )
+                )
+            ingest_state.record_validation_candidates(validation_ids)
+
+            if validation_ids:
+                validation_service = ValidationService(backend=backend)
+                validation_result = await validation_service.validate_raw_ids(
+                    raw_ids=validation_ids,
+                    progress_callback=progress_callback,
+                )
+            ingest_state.record_validation_result(
+                validation_result.parseable_raw_ids if validation_result else [],
             )
-        ingest_state.record_validation_result(
-            validation_result.parseable_raw_ids if validation_result else [],
-        )
 
         parse_raw_ids: list[str] = []
         parse_result = ParseResult()

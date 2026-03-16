@@ -31,6 +31,10 @@ from polylogue.schemas.privacy import (
     _is_content_field,
     _is_safe_enum_value,
 )
+from polylogue.schemas.privacy_config import (
+    PrivacyConfig,
+    load_privacy_config,
+)
 from polylogue.schemas.sampling import (
     PROVIDERS,
     ProviderConfig,
@@ -152,6 +156,9 @@ __all__ = [
     # From privacy
     "_is_content_field",
     "_is_safe_enum_value",
+    # From privacy_config
+    "PrivacyConfig",
+    "load_privacy_config",
     # From sampling
     "PROVIDERS",
     "ProviderConfig",

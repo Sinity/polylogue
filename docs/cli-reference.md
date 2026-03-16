@@ -14,7 +14,8 @@ polylogue sources [OPTIONS...]                    # List configured sources
 polylogue dashboard                               # Launch TUI dashboard
 polylogue mcp                                     # MCP server mode
 polylogue check                                   # Health check
-polylogue qa                                      # Snapshot/index QA artifacts
+polylogue qa                                      # Composable QA (audit, exercises, invariants)
+polylogue generate                                # Synthetic data generation
 polylogue auth                                    # OAuth flow (Drive)
 polylogue reset                                   # Reset database/state
 polylogue completions --shell SHELL               # Generate shell completions
@@ -228,45 +229,62 @@ polylogue dashboard                       # Launch TUI dashboard
 
 Opens the Textual-based TUI (Mission Control) for interactive browsing.
 
-## Demo
+## Generate
 
 Generate synthetic conversations for testing and exploration:
 
 ```bash
-polylogue demo --seed                       # Seed demo DB, print env vars
-polylogue demo --seed --env-only            # Shell-friendly (for eval)
-polylogue demo --corpus                     # Write raw provider-format files
-polylogue demo --corpus -p chatgpt -n 5     # ChatGPT only, 5 conversations
-polylogue demo --corpus -o /tmp/corpus      # Custom output directory
-polylogue demo --showcase                   # Full CLI surface-area validation
-polylogue demo --showcase --showcase-data synthetic -n 5
-polylogue demo --showcase --live            # Read-only against real data
-polylogue demo --showcase --json            # Machine-readable report
-polylogue demo --showcase --verbose         # Print each exercise output
+polylogue generate                          # Raw provider-format files
+polylogue generate -p chatgpt -n 5          # ChatGPT only, 5 conversations
+polylogue generate -o /tmp/corpus           # Custom output directory
+polylogue generate --seed                   # Full demo environment
+polylogue generate --seed --env-only | eval # Shell-friendly
 ```
-
-**Three modes:**
-
-- `--seed`: Creates a full demo environment (database + rendered files) and prints environment variables (`POLYLOGUE_ARCHIVE_ROOT`, etc.) to point your shell at the demo data. Use `eval $(polylogue demo --seed --env-only)` for seamless shell integration.
-- `--corpus`: Writes raw provider-format files (JSON, JSONL) to disk for inspection. Useful for understanding wire formats or testing parsers.
-- `--showcase`: Exercises the entire CLI surface area (58 exercises across 7 groups) and generates verification reports — a summary, JSON results, and a markdown cookbook of all commands with output. Default seed source is packaged fixtures; use `--showcase-data synthetic` for schema-driven seeding.
 
 **Options:**
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--seed` | | Create full demo environment |
-| `--corpus` | | Generate raw fixture files |
-| `--showcase` | | Exercise all CLI commands and generate reports |
-| `--showcase-data fixtures\|synthetic` | | Showcase seed source (default: fixtures) |
 | `--provider NAME` | `-p` | Providers to include (repeatable, default: all) |
 | `--count N` | `-n` | Conversations per provider (default: 3) |
 | `--output-dir PATH` | `-o` | Output directory |
-| `--env-only` | | Print export statements only (for eval) |
-| `--live` | | Run showcase against real data (read-only) |
-| `--fail-fast` | | Stop showcase on first failure |
-| `--json` | | Output showcase results as JSON |
-| `--verbose` | | Print each exercise output |
+| `--seed` | | Run pipeline to produce usable demo environment |
+| `--env-only` | | Print export statements only (requires `--seed`) |
+
+## QA
+
+Composable quality assurance: schema audit, CLI exercises, and invariant checks.
+
+```bash
+polylogue qa                                # Full synthetic QA
+polylogue qa --live                         # Exercises against real data
+polylogue qa --source inbox                 # Fresh workspace from inbox data
+polylogue qa --only audit                   # Schema audit only
+polylogue qa --only exercises --tier 0      # Tier-0 smoke test
+polylogue qa --skip invariants              # Skip invariant checks
+polylogue qa --snapshot release-v3          # QA + archive results
+polylogue qa --snapshot-from ./qa_outputs   # Archive existing directory
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--synthetic` / `--live` | Data source (default: synthetic) |
+| `--source NAME` | Specific real source(s) in fresh workspace (repeatable) |
+| `--fresh` | Isolated temp workspace (default for synthetic) |
+| `--workspace DIR` | Reuse a specific workspace directory |
+| `--ingest` | Run ingestion pipeline (auto for synthetic/fresh) |
+| `--schemas` | Regenerate schemas during pipeline |
+| `--only STAGE` | Run only: `audit`, `exercises`, or `invariants` |
+| `--skip STAGE` | Skip stage (repeatable) |
+| `--tier N` | Exercise tier filter (0/1/2) |
+| `--fail-fast` | Stop on first exercise failure |
+| `--report-dir DIR` | Artifact directory |
+| `--json` | Machine-readable output |
+| `--verbose` | Print exercise outputs |
+| `--snapshot [LABEL]` | Archive results after QA |
+| `--snapshot-from DIR` | Archive existing directory (skip QA) |
 
 ## Other Modes
 
@@ -282,9 +300,9 @@ polylogue check --json                    # Machine-readable output
 polylogue check --schemas                 # Raw-corpus schema verification gate
 polylogue check --schemas --schema-provider chatgpt --schema-samples all
 polylogue check --schemas --schema-provider claude-code --schema-record-limit 500 --schema-record-offset 1000
-polylogue qa                              # Snapshot qa_outputs/qa_archive into archive_root
-polylogue qa --source qa_outputs --source qa_archive
-polylogue qa --name nightly --json
+polylogue qa                              # Full synthetic QA (audit → exercises → invariants)
+polylogue qa --live                       # QA against real data
+polylogue qa --only audit --json          # Schema audit with JSON output
 polylogue auth                            # OAuth flow for Google Drive
 polylogue auth --refresh                  # Force token refresh
 polylogue auth --revoke                   # Revoke stored credentials
@@ -296,7 +314,7 @@ polylogue reset --all                     # Reset everything
 polylogue reset --all --yes               # Non-interactive reset
 ```
 
-`polylogue qa` writes snapshots to `<archive_root>/qa/snapshots/<timestamp>-<name>` with
+`polylogue qa --snapshot` writes snapshots to `<archive_root>/qa/snapshots/<timestamp>-<label>` with
 `manifest.json` (hashes + metadata), `INDEX.md`, and a best-effort `latest` symlink.
 
 ## Global Flags

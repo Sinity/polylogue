@@ -890,6 +890,103 @@ Conversation summaries:
 {json.dumps(summaries, indent=2)}
 """
 
+    # ----- Tier 3: Session Profile & Coverage tools -----
+
+    @mcp.tool()
+    async def session_profile(conversation_id: str) -> str:
+        """Get a rich semantic profile for a single conversation.
+
+        Returns work events, phases, attribution, and cost/duration data.
+
+        Args:
+            conversation_id: Full or prefix conversation ID
+        """
+        async def _run() -> str:
+            from polylogue.lib.session_profile import build_session_profile
+
+            repo = _get_repo()
+            conv = await repo.view(conversation_id)
+            if conv is None:
+                return _error_json("Conversation not found", conversation_id=conversation_id)
+            profile = build_session_profile(conv)
+            return json.dumps(profile.to_dict(), indent=2, default=str)
+
+        return await _async_safe_call("session_profile", _run)
+
+    @mcp.tool()
+    async def session_profiles(
+        since: str | None = None,
+        until: str | None = None,
+        provider: str | None = None,
+        limit: int = 50,
+    ) -> str:
+        """Get semantic profiles for multiple conversations.
+
+        Returns a list of session profiles with work events, attribution, and costs.
+
+        Args:
+            since: Start date (ISO format)
+            until: End date (ISO format)
+            provider: Filter by provider name
+            limit: Maximum profiles to return (default 50)
+        """
+        async def _run() -> str:
+            from polylogue.lib.session_profile import build_session_profile
+
+            kwargs: dict[str, Any] = {"limit": _clamp_limit(limit)}
+            if provider:
+                kwargs["provider"] = provider
+            if since:
+                kwargs["since"] = since
+            if until:
+                kwargs["until"] = until
+
+            summaries = await _get_repo().list_summaries(**kwargs)
+            ids = [str(s.id) for s in summaries]
+            convs = await _get_repo().get_many(ids)
+
+            profiles = []
+            for conv in convs:
+                try:
+                    profile = build_session_profile(conv)
+                    profiles.append(profile.to_dict())
+                except Exception as exc:
+                    logger.debug("Failed to profile %s: %s", conv.id, exc)
+
+            return json.dumps({"count": len(profiles), "profiles": profiles}, indent=2, default=str)
+
+        return await _async_safe_call("session_profiles", _run)
+
+    @mcp.tool()
+    async def archive_coverage() -> str:
+        """Get completeness diagnostics for the conversation archive.
+
+        Returns provider ranges, gaps, truncated sessions, and total counts.
+        """
+        async def _run() -> str:
+            from polylogue.lib.coverage import analyze_coverage
+
+            repo = _get_repo()
+            summaries = await repo.list_summaries()
+            coverage = analyze_coverage(summaries)
+            return json.dumps({
+                "total_conversations": coverage.total_conversations,
+                "total_messages": coverage.total_messages,
+                "provider_counts": coverage.provider_counts,
+                "provider_ranges": [
+                    {"provider": r.provider, "first_date": r.first_date.isoformat(), "last_date": r.last_date.isoformat(), "count": r.count}
+                    for r in coverage.provider_ranges
+                ],
+                "gaps": [
+                    {"start_date": g.start_date.isoformat(), "end_date": g.end_date.isoformat(), "days": g.days}
+                    for g in coverage.gaps
+                ],
+                "truncated_sessions": coverage.truncated_sessions,
+                "date_range": [d.isoformat() if d else None for d in coverage.date_range],
+            }, indent=2)
+
+        return await _async_safe_call("archive_coverage", _run)
+
     return mcp
 
 

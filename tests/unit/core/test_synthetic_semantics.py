@@ -1,23 +1,39 @@
-"""Tests for semantic value generation in the synthetic corpus system.
+"""Tests for semantic value generation, wire formats, corpus generation, and roundtrips.
 
 Verifies that SemanticValueGenerator produces role-appropriate values for
 message_body, message_role, message_timestamp, and conversation_title
 semantic roles, and that _text_for_role handles all known roles correctly.
+
+Also validates wire format configuration, corpus generation contracts, and
+round-trip parsing through provider parsers.
+
+Consolidated from:
+- test_synthetic_semantics.py
+- test_synthetic_wire_formats.py
+- test_synthetic_corpus.py
+- test_synthetic_zero_knowledge.py
 """
 
 from __future__ import annotations
 
+import json
 import random
 from datetime import datetime, timezone
 
 import pytest
 
+from polylogue.schemas.synthetic import (
+    PROVIDER_WIRE_FORMATS,
+    SyntheticCorpus,
+    WireFormat,
+)
 from polylogue.schemas.synthetic.semantic_values import (
     SemanticValueGenerator,
     _ROLE_TEXTS,
     _text_for_role,
 )
 from polylogue.schemas.synthetic.showcase import ConversationTheme, _SHOWCASE_THEMES
+from polylogue.sources.source import parse_payload
 
 
 # ---------------------------------------------------------------------------
@@ -306,3 +322,363 @@ class TestSemanticFallback:
         schema = {"x-polylogue-semantic-role": "message_container"}
         handled, value = gen.try_generate(schema)
         assert handled is False
+
+
+# =============================================================================
+# Merged from test_synthetic_wire_formats.py (2024-03-15)
+# =============================================================================
+
+
+class TestWireFormatShape:
+    """Validate the wire format configuration data structure."""
+
+    EXPECTED_PROVIDERS = {"chatgpt", "claude-code", "claude-ai", "codex", "gemini"}
+
+    def test_all_expected_providers_have_entries(self):
+        """Every known provider has a wire format config."""
+        assert set(PROVIDER_WIRE_FORMATS.keys()) == self.EXPECTED_PROVIDERS
+
+    @pytest.mark.parametrize("provider", sorted(EXPECTED_PROVIDERS))
+    def test_encoding_is_valid(self, provider):
+        """Each wire format has a valid encoding value."""
+        wf = PROVIDER_WIRE_FORMATS[provider]
+        assert isinstance(wf, WireFormat)
+        assert wf.encoding in ("json", "jsonl"), f"{provider} has invalid encoding: {wf.encoding}"
+
+    def test_json_providers_have_structure(self):
+        """JSON-encoded providers have either tree or messages_path."""
+        for name, wf in PROVIDER_WIRE_FORMATS.items():
+            if wf.encoding == "json":
+                has_structure = wf.tree is not None or wf.messages_path is not None
+                assert has_structure, (
+                    f"{name}: JSON provider needs tree or messages_path"
+                )
+
+    def test_chatgpt_has_tree_with_container(self):
+        """ChatGPT wire format uses tree structure with container_path."""
+        wf = PROVIDER_WIRE_FORMATS["chatgpt"]
+        assert wf.tree is not None
+        assert wf.tree.container_path == "mapping"
+        assert wf.tree.children_field == "children"
+
+    def test_claude_code_has_tree_without_container(self):
+        """Claude Code uses tree structure in JSONL (no container_path)."""
+        wf = PROVIDER_WIRE_FORMATS["claude-code"]
+        assert wf.encoding == "jsonl"
+        assert wf.tree is not None
+        assert wf.tree.container_path is None
+        assert wf.tree.session_field == "sessionId"
+
+
+class TestCorpusSeedDeterminism:
+    """Corpus generation is deterministic with same seed."""
+
+    def test_same_seed_same_output(self):
+        """Two generations with the same seed produce identical bytes."""
+        available = SyntheticCorpus.available_providers()
+        if not available:
+            pytest.skip("No schemas available")
+        corpus = SyntheticCorpus.for_provider(available[0])
+        a = corpus.generate(count=2, seed=99)
+        b = corpus.generate(count=2, seed=99)
+        assert a == b
+
+    def test_different_seed_different_output(self):
+        """Two generations with different seeds produce different bytes."""
+        available = SyntheticCorpus.available_providers()
+        if not available:
+            pytest.skip("No schemas available")
+        corpus = SyntheticCorpus.for_provider(available[0])
+        a = corpus.generate(count=2, seed=1)
+        b = corpus.generate(count=2, seed=2)
+        assert a != b
+
+
+class TestCorpusParseRoundtrip:
+    """Generated corpus parses successfully through source iterators."""
+
+    @pytest.mark.parametrize("provider", sorted(PROVIDER_WIRE_FORMATS.keys()))
+    def test_generated_data_parses(self, provider, synthetic_source):
+        """Synthetic data for each provider round-trips through parser."""
+        from polylogue.sources import iter_source_conversations
+
+        try:
+            source = synthetic_source(provider, count=2, seed=42)
+        except FileNotFoundError:
+            pytest.skip(f"No schema available for {provider}")
+
+        convos = list(iter_source_conversations(source))
+        assert len(convos) > 0, f"No conversations parsed for {provider}"
+        for conv in convos:
+            assert len(conv.messages) > 0, f"Empty conversation for {provider}"
+
+
+# =============================================================================
+# Merged from test_synthetic_corpus.py (2024-03-15)
+# =============================================================================
+
+
+class TestSeedDeterminism:
+    """Corpus generation is deterministic given the same seed."""
+
+    @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
+    def test_same_seed_produces_identical_output(self, provider):
+        """Two generate() calls with same seed → identical byte output."""
+        try:
+            corpus = SyntheticCorpus.for_provider(provider)
+        except FileNotFoundError:
+            pytest.skip(f"No schema for {provider}")
+
+        a = corpus.generate(count=3, seed=42)
+        b = corpus.generate(count=3, seed=42)
+        assert a == b, f"{provider}: same seed produced different output"
+
+    def test_different_seeds_produce_different_output(self):
+        """Different seeds produce different output."""
+        available = SyntheticCorpus.available_providers()
+        if not available:
+            pytest.skip("No schemas available")
+
+        corpus = SyntheticCorpus.for_provider(available[0])
+        a = corpus.generate(count=2, seed=1)
+        b = corpus.generate(count=2, seed=2)
+        assert a != b
+
+
+class TestMessageCountContract:
+    """Generated conversations respect the message count range."""
+
+    @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
+    def test_generate_count_matches_requested(self, provider):
+        """generate(count=N) returns exactly N items."""
+        try:
+            corpus = SyntheticCorpus.for_provider(provider)
+        except FileNotFoundError:
+            pytest.skip(f"No schema for {provider}")
+
+        for count in (1, 3, 5):
+            items = corpus.generate(count=count, seed=0)
+            assert len(items) == count, (
+                f"{provider}: requested {count}, got {len(items)}"
+            )
+
+    def test_generate_zero_returns_empty(self):
+        """generate(count=0) returns an empty list."""
+        available = SyntheticCorpus.available_providers()
+        if not available:
+            pytest.skip("No schemas available")
+
+        corpus = SyntheticCorpus.for_provider(available[0])
+        items = corpus.generate(count=0, seed=0)
+        assert items == []
+
+
+class TestParseRoundtrip:
+    """Synthetic data round-trips through the actual provider parsers."""
+
+    @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
+    def test_synthetic_parses_to_conversations(self, provider, synthetic_source):
+        """Synthetic corpus for each provider parses into valid conversations."""
+        from polylogue.sources import iter_source_conversations
+
+        try:
+            source = synthetic_source(provider, count=2, seed=42)
+        except FileNotFoundError:
+            pytest.skip(f"No schema for {provider}")
+
+        convos = list(iter_source_conversations(source))
+        assert len(convos) > 0, f"No conversations parsed for {provider}"
+
+        for conv in convos:
+            assert len(conv.messages) > 0, f"Empty conversation for {provider}"
+            # At least one message should have non-empty text
+            assert any(m.text for m in conv.messages), (
+                f"No message text for {provider}"
+            )
+
+
+# =============================================================================
+# Merged from test_synthetic_zero_knowledge.py (2024-03-15)
+# =============================================================================
+
+
+# Schema providers use different canonical names than runtime parsers.
+# The mapping is: claude-ai (schema) → claude (runtime/parser).
+_SCHEMA_TO_RUNTIME_PROVIDER: dict[str, str] = {
+    "chatgpt": "chatgpt",
+    "claude-ai": "claude",
+    "claude-code": "claude-code",
+    "codex": "codex",
+    "gemini": "gemini",
+}
+
+
+def _deserialize_for_parser(provider: str, raw: bytes) -> object:
+    """Deserialize raw bytes into the format expected by parse_payload.
+
+    JSON providers produce a single JSON object/dict.
+    JSONL providers produce a list of parsed line dicts.
+    """
+    if provider in ("claude-code", "codex"):
+        # JSONL: split lines, parse each as JSON
+        lines = raw.decode("utf-8").strip().split("\n")
+        return [json.loads(line) for line in lines if line.strip()]
+    else:
+        return json.loads(raw)
+
+
+def _available_providers() -> list[str]:
+    return SyntheticCorpus.available_providers()
+
+
+# ---------------------------------------------------------------------------
+# Core roundtrip: generate → parse for every provider
+# ---------------------------------------------------------------------------
+
+
+class TestSyntheticRoundtrip:
+    """For every provider with a schema and wire format, synthetic data must
+    be parseable by the real provider parser."""
+
+    @pytest.mark.parametrize("provider", _available_providers())
+    def test_roundtrip_produces_messages(self, provider: str) -> None:
+        corpus = SyntheticCorpus.for_provider(provider)
+        results = corpus.generate(count=3, seed=42, messages_per_conversation=range(4, 8))
+        assert len(results) == 3
+
+        runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
+
+        for i, raw in enumerate(results):
+            payload = _deserialize_for_parser(provider, raw)
+            conversations = parse_payload(runtime_provider, payload, f"synth-{provider}-{i}")
+            assert len(conversations) >= 1, (
+                f"Provider {provider}: parse_payload returned no conversations "
+                f"for synthetic data (index {i})"
+            )
+            conv = conversations[0]
+            assert len(conv.messages) > 0, (
+                f"Provider {provider}: parsed conversation has no messages (index {i})"
+            )
+
+    @pytest.mark.parametrize("provider", _available_providers())
+    def test_parsed_messages_have_roles(self, provider: str) -> None:
+        corpus = SyntheticCorpus.for_provider(provider)
+        [raw] = corpus.generate(count=1, seed=7, messages_per_conversation=range(5, 6))
+
+        runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
+        payload = _deserialize_for_parser(provider, raw)
+        conversations = parse_payload(runtime_provider, payload, f"synth-{provider}")
+        assert conversations
+
+        for msg in conversations[0].messages:
+            assert msg.role is not None
+            assert str(msg.role) != ""
+
+    @pytest.mark.parametrize("provider", _available_providers())
+    def test_parsed_messages_have_text_content(self, provider: str) -> None:
+        corpus = SyntheticCorpus.for_provider(provider)
+        [raw] = corpus.generate(count=1, seed=99, messages_per_conversation=range(4, 5))
+
+        runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
+        payload = _deserialize_for_parser(provider, raw)
+        conversations = parse_payload(runtime_provider, payload, f"synth-{provider}")
+        assert conversations
+
+        messages_with_text = [m for m in conversations[0].messages if m.text]
+        assert len(messages_with_text) > 0, (
+            f"Provider {provider}: no messages have text content"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Determinism: same seed → same output
+# ---------------------------------------------------------------------------
+
+
+class TestSyntheticDeterminism:
+    @pytest.mark.parametrize("provider", _available_providers())
+    def test_same_seed_same_output(self, provider: str) -> None:
+        corpus = SyntheticCorpus.for_provider(provider)
+        result_a = corpus.generate(count=3, seed=123)
+        result_b = corpus.generate(count=3, seed=123)
+        assert result_a == result_b
+
+    @pytest.mark.parametrize("provider", _available_providers())
+    def test_different_seeds_different_output(self, provider: str) -> None:
+        corpus = SyntheticCorpus.for_provider(provider)
+        result_a = corpus.generate(count=2, seed=1)
+        result_b = corpus.generate(count=2, seed=2)
+        # At least one conversation should differ
+        assert result_a != result_b
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestSyntheticEdgeCases:
+    @pytest.mark.parametrize("provider", _available_providers())
+    def test_count_zero_produces_empty_list(self, provider: str) -> None:
+        corpus = SyntheticCorpus.for_provider(provider)
+        result = corpus.generate(count=0, seed=0)
+        assert result == []
+
+    @pytest.mark.parametrize("provider", _available_providers())
+    def test_single_message_conversation(self, provider: str) -> None:
+        """A conversation with exactly 1 message should still parse."""
+        corpus = SyntheticCorpus.for_provider(provider)
+        [raw] = corpus.generate(count=1, seed=55, messages_per_conversation=range(1, 2))
+
+        runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
+        payload = _deserialize_for_parser(provider, raw)
+        conversations = parse_payload(runtime_provider, payload, f"synth-{provider}")
+        assert len(conversations) >= 1
+        assert len(conversations[0].messages) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Provider availability
+# ---------------------------------------------------------------------------
+
+
+class TestProviderAvailability:
+    def test_available_providers_is_nonempty(self) -> None:
+        providers = SyntheticCorpus.available_providers()
+        assert len(providers) > 0
+
+    def test_available_providers_are_known(self) -> None:
+        known = {"chatgpt", "claude-ai", "claude-code", "codex", "gemini"}
+        for provider in SyntheticCorpus.available_providers():
+            assert provider in known, f"Unknown provider: {provider}"
+
+    def test_for_provider_raises_on_unknown(self) -> None:
+        with pytest.raises((FileNotFoundError, ValueError)):
+            SyntheticCorpus.for_provider("nonexistent-provider-xyz")
+
+
+# ---------------------------------------------------------------------------
+# Showcase style roundtrip
+# ---------------------------------------------------------------------------
+
+
+class TestShowcaseStyleRoundtrip:
+    @pytest.mark.parametrize("provider", _available_providers())
+    def test_showcase_style_roundtrips(self, provider: str) -> None:
+        """Showcase-style synthetic data should also parse correctly."""
+        corpus = SyntheticCorpus.for_provider(provider)
+        results = corpus.generate(
+            count=2,
+            seed=42,
+            messages_per_conversation=range(4, 8),
+            style="showcase",
+        )
+        assert len(results) == 2
+
+        runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
+
+        for i, raw in enumerate(results):
+            payload = _deserialize_for_parser(provider, raw)
+            conversations = parse_payload(runtime_provider, payload, f"showcase-{provider}-{i}")
+            assert len(conversations) >= 1
+            assert len(conversations[0].messages) > 0

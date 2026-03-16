@@ -1,2 +1,1 @@
-"""Development tooling helpers for repository maintenance tasks."""
-
+"""Developer tools for polylogue project maintenance."""
