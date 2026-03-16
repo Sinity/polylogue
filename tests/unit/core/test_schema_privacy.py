@@ -12,6 +12,8 @@ Tests are grouped by guard type so failures pinpoint which heuristic regressed.
 from __future__ import annotations
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from polylogue.schemas.schema_inference import (
     _annotate_schema,
@@ -354,3 +356,41 @@ class TestStructuralConstantsInIdentifierFields:
         assert _is_safe_enum_value("corporate"), "'corporate' has no dot, should not be rejected"
         # "internal-api" contains "internal" as a substring, not a TLD
         assert _is_safe_enum_value("internal-api"), "'internal-api' has no dot, should not be rejected"
+
+
+# =============================================================================
+# Guard 5: Property test — safe values never resemble PII (Phase 9)
+# =============================================================================
+
+class TestSafeValueNeverResemblesPII:
+    """Property: if _is_safe_enum_value(v) returns True, v must not look like PII."""
+
+    @given(st.from_regex(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}", fullmatch=True))
+    @settings(max_examples=50)
+    def test_emails_always_rejected(self, email: str) -> None:
+        assert not _is_safe_enum_value(email), f"Email-like {email!r} should be rejected"
+
+    @given(st.from_regex(r"https?://[a-z0-9.-]+/[a-z0-9/]*", fullmatch=True))
+    @settings(max_examples=50)
+    def test_urls_always_rejected(self, url: str) -> None:
+        assert not _is_safe_enum_value(url), f"URL {url!r} should be rejected"
+
+    @pytest.mark.parametrize("word", [
+        "function", "class", "import", "model",
+        "user", "assistant", "system", "tool",
+        "active", "pending", "disabled", "completed",
+        "text", "json", "html", "markdown",
+    ])
+    def test_technical_vocabulary_always_passes(self, word: str) -> None:
+        assert _is_safe_enum_value(word), f"Technical word {word!r} should pass"
+
+    @given(st.text(
+        alphabet=st.characters(whitelist_categories=("L", "N", "P")),
+        min_size=1, max_size=50,
+    ).filter(lambda s: s.isascii() and " " not in s and "\n" not in s))
+    @settings(max_examples=100)
+    def test_accepted_values_have_no_pii_markers(self, value: str) -> None:
+        """If a value passes _is_safe_enum_value, it should not contain PII markers."""
+        if _is_safe_enum_value(value):
+            assert "@" not in value, f"Accepted value {value!r} contains @"
+            assert "://" not in value, f"Accepted value {value!r} contains URL scheme"
