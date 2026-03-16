@@ -119,6 +119,10 @@ from tests.infra.strategies.schema import (
     session_jsonl_tree_strategy,
     static_key_strategy,
 )
+from tests.infra.strategies.schema_driven import (
+    schema_conformant_payload,
+    strip_schema_extensions,
+)
 from tests.infra.strategies.site import (
     SiteArchiveSpec,
     expected_index_pages,
@@ -196,6 +200,9 @@ __all__ = [
     "record_variant_signature",
     "session_jsonl_tree_strategy",
     "static_key_strategy",
+    # Schema-driven crashlessness
+    "schema_conformant_payload",
+    "strip_schema_extensions",
     # Source/json wire contracts
     "conversations_wrapper_bytes_strategy",
     "json_array_bytes_strategy",

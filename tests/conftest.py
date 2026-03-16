@@ -620,6 +620,9 @@ def raw_synthetic_samples():
 # =============================================================================
 
 
+from tests.infra.corpus_fixtures import corpus_seeded_db  # noqa: F401
+
+
 @pytest.fixture
 def synthetic_source(tmp_path):
     """Factory fixture that generates synthetic Source objects for any provider.
