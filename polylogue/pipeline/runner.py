@@ -273,6 +273,8 @@ async def run_sources(
                 ui=ui,
                 progress_callback=progress_callback,
                 parse_records=stage in _PARSE_STAGES,
+                skip_acquire=stage in {"validate", "parse"},
+                skip_validate=stage == "parse",
             )
             acquire_result = ingest_result.acquire_result
             validation_result = ingest_result.validation_result
@@ -313,11 +315,11 @@ async def run_sources(
                 )
 
         if stage == "generate-schemas":
-            from polylogue.paths import db_path as _db_path
+            from polylogue.paths import data_home as _data_home, db_path as _db_path
             from polylogue.schemas.schema_inference import generate_all_schemas
 
             stage_t0 = time.perf_counter()
-            output_dir = config.archive_root.parent / "schemas"
+            output_dir = _data_home() / "schemas"
             results = await asyncio.to_thread(
                 generate_all_schemas,
                 output_dir=output_dir,

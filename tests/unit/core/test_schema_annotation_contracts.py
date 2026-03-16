@@ -1,4 +1,4 @@
-"""Integration tests for semantic and relational annotation of generated schemas.
+"""Integration tests for semantic and relational annotation of generated schemas, plus packaged schema quality.
 
 Tests the contract between:
   - semantic_inference.infer_semantic_roles()
@@ -11,11 +11,13 @@ Ensures:
   2. x-polylogue-confidence and x-polylogue-evidence attached
   3. Relational annotations (FKs, time deltas, exclusions, lengths) at root
   4. End-to-end: samples → field stats → annotations → schema
+  5. Packaged provider schemas expose coherent annotation metadata
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from typing import Any
 
 import pytest
 
@@ -415,6 +417,120 @@ class TestGenerateSchemaFromSamples:
         # Empty samples may have no properties or minimal structure
 
 
+class TestSemanticInferenceMisclassificationRegression:
+    """Regression tests for known misclassification bugs.
+
+    parentUuid and runSettings.model were both scoring 0.6 as
+    conversation_title due to generic positives (short string + high
+    cardinality). Fixed by adding negative signals in _score_title.
+    """
+
+    def test_uuid_field_not_scored_as_title(self) -> None:
+        """A UUID-format field should never be classified as conversation_title."""
+        field_stats = {
+            "$.parentUuid": FieldStats(
+                path="$.parentUuid",
+                observed_values=Counter({
+                    "550e8400-e29b-41d4-a716-446655440000": 1,
+                    "6ba7b810-9dad-11d1-80b4-00c04fd430c8": 1,
+                    "f47ac10b-58cc-4372-a567-0e02b2c3d479": 1,
+                }),
+                detected_formats=Counter({"uuid4": 2, "uuid": 1}),
+                string_lengths=[36, 36, 36],
+                is_multiline=0,
+                newline_counts=[0, 0, 0],
+                total_samples=3,
+                present_count=3,
+                value_count=3,
+            ),
+        }
+        candidates = infer_semantic_roles(field_stats)
+        title_candidates = [c for c in candidates if c.role == "conversation_title" and c.path == "$.parentUuid"]
+        assert not title_candidates, "UUID field should not be a title candidate"
+
+    def test_model_field_not_scored_as_title(self) -> None:
+        """A model-slug field should not be classified as conversation_title."""
+        field_stats = {
+            "$.runSettings.model": FieldStats(
+                path="$.runSettings.model",
+                observed_values=Counter({
+                    "gpt-4-code-interpreter": 100,
+                    "gpt-4": 50,
+                    "models/gemini-2.5-pro": 30,
+                }),
+                string_lengths=[23, 5, 22],
+                is_multiline=0,
+                newline_counts=[0, 0, 0],
+                total_samples=180,
+                present_count=180,
+                value_count=180,
+            ),
+        }
+        candidates = infer_semantic_roles(field_stats)
+        title_candidates = [
+            c for c in candidates
+            if c.role == "conversation_title" and c.path == "$.runSettings.model"
+        ]
+        # Should either not appear, or have very low confidence
+        for c in title_candidates:
+            assert c.confidence < 0.3, (
+                f"Model field scored {c.confidence} as title, expected <0.3"
+            )
+
+    def test_id_suffix_field_penalized(self) -> None:
+        """Fields ending in 'Id' or '_id' are penalized for title role."""
+        field_stats = {
+            "$.parentId": FieldStats(
+                path="$.parentId",
+                observed_values=Counter({f"id-{i}": 1 for i in range(20)}),
+                string_lengths=[5] * 20,
+                is_multiline=0,
+                newline_counts=[0] * 20,
+                total_samples=20,
+                present_count=20,
+                value_count=20,
+            ),
+        }
+        candidates = infer_semantic_roles(field_stats)
+        title_candidates = [
+            c for c in candidates
+            if c.role == "conversation_title" and c.path == "$.parentId"
+        ]
+        for c in title_candidates:
+            assert c.confidence < 0.15, (
+                f"ID-suffix field scored {c.confidence} as title, expected <0.15"
+            )
+
+    def test_path_like_values_penalized(self) -> None:
+        """Fields where >30% of values contain '/' are penalized."""
+        field_stats = {
+            "$.model_name": FieldStats(
+                path="$.model_name",
+                observed_values=Counter({
+                    "models/gemini-2.5-pro": 10,
+                    "models/gemini-1.5-flash": 8,
+                    "models/gemini-1.0-pro": 5,
+                    "gpt-4": 2,
+                }),
+                string_lengths=[22, 24, 22, 5],
+                is_multiline=0,
+                newline_counts=[0, 0, 0, 0],
+                total_samples=25,
+                present_count=25,
+                value_count=25,
+            ),
+        }
+        candidates = infer_semantic_roles(field_stats)
+        title_candidates = [
+            c for c in candidates
+            if c.role == "conversation_title" and c.path == "$.model_name"
+        ]
+        for c in title_candidates:
+            assert c.confidence < 0.3, (
+                f"Path-heavy field scored {c.confidence} as title, expected <0.3"
+            )
+
+
 class TestFieldStatsCollection:
     """_collect_field_stats() provides foundation for annotations."""
 
@@ -494,3 +610,194 @@ class TestFieldStatsCollection:
         stats = _collect_field_stats(samples)
         ts_stats = stats["$.ts"]
         assert "unix-epoch" in ts_stats.detected_formats
+
+
+# =============================================================================
+# Merged from test_schema_annotations.py (2024-03-15)
+# =============================================================================
+
+
+def _load_schema(provider: str) -> dict | None:
+    """Load a packaged provider schema, returning None if absent."""
+    try:
+        import gzip
+        import json
+        from pathlib import Path
+
+        schema_dir = Path(__file__).resolve().parents[3] / "polylogue" / "schemas" / "providers"
+        path = schema_dir / f"{provider}.schema.json.gz"
+        if not path.exists():
+            return None
+        return json.loads(gzip.decompress(path.read_bytes()))
+    except Exception:
+        return None
+
+
+def _find_annotations(schema: dict, prefix: str = "x-polylogue-") -> dict[str, list[tuple[str, Any]]]:
+    """Walk the schema tree and collect all x-polylogue-* annotations by key."""
+    result: dict[str, list[tuple[str, Any]]] = {}
+
+    def _walk(obj: Any, path: str) -> None:
+        if not isinstance(obj, dict):
+            return
+        for key, value in obj.items():
+            if key.startswith(prefix):
+                result.setdefault(key, []).append((path, value))
+            if isinstance(value, dict):
+                _walk(value, f"{path}.{key}")
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    if isinstance(item, dict):
+                        _walk(item, f"{path}.{key}[{index}]")
+
+    _walk(schema, "$")
+    return result
+
+
+def _get_nested(schema: dict, dotpath: str) -> dict | None:
+    """Navigate a schema by dot-separated property path."""
+    current = schema
+    for part in dotpath.split("."):
+        if part == "additionalProperties":
+            current = current.get("additionalProperties", {})
+        else:
+            current = current.get("properties", {}).get(part, {})
+        if not current:
+            return None
+        if "anyOf" in current:
+            for variant in current["anyOf"]:
+                if variant.get("type") == "object" and "properties" in variant:
+                    current = variant
+                    break
+    return current or None
+
+
+class TestSchemaAnnotations:
+    """Packaged schemas should expose coherent annotation metadata."""
+
+    def test_chatgpt_role_semantic(self):
+        schema = _load_schema("chatgpt")
+        if schema is None:
+            pytest.skip("ChatGPT schema not available")
+
+        role_schema = _get_nested(schema, "mapping.additionalProperties.message.author.role")
+        assert role_schema is not None
+        # Role field is identified via semantic inference; enum values may or may
+        # not be populated depending on cross-conversation threshold filtering.
+        assert role_schema.get("x-polylogue-semantic-role") == "message_role"
+
+    def test_chatgpt_uuid_format(self):
+        schema = _load_schema("chatgpt")
+        if schema is None:
+            pytest.skip("ChatGPT schema not available")
+
+        assert schema["properties"]["current_node"].get("x-polylogue-format") == "uuid4"
+        node_id = _get_nested(schema, "mapping.additionalProperties.id")
+        assert node_id is not None
+        assert node_id.get("x-polylogue-format") == "uuid4"
+
+    def test_chatgpt_timestamp_format(self):
+        schema = _load_schema("chatgpt")
+        if schema is None:
+            pytest.skip("ChatGPT schema not available")
+
+        create_time = schema["properties"].get("create_time", {})
+        fmt = create_time.get("x-polylogue-format")
+        rng = create_time.get("x-polylogue-range")
+        assert fmt == "unix-epoch" or rng is not None
+
+    def test_chatgpt_reference_detection(self):
+        schema = _load_schema("chatgpt")
+        if schema is None:
+            pytest.skip("ChatGPT schema not available")
+
+        assert schema["properties"]["current_node"].get("x-polylogue-ref") == "$.mapping"
+
+    def test_claude_code_has_annotations(self):
+        schema = _load_schema("claude-code")
+        if schema is None:
+            pytest.skip("Claude Code schema not available")
+
+        annotations = _find_annotations(schema)
+        total = sum(len(values) for values in annotations.values())
+        assert total > 100
+        assert "x-polylogue-format" in annotations
+        assert "x-polylogue-values" in annotations
+        assert "x-polylogue-frequency" in annotations
+
+    def test_claude_code_type_enum(self):
+        schema = _load_schema("claude-code")
+        if schema is None:
+            pytest.skip("Claude Code schema not available")
+
+        type_values = schema.get("properties", {}).get("type", {}).get("x-polylogue-values", [])
+        assert any(value in type_values for value in ("user", "assistant", "human"))
+
+    def test_claude_ai_sender_semantic(self):
+        schema = _load_schema("claude-ai")
+        if schema is None:
+            pytest.skip("Claude AI schema not available")
+
+        messages = schema.get("properties", {}).get("chat_messages", {})
+        item = messages.get("items", {})
+        # Navigate anyOf if present
+        if "anyOf" in item:
+            for variant in item["anyOf"]:
+                sender = variant.get("properties", {}).get("sender", {})
+                if "x-polylogue-semantic-role" in sender:
+                    assert sender["x-polylogue-semantic-role"] == "message_role"
+                    return
+        sender = item.get("properties", {}).get("sender", {})
+        assert sender.get("x-polylogue-semantic-role") == "message_role"
+
+    @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
+    def test_frequency_values_in_range(self, provider):
+        schema = _load_schema(provider)
+        if schema is None:
+            pytest.skip(f"{provider} schema not available")
+
+        for path, frequency in _find_annotations(schema).get("x-polylogue-frequency", []):
+            assert 0.0 < frequency < 1.0, f"{provider} {path}: frequency {frequency} not in (0, 1)"
+
+    @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
+    def test_numeric_ranges_plausible(self, provider):
+        schema = _load_schema(provider)
+        if schema is None:
+            pytest.skip(f"{provider} schema not available")
+
+        for path, value_range in _find_annotations(schema).get("x-polylogue-range", []):
+            assert isinstance(value_range, list) and len(value_range) == 2
+            low, high = value_range
+            assert low <= high, f"{provider} {path}: range inverted: {low} > {high}"
+
+    @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
+    def test_format_values_are_known(self, provider):
+        schema = _load_schema(provider)
+        if schema is None:
+            pytest.skip(f"{provider} schema not available")
+
+        known_formats = {
+            "uuid4",
+            "uuid",
+            "hex-id",
+            "iso8601",
+            "unix-epoch",
+            "unix-epoch-str",
+            "base64",
+            "url",
+            "email",
+            "mime-type",
+        }
+        for path, fmt in _find_annotations(schema).get("x-polylogue-format", []):
+            assert fmt in known_formats, f"{provider} {path}: unknown format {fmt!r}"
+
+    @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
+    def test_values_are_nonempty_lists(self, provider):
+        schema = _load_schema(provider)
+        if schema is None:
+            pytest.skip(f"{provider} schema not available")
+
+        for path, values in _find_annotations(schema).get("x-polylogue-values", []):
+            assert isinstance(values, list), f"{provider} {path}: values not a list"
+            assert values, f"{provider} {path}: empty values list"
+            assert all(isinstance(value, str) for value in values)

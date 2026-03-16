@@ -15,7 +15,7 @@ from click.shell_completion import get_completion_class
 
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
-from polylogue.cli.commands.demo import demo_command
+from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.commands.embed import embed_command
 from polylogue.cli.commands.qa import qa_command
 from polylogue.cli.commands.reset import reset_command
@@ -359,13 +359,14 @@ def cli(
     Subcommands:
         polylogue run       Parse/render/index pipeline
         polylogue check     Health check and repair
+        polylogue qa        Composable QA (audit, exercises, invariants)
+        polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
         polylogue schema    Schema inference and versioning
         polylogue mcp       Start MCP server
-        polylogue qa        Snapshot/index QA artifacts
 
     Run `polylogue <command> --help` for subcommand details.
     """
@@ -394,7 +395,7 @@ cli.add_command(dashboard_command)
 cli.add_command(embed_command)
 cli.add_command(site_command)
 cli.add_command(tags_command)
-cli.add_command(demo_command)
+cli.add_command(generate_command)
 cli.add_command(qa_command)
 cli.add_command(schema_command)
 

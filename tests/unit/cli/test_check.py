@@ -391,25 +391,33 @@ class TestCheckCommand:
 class TestCheckCommandSupplementary:
     """Tests for check command edge cases."""
 
-    def test_vacuum_without_repair_fails(self, cli_workspace):
-        """--vacuum requires --repair."""
+    # --- Flag validation: invalid combos rejected with correct error ---
+
+    INVALID_FLAG_COMBOS = [
+        (["check", "--vacuum"], "--vacuum requires --repair"),
+        (["check", "--preview"], "--preview requires --repair"),
+        (["check", "--schema-provider", "chatgpt"], "--schema-provider requires --schemas"),
+        (["check", "--schema-record-limit", "100"], "--schema-record-limit requires --schemas"),
+        (["check", "--schema-record-offset", "10"], "--schema-record-offset requires --schemas"),
+        (["check", "--schema-quarantine-malformed"], "--schema-quarantine-malformed requires --schemas"),
+        (["check", "--schemas", "--schema-samples", "0"], "--schema-samples must be a positive integer or 'all'"),
+        (["check", "--schemas", "--schema-record-limit", "0"], "--schema-record-limit must be a positive integer"),
+        (["check", "--schemas", "--schema-record-offset", "-1"], "--schema-record-offset must be >= 0"),
+    ]
+
+    @pytest.mark.parametrize("args,expected_error", INVALID_FLAG_COMBOS)
+    def test_invalid_flag_combinations_rejected(self, cli_workspace, args, expected_error):
+        """Flag dependencies and value constraints are enforced."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--vacuum"])
+        result = runner.invoke(cli, args)
         assert result.exit_code != 0
+        assert expected_error in result.output
 
-    def test_preview_without_repair_fails(self, cli_workspace):
-        """--preview requires --repair."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--preview"])
-        assert result.exit_code != 0
+    # --- Remaining non-repetitive tests ---
 
     def test_json_output_with_repair(self, cli_workspace):
         """--json with --repair includes repair results."""
@@ -461,17 +469,6 @@ class TestCheckCommandSupplementary:
         assert "repairs" in data
         assert data["vacuum"]["ok"] is True
         assert data["vacuum"]["preview"] is True
-
-    def test_schema_provider_requires_schemas_flag(self, cli_workspace):
-        """--schema-provider requires --schemas."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schema-provider", "chatgpt"])
-        assert result.exit_code != 0
-        assert "--schema-provider requires --schemas" in result.output
 
     def test_check_schemas_json_output(self, cli_workspace):
         """--schemas adds schema_verification block to JSON output."""
@@ -553,72 +550,6 @@ class TestCheckCommandSupplementary:
             record_offset=500,
             quarantine_malformed=False,
         )
-
-    def test_schema_samples_invalid_value_fails(self, cli_workspace):
-        """--schema-samples must be a positive integer or 'all'."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schemas", "--schema-samples", "0"])
-        assert result.exit_code != 0
-        assert "--schema-samples must be a positive integer or 'all'" in result.output
-
-    def test_schema_record_limit_requires_schemas_flag(self, cli_workspace):
-        """--schema-record-limit requires --schemas."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schema-record-limit", "100"])
-        assert result.exit_code != 0
-        assert "--schema-record-limit requires --schemas" in result.output
-
-    def test_schema_record_offset_requires_schemas_flag(self, cli_workspace):
-        """--schema-record-offset requires --schemas."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schema-record-offset", "10"])
-        assert result.exit_code != 0
-        assert "--schema-record-offset requires --schemas" in result.output
-
-    def test_schema_record_limit_invalid_value_fails(self, cli_workspace):
-        """--schema-record-limit must be a positive integer."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schemas", "--schema-record-limit", "0"])
-        assert result.exit_code != 0
-        assert "--schema-record-limit must be a positive integer" in result.output
-
-    def test_schema_record_offset_invalid_value_fails(self, cli_workspace):
-        """--schema-record-offset must be non-negative."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schemas", "--schema-record-offset", "-1"])
-        assert result.exit_code != 0
-        assert "--schema-record-offset must be >= 0" in result.output
-
-    def test_schema_quarantine_requires_schemas_flag(self, cli_workspace):
-        """--schema-quarantine-malformed requires --schemas."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--schema-quarantine-malformed"])
-        assert result.exit_code != 0
-        assert "--schema-quarantine-malformed requires --schemas" in result.output
 
     def test_check_schemas_forwards_quarantine_flag(self, cli_workspace):
         """Quarantine option is forwarded to verify_raw_corpus."""

@@ -738,13 +738,28 @@ class SyntheticCorpus:
         else:
             n = rng.randint(1, 3)
 
-        return [
+        # Check if the item schema explicitly allows null
+        item_allows_null = (
+            item_schema.get("type") == "null"
+            or (isinstance(item_schema.get("type"), list) and "null" in item_schema["type"])
+            or any(v.get("type") == "null" for v in item_schema.get("anyOf", []))
+            or any(v.get("type") == "null" for v in item_schema.get("oneOf", []))
+        )
+
+        items = [
             self._generate_from_schema(
                 item_schema, rng, depth=depth + 1, max_depth=max_depth,
                 path=f"{path}[*]",
             )
             for _ in range(n)
         ]
+
+        # Filter out None values that result from depth limiting when the
+        # item schema does not allow null — prevents invalid [None] arrays.
+        if not item_allows_null:
+            items = [v for v in items if v is not None]
+
+        return items
 
     # -- Wire format serialization -----------------------------------------
 

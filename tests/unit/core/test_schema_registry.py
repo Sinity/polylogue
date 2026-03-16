@@ -1,12 +1,13 @@
-"""Tests for schema clustering, versioning, comparison, and promotion."""
+"""Tests for schema clustering, versioning, comparison, promotion, and packaged provider schemas."""
 
 from __future__ import annotations
 
-import json
 import gzip
+import json
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from polylogue.schemas.registry import (
     ClusterManifest,
@@ -496,3 +497,19 @@ class TestFingerprintHash:
         fp1 = ("object", (("id", ("string",)),))
         fp2 = ("object", (("name", ("string",)),))
         assert _fingerprint_hash(fp1) != _fingerprint_hash(fp2)
+
+
+# =============================================================================
+# Merged from test_provider_schema_meta.py (2024-03-15)
+# =============================================================================
+
+
+def _provider_schema_paths() -> list[Path]:
+    schema_dir = Path(__file__).resolve().parents[3] / "polylogue" / "schemas" / "providers"
+    return sorted(schema_dir.glob("*.schema.json.gz"))
+
+
+@pytest.mark.parametrize("schema_path", _provider_schema_paths(), ids=lambda p: p.name)
+def test_packaged_provider_schema_is_valid_draft202012(schema_path: Path) -> None:
+    schema = json.loads(gzip.decompress(schema_path.read_bytes()).decode("utf-8"))
+    Draft202012Validator.check_schema(schema)

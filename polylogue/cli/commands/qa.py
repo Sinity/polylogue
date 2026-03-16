@@ -1,4 +1,4 @@
-"""QA artifact snapshot/index command."""
+"""Composable QA command: audit, exercises, invariants, and archival."""
 
 from __future__ import annotations
 
@@ -10,10 +10,15 @@ from pathlib import Path
 
 import click
 
-from polylogue.cli.helpers import fail, load_effective_config
+from polylogue.cli.helpers import load_effective_config
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.types import AppEnv
 from polylogue.paths import safe_path_component
+
+
+# ---------------------------------------------------------------------------
+# Archival helpers (preserved from the original qa command)
+# ---------------------------------------------------------------------------
 
 
 def _iter_files(root: Path) -> list[Path]:
@@ -26,11 +31,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _default_qa_sources(base_dir: Path) -> list[Path]:
-    candidates = [base_dir / "qa_outputs", base_dir / "qa_archive"]
-    return [path for path in candidates if path.exists() and path.is_dir()]
 
 
 def _write_index(snapshot_dir: Path, entries: list[dict[str, object]]) -> None:
@@ -58,136 +58,26 @@ def _update_latest_symlink(output_root: Path, snapshot_dir: Path) -> None:
             latest.unlink()
         latest.symlink_to(snapshot_dir.name)
     except OSError:
-        # Best-effort convenience pointer only.
         pass
 
 
-@click.command("qa")
-@click.option(
-    "--source",
-    "sources",
-    multiple=True,
-    type=click.Path(path_type=Path),
-    help="QA source directory (repeatable). Defaults: ./qa_outputs and ./qa_archive if present.",
-)
-@click.option(
-    "--name",
-    default="snapshot",
-    show_default=True,
-    help="Snapshot label (included in output directory name).",
-)
-@click.option(
-    "--output-root",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Snapshot root directory (default: <archive_root>/qa/snapshots).",
-)
-@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable summary JSON")
-@click.option(
-    "--from-showcase",
-    type=click.Path(path_type=Path, exists=True, file_okay=False),
-    default=None,
-    help="Import a showcase output directory as a QA snapshot (reads showcase-manifest.json).",
-)
-@click.pass_obj
-def qa_command(
-    env: AppEnv,
-    sources: tuple[Path, ...],
-    name: str,
-    output_root: Path | None,
+def _snapshot_results(
+    source_dir: Path,
+    *,
+    label: str,
+    output_root: Path,
     json_output: bool,
-    from_showcase: Path | None,
+    env: AppEnv,
 ) -> None:
-    """Snapshot and index QA artifacts to a reproducible archive path."""
-    config = load_effective_config(env)
-
-    # --from-showcase: import a showcase output directory as a QA snapshot
-    if from_showcase is not None:
-        _do_from_showcase(env, from_showcase, name, output_root, json_output, config)
-        return
-
-    source_dirs = list(sources) if sources else _default_qa_sources(Path.cwd())
-    if not source_dirs:
-        fail("qa", "No QA sources found. Provide --source or create qa_outputs/qa_archive.")
-
-    missing = [path for path in source_dirs if not path.exists() or not path.is_dir()]
-    if missing:
-        fail("qa", f"QA source path(s) missing or not directories: {', '.join(str(p) for p in missing)}")
-
+    """Archive a QA output directory into a timestamped snapshot."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    label = safe_path_component(name, fallback="snapshot")
-    root = output_root or (config.archive_root / "qa" / "snapshots")
-    snapshot_dir = root / f"{stamp}-{label}"
+    safe_label = safe_path_component(label, fallback="snapshot")
+    snapshot_dir = output_root / f"{stamp}-{safe_label}"
     snapshot_dir.mkdir(parents=True, exist_ok=False)
 
     entries: list[dict[str, object]] = []
-    for source_dir in source_dirs:
-        for src_file in _iter_files(source_dir):
-            rel = Path(source_dir.name) / src_file.relative_to(source_dir)
-            dst_file = snapshot_dir / rel
-            dst_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, dst_file)
-            entries.append(
-                {
-                    "relative_path": str(rel),
-                    "source_path": str(src_file),
-                    "size_bytes": dst_file.stat().st_size,
-                    "sha256": _sha256(dst_file),
-                }
-            )
-
-    manifest = {
-        "snapshot": snapshot_dir.name,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "source_dirs": [str(path) for path in source_dirs],
-        "entry_count": len(entries),
-        "entries": entries,
-    }
-    (snapshot_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    _write_index(snapshot_dir, entries)
-    _update_latest_symlink(root, snapshot_dir)
-
-    if json_output:
-        emit_success({
-            "snapshot_dir": str(snapshot_dir),
-            "entry_count": len(entries),
-            "sources": [str(path) for path in source_dirs],
-        })
-        return
-
-    env.ui.console.print(f"QA snapshot created: {snapshot_dir}")
-    env.ui.console.print(f"Files captured: {len(entries)}")
-    env.ui.console.print("Artifacts:")
-    env.ui.console.print(f"  - {snapshot_dir / 'manifest.json'}")
-    env.ui.console.print(f"  - {snapshot_dir / 'INDEX.md'}")
-
-
-def _do_from_showcase(
-    env: AppEnv,
-    showcase_dir: Path,
-    name: str,
-    output_root: Path | None,
-    json_output: bool,
-    config: object,
-) -> None:
-    """Import a showcase output directory as a QA snapshot."""
-    manifest_path = showcase_dir / "showcase-manifest.json"
-    showcase_manifest: dict | None = None
-    if manifest_path.exists():
-        showcase_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    label = safe_path_component(name, fallback="showcase")
-    root = output_root or (config.archive_root / "qa" / "snapshots")  # type: ignore[union-attr]
-    snapshot_dir = root / f"{stamp}-{label}"
-    snapshot_dir.mkdir(parents=True, exist_ok=False)
-
-    entries: list[dict[str, object]] = []
-    for src_file in _iter_files(showcase_dir):
-        rel = src_file.relative_to(showcase_dir)
+    for src_file in _iter_files(source_dir):
+        rel = src_file.relative_to(source_dir)
         dst_file = snapshot_dir / rel
         dst_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src_file, dst_file)
@@ -203,39 +93,252 @@ def _do_from_showcase(
     manifest: dict[str, object] = {
         "snapshot": snapshot_dir.name,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "source_dirs": [str(showcase_dir)],
+        "source_dirs": [str(source_dir)],
         "entry_count": len(entries),
         "entries": entries,
-        "source_type": "showcase",
     }
-    if showcase_manifest is not None:
-        manifest["showcase_manifest"] = showcase_manifest
-
     (snapshot_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True),
         encoding="utf-8",
     )
     _write_index(snapshot_dir, entries)
-    _update_latest_symlink(root, snapshot_dir)
+    _update_latest_symlink(output_root, snapshot_dir)
 
     if json_output:
         emit_success({
             "snapshot_dir": str(snapshot_dir),
             "entry_count": len(entries),
-            "sources": [str(showcase_dir)],
-            "source_type": "showcase",
+            "sources": [str(source_dir)],
         })
+    else:
+        env.ui.console.print(f"QA snapshot created: {snapshot_dir}")
+        env.ui.console.print(f"Files captured: {len(entries)}")
+
+
+# ---------------------------------------------------------------------------
+# QA command
+# ---------------------------------------------------------------------------
+
+
+_STAGE_CHOICES = click.Choice(["audit", "exercises", "invariants"])
+
+
+@click.command("qa")
+@click.option("--synthetic/--live", default=True,
+              help="Data source: synthetic (default) or live real data")
+@click.option("--source", "source_names", multiple=True,
+              help="Specific real source(s) in fresh workspace (repeatable, implies --fresh)")
+@click.option("--fresh", is_flag=True, default=None,
+              help="Run in an isolated temp workspace (default for synthetic)")
+@click.option("--workspace", type=click.Path(path_type=Path),
+              help="Reuse a specific workspace directory")
+@click.option("--ingest", is_flag=True, default=None,
+              help="Run ingestion pipeline (auto for synthetic and fresh-with-sources)")
+@click.option("--schemas", "regenerate_schemas", is_flag=True,
+              help="Regenerate schemas during pipeline")
+@click.option("--only", "only_stage", type=_STAGE_CHOICES, default=None,
+              help="Run only this stage")
+@click.option("--skip", "skip_stages", multiple=True, type=_STAGE_CHOICES,
+              help="Skip this stage (repeatable)")
+@click.option("--tier", "tier_filter", type=int, default=None,
+              help="Only run exercises at this tier (0/1/2)")
+@click.option("--fail-fast", is_flag=True, help="Stop on first exercise failure")
+@click.option(
+    "--capture",
+    type=click.Choice(["none", "vhs"], case_sensitive=False),
+    default="none",
+    show_default=True,
+    help="Capture mode for exercises",
+)
+@click.option("--report-dir", type=click.Path(path_type=Path), default=None,
+              help="Directory for QA artifacts (auto-generated if omitted)")
+@click.option("--json", "json_output", is_flag=True, help="Machine-readable output")
+@click.option("--verbose", is_flag=True, help="Print exercise outputs")
+@click.option("--snapshot", "snapshot_label", default=None, is_flag=False,
+              flag_value="snapshot",
+              help="Archive results after QA completes (optional label)")
+@click.option("--snapshot-from", type=click.Path(path_type=Path, exists=True, file_okay=False),
+              default=None,
+              help="Archive an existing output directory (skips QA execution)")
+@click.pass_obj
+def qa_command(
+    env: AppEnv,
+    synthetic: bool,
+    source_names: tuple[str, ...],
+    fresh: bool | None,
+    workspace: Path | None,
+    ingest: bool | None,
+    regenerate_schemas: bool,
+    only_stage: str | None,
+    skip_stages: tuple[str, ...],
+    tier_filter: int | None,
+    fail_fast: bool,
+    capture: str,
+    report_dir: Path | None,
+    json_output: bool,
+    verbose: bool,
+    snapshot_label: str | None,
+    snapshot_from: Path | None,
+) -> None:
+    """Run composable QA: schema audit, exercises, and invariant checks.
+
+    \b
+    By default, creates a fresh workspace with synthetic data and runs
+    all stages: audit → exercises → invariants.
+
+    \b
+    Examples:
+      polylogue qa                              # Full synthetic QA
+      polylogue qa --live                       # Exercises against real data
+      polylogue qa --source inbox               # Fresh workspace from inbox
+      polylogue qa --only audit                 # Schema audit only
+      polylogue qa --only exercises --tier 0    # Tier-0 smoke test
+      polylogue qa --skip invariants            # Skip invariant checks
+      polylogue qa --snapshot release-v3        # QA + archive results
+      polylogue qa --snapshot-from ./qa_outputs # Archive existing directory
+    """
+    # --- Snapshot-from: archive only, no QA ---
+    if snapshot_from is not None:
+        config = load_effective_config(env)
+        root = report_dir or (config.archive_root / "qa" / "snapshots")
+        _snapshot_results(
+            snapshot_from,
+            label=snapshot_label or "snapshot",
+            output_root=root,
+            json_output=json_output,
+            env=env,
+        )
         return
 
-    env.ui.console.print(f"QA snapshot created from showcase: {snapshot_dir}")
-    env.ui.console.print(f"Files captured: {len(entries)}")
-    if showcase_manifest:
-        env.ui.console.print(
-            f"Showcase artifacts: {showcase_manifest.get('entry_count', '?')} entries"
+    # --- Validate flag combinations ---
+    if only_stage and skip_stages:
+        raise click.UsageError("--only and --skip are mutually exclusive")
+
+    live = not synthetic
+
+    # --source implies fresh + live
+    if source_names:
+        live = True
+        if fresh is None:
+            fresh = True
+
+    # Determine freshness
+    if fresh is None:
+        fresh = not live  # synthetic → fresh, live → existing DB
+
+    # Determine ingestion
+    if ingest is None:
+        ingest = fresh  # fresh workspaces need ingestion
+
+    # Resolve which stages to run
+    run_audit = True
+    run_exercises = True
+    run_invariants = True
+
+    if only_stage:
+        run_audit = only_stage == "audit"
+        run_exercises = only_stage == "exercises"
+        run_invariants = only_stage == "invariants"
+    else:
+        if "audit" in skip_stages:
+            run_audit = False
+        if "exercises" in skip_stages:
+            run_exercises = False
+        if "invariants" in skip_stages:
+            run_invariants = False
+
+    # --- Execute QA session ---
+    from polylogue.showcase.qa_runner import (
+        format_qa_summary,
+        run_qa_session,
+    )
+
+    result = run_qa_session(
+        live=live,
+        fresh=fresh,
+        ingest=ingest,
+        source_names=list(source_names) if source_names else None,
+        regenerate_schemas=regenerate_schemas,
+        skip_audit=not run_audit,
+        skip_exercises=not run_exercises,
+        skip_invariants=not run_invariants,
+        workspace_dir=workspace,
+        report_dir=report_dir,
+        verbose=verbose,
+        fail_fast=fail_fast,
+        tier_filter=tier_filter,
+    )
+
+    # --- VHS capture ---
+    if capture.lower() == "vhs" and result.showcase_result and result.showcase_result.output_dir:
+        _run_vhs_capture(env, result.showcase_result.output_dir, json_output)
+
+    # --- Output ---
+    if json_output:
+        qa_data = {
+            "audit_passed": result.audit_passed,
+            "audit_report": result.audit_report,
+            "showcase": {
+                "passed": result.showcase_result.passed if result.showcase_result else 0,
+                "failed": result.showcase_result.failed if result.showcase_result else 0,
+                "skipped": result.showcase_result.skipped if result.showcase_result else 0,
+            },
+            "invariants": {
+                "passed": sum(1 for r in result.invariant_results if r.status == "pass"),
+                "failed": sum(1 for r in result.invariant_results if r.status == "fail"),
+                "skipped": sum(1 for r in result.invariant_results if r.status == "skip"),
+            },
+            "overall_passed": result.all_passed,
+        }
+        click.echo(json.dumps(qa_data, indent=2))
+    else:
+        env.ui.console.print(format_qa_summary(result))
+
+    # --- Snapshot ---
+    if snapshot_label is not None and result.report_dir:
+        config = load_effective_config(env)
+        root = config.archive_root / "qa" / "snapshots"
+        _snapshot_results(
+            result.report_dir,
+            label=snapshot_label,
+            output_root=root,
+            json_output=json_output,
+            env=env,
         )
-    env.ui.console.print("Artifacts:")
-    env.ui.console.print(f"  - {snapshot_dir / 'manifest.json'}")
-    env.ui.console.print(f"  - {snapshot_dir / 'INDEX.md'}")
+
+    if not result.all_passed:
+        raise SystemExit(1)
+
+
+def _run_vhs_capture(env: AppEnv, output_dir: Path, json_output: bool) -> None:
+    """Run VHS tape captures if available."""
+    try:
+        from polylogue.showcase.vhs import (
+            check_vhs_available,
+            generate_all_tapes,
+            run_vhs_capture,
+        )
+    except ImportError:
+        return
+
+    tapes_dir = output_dir / "tapes"
+    captures_dir = output_dir / "captures"
+    captures_dir.mkdir(parents=True, exist_ok=True)
+
+    tapes = generate_all_tapes(output_dir=tapes_dir)
+
+    if check_vhs_available():
+        for name in tapes:
+            tape_path = tapes_dir / f"{name}.tape"
+            gif_path = captures_dir / f"{name}.gif"
+            ok = run_vhs_capture(tape_path, gif_path)
+            if not json_output:
+                status = "ok" if ok else "FAILED"
+                env.ui.console.print(f"  VHS {name}: {status}")
+    elif not json_output:
+        env.ui.console.print(
+            f"VHS binary not found — {len(tapes)} tape(s) generated in {tapes_dir} but not recorded"
+        )
 
 
 __all__ = ["qa_command"]

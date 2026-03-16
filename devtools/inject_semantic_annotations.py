@@ -30,6 +30,9 @@ SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "polylogue" / "schemas" /
 
 ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
     "chatgpt": [
+        (["properties.title"], "conversation_title"),
+        (["properties.create_time"], "message_timestamp"),
+        (["properties.mapping"], "message_container"),
         # mapping.*.message(anyOf→props).author.role → message_role
         (
             [
@@ -55,48 +58,53 @@ ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
             ],
             "message_body",
         ),
-        # mapping.*.message(anyOf→props).create_time → message_timestamp
-        (
-            [
-                "properties.mapping",
-                "additionalProperties",
-                "properties.message",
-                "anyOf:props",
-                "properties.create_time",
-            ],
-            "message_timestamp",
-        ),
-        # title → conversation_title
-        (["properties.title"], "conversation_title"),
     ],
     "claude-ai": [
+        (["properties.name"], "conversation_title"),
+        (["properties.created_at"], "message_timestamp"),
+        (["properties.chat_messages"], "message_container"),
         (["properties.chat_messages", "items", "properties.sender"], "message_role"),
         (["properties.chat_messages", "items", "properties.text"], "message_body"),
-        (["properties.chat_messages", "items", "properties.created_at"], "message_timestamp"),
-        (["properties.name"], "conversation_title"),
     ],
     "claude-code": [
-        # top-level type field IS the role for claude-code
         (["properties.type"], "message_role"),
-        # message.content → anyOf → array variant → items → find text property
         (
             [
                 "properties.message",
                 "properties.content",
                 "anyOf:array",
                 "items",
-                "properties.text",
+                "properties.content",
             ],
             "message_body",
         ),
         (["properties.timestamp"], "message_timestamp"),
+        (["properties.gitBranch"], "conversation_title"),
     ],
     "codex": [
-        (["properties.role"], "message_role"),
-        (["properties.content", "items", "properties.text"], "message_body"),
         (["properties.timestamp"], "message_timestamp"),
+        (["properties.payload"], "message_container"),
+        (["properties.payload", "properties.role"], "message_role"),
+        (
+            [
+                "properties.payload",
+                "properties.summary",
+                "anyOf:array",
+                "items",
+                "properties.text",
+            ],
+            "message_body",
+        ),
+        (["properties.payload", "properties.name"], "conversation_title"),
     ],
     "gemini": [
+        (
+            [
+                "properties.chunkedPrompt",
+                "properties.chunks",
+            ],
+            "message_container",
+        ),
         (
             [
                 "properties.chunkedPrompt",
@@ -115,6 +123,16 @@ ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
             ],
             "message_body",
         ),
+        (
+            [
+                "properties.chunkedPrompt",
+                "properties.chunks",
+                "items",
+                "properties.createTime",
+            ],
+            "message_timestamp",
+        ),
+        (["properties.runSettings", "properties.thinkingLevel"], "conversation_title"),
     ],
 }
 

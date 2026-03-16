@@ -1,8 +1,8 @@
-"""Pinned regression and record-conversion tests for core models.
+"""Pinned regression and record-conversion tests for core models, code detection, and provider identity.
 
 Broader semantic ownership lives in ``test_message_laws.py`` and
 ``test_conversation_semantics.py``. This file keeps only model-specific
-regressions and storage-record conversions.
+regressions and storage-record conversions, code language detection, and provider identity.
 """
 
 from __future__ import annotations
@@ -13,7 +13,13 @@ import pytest
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, ConversationSummary, Message
+from polylogue.lib.provider_identity import (
+    canonical_runtime_provider,
+    canonical_schema_provider,
+)
+from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.lib.viewports import ToolCall, classify_tool
+from polylogue.schemas.code_detection import LANGUAGE_PATTERNS, detect_language, extract_code_block
 from polylogue.storage.hydrators import (
     attachment_from_record,
     conversation_from_records,
@@ -21,6 +27,7 @@ from polylogue.storage.hydrators import (
     message_from_record,
 )
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.types import Provider
 
 TOOL_FILE_OPS = [
     ("Read", True),
@@ -267,3 +274,153 @@ class TestConversationFromRecords:
         assert len(conversation.messages) == 1
         assert conversation.messages[0].role == "user"
         assert [attachment.name for attachment in conversation.messages[0].attachments] == ["file.txt"]
+
+
+# =============================================================================
+# Merged from test_code_detection.py (2024-03-15)
+# =============================================================================
+
+
+def test_language_patterns_cover_major_languages() -> None:
+    expected = {
+        "python",
+        "javascript",
+        "typescript",
+        "rust",
+        "go",
+        "java",
+        "c",
+        "cpp",
+        "bash",
+        "sql",
+        "html",
+        "css",
+        "json",
+        "yaml",
+    }
+    assert expected.issubset(LANGUAGE_PATTERNS)
+    assert all(patterns for patterns in LANGUAGE_PATTERNS.values())
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("def hello():\n    print('world')", "python"),
+        ("const x = () => console.log('hi')", "javascript"),
+        ("interface User {\n  name: string;\n}", "typescript"),
+        ("fn main() {\n    println!(\"Hello\");\n}", "rust"),
+        ("func main() {\n    fmt.Println(\"hi\")\n}", "go"),
+        ("public class Main {\n    public static void main(String[] args) {}\n}", "java"),
+        ("#include <stdio.h>\nint main() {}", "c"),
+        ("std::cout << \"Hi\" << std::endl;", "cpp"),
+        ("#!/bin/bash\necho 'test'", "bash"),
+        ("SELECT * FROM users WHERE id = 1;", "sql"),
+        ("<!DOCTYPE html>\n<html><body></body></html>", "html"),
+        (".container {\n  display: flex;\n}", "css"),
+        ('{"name": "test", "value": 123}', "json"),
+        ("name: test\nvalue: 123", "yaml"),
+    ],
+)
+def test_detect_language_exact_contracts(code: str, expected: str) -> None:
+    assert detect_language(code) == expected
+
+
+@pytest.mark.parametrize("code", ["", "   \n\n   ", "This is plain text without code markers", "random gibberish @@##$$"])
+def test_detect_language_returns_none_for_non_code(code: str) -> None:
+    assert detect_language(code) is None
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [("py", "python"), ("js", "javascript"), ("ts", "typescript"), ("rs", "rust"), ("sh", "bash"), ("zsh", "bash")],
+)
+def test_detect_language_normalizes_alias_hints(declared: str, expected: str) -> None:
+    assert detect_language("", declared_lang=declared) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("```python\ndef hello():\n    pass\n```", "def hello():\n    pass"),
+        ("```\nsome code\n```", "some code"),
+        ("Text before\n\n    indented code\n    more code\n\nText after", "indented code\nmore code"),
+        ("<thinking>Let me analyze this</thinking>", "Let me analyze this"),
+    ],
+)
+def test_extract_code_block_contracts(text: str, expected: str) -> None:
+    result = extract_code_block(text)
+    assert expected in result or result == expected
+
+
+@pytest.mark.parametrize("text", ["No code blocks here", "Just plain text", ""])
+def test_extract_code_block_returns_original_or_empty_for_non_code(text: str) -> None:
+    result = extract_code_block(text)
+    assert result in {text, ""}
+
+
+# =============================================================================
+# Merged from test_provider_identity.py (2024-03-15)
+# =============================================================================
+
+
+def test_canonical_runtime_provider_aliases() -> None:
+    assert canonical_runtime_provider("gpt") == "chatgpt"
+    assert canonical_runtime_provider("openai") == "chatgpt"
+    assert canonical_runtime_provider("claude-ai") == "claude"
+    assert canonical_runtime_provider("anthropic") == "claude"
+    assert canonical_runtime_provider("CLAUDE_CODE") == "claude-code"
+
+
+def test_canonical_runtime_provider_preserves_unknown_when_requested() -> None:
+    assert canonical_runtime_provider("my-inbox", preserve_unknown=True) == "my-inbox"
+    assert canonical_runtime_provider("my-inbox", preserve_unknown=False) == "unknown"
+
+
+def test_canonical_schema_provider_mapping() -> None:
+    assert canonical_schema_provider("claude") == "claude-ai"
+    assert canonical_schema_provider("claude-ai") == "claude-ai"
+    assert canonical_schema_provider("openai") == "chatgpt"
+
+
+def test_provider_enum_from_string_uses_shared_runtime_identity() -> None:
+    assert Provider.from_string("claude-ai") is Provider.CLAUDE
+    assert Provider.from_string("openai") is Provider.CHATGPT
+    assert Provider.from_string("nonexistent-provider") is Provider.UNKNOWN
+
+
+def test_build_raw_payload_envelope_normalizes_fallback_identity() -> None:
+    raw = b'{"id":"x"}'  # not enough for detect_provider
+    assert build_raw_payload_envelope(raw, source_path=None, fallback_provider="claude-ai").provider == "claude"
+    assert build_raw_payload_envelope(raw, source_path=None, fallback_provider="my-inbox").provider == "my-inbox"
+
+
+def test_build_raw_payload_envelope_uses_zip_inner_path_for_detection() -> None:
+    raw = b'[{"id":"conv-1","mapping":{}}]'
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/export.zip:takeout/chatgpt/conversations.json",
+        fallback_provider="archive-source",
+    )
+    assert envelope.provider == "chatgpt"
+
+
+def test_build_raw_payload_envelope_reuses_persisted_payload_provider() -> None:
+    raw = b'{"id":"x"}'
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/unhelpful.json",
+        fallback_provider="my-inbox",
+        payload_provider="claude-ai",
+    )
+    assert envelope.provider == "claude"
+
+
+def test_build_raw_payload_envelope_keeps_gemini_json_documents_as_json() -> None:
+    raw = b'{"chunkedPrompt":{"chunks":[{"role":"user","text":"hello"}]}}'
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/gemini-export.json",
+        fallback_provider="gemini",
+    )
+    assert envelope.wire_format == "json"
+    assert isinstance(envelope.payload, dict)

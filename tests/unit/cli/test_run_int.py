@@ -83,12 +83,17 @@ async def test_run_sources_filtered_by_stage(
             Source(name="source-a", path=inbox / "a.json"),
             Source(name="source-b", path=inbox / "b.json"),
         ]
+        # Stages are independent: acquire + validate before testing parse
+        await run_sources(config=config, stage="acquire", source_names=["source-a"])
+        await run_sources(config=config, stage="validate", source_names=["source-a"])
         result = await run_sources(config=config, stage=stage, source_names=["source-a"])
     else:
         inbox = tmp_path / "inbox"
         source_file = ChatGPTExportBuilder("conv-chatgpt").add_node("user", "hello").write_to(inbox / "conversation.json")
         config = get_config()
         config.sources = [Source(name="inbox", path=source_file)]
+        await run_sources(config=config, stage="acquire", source_names=["inbox"])
+        await run_sources(config=config, stage="validate", source_names=["inbox"])
         await run_sources(config=config, stage="parse", source_names=["inbox"])
         result = await run_sources(config=config, stage=stage, source_names=["inbox"])
 
@@ -110,6 +115,9 @@ async def test_run_index_filters_selected_sources(workspace_env, tmp_path, monke
         Source(name="source-a", path=inbox / "a.json"),
         Source(name="source-b", path=inbox / "b.json"),
     ]
+    # Stages are independent: populate pipeline through all three predecessors
+    await run_sources(config=config, stage="acquire")
+    await run_sources(config=config, stage="validate")
     await run_sources(config=config, stage="parse")
 
     id_by_source = {}

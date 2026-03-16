@@ -30,6 +30,12 @@ from polylogue.schemas.field_stats import (
 from polylogue.schemas.privacy import (
     _is_content_field,
     _is_safe_enum_value,
+    _looks_high_entropy_token,
+)
+from polylogue.schemas.redaction_report import (
+    FieldReport,
+    RedactionDecision,
+    SchemaReport,
 )
 from polylogue.schemas.relational_inference import (
     infer_relations,
@@ -69,6 +75,7 @@ class GenerationResult:
     schema: dict[str, Any] | None
     sample_count: int
     error: str | None = None
+    redaction_report: Any | None = None  # SchemaReport when privacy tracking enabled
 
     @property
     def success(self) -> bool:
@@ -219,6 +226,7 @@ def _annotate_schema(
     path: str = "$",
     *,
     min_conversation_count: int = 1,
+    privacy_config: Any | None = None,
 ) -> dict[str, Any]:
     """Apply x-polylogue-* annotations to a schema based on collected field stats.
 
@@ -266,7 +274,7 @@ def _annotate_schema(
             sorted_vals: list[Any] = []
             for value, count in field_stats.observed_values.most_common(_ENUM_VALUE_CAP):
                 if isinstance(value, str):
-                    if not _is_safe_enum_value(value, path=path):
+                    if not _is_safe_enum_value(value, path=path, config=privacy_config):
                         continue
                     if count < min_count:
                         continue
@@ -314,6 +322,7 @@ def _annotate_schema(
             schema["properties"][prop_name] = _annotate_schema(
                 prop_schema, stats, f"{path}.{prop_name}",
                 min_conversation_count=min_conversation_count,
+                privacy_config=privacy_config,
             )
 
     # Recurse into additionalProperties
@@ -339,6 +348,99 @@ def _annotate_schema(
             ]
 
     return schema
+
+
+def _build_redaction_report(
+    provider: str,
+    stats: dict[str, FieldStats],
+    schema: dict[str, Any],
+    *,
+    privacy_config: Any | None = None,
+    privacy_level: str = "standard",
+) -> SchemaReport:
+    """Build a redaction report by comparing field stats against the annotated schema.
+
+    Walks field stats and for each enum-like field, checks which values ended up
+    in x-polylogue-values vs. which were rejected. Non-invasive: runs after
+    _annotate_schema has already completed.
+    """
+    report = SchemaReport(provider=provider, privacy_level=privacy_level)
+
+    # Collect all x-polylogue-values from the final schema
+    schema_values: dict[str, set[str]] = {}
+
+    def _collect_schema_values(s: dict[str, Any], path: str = "$") -> None:
+        if not isinstance(s, dict):
+            return
+        vals = s.get("x-polylogue-values")
+        if isinstance(vals, list):
+            schema_values[path] = set(str(v) for v in vals)
+        if "properties" in s:
+            for name, prop in s["properties"].items():
+                _collect_schema_values(prop, f"{path}.{name}")
+        if isinstance(s.get("additionalProperties"), dict):
+            _collect_schema_values(s["additionalProperties"], f"{path}.*")
+        if isinstance(s.get("items"), dict):
+            _collect_schema_values(s["items"], f"{path}[*]")
+        for kw in ("anyOf", "oneOf", "allOf"):
+            for sub in s.get(kw, []):
+                if isinstance(sub, dict):
+                    _collect_schema_values(sub, path)
+
+    _collect_schema_values(schema)
+
+    # Walk field stats and compare
+    for path, fs in stats.items():
+        if not fs.is_enum_like or not fs.observed_values:
+            continue
+
+        report.total_fields += 1
+        report.fields_with_enums += 1
+        included_in_schema = schema_values.get(path, set())
+        field_report = FieldReport(path=path)
+
+        if _is_content_field(path):
+            field_report.content_field_blocked = True
+
+        for value, count in fs.observed_values.most_common():
+            if not isinstance(value, str):
+                continue
+            report.total_values_considered += 1
+
+            if value in included_in_schema:
+                decision = RedactionDecision(
+                    path=path, value=value, action="included", count=count,
+                )
+                field_report.included_values.append(value)
+            else:
+                # Determine rejection reason
+                reason = "unknown"
+                if _is_content_field(path):
+                    reason = "content_field"
+                elif _looks_high_entropy_token(value):
+                    reason = "high_entropy"
+                elif not _is_safe_enum_value(value, path=path, config=privacy_config):
+                    reason = "unsafe_value"
+                else:
+                    reason = "threshold"  # cross-conv or min_count
+
+                decision = RedactionDecision(
+                    path=path, value=value, action="rejected",
+                    reason=reason, count=count,
+                )
+                field_report.rejected.append(decision)
+
+                # Track borderline decisions (high count but rejected)
+                if count >= 100:
+                    decision.risk = "medium"
+                    report.borderline_decisions.append(decision)
+
+            report.add_decision(decision)
+
+        if field_report.included_values or field_report.rejected:
+            report.field_reports.append(field_report)
+
+    return report
 
 
 def _annotate_semantic_and_relational(
@@ -527,6 +629,7 @@ def generate_provider_schema(
     provider: str,
     db_path: Path | None = None,
     max_samples: int | None = None,
+    privacy_config: Any | None = None,
 ) -> GenerationResult:
     """Generate schema for a provider."""
     if db_path is None:
@@ -549,6 +652,7 @@ def generate_provider_schema(
         )
 
     try:
+        redaction_report = None
         if max_samples is not None:
             if config.db_provider_name:
                 samples = load_samples_from_db(
@@ -584,26 +688,42 @@ def generate_provider_schema(
 
             builder = SchemaBuilder()
             reservoir: list[dict[str, Any]] = []
+            reservoir_conv_ids: list[str | None] = []
             reservoir_size = 500
             reservoir_rng = random.Random(42)
             sample_count = 0
             fingerprint_counts: dict[Any, int] = {}
 
+            # Use with_conv_ids=True for DB providers to enable the
+            # cross-conversation privacy threshold in _annotate_schema.
             if config.db_provider_name:
                 sample_iter = _iter_samples_from_db(
                     config.db_provider_name,
                     db_path=db_path,
                     config=config,
+                    with_conv_ids=True,
                 )
+                has_conv_ids = True
             elif config.session_dir:
-                sample_iter = _iter_samples_from_sessions(
-                    config.session_dir,
-                    max_sessions=config.max_sessions,
+                # Session files: use the file stem as a pseudo-conversation ID
+                sample_iter = (
+                    (sample, None)
+                    for sample in _iter_samples_from_sessions(
+                        config.session_dir,
+                        max_sessions=config.max_sessions,
+                    )
                 )
+                has_conv_ids = False
             else:
                 sample_iter = iter(())
+                has_conv_ids = False
 
-            for sample in sample_iter:
+            for item in sample_iter:
+                if has_conv_ids or isinstance(item, tuple):
+                    sample, conv_id = item
+                else:
+                    sample, conv_id = item, None
+
                 sample_count += 1
                 fingerprint = _structure_fingerprint(sample)
                 seen = fingerprint_counts.get(fingerprint, 0)
@@ -613,10 +733,12 @@ def generate_provider_schema(
 
                 if len(reservoir) < reservoir_size:
                     reservoir.append(sample)
+                    reservoir_conv_ids.append(conv_id)
                 else:
                     j = reservoir_rng.randint(0, sample_count - 1)
                     if j < reservoir_size:
                         reservoir[j] = sample
+                        reservoir_conv_ids[j] = conv_id
 
             if sample_count == 0:
                 return GenerationResult(
@@ -632,11 +754,29 @@ def generate_provider_schema(
             if config.sample_granularity == "record":
                 schema.pop("required", None)
 
-            field_stats = _collect_field_stats(reservoir)
-            schema = _annotate_schema(schema, field_stats)
+            # Pass conversation IDs through to enable the cross-conversation
+            # privacy threshold (values seen in <N conversations excluded).
+            conv_ids_for_stats: list[str | None] | None = (
+                reservoir_conv_ids if any(c is not None for c in reservoir_conv_ids) else None
+            )
+            field_stats = _collect_field_stats(
+                reservoir, conversation_ids=conv_ids_for_stats,
+            )
+            schema = _annotate_schema(
+                schema, field_stats, min_conversation_count=3,
+                privacy_config=privacy_config,
+            )
             schema = _annotate_semantic_and_relational(schema, field_stats)
 
             schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+
+            # Build redaction report from the diff between stats and annotated schema
+            redaction_report = _build_redaction_report(
+                provider, field_stats, schema,
+                privacy_config=privacy_config,
+                privacy_level=getattr(privacy_config, "level", "standard")
+                if privacy_config else "standard",
+            )
 
         schema["title"] = f"{provider} export format"
         schema["description"] = config.description
@@ -652,6 +792,7 @@ def generate_provider_schema(
             provider=provider,
             schema=schema,
             sample_count=sample_count,
+            redaction_report=redaction_report,
         )
     except Exception as e:
         return GenerationResult(
@@ -667,6 +808,7 @@ def generate_all_schemas(
     db_path: Path | None = None,
     providers: list[str] | None = None,
     max_samples: int | None = None,
+    privacy_config: Any | None = None,
 ) -> list[GenerationResult]:
     """Generate schemas for all (or specified) providers."""
     if db_path is None:
@@ -681,6 +823,7 @@ def generate_all_schemas(
             provider,
             db_path=db_path,
             max_samples=max_samples,
+            privacy_config=privacy_config,
         )
         results.append(result)
 

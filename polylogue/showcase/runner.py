@@ -9,7 +9,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
-from importlib import resources as importlib_resources
 from pathlib import Path
 from typing import Any
 
@@ -83,22 +82,22 @@ class ShowcaseRunner:
         output_dir: Path | None = None,
         fail_fast: bool = False,
         verbose: bool = False,
-        showcase_data: str = "fixtures",
         synthetic_count: int = 3,
         tier_filter: int | None = None,
+        extra_exercises: list[Exercise] | None = None,
+        workspace_env: dict[str, str] | None = None,
     ) -> None:
-        if showcase_data not in {"fixtures", "synthetic"}:
-            raise ValueError(f"Unknown showcase_data: {showcase_data}")
         self.live = live
         self.output_dir = output_dir
         self.fail_fast = fail_fast
         self.verbose = verbose
-        self.showcase_data = showcase_data
         self.synthetic_count = synthetic_count
         self.tier_filter = tier_filter
+        self.extra_exercises = extra_exercises or []
         self._env_vars: dict[str, str] = {}
         self._workspace_dir: Path | None = None
         self._shared_state: dict[str, Any] = {}
+        self._workspace_env = workspace_env
 
     def run(self) -> ShowcaseResult:
         """Execute all applicable exercises and return results."""
@@ -119,9 +118,13 @@ class ShowcaseRunner:
 
         # Seed workspace if not live mode
         if not self.live:
-            self._workspace_dir = self.output_dir / "workspace"
-            self._seed_workspace(self._workspace_dir)
-            result.workspace_dir = self._workspace_dir
+            if self._workspace_env:
+                # Workspace already prepared externally (by qa_runner)
+                self._env_vars = dict(self._workspace_env)
+            else:
+                self._workspace_dir = self.output_dir / "workspace"
+                self._seed_workspace(self._workspace_dir)
+                result.workspace_dir = self._workspace_dir
 
         # Build exercise list
         exercises = self._select_exercises()
@@ -163,8 +166,11 @@ class ShowcaseRunner:
 
     def _select_exercises(self) -> list[Exercise]:
         """Filter exercises based on mode, env, and tier."""
+        # Combine static catalog with any dynamically generated exercises
+        all_exercises = list(EXERCISES) + list(self.extra_exercises)
+
         selected: list[Exercise] = []
-        for ex in EXERCISES:
+        for ex in all_exercises:
             # Env-based filtering
             if ex.env == "live" and not self.live:
                 continue  # live-only exercises require --live mode
@@ -192,11 +198,8 @@ class ShowcaseRunner:
         for d in [data_home, state_home, archive_root, render_root, fake_home]:
             d.mkdir(parents=True, exist_ok=True)
 
-        # Seed fixture data for the workspace.
-        if self.showcase_data == "synthetic":
-            self._generate_synthetic_fixtures(fixture_dir, count=self.synthetic_count)
-        else:
-            self._copy_fixtures(fixture_dir)
+        # Seed schema-driven synthetic fixtures for the workspace.
+        self._generate_synthetic_fixtures(fixture_dir, count=self.synthetic_count)
 
         # Also copy fixtures into the inbox location so get_sources() finds them
         # inbox_root() = {XDG_DATA_HOME}/polylogue/inbox
@@ -261,21 +264,6 @@ class ShowcaseRunner:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = old_value
-
-    def _copy_fixtures(self, fixture_dir: Path) -> None:
-        """Copy static fixtures from package resources to workspace."""
-        fixture_dir.mkdir(parents=True, exist_ok=True)
-
-        pkg_fixtures = importlib_resources.files("polylogue.showcase") / "fixtures"
-        for provider_entry in pkg_fixtures.iterdir():
-            if not provider_entry.is_dir():
-                continue
-            dest_dir = fixture_dir / provider_entry.name
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            for file_entry in provider_entry.iterdir():
-                if file_entry.is_file():
-                    dest_file = dest_dir / file_entry.name
-                    dest_file.write_bytes(file_entry.read_bytes())
 
     def _generate_synthetic_fixtures(self, fixture_dir: Path, *, count: int) -> None:
         """Generate schema-driven synthetic fixtures for all providers."""
@@ -358,7 +346,7 @@ class ShowcaseRunner:
         """Validate exercise output against its Validation spec. Returns error or None."""
         v = exercise.validation
 
-        if exit_code != v.exit_code:
+        if v.exit_code is not None and exit_code != v.exit_code:
             return f"exit code {exit_code}, expected {v.exit_code}"
 
         for needle in v.stdout_contains:

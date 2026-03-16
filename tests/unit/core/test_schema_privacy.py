@@ -74,15 +74,17 @@ class TestSafeEnumValueExistingGuards:
     def test_sentences_rejected(self, value: str) -> None:
         assert not _is_safe_enum_value(value), f"Expected sentence {value!r} to be rejected"
 
-    # --- Personal name (TitleCase) rejection ---
+    # --- Capitalized words now PASS (CamelCase check removed) ---
 
     @pytest.mark.parametrize("value", [
-        "Alice",
-        "JohnSmith",
-        "MaryJane",
+        "Reasoning",
+        "Thinking",
+        "GitHub",
+        "None",
+        "Alice",  # single word — no longer blocked (whitespace check handles multi-word names)
     ])
-    def test_personal_names_rejected(self, value: str) -> None:
-        assert not _is_safe_enum_value(value), f"Expected personal name {value!r} to be rejected"
+    def test_capitalized_words_pass(self, value: str) -> None:
+        assert _is_safe_enum_value(value), f"Expected {value!r} to pass (CamelCase check removed)"
 
     # --- Public domain / TLD rejection ---
 
@@ -121,10 +123,30 @@ class TestSafeEnumValueExistingGuards:
     @pytest.mark.parametrize("value", [
         "sk-abc123XYZ789def456",
         "Bearer eyJhbGciOiJSUzI1NiJ9",
+        "dQw4w9WgXcQ",  # YouTube video ID (11 chars, now caught with lowered threshold)
     ])
     def test_high_entropy_tokens_rejected(self, value: str) -> None:
         # These are opaque tokens — reject even without explicit URL indicators
         assert not _is_safe_enum_value(value), f"Expected token {value!r} to be rejected"
+
+    # --- Quoted high-entropy tokens (Gemini format) ---
+
+    def test_quoted_high_entropy_stripped(self) -> None:
+        """Gemini exports embed values in double quotes — quotes are stripped before check."""
+        # A YouTube-ID-like token wrapped in quotes
+        assert not _is_safe_enum_value('"dQw4w9WgXcQ"')
+
+    # --- Model slug exemption (dash-separated structural tokens) ---
+
+    @pytest.mark.parametrize("value", [
+        "gpt-4-code-interpreter",
+        "claude-haiku-4-5-20251001",
+        "gemini-2-5-pro",
+        "gpt-4o-mini",
+    ])
+    def test_model_slugs_pass(self, value: str) -> None:
+        """Model slugs with 2+ dashes and short segments should pass high-entropy check."""
+        assert _is_safe_enum_value(value), f"Expected model slug {value!r} to pass"
 
     # --- Non-ASCII rejection ---
 
@@ -285,6 +307,44 @@ class TestPrivateTLDDenylist:
         """A plain word with no dot is unaffected by TLD filters."""
         assert _is_safe_enum_value("local"), "Bare word 'local' should not be rejected"
         assert _is_safe_enum_value("corp"), "Bare word 'corp' should not be rejected"
+
+
+# =============================================================================
+# Guard 4: Structural constants in identifier fields
+# =============================================================================
+
+class TestStructuralConstantsInIdentifierFields:
+    """Identifier-named fields allow structural constants (lowercase tokens)."""
+
+    @pytest.mark.parametrize("value", [
+        "chatgpt_agent",
+        "deep_research",
+        "text_completion",
+        "auto",
+    ])
+    def test_structural_constants_pass_identifier_fields(self, value: str) -> None:
+        """Lowercase underscore-separated tokens pass even in identifier fields."""
+        assert _is_safe_enum_value(value, path="$.notification_channel_id"), (
+            f"Structural constant {value!r} should pass in identifier field"
+        )
+
+    @pytest.mark.parametrize("value", [
+        "abc123DEF456ghi789",
+        "A1b2C3d4E5f6G7h8I9j0",
+    ])
+    def test_random_ids_still_blocked_in_identifier_fields(self, value: str) -> None:
+        """Random-looking values are still blocked in identifier fields."""
+        assert not _is_safe_enum_value(value, path="$.user_id"), (
+            f"Random ID {value!r} should be blocked in identifier field"
+        )
+
+    def test_uuid_still_blocked_in_identifier_field(self) -> None:
+        """UUID-like values are still blocked (they don't match structural constant pattern)."""
+        assert not _is_safe_enum_value(
+            "550e8400-e29b-41d4-a716-446655440000",
+            path="$.message_id",
+        )
+
 
     def test_partial_tld_match_not_rejected(self) -> None:
         """Words containing TLD substrings without a preceding dot are not rejected."""

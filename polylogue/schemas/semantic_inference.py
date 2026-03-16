@@ -353,12 +353,22 @@ def _score_timestamp(path: str, fs: FieldStats) -> SemanticCandidate | None:
     )
 
 
+_ANTI_TITLE_NAME_TOKENS = frozenset({
+    "uuid", "model", "version", "hash", "key", "token",
+    "ref", "parent", "slug", "path", "config", "setting",
+})
+
+
 def _score_title(
     path: str,
     fs: FieldStats,
     all_stats: dict[str, FieldStats],
 ) -> SemanticCandidate | None:
     """Score as conversation_title: short, high-cardinality, non-multiline."""
+    # Format-aware suppression: ID/UUID-format fields cannot be titles
+    if fs.dominant_format in {"uuid4", "uuid", "hex-id", "url", "email", "base64"}:
+        return None
+
     length_stats = fs.string_length_stats
     if not length_stats:
         return None
@@ -407,6 +417,27 @@ def _score_title(
     if terminal in title_name_signals:
         score += 0.2
         evidence["name_signal"] = terminal
+
+    # Anti-name signals: field names containing ID/model/hash/etc. tokens
+    # penalize heavily — these are structural fields, not titles.
+    terminal_lower = terminal.replace("_", " ").replace("-", " ")
+    for anti_token in _ANTI_TITLE_NAME_TOKENS:
+        if anti_token in terminal_lower:
+            score *= 0.1
+            evidence["anti_name_signal"] = anti_token
+            break
+    # Also check for "id" as a suffix/word boundary (e.g. "parentId", "user_id")
+    if terminal.endswith(("id", "Id", "ID", "_id", "-id")):
+        score *= 0.1
+        evidence["anti_name_signal"] = "id_suffix"
+
+    # Value structure penalty: if >30% of values contain "/" → likely paths/model identifiers
+    if fs.observed_values:
+        slash_count = sum(1 for v in fs.observed_values if isinstance(v, str) and "/" in v)
+        slash_ratio = slash_count / len(fs.observed_values)
+        if slash_ratio > 0.3:
+            score *= 0.3
+            evidence["slash_ratio"] = round(slash_ratio, 3)
 
     if score < 0.15:
         return None

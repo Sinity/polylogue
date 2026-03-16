@@ -78,91 +78,9 @@
 # ---
 # name: TestErrorOutput.test_invalid_command_error_output
   '''
-  Traceback (most recent call last):
-    File "<PATH>", line 10, in <module>
-      sys.exit(main())
-               <HOME><HOME><HOME><HOME>^^
-    File "<PATH>", line 420, in main
-      cli()
-      <HOME><HOME><HOME>^^
-    File "<PATH>
-  y", line 1485, in __call__
-      return self.main(*args, **kwargs)
-             <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^^^^^^^^^^^^
-    File "<PATH>
-  y", line 1406, in main
-      rv = self.invoke(ctx)
-    File "<PATH>", line 106, in invok
-  e
-      _handle_query_mode(ctx)
-      <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^
-    File "<PATH>", line 154, in _hand
-  le_query_mode
-      execute_query(env, params_copy)
-      <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^^^^^^^^^^^^^
-    File "<PATH>", line 42, in execute_qu
-  ery
-      asyncio.run(async_execute_query(env, params))
-      <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>
-  13<PATH>", line 195, in run
-      return runner.run(main)
-             <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^
-    File "<PATH>
-  13<PATH>", line 118, in run
-      return self._loop.run_until_complete(task)
-             <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^
-    File "<PATH>
-  13<PATH>", line 725, in run_until_complete
-      return future.result()
-             <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^
-    File "<PATH>", line 140, in async_exe
-  cute_query
-      results = await filter_chain.list()
-                ^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>", line 584, in list
-      candidates = await self._fetch_candidates()
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>", line 550, in _fetch_
-  candidates
-      return await self._fetch_generic(
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^
-      ...<3 lines>...
-      )
-      ^
-    File "<PATH>", line 546, in _fetch_
-  generic
-      return await list_all(limit=plan.fetch_limit, **plan.sql_params)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>", line 432, in
-  list
-      conv_records = await self._backend.list_conversations(
-                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-      ...<17 lines>...
-      )
-      ^
-    File "<PATH>", li
-  ne 411, in list_conversations
-      async with self._get_connection() as conn:
-                 <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^
-    File "<PATH>
-  13<PATH>", line 214, in __aenter__
-      return await anext(self.gen)
-             ^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>", li
-  ne 228, in _get_connection
-      await self._ensure_schema_once()
-    File "<PATH>", li
-  ne 137, in _ensure_schema_once
-      await self._ensure_schema(init_conn)
-    File "<PATH>", li
-  ne 288, in _ensure_schema
-      raise DatabaseError(
-      ...<2 lines>...
-      )
-  polylogue.errors.DatabaseError: Database schema version 3 is incompatible with e
-  xpected version 4. Delete the database file and re-run polylogue to create a fre
-  sh v4 schema.
+  No conversations matched filters:
+    search: invalid-command-xyz
+  Hint: try broadening your filters or use --list to browse
   '''
 # ---
 # name: TestHelpOutput.test_help_output_snapshot
@@ -188,13 +106,14 @@
     Subcommands:
         polylogue run       Parse<PATH> pipeline
         polylogue check     Health check and repair
+        polylogue qa        Composable QA (audit, exercises, invariants)
+        polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
         polylogue schema    Schema inference and versioning
         polylogue mcp       Start MCP server
-        polylogue qa        Snapshot<PATH> QA artifacts
   
     Run `polylogue <command> --help` for subcommand details.
   
@@ -263,10 +182,10 @@
     check        Health check with optional repair.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
-    demo         Generate synthetic conversations for demos, testing, and...
     embed        Generate semantic embeddings for conversations.
+    generate     Generate synthetic conversations for demos, testing, and...
     mcp          Start the MCP server for AI assistant integration.
-    qa           Snapshot and index QA artifacts to a reproducible archive...
+    qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, assets, rendered outputs, or auth state.
     run          Run pipeline stages on configured sources.
     schema       Schema inference, versioning, and promotion.
@@ -298,13 +217,15 @@
     Subcommands:
         polylogue run       Parse<PATH> pipeline
         polylogue check     Health check and repair
+        polylogue qa        Composable QA (audit, exercises, i
+  nvariants)
+        polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
         polylogue schema    Schema inference and versioning
         polylogue mcp       Start MCP server
-        polylogue qa        Snapshot<PATH> QA artifacts
   
     Run `polylogue <command> --help` for subcommand details.
   
@@ -406,14 +327,14 @@
     check        Health check with optional repair.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
-    demo         Generate synthetic conversations for demos, t
-  esting, and...
     embed        Generate semantic embeddings for conversation
   s.
+    generate     Generate synthetic conversations for demos, t
+  esting, and...
     mcp          Start the MCP server for AI assistant integra
   tion.
-    qa           Snapshot and index QA artifacts to a reproduc
-  ible archive...
+    qa           Run composable QA: schema audit, exercises, a
+  nd invariant...
     reset        Reset database, assets, rendered outputs, or
   auth state.
     run          Run pipeline stages on configured sources.
@@ -446,13 +367,14 @@
     Subcommands:
         polylogue run       Parse<PATH> pipeline
         polylogue check     Health check and repair
+        polylogue qa        Composable QA (audit, exercises, invariants)
+        polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
         polylogue schema    Schema inference and versioning
         polylogue mcp       Start MCP server
-        polylogue qa        Snapshot<PATH> QA artifacts
   
     Run `polylogue <command> --help` for subcommand details.
   
@@ -521,10 +443,10 @@
     check        Health check with optional repair.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
-    demo         Generate synthetic conversations for demos, testing, and...
     embed        Generate semantic embeddings for conversations.
+    generate     Generate synthetic conversations for demos, testing, and...
     mcp          Start the MCP server for AI assistant integration.
-    qa           Snapshot and index QA artifacts to a reproducible archive...
+    qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, assets, rendered outputs, or auth state.
     run          Run pipeline stages on configured sources.
     schema       Schema inference, versioning, and promotion.

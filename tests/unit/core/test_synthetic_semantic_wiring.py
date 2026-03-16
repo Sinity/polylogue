@@ -21,13 +21,14 @@ from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 
 SCHEMAS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "polylogue" / "schemas" / "providers"
 
-# Expected annotations per provider
+# Expected annotations per provider — all providers now consistently detect
+# the same 5 roles after the semantic inference overhaul (2026-03-16).
 EXPECTED_ANNOTATIONS: dict[str, list[str]] = {
-    "chatgpt": ["message_role", "message_body", "message_timestamp", "conversation_title"],
-    "claude-ai": ["message_role", "message_body", "message_timestamp", "conversation_title"],
-    "claude-code": ["message_role", "message_body", "message_timestamp"],
-    "codex": ["message_role", "message_body", "message_timestamp"],
-    "gemini": ["message_role", "message_body"],
+    "chatgpt": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
+    "claude-ai": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
+    "claude-code": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
+    "codex": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
+    "gemini": ["conversation_title", "message_body", "message_container", "message_role", "message_timestamp"],
 }
 
 

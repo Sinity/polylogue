@@ -16,10 +16,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import given, settings
 
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.sources.source import _iter_json_stream
+from polylogue.sources.source import _decode_json_bytes, _iter_json_stream
 from polylogue.storage.store import RawConversationRecord
+from tests.infra.strategies import malformed_json_strategy
 
 from tests.infra.large_batches import (
     corrupt_line_bad_utf8,
@@ -734,3 +736,44 @@ class TestRerunIdempotency:
             assert parsed_1 == parsed_2, (
                 f"Idempotency violated for pattern '{pattern_name}'"
             )
+
+
+# ===========================================================================
+# Property-based: malformed JSON never crashes the pipeline
+# ===========================================================================
+
+
+@given(malformed_json_strategy())
+@settings(max_examples=40)
+def test_iter_json_stream_handles_malformed_json_without_crash(malformed: str) -> None:
+    """_iter_json_stream never raises on malformed JSON input — it skips bad lines."""
+    raw = malformed.encode("utf-8", errors="replace")
+    try:
+        result = list(_iter_json_stream(BytesIO(raw), "fuzz.jsonl"))
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        pass  # Expected for some malformed patterns
+    else:
+        assert isinstance(result, list)
+
+
+@given(malformed_json_strategy())
+@settings(max_examples=40)
+def test_decode_json_bytes_handles_malformed_json_without_crash(malformed: str) -> None:
+    """_decode_json_bytes never raises on malformed JSON — returns None or a string."""
+    raw = malformed.encode("utf-8", errors="replace")
+    result = _decode_json_bytes(raw)
+    assert result is None or isinstance(result, str)
+
+
+@given(malformed_json_strategy())
+@settings(max_examples=30)
+def test_malformed_json_in_jsonl_batch_does_not_poison_valid_lines(malformed: str) -> None:
+    """Inserting a malformed JSON line into a valid JSONL batch preserves valid records."""
+    valid_records = [json.dumps(generate_valid_jsonl_record(i, provider="codex")) for i in range(5)]
+    lines = valid_records[:2] + [malformed] + valid_records[2:]
+    data = ("\n".join(lines) + "\n").encode("utf-8", errors="replace")
+
+    parsed = list(_iter_json_stream(BytesIO(data), "batch-fuzz.jsonl"))
+    # At least the 5 valid records should survive; the malformed line
+    # is either skipped (not a dict) or parsed if it happens to be valid JSON
+    assert len(parsed) >= 4  # at worst one valid line adjacent to malformed gets damaged

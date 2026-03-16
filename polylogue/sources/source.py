@@ -292,27 +292,44 @@ def parse_drive_payload(provider: str, payload: Any, fallback_id: str, _depth: i
 def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists: bool = True) -> Iterable[Any]:
     if path_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
         error_count = 0
+        # One-ahead buffer: process `pending` only when we know it's NOT the last line.
+        # This lets us downgrade JSONDecodeError on the final line to debug level —
+        # truncated trailing lines are a normal artifact of reading in-progress session files.
+        pending: bytes | str | None = None
+
+        def _yield_pending(raw_pending: bytes | str, *, is_last: bool) -> Iterable[Any]:
+            nonlocal error_count
+            if isinstance(raw_pending, bytes):
+                decoded: str | None = _decode_json_bytes(raw_pending)
+                if not decoded:
+                    if is_last:
+                        logger.debug("Skipping undecodable trailing line from %s", path_name)
+                    else:
+                        logger.warning("Skipping undecodable line from %s", path_name)
+                    return
+            else:
+                decoded = raw_pending
+            try:
+                yield json.loads(decoded)
+            except json.JSONDecodeError as exc:
+                if is_last:
+                    logger.debug("Skipping truncated trailing line in %s: %s", path_name, exc)
+                else:
+                    error_count += 1
+                    if error_count <= 3:
+                        logger.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
+                    elif error_count == 4:
+                        logger.warning("Skipping further invalid JSON lines in %s...", path_name)
+
         for line in handle:
             raw = line.strip()
             if not raw:
                 continue
-            if isinstance(raw, bytes):
-                decoded = _decode_json_bytes(raw)
-                if not decoded:
-                    logger.warning("Skipping undecodable line from %s", path_name)
-                    continue
-            else:
-                decoded = raw
-            try:
-                yield json.loads(decoded)
-            except json.JSONDecodeError as exc:
-                # Log first few errors, then summarize
-                error_count += 1
-                if error_count <= 3:
-                    logger.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
-                elif error_count == 4:
-                    logger.warning("Skipping further invalid JSON lines in %s...", path_name)
-                continue
+            if pending is not None:
+                yield from _yield_pending(pending, is_last=False)
+            pending = raw
+        if pending is not None:
+            yield from _yield_pending(pending, is_last=True)
         if error_count > 3:
             logger.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
         return
@@ -371,6 +388,11 @@ _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
 # These contain derived/analysis artifacts, not raw conversation data.
 _SKIP_DIRS = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
 
+# Files to skip by exact name (case-insensitive).
+# bridge-pointer.json: Claude Code project↔session pointer ({sessionId, environmentId, source})
+# sessions-index.json: Claude Code session index (metadata, not conversations)
+_SKIP_FILES = frozenset({"bridge-pointer.json", "sessions-index.json"})
+
 
 def _has_supported_extension(path: Path) -> bool:
     """Check if path has a supported file extension (case-insensitive)."""
@@ -411,12 +433,14 @@ def _record_cursor_failure(
 def _walk_source_paths(base: Path) -> list[Path]:
     """Walk a directory and return sorted paths with supported extensions.
 
-    Prunes ``_SKIP_DIRS`` during traversal.
+    Prunes ``_SKIP_DIRS`` during traversal and ``_SKIP_FILES`` by filename.
     """
     paths: list[Path] = []
     for root, dirs, files in os.walk(base, followlinks=True):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
         for filename in files:
+            if filename.lower() in _SKIP_FILES:
+                continue
             file_path = Path(root) / filename
             if _has_supported_extension(file_path):
                 paths.append(file_path)

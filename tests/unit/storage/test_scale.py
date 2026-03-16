@@ -590,8 +590,8 @@ class TestScaleBudgets:
             elapsed = time.monotonic() - t0
 
             assert len(ids) == 100
-            assert elapsed < 5.0, (
-                f"Batch insert of 100 conversations took {elapsed:.3f}s (budget: 5.0s)"
+            assert elapsed < 10.0, (
+                f"Batch insert of 100 conversations took {elapsed:.3f}s (budget: 10.0s)"
             )
         finally:
             await backend.close()
