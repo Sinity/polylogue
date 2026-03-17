@@ -124,18 +124,40 @@ def verify_raw_corpus(
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        base_query = (
-            "SELECT raw_id, provider_name, payload_provider, source_path, raw_content "
-            "FROM raw_conversations "
-        )
+        # Build filter clause (provider filter only — no ORDER BY, we use rowid cursor)
+        provider_where: str = ""
         where_params: tuple[Any, ...] = ()
         if providers:
-            where_clause, where_params = _verification_provider_clause(providers)
-            base_query += f"WHERE {where_clause} "
-        base_query += "ORDER BY acquired_at DESC "
+            provider_where, where_params = _verification_provider_clause(providers)
+
+        # Resolve starting rowid for record_offset (single cheap rowid-only scan)
+        last_rowid: int = 0
+        if bounded_offset > 0:
+            offset_query = "SELECT rowid FROM raw_conversations "
+            if provider_where:
+                offset_query += f"WHERE {provider_where} "
+            offset_query += "ORDER BY rowid LIMIT 1 OFFSET ?"
+            row = conn.execute(offset_query, (*where_params, bounded_offset - 1)).fetchone()
+            if row is None:
+                # Offset beyond end of table
+                return SchemaVerificationReport(
+                    providers={},
+                    max_samples=max_samples,
+                    total_records=0,
+                    record_limit=bounded_limit,
+                    record_offset=bounded_offset,
+                )
+            last_rowid = row[0]
+
+        # Keyset pagination: WHERE rowid > :last ORDER BY rowid LIMIT N
+        # Each batch is O(log n) via SQLite's implicit rowid B-tree index —
+        # no O(n²) re-scan from row 0 unlike LIMIT/OFFSET on unindexed columns.
+        base_query = (
+            "SELECT rowid, raw_id, provider_name, payload_provider, source_path, raw_content "
+            "FROM raw_conversations "
+        )
 
         quarantine_updates: list[tuple[str, str, str, str | None]] = []
-        batch_offset = bounded_offset
         records_fetched = 0
         while True:
             if bounded_limit is not None:
@@ -145,13 +167,19 @@ def verify_raw_corpus(
                 batch_size = min(_BATCH_SIZE, remaining)
             else:
                 batch_size = _BATCH_SIZE
-            rows = conn.execute(
-                base_query + "LIMIT ? OFFSET ?",
-                (*where_params, batch_size, batch_offset),
-            ).fetchall()
+
+            # Compose keyset WHERE: rowid cursor + optional provider filter
+            if provider_where:
+                query = base_query + f"WHERE rowid > ? AND ({provider_where}) ORDER BY rowid LIMIT ?"
+                params: tuple[Any, ...] = (last_rowid, *where_params, batch_size)
+            else:
+                query = base_query + "WHERE rowid > ? ORDER BY rowid LIMIT ?"
+                params = (last_rowid, batch_size)
+
+            rows = conn.execute(query, params).fetchall()
             if not rows:
                 break
-            batch_offset += len(rows)
+            last_rowid = rows[-1]["rowid"]
             records_fetched += len(rows)
             for row in rows:
                 raw_provider = str(row["provider_name"])
