@@ -14,6 +14,7 @@ from typing import Any
 
 from polylogue.lib.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.lib.raw_payload import build_raw_payload_envelope
+from polylogue.protocols import ProgressCallback
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.paths import db_path as default_db_path
 
@@ -90,6 +91,7 @@ def verify_raw_corpus(
     record_limit: int | None = None,
     record_offset: int = 0,
     quarantine_malformed: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> SchemaVerificationReport:
     """Run non-mutating schema verification over ``raw_conversations``.
 
@@ -181,6 +183,8 @@ def verify_raw_corpus(
                         reason = f"Unable to decode payload: {type(exc).__name__}"
                         quarantine_updates.append((raw_id, reason, candidate_provider, stored_payload_provider))
                         provider_stats.quarantined_records += 1
+                    if progress_callback is not None:
+                        progress_callback(1)
                     continue
                 actual_provider = envelope.provider
                 if provider_filter and actual_provider not in provider_filter:
@@ -198,12 +202,16 @@ def verify_raw_corpus(
                         reason = f"Malformed JSONL lines: {malformed_lines}"
                         quarantine_updates.append((raw_id, reason, actual_provider, actual_provider))
                         provider_stats.quarantined_records += 1
+                    if progress_callback is not None:
+                        progress_callback(1)
                     continue
 
                 try:
                     validator = SchemaValidator.for_provider(actual_provider)
                 except (FileNotFoundError, ImportError):
                     provider_stats.skipped_no_schema += 1
+                    if progress_callback is not None:
+                        progress_callback(1)
                     continue
 
                 samples = validator.validation_samples(
@@ -212,6 +220,8 @@ def verify_raw_corpus(
                 )
                 if not samples:
                     provider_stats.valid_records += 1
+                    if progress_callback is not None:
+                        progress_callback(1)
                     continue
 
                 invalid_found = False
@@ -229,6 +239,9 @@ def verify_raw_corpus(
                     provider_stats.valid_records += 1
                 if drift_found:
                     provider_stats.drift_records += 1
+
+                if progress_callback is not None:
+                    progress_callback(1)
 
             del rows  # Release batch before fetching next — prevents RSS accumulation
 

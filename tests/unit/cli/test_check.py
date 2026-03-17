@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 from click.testing import CliRunner
@@ -549,6 +549,7 @@ class TestCheckCommandSupplementary:
             record_limit=250,
             record_offset=500,
             quarantine_malformed=False,
+            progress_callback=ANY,
         )
 
     def test_check_schemas_forwards_quarantine_flag(self, cli_workspace):
@@ -581,4 +582,5 @@ class TestCheckCommandSupplementary:
             record_limit=None,
             record_offset=0,
             quarantine_malformed=True,
+            progress_callback=ANY,
         )

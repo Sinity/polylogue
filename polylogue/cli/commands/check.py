@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import time
 from typing import Any
 
 import click
@@ -101,7 +103,9 @@ def check_command(
             record_limit=schema_record_limit,
             record_offset=schema_record_offset,
             quarantine_malformed=schema_quarantine_malformed,
+            progress_callback=_make_schema_progress_callback(),
         )
+        print(file=sys.stderr)  # End the \r progress line
 
     # Run repairs before output so JSON mode includes repair results
     repair_results: list | None = None
@@ -226,6 +230,27 @@ def check_command(
         env.ui.console.print("Preview mode: VACUUM skipped.")
     elif repair and vacuum:
         _run_vacuum(env)
+
+
+def _make_schema_progress_callback():
+    """Return a stderr progress reporter for schema verification."""
+    start = time.monotonic()
+    count = 0
+
+    def _cb(amount: int, desc: str | None = None) -> None:
+        nonlocal count
+        count += amount
+        elapsed = time.monotonic() - start
+        rate = count / elapsed if elapsed > 0 else 0
+        elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
+        print(
+            f"\rVerifying schemas: {count:,} raw records ({rate:.1f}/s, {elapsed_str} elapsed)...",
+            end="",
+            flush=True,
+            file=sys.stderr,
+        )
+
+    return _cb
 
 
 def _run_vacuum(env: AppEnv) -> None:
