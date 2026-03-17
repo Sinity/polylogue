@@ -117,29 +117,40 @@ def verify_raw_corpus(
     bounded_limit = max(1, int(record_limit)) if record_limit is not None else None
     provider_filter = set(providers or [])
 
+    _BATCH_SIZE = 50  # Small batches — raw_content blobs can be 50–200 MB each
+
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        params: list[Any] = []
-        query = (
+        base_query = (
             "SELECT raw_id, provider_name, payload_provider, source_path, raw_content "
             "FROM raw_conversations "
         )
+        where_params: tuple[Any, ...] = ()
         if providers:
             where_clause, where_params = _verification_provider_clause(providers)
-            query += f"WHERE {where_clause} "
-            params.extend(where_params)
-        query += "ORDER BY acquired_at DESC "
-        if bounded_limit is not None:
-            query += "LIMIT ? OFFSET ?"
-            params.extend([bounded_limit, bounded_offset])
+            base_query += f"WHERE {where_clause} "
+        base_query += "ORDER BY acquired_at DESC "
 
-        cursor = conn.execute(query, tuple(params))
         quarantine_updates: list[tuple[str, str, str, str | None]] = []
+        batch_offset = bounded_offset
+        records_fetched = 0
         while True:
-            rows = cursor.fetchmany(250)
+            if bounded_limit is not None:
+                remaining = bounded_limit - records_fetched
+                if remaining <= 0:
+                    break
+                batch_size = min(_BATCH_SIZE, remaining)
+            else:
+                batch_size = _BATCH_SIZE
+            rows = conn.execute(
+                base_query + "LIMIT ? OFFSET ?",
+                (*where_params, batch_size, batch_offset),
+            ).fetchall()
             if not rows:
                 break
+            batch_offset += len(rows)
+            records_fetched += len(rows)
             for row in rows:
                 raw_provider = str(row["provider_name"])
                 stored_payload_provider = row["payload_provider"]
@@ -218,6 +229,8 @@ def verify_raw_corpus(
                     provider_stats.valid_records += 1
                 if drift_found:
                     provider_stats.drift_records += 1
+
+            del rows  # Release batch before fetching next — prevents RSS accumulation
 
         if quarantine_updates:
             validated_at = datetime.now(tz=timezone.utc).isoformat()
