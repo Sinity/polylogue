@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,11 +15,6 @@ from .parsers.base import RawConversationData
 from .source import ParsedConversation, detect_provider, parse_drive_payload
 
 logger = get_logger(__name__)
-
-# Maximum concurrent Drive download threads.  Each download is an independent
-# HTTP request to the Drive API; 4 workers reduce wall time ~4× compared to
-# sequential downloads on a typical connection without overwhelming the API.
-_DRIVE_DOWNLOAD_CONCURRENCY = 4
 
 
 @dataclass
@@ -175,24 +169,19 @@ def iter_drive_raw_data(
 ) -> Iterable[RawConversationData]:
     """Iterate Drive payloads as raw bytes without writing a local cache.
 
-    Downloads run in a thread pool (up to _DRIVE_DOWNLOAD_CONCURRENCY
-    concurrent workers) so independent HTTP requests overlap.  Results are
-    yielded in the original listing order.
-
-    Two-phase approach:
-    1. List all files (sequential paginated API call) — cheap, updates cursor.
-    2. Download needed files in parallel — the expensive network phase.
+    Note: googleapiclient / httplib2 are not thread-safe — a single service
+    object cannot be shared across threads.  Downloads remain sequential.
+    Parallelism would require per-thread client construction from credentials,
+    which is a larger refactor deferred until the Drive client supports it.
     """
     if not source.folder:
         return
 
     drive_client = client or DriveClient(ui=ui, config=drive_config)
     folder_id = drive_client.resolve_folder_id(source.folder)
-
-    # Phase 1: collect metadata and update cursor (sequential API listing).
-    all_files: list[tuple[Any, str]] = []  # (DriveFile, source_path)
     if cursor_state is not None:
         cursor_state.setdefault("file_count", 0)
+
     for file_meta in drive_client.iter_json_files(folder_id):
         dest_path = drive_cache_file_path(source.path or Path(source.name), file_meta.name)
         source_path = str(dest_path)
@@ -205,33 +194,16 @@ def iter_drive_raw_data(
                     cursor_state["latest_mtime"] = ts
                     cursor_state["latest_file_id"] = file_meta.file_id
                     cursor_state["latest_file_name"] = file_meta.name
-        all_files.append((file_meta, source_path))
 
-    # Phase 2: filter known-mtime files, download the rest in parallel.
-    to_download: list[tuple[Any, str]] = []
-    for file_meta, source_path in all_files:
         if (
             known_mtimes is not None
             and file_meta.modified_time is not None
             and known_mtimes.get(source_path) == file_meta.modified_time
         ):
             continue
-        to_download.append((file_meta, source_path))
 
-    if not to_download:
-        return
-
-    worker_count = min(len(to_download), _DRIVE_DOWNLOAD_CONCURRENCY)
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [
-            (file_meta, source_path, executor.submit(drive_client.download_bytes, file_meta.file_id))
-            for file_meta, source_path in to_download
-        ]
-
-    # Yield results in original listing order; handle per-file failures.
-    for file_meta, source_path, future in futures:
         try:
-            raw_bytes = future.result()
+            raw_bytes = drive_client.download_bytes(file_meta.file_id)
         except Exception as exc:
             if cursor_state is not None:
                 cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
