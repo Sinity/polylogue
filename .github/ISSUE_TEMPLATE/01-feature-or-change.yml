@@ -1,0 +1,58 @@
+name: Feature or Change
+description: Track a concrete feature, improvement, or meaningful implementation slice.
+title: "[feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What should exist or work differently once this is done?
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: Why does this matter now?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Expected scope
+      description: What parts of the repo or system are likely in scope?
+      placeholder: CLI, importers, archive model, MCP server, site, storage, tests, docs.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and invariants
+      description: Capture requirements that must not be violated.
+      placeholder: Archive fidelity, import safety, local-first posture, CLI/MCP contracts, performance limits.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: How should this be tested or otherwise checked?
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and evidence
+      description: Link issues, reports, docs, screenshots, logs, or commits.
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals or explicitly deferred work
+      description: Say what this issue is not trying to solve.
