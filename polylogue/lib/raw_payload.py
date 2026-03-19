@@ -12,7 +12,7 @@ from typing import Any, Literal
 import orjson
 
 from polylogue.lib.artifact_taxonomy import ArtifactClassification, classify_artifact
-from polylogue.sources.source import detect_provider
+from polylogue.sources.dispatch import detect_provider
 from polylogue.types import Provider
 
 WireFormat = Literal["json", "jsonl"]

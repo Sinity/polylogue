@@ -10,6 +10,7 @@ from typing import IO, Any, BinaryIO
 
 import ijson
 
+from polylogue.lib.artifact_taxonomy import classify_artifact_path
 from polylogue.logging import get_logger
 from polylogue.types import Provider
 
@@ -148,7 +149,7 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
 class _ZipEntryValidator:
     """Validate ZIP entries for security and relevance."""
 
-    __slots__ = ("_provider_hint", "_cursor_state", "_zip_path")
+    __slots__ = ("_provider_hint", "_cursor_state", "_zip_path", "_conversation_only")
 
     def __init__(
         self,
@@ -156,10 +157,12 @@ class _ZipEntryValidator:
         *,
         cursor_state: dict[str, Any] | None,
         zip_path: Path,
+        conversation_only: bool = False,
     ) -> None:
         self._provider_hint = Provider.from_string(provider_hint)
         self._cursor_state = cursor_state
         self._zip_path = zip_path
+        self._conversation_only = conversation_only
 
     def filter_entries(self, entries: list[zipfile.ZipInfo]) -> Iterable[zipfile.ZipInfo]:
         """Yield safe, relevant entries.  Record failures in cursor_state."""
@@ -203,6 +206,13 @@ class _ZipEntryValidator:
 
             # Only yield entries with supported JSON extensions
             if lower_name.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
+                if self._conversation_only:
+                    path_classification = classify_artifact_path(
+                        f"{self._zip_path}:{name}",
+                        provider=self._provider_hint,
+                    )
+                    if path_classification is not None and not path_classification.parse_as_conversation:
+                        continue
                 yield info
 
 
@@ -221,15 +231,20 @@ def _process_zip(
 ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
     """Process a ZIP file, yielding conversations from its entries."""
     from .emitter import _ConversationEmitter, _ParseContext
-    from .source import _GROUP_PROVIDERS
+    from .dispatch import GROUP_PROVIDERS
 
-    validator = _ZipEntryValidator(provider_hint, cursor_state=cursor_state, zip_path=zip_path)
+    validator = _ZipEntryValidator(
+        provider_hint,
+        cursor_state=cursor_state,
+        zip_path=zip_path,
+        conversation_only=True,
+    )
 
     with zipfile.ZipFile(zip_path) as zf:
         for info in validator.filter_entries(zf.infolist()):
             name = info.filename
             entry_provider_hint = _zip_entry_provider_hint(name, provider_hint)
-            entry_should_group = entry_provider_hint in _GROUP_PROVIDERS
+            entry_should_group = entry_provider_hint in GROUP_PROVIDERS
             ctx = _ParseContext(
                 provider_hint=entry_provider_hint,
                 should_group=entry_should_group,
