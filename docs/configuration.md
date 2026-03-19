@@ -74,7 +74,7 @@ To export all conversations as JSON:
 polylogue --format json > conversations.json
 
 # Or with filters
-polylogue -p claude --format json > claude-conversations.json
+polylogue -p claude-ai --format json > claude-conversations.json
 ```
 
 The inbox directory contains original exports and can be re-synced to rebuild the database.
