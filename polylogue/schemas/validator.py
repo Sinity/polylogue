@@ -74,7 +74,7 @@ class SchemaValidator:
 
     # Class-level cache: avoids re-reading schema files and re-compiling
     # validators for the same provider during a pipeline run.
-    _cache: dict[tuple[str, bool], SchemaValidator] = {}
+    _cache: dict[tuple[str, str, str, bool], SchemaValidator] = {}
 
     def __init__(self, schema: dict[str, Any], strict: bool = True, provider: Provider | None = None):
         """Initialize validator with a schema.
@@ -111,12 +111,23 @@ class SchemaValidator:
             FileNotFoundError: If no schema exists for the provider
         """
         canonical_provider = cls.canonical_provider(provider)
-        key = (str(canonical_provider), strict)
+        registry = SchemaRegistry()
+        package = registry.get_package(str(canonical_provider), version="default") if hasattr(registry, "get_package") else None
+        package_version = package.version if package is not None else "latest"
+        element_kind = package.default_element_kind if package is not None else "default"
+        key = (str(canonical_provider), package_version, element_kind, strict)
         cached = cls._cache.get(key)
         if cached is not None:
             return cached
 
-        schema = SchemaRegistry().get_schema(str(canonical_provider), version="latest")
+        if package is not None and hasattr(registry, "get_element_schema"):
+            schema = registry.get_element_schema(
+                str(canonical_provider),
+                version=package.version,
+                element_kind=package.default_element_kind,
+            )
+        else:
+            schema = registry.get_schema(str(canonical_provider), version="latest")
         if schema is None:
             raise FileNotFoundError(f"No schema found for provider: {provider} (canonical: {canonical_provider})")
         instance = cls(schema, strict=strict, provider=canonical_provider)
@@ -135,20 +146,34 @@ class SchemaValidator:
         """Create a validator matched to the most likely schema version."""
         canonical_provider = cls.canonical_provider(provider)
         registry = SchemaRegistry()
-        version = registry.match_payload_version(
-            str(canonical_provider),
-            payload,
-            source_path=source_path,
-        ) or "latest"
-        key = (f"{canonical_provider}:{version}", strict)
+        resolution = (
+            registry.resolve_payload(
+                str(canonical_provider),
+                payload,
+                source_path=source_path,
+            )
+            if hasattr(registry, "resolve_payload")
+            else None
+        )
+        package_version = resolution.package_version if resolution is not None else "latest"
+        element_kind = resolution.element_kind if resolution is not None else "default"
+        key = (str(canonical_provider), package_version, element_kind, strict)
         cached = cls._cache.get(key)
         if cached is not None:
             return cached
 
-        schema = registry.get_schema(str(canonical_provider), version=version)
+        if hasattr(registry, "get_element_schema"):
+            schema = registry.get_element_schema(
+                str(canonical_provider),
+                version=package_version,
+                element_kind=None if element_kind == "default" else element_kind,
+            )
+        else:
+            schema = registry.get_schema(str(canonical_provider), version=package_version)
         if schema is None:
             raise FileNotFoundError(
-                f"No schema found for provider: {provider} (canonical: {canonical_provider}, version: {version})"
+                "No schema found for provider: "
+                f"{provider} (canonical: {canonical_provider}, package: {package_version}, element: {element_kind})"
             )
         instance = cls(schema, strict=strict, provider=canonical_provider)
         cls._cache[key] = instance
