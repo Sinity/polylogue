@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.hydrators import (
     conversation_from_records,
@@ -916,6 +917,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
                     await backend.save_attachments(attachments)
                     counts["attachments"] = len(attachments)
 
+        invalidate_search_cache()
         return counts
 
     async def record_run(self, record: RunRecord) -> None:
@@ -1007,7 +1009,10 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             True if deleted, False if not found
         """
-        return await self._backend.delete_conversation(conversation_id)
+        deleted = await self._backend.delete_conversation(conversation_id)
+        if deleted:
+            invalidate_search_cache()
+        return deleted
 
     # --- Vector Search Methods ---
 
@@ -1054,7 +1059,8 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             vector_provider: Optional vector provider
 
         Returns:
-            List of (conversation_id, message_id, distance) tuples
+            List of (conversation_id, message_id, distance) tuples derived from
+            synchronous vector-provider `(message_id, distance)` results
 
         Raises:
             ValueError: If no vector provider configured
