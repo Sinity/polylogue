@@ -179,6 +179,32 @@ class TestRawConversationStorage:
         assert len(claude_ids) == 3
         assert all(raw_id.startswith("raw-id-") for raw_id in chatgpt_ids + claude_ids)
 
+    async def test_raw_provider_filters_prefer_payload_provider_when_present(self, backend: SQLiteBackend) -> None:
+        """Raw provider filtering should use payload_provider when validation/parsing has classified the payload."""
+        from datetime import datetime, timezone
+
+        from polylogue.storage.store import RawConversationRecord
+
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-generic",
+                provider_name="unknown",
+                payload_provider="chatgpt",
+                source_name="inbox",
+                source_path="/path/raw.json",
+                raw_content=b'{}',
+                acquired_at=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+
+        matched_records = [record async for record in backend.iter_raw_conversations(provider="chatgpt")]
+        matched_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="chatgpt")]
+        matched_count = await backend.get_raw_conversation_count(provider="chatgpt")
+
+        assert [record.raw_id for record in matched_records] == ["raw-generic"]
+        assert matched_ids == ["raw-generic"]
+        assert matched_count == 1
+
     async def test_iter_raw_conversations_with_limit(self, backend: SQLiteBackend) -> None:
         """Limit the number of records returned."""
         from datetime import datetime, timezone
