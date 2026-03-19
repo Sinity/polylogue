@@ -698,7 +698,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         if not vector_provider:
             raise ValueError("Semantic search requires a vector provider.")
 
-        results = vector_provider.query(text, limit=limit * 3)
+        results = await asyncio.to_thread(
+            vector_provider.query,
+            text,
+            limit=limit * 3,
+        )
         if not results:
             return []
 
@@ -1042,7 +1046,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         if not messages:
             return 0
 
-        vector_provider.upsert(conversation_id, messages)
+        await asyncio.to_thread(
+            vector_provider.upsert,
+            conversation_id,
+            messages,
+        )
         return len(messages)
 
     async def similarity_search(
@@ -1070,7 +1078,11 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         if vector_provider is None:
             raise ValueError("No vector provider configured")
 
-        results = vector_provider.query(query, limit=limit)
+        results = await asyncio.to_thread(
+            vector_provider.query,
+            query,
+            limit=limit,
+        )
         if not results:
             return []
 

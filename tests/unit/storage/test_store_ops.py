@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from hypothesis import given, settings
@@ -976,6 +979,94 @@ class TestCacheThreadSafety:
         final_stats = get_cache_stats()
         expected_version = initial_version + (num_threads * invalidations_per_thread)
         assert final_stats["cache_version"] == expected_version
+
+
+class _VectorSpy:
+    def __init__(self) -> None:
+        self.query_calls: list[tuple[str, int]] = []
+        self.upsert_calls: list[tuple[str, list[object]]] = []
+
+    def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+        self.query_calls.append((text, limit))
+        return [("msg-1", 0.125)]
+
+    def upsert(self, conversation_id: str, messages: list[object]) -> None:
+        self.upsert_calls.append((conversation_id, messages))
+
+
+class TestRepositoryVectorAsyncBoundary:
+    async def test_search_similar_offloads_vector_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = SimpleNamespace(queries=SimpleNamespace())
+        repo = ConversationRepository(backend=backend)
+        provider = _VectorSpy()
+        repo._get_message_conversation_mapping = AsyncMock(return_value={"msg-1": "conv-1"})
+        repo.get_many = AsyncMock(return_value=["conv-1"])
+
+        to_thread_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+        async def fake_to_thread(func, /, *args, **kwargs):
+            to_thread_calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+        result = await repo.search_similar("semantic query", limit=4, vector_provider=provider)
+
+        assert result == ["conv-1"]
+        assert provider.query_calls == [("semantic query", 12)]
+        assert len(to_thread_calls) == 1
+        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
+        assert getattr(to_thread_calls[0][0], "__name__", "") == "query"
+
+    async def test_embed_conversation_offloads_vector_upsert(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        messages = [make_message("msg-embed", "conv-embed", text="Message long enough to embed.")]
+        backend = SimpleNamespace(queries=SimpleNamespace(get_messages=AsyncMock(return_value=messages)))
+        repo = ConversationRepository(backend=backend)
+        provider = _VectorSpy()
+
+        to_thread_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+        async def fake_to_thread(func, /, *args, **kwargs):
+            to_thread_calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+        result = await repo.embed_conversation("conv-embed", vector_provider=provider)
+
+        assert result == 1
+        assert provider.upsert_calls == [("conv-embed", messages)]
+        assert len(to_thread_calls) == 1
+        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
+        assert getattr(to_thread_calls[0][0], "__name__", "") == "upsert"
+
+    async def test_similarity_search_offloads_vector_query(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        backend = SimpleNamespace(queries=SimpleNamespace())
+        repo = ConversationRepository(backend=backend)
+        provider = _VectorSpy()
+        repo._get_message_conversation_mapping = AsyncMock(return_value={"msg-1": "conv-1"})
+
+        to_thread_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+        async def fake_to_thread(func, /, *args, **kwargs):
+            to_thread_calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+        result = await repo.similarity_search("semantic query", limit=4, vector_provider=provider)
+
+        assert result == [("conv-1", "msg-1", 0.125)]
+        assert provider.query_calls == [("semantic query", 4)]
+        assert len(to_thread_calls) == 1
+        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
+        assert getattr(to_thread_calls[0][0], "__name__", "") == "query"
 
 
 # ============================================================================
