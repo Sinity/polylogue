@@ -7,9 +7,7 @@ with optional real-data ingestion into isolated workspaces.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +18,13 @@ from polylogue.showcase.invariants import (
     format_invariant_summary,
 )
 from polylogue.showcase.runner import ShowcaseResult, ShowcaseRunner
+from polylogue.showcase.workspace import (
+    create_verification_workspace,
+    ensure_report_dir,
+    generate_synthetic_fixtures,
+    run_pipeline_for_configured_sources,
+    run_pipeline_for_fixture_workspace,
+)
 
 
 @dataclass
@@ -60,126 +65,6 @@ def _generate_extra_exercises() -> list:
     return exercises
 
 
-def _create_workspace(workspace_dir: Path | None = None) -> tuple[Path, dict[str, str]]:
-    """Create an isolated QA workspace with env vars.
-
-    Returns (workspace_path, env_vars_dict).
-    """
-    if workspace_dir is None:
-        workspace_dir = Path(tempfile.mkdtemp(prefix="polylogue-qa-"))
-
-    data_home = workspace_dir / "data"
-    state_home = workspace_dir / "state"
-    archive_root = workspace_dir / "archive"
-    render_root = archive_root / "render"
-    fake_home = workspace_dir / "home"
-
-    for d in [data_home, state_home, archive_root, render_root, fake_home]:
-        d.mkdir(parents=True, exist_ok=True)
-
-    env_vars = {
-        "HOME": str(fake_home),
-        "XDG_DATA_HOME": str(data_home),
-        "XDG_STATE_HOME": str(state_home),
-        "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-        "POLYLOGUE_RENDER_ROOT": str(render_root),
-        "POLYLOGUE_FORCE_PLAIN": "1",
-    }
-
-    return workspace_dir, env_vars
-
-
-def _run_pipeline_in_workspace(
-    env_vars: dict[str, str],
-    workspace_dir: Path,
-    *,
-    source_names: list[str] | None = None,
-    regenerate_schemas: bool = False,
-) -> None:
-    """Run the ingestion pipeline inside a workspace with env overrides."""
-    from polylogue.config import Config, Source, get_config
-    from polylogue.pipeline.runner import run_sources
-
-    old_env: dict[str, str | None] = {}
-    for key, value in env_vars.items():
-        old_env[key] = os.environ.get(key)
-        os.environ[key] = value
-
-    try:
-        # When source_names are provided, resolve from user config
-        if source_names:
-            user_config = get_config()
-            sources = [s for s in user_config.sources if s.name in source_names]
-        else:
-            # Synthetic: fixture dir is the source
-            fixture_dir = workspace_dir / "fixtures"
-            sources = []
-            if fixture_dir.exists():
-                for provider_dir in sorted(fixture_dir.iterdir()):
-                    if provider_dir.is_dir():
-                        sources.append(Source(name=provider_dir.name, path=provider_dir))
-
-        archive_root = Path(env_vars["POLYLOGUE_ARCHIVE_ROOT"])
-        render_root = Path(env_vars["POLYLOGUE_RENDER_ROOT"])
-
-        config = Config(
-            archive_root=archive_root,
-            render_root=render_root,
-            sources=sources,
-        )
-
-        stage = "all"
-        if regenerate_schemas:
-            stage = "all"  # generate-schemas is part of "all"
-
-        asyncio.run(run_sources(
-            config=config,
-            stage=stage,
-            plan=None,
-            ui=None,
-            source_names=None,
-        ))
-    finally:
-        for key, old_value in old_env.items():
-            if old_value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = old_value
-
-
-def _generate_synthetic_fixtures(workspace_dir: Path, *, count: int = 3) -> None:
-    """Generate schema-driven synthetic fixtures into the workspace."""
-    from polylogue.schemas.synthetic import SyntheticCorpus
-
-    fixture_dir = workspace_dir / "fixtures"
-    fixture_dir.mkdir(parents=True, exist_ok=True)
-
-    data_home = workspace_dir / "data"
-    inbox_dir = data_home / "polylogue" / "inbox"
-    inbox_dir.mkdir(parents=True, exist_ok=True)
-
-    for provider in SyntheticCorpus.available_providers():
-        corpus = SyntheticCorpus.for_provider(provider)
-        provider_dir = fixture_dir / provider
-        provider_dir.mkdir(parents=True, exist_ok=True)
-        ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-        raw_items = corpus.generate(
-            count=count,
-            messages_per_conversation=range(6, 20),
-            seed=42,
-            style="showcase",
-        )
-        for idx, raw_bytes in enumerate(raw_items):
-            (provider_dir / f"showcase-{idx:02d}{ext}").write_bytes(raw_bytes)
-
-        # Copy into inbox so get_sources() finds them
-        dest = inbox_dir / provider
-        dest.mkdir(parents=True, exist_ok=True)
-        for f in provider_dir.iterdir():
-            if f.is_file():
-                (dest / f.name).write_bytes(f.read_bytes())
-
-
 def run_qa_session(
     *,
     live: bool = False,
@@ -216,45 +101,38 @@ def run_qa_session(
     # --- Workspace setup ---
     if needs_workspace and fresh and not live:
         # Synthetic mode: create workspace, generate fixtures, ingest
-        ws_dir, ws_env = _create_workspace(workspace_dir)
-        _generate_synthetic_fixtures(ws_dir, count=synthetic_count)
-        _run_pipeline_in_workspace(
-            ws_env, ws_dir,
+        workspace = create_verification_workspace(workspace_dir)
+        generate_synthetic_fixtures(workspace.fixture_dir, count=synthetic_count, style="showcase")
+        run_pipeline_for_fixture_workspace(
+            workspace,
             regenerate_schemas=regenerate_schemas,
         )
-        workspace_env_for_runner = ws_env
-        if report_dir is None:
-            report_dir = ws_dir / "reports"
-            report_dir.mkdir(parents=True, exist_ok=True)
-            result.report_dir = report_dir
+        workspace_env_for_runner = dict(workspace.env_vars)
+        report_dir = ensure_report_dir(workspace, report_dir)
+        result.report_dir = report_dir
 
     elif needs_workspace and fresh and live and source_names:
         # Real data in fresh workspace
-        ws_dir, ws_env = _create_workspace(workspace_dir)
-        _run_pipeline_in_workspace(
-            ws_env, ws_dir,
+        workspace = create_verification_workspace(workspace_dir)
+        run_pipeline_for_configured_sources(
+            workspace,
             source_names=source_names,
             regenerate_schemas=regenerate_schemas,
         )
-        workspace_env_for_runner = ws_env
-        if report_dir is None:
-            report_dir = ws_dir / "reports"
-            report_dir.mkdir(parents=True, exist_ok=True)
-            result.report_dir = report_dir
+        workspace_env_for_runner = dict(workspace.env_vars)
+        report_dir = ensure_report_dir(workspace, report_dir)
+        result.report_dir = report_dir
 
     elif needs_workspace and fresh and live:
         # Fresh workspace with all real sources
-        ws_dir, ws_env = _create_workspace(workspace_dir)
-        _run_pipeline_in_workspace(
-            ws_env, ws_dir,
-            source_names=None,
+        workspace = create_verification_workspace(workspace_dir)
+        run_pipeline_for_configured_sources(
+            workspace,
             regenerate_schemas=regenerate_schemas,
         )
-        workspace_env_for_runner = ws_env
-        if report_dir is None:
-            report_dir = ws_dir / "reports"
-            report_dir.mkdir(parents=True, exist_ok=True)
-            result.report_dir = report_dir
+        workspace_env_for_runner = dict(workspace.env_vars)
+        report_dir = ensure_report_dir(workspace, report_dir)
+        result.report_dir = report_dir
 
     elif needs_workspace and live and ingest:
         # Live mode with ingestion on existing DB

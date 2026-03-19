@@ -271,7 +271,7 @@ def qa_command(
 
     # --- VHS capture ---
     if capture.lower() == "vhs" and result.showcase_result and result.showcase_result.output_dir:
-        _run_vhs_capture(env, result.showcase_result.output_dir, json_output)
+        _run_vhs_capture(env, result.showcase_result, json_output)
 
     # --- Output ---
     if json_output:
@@ -310,7 +310,7 @@ def qa_command(
         raise SystemExit(1)
 
 
-def _run_vhs_capture(env: AppEnv, output_dir: Path, json_output: bool) -> None:
+def _run_vhs_capture(env: AppEnv, showcase_result, json_output: bool) -> None:
     """Run VHS tape captures if available."""
     try:
         from polylogue.showcase.vhs import (
@@ -321,11 +321,16 @@ def _run_vhs_capture(env: AppEnv, output_dir: Path, json_output: bool) -> None:
     except ImportError:
         return
 
+    output_dir = showcase_result.output_dir
+    if output_dir is None:
+        return
+
     tapes_dir = output_dir / "tapes"
     captures_dir = output_dir / "captures"
     captures_dir.mkdir(parents=True, exist_ok=True)
 
-    tapes = generate_all_tapes(output_dir=tapes_dir)
+    exercises = [entry.exercise for entry in showcase_result.results]
+    tapes = generate_all_tapes(exercises, output_dir=tapes_dir)
 
     if check_vhs_available():
         for name in tapes:
