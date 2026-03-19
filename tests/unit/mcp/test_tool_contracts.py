@@ -390,7 +390,7 @@ class TestMutationTools:
             )
             mock_repo.resolve_id.return_value = "test:conv-123"
             mock_repo.get_summary.return_value = mock_summary
-            mock_repo.get_conversation_stats.return_value = {"total_messages": 5}
+            mock_repo.queries.get_conversation_stats.return_value = {"total_messages": 5}
             mock_get_repo.return_value = mock_repo
 
             result = invoke_surface(mcp_server._tool_manager._tools["get_conversation_summary"].fn, id="test:conv-123")
@@ -434,7 +434,7 @@ class TestMutationTools:
     def test_stats_by_group(self, group_by, expected, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
-            mock_repo.get_stats_by.return_value = expected
+            mock_repo.queries.get_stats_by.return_value = expected
             mock_get_repo.return_value = mock_repo
 
             result = invoke_surface(mcp_server._tool_manager._tools["get_stats_by"].fn, group_by=group_by)

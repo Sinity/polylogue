@@ -46,6 +46,13 @@ def _configure_summary_pages(repo: AsyncMock, summaries):
     repo.iter_messages = _empty_messages
 
 
+def _make_backend() -> AsyncMock:
+    backend = AsyncMock()
+    backend.queries = MagicMock()
+    backend.queries.get_message_counts_batch = AsyncMock(return_value={})
+    return backend
+
+
 def _make_site_env(*, backend: AsyncMock, repository: AsyncMock) -> AppEnv:
     ui = MagicMock()
     ui.plain = True
@@ -86,8 +93,8 @@ def test_site_builder_archive_shape_contract(spec) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         summaries = [build_conversation_summary(summary) for summary in spec.summaries]
-        backend = AsyncMock()
-        backend.get_message_counts_batch.return_value = build_message_counts(spec.summaries)
+        backend = _make_backend()
+        backend.queries.get_message_counts_batch.return_value = build_message_counts(spec.summaries)
         repository = AsyncMock()
         _configure_summary_pages(repository, summaries)
 
@@ -130,8 +137,8 @@ def test_site_builder_archive_shape_contract(spec) -> None:
 def test_site_builder_search_surface_contract(summaries, mode: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        backend = AsyncMock()
-        backend.get_message_counts_batch.return_value = build_message_counts(summaries)
+        backend = _make_backend()
+        backend.queries.get_message_counts_batch.return_value = build_message_counts(summaries)
         repository = AsyncMock()
         _configure_summary_pages(repository, [build_conversation_summary(summary) for summary in summaries])
         output_dir = tmp_path / "site"
@@ -175,8 +182,8 @@ def test_site_command_contract(spec) -> None:
         tmp_path = Path(tmp)
         runner = CliRunner()
         summaries = [build_conversation_summary(summary) for summary in spec.summaries]
-        backend = AsyncMock()
-        backend.get_message_counts_batch.return_value = build_message_counts(spec.summaries)
+        backend = _make_backend()
+        backend.queries.get_message_counts_batch.return_value = build_message_counts(spec.summaries)
         repository = AsyncMock()
         _configure_summary_pages(repository, summaries)
         env = _make_site_env(backend=backend, repository=repository)
@@ -228,8 +235,8 @@ def test_site_builder_scan_archive_streaming_contract() -> None:
             ),
         ]
         summaries = [build_conversation_summary(spec) for spec in specs]
-        backend = AsyncMock()
-        backend.get_message_counts_batch.return_value = build_message_counts(specs)
+        backend = _make_backend()
+        backend.queries.get_message_counts_batch.return_value = build_message_counts(specs)
         repository = AsyncMock()
         _configure_summary_pages(repository, summaries)
 

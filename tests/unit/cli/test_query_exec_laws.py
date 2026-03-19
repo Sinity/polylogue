@@ -57,6 +57,16 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
     ui.plain = True
     ui.console = MagicMock()
     ui.confirm = MagicMock(return_value=True)
+    if repo is not None:
+        queries = repo.queries
+        if not isinstance(queries.get_conversation, AsyncMock):
+            queries.get_conversation = AsyncMock(return_value=None)
+        if not isinstance(queries.get_conversation_stats, AsyncMock):
+            queries.get_conversation_stats = AsyncMock(return_value={})
+        if not isinstance(queries.get_message_counts_batch, AsyncMock):
+            queries.get_message_counts_batch = AsyncMock(return_value={})
+        if not isinstance(queries.aggregate_message_stats, AsyncMock):
+            queries.aggregate_message_stats = AsyncMock(return_value={})
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
 
 
@@ -293,7 +303,7 @@ def test_delete_conversations_contract(case) -> None:
 @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
 def test_output_summary_list_contract(case, output_format: str) -> None:
     repo = MagicMock()
-    repo.get_message_counts_batch = AsyncMock(return_value=build_message_counts(case.summaries))
+    repo.queries.get_message_counts_batch = AsyncMock(return_value=build_message_counts(case.summaries))
     env = _make_env(repo=repo)
     summaries = [build_conversation_summary(spec) for spec in case.summaries]
     params = {"output_format": output_format}
@@ -570,7 +580,7 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         patch("polylogue.cli.query_actions.resolve_stream_target", new_callable=AsyncMock, return_value="conv-stream") as mock_stream_target,
         patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock) as mock_stream_conversation,
     ):
-        repo.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
+        repo.queries.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
         asyncio.run(async_execute_query(env, {"limit": 7}))
 
     plan.selection.build_filter.assert_called_once_with(repo, vector_provider=None)
@@ -587,7 +597,7 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
     elif expected_helper == "stats_by_summaries":
         filter_chain.list.assert_not_called()
         filter_chain.list_summaries.assert_awaited_once()
-        repo.get_message_counts_batch.assert_awaited_once_with([str(summary.id)])
+        repo.queries.get_message_counts_batch.assert_awaited_once_with([str(summary.id)])
         mock_output_stats_by_summaries.assert_called_once()
         mock_output_stats_by.assert_not_called()
     elif expected_helper == "modify":
@@ -775,7 +785,7 @@ def test_apply_transform_contract(transform: str, expected_ids: list[str]) -> No
 async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
     env = _make_env()
     repo = MagicMock()
-    repo.aggregate_message_stats = AsyncMock(
+    repo.queries.aggregate_message_stats = AsyncMock(
         return_value={
             "total": 9,
             "user": 4,
@@ -819,7 +829,7 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
 
     filter_chain.list_summaries.assert_awaited_once()
     filter_chain.count.assert_not_called()
-    repo.aggregate_message_stats.assert_awaited_once_with(["conv-a", "conv-b"])
+    repo.queries.aggregate_message_stats.assert_awaited_once_with(["conv-a", "conv-b"])
     printed = [call.args[0] for call in env.ui.console.print.call_args_list if call.args]
     assert printed == [
         "\nConversations: 2\n",
@@ -842,7 +852,7 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
 async def test_output_stats_sql_empty_paths_contract(described: list[str], can_use_summaries: bool, expected_message: str) -> None:
     env = _make_env()
     repo = MagicMock()
-    repo.aggregate_message_stats = AsyncMock()
+    repo.queries.aggregate_message_stats = AsyncMock()
 
     filter_chain = MagicMock()
     filter_chain.describe.return_value = described
@@ -853,7 +863,7 @@ async def test_output_stats_sql_empty_paths_contract(described: list[str], can_u
     await output_stats_sql(env, filter_chain, repo)
 
     env.ui.console.print.assert_called_once_with(expected_message)
-    repo.aggregate_message_stats.assert_not_called()
+    repo.queries.aggregate_message_stats.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -250,7 +250,7 @@ class ArchiveOperations:
 
         last_sync = None
         try:
-            last_sync = await self.backend.get_last_sync_timestamp()
+            last_sync = await self.backend.queries.get_last_sync_timestamp()
         except Exception as exc:
             logger.debug("failed to query last sync timestamp", error=str(exc))
 
@@ -265,11 +265,11 @@ class ArchiveOperations:
         )
 
     async def provider_counts(self) -> list[tuple[str, int]]:
-        rows = await self.backend.get_provider_conversation_counts()
+        rows = await self.backend.queries.get_provider_conversation_counts()
         return [(row["provider_name"] or "unknown", row["conversation_count"]) for row in rows]
 
     async def provider_metrics(self) -> list[ProviderMetrics]:
-        rows = await self.backend.get_provider_metrics_rows()
+        rows = await self.backend.queries.get_provider_metrics_rows()
         results: list[ProviderMetrics] = []
         for row in rows:
             conversation_count = row["conversation_count"]

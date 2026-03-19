@@ -130,7 +130,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     if route == QueryRoute.SUMMARY_STATS:
         summaries = await filter_chain.list_summaries()
-        msg_counts = await repo.get_message_counts_batch([str(summary.id) for summary in summaries])
+        msg_counts = await repo.queries.get_message_counts_batch([str(summary.id) for summary in summaries])
         _query_output.output_stats_by_summaries(env, summaries, msg_counts, plan.stats_dimension or "all")
         return
 
