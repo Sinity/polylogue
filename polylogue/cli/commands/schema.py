@@ -148,6 +148,7 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
     registry = SchemaRegistry()
 
     if provider:
+        catalog = registry.load_package_catalog(provider)
         versions = registry.list_versions(provider)
         manifest = registry.load_cluster_manifest(provider)
 
@@ -156,28 +157,51 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
                 "provider": provider,
                 "versions": versions,
             }
+            if catalog:
+                out["catalog"] = catalog.to_dict()
             if manifest:
                 out["manifest"] = manifest.to_dict()
             click.echo(json.dumps(out, indent=2))
         else:
-            if not versions:
+            if not versions and catalog is None:
                 click.echo(f"No schemas found for provider: {provider}")
                 return
 
             click.echo(f"Provider: {provider}")
             click.echo(f"Versions: {', '.join(versions)}")
-            latest = versions[-1] if versions else None
-            if latest:
-                schema = registry.get_schema(provider, version=latest)
-                if schema:
-                    age = registry.get_schema_age_days(provider)
-                    props = schema.get("properties", {})
-                    click.echo(f"Latest: {latest} ({len(props)} properties)")
-                    if age is not None:
-                        click.echo(f"Age: {age} days")
-                    sample_count = schema.get("x-polylogue-sample-count")
-                    if sample_count:
-                        click.echo(f"Sample count: {sample_count:,}")
+            if catalog:
+                click.echo(
+                    f"Default={catalog.default_version}, latest={catalog.latest_version}, "
+                    f"recommended={catalog.recommended_version}"
+                )
+                if catalog.orphan_adjunct_counts:
+                    counts = ", ".join(f"{kind}={count}" for kind, count in sorted(catalog.orphan_adjunct_counts.items()))
+                    click.echo(f"Orphan adjunct evidence: {counts}")
+                click.echo()
+                for package in catalog.packages:
+                    click.echo(
+                        f"  {package.version}: anchor={package.anchor_kind}, "
+                        f"default={package.default_element_kind}, scopes={package.bundle_scope_count}, "
+                        f"window={package.first_seen} -> {package.last_seen}"
+                    )
+                    for element in package.elements:
+                        click.echo(
+                            f"    - {element.element_kind}: "
+                            f"{element.sample_count} samples / {element.artifact_count} artifacts"
+                        )
+            else:
+                latest = versions[-1] if versions else None
+                if latest:
+                    schema = registry.get_schema(provider, version=latest)
+                    if schema:
+                        age = registry.get_schema_age_days(provider)
+                        props = schema.get("properties", {})
+                        click.echo(f"Latest: {latest} ({len(props)} properties)")
+                        if age is not None:
+                            click.echo(f"Age: {age} days")
+                        sample_count = schema.get("x-polylogue-sample-count")
+                        if sample_count:
+                            click.echo(f"Sample count: {sample_count:,}")
 
             if manifest:
                 click.echo(f"\nCluster manifest ({len(manifest.clusters)} clusters):")
@@ -192,6 +216,11 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
             for p in providers:
                 versions = registry.list_versions(p)
                 entry: dict[str, Any] = {"provider": p, "versions": versions}
+                catalog = registry.load_package_catalog(p)
+                if catalog:
+                    entry["package_count"] = len(catalog.packages)
+                    entry["default_version"] = catalog.default_version
+                    entry["latest_version"] = catalog.latest_version
                 manifest = registry.load_cluster_manifest(p)
                 if manifest:
                     entry["cluster_count"] = len(manifest.clusters)
@@ -205,16 +234,19 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
             click.echo(f"Found {len(providers)} provider(s):\n")
             for p in providers:
                 versions = registry.list_versions(p)
-                latest = versions[-1] if versions else "none"
+                catalog = registry.load_package_catalog(p)
+                latest = (catalog.latest_version if catalog else (versions[-1] if versions else None)) or "none"
                 age = registry.get_schema_age_days(p)
                 age_str = f" ({age}d old)" if age is not None else ""
-                click.echo(f"  {p}: {len(versions)} version(s), latest={latest}{age_str}")
+                package_str = f", packages={len(catalog.packages)}" if catalog else ""
+                click.echo(f"  {p}: {len(versions)} version(s){package_str}, latest={latest}{age_str}")
 
 
 @schema_command.command("compare")
 @click.option("--provider", required=True, help="Provider name")
 @click.option("--from", "from_version", required=True, help="Source version (e.g., v1)")
 @click.option("--to", "to_version", required=True, help="Target version (e.g., v2)")
+@click.option("--element", "element_kind", default=None, help="Element kind inside the package (defaults to package default)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.option("--markdown", "md_output", is_flag=True, help="Output as Markdown")
 @click.pass_obj
@@ -223,6 +255,7 @@ def schema_compare(
     provider: str,
     from_version: str,
     to_version: str,
+    element_kind: str | None,
     json_output: bool,
     md_output: bool,
 ) -> None:
@@ -232,7 +265,7 @@ def schema_compare(
     registry = SchemaRegistry()
 
     try:
-        diff = registry.compare_versions(provider, from_version, to_version)
+        diff = registry.compare_versions(provider, from_version, to_version, element_kind=element_kind)
     except ValueError as exc:
         fail("schema compare", str(exc))
 
@@ -298,16 +331,18 @@ def schema_promote(
         fail("schema promote", str(exc))
 
     if json_output:
-        schema = registry.get_schema(provider, version=new_version)
+        package = registry.get_package(provider, version=new_version)
+        schema = registry.get_element_schema(provider, version=new_version)
         click.echo(json.dumps({
             "provider": provider,
             "cluster_id": cluster_id,
-            "schema_version": new_version,
+            "package_version": new_version,
+            "package": package.to_dict() if package else None,
             "schema": schema,
         }, indent=2))
     else:
-        click.echo(f"Promoted cluster {cluster_id} -> {new_version}")
-        click.echo(f"Schema registered for {provider} as {new_version}")
+        click.echo(f"Promoted cluster {cluster_id} -> package {new_version}")
+        click.echo(f"Schema package registered for {provider} as {new_version}")
 
         # Show what's now available
         versions = registry.list_versions(provider)
@@ -317,6 +352,7 @@ def schema_promote(
 @schema_command.command("explain")
 @click.option("--provider", required=True, help="Provider name")
 @click.option("--version", "version", default="latest", help="Schema version (default: latest)")
+@click.option("--element", "element_kind", default=None, help="Element kind inside the package (defaults to package default)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.option("--verbose", "-v", is_flag=True, help="Show semantic roles, privacy summary, annotation coverage")
 @click.pass_obj
@@ -324,6 +360,7 @@ def schema_explain(
     env: AppEnv,
     provider: str,
     version: str,
+    element_kind: str | None,
     json_output: bool,
     verbose: bool,
 ) -> None:
@@ -331,13 +368,21 @@ def schema_explain(
     from polylogue.schemas.registry import SchemaRegistry
 
     registry = SchemaRegistry()
-    schema = registry.get_schema(provider, version=version)
+    package = registry.get_package(provider, version=version)
+    schema = registry.get_element_schema(provider, version=version, element_kind=element_kind)
 
     if schema is None:
-        fail("schema explain", f"No schema found for {provider} version={version}")
+        fail(
+            "schema explain",
+            f"No schema found for {provider} version={version}"
+            + (f" element={element_kind}" if element_kind else ""),
+        )
 
     if json_output:
-        click.echo(json.dumps(schema, indent=2))
+        payload: dict[str, Any] = {"schema": schema}
+        if package is not None:
+            payload["package"] = package.to_dict()
+        click.echo(json.dumps(payload, indent=2))
         return
 
     # Count annotations for summary line
@@ -372,7 +417,15 @@ def schema_explain(
 
     # Summary header
     sample_count = schema.get("x-polylogue-sample-count", "?")
-    click.echo(f"Schema: {provider} {version}")
+    resolved_element = element_kind or (
+        package.default_element_kind if package else schema.get("x-polylogue-element-kind", "?")
+    )
+    click.echo(f"Schema: {provider} {version} [{resolved_element}]")
+    if package is not None:
+        click.echo(
+            f"  Package anchor={package.anchor_kind}, scopes={package.bundle_scope_count}, "
+            f"window={package.first_seen} -> {package.last_seen}"
+        )
     click.echo(
         f"  {len(props)} properties, {sample_count} samples, "
         f"{n_semantic} semantic roles, {n_format} format annotations"

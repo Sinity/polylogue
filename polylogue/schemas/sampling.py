@@ -15,6 +15,7 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -58,9 +59,13 @@ class SchemaUnit:
     cluster_payload: Any
     schema_samples: list[dict[str, Any]]
     artifact_kind: str
-    conversation_id: str | None
-    source_path: str | None
-    profile_tokens: tuple[str, ...]
+    conversation_id: str | None = None
+    raw_id: str | None = None
+    source_path: str | None = None
+    bundle_scope: str | None = None
+    observed_at: str | None = None
+    exact_structure_id: str = ""
+    profile_tokens: tuple[str, ...] = ()
 
 
 # Provider configurations
@@ -173,6 +178,35 @@ def _document_conversation_id(sample: dict[str, Any], raw_id: str | None) -> str
     return raw_id
 
 
+def derive_bundle_scope(
+    provider_name: str | Provider,
+    source_path: str | Path | None,
+) -> str | None:
+    """Return the provider-specific bundle scope for a raw artifact path."""
+    if source_path is None:
+        return None
+
+    provider_token = Provider.from_string(provider_name)
+    path = Path(str(source_path))
+    normalized = str(path)
+
+    if provider_token is Provider.CLAUDE_CODE:
+        if "/subagents/" in normalized:
+            return path.parent.parent.name or None
+        if path.name in {"bridge-pointer.json", "sessions-index.json"}:
+            return path.parent.name or None
+        if path.name.startswith("agent-") and path.name.endswith(".meta.json"):
+            return path.parent.parent.name or None
+        if path.suffix == ".jsonl":
+            return path.stem or None
+
+    if provider_token is Provider.CODEX:
+        if path.suffix == ".jsonl":
+            return path.stem or None
+
+    return path.stem or path.name or None
+
+
 def _compact_schema_value(value: Any) -> Any:
     if isinstance(value, str):
         if len(value) <= _SCHEMA_SAMPLE_STRING_LIMIT:
@@ -250,6 +284,7 @@ def _extract_schema_units(
     provider_name: Provider,
     source_path: str | Path | None,
     raw_id: str | None,
+    observed_at: str | None,
     config: ProviderConfig,
     max_samples: int | None = None,
 ) -> list[SchemaUnit]:
@@ -284,7 +319,11 @@ def _extract_schema_units(
                 schema_samples=samples,
                 artifact_kind=artifact.cohort,
                 conversation_id=raw_id,
+                raw_id=raw_id,
                 source_path=str(source_path) if source_path is not None else None,
+                bundle_scope=derive_bundle_scope(provider_name, source_path),
+                observed_at=observed_at,
+                exact_structure_id=schema_cluster_id(payload, artifact.cohort),
                 profile_tokens=_record_profile_tokens(
                     samples,
                     record_type_key=config.record_type_key,
@@ -313,7 +352,11 @@ def _extract_schema_units(
                 schema_samples=[sample],
                 artifact_kind=artifact.cohort,
                 conversation_id=_document_conversation_id(sample, raw_id),
+                raw_id=raw_id,
                 source_path=str(source_path) if source_path is not None else None,
+                bundle_scope=derive_bundle_scope(provider_name, source_path),
+                observed_at=observed_at,
+                exact_structure_id=schema_cluster_id(sample, artifact.cohort),
                 profile_tokens=_document_profile_tokens(sample),
             )
         )
@@ -326,6 +369,7 @@ def extract_schema_units_from_payload(
     provider_name: Provider,
     source_path: str | Path | None,
     raw_id: str | None,
+    observed_at: str | None = None,
     config: ProviderConfig,
     max_samples: int | None = None,
 ) -> list[SchemaUnit]:
@@ -335,6 +379,7 @@ def extract_schema_units_from_payload(
         provider_name=provider_name,
         source_path=source_path,
         raw_id=raw_id,
+        observed_at=observed_at,
         config=config,
         max_samples=max_samples,
     )
@@ -355,7 +400,7 @@ def _iter_schema_units_from_db(
         where_clause, where_params = _sample_provider_where_clause(query_provider)
         cursor = conn.execute(
             f"""
-            SELECT raw_content, source_path, provider_name, payload_provider, raw_id
+            SELECT raw_content, source_path, provider_name, payload_provider, raw_id, file_mtime, acquired_at
             FROM raw_conversations
             WHERE {where_clause}
             """,
@@ -402,7 +447,11 @@ def _iter_schema_units_from_db(
                                 schema_samples=samples,
                                 artifact_kind=artifact.cohort,
                                 conversation_id=row[4],
+                                raw_id=row[4],
                                 source_path=str(row[1]) if row[1] is not None else None,
+                                bundle_scope=derive_bundle_scope(provider_name, row[1]),
+                                observed_at=row[5] or row[6],
+                                exact_structure_id=schema_cluster_id(samples, artifact.cohort),
                                 profile_tokens=_record_profile_tokens(
                                     samples,
                                     record_type_key=config.record_type_key,
@@ -429,6 +478,7 @@ def _iter_schema_units_from_db(
                     provider_name=provider_name,
                     source_path=row[1],
                     raw_id=row[4],
+                    observed_at=row[5] or row[6],
                     config=config,
                     max_samples=max_samples,
                 )
@@ -480,6 +530,7 @@ def _iter_schema_units_from_sessions(
             provider_name=provider_name,
             source_path=path,
             raw_id=path.stem,
+            observed_at=datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
             config=config,
             max_samples=max_samples,
         )
@@ -653,6 +704,7 @@ __all__ = [
     "_iter_samples_from_sessions",
     "_iter_schema_units_from_db",
     "_iter_schema_units_from_sessions",
+    "derive_bundle_scope",
     "extract_schema_units_from_payload",
     "fingerprint_hash",
     "get_sample_count_from_db",

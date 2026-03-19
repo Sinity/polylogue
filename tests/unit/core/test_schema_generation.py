@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.schema_inference import (
     PROVIDERS,
     GenerationResult,
@@ -245,34 +246,61 @@ class TestGenerateAllSchemas:
 
     def test_creates_output_directory(self, tmp_path):
         output_dir = tmp_path / "schemas" / "nested"
-        fake_result = GenerationResult(provider="chatgpt", sample_count=1, schema={"type": "object"}, error=None)
-        fake_cluster = SimpleNamespace(
-            artifact_kind="conversation_document",
+        package = SchemaVersionPackage(
+            provider="chatgpt",
+            version="v1",
+            anchor_kind="conversation_document",
+            default_element_kind="conversation_document",
+            first_seen="2026-01-01T00:00:00+00:00",
+            last_seen="2026-01-01T00:00:00+00:00",
+            bundle_scope_count=1,
             sample_count=1,
-            schema_sample_count=1,
-            representative_paths=["/tmp/conv.json"],
-            dominant_keys=["id"],
-            reservoir_samples=[{"id": "conv-1"}],
-            reservoir_conv_ids=["conv-1"],
+            elements=[
+                SchemaElementManifest(
+                    element_kind="conversation_document",
+                    schema_file="conversation_document.schema.json.gz",
+                    sample_count=1,
+                    artifact_count=1,
+                )
+            ],
+        )
+        fake_result = GenerationResult(
+            provider="chatgpt",
+            sample_count=1,
+            schema={"type": "object"},
+            error=None,
+            versions=["v1"],
+            default_version="v1",
+            package_count=1,
+            cluster_count=1,
+        )
+        fake_bundle = SimpleNamespace(
+            result=fake_result,
+            catalog=SchemaPackageCatalog(
+                provider="chatgpt",
+                packages=[package],
+                latest_version="v1",
+                default_version="v1",
+                recommended_version="v1",
+            ),
+            package_schemas={
+                "v1": {
+                    "conversation_document": {"type": "object", "properties": {"id": {"type": "string"}}}
+                }
+            },
+            manifest=SimpleNamespace(to_dict=lambda: {"provider": "chatgpt", "clusters": []}),
         )
 
         with (
-            patch("polylogue.schemas.schema_generation.generate_provider_schema", return_value=fake_result),
-            patch(
-                "polylogue.schemas.schema_generation._collect_cluster_accumulators",
-                return_value=({"cluster-1": fake_cluster}, 1, {"conversation_document": 1}),
-            ),
-            patch(
-                "polylogue.schemas.schema_generation._generate_cluster_schema",
-                return_value=({"type": "object", "properties": {"id": {"type": "string"}}}, None),
-            ),
+            patch("polylogue.schemas.schema_generation._build_provider_bundle", return_value=fake_bundle),
+            patch("polylogue.schemas.registry.SchemaRegistry.save_cluster_manifest", return_value=output_dir / "chatgpt" / "manifest.json"),
         ):
             results = generate_all_schemas(output_dir, providers=["chatgpt"])
 
         assert output_dir.exists()
         assert len(results) == 1
-        assert (output_dir / "chatgpt" / "v1.schema.json.gz").exists()
-        assert (output_dir / "chatgpt" / "manifest.json").exists()
+        assert (output_dir / "chatgpt" / "catalog.json").exists()
+        assert (output_dir / "chatgpt" / "versions" / "v1" / "elements" / "conversation_document.schema.json.gz").exists()
 
     def test_skips_failed_schemas(self, tmp_path):
         failed_result = GenerationResult(provider="broken", sample_count=0, schema=None, error="No samples")
@@ -310,13 +338,14 @@ class TestProfileClustering:
             lambda *args, **kwargs: iter(units),
         )
 
-        clusters, sample_count, artifact_counts = _collect_cluster_accumulators(
+        clusters, memberships, sample_count, artifact_counts = _collect_cluster_accumulators(
             "chatgpt",
             db_path=tmp_path / "unused.db",
             max_samples=None,
             reservoir_size=8,
         )
 
+        assert len(memberships) == 2
         assert sample_count == 2
         assert artifact_counts == {"conversation_document": 2}
         assert len(clusters) == 1

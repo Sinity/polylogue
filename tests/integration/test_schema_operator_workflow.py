@@ -299,8 +299,9 @@ class TestSchemaExplainCommand:
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         data = _extract_json(result.output)
-        assert "properties" in data
-        assert "id" in data["properties"]
+        assert "schema" in data
+        assert "package" in data
+        assert "id" in data["schema"]["properties"]
 
     def test_explain_latest_version(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):
@@ -363,8 +364,8 @@ class TestSchemaExplainCommand:
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         data = _extract_json(result.output)
-        assert data["properties"]["msg"]["x-polylogue-semantic-role"] == "message_body"
-        assert "x-polylogue-foreign-keys" in data
+        assert data["schema"]["properties"]["msg"]["x-polylogue-semantic-role"] == "message_body"
+        assert "x-polylogue-foreign-keys" in data["schema"]
 
 
 # =============================================================================
@@ -411,7 +412,8 @@ class TestSchemaPromoteCommand:
         data = _extract_json(result.output)
         assert data["provider"] == "promo-json"
         assert data["cluster_id"] == cluster_id
-        assert data["schema_version"] == "v1"
+        assert data["package_version"] == "v1"
+        assert data["package"]["version"] == "v1"
         assert data["schema"] is not None
 
     def test_promote_already_promoted_fails(self, runner: CliRunner, schema_storage: Path) -> None:
@@ -541,7 +543,7 @@ class TestFullOperatorWorkflow:
             )
         assert result.exit_code == 0
         promo = _extract_json(result.output)
-        assert promo["schema_version"] == "v3"
+        assert promo["package_version"] == "v3"
 
         # Step 6: Explain the promoted version
         with _patch_registry(registry):
@@ -551,9 +553,9 @@ class TestFullOperatorWorkflow:
             )
         assert result.exit_code == 0
         schema_v3 = _extract_json(result.output)
-        assert schema_v3["x-polylogue-cluster-id"] == cluster_id
-        assert "x-polylogue-promoted-at" in schema_v3
-        assert schema_v3["x-polylogue-version"] == 3
+        assert schema_v3["schema"]["x-polylogue-cluster-id"] == cluster_id
+        assert "x-polylogue-promoted-at" in schema_v3["schema"]
+        assert schema_v3["schema"]["x-polylogue-version"] == 3
 
         # Step 7: Final list shows all 3 versions
         with _patch_registry(registry):

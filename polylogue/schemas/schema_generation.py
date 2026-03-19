@@ -39,6 +39,11 @@ from polylogue.schemas.redaction_report import (
     RedactionDecision,
     SchemaReport,
 )
+from polylogue.schemas.packages import (
+    SchemaElementManifest,
+    SchemaPackageCatalog,
+    SchemaVersionPackage,
+)
 from polylogue.schemas.relational_inference import (
     infer_relations,
 )
@@ -47,6 +52,7 @@ from polylogue.schemas.sampling import (
     ProviderConfig,
     _resolve_provider_config,
     iter_schema_units,
+    SchemaUnit,
     profile_cluster_id,
     profile_similarity,
 )
@@ -70,6 +76,10 @@ _PROFILE_SIMILARITY_THRESHOLDS = {
     "conversation_record_stream": 0.8,
     "subagent_conversation_stream": 0.8,
 }
+_ANCHOR_ELEMENT_KINDS = {
+    "conversation_document",
+    "conversation_record_stream",
+}
 
 # Thresholds used by _annotate_schema
 _ENUM_VALUE_CAP = 200  # max values to iterate per field in annotation
@@ -90,6 +100,7 @@ class GenerationResult:
     versions: list[str] = field(default_factory=list)
     default_version: str | None = None
     cluster_count: int = 0
+    package_count: int = 0
     artifact_counts: dict[str, int] = field(default_factory=dict)
 
     @property
@@ -100,7 +111,8 @@ class GenerationResult:
 @dataclass
 class _ProviderBundle:
     result: GenerationResult
-    versioned_schemas: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    catalog: SchemaPackageCatalog | None = None
+    package_schemas: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     manifest: ClusterManifest | None = None
 
 
@@ -625,6 +637,29 @@ class _ClusterAccumulator:
     reservoir_samples: list[dict[str, Any]] = field(default_factory=list)
     reservoir_conv_ids: list[str | None] = field(default_factory=list)
     rng: random.Random = field(default_factory=lambda: random.Random(42))
+    exact_structure_ids: set[str] = field(default_factory=set)
+    bundle_scopes: set[str] = field(default_factory=set)
+    first_seen: str | None = None
+    last_seen: str | None = None
+
+
+@dataclass(frozen=True)
+class _UnitMembership:
+    unit: SchemaUnit
+    profile_family_id: str
+
+
+@dataclass
+class _PackageAccumulator:
+    provider: str
+    anchor_family_id: str
+    anchor_kind: str
+    memberships: list[_UnitMembership] = field(default_factory=list)
+    bundle_scopes: set[str] = field(default_factory=set)
+    representative_paths: list[str] = field(default_factory=list)
+    source_cluster_ids: set[str] = field(default_factory=set)
+    first_seen: str | None = None
+    last_seen: str | None = None
 
 
 def _artifact_priority(artifact_kind: str) -> int:
@@ -649,6 +684,27 @@ def _dominant_keys_for_payload(payload: Any) -> list[str]:
 def _cluster_sort_key(item: tuple[str, _ClusterAccumulator]) -> tuple[int, int, int]:
     _cluster_id, acc = item
     return (_artifact_priority(acc.artifact_kind), acc.sample_count, acc.schema_sample_count)
+
+
+def _parse_observed_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _update_observed_window(acc: _ClusterAccumulator | _PackageAccumulator, observed_at: str | None) -> None:
+    parsed = _parse_observed_at(observed_at)
+    if parsed is None:
+        return
+    iso = parsed.astimezone(timezone.utc).isoformat()
+    if acc.first_seen is None or _parse_observed_at(acc.first_seen) is None or parsed < _parse_observed_at(acc.first_seen):
+        acc.first_seen = iso
+    if acc.last_seen is None or _parse_observed_at(acc.last_seen) is None or parsed > _parse_observed_at(acc.last_seen):
+        acc.last_seen = iso
 
 
 def _cluster_reservoir_size(config: ProviderConfig, max_samples: int | None) -> int:
@@ -744,6 +800,10 @@ def _merge_cluster_accumulators(
     target.member_profiles.update(source.member_profiles)
     target.dominant_keys = _merge_dominant_keys(target.dominant_keys, source.dominant_keys)
     _merge_representative_paths(target.representative_paths, source.representative_paths)
+    target.exact_structure_ids.update(source.exact_structure_ids)
+    target.bundle_scopes.update(source.bundle_scopes)
+    _update_observed_window(target, source.first_seen)
+    _update_observed_window(target, source.last_seen)
     if reservoir_size is not None and source.reservoir_samples:
         combined = list(zip(target.reservoir_samples, target.reservoir_conv_ids, strict=False))
         combined.extend(zip(source.reservoir_samples, source.reservoir_conv_ids, strict=False))
@@ -821,13 +881,14 @@ def _collect_cluster_accumulators(
     db_path: Path,
     max_samples: int | None,
     reservoir_size: int,
-) -> tuple[dict[str, _ClusterAccumulator], int, dict[str, int]]:
-    """Cluster schema units by heuristic profile similarity and collect reservoirs."""
+) -> tuple[dict[str, _ClusterAccumulator], list[_UnitMembership], int, dict[str, int]]:
+    """Cluster schema units into profile families and retain bundle memberships."""
+    units = list(iter_schema_units(provider, db_path=db_path, max_samples=max_samples))
     profile_summaries: dict[tuple[str, tuple[str, ...]], _ProfileSummary] = {}
     total_schema_samples = 0
     artifact_counts: dict[str, int] = {}
 
-    for unit in iter_schema_units(provider, db_path=db_path, max_samples=max_samples):
+    for unit in units:
         summary_key = (unit.artifact_kind, unit.profile_tokens)
         summary = profile_summaries.get(summary_key)
         if summary is None:
@@ -907,24 +968,25 @@ def _collect_cluster_accumulators(
         for profile_tokens in acc.member_profiles:
             summary_cluster_ids[(acc.artifact_kind, profile_tokens)] = cluster_id
 
-    for unit in iter_schema_units(provider, db_path=db_path, max_samples=max_samples):
+    memberships: list[_UnitMembership] = []
+    for unit in units:
         cluster_id = summary_cluster_ids[(unit.artifact_kind, unit.profile_tokens)]
         acc = clusters[cluster_id]
         acc.sample_count += 1
+        acc.schema_sample_count += len(unit.schema_samples)
         acc.profile_token_counts.update(unit.profile_tokens)
+        acc.member_profiles.add(unit.profile_tokens)
+        acc.exact_structure_ids.add(unit.exact_structure_id)
+        if unit.bundle_scope:
+            acc.bundle_scopes.add(unit.bundle_scope)
+        _update_observed_window(acc, unit.observed_at)
         if (
             unit.source_path
             and unit.source_path not in acc.representative_paths
             and len(acc.representative_paths) < 5
         ):
             acc.representative_paths.append(unit.source_path)
-        for sample in unit.schema_samples:
-            _update_cluster_reservoir(
-                acc,
-                sample,
-                unit.conversation_id,
-                reservoir_size=reservoir_size,
-            )
+        memberships.append(_UnitMembership(unit=unit, profile_family_id=cluster_id))
 
     refined_clusters = _refine_coarse_clusters(
         list(clusters.values()),
@@ -939,7 +1001,27 @@ def _collect_cluster_accumulators(
         else:
             _merge_cluster_accumulators(existing, acc, reservoir_size=reservoir_size)
 
-    return final_clusters, total_schema_samples, artifact_counts
+    membership_cluster_map: dict[str, str] = {}
+    for cluster_id, acc in final_clusters.items():
+        for profile_tokens in acc.member_profiles:
+            membership_cluster_map[profile_cluster_id(acc.artifact_kind, profile_tokens)] = cluster_id
+
+    normalized_memberships: list[_UnitMembership] = []
+    for membership in memberships:
+        normalized_cluster_id = membership_cluster_map.get(membership.profile_family_id, membership.profile_family_id)
+        normalized_memberships.append(
+            _UnitMembership(unit=membership.unit, profile_family_id=normalized_cluster_id)
+        )
+        final_acc = final_clusters[normalized_cluster_id]
+        for sample in membership.unit.schema_samples:
+            _update_cluster_reservoir(
+                final_acc,
+                sample,
+                membership.unit.conversation_id,
+                reservoir_size=reservoir_size,
+            )
+
+    return final_clusters, normalized_memberships, total_schema_samples, artifact_counts
 
 
 def _generate_cluster_schema(
@@ -1015,6 +1097,132 @@ def _apply_schema_metadata(
     schema["x-polylogue-cluster-id"] = cluster_id
     schema["x-polylogue-cluster-sample-count"] = cluster_sample_count
     schema["x-polylogue-artifact-kind"] = artifact_kind
+
+
+def _membership_scope_key(membership: _UnitMembership) -> str:
+    unit = membership.unit
+    return (
+        unit.bundle_scope
+        or unit.raw_id
+        or unit.source_path
+        or f"{membership.profile_family_id}:{unit.artifact_kind}:{unit.exact_structure_id}"
+    )
+
+
+def _dedupe_bundle_memberships(memberships: list[_UnitMembership]) -> dict[str, list[_UnitMembership]]:
+    scoped: dict[str, list[_UnitMembership]] = {}
+    for membership in memberships:
+        scoped.setdefault(_membership_scope_key(membership), []).append(membership)
+
+    deduped: dict[str, list[_UnitMembership]] = {}
+    for scope, items in scoped.items():
+        items = sorted(
+            items,
+            key=lambda item: (
+                item.unit.observed_at or "",
+                item.unit.source_path or "",
+                item.profile_family_id,
+            ),
+        )
+        seen: set[tuple[str, str]] = set()
+        retained: list[_UnitMembership] = []
+        for membership in items:
+            dedupe_key = (membership.unit.artifact_kind, membership.unit.exact_structure_id)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            retained.append(membership)
+        deduped[scope] = retained
+    return deduped
+
+
+def _attach_package_membership(
+    package: _PackageAccumulator,
+    membership: _UnitMembership,
+    *,
+    scope: str,
+) -> None:
+    package.memberships.append(membership)
+    package.bundle_scopes.add(scope)
+    package.source_cluster_ids.add(membership.profile_family_id)
+    if membership.unit.source_path:
+        _merge_representative_paths(package.representative_paths, [membership.unit.source_path])
+    _update_observed_window(package, membership.unit.observed_at)
+
+
+def _build_package_candidates(
+    provider: str,
+    *,
+    memberships: list[_UnitMembership],
+    clusters: dict[str, _ClusterAccumulator],
+) -> tuple[list[_PackageAccumulator], dict[str, int]]:
+    scoped = _dedupe_bundle_memberships(memberships)
+    packages: dict[str, _PackageAccumulator] = {}
+    orphan_adjunct_counts: Counter[str] = Counter()
+
+    for scope, items in scoped.items():
+        anchor_families = sorted(
+            {
+                membership.profile_family_id
+                for membership in items
+                if membership.unit.artifact_kind in _ANCHOR_ELEMENT_KINDS
+            }
+        )
+
+        if not anchor_families:
+            for membership in items:
+                orphan_adjunct_counts[membership.unit.artifact_kind] += 1
+            continue
+
+        for family_id in anchor_families:
+            acc = packages.get(family_id)
+            if acc is None:
+                cluster = clusters[family_id]
+                acc = _PackageAccumulator(
+                    provider=provider,
+                    anchor_family_id=family_id,
+                    anchor_kind=cluster.artifact_kind,
+                )
+                packages[family_id] = acc
+            for membership in items:
+                if membership.profile_family_id == family_id and membership.unit.artifact_kind in _ANCHOR_ELEMENT_KINDS:
+                    _attach_package_membership(acc, membership, scope=scope)
+
+        if len(anchor_families) == 1:
+            target = packages[anchor_families[0]]
+            for membership in items:
+                if membership.unit.artifact_kind not in _ANCHOR_ELEMENT_KINDS:
+                    _attach_package_membership(target, membership, scope=scope)
+        else:
+            for membership in items:
+                if membership.unit.artifact_kind not in _ANCHOR_ELEMENT_KINDS:
+                    orphan_adjunct_counts[membership.unit.artifact_kind] += 1
+
+    ordered = sorted(
+        packages.values(),
+        key=lambda item: (
+            _parse_observed_at(item.first_seen) or datetime.max.replace(tzinfo=timezone.utc),
+            -len(item.bundle_scopes),
+            item.anchor_family_id,
+        ),
+    )
+    return ordered, dict(orphan_adjunct_counts)
+
+
+def _element_profile_tokens(memberships: list[_UnitMembership]) -> list[str]:
+    token_counts: Counter[str] = Counter()
+    for membership in memberships:
+        token_counts.update(membership.unit.profile_tokens)
+    if not token_counts:
+        return []
+    min_count = max(1, len(memberships) // 2)
+    tokens = sorted(token for token, count in token_counts.items() if count >= min_count)
+    if not tokens:
+        tokens = [
+            token
+            for token, _count in sorted(token_counts.items(), key=lambda item: (-item[1], item[0]))[:_PROFILE_MAX_TOKENS]
+        ]
+    return tokens[:_PROFILE_MAX_TOKENS]
 
 
 def generate_schema_from_samples(
@@ -1109,7 +1317,7 @@ def _build_provider_bundle(
     config = _resolve_provider_config(provider_token)
 
     try:
-        clusters, sample_count, artifact_counts = _collect_cluster_accumulators(
+        clusters, memberships, sample_count, artifact_counts = _collect_cluster_accumulators(
             provider,
             db_path=db_path,
             max_samples=max_samples,
@@ -1117,71 +1325,182 @@ def _build_provider_bundle(
         )
         if not clusters:
             return _ProviderBundle(
-            result=GenerationResult(
+                result=GenerationResult(
                     provider=str(provider_token),
                     schema=None,
                     sample_count=0,
                     error="No samples found",
                 ),
             )
-
-        ordered_clusters = sorted(
-            clusters.items(),
-            key=_cluster_sort_key,
-            reverse=True,
+        packages, orphan_adjunct_counts = _build_package_candidates(
+            str(provider_token),
+            memberships=memberships,
+            clusters=clusters,
         )
-        total_units = max(sum(acc.sample_count for _cluster_id, acc in ordered_clusters), 1)
-        timestamp = datetime.now(tz=timezone.utc).isoformat()
-        versioned_schemas: list[tuple[str, dict[str, Any]]] = []
-        manifest_clusters: list[SchemaCluster] = []
-        default_schema: dict[str, Any] | None = None
-        default_redaction_report: SchemaReport | None = None
-        default_version: str | None = None
+        if not packages:
+            return _ProviderBundle(
+                result=GenerationResult(
+                    provider=str(provider_token),
+                    schema=None,
+                    sample_count=sample_count,
+                    error="No anchor-backed schema packages found",
+                    cluster_count=len(clusters),
+                    artifact_counts=artifact_counts,
+                ),
+                manifest=ClusterManifest(
+                    provider=provider_token,
+                    clusters=[
+                        SchemaCluster(
+                            cluster_id=cluster_id,
+                            provider=provider_token,
+                            sample_count=acc.sample_count,
+                            first_seen=acc.first_seen or "",
+                            last_seen=acc.last_seen or "",
+                            representative_paths=acc.representative_paths,
+                            dominant_keys=acc.dominant_keys,
+                            confidence=1.0,
+                            artifact_kind=acc.artifact_kind,
+                            profile_tokens=list(_cluster_profile_tokens(acc)),
+                            exact_structure_ids=sorted(acc.exact_structure_ids),
+                            bundle_scope_count=len(acc.bundle_scopes),
+                        )
+                        for cluster_id, acc in sorted(clusters.items(), key=_cluster_sort_key, reverse=True)
+                    ],
+                    artifact_counts=artifact_counts,
+                ),
+            )
 
-        for index, (cluster_id, acc) in enumerate(ordered_clusters, start=1):
+        total_units = max(sum(acc.sample_count for acc in clusters.values()), 1)
+        package_schemas: dict[str, dict[str, dict[str, Any]]] = {}
+        package_reports: dict[str, dict[str, SchemaReport | None]] = {}
+        catalog_packages: list[SchemaVersionPackage] = []
+        cluster_to_package_version: dict[str, str] = {}
+
+        for index, package_acc in enumerate(packages, start=1):
             version = f"v{index}"
-            schema, redaction_report = _generate_cluster_schema(
-                provider,
-                config,
-                acc.reservoir_samples,
-                acc.reservoir_conv_ids,
-                privacy_config=privacy_config,
+            package_schemas[version] = {}
+            package_reports[version] = {}
+
+            element_memberships: dict[str, list[_UnitMembership]] = {}
+            for membership in package_acc.memberships:
+                element_memberships.setdefault(membership.unit.artifact_kind, []).append(membership)
+
+            elements: list[SchemaElementManifest] = []
+            total_package_samples = 0
+            for element_kind, kind_memberships in sorted(
+                element_memberships.items(),
+                key=lambda item: (_artifact_priority(item[0]), item[0]),
+                reverse=True,
+            ):
+                schema_samples: list[dict[str, Any]] = []
+                conv_ids: list[str | None] = []
+                representative_paths: list[str] = []
+                exact_structure_ids = sorted({membership.unit.exact_structure_id for membership in kind_memberships})
+                profile_family_ids = sorted({membership.profile_family_id for membership in kind_memberships})
+                for membership in kind_memberships:
+                    schema_samples.extend(membership.unit.schema_samples)
+                    conv_ids.extend([membership.unit.conversation_id] * len(membership.unit.schema_samples))
+                    if membership.unit.source_path:
+                        _merge_representative_paths(representative_paths, [membership.unit.source_path])
+
+                total_package_samples += len(schema_samples)
+                schema, redaction_report = _generate_cluster_schema(
+                    provider,
+                    config,
+                    schema_samples,
+                    conv_ids,
+                    privacy_config=privacy_config,
+                )
+                _apply_schema_metadata(
+                    schema,
+                    provider=str(provider_token),
+                    config=config,
+                    schema_sample_count=len(schema_samples),
+                    cluster_id=package_acc.anchor_family_id,
+                    artifact_kind=element_kind,
+                    cluster_sample_count=len(kind_memberships),
+                )
+                schema["x-polylogue-package-version"] = version
+                schema["x-polylogue-profile-family-ids"] = profile_family_ids
+                schema["x-polylogue-exact-structure-ids"] = exact_structure_ids
+                package_schemas[version][element_kind] = schema
+                package_reports[version][element_kind] = redaction_report
+                elements.append(
+                    SchemaElementManifest(
+                        element_kind=element_kind,
+                        schema_file=f"{element_kind}.schema.json.gz",
+                        sample_count=len(schema_samples),
+                        artifact_count=len(kind_memberships),
+                        exact_structure_ids=exact_structure_ids,
+                        profile_family_ids=profile_family_ids,
+                        profile_tokens=_element_profile_tokens(kind_memberships),
+                        representative_paths=representative_paths,
+                        observed_artifact_count=len(kind_memberships),
+                    )
+                )
+
+            package = SchemaVersionPackage(
+                provider=provider_token,
+                version=version,
+                anchor_kind=package_acc.anchor_kind,
+                default_element_kind=package_acc.anchor_kind,
+                first_seen=package_acc.first_seen or datetime.now(tz=timezone.utc).isoformat(),
+                last_seen=package_acc.last_seen or package_acc.first_seen or datetime.now(tz=timezone.utc).isoformat(),
+                bundle_scope_count=len(package_acc.bundle_scopes),
+                sample_count=total_package_samples,
+                bundle_scopes=sorted(package_acc.bundle_scopes),
+                source_cluster_ids=sorted(package_acc.source_cluster_ids),
+                representative_paths=package_acc.representative_paths,
+                elements=elements,
             )
-            _apply_schema_metadata(
-                schema,
-                provider=str(provider_token),
-                config=config,
-                schema_sample_count=acc.schema_sample_count,
-                cluster_id=cluster_id,
-                artifact_kind=acc.artifact_kind,
-                cluster_sample_count=acc.sample_count,
-            )
-            versioned_schemas.append((version, schema))
+            catalog_packages.append(package)
+            for cluster_id in package.source_cluster_ids:
+                cluster_to_package_version[cluster_id] = version
+
+        latest_version = catalog_packages[-1].version if catalog_packages else None
+        catalog = SchemaPackageCatalog(
+            provider=provider_token,
+            packages=catalog_packages,
+            latest_version=latest_version,
+            default_version=latest_version,
+            recommended_version=latest_version,
+            orphan_adjunct_counts=orphan_adjunct_counts,
+        )
+        manifest_clusters: list[SchemaCluster] = []
+        for cluster_id, acc in sorted(clusters.items(), key=_cluster_sort_key, reverse=True):
             manifest_clusters.append(
                 SchemaCluster(
                     cluster_id=cluster_id,
                     provider=provider_token,
                     sample_count=acc.sample_count,
-                    first_seen=timestamp,
-                    last_seen=timestamp,
+                    first_seen=acc.first_seen or "",
+                    last_seen=acc.last_seen or "",
                     representative_paths=acc.representative_paths,
                     dominant_keys=acc.dominant_keys,
                     confidence=round(min(1.0, acc.sample_count / max(total_units * 0.1, 1)), 3),
                     artifact_kind=acc.artifact_kind,
                     profile_tokens=list(_cluster_profile_tokens(acc)),
-                    schema_version=version,
+                    exact_structure_ids=sorted(acc.exact_structure_ids),
+                    bundle_scope_count=len(acc.bundle_scopes),
+                    schema_version=cluster_to_package_version.get(cluster_id),
                 )
             )
-            if default_schema is None:
-                default_schema = schema
-                default_redaction_report = redaction_report
-                default_version = version
-
         manifest = ClusterManifest(
             provider=provider_token,
             clusters=manifest_clusters,
             artifact_counts=artifact_counts,
-            default_version=default_version,
+            default_version=catalog.default_version,
+        )
+        default_package = catalog.package(catalog.default_version) if catalog.default_version else None
+        default_schema = (
+            package_schemas[default_package.version][default_package.default_element_kind]
+            if default_package is not None
+            else None
+        )
+        default_redaction_report = (
+            package_reports[default_package.version][default_package.default_element_kind]
+            if default_package is not None
+            else None
         )
         return _ProviderBundle(
             result=GenerationResult(
@@ -1189,12 +1508,14 @@ def _build_provider_bundle(
                 schema=default_schema,
                 sample_count=sample_count,
                 redaction_report=default_redaction_report,
-                versions=[version for version, _schema in versioned_schemas],
-                default_version=default_version,
-                cluster_count=len(ordered_clusters),
+                versions=[package.version for package in catalog.packages],
+                default_version=catalog.default_version,
+                cluster_count=len(clusters),
+                package_count=len(catalog.packages),
                 artifact_counts=artifact_counts,
             ),
-            versioned_schemas=versioned_schemas,
+            catalog=catalog,
+            package_schemas=package_schemas,
             manifest=manifest,
         )
     except Exception as e:
@@ -1233,11 +1554,12 @@ def generate_all_schemas(
         result = bundle.result
         results.append(result)
 
-        if result.success and bundle.manifest is not None:
+        if result.success and bundle.manifest is not None and bundle.catalog is not None:
             registry = SchemaRegistry(storage_root=output_dir)
-            registry.replace_provider_schemas(
+            registry.replace_provider_packages(
                 provider,
-                bundle.versioned_schemas,
+                bundle.catalog,
+                bundle.package_schemas,
                 manifest=bundle.manifest,
             )
 

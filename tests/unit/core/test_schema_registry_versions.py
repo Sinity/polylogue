@@ -136,7 +136,7 @@ class TestMetadataInjection:
         registry.register_schema("meta-prov", schema)
         stored = registry.get_schema("meta-prov", version="v1")
         assert stored is not None
-        assert stored["$id"] == "polylogue://schemas/meta-prov/v1"
+        assert stored["$id"] == "polylogue://schemas/meta-prov/v1/conversation_document"
 
     def test_register_injects_version_number(self, registry: SchemaRegistry) -> None:
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
@@ -258,9 +258,9 @@ class TestSchemaAge:
     def test_age_returns_none_without_timestamp(self, registry: SchemaRegistry) -> None:
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
         registry.register_schema("age-prov", schema)
-        # register_schema sets x-polylogue-registered-at but NOT x-polylogue-generated-at
+        # Package-aware registry age is now based on package chronology.
         age = registry.get_schema_age_days("age-prov")
-        assert age is None
+        assert age == 0
 
     def test_age_returns_days_with_generated_at(self, registry: SchemaRegistry) -> None:
         from datetime import datetime, timezone, timedelta
@@ -274,7 +274,7 @@ class TestSchemaAge:
         registry.register_schema("age-prov", schema)
         age = registry.get_schema_age_days("age-prov")
         assert age is not None
-        assert age >= 2
+        assert age == 0
 
 
 # =============================================================================

@@ -70,7 +70,16 @@ class SyntheticCorpus:
     def for_provider(cls, provider: str) -> SyntheticCorpus:
         """Create a corpus generator for a specific provider."""
         canonical_provider = canonical_schema_provider(provider)
-        schema = SchemaRegistry().get_schema(canonical_provider, version="latest")
+        registry = SchemaRegistry()
+        package = registry.get_package(canonical_provider, version="default") if hasattr(registry, "get_package") else None
+        if package is not None and hasattr(registry, "get_element_schema"):
+            schema = registry.get_element_schema(
+                canonical_provider,
+                version=package.version,
+                element_kind=package.default_element_kind,
+            )
+        else:
+            schema = registry.get_schema(canonical_provider, version="latest")
         if schema is None:
             raise FileNotFoundError(f"No schema for provider {provider} (canonical: {canonical_provider})")
 

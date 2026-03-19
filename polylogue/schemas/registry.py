@@ -15,8 +15,15 @@ from polylogue.lib.provider_identity import (
     normalize_provider_token,
 )
 from polylogue.paths import data_home
+from polylogue.schemas.packages import (
+    SchemaElementManifest,
+    SchemaPackageCatalog,
+    SchemaResolution,
+    SchemaVersionPackage,
+)
 from polylogue.schemas.sampling import (
     _resolve_provider_config,
+    derive_bundle_scope,
     extract_schema_units_from_payload,
     fingerprint_hash as _stable_fingerprint_hash,
     profile_similarity,
@@ -200,6 +207,8 @@ class SchemaCluster:
     confidence: float = 1.0
     artifact_kind: str = "unspecified"
     profile_tokens: list[str] = field(default_factory=list)
+    exact_structure_ids: list[str] = field(default_factory=list)
+    bundle_scope_count: int = 0
     schema_version: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -246,6 +255,8 @@ class ClusterManifest:
                     confidence=float(cluster.get("confidence", 1.0)),
                     artifact_kind=str(cluster.get("artifact_kind", "unspecified")),
                     profile_tokens=list(cluster.get("profile_tokens", [])),
+                    exact_structure_ids=list(cluster.get("exact_structure_ids", [])),
+                    bundle_scope_count=int(cluster.get("bundle_scope_count", 0)),
                     schema_version=cluster.get("schema_version"),
                 )
                 for cluster in data.get("clusters", [])
@@ -285,28 +296,142 @@ class SchemaRegistry:
     def storage_root(self) -> Path:
         return self._storage_root if self._storage_root is not None else data_home() / "schemas"
 
-    def get_schema(self, provider: str | Provider, version: str = "latest") -> dict[str, Any] | None:
-        provider_token = canonical_schema_provider(provider)
+    def _provider_dir(self, provider: str | Provider) -> Path:
+        return self.storage_root / str(canonical_schema_provider(provider))
+
+    def _catalog_path(self, provider: str | Provider) -> Path:
+        return self._provider_dir(provider) / "catalog.json"
+
+    def _package_dir(self, provider: str | Provider, version: str) -> Path:
+        return self._provider_dir(provider) / "versions" / version
+
+    def _package_manifest_path(self, provider: str | Provider, version: str) -> Path:
+        return self._package_dir(provider, version) / "package.json"
+
+    def _element_schema_path(self, provider: str | Provider, version: str, element_kind: str) -> Path:
+        return self._package_dir(provider, version) / "elements" / f"{element_kind}.schema.json.gz"
+
+    def load_package_catalog(self, provider: str | Provider) -> SchemaPackageCatalog | None:
+        path = self._catalog_path(provider)
+        if not path.exists():
+            return None
+        return SchemaPackageCatalog.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    def save_package_catalog(self, catalog: SchemaPackageCatalog) -> Path:
+        provider_dir = self._provider_dir(catalog.provider)
+        provider_dir.mkdir(parents=True, exist_ok=True)
+        path = self._catalog_path(catalog.provider)
+        path.write_text(json.dumps(catalog.to_dict(), indent=2), encoding="utf-8")
+        return path
+
+    def _resolve_catalog_version(self, catalog: SchemaPackageCatalog, version: str) -> str | None:
+        if version == "default":
+            return catalog.default_version or catalog.latest_version or catalog.recommended_version
         if version == "latest":
-            manifest = self.load_cluster_manifest(provider_token)
-            if manifest is not None and manifest.default_version is not None:
-                version = manifest.default_version
-            else:
-                versions = self.list_versions(provider_token)
-                if versions:
-                    version = versions[-1]
-                else:
-                    return self._load_baseline(provider_token)
+            return catalog.latest_version or catalog.default_version or catalog.recommended_version
+        if version == "recommended":
+            return catalog.recommended_version or catalog.default_version or catalog.latest_version
+        return version
+
+    def write_package(
+        self,
+        package: SchemaVersionPackage,
+        *,
+        element_schemas: dict[str, dict[str, Any]],
+    ) -> Path:
+        provider_token = canonical_schema_provider(package.provider)
+        package_dir = self._package_dir(provider_token, package.version)
+        elements_dir = package_dir / "elements"
+        elements_dir.mkdir(parents=True, exist_ok=True)
+
+        for element in package.elements:
+            if element.schema_file is None:
+                continue
+            schema = copy.deepcopy(element_schemas[element.element_kind])
+            schema["$id"] = (
+                f"polylogue://schemas/{provider_token}/{package.version}/{element.element_kind}"
+            )
+            schema["x-polylogue-version"] = int(package.version[1:]) if package.version.startswith("v") else package.version
+            schema["x-polylogue-package-version"] = package.version
+            schema["x-polylogue-element-kind"] = element.element_kind
+            schema["x-polylogue-registered-at"] = datetime.now(tz=timezone.utc).isoformat()
+            schema_path = elements_dir / element.schema_file
+            schema_path.write_bytes(gzip.compress(json.dumps(schema, indent=2).encode("utf-8")))
+
+        manifest_path = self._package_manifest_path(provider_token, package.version)
+        manifest_path.write_text(json.dumps(package.to_dict(), indent=2), encoding="utf-8")
+        return manifest_path
+
+    def replace_provider_packages(
+        self,
+        provider: str | Provider,
+        catalog: SchemaPackageCatalog,
+        package_schemas: dict[str, dict[str, dict[str, Any]]],
+        *,
+        manifest: ClusterManifest | None = None,
+    ) -> None:
+        provider_token = canonical_schema_provider(provider)
+        provider_dir = self._provider_dir(provider_token)
+        provider_dir.mkdir(parents=True, exist_ok=True)
+        versions_dir = provider_dir / "versions"
+        if versions_dir.exists():
+            for path in versions_dir.rglob("*"):
+                if path.is_file():
+                    path.unlink()
+            for path in sorted(versions_dir.rglob("*"), reverse=True):
+                if path.is_dir():
+                    path.rmdir()
+        versions_dir.mkdir(parents=True, exist_ok=True)
+
+        for package in catalog.packages:
+            self.write_package(package, element_schemas=package_schemas[package.version])
+        self.save_package_catalog(catalog)
+        if manifest is not None:
+            self.save_cluster_manifest(manifest)
+
+    def get_package(self, provider: str | Provider, version: str = "default") -> SchemaVersionPackage | None:
+        provider_token = canonical_schema_provider(provider)
+        catalog = self.load_package_catalog(provider_token)
+        if catalog is not None:
+            resolved_version = self._resolve_catalog_version(catalog, version)
+            if resolved_version:
+                package = catalog.package(resolved_version)
+                if package is not None:
+                    return package
+        return None
+
+    def get_element_schema(
+        self,
+        provider: str | Provider,
+        *,
+        version: str = "default",
+        element_kind: str | None = None,
+    ) -> dict[str, Any] | None:
+        provider_token = canonical_schema_provider(provider)
+        package = self.get_package(provider_token, version=version)
+        if package is not None:
+            element = package.element(element_kind)
+            if element is None or element.schema_file is None:
+                return None
+            path = self._package_dir(provider_token, package.version) / "elements" / element.schema_file
+            if path.exists():
+                return json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
         schema = self._load_versioned(provider_token, version)
         if schema is not None:
             return schema
-        if version == "v1":
+        if version in {"v1", "default", "latest"}:
             return self._load_baseline(provider_token)
         return None
 
+    def get_schema(self, provider: str | Provider, version: str = "default") -> dict[str, Any] | None:
+        return self.get_element_schema(provider, version=version)
+
     def list_versions(self, provider: str | Provider) -> list[str]:
         provider_token = canonical_schema_provider(provider)
-        provider_dir = self.storage_root / str(provider_token)
+        catalog = self.load_package_catalog(provider_token)
+        if catalog is not None:
+            return sorted((package.version for package in catalog.packages), key=lambda value: int(value[1:]))
+        provider_dir = self._provider_dir(provider_token)
         if not provider_dir.exists():
             return ["v1"] if self._baseline_exists(provider_token) else []
         versions = [path.name.split(".")[0] for path in provider_dir.glob("v*.schema.json.gz")]
@@ -321,9 +446,57 @@ class SchemaRegistry:
                 providers.add(path.name.replace(".schema.json.gz", "").replace(".schema.json", ""))
         if self.storage_root.exists():
             for path in self.storage_root.iterdir():
-                if path.is_dir() and any(path.glob("v*.schema.json.gz")):
+                if path.is_dir() and (
+                    (path / "catalog.json").exists()
+                    or any(path.glob("v*.schema.json.gz"))
+                ):
                     providers.add(path.name)
         return sorted(providers)
+
+    def _single_element_package(
+        self,
+        provider: str | Provider,
+        *,
+        version: str,
+        schema: dict[str, Any],
+        element_kind: str = "conversation_document",
+        first_seen: str | None = None,
+        last_seen: str | None = None,
+    ) -> tuple[SchemaVersionPackage, dict[str, dict[str, Any]]]:
+        provider_token = canonical_schema_provider(provider)
+        now = datetime.now(tz=timezone.utc).isoformat()
+        package = SchemaVersionPackage(
+            provider=provider_token,
+            version=version,
+            anchor_kind=element_kind,
+            default_element_kind=element_kind,
+            first_seen=first_seen or now,
+            last_seen=last_seen or first_seen or now,
+            bundle_scope_count=0,
+            sample_count=int(schema.get("x-polylogue-sample-count", 0) or 0),
+            elements=[
+                SchemaElementManifest(
+                    element_kind=element_kind,
+                    schema_file=f"{element_kind}.schema.json.gz",
+                    sample_count=int(schema.get("x-polylogue-sample-count", 0) or 0),
+                    artifact_count=int(schema.get("x-polylogue-cluster-sample-count", 0) or 0),
+                    exact_structure_ids=[str(item) for item in schema.get("x-polylogue-exact-structure-ids", [])],
+                    profile_family_ids=[str(item) for item in schema.get("x-polylogue-profile-family-ids", [])],
+                    profile_tokens=[
+                        str(item)
+                        for item in schema.get("x-polylogue-profile-tokens", [])
+                        if isinstance(item, str)
+                    ],
+                    representative_paths=[
+                        str(item)
+                        for item in schema.get("x-polylogue-representative-paths", [])
+                        if isinstance(item, str)
+                    ],
+                    observed_artifact_count=int(schema.get("x-polylogue-cluster-sample-count", 0) or 0),
+                )
+            ],
+        )
+        return package, {element_kind: schema}
 
     def register_schema(self, provider: str | Provider, schema: dict[str, Any]) -> str:
         provider_token = canonical_schema_provider(provider)
@@ -334,15 +507,18 @@ class SchemaRegistry:
 
     def write_schema_version(self, provider: str | Provider, version: str, schema: dict[str, Any]) -> Path:
         provider_token = canonical_schema_provider(provider)
-        schema_copy = copy.deepcopy(schema)
-        schema_copy["$id"] = f"polylogue://schemas/{provider_token}/{version}"
-        schema_copy["x-polylogue-version"] = int(version[1:])
-        schema_copy["x-polylogue-registered-at"] = datetime.now(tz=timezone.utc).isoformat()
-        provider_dir = self.storage_root / str(provider_token)
-        provider_dir.mkdir(parents=True, exist_ok=True)
-        path = provider_dir / f"{version}.schema.json.gz"
-        path.write_bytes(gzip.compress(json.dumps(schema_copy, indent=2).encode("utf-8")))
-        return path
+        package, schemas = self._single_element_package(provider_token, version=version, schema=copy.deepcopy(schema))
+        catalog = self.load_package_catalog(provider_token) or SchemaPackageCatalog(provider=provider_token)
+        existing_packages = [item for item in catalog.packages if item.version != version]
+        existing_packages.append(package)
+        existing_packages.sort(key=lambda item: int(item.version[1:]))
+        catalog.packages = existing_packages
+        catalog.latest_version = existing_packages[-1].version if existing_packages else version
+        catalog.default_version = catalog.latest_version
+        catalog.recommended_version = catalog.latest_version
+        self.write_package(package, element_schemas=schemas)
+        self.save_package_catalog(catalog)
+        return self._element_schema_path(provider_token, version, package.default_element_kind)
 
     def replace_provider_schemas(
         self,
@@ -352,28 +528,48 @@ class SchemaRegistry:
         manifest: ClusterManifest | None = None,
     ) -> Path | None:
         provider_token = canonical_schema_provider(provider)
-        provider_dir = self.storage_root / str(provider_token)
-        provider_dir.mkdir(parents=True, exist_ok=True)
-        for path in provider_dir.glob("v*.schema.json.gz"):
-            path.unlink()
-        manifest_path = provider_dir / "manifest.json"
-        if manifest_path.exists():
-            manifest_path.unlink()
+        packages: list[SchemaVersionPackage] = []
+        package_schemas: dict[str, dict[str, dict[str, Any]]] = {}
         for version, schema in versioned_schemas:
-            self.write_schema_version(provider_token, version, schema)
-        if manifest is not None:
-            return self.save_cluster_manifest(manifest)
-        return None
+            package, schemas = self._single_element_package(provider_token, version=version, schema=copy.deepcopy(schema))
+            packages.append(package)
+            package_schemas[version] = schemas
+        catalog = SchemaPackageCatalog(
+            provider=provider_token,
+            packages=sorted(packages, key=lambda item: int(item.version[1:])),
+            latest_version=packages[-1].version if packages else None,
+            default_version=(manifest.default_version if manifest is not None else (packages[-1].version if packages else None)),
+            recommended_version=(manifest.default_version if manifest is not None else (packages[-1].version if packages else None)),
+        )
+        self.replace_provider_packages(provider_token, catalog, package_schemas, manifest=manifest)
+        return self._catalog_path(provider_token)
 
-    def compare_versions(self, provider: str | Provider, v1: str, v2: str) -> SchemaDiff:
+    def compare_versions(
+        self,
+        provider: str | Provider,
+        v1: str,
+        v2: str,
+        *,
+        element_kind: str | None = None,
+    ) -> SchemaDiff:
         provider_token = canonical_schema_provider(provider)
-        schema_a = self.get_schema(provider_token, version=v1)
-        schema_b = self.get_schema(provider_token, version=v2)
+        schema_a = self.get_element_schema(provider_token, version=v1, element_kind=element_kind)
+        schema_b = self.get_element_schema(provider_token, version=v2, element_kind=element_kind)
         if schema_a is None or schema_b is None:
-            raise ValueError(f"Schema not found for {provider_token}: {v1}, {v2}")
+            raise ValueError(
+                f"Schema not found for {provider_token}: {v1}, {v2}"
+                + (f", element={element_kind}" if element_kind else "")
+            )
         return self._diff_schemas(provider_token, v1, v2, schema_a, schema_b)
 
     def get_schema_age_days(self, provider: str | Provider) -> int | None:
+        package = self.get_package(provider, version="latest")
+        if package is not None:
+            try:
+                delta = datetime.now(tz=timezone.utc) - datetime.fromisoformat(package.last_seen)
+            except (ValueError, TypeError):
+                return None
+            return delta.days
         schema = self.get_schema(provider, version="latest")
         if schema is None:
             return None
@@ -445,18 +641,17 @@ class SchemaRegistry:
             return None
         return ClusterManifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
-    def match_payload_version(
+    def resolve_payload(
         self,
         provider: str | Provider,
         payload: Any,
         *,
         source_path: str | None = None,
-    ) -> str | None:
+    ) -> SchemaResolution | None:
         provider_token = canonical_schema_provider(provider)
-        manifest = self.load_cluster_manifest(provider_token)
-        if manifest is None:
-            versions = self.list_versions(provider_token)
-            return versions[-1] if versions else None
+        catalog = self.load_package_catalog(provider_token)
+        if catalog is None or not catalog.packages:
+            return None
 
         config = _resolve_provider_config(provider_token)
         units = extract_schema_units_from_payload(
@@ -464,46 +659,96 @@ class SchemaRegistry:
             provider_name=provider_token,
             source_path=source_path,
             raw_id=None,
+            observed_at=None,
             config=config,
             max_samples=64,
         )
         if not units:
-            return manifest.default_version
+            default_package = self.get_package(provider_token, version="default")
+            if default_package is None:
+                return None
+            return SchemaResolution(
+                provider=str(provider_token),
+                package_version=default_package.version,
+                element_kind=default_package.default_element_kind,
+                exact_structure_id=None,
+                bundle_scope=derive_bundle_scope(provider_token, source_path),
+                reason="package_default",
+            )
 
-        scores: dict[str, float] = {}
-        promoted_clusters = [cluster for cluster in manifest.clusters if cluster.schema_version is not None]
-        exact_clusters = {cluster.cluster_id: cluster for cluster in promoted_clusters if not cluster.profile_tokens}
-        for unit in units:
-            exact_cluster = exact_clusters.get(schema_cluster_id(unit.cluster_payload, unit.artifact_kind))
-            if exact_cluster is not None:
-                scores[exact_cluster.cluster_id] = scores.get(exact_cluster.cluster_id, 0.0) + 1.0
-                continue
-            best_cluster: SchemaCluster | None = None
-            best_score = 0.0
-            for cluster in promoted_clusters:
-                if cluster.artifact_kind != unit.artifact_kind or not cluster.profile_tokens:
+        unit = units[0]
+        bundle_scope = unit.bundle_scope or derive_bundle_scope(provider_token, source_path)
+
+        if bundle_scope is not None:
+            for package in catalog.packages:
+                if bundle_scope not in package.bundle_scopes:
                     continue
-                score = profile_similarity(set(cluster.profile_tokens), set(unit.profile_tokens))
-                if score > best_score:
-                    best_cluster = cluster
-                    best_score = score
-            if best_cluster is not None:
-                scores[best_cluster.cluster_id] = scores.get(best_cluster.cluster_id, 0.0) + best_score
+                element = package.element(unit.artifact_kind)
+                if element is None:
+                    continue
+                return SchemaResolution(
+                    provider=str(provider_token),
+                    package_version=package.version,
+                    element_kind=element.element_kind,
+                    exact_structure_id=unit.exact_structure_id,
+                    bundle_scope=bundle_scope,
+                    reason="bundle_scope",
+                )
 
-        if not scores:
-            return manifest.default_version
+        for package in catalog.packages:
+            element = package.element(unit.artifact_kind)
+            if element is None:
+                continue
+            if unit.exact_structure_id in element.exact_structure_ids:
+                return SchemaResolution(
+                    provider=str(provider_token),
+                    package_version=package.version,
+                    element_kind=element.element_kind,
+                    exact_structure_id=unit.exact_structure_id,
+                    bundle_scope=bundle_scope,
+                    reason="exact_structure",
+                )
 
-        best_cluster_id = max(
-            scores.items(),
-            key=lambda item: (
-                item[1],
-                next((cluster.sample_count for cluster in manifest.clusters if cluster.cluster_id == item[0]), 0),
-            ),
-        )[0]
-        return next(
-            (cluster.schema_version for cluster in manifest.clusters if cluster.cluster_id == best_cluster_id),
-            manifest.default_version,
+        best_match: tuple[float, SchemaVersionPackage, SchemaElementManifest] | None = None
+        for package in catalog.packages:
+            element = package.element(unit.artifact_kind)
+            if element is None or not element.profile_tokens:
+                continue
+            score = profile_similarity(set(element.profile_tokens), set(unit.profile_tokens))
+            if best_match is None or score > best_match[0]:
+                best_match = (score, package, element)
+        if best_match is not None and best_match[0] > 0.0:
+            _score, package, element = best_match
+            return SchemaResolution(
+                provider=str(provider_token),
+                package_version=package.version,
+                element_kind=element.element_kind,
+                exact_structure_id=unit.exact_structure_id,
+                bundle_scope=bundle_scope,
+                reason="profile_family",
+            )
+
+        default_package = self.get_package(provider_token, version="default")
+        if default_package is None:
+            return None
+        return SchemaResolution(
+            provider=str(provider_token),
+            package_version=default_package.version,
+            element_kind=default_package.default_element_kind,
+            exact_structure_id=unit.exact_structure_id,
+            bundle_scope=bundle_scope,
+            reason="package_default",
         )
+
+    def match_payload_version(
+        self,
+        provider: str | Provider,
+        payload: Any,
+        *,
+        source_path: str | None = None,
+    ) -> str | None:
+        resolution = self.resolve_payload(provider, payload, source_path=source_path)
+        return resolution.package_version if resolution is not None else None
 
     def promote_cluster(
         self,

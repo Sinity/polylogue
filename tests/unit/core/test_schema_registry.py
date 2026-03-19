@@ -523,8 +523,11 @@ class TestManifestVersionSelection:
         )
 
         latest = tmp_registry.get_schema("chatgpt", version="latest")
+        default = tmp_registry.get_schema("chatgpt", version="default")
         assert latest is not None
-        assert latest["x-polylogue-version"] == 1
+        assert default is not None
+        assert latest["x-polylogue-version"] == 2
+        assert default["x-polylogue-version"] == 1
         assert tmp_registry.match_payload_version("chatgpt", {"mapping": {}}) == "v1"
 
 
