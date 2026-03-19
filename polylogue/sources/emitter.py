@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from io import BytesIO
-from pathlib import Path
 from typing import BinaryIO
 
+from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.logging import get_logger
 from polylogue.types import Provider
 
 from .cursor import _ParseContext
 from .decoders import _iter_json_stream
+from .dispatch import GROUP_PROVIDERS, detect_provider, parse_payload
 from .parsers.base import ParsedConversation, RawConversationData
 from .parsers.claude import enrich_conversation_from_index
 
@@ -59,8 +60,7 @@ class _ConversationEmitter:
             sniff_bytes = pre_read_bytes if pre_read_bytes is not None else handle.read()
             sniff_payloads = list(_iter_json_stream(BytesIO(sniff_bytes), stream_name))
             sniff_provider = detect_provider(sniff_payloads) or self._ctx.provider_hint
-            from .source import _GROUP_PROVIDERS
-            if sniff_provider in _GROUP_PROVIDERS:
+            if sniff_provider in GROUP_PROVIDERS:
                 yield from self._emit_grouped(
                     BytesIO(sniff_bytes),
                     stream_name,
@@ -92,8 +92,14 @@ class _ConversationEmitter:
             return
 
         raw_data = self._make_raw(raw_bytes) if raw_bytes else None
-        from .source import detect_provider, parse_payload
         provider = detect_provider(payloads) or self._ctx.provider_hint
+        artifact = classify_artifact(
+            payloads,
+            provider=provider,
+            source_path=self._ctx.source_path_str,
+        )
+        if not artifact.parse_as_conversation:
+            return
         for conv in parse_payload(provider, payloads, self._ctx.fallback_id):
             yield (raw_data, self._maybe_enrich(conv))
 
@@ -112,10 +118,16 @@ class _ConversationEmitter:
         whole_file_raw = self._make_raw(pre_read_bytes) if pre_read_bytes is not None else None
 
         source_index = 0
-        from .source import detect_provider, parse_payload
         for payload in _iter_json_stream(handle, stream_name, unpack_lists=unpack):
             try:
                 provider = detect_provider(payload) or self._ctx.provider_hint
+                artifact = classify_artifact(
+                    payload,
+                    provider=provider,
+                    source_path=self._ctx.source_path_str,
+                )
+                if not artifact.parse_as_conversation:
+                    continue
 
                 if whole_file_raw is not None:
                     raw_data: RawConversationData | None = whole_file_raw

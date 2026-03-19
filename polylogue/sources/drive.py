@@ -12,8 +12,9 @@ from polylogue.types import Provider
 from ..paths import safe_path_component
 from .drive_client import DriveClient
 from .drive_source import DriveSourceAPI, _parse_modified_time
+from .dispatch import parse_drive_payload
 from .parsers.base import RawConversationData
-from .source import ParsedConversation, detect_provider, parse_drive_payload
+from .source import ParsedConversation
 
 logger = get_logger(__name__)
 
