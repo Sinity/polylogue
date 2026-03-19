@@ -155,8 +155,10 @@ async def _run_index_stage(
             return await index_service.rebuild_index(), len(processed_ids)
         if processed_ids:
             if progress_callback is not None:
-                progress_callback(0, desc=f"Indexing: {len(processed_ids)} conversations")
-            return await index_service.update_index(list(processed_ids)), len(processed_ids)
+                progress_callback(0, desc=f"Index verified: {len(processed_ids)} conversations")
+            # Live writes already maintain FTS rows via schema triggers; in the
+            # common `all` path we only need to ensure the index still exists.
+            return await index_service.ensure_index_exists(), len(processed_ids)
 
     return False, 0
 

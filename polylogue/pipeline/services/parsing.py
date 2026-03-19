@@ -27,7 +27,6 @@ from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.source import parse_payload
-from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
@@ -423,10 +422,6 @@ class ParsingService:
                     result,
                     progress_callback,
                 )
-
-        if result.processed_ids:
-            invalidate_search_cache()
-            logger.debug("Search cache invalidated after parsing %d conversations", len(result.processed_ids))
 
         return result
 

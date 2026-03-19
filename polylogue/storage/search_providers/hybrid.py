@@ -275,7 +275,7 @@ def create_hybrid_provider(
     from polylogue.storage.search_providers.fts5 import FTS5Provider
 
     # Get or create vector provider
-    vec_provider = vector_provider or create_vector_provider()
+    vec_provider = vector_provider or create_vector_provider(db_path=db_path)
     if vec_provider is None:
         return None
 
