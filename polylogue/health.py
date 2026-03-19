@@ -6,11 +6,13 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
 from .config import Config
+from .lib.outcomes import OutcomeCheck as HealthCheck
+from .lib.outcomes import OutcomeReport
+from .lib.outcomes import OutcomeStatus as VerifyStatus
 from polylogue.logging import get_logger
 from .lib.provider_identity import CORE_SCHEMA_PROVIDERS
 from .sources.drive_client import default_credentials_path, default_token_path
@@ -21,53 +23,33 @@ logger = get_logger(__name__)
 HEALTH_TTL_SECONDS = 600
 
 
-class VerifyStatus(str, Enum):
-    """Status levels for health and verification checks."""
-
-    OK = "ok"
-    WARNING = "warning"
-    ERROR = "error"
-
-    def __str__(self) -> str:
-        return self.value
-
-
 @dataclass
-class HealthCheck:
-    """Result of a single health or verification check."""
-
-    name: str
-    status: VerifyStatus
-    count: int = 0
-    detail: str = ""
-    breakdown: dict[str, int] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "status": self.status.value,
-            "count": self.count,
-            "detail": self.detail,
-            "breakdown": self.breakdown,
-        }
-
-
-@dataclass
-class HealthReport:
+class HealthReport(OutcomeReport):
     """Comprehensive health and verification report."""
 
-    checks: list[HealthCheck]
-    summary: dict[str, int]
     timestamp: int = field(default_factory=lambda: int(time.time()))
     cached: bool = False
     age_seconds: int = 0
+
+    @property
+    def summary(self) -> dict[str, int]:
+        return self.summary_counts()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "timestamp": self.timestamp,
             "cached": self.cached,
             "age_seconds": self.age_seconds,
-            "checks": [c.to_dict() for c in self.checks],
+            "checks": [
+                {
+                    "name": check.name,
+                    "status": check.status.value,
+                    "count": check.count,
+                    "detail": check.summary,
+                    "breakdown": check.breakdown,
+                }
+                for check in self.checks
+            ],
             "summary": self.summary,
         }
 
@@ -110,32 +92,32 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
     checks: list[HealthCheck] = []
 
     # 1. Environment & Paths
-    checks.append(HealthCheck("config", VerifyStatus.OK, detail="Zero-config (XDG paths)"))
+    checks.append(HealthCheck("config", VerifyStatus.OK, summary="Zero-config (XDG paths)"))
 
     for path_name in ("archive_root", "render_root"):
         path = getattr(config, path_name)
         if path.exists():
-            checks.append(HealthCheck(path_name, VerifyStatus.OK, detail=str(path)))
+            checks.append(HealthCheck(path_name, VerifyStatus.OK, summary=str(path)))
         else:
-            checks.append(HealthCheck(path_name, VerifyStatus.WARNING, detail=f"Missing {path}"))
+            checks.append(HealthCheck(path_name, VerifyStatus.WARNING, summary=f"Missing {path}"))
 
     # 2. Database Reachability (& optional Integrity)
     db_error: str | None = None
     try:
         with open_connection(None) as conn:
-            checks.append(HealthCheck("database", VerifyStatus.OK, detail="DB reachable"))
+            checks.append(HealthCheck("database", VerifyStatus.OK, summary="DB reachable"))
             if deep:
                 integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
                 checks.append(
                     HealthCheck(
                         "sqlite_integrity",
                         VerifyStatus.OK if integrity == "ok" else VerifyStatus.ERROR,
-                        detail=integrity,
+                        summary=integrity,
                     )
                 )
     except Exception as exc:
         db_error = str(exc)
-        checks.append(HealthCheck("database", VerifyStatus.ERROR, detail=f"DB error: {db_error}"))
+        checks.append(HealthCheck("database", VerifyStatus.ERROR, summary=f"DB error: {db_error}"))
 
     # 3. Search Index Status
     if db_error is None:
@@ -143,13 +125,13 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
         if idx["exists"]:
             checks.append(
                 HealthCheck(
-                    "index", VerifyStatus.OK, count=int(cast(Any, idx["count"])), detail=f"messages indexed: {idx['count']}"
+                    "index", VerifyStatus.OK, count=int(cast(Any, idx["count"])), summary=f"messages indexed: {idx['count']}"
                 )
             )
         else:
-            checks.append(HealthCheck("index", VerifyStatus.WARNING, detail="index not built"))
+            checks.append(HealthCheck("index", VerifyStatus.WARNING, summary="index not built"))
     else:
-        checks.append(HealthCheck("index", VerifyStatus.WARNING, detail=f"Skipped: database unavailable ({db_error})"))
+        checks.append(HealthCheck("index", VerifyStatus.WARNING, summary=f"Skipped: database unavailable ({db_error})"))
 
     # 4. Data Quality (from former verify.py)
     if db_error is None:
@@ -176,7 +158,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                     "orphaned_messages",
                     VerifyStatus.OK if orphan_count == 0 else VerifyStatus.ERROR,
                     count=orphan_count,
-                    detail="No orphaned messages" if orphan_count == 0 else f"{orphan_count:,} orphaned messages",
+                    summary="No orphaned messages" if orphan_count == 0 else f"{orphan_count:,} orphaned messages",
                 )
             )
 
@@ -193,7 +175,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                     "duplicate_conversations",
                     VerifyStatus.OK if dup_conv == 0 else VerifyStatus.ERROR,
                     count=dup_conv,
-                    detail="No duplicates" if dup_conv == 0 else f"{dup_conv} duplicate conversation IDs",
+                    summary="No duplicates" if dup_conv == 0 else f"{dup_conv} duplicate conversation IDs",
                 )
             )
 
@@ -209,7 +191,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                     "empty_conversations",
                     VerifyStatus.OK if empty_conv == 0 else VerifyStatus.WARNING,
                     count=empty_conv,
-                    detail="No empty conversations" if empty_conv == 0 else f"{empty_conv} conversation(s) with no messages",
+                    summary="No empty conversations" if empty_conv == 0 else f"{empty_conv} conversation(s) with no messages",
                 )
             )
 
@@ -230,7 +212,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                     "provider_distribution",
                     VerifyStatus.OK,
                     count=sum(provider_breakdown.values()),
-                    detail=f"{len(provider_breakdown)} provider(s) represented",
+                    summary=f"{len(provider_breakdown)} provider(s) represented",
                     breakdown=provider_breakdown,
                 )
             )
@@ -255,7 +237,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                                 "fts_sync",
                                 VerifyStatus.OK,
                                 count=fts_count,
-                                detail=f"FTS index in sync ({fts_count:,} messages indexed)",
+                                summary=f"FTS index in sync ({fts_count:,} messages indexed)",
                             )
                         )
                     else:
@@ -264,7 +246,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                                 "fts_sync",
                                 VerifyStatus.WARNING,
                                 count=abs(msg_count - fts_count),
-                                detail=f"FTS out of sync: {msg_count:,} messages vs {fts_count:,} indexed",
+                                summary=f"FTS out of sync: {msg_count:,} messages vs {fts_count:,} indexed",
                             )
                         )
                 else:
@@ -275,7 +257,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                             "fts_sync",
                             VerifyStatus.WARNING,
                             count=msg_count,
-                            detail=f"FTS index not built ({msg_count:,} messages not indexed)",
+                            summary=f"FTS index not built ({msg_count:,} messages not indexed)",
                         )
                     )
             except Exception as exc:
@@ -283,7 +265,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                     HealthCheck(
                         "fts_sync",
                         VerifyStatus.ERROR,
-                        detail=f"FTS check failed: {exc}",
+                        summary=f"FTS check failed: {exc}",
                     )
                 )
 
@@ -298,22 +280,22 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                 HealthCheck(
                     f"source:{source.name}",
                     cred_status,
-                    detail=f"drive folder '{source.folder}' credentials: {cred_path}",
+                    summary=f"drive folder '{source.folder}' credentials: {cred_path}",
                 )
             )
             checks.append(
                 HealthCheck(
                     f"source:{source.name}:token",
                     token_status,
-                    detail=f"drive token: {token_path}",
+                    summary=f"drive token: {token_path}",
                 )
             )
         else:
             if source.path and source.path.exists():
-                checks.append(HealthCheck(f"source:{source.name}", VerifyStatus.OK, detail=str(source.path)))
+                checks.append(HealthCheck(f"source:{source.name}", VerifyStatus.OK, summary=str(source.path)))
             else:
                 checks.append(
-                    HealthCheck(f"source:{source.name}", VerifyStatus.WARNING, detail=f"missing path: {source.path}")
+                    HealthCheck(f"source:{source.name}", VerifyStatus.WARNING, summary=f"missing path: {source.path}")
                 )
 
     # 6. Schema Health
@@ -331,7 +313,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                     "schemas_missing",
                     VerifyStatus.WARNING,
                     count=len(missing),
-                    detail=f"Missing schemas for: {', '.join(missing)}",
+                    summary=f"Missing schemas for: {', '.join(missing)}",
                 )
             )
         else:
@@ -340,7 +322,7 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                     "schemas_coverage",
                     VerifyStatus.OK,
                     count=len(available),
-                    detail=f"All {len(available)} provider schemas present",
+                    summary=f"All {len(available)} provider schemas present",
                 )
             )
 
@@ -356,24 +338,19 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                     "schemas_freshness",
                     VerifyStatus.WARNING,
                     count=len(stale_providers),
-                    detail=f"Stale schemas (>30d): {', '.join(stale_providers)}",
+                    summary=f"Stale schemas (>30d): {', '.join(stale_providers)}",
                 )
             )
         else:
             checks.append(
-                HealthCheck("schemas_freshness", VerifyStatus.OK, detail="All schemas current")
+                    HealthCheck("schemas_freshness", VerifyStatus.OK, summary="All schemas current")
             )
     except Exception as exc:
         checks.append(
-            HealthCheck("schemas", VerifyStatus.WARNING, detail=f"Schema check failed: {exc}")
+            HealthCheck("schemas", VerifyStatus.WARNING, summary=f"Schema check failed: {exc}")
         )
 
-    # Build summary
-    summary = {"ok": 0, "warning": 0, "error": 0}
-    for check in checks:
-        summary[check.status.value] += 1
-
-    report = HealthReport(checks=checks, summary=summary)
+    report = HealthReport(checks=checks)
     _write_cache(config.archive_root, report)
     return report
 
@@ -397,7 +374,7 @@ def get_health(config: Config, *, deep: bool = False) -> HealthReport:
                             name=c["name"],
                             status=VerifyStatus(c["status"]),
                             count=c.get("count", 0),
-                            detail=c.get("detail", ""),
+                            summary=c.get("detail", c.get("summary", "")),
                             breakdown=c.get("breakdown", {}),
                         )
                         for c in cached_data.get("checks", [])
@@ -408,7 +385,6 @@ def get_health(config: Config, *, deep: bool = False) -> HealthReport:
                 else:
                     return HealthReport(
                         checks=checks,
-                        summary=cached_data.get("summary", {}),
                         timestamp=ts,
                         cached=True,
                         age_seconds=now - ts,
@@ -435,20 +411,20 @@ def run_runtime_health(config: Config) -> HealthReport:
             # Test writable by opening in append mode
             with open(db, "a"):
                 pass
-            checks.append(HealthCheck("db_writable", VerifyStatus.OK, detail=f"Writable: {db}"))
+            checks.append(HealthCheck("db_writable", VerifyStatus.OK, summary=f"Writable: {db}"))
         except OSError as exc:
-            checks.append(HealthCheck("db_writable", VerifyStatus.ERROR, detail=f"Not writable: {exc}"))
+            checks.append(HealthCheck("db_writable", VerifyStatus.ERROR, summary=f"Not writable: {exc}"))
     else:
         # Check parent directory writability
         parent = db.parent
         if parent.exists():
             writable = os.access(parent, os.W_OK)
             if writable:
-                checks.append(HealthCheck("db_writable", VerifyStatus.OK, detail=f"Parent writable, DB will be created: {db}"))
+                checks.append(HealthCheck("db_writable", VerifyStatus.OK, summary=f"Parent writable, DB will be created: {db}"))
             else:
-                checks.append(HealthCheck("db_writable", VerifyStatus.ERROR, detail=f"Parent not writable: {parent}"))
+                checks.append(HealthCheck("db_writable", VerifyStatus.ERROR, summary=f"Parent not writable: {parent}"))
         else:
-            checks.append(HealthCheck("db_writable", VerifyStatus.WARNING, detail=f"Parent missing: {parent}"))
+            checks.append(HealthCheck("db_writable", VerifyStatus.WARNING, summary=f"Parent missing: {parent}"))
 
     # 2. Schema version
     try:
@@ -457,17 +433,17 @@ def run_runtime_health(config: Config) -> HealthReport:
         with open_connection(None) as conn:
             current = conn.execute("PRAGMA user_version").fetchone()[0]
             if current == SCHEMA_VERSION:
-                checks.append(HealthCheck("schema_version", VerifyStatus.OK, detail=f"v{current} (current)"))
+                checks.append(HealthCheck("schema_version", VerifyStatus.OK, summary=f"v{current} (current)"))
             elif current == 0:
-                checks.append(HealthCheck("schema_version", VerifyStatus.WARNING, detail="Uninitialized (v0)"))
+                checks.append(HealthCheck("schema_version", VerifyStatus.WARNING, summary="Uninitialized (v0)"))
             else:
                 checks.append(HealthCheck(
                     "schema_version",
                     VerifyStatus.ERROR,
-                    detail=f"v{current} (expected v{SCHEMA_VERSION})",
+                    summary=f"v{current} (expected v{SCHEMA_VERSION})",
                 ))
     except Exception as exc:
-        checks.append(HealthCheck("schema_version", VerifyStatus.ERROR, detail=f"Cannot check: {exc}"))
+        checks.append(HealthCheck("schema_version", VerifyStatus.ERROR, summary=f"Cannot check: {exc}"))
 
     # 3. FTS tables health
     try:
@@ -478,18 +454,18 @@ def run_runtime_health(config: Config) -> HealthReport:
             if fts:
                 # Verify FTS integrity via simple query
                 conn.execute("SELECT * FROM messages_fts LIMIT 0")
-                checks.append(HealthCheck("fts_tables", VerifyStatus.OK, detail="FTS5 table present and queryable"))
+                checks.append(HealthCheck("fts_tables", VerifyStatus.OK, summary="FTS5 table present and queryable"))
             else:
-                checks.append(HealthCheck("fts_tables", VerifyStatus.WARNING, detail="FTS5 table not found"))
+                checks.append(HealthCheck("fts_tables", VerifyStatus.WARNING, summary="FTS5 table not found"))
     except Exception as exc:
-        checks.append(HealthCheck("fts_tables", VerifyStatus.ERROR, detail=f"FTS check failed: {exc}"))
+        checks.append(HealthCheck("fts_tables", VerifyStatus.ERROR, summary=f"FTS check failed: {exc}"))
 
     # 4. sqlite-vec availability
     try:
         import sqlite_vec  # noqa: F401
-        checks.append(HealthCheck("sqlite_vec", VerifyStatus.OK, detail="sqlite-vec extension available"))
+        checks.append(HealthCheck("sqlite_vec", VerifyStatus.OK, summary="sqlite-vec extension available"))
     except ImportError:
-        checks.append(HealthCheck("sqlite_vec", VerifyStatus.WARNING, detail="sqlite-vec not installed (vector search unavailable)"))
+        checks.append(HealthCheck("sqlite_vec", VerifyStatus.WARNING, summary="sqlite-vec not installed (vector search unavailable)"))
 
     # 5. Archive and render root writability
     for label, path in [("archive_root", config.archive_root), ("render_root", config.render_root)]:
@@ -506,16 +482,16 @@ def run_runtime_health(config: Config) -> HealthReport:
             else:
                 status = VerifyStatus.WARNING
                 detail = f"Missing and parent not writable: {path}"
-        checks.append(HealthCheck(f"{label}_writable", status, detail=detail))
+        checks.append(HealthCheck(f"{label}_writable", status, summary=detail))
 
     # 6. Config paths
     from polylogue.paths import config_home
 
     cfg_home = config_home()
     if cfg_home.exists():
-        checks.append(HealthCheck("config_path", VerifyStatus.OK, detail=str(cfg_home)))
+        checks.append(HealthCheck("config_path", VerifyStatus.OK, summary=str(cfg_home)))
     else:
-        checks.append(HealthCheck("config_path", VerifyStatus.OK, detail=f"Not yet created: {cfg_home}"))
+        checks.append(HealthCheck("config_path", VerifyStatus.OK, summary=f"Not yet created: {cfg_home}"))
 
     # 7. Google credentials (if Drive sources configured)
     drive_sources = [s for s in config.sources if s.is_drive]
@@ -525,13 +501,13 @@ def run_runtime_health(config: Config) -> HealthReport:
         cred = default_credentials_path(config.drive_config)
         token = default_token_path(config.drive_config)
         if cred.exists():
-            checks.append(HealthCheck("drive_credentials", VerifyStatus.OK, detail=str(cred)))
+            checks.append(HealthCheck("drive_credentials", VerifyStatus.OK, summary=str(cred)))
         else:
-            checks.append(HealthCheck("drive_credentials", VerifyStatus.WARNING, detail=f"Missing: {cred}"))
+            checks.append(HealthCheck("drive_credentials", VerifyStatus.WARNING, summary=f"Missing: {cred}"))
         if token.exists():
-            checks.append(HealthCheck("drive_token", VerifyStatus.OK, detail=str(token)))
+            checks.append(HealthCheck("drive_token", VerifyStatus.OK, summary=str(token)))
         else:
-            checks.append(HealthCheck("drive_token", VerifyStatus.WARNING, detail=f"Missing (auth required): {token}"))
+            checks.append(HealthCheck("drive_token", VerifyStatus.WARNING, summary=f"Missing (auth required): {token}"))
 
     # 8. Terminal capabilities
     import shutil
@@ -545,7 +521,7 @@ def run_runtime_health(config: Config) -> HealthReport:
     term_detail = f"TERM={term}, {cols}x{rows}, tty={is_tty}"
     if force_plain:
         term_detail += ", POLYLOGUE_FORCE_PLAIN=1"
-    checks.append(HealthCheck("terminal", VerifyStatus.OK, detail=term_detail))
+    checks.append(HealthCheck("terminal", VerifyStatus.OK, summary=term_detail))
 
     # Rich/Textual availability
     try:
@@ -561,7 +537,7 @@ def run_runtime_health(config: Config) -> HealthReport:
     checks.append(HealthCheck(
         "ui_libraries",
         VerifyStatus.OK if rich_ok else VerifyStatus.WARNING,
-        detail=f"Rich={'yes' if rich_ok else 'no'}, Textual={'yes' if textual_ok else 'no'}",
+        summary=f"Rich={'yes' if rich_ok else 'no'}, Textual={'yes' if textual_ok else 'no'}",
     ))
 
     # 9. VHS availability
@@ -569,15 +545,10 @@ def run_runtime_health(config: Config) -> HealthReport:
     checks.append(HealthCheck(
         "vhs",
         VerifyStatus.OK if vhs_available else VerifyStatus.WARNING,
-        detail="VHS available" if vhs_available else "VHS not found (showcase capture unavailable)",
+        summary="VHS available" if vhs_available else "VHS not found (showcase capture unavailable)",
     ))
 
-    # Build summary
-    summary = {"ok": 0, "warning": 0, "error": 0}
-    for check in checks:
-        summary[check.status.value] += 1
-
-    return HealthReport(checks=checks, summary=summary)
+    return HealthReport(checks=checks)
 
 
 def cached_health_summary(archive_root: Path) -> str:

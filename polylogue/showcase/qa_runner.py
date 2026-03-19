@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.invariants import (
     InvariantResult,
     check_invariants,
@@ -47,7 +48,7 @@ class QAResult:
             return False
         if self.showcase_result and self.showcase_result.failed > 0:
             return False
-        if any(r.status == "fail" for r in self.invariant_results):
+        if any(r.status is OutcomeStatus.ERROR for r in self.invariant_results):
             return False
         return True
 
@@ -220,7 +221,7 @@ def _save_qa_reports(result: QAResult, report_dir: Path) -> None:
         {
             "invariant": r.invariant_name,
             "exercise": r.exercise_name,
-            "status": r.status,
+            "status": r.status.value,
             "error": r.error,
         }
         for r in result.invariant_results
@@ -275,9 +276,9 @@ def format_qa_summary(result: QAResult) -> str:
     if result.invariants_skipped:
         lines.append("Invariants: SKIPPED")
     elif result.invariant_results:
-        inv_passed = sum(1 for r in result.invariant_results if r.status == "pass")
-        inv_failed = sum(1 for r in result.invariant_results if r.status == "fail")
-        inv_skipped = sum(1 for r in result.invariant_results if r.status == "skip")
+        inv_passed = sum(1 for r in result.invariant_results if r.status is OutcomeStatus.OK)
+        inv_failed = sum(1 for r in result.invariant_results if r.status is OutcomeStatus.ERROR)
+        inv_skipped = sum(1 for r in result.invariant_results if r.status is OutcomeStatus.SKIP)
         lines.append(
             f"Invariants: {inv_passed} pass, {inv_failed} fail, {inv_skipped} skip"
         )

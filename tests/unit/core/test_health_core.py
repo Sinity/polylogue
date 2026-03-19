@@ -98,8 +98,14 @@ def test_write_cache_logs_failures(tmp_path: Path, capsys: pytest.CaptureFixture
 def test_health_check_dataclass_contract(name: str, status_name: str, detail: str, expected: dict[str, object]) -> None:
     from polylogue.health import HealthCheck, VerifyStatus
 
-    check = HealthCheck(name=name, status=getattr(VerifyStatus, status_name), detail=detail)
-    assert check.to_dict() == expected
+    check = HealthCheck(name=name, status=getattr(VerifyStatus, status_name), summary=detail)
+    assert {
+        "name": check.name,
+        "status": check.status.value,
+        "count": check.count,
+        "detail": check.summary,
+        "breakdown": check.breakdown,
+    } == expected
 
 
 @pytest.mark.parametrize(

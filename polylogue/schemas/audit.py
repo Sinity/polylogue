@@ -10,10 +10,13 @@ from __future__ import annotations
 import gzip
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+from polylogue.lib.outcomes import OutcomeCheck as CheckResult
+from polylogue.lib.outcomes import OutcomeReport
+from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.schemas.privacy import (
     _is_safe_enum_value,
     _looks_high_entropy_token,
@@ -28,41 +31,39 @@ _HEX_RE = re.compile(r"^[0-9a-f]{16,}$", re.IGNORECASE)
 
 
 @dataclass
-class CheckResult:
-    """Result of a single audit check."""
-
-    name: str
-    status: Literal["PASS", "WARN", "FAIL"]
-    message: str
-    details: list[str] = field(default_factory=list)
-
-    def format_line(self) -> str:
-        icon = {"PASS": "✓", "WARN": "⚠", "FAIL": "✗"}[self.status]
-        return f"  {icon} [{self.status}] {self.name}: {self.message}"
-
-
-@dataclass
-class AuditReport:
+class AuditReport(OutcomeReport):
     """Full audit report across all checks."""
 
     provider: str | None = None
-    checks: list[CheckResult] = field(default_factory=list)
+
+    _LABELS = {
+        OutcomeStatus.OK: "PASS",
+        OutcomeStatus.WARNING: "WARN",
+        OutcomeStatus.ERROR: "FAIL",
+        OutcomeStatus.SKIP: "SKIP",
+    }
+    _ICONS = {
+        OutcomeStatus.OK: "✓",
+        OutcomeStatus.WARNING: "⚠",
+        OutcomeStatus.ERROR: "✗",
+        OutcomeStatus.SKIP: "◌",
+    }
 
     @property
     def passed(self) -> int:
-        return sum(1 for c in self.checks if c.status == "PASS")
+        return self.ok_count
 
     @property
     def warned(self) -> int:
-        return sum(1 for c in self.checks if c.status == "WARN")
+        return self.warning_count
 
     @property
     def failed(self) -> int:
-        return sum(1 for c in self.checks if c.status == "FAIL")
+        return self.error_count
 
     @property
     def all_passed(self) -> bool:
-        return all(c.status == "PASS" for c in self.checks)
+        return self.all_ok
 
     def format_text(self) -> str:
         lines = []
@@ -70,7 +71,7 @@ class AuditReport:
         lines.append(f"Schema Audit{scope}: {self.passed} pass, {self.warned} warn, {self.failed} fail")
         lines.append("")
         for c in self.checks:
-            lines.append(c.format_line())
+            lines.append(f"  {c.format_line(labels=self._LABELS, icons=self._ICONS)}")
             for d in c.details[:5]:
                 lines.append(f"      {d}")
         return "\n".join(lines)
@@ -86,8 +87,8 @@ class AuditReport:
             "checks": [
                 {
                     "name": c.name,
-                    "status": c.status,
-                    "message": c.message,
+                    "status": self._LABELS[c.status],
+                    "message": c.summary,
                     "details": c.details,
                 }
                 for c in self.checks
@@ -175,14 +176,14 @@ def check_privacy_guards(schema: dict[str, Any]) -> CheckResult:
     if violations:
         return CheckResult(
             name="privacy_guards",
-            status="FAIL",
-            message=f"{len(violations)} unsafe enum value(s) found",
+            status=OutcomeStatus.ERROR,
+            summary=f"{len(violations)} unsafe enum value(s) found",
             details=violations[:20],
         )
     return CheckResult(
         name="privacy_guards",
-        status="PASS",
-        message="All enum values pass privacy checks",
+        status=OutcomeStatus.OK,
+        summary="All enum values pass privacy checks",
     )
 
 
@@ -222,22 +223,22 @@ def check_semantic_roles(schema: dict[str, Any]) -> CheckResult:
     if issues:
         return CheckResult(
             name="semantic_roles",
-            status="FAIL",
-            message=f"{len(issues)} misclassified semantic role(s)",
+            status=OutcomeStatus.ERROR,
+            summary=f"{len(issues)} misclassified semantic role(s)",
             details=issues[:10],
         )
 
     if not roles:
         return CheckResult(
             name="semantic_roles",
-            status="WARN",
-            message="No semantic roles detected",
+            status=OutcomeStatus.WARNING,
+            summary="No semantic roles detected",
         )
 
     return CheckResult(
         name="semantic_roles",
-        status="PASS",
-        message=f"{len(roles)} role(s) assigned correctly",
+        status=OutcomeStatus.OK,
+        summary=f"{len(roles)} role(s) assigned correctly",
     )
 
 
@@ -277,12 +278,12 @@ def check_annotation_coverage(schema: dict[str, Any]) -> CheckResult:
     if total_fields == 0:
         return CheckResult(
             name="annotation_coverage",
-            status="WARN",
-            message="No properties found in schema",
+            status=OutcomeStatus.WARNING,
+            summary="No properties found in schema",
         )
 
     pct = (annotated_fields / total_fields) * 100
-    status: Literal["PASS", "WARN", "FAIL"]
+    status: OutcomeStatus
     # Large schemas with hundreds of auto-discovered nested properties
     # naturally have lower annotation percentages than small schemas.
     # Scale thresholds by schema size: >500 props → 5%/2%, else 30%/10%.
@@ -291,16 +292,16 @@ def check_annotation_coverage(schema: dict[str, Any]) -> CheckResult:
     else:
         pass_pct, warn_pct = 30, 10
     if pct >= pass_pct:
-        status = "PASS"
+        status = OutcomeStatus.OK
     elif pct >= warn_pct:
-        status = "WARN"
+        status = OutcomeStatus.WARNING
     else:
-        status = "FAIL"
+        status = OutcomeStatus.ERROR
 
     return CheckResult(
         name="annotation_coverage",
         status=status,
-        message=f"{annotated_fields}/{total_fields} fields annotated ({pct:.0f}%)",
+        summary=f"{annotated_fields}/{total_fields} fields annotated ({pct:.0f}%)",
     )
 
 
@@ -324,15 +325,15 @@ def check_cross_provider_consistency(schemas: dict[str, dict[str, Any]]) -> Chec
     if issues:
         return CheckResult(
             name="cross_provider_consistency",
-            status="WARN",
-            message=f"{len(issues)} consistency issue(s)",
+            status=OutcomeStatus.WARNING,
+            summary=f"{len(issues)} consistency issue(s)",
             details=issues,
         )
 
     return CheckResult(
         name="cross_provider_consistency",
-        status="PASS",
-        message=f"All {len(schemas)} provider schemas consistent",
+        status=OutcomeStatus.OK,
+        summary=f"All {len(schemas)} provider schemas consistent",
     )
 
 
@@ -344,15 +345,15 @@ def audit_provider(provider: str) -> AuditReport:
     if schema is None:
         report.checks.append(CheckResult(
             name="schema_exists",
-            status="FAIL",
-            message=f"No committed schema found for {provider}",
+            status=OutcomeStatus.ERROR,
+            summary=f"No committed schema found for {provider}",
         ))
         return report
 
     report.checks.append(CheckResult(
         name="schema_exists",
-        status="PASS",
-        message="Committed schema loaded",
+        status=OutcomeStatus.OK,
+        summary="Committed schema loaded",
     ))
     report.checks.append(check_privacy_guards(schema))
     report.checks.append(check_semantic_roles(schema))
