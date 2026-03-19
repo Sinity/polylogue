@@ -32,6 +32,7 @@ from polylogue.mcp.payloads import (
     MCPStatsByPayload,
     MCPTagCountsPayload,
 )
+from polylogue.operations import ArchiveOperations
 from polylogue.services import RuntimeServices, build_runtime_services
 
 if TYPE_CHECKING:
@@ -137,6 +138,17 @@ def _get_config():
     return _get_runtime_services().get_config()
 
 
+def _get_archive_ops() -> ArchiveOperations:
+    """Return canonical archive operations for MCP read surfaces."""
+    repo = _get_repo()
+    services = _runtime_services
+    return ArchiveOperations(
+        config=services.config if services is not None else None,
+        repository=repo,
+        backend=getattr(repo, "backend", None),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Build the FastMCP server
 # ---------------------------------------------------------------------------
@@ -190,7 +202,7 @@ def build_server() -> FastMCP:
             has_subagent: Only conversations that spawned subagents
         """
         async def _run() -> str:
-            repo = _get_repo()
+            ops = _get_archive_ops()
             spec = ConversationQuerySpec(
                 query_terms=(query,),
                 providers=(provider,) if provider else (),
@@ -204,7 +216,7 @@ def build_server() -> FastMCP:
                 filter_has_git_ops=has_git_ops,
                 filter_has_subagent=has_subagent,
             )
-            results = await spec.build_filter(repo).list()
+            results = await ops.query_conversations(spec)
             return _json_payload(
                 MCPConversationSummaryListPayload(
                     root=[
@@ -249,7 +261,7 @@ def build_server() -> FastMCP:
             has_subagent: Only conversations that spawned subagents
         """
         async def _run() -> str:
-            repo = _get_repo()
+            ops = _get_archive_ops()
             spec = ConversationQuerySpec(
                 providers=(provider,) if provider else (),
                 tags=(tag,) if tag else (),
@@ -265,7 +277,7 @@ def build_server() -> FastMCP:
                 filter_has_git_ops=has_git_ops,
                 filter_has_subagent=has_subagent,
             )
-            conversations = await spec.build_filter(repo).list()
+            conversations = await ops.query_conversations(spec)
             return _json_payload(
                 MCPConversationSummaryListPayload(
                     root=[
@@ -284,8 +296,7 @@ def build_server() -> FastMCP:
             id: Conversation ID or unique prefix
         """
         async def _run() -> str:
-            repo = _get_repo()
-            conv = await repo.view(id)
+            conv = await _get_archive_ops().get_conversation(id)
             if conv is None:
                 return _error_json(f"Conversation not found: {id}")
             return _json_payload(MCPConversationDetailPayload.from_conversation(conv))
@@ -295,8 +306,7 @@ def build_server() -> FastMCP:
     async def stats() -> str:
         """Get archive statistics: total conversations, messages, provider breakdown, database size."""
         async def _run() -> str:
-            repo = _get_repo()
-            archive_stats = await repo.get_archive_stats()
+            archive_stats = await _get_archive_ops().storage_stats()
             return _json_payload(
                 MCPArchiveStatsPayload.from_archive_stats(
                     archive_stats,
