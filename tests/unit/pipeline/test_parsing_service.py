@@ -252,12 +252,13 @@ class TestParsingServiceStreaming:
     async def test_parse_from_raw_uses_raw_ids_without_prefetching_full_records(self, tmp_path):
         backend = MagicMock()
         backend.iter_raw_conversations.side_effect = AssertionError("iter_raw_conversations should not be used")
+        backend.queries = MagicMock()
 
         async def raw_ids():
             for raw_id in ("raw-1", "raw-2"):
                 yield raw_id
 
-        backend.iter_raw_ids = MagicMock(return_value=raw_ids())
+        backend.queries.iter_raw_ids = MagicMock(return_value=raw_ids())
         repository = MagicMock()
         repository.backend = backend
         config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
@@ -266,7 +267,7 @@ class TestParsingServiceStreaming:
         with patch.object(service, "_process_raw_batch", new_callable=AsyncMock) as mock_process:
             await service.parse_from_raw(provider="chatgpt")
 
-        backend.iter_raw_ids.assert_called_once_with(provider_name="chatgpt")
+        backend.queries.iter_raw_ids.assert_called_once_with(provider_name="chatgpt")
         assert mock_process.await_count == 1
 
 
@@ -429,8 +430,9 @@ class TestPlanningService:
     @pytest.mark.parametrize(("stage", "count_key"), [("render", "render"), ("index", "index")])
     async def test_build_plan_uses_count_query_for_render_and_index(self, tmp_path: Path, stage: str, count_key: str):
         backend = MagicMock(spec=SQLiteBackend)
-        backend.count_conversation_ids = AsyncMock(return_value=7)
-        backend.iter_conversation_ids.side_effect = AssertionError(
+        backend.queries = MagicMock()
+        backend.queries.count_conversation_ids = AsyncMock(return_value=7)
+        backend.queries.iter_conversation_ids.side_effect = AssertionError(
             "build_plan should count render/index scope without materializing IDs"
         )
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
@@ -439,4 +441,4 @@ class TestPlanningService:
         plan = await planner.build_plan(sources=[], stage=stage)
 
         assert plan.summary.counts == {count_key: 7}
-        backend.count_conversation_ids.assert_awaited_once_with(source_names=None)
+        backend.queries.count_conversation_ids.assert_awaited_once_with(source_names=None)

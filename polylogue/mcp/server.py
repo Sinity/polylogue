@@ -478,7 +478,7 @@ def build_server() -> FastMCP:
             summary = await repo.get_summary(full_id)
             if summary is None:
                 return _error_json(f"Conversation not found: {id}")
-            stats = await repo.get_conversation_stats(str(full_id))
+            stats = await repo.queries.get_conversation_stats(str(full_id))
             return _json_payload(
                 MCPConversationSummaryPayload.from_summary(
                     summary,
@@ -516,7 +516,7 @@ def build_server() -> FastMCP:
         """
         async def _run() -> str:
             repo = _get_repo()
-            return _json_payload(MCPStatsByPayload(root=await repo.get_stats_by(group_by)))
+            return _json_payload(MCPStatsByPayload(root=await repo.queries.get_stats_by(group_by)))
         return await _async_safe_call("get_stats_by", _run)
 
     @mcp.tool()

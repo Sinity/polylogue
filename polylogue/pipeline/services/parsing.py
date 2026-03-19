@@ -406,7 +406,7 @@ class ParsingService:
             if progress_callback is not None:
                 progress_callback(0, desc="Parsing")
             batch_ids: list[str] = []
-            async for raw_id in backend.iter_raw_ids(provider_name=provider):
+            async for raw_id in backend.queries.iter_raw_ids(provider_name=provider):
                 batch_ids.append(raw_id)
                 if len(batch_ids) >= self.RAW_BATCH_SIZE:
                     await self._process_raw_batch(

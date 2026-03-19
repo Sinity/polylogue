@@ -138,10 +138,10 @@ async def _run_index_stage(
         if progress_callback is not None:
             progress_callback(0, desc="Indexing")
         if source_names:
-            total = await backend.count_conversation_ids(source_names=list(source_names))
+            total = await backend.queries.count_conversation_ids(source_names=list(source_names))
             return (
                 await index_service.update_index(
-                    backend.iter_conversation_ids(source_names=list(source_names)),
+                    backend.queries.iter_conversation_ids(source_names=list(source_names)),
                 ),
                 total,
             )
@@ -342,10 +342,10 @@ async def run_sources(
             render_ids = None
             render_total = 0
             if stage == "render":
-                render_total = await active_backend.count_conversation_ids(
+                render_total = await active_backend.queries.count_conversation_ids(
                     source_names=list(source_names) if source_names is not None else None
                 )
-                render_ids = active_backend.iter_conversation_ids(
+                render_ids = active_backend.queries.iter_conversation_ids(
                     source_names=list(source_names) if source_names is not None else None
                 )
             else:
@@ -471,7 +471,7 @@ async def latest_run(backend: SQLiteBackend | None = None) -> RunRecord | None:
     owns_backend = backend is None
     active_backend = backend or create_backend()
     try:
-        return await active_backend.get_latest_run()
+        return await active_backend.queries.get_latest_run()
     finally:
         if owns_backend:
             await active_backend.close()

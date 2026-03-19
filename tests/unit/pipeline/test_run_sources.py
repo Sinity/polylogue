@@ -332,7 +332,7 @@ class TestAcquisitionServiceAcquireSources:
             source_index=0,
         )
         mock_iter.return_value = iter([raw_data])
-        backend.get_known_source_mtimes = AsyncMock(return_value={})
+        backend.queries.get_known_source_mtimes = AsyncMock(return_value={})
         callback = MagicMock()
         service = AcquisitionService(backend=backend)
         source = Source(name="test-source", path=Path("/tmp/inbox"))

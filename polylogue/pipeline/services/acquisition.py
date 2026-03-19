@@ -110,7 +110,7 @@ class AcquisitionService:
     ) -> ScanResult:
         """Visit source raw payloads incrementally without forcing list materialization."""
         result = ScanResult()
-        known_mtimes = await self.backend.get_known_source_mtimes()
+        known_mtimes = await self.backend.queries.get_known_source_mtimes()
 
         async def _consume(record: RawConversationRecord) -> None:
             if on_record is not None:

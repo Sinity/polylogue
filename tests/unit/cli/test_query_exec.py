@@ -61,6 +61,16 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
     ui.plain = True
     ui.console = MagicMock()
     ui.confirm = MagicMock(return_value=True)
+    if repo is not None:
+        queries = repo.queries
+        if not isinstance(queries.get_conversation, AsyncMock):
+            queries.get_conversation = AsyncMock(return_value=None)
+        if not isinstance(queries.get_conversation_stats, AsyncMock):
+            queries.get_conversation_stats = AsyncMock(return_value={})
+        if not isinstance(queries.get_message_counts_batch, AsyncMock):
+            queries.get_message_counts_batch = AsyncMock(return_value={})
+        if not isinstance(queries.aggregate_message_stats, AsyncMock):
+            queries.aggregate_message_stats = AsyncMock(return_value={})
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
 
 
@@ -159,8 +169,8 @@ async def test_stream_conversation_output_contract(output_format: str, dialogue_
     from polylogue.cli.query_output import stream_conversation
 
     repo = MagicMock()
-    repo.get_conversation = AsyncMock(return_value=SimpleNamespace(title="Test Title"))
-    repo.get_conversation_stats = AsyncMock(return_value={"dialogue_messages": 1, "total_messages": 2})
+    repo.queries.get_conversation = AsyncMock(return_value=SimpleNamespace(title="Test Title"))
+    repo.queries.get_conversation_stats = AsyncMock(return_value={"dialogue_messages": 1, "total_messages": 2})
 
     async def _iter_messages(*_args, **_kwargs):
         messages = [_make_msg("m1", "user", "Hello"), _make_msg("m2", "assistant", "Hi")]
@@ -187,7 +197,7 @@ async def test_stream_conversation_errors_for_missing_conversation() -> None:
     from polylogue.cli.query_output import stream_conversation
 
     repo = MagicMock()
-    repo.get_conversation = AsyncMock(return_value=None)
+    repo.queries.get_conversation = AsyncMock(return_value=None)
     env = _make_env(repo=repo, config=MagicMock())
 
     with patch("click.echo") as mock_echo, pytest.raises(SystemExit) as exc_info:

@@ -886,7 +886,7 @@ class SiteBuilder:
             page_size=self.SUMMARY_PAGE_SIZE,
             provider=provider,
         ):
-            message_counts = await backend.get_message_counts_batch(
+            message_counts = await backend.queries.get_message_counts_batch(
                 [str(summary.id) for summary in summaries]
             )
             for summary in summaries:
