@@ -8,6 +8,7 @@ from typing import Any
 from ..assets import asset_path
 from ..config import Source
 from polylogue.logging import get_logger
+from polylogue.types import Provider
 from ..paths import safe_path_component
 from .drive_client import DriveClient
 from .drive_source import DriveSourceAPI, _parse_modified_time
@@ -217,7 +218,7 @@ def iter_drive_raw_data(
             )
             continue
 
-        provider_hint = detect_provider(None, Path(file_meta.name)) or source.name
+        provider_hint = Provider.from_string(source.name)
         yield RawConversationData(
             raw_bytes=raw_bytes,
             source_path=source_path,

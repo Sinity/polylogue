@@ -174,7 +174,7 @@ class TestSchemaCluster:
         assert d["cluster_id"] == "abc123"
         assert d["sample_count"] == 100
         assert d["confidence"] == 0.95
-        assert d["promoted_version"] is None
+        assert d["schema_version"] is None
 
 
 class TestClusterManifest:
@@ -187,12 +187,15 @@ class TestClusterManifest:
             last_seen="2026-03-01",
             dominant_keys=["a", "b"],
             confidence=0.8,
-            promoted_version="v2",
+            artifact_kind="conversation_document",
+            schema_version="v2",
         )
         manifest = ClusterManifest(
             provider="test",
             clusters=[cluster],
             generated_at="2026-03-15T00:00:00Z",
+            artifact_counts={"conversation_document": 50},
+            default_version="v2",
         )
         d = manifest.to_dict()
         assert d["provider"] == "test"
@@ -202,7 +205,8 @@ class TestClusterManifest:
         assert restored.provider == "test"
         assert len(restored.clusters) == 1
         assert restored.clusters[0].cluster_id == "xyz"
-        assert restored.clusters[0].promoted_version == "v2"
+        assert restored.clusters[0].schema_version == "v2"
+        assert restored.default_version == "v2"
 
     def test_generated_at_auto_set(self) -> None:
         manifest = ClusterManifest(provider="auto")
@@ -306,7 +310,7 @@ class TestRegistryPromotion:
 
         reloaded = tmp_registry.load_cluster_manifest("up-prov")
         assert reloaded is not None
-        assert reloaded.clusters[0].promoted_version == version
+        assert reloaded.clusters[0].schema_version == version
 
     def test_promote_cluster_already_promoted_raises(self, tmp_registry: SchemaRegistry) -> None:
         samples = [{"x": 1}]
@@ -437,7 +441,7 @@ class TestEnhancedCompare:
 
 
 class TestPromotionVisibility:
-    def test_promoted_version_visible_via_get_schema(self, tmp_registry: SchemaRegistry) -> None:
+    def test_schema_version_visible_via_get_schema(self, tmp_registry: SchemaRegistry) -> None:
         samples = [{"field_a": "val", "field_b": 42}]
         manifest = tmp_registry.cluster_samples("vis-prov", samples)
         tmp_registry.save_cluster_manifest(manifest)
@@ -454,7 +458,7 @@ class TestPromotionVisibility:
         assert latest is not None
         assert latest.get("x-polylogue-cluster-id") == cluster_id
 
-    def test_promoted_version_in_list_versions(self, tmp_registry: SchemaRegistry) -> None:
+    def test_schema_version_in_list_versions(self, tmp_registry: SchemaRegistry) -> None:
         samples = [{"k": "v"}]
         manifest = tmp_registry.cluster_samples("lv-prov", samples)
         tmp_registry.save_cluster_manifest(manifest)
@@ -473,11 +477,55 @@ class TestPromotionVisibility:
         cluster_id = manifest.clusters[0].cluster_id
         version = tmp_registry.promote_cluster("prov-prov", cluster_id, samples=samples)
 
-        schema = tmp_registry.get_schema("prov-prov", version=version)
-        assert schema is not None
-        assert schema["x-polylogue-cluster-id"] == cluster_id
-        assert schema["x-polylogue-cluster-sample-count"] == 1
-        assert "x-polylogue-promoted-at" in schema
+
+class TestManifestVersionSelection:
+    def test_latest_uses_manifest_default_and_payload_matching_uses_profile_tokens(
+        self,
+        tmp_registry: SchemaRegistry,
+    ) -> None:
+        manifest = ClusterManifest(
+            provider="chatgpt",
+            artifact_counts={
+                "conversation_document": 10,
+                "subagent_conversation_stream": 5,
+            },
+            default_version="v1",
+            clusters=[
+                SchemaCluster(
+                    cluster_id="cluster-main",
+                    provider="chatgpt",
+                    sample_count=10,
+                    first_seen="2026-01-01T00:00:00Z",
+                    last_seen="2026-01-01T00:00:00Z",
+                    artifact_kind="conversation_document",
+                    profile_tokens=["field:mapping", "shape:mapping:object", "anchor:mapping"],
+                    schema_version="v1",
+                ),
+                SchemaCluster(
+                    cluster_id="cluster-sidecar",
+                    provider="chatgpt",
+                    sample_count=5,
+                    first_seen="2026-01-01T00:00:00Z",
+                    last_seen="2026-01-01T00:00:00Z",
+                    artifact_kind="subagent_conversation_stream",
+                    profile_tokens=["bucket:type:user", "field:type:user:message"],
+                    schema_version="v2",
+                ),
+            ],
+        )
+        tmp_registry.replace_provider_schemas(
+            "chatgpt",
+            [
+                ("v1", {"type": "object", "properties": {"mapping": {"type": "object"}}}),
+                ("v2", {"type": "object", "properties": {"type": {"type": "string"}}}),
+            ],
+            manifest=manifest,
+        )
+
+        latest = tmp_registry.get_schema("chatgpt", version="latest")
+        assert latest is not None
+        assert latest["x-polylogue-version"] == 1
+        assert tmp_registry.match_payload_version("chatgpt", {"mapping": {}}) == "v1"
 
 
 # =============================================================================

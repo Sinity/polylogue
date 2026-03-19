@@ -453,11 +453,15 @@ class ParsingService:
         work_items: list[tuple[ParsedConversation, str, str]] = []  # (convo, source_name, raw_id)
         failed_raw_ids: dict[str, str] = {}  # raw_id -> error message
         payload_providers: dict[str, str | None] = {}
+        skipped_raw_ids: set[str] = set()
 
         for raw_record in raw_records:
             try:
                 parsed_convos = await self._parse_raw_record(raw_record)
                 payload_providers[raw_record.raw_id] = raw_record.payload_provider
+                if not parsed_convos:
+                    skipped_raw_ids.add(raw_record.raw_id)
+                    continue
                 source_name = raw_record.source_name or raw_record.source_path
                 for convo in parsed_convos:
                     work_items.append((convo, source_name, raw_record.raw_id))
@@ -555,6 +559,9 @@ class ParsingService:
         for rid in succeeded_raw_ids:
             if rid not in failed_raw_ids:
                 await backend.mark_raw_parsed(rid, payload_provider=payload_providers.get(rid))
+        for rid in skipped_raw_ids:
+            if rid not in failed_raw_ids and rid not in succeeded_raw_ids:
+                await backend.mark_raw_parsed(rid, payload_provider=payload_providers.get(rid))
         for rid, error in failed_raw_ids.items():
             await backend.mark_raw_parsed(
                 rid,
@@ -587,6 +594,8 @@ class ParsingService:
             payload_provider=stored_payload_provider,
         )
         raw_record.payload_provider = envelope.provider
+        if not envelope.artifact.parse_as_conversation:
+            return []
 
         # Use the existing parser dispatcher
         return parse_payload(

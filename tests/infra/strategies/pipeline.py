@@ -130,7 +130,7 @@ def build_validation_payload(case: ValidationCase) -> tuple[bytes, str, str]:
         lines: list[bytes] = [b'{"type":"session_meta"}', b'{"type":"response_item"}']
         lines.extend(b"not json" for _ in range(case.malformed_jsonl_lines))
         return b"\n".join(lines), "codex", "/tmp/session.jsonl"
-    return b'{"id":"doc-1"}', "chatgpt", "/tmp/conversations.json"
+    return b'{"id":"doc-1","mapping":{}}', "chatgpt", "/tmp/conversations.json"
 
 
 

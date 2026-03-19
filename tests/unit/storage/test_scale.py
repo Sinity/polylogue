@@ -44,7 +44,7 @@ async def _seed_conversations(
     conv_records = [
         ConversationRecord(
             conversation_id=ids[i],
-            provider_name="chatgpt" if i % 2 == 0 else "claude",
+            provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
             provider_conversation_id=f"prov-{ids[i]}",
             title=f"Scale Test Conversation {i}",
             created_at=f"2025-01-{(i % 28) + 1:02d}T00:00:00Z",

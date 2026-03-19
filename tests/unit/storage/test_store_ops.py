@@ -398,7 +398,7 @@ def test_attachment_size_bytes_contract(size_bytes, valid) -> None:
             )
 
 
-@pytest.mark.parametrize("name", ["claude", "claude-code", "Provider123"])
+@pytest.mark.parametrize("name", ["claude-ai", "claude-code", "Provider123"])
 def test_provider_name_accepts_valid(name) -> None:
     """Representative provider-name formats should validate."""
     record = ConversationRecord(
@@ -686,12 +686,12 @@ class TestSearchCacheKey:
             render_root_path=tmp_path / "render",
             db_path=tmp_path / "test.db",
             limit=50,
-            source="claude",
+            source="claude-ai",
             since="2024-01-01",
         )
         assert key.query == "test query"
         assert key.limit == 50
-        assert key.source == "claude"
+        assert key.source == "claude-ai"
         assert key.since == "2024-01-01"
         assert key.render_root_path == str(tmp_path / "render")
         assert key.db_path == str(tmp_path / "test.db")

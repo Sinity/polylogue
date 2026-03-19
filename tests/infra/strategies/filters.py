@@ -45,7 +45,7 @@ def provider_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
     """Generate arguments for provider filter."""
     return {
         "type": "provider",
-        "value": draw(st.sampled_from(["chatgpt", "claude", "claude-code", "codex"])),
+        "value": draw(st.sampled_from(["chatgpt", "claude-ai", "claude-code", "codex"])),
     }
 
 

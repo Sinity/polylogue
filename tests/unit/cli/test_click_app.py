@@ -95,7 +95,7 @@ class TestHandleQueryMode:
     def test_filter_flags_trigger_query(self):
         for params in (
             self._make_params(conv_id="abc123"),
-            self._make_params(provider="claude"),
+            self._make_params(provider="claude-ai"),
             self._make_params(tag="important"),
             self._make_params(contains=("error",)),
             self._make_params(has_type=("thinking",)),
@@ -162,9 +162,9 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_execute:
-            cli_runner.invoke(cli, ["-p", "claude", "search_term", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["-p", "claude-ai", "search_term", "--plain"], catch_exceptions=False)
         _, params = mock_execute.call_args[0]
-        assert params.get("provider") == "claude"
+        assert params.get("provider") == "claude-ai"
         assert "search_term" in params.get("query", ())
 
     def test_mixed_options_and_positionals(self, cli_runner):
@@ -173,11 +173,11 @@ class TestQueryFirstGroupParseArgs:
         with patch("polylogue.cli.query.execute_query") as mock_execute:
             cli_runner.invoke(
                 cli,
-                ["error", "-p", "claude", "handling", "--latest", "--plain"],
+                ["error", "-p", "claude-ai", "handling", "--latest", "--plain"],
                 catch_exceptions=False,
             )
         _, params = mock_execute.call_args[0]
-        assert params.get("provider") == "claude"
+        assert params.get("provider") == "claude-ai"
         assert params.get("latest") is True
         assert set(params.get("query", ())) == {"error", "handling"}
 

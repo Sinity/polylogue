@@ -99,7 +99,7 @@ class TestSchemaVerificationReport:
         report = SchemaVerificationReport(
             providers={
                 "chatgpt": ProviderSchemaVerification(provider="chatgpt", total_records=10),
-                "claude": ProviderSchemaVerification(provider="claude", total_records=20),
+                "claude-ai": ProviderSchemaVerification(provider="claude-ai", total_records=20),
             },
             max_samples=None,
             total_records=30,
@@ -107,7 +107,7 @@ class TestSchemaVerificationReport:
         d = report.to_dict()
         assert len(d["providers"]) == 2
         assert "chatgpt" in d["providers"]
-        assert "claude" in d["providers"]
+        assert "claude-ai" in d["providers"]
 
     def test_to_dict_sorts_providers(self) -> None:
         report = SchemaVerificationReport(

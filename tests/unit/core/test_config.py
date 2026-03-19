@@ -34,7 +34,7 @@ class TestConfig:
         """Config stores source list."""
         sources = [
             Source(name="inbox", path=tmp_path / "inbox"),
-            Source(name="claude-code", path=tmp_path / "claude"),
+            Source(name="claude-code", path=tmp_path / "claude-ai"),
         ]
         config = Config(
             archive_root=tmp_path,

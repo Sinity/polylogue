@@ -223,6 +223,11 @@ def verify_raw_corpus(
                     ProviderSchemaVerification(provider=actual_provider),
                 )
                 provider_stats.total_records += 1
+                if not envelope.artifact.schema_eligible:
+                    provider_stats.skipped_no_schema += 1
+                    if progress_callback is not None:
+                        progress_callback(1)
+                    continue
                 if malformed_lines:
                     provider_stats.decode_errors += 1
                     if quarantine_malformed:
@@ -235,7 +240,11 @@ def verify_raw_corpus(
                     continue
 
                 try:
-                    validator = SchemaValidator.for_provider(actual_provider)
+                    validator = SchemaValidator.for_payload(
+                        actual_provider,
+                        payload,
+                        source_path=str(row["source_path"] or ""),
+                    )
                 except (FileNotFoundError, ImportError):
                     provider_stats.skipped_no_schema += 1
                     if progress_callback is not None:

@@ -16,6 +16,7 @@ import ijson
 from pydantic import BaseModel
 
 from polylogue.config import Source
+from polylogue.lib.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.logging import get_logger
 from polylogue.types import Provider
@@ -111,12 +112,12 @@ def _decode_json_bytes(blob: bytes) -> str | None:
         return None
 
 
-def detect_provider(payload: Any, path: Path) -> Provider | None:
+def detect_provider(payload: Any, path: Path | None = None) -> Provider | None:
     if isinstance(payload, dict):
         if chatgpt.looks_like(payload):
             return Provider.CHATGPT
         if claude.looks_like_ai(payload):
-            return Provider.CLAUDE
+            return Provider.CLAUDE_AI
         if claude.looks_like_code([payload]):
             return Provider.CLAUDE_CODE
         if codex.looks_like([payload]):
@@ -132,7 +133,7 @@ def detect_provider(payload: Any, path: Path) -> Provider | None:
                 return Provider.CHATGPT
             # Claude AI bundle export: list[conversation]
             if isinstance(first.get("chat_messages"), list):
-                return Provider.CLAUDE
+                return Provider.CLAUDE_AI
             # Gemini/Drive grouped list of conversations/chunks
             if "chunkedPrompt" in first or ("chunks" in first and isinstance(first.get("chunks"), list)):
                 return Provider.GEMINI
@@ -141,21 +142,31 @@ def detect_provider(payload: Any, path: Path) -> Provider | None:
         if codex.looks_like(payload):
             return Provider.CODEX
 
-    # Check filename and parent directory for provider hints
-    name = path.name.lower()
-    path_str = str(path).lower()
-
-    if "chatgpt" in name or "chatgpt" in path_str:
-        return Provider.CHATGPT
-    if "claude-code" in name or "claude_code" in name or "claude-code" in path_str or "claude_code" in path_str:
-        return Provider.CLAUDE_CODE
-    if "claude" in name or "/claude/" in path_str:
-        return Provider.CLAUDE
-    if "codex" in name or "codex" in path_str:
-        return Provider.CODEX
-    if "gemini" in name or "gemini" in path_str:
-        return Provider.GEMINI
     return None
+
+
+def _detect_provider_from_raw_bytes(
+    raw_bytes: bytes,
+    stream_name: str,
+    fallback_provider: Provider,
+) -> Provider:
+    text = _decode_json_bytes(raw_bytes)
+    if text:
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        else:
+            detected = detect_provider(payload)
+            if detected is not None:
+                return detected
+
+    try:
+        payloads = list(_iter_json_stream(BytesIO(raw_bytes), stream_name))
+    except Exception:
+        return fallback_provider
+
+    return detect_provider(payloads) or fallback_provider
 
 
 _MAX_PARSE_DEPTH = 10
@@ -180,7 +191,7 @@ def _parse_bundle_items(
     return [parser(item, f"{fallback_id}-{i}") for i, item in enumerate(payload) if isinstance(item, dict)]
 
 
-def parse_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
+def parse_payload(provider: str | Provider, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
     """Dispatch parsed payload to the appropriate provider parser.
 
     This function is the central routing point for all conversation parsing.
@@ -196,7 +207,7 @@ def parse_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0
     without value — the dispatch here IS the abstraction.
 
     Args:
-        provider: Detected provider name (e.g. "chatgpt", "claude", "gemini")
+        provider: Detected provider name (e.g. "chatgpt", "claude-ai", "gemini")
         payload: Deserialized JSON content (dict or list depending on format)
         fallback_id: ID to use if the payload lacks an explicit conversation ID
         _depth: Recursion guard for nested structures (max: _MAX_PARSE_DEPTH)
@@ -204,6 +215,7 @@ def parse_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0
     Returns:
         List of ParsedConversation objects extracted from the payload
     """
+    runtime_provider = Provider.from_string(provider)
     if _depth > _MAX_PARSE_DEPTH:
         logger.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
         return []
@@ -211,35 +223,35 @@ def parse_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0
         results: list[ParsedConversation] = []
         for i, item in enumerate(payload["conversations"]):
             if isinstance(item, dict):
-                results.extend(parse_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
+                results.extend(parse_payload(runtime_provider, item, f"{fallback_id}-{i}", _depth + 1))
         return results
-    if provider == Provider.CHATGPT:
+    if runtime_provider is Provider.CHATGPT:
         if isinstance(payload, list):
             return _parse_bundle_items(payload, fallback_id, chatgpt.parse)
         return [chatgpt.parse(payload, fallback_id)]
-    if provider == Provider.CLAUDE:
+    if runtime_provider is Provider.CLAUDE_AI:
         if isinstance(payload, list):
             return _parse_bundle_items(payload, fallback_id, claude.parse_ai)
         return [claude.parse_ai(payload, fallback_id)]
-    if provider == Provider.CLAUDE_CODE:
+    if runtime_provider is Provider.CLAUDE_CODE:
         if isinstance(payload, list):
             return [claude.parse_code(payload, fallback_id)]
         if isinstance(payload, dict):
             if isinstance(payload.get("messages"), list):
                 return [claude.parse_code(payload["messages"], fallback_id)]
             return [claude.parse_code([payload], fallback_id)]
-    if provider == Provider.CODEX:
+    if runtime_provider is Provider.CODEX:
         if isinstance(payload, list):
             return [codex.parse(payload, fallback_id)]
         if isinstance(payload, dict):
             return [codex.parse([payload], fallback_id)]
-    if provider in (Provider.GEMINI, Provider.DRIVE) and isinstance(payload, list):
+    if runtime_provider in (Provider.GEMINI, Provider.DRIVE) and isinstance(payload, list):
         if _looks_like_chunked_conversation_list(payload):
             results = []
             for i, item in enumerate(payload):
-                results.extend(parse_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
+                results.extend(parse_payload(runtime_provider, item, f"{fallback_id}-{i}", _depth + 1))
             return results
-        return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
+        return [drive.parse_chunked_prompt(runtime_provider, {"chunks": payload}, fallback_id)]
 
     # Fallback / Generic
     if isinstance(payload, dict):
@@ -249,7 +261,7 @@ def parse_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0
             title = payload.get("title") or payload.get("name") or fallback_id
             return [
                 ParsedConversation(
-                    provider_name=provider,
+                    provider_name=runtime_provider,
                     provider_conversation_id=str(payload.get("id") or fallback_id),
                     title=str(title),
                     created_at=None,
@@ -261,13 +273,14 @@ def parse_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0
         if chatgpt.looks_like(payload):
             return [chatgpt.parse(payload, fallback_id)]
         if _looks_like_chunked_conversation(payload):
-            return [drive.parse_chunked_prompt(provider, payload, fallback_id)]
+            return [drive.parse_chunked_prompt(runtime_provider, payload, fallback_id)]
         return []
 
     return []
 
 
-def parse_drive_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
+def parse_drive_payload(provider: str | Provider, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
+    runtime_provider = Provider.from_string(provider)
     if _depth > _MAX_PARSE_DEPTH:
         logger.warning("Recursion depth exceeded parsing drive payload %s", fallback_id)
         return []
@@ -275,16 +288,16 @@ def parse_drive_payload(provider: str, payload: Any, fallback_id: str, _depth: i
         # Check if it looks like a list of conversations or a list of messages
         # For drive/gemini, if it's a list, it's often a list of chunks
         if payload and isinstance(payload[0], dict) and ("role" in payload[0] or "text" in payload[0]):
-            return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
+            return [drive.parse_chunked_prompt(runtime_provider, {"chunks": payload}, fallback_id)]
 
         results = []
         for i, item in enumerate(payload):
-            results.extend(parse_drive_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
+            results.extend(parse_drive_payload(runtime_provider, item, f"{fallback_id}-{i}", _depth + 1))
         return results
     if isinstance(payload, dict):
         if "chunkedPrompt" in payload or "chunks" in payload:
-            return [drive.parse_chunked_prompt(provider, payload, fallback_id)]
-        detected = detect_provider(payload, Path(fallback_id)) or provider
+            return [drive.parse_chunked_prompt(runtime_provider, payload, fallback_id)]
+        detected = detect_provider(payload) or runtime_provider
         return parse_payload(detected, payload, fallback_id)
     return []
 
@@ -599,7 +612,6 @@ class _ParseContext:
     file_mtime: str | None
     capture_raw: bool
     session_index: dict[str, SessionIndexEntry]
-    detect_path: Path  # For detect_provider calls on individual payloads
 
 
 class _ConversationEmitter:
@@ -636,8 +648,23 @@ class _ConversationEmitter:
 
         if is_jsonl and self._ctx.should_group:
             yield from self._emit_grouped(handle, stream_name, pre_read_bytes)
-        else:
-            yield from self._emit_individual(handle, stream_name, pre_read_bytes=pre_read_bytes)
+            return
+
+        if is_jsonl:
+            sniff_bytes = pre_read_bytes if pre_read_bytes is not None else handle.read()
+            sniff_payloads = list(_iter_json_stream(BytesIO(sniff_bytes), stream_name))
+            sniff_provider = detect_provider(sniff_payloads) or self._ctx.provider_hint
+            if sniff_provider in _GROUP_PROVIDERS:
+                yield from self._emit_grouped(
+                    BytesIO(sniff_bytes),
+                    stream_name,
+                    sniff_bytes,
+                )
+                return
+            handle = BytesIO(sniff_bytes)
+            pre_read_bytes = sniff_bytes
+
+        yield from self._emit_individual(handle, stream_name, pre_read_bytes=pre_read_bytes)
 
     def _emit_grouped(
         self,
@@ -659,7 +686,14 @@ class _ConversationEmitter:
             return
 
         raw_data = self._make_raw(raw_bytes) if raw_bytes else None
-        provider = detect_provider(payloads, Path(stream_name)) or self._ctx.provider_hint
+        provider = detect_provider(payloads) or self._ctx.provider_hint
+        artifact = classify_artifact(
+            payloads,
+            provider=provider,
+            source_path=self._ctx.source_path_str,
+        )
+        if not artifact.parse_as_conversation:
+            return
         for conv in parse_payload(provider, payloads, self._ctx.fallback_id):
             yield (raw_data, self._maybe_enrich(conv))
 
@@ -680,7 +714,14 @@ class _ConversationEmitter:
         source_index = 0
         for payload in _iter_json_stream(handle, stream_name, unpack_lists=unpack):
             try:
-                provider = detect_provider(payload, self._ctx.detect_path) or self._ctx.provider_hint
+                provider = detect_provider(payload) or self._ctx.provider_hint
+                artifact = classify_artifact(
+                    payload,
+                    provider=provider,
+                    source_path=self._ctx.source_path_str,
+                )
+                if not artifact.parse_as_conversation:
+                    continue
 
                 if whole_file_raw is not None:
                     raw_data: RawConversationData | None = whole_file_raw
@@ -702,7 +743,7 @@ class _ConversationEmitter:
         raw_bytes: bytes | None,
         *,
         source_index: int | None = None,
-        provider_override: str | None = None,
+        provider_override: Provider | None = None,
     ) -> RawConversationData | None:
         """Construct ``RawConversationData``, or ``None`` if no bytes."""
         if raw_bytes is None or not self._ctx.capture_raw:
@@ -718,12 +759,12 @@ class _ConversationEmitter:
     def _maybe_enrich(
         self,
         conv: ParsedConversation,
-        provider: str | None = None,
+        provider: Provider | None = None,
     ) -> ParsedConversation:
         """Apply Claude Code session index enrichment if applicable."""
         p = provider or self._ctx.provider_hint
         idx = self._ctx.session_index
-        if p == Provider.CLAUDE_CODE and conv.provider_conversation_id in idx:
+        if p is Provider.CLAUDE_CODE and conv.provider_conversation_id in idx:
             return enrich_conversation_from_index(conv, idx[conv.provider_conversation_id])
         return conv
 
@@ -736,18 +777,20 @@ class _ConversationEmitter:
 class _ZipEntryValidator:
     """Validate ZIP entries for security and relevance."""
 
-    __slots__ = ("_provider_hint", "_cursor_state", "_zip_path")
+    __slots__ = ("_provider_hint", "_cursor_state", "_zip_path", "_conversation_only")
 
     def __init__(
         self,
-        provider_hint: str,
+        provider_hint: str | Provider,
         *,
         cursor_state: dict[str, Any] | None,
         zip_path: Path,
+        conversation_only: bool = False,
     ) -> None:
-        self._provider_hint = provider_hint
+        self._provider_hint = Provider.from_string(provider_hint)
         self._cursor_state = cursor_state
         self._zip_path = zip_path
+        self._conversation_only = conversation_only
 
     def filter_entries(self, entries: list[zipfile.ZipInfo]) -> Iterable[zipfile.ZipInfo]:
         """Yield safe, relevant entries.  Record failures in cursor_state."""
@@ -756,12 +799,6 @@ class _ZipEntryValidator:
                 continue
             name = info.filename
             lower_name = name.lower()
-
-            # Filter Claude AI ZIP: only process conversations.json
-            if self._provider_hint in ("claude", "claude-ai"):
-                basename = lower_name.split("/")[-1]
-                if basename not in ("conversations.json",):
-                    continue
 
             # ZIP bomb protection: compression ratio
             if info.compress_size > 0:
@@ -797,20 +834,32 @@ class _ZipEntryValidator:
 
             # Only yield entries with supported JSON extensions
             if lower_name.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
+                if self._conversation_only:
+                    path_classification = classify_artifact_path(
+                        f"{self._zip_path}:{name}",
+                        provider=self._provider_hint,
+                    )
+                    if path_classification is not None and not path_classification.parse_as_conversation:
+                        continue
                 yield info
 
 
 def _process_zip(
     zip_path: Path,
     *,
-    provider_hint: str,
+    provider_hint: Provider,
     should_group: bool,
     file_mtime: str | None,
     capture_raw: bool,
     cursor_state: dict[str, Any] | None,
 ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
     """Process a ZIP file, yielding conversations from its entries."""
-    validator = _ZipEntryValidator(provider_hint, cursor_state=cursor_state, zip_path=zip_path)
+    validator = _ZipEntryValidator(
+        provider_hint,
+        cursor_state=cursor_state,
+        zip_path=zip_path,
+        conversation_only=True,
+    )
 
     with zipfile.ZipFile(zip_path) as zf:
         for info in validator.filter_entries(zf.infolist()):
@@ -825,7 +874,6 @@ def _process_zip(
                 file_mtime=file_mtime,
                 capture_raw=capture_raw,
                 session_index={},  # ZIP files don't have session indices
-                detect_path=Path(name),
             )
             emitter = _ConversationEmitter(ctx)
             with zf.open(name) as handle:
@@ -833,7 +881,7 @@ def _process_zip(
 
 
 def _zip_entry_provider_hint(entry_name: str, fallback_provider: str | Provider) -> Provider:
-    return detect_provider(None, Path(entry_name)) or Provider.from_string(fallback_provider)
+    return Provider.from_string(fallback_provider)
 
 
 # =============================================================================
@@ -897,7 +945,10 @@ def iter_source_conversations_with_raw(
     failed_count = 0
     for path, file_mtime in walk.paths_to_process:
         try:
-            provider_hint = detect_provider(None, path) or Provider.from_string(source.name)
+            path_classification = classify_artifact_path(path, provider=source.name)
+            if path_classification is not None and not path_classification.parse_as_conversation:
+                continue
+            provider_hint = Provider.from_string(source.name)
             should_group = provider_hint in _GROUP_PROVIDERS
 
             if path.suffix.lower() == ".zip":
@@ -918,7 +969,6 @@ def iter_source_conversations_with_raw(
                     file_mtime=file_mtime,
                     capture_raw=capture_raw,
                     session_index=walk.session_indices.get(path.parent, {}),
-                    detect_path=path,
                 )
                 emitter = _ConversationEmitter(ctx)
 
@@ -989,16 +1039,26 @@ def iter_source_raw_data(
     failed_count = 0
     for path, file_mtime in walk.paths_to_process:
         try:
-            provider_hint = detect_provider(None, path) or Provider.from_string(source.name)
+            provider_hint = Provider.from_string(source.name)
 
             if path.suffix.lower() == ".zip":
-                validator = _ZipEntryValidator(provider_hint, cursor_state=cursor_state, zip_path=path)
+                validator = _ZipEntryValidator(
+                    provider_hint,
+                    cursor_state=cursor_state,
+                    zip_path=path,
+                    conversation_only=False,
+                )
                 with zipfile.ZipFile(path) as zf:
                     for info in validator.filter_entries(zf.infolist()):
                         entry_path = f"{path}:{info.filename}"
                         entry_provider_hint = _zip_entry_provider_hint(info.filename, provider_hint)
                         with zf.open(info.filename) as handle:
                             raw_bytes = handle.read()
+                        entry_provider_hint = _detect_provider_from_raw_bytes(
+                            raw_bytes,
+                            info.filename,
+                            entry_provider_hint,
+                        )
                         yield RawConversationData(
                             raw_bytes=raw_bytes,
                             source_path=entry_path,
@@ -1007,12 +1067,18 @@ def iter_source_raw_data(
                             provider_hint=entry_provider_hint,
                         )
             else:
+                raw_bytes = path.read_bytes()
+                detected_provider = _detect_provider_from_raw_bytes(
+                    raw_bytes,
+                    path.name,
+                    provider_hint,
+                )
                 yield RawConversationData(
-                    raw_bytes=path.read_bytes(),
+                    raw_bytes=raw_bytes,
                     source_path=str(path),
                     source_index=None,
                     file_mtime=file_mtime,
-                    provider_hint=provider_hint,
+                    provider_hint=detected_provider,
                 )
         except FileNotFoundError as exc:
             failed_count += 1

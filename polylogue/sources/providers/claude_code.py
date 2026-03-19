@@ -225,9 +225,12 @@ class ClaudeCodeRecord(BaseModel):
             message_role = getattr(self.message, "role", None)
         if isinstance(message_role, str) and message_role:
             try:
-                return normalize_role(message_role)
+                normalized_role = normalize_role(message_role)
             except ValueError:
                 pass
+            else:
+                if normalized_role != "unknown":
+                    return normalized_role
 
         if self.type == "user":
             return "user"

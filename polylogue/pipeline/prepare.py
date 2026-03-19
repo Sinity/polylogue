@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.logging import get_logger
-from polylogue.lib.viewports import classify_tool
+from polylogue.lib.viewports import ToolCategory, classify_tool
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
@@ -284,7 +284,7 @@ def transform_to_records(
 
             if block.type == "tool_use" and block.tool_name:
                 category = classify_tool(block.tool_name, block.tool_input or {})
-                semantic_type = category.value
+                semantic_type = None if category is ToolCategory.OTHER else category.value
                 # Extract structured metadata for semantically meaningful tool calls
                 tool_meta = extract_tool_metadata(block.tool_name, block.tool_input or {})
                 if tool_meta is not None:

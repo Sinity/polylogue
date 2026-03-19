@@ -321,7 +321,6 @@ def conversation_id_query(
     """Build the canonical scoped conversation-ID query."""
     predicate, params = _build_source_scope_filter(
         source_names,
-        provider_column="provider_name",
         source_column="source_name",
     )
     sql = "SELECT conversation_id FROM conversations"
@@ -339,7 +338,6 @@ async def count_conversation_ids(
     """Count conversation IDs, optionally scoped to source names."""
     predicate, params = _build_source_scope_filter(
         source_names,
-        provider_column="provider_name",
         source_column="source_name",
     )
     sql = "SELECT COUNT(*) AS count FROM conversations"

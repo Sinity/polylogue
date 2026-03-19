@@ -135,7 +135,7 @@ class TestRawConversationStorage:
         records = [
             RawConversationRecord(
                 raw_id=f"raw-{i}",
-                provider_name="chatgpt" if i % 2 == 0 else "claude",
+                provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
                 raw_content=b'{}',
                 acquired_at=datetime.now(timezone.utc).isoformat(),
@@ -149,7 +149,7 @@ class TestRawConversationStorage:
         chatgpt_records = [r async for r in backend.iter_raw_conversations(provider="chatgpt")]
         assert len(chatgpt_records) == 3
 
-        claude_records = [r async for r in backend.iter_raw_conversations(provider="claude")]
+        claude_records = [r async for r in backend.iter_raw_conversations(provider="claude-ai")]
         assert len(claude_records) == 3
 
     async def test_iter_raw_ids_by_provider_name(self, backend: SQLiteBackend) -> None:
@@ -161,7 +161,7 @@ class TestRawConversationStorage:
         records = [
             RawConversationRecord(
                 raw_id=f"raw-id-{i}",
-                provider_name="chatgpt" if i % 2 == 0 else "claude",
+                provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
                 raw_content=b'{}',
                 acquired_at=datetime.now(timezone.utc).isoformat(),
@@ -173,7 +173,7 @@ class TestRawConversationStorage:
             await backend.save_raw_conversation(record)
 
         chatgpt_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="chatgpt")]
-        claude_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="claude")]
+        claude_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="claude-ai")]
 
         assert len(chatgpt_ids) == 3
         assert len(claude_ids) == 3
@@ -278,7 +278,7 @@ class TestRawConversationStorage:
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"count-{i}",
-                    provider_name="chatgpt" if i < 3 else "claude",
+                    provider_name="chatgpt" if i < 3 else "claude-ai",
                     source_path=f"/path/{i}.json",
                     raw_content=b'{}',
                     acquired_at=datetime.now(timezone.utc).isoformat(),
@@ -290,7 +290,7 @@ class TestRawConversationStorage:
 
         # Filtered count
         assert await backend.get_raw_conversation_count(provider="chatgpt") == 3
-        assert await backend.get_raw_conversation_count(provider="claude") == 2
+        assert await backend.get_raw_conversation_count(provider="claude-ai") == 2
         assert await backend.get_raw_conversation_count(provider="codex") == 0
 
     async def test_iter_raw_conversations_without_limit_returns_all(self, backend: SQLiteBackend) -> None:

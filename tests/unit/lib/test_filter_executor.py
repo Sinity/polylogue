@@ -39,16 +39,16 @@ class TestSqlPushdownParams:
 
     def test_single_provider_pushdown(self):
         """Single provider uses 'provider' key (not 'providers')."""
-        f = _make_filter().provider("claude")
+        f = _make_filter().provider("claude-ai")
         params = f._sql_pushdown_params()
-        assert params == {"provider": "claude"}
+        assert params == {"provider": "claude-ai"}
 
     def test_multi_provider_pushdown(self):
         """Multiple providers use 'providers' key as a list."""
-        f = _make_filter().provider("claude", "chatgpt")
+        f = _make_filter().provider("claude-ai", "chatgpt")
         params = f._sql_pushdown_params()
         assert "providers" in params
-        assert params["providers"] == ["claude", "chatgpt"]
+        assert params["providers"] == ["claude-ai", "chatgpt"]
 
     def test_date_pushdown_since(self):
         """since date is pushed down as ISO string."""
@@ -76,9 +76,9 @@ class TestSqlPushdownParams:
         """Multiple pushdown-eligible filters produce combined params."""
         dt_since = datetime(2024, 1, 1, tzinfo=timezone.utc)
         dt_until = datetime(2024, 12, 31, tzinfo=timezone.utc)
-        f = _make_filter().provider("claude").since(dt_since).until(dt_until).title("test")
+        f = _make_filter().provider("claude-ai").since(dt_since).until(dt_until).title("test")
         params = f._sql_pushdown_params()
-        assert params["provider"] == "claude"
+        assert params["provider"] == "claude-ai"
         assert params["since"] == dt_since.isoformat()
         assert params["until"] == dt_until.isoformat()
         assert params["title_contains"] == "test"
@@ -94,7 +94,7 @@ class TestExecutionPlan:
 
     def test_summary_compatible_for_simple_filters(self):
         """SQL-only filters are summary-compatible (don't need message content)."""
-        f = _make_filter().provider("claude").title("test")
+        f = _make_filter().provider("claude-ai").title("test")
         assert f.can_use_summaries() is True
 
     def test_content_required_for_has_thinking(self):
@@ -149,7 +149,7 @@ class TestHasPostFilters:
 
     def test_no_post_filters_for_pushdown_only(self):
         """Pushdown-only filters have no post-filters."""
-        f = _make_filter().provider("claude").since(datetime(2024, 1, 1, tzinfo=timezone.utc))
+        f = _make_filter().provider("claude-ai").since(datetime(2024, 1, 1, tzinfo=timezone.utc))
         assert f._has_post_filters() is False
 
     def test_excluded_providers_require_post_filter(self):

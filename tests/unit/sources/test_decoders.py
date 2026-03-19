@@ -235,10 +235,10 @@ class TestZipEntryValidator:
         entries = list(validator.filter_entries([huge_entry]))
         assert len(entries) == 0
 
-    def test_claude_filter_conversations_only(self):
-        """Claude provider ZIP: only conversations.json passes through."""
+    def test_claude_json_entries_are_not_special_cased(self):
+        """Claude ZIP validation now relies on artifact classification, not filename allowlists."""
         validator = _ZipEntryValidator(
-            "claude",
+            "claude-ai",
             cursor_state=None,
             zip_path=Path("claude.zip"),
         )
@@ -248,8 +248,11 @@ class TestZipEntryValidator:
             self._make_zip_info("account.json", file_size=1000, compress_size=100),
         ]
         entries_out = list(validator.filter_entries(entries_in))
-        assert len(entries_out) == 1
-        assert entries_out[0].filename == "conversations.json"
+        assert [entry.filename for entry in entries_out] == [
+            "conversations.json",
+            "settings.json",
+            "account.json",
+        ]
 
     def test_directories_skipped(self):
         """Directory entries in ZIP are skipped."""

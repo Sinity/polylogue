@@ -115,6 +115,12 @@ class SyntheticCorpus:
         rng = random.Random(seed)
         results = []
         for _ in range(count):
+            # Reset per-conversation relational state so foreign keys and
+            # mutually exclusive fields are derived only from the current
+            # synthetic conversation, and repeated generate() calls remain
+            # deterministic for the same seed.
+            self._relation_solver = RelationConstraintSolver(self.schema)
+            self._semantic_gen = None
             n_messages = rng.choice(messages_per_conversation)
             theme = rng.choice(_SHOWCASE_THEMES) if style == "showcase" else None
             data = self._generate_conversation(n_messages, rng, theme=theme)
@@ -158,6 +164,12 @@ class SyntheticCorpus:
         tree_cfg = self.wire_format.tree
         assert tree_cfg is not None and tree_cfg.container_path is not None
 
+        roles = self._role_cycle()
+        base_ts = rng.uniform(1670000000, 1760000000)
+        self._semantic_gen = SemanticValueGenerator(
+            rng, theme=theme, base_ts=base_ts, role_cycle=roles,
+        )
+
         # Generate top-level structure, skipping the tree container
         top = self._generate_from_schema(
             self.schema, rng, skip_keys={tree_cfg.container_path}
@@ -173,11 +185,6 @@ class SyntheticCorpus:
 
         # Generate tree nodes
         nodes: list[dict] = []
-        roles = self._role_cycle()
-        base_ts = rng.uniform(1670000000, 1760000000)
-        self._semantic_gen = SemanticValueGenerator(
-            rng, theme=theme, base_ts=base_ts, role_cycle=roles,
-        )
 
         for i in range(n_messages):
             node = self._generate_from_schema(node_schema, rng)
@@ -233,6 +240,11 @@ class SyntheticCorpus:
         assert msgs_path is not None
 
         parts = msgs_path.split(".")
+        roles = self._role_cycle()
+        base_ts = rng.uniform(1670000000, 1760000000)
+        self._semantic_gen = SemanticValueGenerator(
+            rng, theme=theme, base_ts=base_ts, role_cycle=roles,
+        )
 
         # Navigate schema to find the item schema for messages.
         # Two cases:
@@ -260,12 +272,7 @@ class SyntheticCorpus:
             top = {}
 
         # Generate messages
-        roles = self._role_cycle()
         messages = []
-        base_ts = rng.uniform(1670000000, 1760000000)
-        self._semantic_gen = SemanticValueGenerator(
-            rng, theme=theme, base_ts=base_ts, role_cycle=roles,
-        )
 
         for i in range(n_messages):
             msg = self._generate_from_schema(item_schema, rng)

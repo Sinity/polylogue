@@ -59,7 +59,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
 
     Example:
         async with ConversationRepository() as repo:
-            conv = await repo.get("claude:abc123")
+            conv = await repo.get("claude-ai:abc123")
             convs = await repo.list(limit=10)
             await repo.save_conversation(conv_rec, msgs, atts)
     """
@@ -531,8 +531,8 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             List of conversation IDs from that provider
         """
         return [
-            conversation_id
-            async for conversation_id in self._backend.iter_conversation_ids(source_names=[provider])
+            conversation.conversation_id
+            for conversation in await self._backend.list_conversations(provider=provider)
         ]
 
     async def get_parent(self, conversation_id: str) -> Conversation | None:

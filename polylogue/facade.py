@@ -14,7 +14,7 @@ Example:
         stats, recent, claude = await asyncio.gather(
             archive.stats(),
             archive.filter().limit(10).list(),
-            archive.filter().provider("claude").list()
+            archive.filter().provider("claude-ai").list()
         )
 
         # Parallel batch retrieval
@@ -233,7 +233,7 @@ class Polylogue:
             Conversation object or None if not found
 
         Example:
-            conv = await archive.get_conversation("claude:abc123")
+            conv = await archive.get_conversation("claude-ai:abc123")
             conv = await archive.get_conversation("abc12345")  # prefix match
         """
         return await self._repository.view(conversation_id)
@@ -273,7 +273,7 @@ class Polylogue:
             List of Conversation objects
 
         Example:
-            convs = await archive.list_conversations(provider="claude", limit=10)
+            convs = await archive.list_conversations(provider="claude-ai", limit=10)
         """
         return await self._repository.list(
             provider=provider,
@@ -421,7 +421,7 @@ class Polylogue:
             ConversationFilter for building queries
 
         Example:
-            convs = await archive.filter().provider("claude").contains("error").limit(10).list()
+            convs = await archive.filter().provider("claude-ai").contains("error").limit(10).list()
         """
         from polylogue.lib.filters import ConversationFilter
 

@@ -65,7 +65,7 @@ def message_from_record(
         timestamp=ts,
         provider=provider,
         attachments=[attachment_from_record(a) for a in attachments],
-        provider_meta=None,  # No longer stored in messages table
+        provider_meta=None,  # Canonical storage keeps message semantics in content_blocks, not message-level provider_meta.
         content_blocks=blocks,
         parent_id=record.parent_message_id,
         branch_index=record.branch_index,

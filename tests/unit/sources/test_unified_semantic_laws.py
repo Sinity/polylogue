@@ -263,7 +263,7 @@ def test_harmonized_message_role_coercion_contract(role_str: str) -> None:
     assert msg.role.value in _VALID_VIEWPORT_ROLES
 
 
-@given(st.sampled_from(["chatgpt", "claude", "claude-code", "gemini", "codex"]))
+@given(st.sampled_from(["chatgpt", "claude-ai", "claude-code", "gemini", "codex"]))
 def test_harmonized_message_provider_coercion_contract(provider_str: str) -> None:
     msg = HarmonizedMessage(role="user", text="test", provider=provider_str)
     assert msg.provider.value == provider_str
@@ -279,7 +279,7 @@ def test_harmonized_message_provider_coercion_contract(provider_str: str) -> Non
         ),
         max_size=10,
     ),
-    st.sampled_from(["claude-code", "claude", "chatgpt", "gemini", "codex"]),
+    st.sampled_from(["claude-code", "claude-ai", "chatgpt", "gemini", "codex"]),
 )
 def test_typed_content_blocks_extract_without_crash(
     content: list[dict[str, object]],
@@ -304,7 +304,7 @@ def test_typed_content_blocks_extract_without_crash(
         ),
         max_size=10,
     ),
-    st.sampled_from(["claude-code", "claude", "chatgpt", "gemini", "codex"]),
+    st.sampled_from(["claude-code", "claude-ai", "chatgpt", "gemini", "codex"]),
 )
 def test_extract_reasoning_traces_preserve_reasoning_blocks_contract(
     content: list[object],
@@ -324,7 +324,7 @@ def test_extract_reasoning_traces_preserve_reasoning_blocks_contract(
         ),
         max_size=10,
     ),
-    st.sampled_from(["claude-code", "claude", "chatgpt", "gemini", "codex"]),
+    st.sampled_from(["claude-code", "claude-ai", "chatgpt", "gemini", "codex"]),
 )
 def test_extract_tool_calls_preserve_tool_use_blocks_contract(
     content: list[object],
@@ -881,7 +881,7 @@ def test_extract_from_provider_meta_integration_contract() -> None:
 
     # --- Multi-provider overlay: DB fields fill in when provider_meta lacks them ---
     for provider, provider_meta, message_id, role, text, expected_provider in [
-        ("claude-ai", {"sender": "human", "text": ""}, "db-message-id", "user", "DB fallback text", "claude"),
+        ("claude-ai", {"sender": "human", "text": ""}, "db-message-id", "user", "DB fallback text", "claude-ai"),
         ("gemini", {"role": "model", "text": "", "tokenCount": {"invalid": True}}, "db-gemini-id", "assistant", "DB Gemini fallback text", "gemini"),
         ("codex", {"payload": "not-a-dict", "content": []}, "db-codex-id", "assistant", "DB Codex fallback text", "codex"),
         ("codex", {"raw": {"payload": "not-a-dict", "content": []}}, "db-codex-raw-id", "assistant", "DB raw fallback text", "codex"),
@@ -992,7 +992,7 @@ def test_extract_harmonized_message_fallback_contract() -> None:
         (
             "claude-ai",
             {"sender": "human", "text": "Fallback Claude AI text", "created_at": "2024-01-15T10:30:00Z"},
-            "user", "Fallback Claude AI text", "claude", None,
+            "user", "Fallback Claude AI text", "claude-ai", None,
         ),
         (
             "gemini",

@@ -411,7 +411,7 @@ class TestSchemaPromoteCommand:
         data = _extract_json(result.output)
         assert data["provider"] == "promo-json"
         assert data["cluster_id"] == cluster_id
-        assert data["promoted_version"] == "v1"
+        assert data["schema_version"] == "v1"
         assert data["schema"] is not None
 
     def test_promote_already_promoted_fails(self, runner: CliRunner, schema_storage: Path) -> None:
@@ -541,7 +541,7 @@ class TestFullOperatorWorkflow:
             )
         assert result.exit_code == 0
         promo = _extract_json(result.output)
-        assert promo["promoted_version"] == "v3"
+        assert promo["schema_version"] == "v3"
 
         # Step 6: Explain the promoted version
         with _patch_registry(registry):

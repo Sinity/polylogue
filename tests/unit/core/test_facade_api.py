@@ -13,15 +13,15 @@ from polylogue.lib.models import Conversation, Message
 from polylogue.storage.store import ConversationRecord, MessageRecord
 
 ARCHIVE_STATS_PARAMS = [
-    (10, 50, 1000, {"claude": 7, "chatgpt": 3}, {"test": 2, "work": 3}, None),
-    (5, 25, 500, {"claude": 5}, {}, "2025-01-15T12:30:45Z"),
+    (10, 50, 1000, {"claude-ai": 7, "chatgpt": 3}, {"test": 2, "work": 3}, None),
+    (5, 25, 500, {"claude-ai": 5}, {}, "2025-01-15T12:30:45Z"),
     (0, 0, 0, {}, {}, None),
-    (1, 1, 10, {"claude": 1}, {}, None),
+    (1, 1, 10, {"claude-ai": 1}, {}, None),
     (
         20,
         100,
         2000,
-        {"claude": 10, "chatgpt": 5, "gemini": 5},
+        {"claude-ai": 10, "chatgpt": 5, "gemini": 5},
         {"personal": 1, "work": 2},
         "2025-01-20T10:00:00Z",
     ),
@@ -30,7 +30,7 @@ ARCHIVE_STATS_PARAMS = [
 LIST_CONV_FILTERS = [
     (0, None, None, None, 0),
     (3, None, None, None, 3),
-    (4, "claude", None, None, 2),
+    (4, "claude-ai", None, None, 2),
     (5, None, "inbox", None, 5),
     (5, None, "inbox", 3, 3),
 ]
@@ -95,14 +95,14 @@ class TestArchiveStatsCreation:
         ]
         recent_conv = Conversation(
             id="conv1",
-            provider="claude",
+            provider="claude-ai",
             messages=MessageCollection(messages=recent_msgs),
         )
         stats = ArchiveStats(
             conversation_count=1,
             message_count=1,
             word_count=10,
-            providers={"claude": 1},
+            providers={"claude-ai": 1},
             tags={},
             last_sync=None,
             recent=[recent_conv],
@@ -168,7 +168,7 @@ class TestPolylogueGetConversation:
         # Create and save a conversation
         conv_record = ConversationRecord(
             conversation_id="conv-1",
-            provider_name="claude",
+            provider_name="claude-ai",
             provider_conversation_id="provider-1",
             title="Test Conversation",
             created_at="2025-01-01T00:00:00Z",
@@ -228,7 +228,7 @@ class TestPolylogueGetConversations:
         for i in range(3):
             conv_record = ConversationRecord(
                 conversation_id=f"conv-{i}",
-                provider_name="claude",
+                provider_name="claude-ai",
                 provider_conversation_id=f"provider-{i}",
                 title=f"Conversation {i}",
                 created_at="2025-01-01T00:00:00Z",
@@ -253,7 +253,7 @@ class TestPolylogueGetConversations:
         # Create only conv-1
         conv_record = ConversationRecord(
             conversation_id="conv-1",
-            provider_name="claude",
+            provider_name="claude-ai",
             provider_conversation_id="provider-1",
             title="Conversation 1",
             created_at="2025-01-01T00:00:00Z",
@@ -290,7 +290,7 @@ class TestPolylogueListConversations:
 
         # Setup conversations
         for i in range(setup_count):
-            provider = "claude" if i < 2 else "chatgpt"
+            provider = "claude-ai" if i < 2 else "chatgpt"
             conv_record = ConversationRecord(
                 conversation_id=f"conv-{i}",
                 provider_name=provider,
@@ -334,7 +334,7 @@ class TestPolylogueFilter:
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
         filter_builder = archive.filter()
         # Should support chaining
-        result = filter_builder.provider("claude")
+        result = filter_builder.provider("claude-ai")
         assert result is not None
 
 
@@ -431,7 +431,7 @@ class TestPolylogueStats:
         for i in range(2):
             conv_record = ConversationRecord(
                 conversation_id=f"claude-{i}",
-                provider_name="claude",
+                provider_name="claude-ai",
                 provider_conversation_id=f"p-{i}",
                 title=f"Claude Conv {i}",
                 created_at="2025-01-01T00:00:00Z",
@@ -485,9 +485,9 @@ class TestPolylogueStats:
         stats = await archive.stats()
         assert stats.conversation_count == 3
         assert stats.message_count == 5
-        assert "claude" in stats.providers
+        assert "claude-ai" in stats.providers
         assert "chatgpt" in stats.providers
-        assert stats.providers["claude"] == 2
+        assert stats.providers["claude-ai"] == 2
         assert stats.providers["chatgpt"] == 1
 
     @pytest.mark.asyncio
@@ -500,7 +500,7 @@ class TestPolylogueStats:
         # Create a single conversation
         conv_record = ConversationRecord(
             conversation_id="conv-1",
-            provider_name="claude",
+            provider_name="claude-ai",
             provider_conversation_id="p-1",
             title="Test Conv",
             created_at="2025-01-01T00:00:00Z",

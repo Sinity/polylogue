@@ -523,7 +523,7 @@ def test_format_index_status_contract(stage: str, indexed: bool, error: str | No
 @pytest.mark.parametrize(
     ("source_name", "provider_name", "expected"),
     [
-        ("inbox", "claude", "inbox/claude"),
+        ("inbox", "claude-ai", "inbox/claude-ai"),
         ("chatgpt", "chatgpt", "chatgpt"),
         (None, "codex", "codex"),
     ],

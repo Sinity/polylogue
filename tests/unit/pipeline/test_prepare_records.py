@@ -465,7 +465,7 @@ class TestValidationService:
                 return ValidationResult(is_valid=True)
 
         capturing = _CapturingValidator()
-        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_provider", lambda _provider: capturing)
+        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: capturing)
 
         result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
 
@@ -496,7 +496,7 @@ class TestValidationService:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
-        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_provider", lambda _provider: _AlwaysValidValidator())
+        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
 
         result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
 
@@ -510,8 +510,8 @@ class TestValidationService:
         from polylogue.schemas import ValidationResult
 
         raw_records = [
-            MagicMock(raw_id="raw-1", raw_content=b'{"id":"1"}', provider_name="chatgpt", source_path="/tmp/a.json"),
-            MagicMock(raw_id="raw-2", raw_content=b'{"id":"2"}', provider_name="chatgpt", source_path="/tmp/b.json"),
+            MagicMock(raw_id="raw-1", raw_content=b'{"id":"1","mapping":{}}', provider_name="chatgpt", source_path="/tmp/a.json"),
+            MagicMock(raw_id="raw-2", raw_content=b'{"id":"2","mapping":{}}', provider_name="chatgpt", source_path="/tmp/b.json"),
         ]
         backend = MagicMock()
         backend.get_raw_conversations_batch = AsyncMock(return_value=raw_records)
@@ -527,7 +527,7 @@ class TestValidationService:
             def validate(self, _sample):
                 return ValidationResult(is_valid=True)
 
-        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_provider", lambda _provider: _AlwaysValidValidator())
+        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
         await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1", "raw-2"], progress_callback=callback)
 
         callback.assert_any_call(0, desc="Validating: 0/2 raw")
@@ -558,7 +558,7 @@ class TestValidationService:
             def validate(self, _sample):
                 return ValidationResult(is_valid=True)
 
-        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_provider", lambda _provider: _AlwaysValidValidator())
+        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
         result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
 
         assert result.parseable_raw_ids == ["raw-1"]

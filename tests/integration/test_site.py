@@ -60,7 +60,7 @@ def _site_env(*, backend: AsyncMock, repository: AsyncMock) -> AppEnv:
 def _summary(
     conversation_id: str,
     *,
-    provider: str = "claude",
+    provider: str = "claude-ai",
     title: str | None = "Test Conversation",
     summary: str | None = None,
 ) -> ConversationSummary:
@@ -111,7 +111,7 @@ def test_conversation_index_no_source_attribute_reference(tmp_path):
     index = indexes[0]
     assert index.id == "test-conv-001"
     assert index.title == "Test Conversation"
-    assert index.provider == "claude"
+    assert index.provider == "claude-ai"
     assert not hasattr(index, "source")
     assert index.message_count == 3
 

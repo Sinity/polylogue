@@ -367,7 +367,7 @@ KNOWN_PROVIDER_TOKENS = {
     normalize_provider_token(token)
     for token in (
         "chatgpt",
-        "claude",
+        "claude-ai",
         "claude-code",
         "codex",
         "gemini",

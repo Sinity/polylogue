@@ -502,11 +502,10 @@ class TestParseRoundtrip:
 # =============================================================================
 
 
-# Schema providers use different canonical names than runtime parsers.
-# The mapping is: claude-ai (schema) → claude (runtime/parser).
+# Schema providers and runtime parsers share the same canonical names.
 _SCHEMA_TO_RUNTIME_PROVIDER: dict[str, str] = {
     "chatgpt": "chatgpt",
-    "claude-ai": "claude",
+    "claude-ai": "claude-ai",
     "claude-code": "claude-code",
     "codex": "codex",
     "gemini": "gemini",

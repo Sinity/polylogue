@@ -130,7 +130,7 @@ class TestRowToConversation:
         """All required fields are mapped from row to ConversationRecord."""
         row = make_row({
             "conversation_id": "conv-1",
-            "provider_name": "claude",
+            "provider_name": "claude-ai",
             "provider_conversation_id": "ext-conv-1",
             "title": "Test Chat",
             "created_at": "2024-01-01T00:00:00Z",
@@ -147,7 +147,7 @@ class TestRowToConversation:
         result = _row_to_conversation(row)
         assert isinstance(result, ConversationRecord)
         assert result.conversation_id == "conv-1"
-        assert result.provider_name == "claude"
+        assert result.provider_name == "claude-ai"
         assert result.title == "Test Chat"
         assert result.content_hash == "abcdef1234567890"
 
@@ -158,7 +158,7 @@ class TestRowToConversation:
         meta = {"model": "claude-3"}
         row = make_row({
             "conversation_id": "conv-2",
-            "provider_name": "claude",
+            "provider_name": "claude-ai",
             "provider_conversation_id": "ext-2",
             "title": "With Meta",
             "created_at": None,
@@ -197,7 +197,7 @@ class TestRowToMessage:
             "version": 1,
             "parent_message_id": None,
             "branch_index": 0,
-            "provider_name": "claude",
+            "provider_name": "claude-ai",
             "word_count": 2,
             "has_tool_use": 0,
             "has_thinking": 0,

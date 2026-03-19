@@ -152,12 +152,12 @@ class _ZipEntryValidator:
 
     def __init__(
         self,
-        provider_hint: str,
+        provider_hint: str | Provider,
         *,
         cursor_state: dict[str, Any] | None,
         zip_path: Path,
     ) -> None:
-        self._provider_hint = provider_hint
+        self._provider_hint = Provider.from_string(provider_hint)
         self._cursor_state = cursor_state
         self._zip_path = zip_path
 
@@ -168,12 +168,6 @@ class _ZipEntryValidator:
                 continue
             name = info.filename
             lower_name = name.lower()
-
-            # Filter Claude AI ZIP: only process conversations.json
-            if self._provider_hint in ("claude", "claude-ai"):
-                basename = lower_name.split("/")[-1]
-                if basename not in ("conversations.json",):
-                    continue
 
             # ZIP bomb protection: compression ratio
             if info.compress_size > 0:
@@ -213,14 +207,13 @@ class _ZipEntryValidator:
 
 
 def _zip_entry_provider_hint(entry_name: str, fallback_provider: str | Provider) -> Provider:
-    from .source import detect_provider
-    return detect_provider(None, Path(entry_name)) or Provider.from_string(fallback_provider)
+    return Provider.from_string(fallback_provider)
 
 
 def _process_zip(
     zip_path: Path,
     *,
-    provider_hint: str,
+    provider_hint: Provider,
     should_group: bool,
     file_mtime: str | None,
     capture_raw: bool,
@@ -245,7 +238,6 @@ def _process_zip(
                 file_mtime=file_mtime,
                 capture_raw=capture_raw,
                 session_index={},  # ZIP files don't have session indices
-                detect_path=Path(name),
             )
             emitter = _ConversationEmitter(ctx)
             with zf.open(name) as handle:

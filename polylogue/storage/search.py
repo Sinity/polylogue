@@ -14,7 +14,7 @@ from polylogue.errors import DatabaseError
 from polylogue.logging import get_logger
 from polylogue.paths import conversation_render_root
 
-from .backends.connection import _build_source_scope_filter, open_connection
+from .backends.connection import _build_provider_scope_filter, open_connection
 from .search_cache import SearchCacheKey
 
 logger = get_logger(__name__)
@@ -79,7 +79,7 @@ def _resolve_conversation_path(
     Args:
         archive_root: Root directory for archived conversations
         render_root_path: Optional override for render output root
-        provider_name: Provider name (e.g., "claude", "chatgpt")
+        provider_name: Provider name (e.g., "claude-ai", "chatgpt")
         conversation_id: Unique conversation identifier
 
     Returns:
@@ -203,10 +203,9 @@ def build_ranked_conversation_search_query(
     params: list[object] = [fts_query]
 
     if scope_names:
-        scope_sql, scope_params = _build_source_scope_filter(
+        scope_sql, scope_params = _build_provider_scope_filter(
             scope_names,
             provider_column="conversations.provider_name",
-            source_column="conversations.source_name",
         )
         sql += f" AND {scope_sql}"
         params.extend(scope_params)

@@ -96,7 +96,7 @@ def _csv_rows(case) -> list[dict[str, str]]:
 def _sample_summary_spec() -> ConversationSummarySpec:
     return ConversationSummarySpec(
         conversation_id="conv-law-1",
-        provider="claude",
+        provider="claude-ai",
         title="Lawful Conversation",
         summary="summary",
         tags=("law",),
@@ -146,7 +146,7 @@ def _build_plan(case: str) -> QueryExecutionPlan:
 def _sample_conversation() -> Conversation:
     return Conversation(
         id="conv-transform",
-        provider="claude",
+        provider="claude-ai",
         title="Transform Contract",
         messages=[
             Message(id="m-user", role="user", text="hello"),
@@ -165,7 +165,7 @@ def _sample_conversation() -> Conversation:
 def _sample_output_conversation(conversation_id: str = "conv-output") -> Conversation:
     return Conversation(
         id=conversation_id,
-        provider="claude",
+        provider="claude-ai",
         title="Output Contract",
         messages=[
             Message(id=f"{conversation_id}-user", role="user", text="hello"),
@@ -483,7 +483,7 @@ def test_render_conversation_rich_contract() -> None:
     env, buffer = _make_recording_env()
     conversation = Conversation(
         id="conv-rich",
-        provider="claude",
+        provider="claude-ai",
         title="Rich Contract",
         messages=[
             Message(id="m-user", role="user", text="**Hello** world"),
@@ -501,7 +501,7 @@ def test_render_conversation_rich_contract() -> None:
 
     rendered = buffer.getvalue()
     assert "Rich Contract" in rendered
-    assert "claude" in rendered
+    assert "claude-ai" in rendered
     assert "User" in rendered
     assert "Hello" in rendered
     assert "Thinking" in rendered
@@ -723,14 +723,14 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
 @pytest.mark.parametrize(
     ("params", "expected_lines"),
     [
-        (
-            {"provider": "claude", "limit": 5},
-            [
-                "No conversations matched filters:",
-                "  provider: claude",
-                "Hint: try broadening your filters or use --list to browse",
-            ],
-        ),
+            (
+                {"provider": "claude-ai", "limit": 5},
+                [
+                    "No conversations matched filters:",
+                    "  provider: claude-ai",
+                    "Hint: try broadening your filters or use --list to browse",
+                ],
+            ),
         (
             ConversationQuerySpec(),
             ["No conversations matched."],
@@ -784,13 +784,13 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
             "attachments": 2,
             "min_sort_key": 1704067200,
             "max_sort_key": 1704153600,
-            "providers": {"claude": 2, "chatgpt": 1},
+            "providers": {"claude-ai": 2, "chatgpt": 1},
         }
     )
     summary_specs = (
         ConversationSummarySpec(
             conversation_id="conv-a",
-            provider="claude",
+            provider="claude-ai",
             title="A",
             summary="",
             tags=(),
@@ -811,7 +811,7 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
     )
     summaries = [build_conversation_summary(spec) for spec in summary_specs]
     filter_chain = MagicMock()
-    filter_chain.describe.return_value = ["provider=claude", "tag=law"]
+    filter_chain.describe.return_value = ["provider=claude-ai", "tag=law"]
     filter_chain.can_use_summaries.return_value = True
     filter_chain.list_summaries = AsyncMock(return_value=summaries)
 
@@ -825,7 +825,7 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
         "\nConversations: 2\n",
         "Messages: 9 total (4 user, 5 assistant)",
         "Words: ~42",
-        "Providers: claude (2), chatgpt (1)",
+        "Providers: claude-ai (2), chatgpt (1)",
         "Attachments: 2",
         "Date range: 2024-01-01 to 2024-01-02",
     ]
@@ -835,7 +835,7 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
 @pytest.mark.parametrize(
     ("described", "can_use_summaries", "expected_message"),
     [
-        (["provider=claude"], True, "No conversations matched."),
+        (["provider=claude-ai"], True, "No conversations matched."),
         ([], False, "No conversations in archive."),
     ],
 )

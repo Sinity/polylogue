@@ -41,9 +41,9 @@ from polylogue.storage.store import (
     RawConversationState,
     RunRecord,
 )
+from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 logger = get_logger(__name__)
-
 
 
 def default_db_path() -> Path:
@@ -887,7 +887,7 @@ class SQLiteBackend:
         raw_id: str,
         *,
         error: str | None = None,
-        payload_provider: str | None = None,
+        payload_provider: Provider | str | None = None,
     ) -> None:
         """Mark a raw conversation as parsed (or record a parse error)."""
         async with self._get_connection() as conn:
@@ -902,12 +902,12 @@ class SQLiteBackend:
         self,
         raw_id: str,
         *,
-        status: str,
+        status: ValidationStatus | str,
         error: str | None = None,
         drift_count: int = 0,
-        provider: str | None = None,
-        mode: str | None = None,
-        payload_provider: str | None = None,
+        provider: Provider | str | None = None,
+        mode: ValidationMode | str | None = None,
+        payload_provider: Provider | str | None = None,
     ) -> None:
         """Persist validation status for a raw conversation record."""
         async with self._get_connection() as conn:

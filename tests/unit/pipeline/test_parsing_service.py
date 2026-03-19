@@ -301,9 +301,9 @@ class TestPlanningService:
 
         plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="validate")
 
-        assert plan.summary.counts["validate"] == 2
-        assert plan.summary.details["backlog_validate"] == 2
-        assert set(plan.validate_raw_ids) == {"raw-scoped", "raw-legacy-provider"}
+        assert plan.summary.counts["validate"] == 1
+        assert plan.summary.details["backlog_validate"] == 1
+        assert set(plan.validate_raw_ids) == {"raw-scoped"}
 
     @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
     async def test_build_plan_dedupes_duplicate_scanned_raw_ids(self, mock_iter, tmp_path: Path):

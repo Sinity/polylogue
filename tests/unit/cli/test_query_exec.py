@@ -33,7 +33,7 @@ def _make_msg(id: str, role: str, text: str, *, timestamp=None, provider_meta=No
 
 def _make_conv(
     id: str = "conv-1",
-    provider: str = "claude",
+    provider: str = "claude-ai",
     title: str = "Test Conversation",
     messages: list[Message] | None = None,
 ) -> Conversation:
@@ -48,7 +48,7 @@ def _make_conv(
 def _make_summary(id: str = "conv-1") -> ConversationSummary:
     return ConversationSummary(
         id=id,
-        provider="claude",
+        provider="claude-ai",
         title="Test",
         created_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
         updated_at=datetime(2025, 1, 15, tzinfo=timezone.utc),
@@ -325,7 +325,7 @@ class TestBuildQueryExecutionPlan:
             ({"stats_only": True, "query": ()}, QueryAction.STATS),
             ({"stats_by": "provider", "query": ()}, QueryAction.STATS_BY),
             ({"add_tag": ["x"], "query": ()}, QueryAction.MODIFY),
-            ({"delete_matched": True, "provider": "claude", "query": ()}, QueryAction.DELETE),
+            ({"delete_matched": True, "provider": "claude-ai", "query": ()}, QueryAction.DELETE),
             ({"open_result": True, "query": ("abc",)}, QueryAction.OPEN),
             ({"query": ("abc",)}, QueryAction.SHOW),
         ],
@@ -356,7 +356,7 @@ class TestBuildQueryExecutionPlan:
                 "add_tag": ["todo", "review"],
                 "force": True,
                 "dry_run": True,
-                "provider": "claude",
+                "provider": "claude-ai",
                 "query": (),
             }
         )
@@ -386,12 +386,12 @@ class TestBuildQueryExecutionPlan:
                 QueryRoute.MODIFY,
             ),
             (
-                {"delete_matched": True, "provider": "claude", "query": ()},
+                {"delete_matched": True, "provider": "claude-ai", "query": ()},
                 True,
                 QueryRoute.SUMMARY_DELETE,
             ),
             (
-                {"delete_matched": True, "provider": "claude", "query": ()},
+                {"delete_matched": True, "provider": "claude-ai", "query": ()},
                 False,
                 QueryRoute.DELETE,
             ),

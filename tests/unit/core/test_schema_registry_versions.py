@@ -161,10 +161,7 @@ class TestMetadataInjection:
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
         original_keys = set(schema.keys())
         registry.register_schema("mut-prov", schema)
-        # register_schema mutates the dict in-place (documented behavior);
-        # verify it at least wrote the expected keys
-        assert "$id" in schema
-        assert "x-polylogue-version" in schema
+        assert set(schema.keys()) == original_keys
 
 
 # =============================================================================
