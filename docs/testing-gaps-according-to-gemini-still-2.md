@@ -97,7 +97,7 @@ Files like `test_filters_props.py` (1,043 lines) contain endless repetitions of 
 
 ```python
 (ConversationBuilder(db_path, "conv-tools")
- .provider("claude")
+ .provider("claude-ai")
  .title("API Integration Help")
  .add_message("m4", role="user", text="How do I call an API?")
  .add_message("m5", role="assistant", text="I'll help you.")

@@ -107,7 +107,7 @@ Date range: 2025-01-18 to 2025-01-24
 
 ```bash
 polylogue --stats-by month                        # Activity histogram by month
-polylogue -p claude --stats-by provider           # Provider breakdown for Claude
+polylogue -p claude-ai --stats-by provider           # Provider breakdown for Claude
 polylogue --stats-by year                         # Year-by-year overview
 polylogue --since 2025-01 --stats-by day          # Daily breakdown
 ```
@@ -150,7 +150,7 @@ polylogue -p old --delete --force                  # Skip confirmation
 
 ```
   ID (24 chars)             DATE        [PROVIDER    ]  TITLE (MSG COUNT)
-  claude:a8f2c3d4e5f6...    2025-01-24  [claude-code ]  Debugging OAuth (42 msgs)
+  claude-ai:a8f2c3d4e5f6...    2025-01-24  [claude-code ]  Debugging OAuth (42 msgs)
   chatgpt:b9d8e7f6a5...     2025-01-23  [chatgpt     ]  Python patterns (18 msgs)
 ```
 
@@ -160,7 +160,7 @@ polylogue -p old --delete --force                  # Skip confirmation
 
 ```bash
 polylogue run                             # Run pipeline on all sources
-polylogue run --source claude             # Run only for claude source
+polylogue run --source claude-ai             # Run only for claude source
 polylogue run --preview                   # Preview counts, confirm before writing
 polylogue run --stage parse               # Run only parse stage
 polylogue run --stage all                 # Run all stages (default)
@@ -196,7 +196,7 @@ Generates vector embeddings using Voyage AI, stored in sqlite-vec for semantic s
 
 ```bash
 polylogue tags                            # List all tags with counts
-polylogue tags -p claude                  # Tags for Claude conversations only
+polylogue tags -p claude-ai                  # Tags for Claude conversations only
 polylogue tags --json                     # Machine-readable output
 polylogue tags -n 10                      # Top 10 tags
 ```
@@ -426,10 +426,10 @@ polylogue
 
 # Search
 polylogue "OAuth bug"
-polylogue "error" "python" -p claude,chatgpt
+polylogue "error" "python" -p claude-ai,chatgpt
 
 # Filter and output
-polylogue -p claude --has thinking --output browser
+polylogue -p claude-ai --has thinking --output browser
 polylogue --latest --output browser,clipboard
 
 # Sorting and sampling
@@ -438,11 +438,11 @@ polylogue --sort random --limit 5                # Random 5
 polylogue --sample 10                            # Random sample of 10
 
 # Field selection
-polylogue -p claude --fields id,title,tokens --format json
+polylogue -p claude-ai --fields id,title,tokens --format json
 
 # Aggregation
 polylogue --stats-by month                       # Activity by month
-polylogue -p claude --stats-by provider          # Provider breakdown
+polylogue -p claude-ai --stats-by provider          # Provider breakdown
 
 # Exclusions
 polylogue "error" --exclude-text "warning" --exclude-provider gemini
@@ -457,7 +457,7 @@ polylogue --latest --stream                      # Stream most recent
 polylogue -i abc123 --stream -d                  # Stream dialogue only
 
 # Count
-polylogue -p claude --count                      # Quick count
+polylogue -p claude-ai --count                      # Quick count
 
 # Metadata
 polylogue -i abc123 --set title "The OAuth Fix"
@@ -466,12 +466,12 @@ polylogue -i abc123 --add-tag project:polylogue,important
 polylogue --tag project:polylogue --list
 
 # Bulk operations with safety
-polylogue -p claude --since "last month" --add-tag review --dry-run
+polylogue -p claude-ai --since "last month" --add-tag review --dry-run
 polylogue -p old --delete --dry-run
 
 # Run pipeline
 polylogue run
-polylogue run --source claude
+polylogue run --source claude-ai
 polylogue run --preview
 polylogue run --watch --notify
 

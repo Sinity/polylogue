@@ -13,7 +13,7 @@ eval $(polylogue generate --seed --env-only)
 # Now all commands work against synthetic data
 polylogue                          # Archive stats
 polylogue "error handling"         # Search
-polylogue -p claude --latest       # Latest Claude conversation
+polylogue -p claude-ai --latest       # Latest Claude conversation
 polylogue dashboard                # Interactive TUI
 ```
 
@@ -47,7 +47,7 @@ polylogue generate --seed
 eval $(polylogue generate --seed --env-only)
 
 # Custom options
-polylogue generate --seed -p chatgpt,claude -n 10
+polylogue generate --seed -p chatgpt,claude-ai -n 10
 ```
 
 The seeded environment uses `run_sources` — the same pipeline as `polylogue run` — so the generate command exercises the full acquire → validate → parse → render → index flow.

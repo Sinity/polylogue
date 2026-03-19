@@ -20,7 +20,7 @@ uv run ruff check polylogue/ tests/
 # Run
 uv run polylogue                              # Stats
 uv run polylogue "search terms"               # Query
-uv run polylogue -p claude --since "last week"
+uv run polylogue -p claude-ai --since "last week"
 uv run polylogue --similar "error handling"   # Semantic search
 uv run polylogue run --preview                # Dry-run sync
 uv run polylogue check --repair               # Integrity check
@@ -37,7 +37,7 @@ async with Polylogue() as archive:
     results = await archive.search("error handling")
     for hit in results.hits:
         print(hit.title)
-    filtered = await archive.filter().contains("python").provider("claude").list()
+    filtered = await archive.filter().contains("python").provider("claude-ai").list()
     await archive.rebuild_index()
 ```
 
@@ -62,7 +62,7 @@ async with Polylogue() as archive:
 |------|---------|
 | `lib/models.py` | Message/Conversation with `is_thinking`, `is_tool_use`, `is_substantive` |
 | `lib/projections.py` | Fluent API: `conv.project().substantive().min_words(50).execute()` |
-| `lib/filters.py` | Conversation filter chain: `await p.filter().provider("claude").list()` |
+| `lib/filters.py` | Conversation filter chain: `await p.filter().provider("claude-ai").list()` |
 | `facade.py` | `Polylogue` — async-first library API |
 | `services.py` | Invocation-scoped runtime services: config, backend, repository |
 | `protocols.py` | SearchProvider, VectorProvider (storage protocol deleted) |
@@ -114,7 +114,7 @@ async with Polylogue() as archive:
 from polylogue import Polylogue
 
 async with Polylogue() as p:
-    convs = await p.filter().provider("claude").since("2024-01-01").contains("error").limit(10).list()
+    convs = await p.filter().provider("claude-ai").since("2024-01-01").contains("error").limit(10).list()
 ```
 
 **Filters** (chainable):
@@ -246,7 +246,7 @@ Polylogue provides a Model Context Protocol (MCP) server for AI assistant integr
 - **Resources**: Dynamic with query parameters
   - `polylogue://stats` - Archive statistics
   - `polylogue://conversations` - All conversations
-  - `polylogue://conversations?provider=claude&since=2024-01-01` - Filtered
+  - `polylogue://conversations?provider=claude-ai&since=2024-01-01` - Filtered
   - `polylogue://conversation/{id}` - Single conversation
 - **Prompts**: Standardized workflows
   - `analyze-errors` - Find error patterns & solutions
@@ -255,7 +255,7 @@ Polylogue provides a Model Context Protocol (MCP) server for AI assistant integr
 
 **Example resource template**:
 ```
-polylogue://conversations?provider=claude&tag=important&limit=50
+polylogue://conversations?provider=claude-ai&tag=important&limit=50
 ```
 
 **Example prompt invocation**:
@@ -264,7 +264,7 @@ polylogue://conversations?provider=claude&tag=important&limit=50
   "method": "prompts/get",
   "params": {
     "name": "analyze-errors",
-    "arguments": {"provider": "claude", "since": "2024-01-01"}
+    "arguments": {"provider": "claude-ai", "since": "2024-01-01"}
   }
 }
 ```
