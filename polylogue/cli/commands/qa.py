@@ -13,6 +13,7 @@ import click
 from polylogue.cli.helpers import load_effective_config
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.types import AppEnv
+from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.paths import safe_path_component
 
 
@@ -284,9 +285,9 @@ def qa_command(
                 "skipped": result.showcase_result.skipped if result.showcase_result else 0,
             },
             "invariants": {
-                "passed": sum(1 for r in result.invariant_results if r.status == "pass"),
-                "failed": sum(1 for r in result.invariant_results if r.status == "fail"),
-                "skipped": sum(1 for r in result.invariant_results if r.status == "skip"),
+                "passed": sum(1 for r in result.invariant_results if r.status is OutcomeStatus.OK),
+                "failed": sum(1 for r in result.invariant_results if r.status is OutcomeStatus.ERROR),
+                "skipped": sum(1 for r in result.invariant_results if r.status is OutcomeStatus.SKIP),
             },
             "overall_passed": result.all_passed,
         }

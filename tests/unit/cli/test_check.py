@@ -39,17 +39,13 @@ class TestHealthReportConstruction:
     """Tests for proper HealthReport instantiation."""
 
     def test_health_report_requires_summary(self):
-        """HealthReport must include summary dict with ok/warning/error counts."""
+        """HealthReport derives summary dict from check statuses."""
         checks = [
-            HealthCheck("database", VerifyStatus.OK, detail="DB reachable"),
-            HealthCheck("archive", VerifyStatus.WARNING, detail="Not found"),
+            HealthCheck("database", VerifyStatus.OK, summary="DB reachable"),
+            HealthCheck("archive", VerifyStatus.WARNING, summary="Not found"),
         ]
 
-        # Correct: include summary
-        report = HealthReport(
-            checks=checks,
-            summary={"ok": 1, "warning": 1, "error": 0},
-        )
+        report = HealthReport(checks=checks)
 
         assert len(report.checks) == 2
         assert report.summary == {"ok": 1, "warning": 1, "error": 0}
@@ -63,10 +59,7 @@ class TestHealthReportConstruction:
             HealthCheck("check4", VerifyStatus.ERROR),
         ]
 
-        report = HealthReport(
-            checks=checks,
-            summary={"ok": 2, "warning": 1, "error": 1},
-        )
+        report = HealthReport(checks=checks)
 
         # Verify counts match
         assert report.summary["ok"] == 2
@@ -75,8 +68,8 @@ class TestHealthReportConstruction:
 
     def test_health_report_to_dict_serialization(self):
         """HealthReport should serialize to dict with all required fields."""
-        checks = [HealthCheck("test", VerifyStatus.OK, detail="OK")]
-        report = HealthReport(checks=checks, summary={"ok": 1, "warning": 0, "error": 0})
+        checks = [HealthCheck("test", VerifyStatus.OK, summary="OK")]
+        report = HealthReport(checks=checks)
 
         data = report.to_dict()
 
@@ -87,7 +80,7 @@ class TestHealthReportConstruction:
 
     def test_health_report_empty_checks(self):
         """HealthReport with no checks should still have summary."""
-        report = HealthReport(checks=[], summary={"ok": 0, "warning": 0, "error": 0})
+        report = HealthReport(checks=[])
 
         assert len(report.checks) == 0
         assert report.summary == {"ok": 0, "warning": 0, "error": 0}

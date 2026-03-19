@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
+from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.runner import ExerciseResult
 
@@ -37,7 +38,7 @@ class InvariantResult:
 
     invariant_name: str
     exercise_name: str
-    status: Literal["pass", "fail", "skip"]
+    status: OutcomeStatus
     error: str | None = None
 
 
@@ -144,7 +145,7 @@ def check_invariants(results: list[ExerciseResult]) -> list[InvariantResult]:
                 invariant_results.append(InvariantResult(
                     invariant_name=invariant.name,
                     exercise_name=result.exercise.name,
-                    status="skip",
+                    status=OutcomeStatus.SKIP,
                 ))
                 continue
 
@@ -157,19 +158,19 @@ def check_invariants(results: list[ExerciseResult]) -> list[InvariantResult]:
                 invariant_results.append(InvariantResult(
                     invariant_name=invariant.name,
                     exercise_name=result.exercise.name,
-                    status="skip",
+                    status=OutcomeStatus.SKIP,
                 ))
             elif error is None:
                 invariant_results.append(InvariantResult(
                     invariant_name=invariant.name,
                     exercise_name=result.exercise.name,
-                    status="pass",
+                    status=OutcomeStatus.OK,
                 ))
             else:
                 invariant_results.append(InvariantResult(
                     invariant_name=invariant.name,
                     exercise_name=result.exercise.name,
-                    status="fail",
+                    status=OutcomeStatus.ERROR,
                     error=error,
                 ))
 
@@ -178,13 +179,13 @@ def check_invariants(results: list[ExerciseResult]) -> list[InvariantResult]:
 
 def format_invariant_summary(results: list[InvariantResult]) -> str:
     """Format invariant check results as a summary."""
-    passed = sum(1 for r in results if r.status == "pass")
-    failed = sum(1 for r in results if r.status == "fail")
-    skipped = sum(1 for r in results if r.status == "skip")
+    passed = sum(1 for r in results if r.status is OutcomeStatus.OK)
+    failed = sum(1 for r in results if r.status is OutcomeStatus.ERROR)
+    skipped = sum(1 for r in results if r.status is OutcomeStatus.SKIP)
 
     lines = [f"Invariant Checks: {passed} pass, {failed} fail, {skipped} skip"]
 
-    failures = [r for r in results if r.status == "fail"]
+    failures = [r for r in results if r.status is OutcomeStatus.ERROR]
     if failures:
         lines.append("")
         lines.append("Failures:")
