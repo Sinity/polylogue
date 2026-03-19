@@ -11,8 +11,9 @@ from typing import Any, Literal
 
 import orjson
 
-from polylogue.lib.provider_identity import canonical_runtime_provider
+from polylogue.lib.artifact_taxonomy import ArtifactClassification, classify_artifact
 from polylogue.sources.source import detect_provider
+from polylogue.types import Provider
 
 WireFormat = Literal["json", "jsonl"]
 
@@ -27,8 +28,9 @@ class RawPayloadEnvelope:
     """Canonical decoded raw payload with inferred runtime semantics."""
 
     payload: Any
-    provider: str
+    provider: Provider
     wire_format: WireFormat
+    artifact: ArtifactClassification
     malformed_jsonl_lines: int = 0
 
 
@@ -109,38 +111,24 @@ def _infer_payload_provider(
     payload: Any,
     *,
     source_path: str | Path | None,
-    fallback_provider: str,
-    payload_provider: str | None = None,
-) -> str:
+    fallback_provider: str | Provider,
+    payload_provider: str | Provider | None = None,
+) -> Provider:
     """Infer canonical provider from payload/path, with fallback."""
     if payload_provider:
-        return canonical_runtime_provider(
-            payload_provider,
-            preserve_unknown=True,
-            default=payload_provider,
-        )
-    source_hint = str(source_path or "")
-    if source_hint:
-        inferred = detect_provider(payload, Path(source_hint))
-        if inferred:
-            return canonical_runtime_provider(
-                inferred,
-                preserve_unknown=True,
-                default=inferred,
-            )
-    return canonical_runtime_provider(
-        fallback_provider,
-        preserve_unknown=True,
-        default=fallback_provider,
-    )
+        return Provider.from_string(payload_provider)
+    inferred = detect_provider(payload)
+    if inferred:
+        return inferred
+    return Provider.from_string(fallback_provider)
 
 
 def build_raw_payload_envelope(
     raw_content: bytes | str | Any,
     *,
     source_path: str | Path | None,
-    fallback_provider: str,
-    payload_provider: str | None = None,
+    fallback_provider: str | Provider,
+    payload_provider: str | Provider | None = None,
     jsonl_dict_only: bool = False,
 ) -> RawPayloadEnvelope:
     """Decode raw payload and attach canonical provider/wire-format identity."""
@@ -148,11 +136,8 @@ def build_raw_payload_envelope(
     prefer_jsonl = normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
     preferred_provider = payload_provider or fallback_provider
     if not prefer_jsonl:
-        prefer_jsonl = canonical_runtime_provider(
-            preferred_provider,
-            preserve_unknown=True,
-            default=preferred_provider,
-        ) in {"claude-code", "codex"}
+        runtime_provider = Provider.from_string(preferred_provider)
+        prefer_jsonl = runtime_provider in {Provider.CLAUDE_CODE, Provider.CODEX}
     payload, wire_format, malformed_jsonl_lines = _decode_raw_payload(
         raw_content,
         jsonl_dict_only=jsonl_dict_only,
@@ -164,10 +149,16 @@ def build_raw_payload_envelope(
         fallback_provider=fallback_provider,
         payload_provider=payload_provider,
     )
+    artifact = classify_artifact(
+        payload,
+        provider=provider,
+        source_path=source_path,
+    )
     return RawPayloadEnvelope(
         payload=payload,
         provider=provider,
         wire_format=wire_format,
+        artifact=artifact,
         malformed_jsonl_lines=malformed_jsonl_lines,
     )
 
@@ -379,11 +370,67 @@ def extract_payload_samples(
     return _take_bucketed_samples(buckets, max_samples)
 
 
+def extract_record_samples_from_raw_content(
+    raw_content: bytes | str | Any,
+    *,
+    max_samples: int,
+    record_type_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Stream-record sample extraction for large JSONL payloads.
+
+    This avoids materializing the entire payload list in memory when schema
+    inference only needs a bounded, stratified subset of records.
+    """
+    if max_samples <= 0:
+        return []
+
+    raw = raw_content if isinstance(raw_content, (bytes, str)) else str(raw_content)
+    lines: list[dict[str, Any]] = []
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    dict_count = 0
+    scan_cap = max(1024, max_samples * 64)
+    per_bucket_cap = 8
+    first_line = True
+    stream = BytesIO(raw) if isinstance(raw, bytes) else StringIO(raw)
+
+    for raw_line in stream:
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+        if first_line:
+            line = line.lstrip("\ufeff")
+            first_line = False
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = orjson.loads(line)
+        except (orjson.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(parsed, dict) or not is_record_candidate(parsed):
+            continue
+
+        dict_count += 1
+        if dict_count <= max_samples:
+            lines.append(parsed)
+        bucket = record_bucket_key(parsed, record_type_key)
+        bucket_records = buckets.setdefault(bucket, [])
+        if len(bucket_records) < per_bucket_cap:
+            bucket_records.append(parsed)
+        if dict_count >= scan_cap:
+            break
+
+    if dict_count == 0:
+        return []
+    if dict_count <= max_samples:
+        return lines
+    return _take_bucketed_samples(buckets, max_samples)
+
+
 __all__ = [
     "RawPayloadEnvelope",
     "WireFormat",
     "build_raw_payload_envelope",
     "collect_limited_samples",
+    "extract_record_samples_from_raw_content",
     "extract_payload_samples",
     "is_record_candidate",
     "limit_samples",

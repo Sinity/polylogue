@@ -303,7 +303,7 @@ def test_parse_conversation(parse_fn, conv_data, check_type, desc):
     elif check_type == "fallback":
         assert result.provider_conversation_id == "fallback-id", f"Failed {desc}"
     elif check_type == "provider":
-        assert result.provider_name in ["claude", "claude-code"], f"Failed {desc}"
+        assert result.provider_name in ["claude-ai", "claude-code"], f"Failed {desc}"
 
 
 # -----------------------------------------------------------------------------

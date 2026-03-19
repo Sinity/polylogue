@@ -14,6 +14,7 @@ import pytest
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
+from polylogue.lib.pricing import harmonize_session_cost
 from tests.infra.assertions import assert_contains_all, assert_not_contains_any
 
 
@@ -53,7 +54,7 @@ def conversation_with_metadata() -> Conversation:
     ]
     return Conversation(
         id="complex-conv",
-        provider="claude",
+        provider="claude-ai",
         title="Complex Conversation",
         messages=MessageCollection(messages=messages),
         created_at=datetime(2024, 1, 15, 10, 0),
@@ -82,7 +83,7 @@ def dialogue_noise_mix() -> Conversation:
             provider_meta={"content_blocks": [{"type": "tool_use"}]},
         ),
     ]
-    return Conversation(id="mixed", provider="claude", messages=MessageCollection(messages=messages))
+    return Conversation(id="mixed", provider="claude-ai", messages=MessageCollection(messages=messages))
 
 
 @pytest.fixture
@@ -231,6 +232,23 @@ class TestConversationMetadataAndAggregation:
         assert branched.assistant_message_count == 3
         assert conversation_with_metadata.model_copy() == conversation_with_metadata
 
+    def test_cost_duration_fall_back_to_conversation_provider_meta(self):
+        conversation = Conversation(
+            id="claude-code-session",
+            provider="claude-code",
+            messages=MessageCollection(
+                messages=[
+                    Message(id="u1", role="user", text="Question"),
+                    Message(id="a1", role="assistant", text="Answer"),
+                ]
+            ),
+            provider_meta={"total_cost_usd": "0.75", "total_duration_ms": "3200"},
+        )
+
+        assert conversation.total_cost_usd == pytest.approx(0.75)
+        assert conversation.total_duration_ms == 3200
+        assert harmonize_session_cost(conversation) == (0.75, False)
+
 
 VIEW_CASES = [
     ViewCase(
@@ -329,7 +347,7 @@ class TestConversationViewsAndIteration:
     def test_iter_branches_contract(self):
         conversation = Conversation(
             id="c1",
-            provider="claude",
+            provider="claude-ai",
             messages=MessageCollection(
                 messages=[
                     Message(id="m1", role="assistant", text="root", parent_id=None, branch_index=0),

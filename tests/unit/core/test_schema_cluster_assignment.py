@@ -177,6 +177,18 @@ class TestClusterAssignment:
         manifest = registry.cluster_samples("type-prov", samples)
         assert len(manifest.clusters) == 2
 
+    def test_same_shape_different_artifact_kind_splits_clusters(self, registry: SchemaRegistry) -> None:
+        samples = [
+            {"id": "1", "count": 5},
+            {"id": "2", "count": 10},
+        ]
+        manifest = registry.cluster_samples(
+            "kind-prov",
+            samples,
+            artifact_kinds=["conversation_record_stream", "subagent_conversation_stream"],
+        )
+        assert len(manifest.clusters) == 2
+
     def test_optional_field_presence_causes_separate_cluster(self, registry: SchemaRegistry) -> None:
         """A sample missing a field has a different structure than one with it."""
         samples = [
@@ -312,7 +324,7 @@ class TestManifestMembership:
 
         reloaded = registry.load_cluster_manifest("promo-prov")
         assert reloaded is not None
-        assert reloaded.clusters[0].promoted_version == version
+        assert reloaded.clusters[0].schema_version == version
 
 
 # =============================================================================

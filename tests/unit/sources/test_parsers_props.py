@@ -128,7 +128,7 @@ PARSER_CASES: tuple[ParserCase, ...] = (
         strategy=claude_ai_export_strategy(min_messages=1, max_messages=10),
         parse=lambda payload: claude.parse_ai(payload, "fallback"),
         looks_like=claude.looks_like_ai,
-        expected_provider="claude",
+        expected_provider="claude-ai",
         message_cap=_claude_ai_message_count,
         id_oracle=lambda export: str(
             export.get("id") or export.get("uuid") or export.get("conversation_id") or "fallback"

@@ -8,7 +8,7 @@ from dimensions rather than manually assigned.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from polylogue.types import ExerciseIOMode
 
 
 @dataclass(frozen=True)
@@ -17,7 +17,7 @@ class ExerciseDimensions:
 
     capability: str  # "query" | "ingest" | "schema" | "format" | "filter" | "mutation" | "meta"
     scope: str  # "structural" | "single-provider" | "cross-provider" | "full-archive"
-    io_mode: str  # "read" | "write" | "idempotent"
+    io_mode: ExerciseIOMode
     output_format: str  # "text" | "json" | "markdown" | "html" | "csv" | "yaml" | "org" | "obsidian" | "mixed"
     complexity: str  # "smoke" | "basic" | "combinatorial" | "stress"
 
@@ -46,7 +46,7 @@ def structural_smoke(
     return ExerciseDimensions(
         capability=capability,
         scope="structural",
-        io_mode="read",
+        io_mode=ExerciseIOMode.READ,
         output_format=output_format,
         complexity="smoke",
     )
@@ -61,7 +61,7 @@ def query_read(
     return ExerciseDimensions(
         capability="query",
         scope=scope,
-        io_mode="read",
+        io_mode=ExerciseIOMode.READ,
         output_format=output_format,
         complexity=complexity,
     )
@@ -75,7 +75,7 @@ def query_write(
     return ExerciseDimensions(
         capability="mutation",
         scope="full-archive",
-        io_mode="write",
+        io_mode=ExerciseIOMode.WRITE,
         output_format=output_format,
         complexity=complexity,
     )
@@ -83,13 +83,13 @@ def query_write(
 
 def schema_exercise(
     complexity: str = "basic",
-    io_mode: str = "read",
+    io_mode: ExerciseIOMode = ExerciseIOMode.READ,
 ) -> ExerciseDimensions:
     """Schema-related exercise."""
     return ExerciseDimensions(
         capability="schema",
         scope="single-provider",
-        io_mode=io_mode,
+        io_mode=ExerciseIOMode.from_string(io_mode),
         output_format="json",
         complexity=complexity,
     )

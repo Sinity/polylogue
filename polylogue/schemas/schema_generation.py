@@ -10,7 +10,9 @@ from __future__ import annotations
 import gzip
 import json
 import re
-from dataclasses import dataclass
+import random
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -43,22 +45,31 @@ from polylogue.schemas.relational_inference import (
 from polylogue.schemas.sampling import (
     PROVIDERS,
     ProviderConfig,
-    _iter_samples_from_db,
-    _iter_samples_from_sessions,
-    load_samples_from_db,
-    load_samples_from_sessions,
+    _resolve_provider_config,
+    iter_schema_units,
+    profile_cluster_id,
+    profile_similarity,
 )
 from polylogue.schemas.semantic_inference import (
     infer_semantic_roles,
     select_best_roles,
 )
+from polylogue.schemas.registry import ClusterManifest, SchemaCluster, SchemaRegistry
 from polylogue.paths import db_path as default_db_path
+from polylogue.types import Provider
 
 _HIGH_CARDINALITY_KEY_THRESHOLD = 128
 _PATHLIKE_KEY_RATIO_THRESHOLD = 0.35
 _STRUCTURE_EXEMPLARS_PER_FINGERPRINT = 8
 _FINGERPRINT_MAX_DEPTH = 8
 _FINGERPRINT_ARRAY_SAMPLE = 8
+_PROFILE_CORE_MIN_RATIO = 0.5
+_PROFILE_MAX_TOKENS = 128
+_PROFILE_SIMILARITY_THRESHOLDS = {
+    "conversation_document": 0.86,
+    "conversation_record_stream": 0.8,
+    "subagent_conversation_stream": 0.8,
+}
 
 # Thresholds used by _annotate_schema
 _ENUM_VALUE_CAP = 200  # max values to iterate per field in annotation
@@ -76,10 +87,21 @@ class GenerationResult:
     sample_count: int
     error: str | None = None
     redaction_report: Any | None = None  # SchemaReport when privacy tracking enabled
+    versions: list[str] = field(default_factory=list)
+    default_version: str | None = None
+    cluster_count: int = 0
+    artifact_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def success(self) -> bool:
         return self.schema is not None and self.error is None
+
+
+@dataclass
+class _ProviderBundle:
+    result: GenerationResult
+    versioned_schemas: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    manifest: ClusterManifest | None = None
 
 
 # =============================================================================
@@ -581,6 +603,420 @@ def _remove_nested_required(schema: dict[str, Any], depth: int = 0) -> dict[str,
     return schema
 
 
+@dataclass
+class _ProfileSummary:
+    artifact_kind: str
+    profile_tokens: tuple[str, ...]
+    dominant_keys: list[str]
+    sample_count: int = 0
+    schema_sample_count: int = 0
+    representative_paths: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _ClusterAccumulator:
+    artifact_kind: str
+    dominant_keys: list[str]
+    sample_count: int = 0  # number of clustered units (documents or raw streams)
+    schema_sample_count: int = 0  # number of individual samples contributing to the schema
+    representative_paths: list[str] = field(default_factory=list)
+    profile_token_counts: Counter[str] = field(default_factory=Counter)
+    member_profiles: set[tuple[str, ...]] = field(default_factory=set)
+    reservoir_samples: list[dict[str, Any]] = field(default_factory=list)
+    reservoir_conv_ids: list[str | None] = field(default_factory=list)
+    rng: random.Random = field(default_factory=lambda: random.Random(42))
+
+
+def _artifact_priority(artifact_kind: str) -> int:
+    priorities = {
+        "conversation_document": 120,
+        "conversation_record_stream": 120,
+        "subagent_conversation_stream": 90,
+    }
+    return priorities.get(artifact_kind, 0)
+
+
+def _dominant_keys_for_payload(payload: Any) -> list[str]:
+    if isinstance(payload, dict):
+        return sorted(payload.keys())
+    if isinstance(payload, list):
+        first_dict = next((item for item in payload if isinstance(item, dict)), None)
+        if isinstance(first_dict, dict):
+            return sorted(first_dict.keys())
+    return []
+
+
+def _cluster_sort_key(item: tuple[str, _ClusterAccumulator]) -> tuple[int, int, int]:
+    _cluster_id, acc = item
+    return (_artifact_priority(acc.artifact_kind), acc.sample_count, acc.schema_sample_count)
+
+
+def _cluster_reservoir_size(config: ProviderConfig, max_samples: int | None) -> int:
+    if max_samples is not None:
+        return max(64, min(max_samples, 500))
+    if config.sample_granularity == "record":
+        return 192
+    return 500
+
+
+def _profile_similarity_threshold(artifact_kind: str) -> float:
+    return _PROFILE_SIMILARITY_THRESHOLDS.get(artifact_kind, 0.84)
+
+
+def _cluster_profile_tokens(acc: _ClusterAccumulator) -> tuple[str, ...]:
+    token_counts = getattr(acc, "profile_token_counts", None)
+    if not token_counts:
+        dominant_keys = getattr(acc, "dominant_keys", ())
+        return tuple(f"field:{key}" for key in dominant_keys[:_PROFILE_MAX_TOKENS])
+
+    if acc.sample_count <= 2:
+        min_count = 1
+    else:
+        min_count = max(2, int(acc.sample_count * _PROFILE_CORE_MIN_RATIO))
+
+    tokens = sorted(
+        token
+        for token, count in token_counts.items()
+        if count >= min_count
+    )
+    if not tokens:
+        tokens = [
+            token
+            for token, _count in sorted(
+                token_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[:_PROFILE_MAX_TOKENS]
+        ]
+    return tuple(tokens[:_PROFILE_MAX_TOKENS])
+
+
+def _cluster_similarity(acc: _ClusterAccumulator, profile_tokens: tuple[str, ...]) -> float:
+    if not profile_tokens:
+        return 0.0
+    return profile_similarity(set(_cluster_profile_tokens(acc)), set(profile_tokens))
+
+
+def _merge_representative_paths(target: list[str], source: list[str]) -> None:
+    for path in source:
+        if path not in target and len(target) < 5:
+            target.append(path)
+
+
+def _merge_dominant_keys(target: list[str], source: list[str]) -> list[str]:
+    merged = list(dict.fromkeys([*target, *source]))
+    return merged[:20]
+
+
+def _new_cluster_accumulator(
+    *,
+    artifact_kind: str,
+    dominant_keys: list[str],
+) -> _ClusterAccumulator:
+    return _ClusterAccumulator(
+        artifact_kind=artifact_kind,
+        dominant_keys=dominant_keys[:20],
+    )
+
+
+def _merge_profile_summary(
+    acc: _ClusterAccumulator,
+    summary: _ProfileSummary,
+) -> None:
+    acc.sample_count += summary.sample_count
+    acc.schema_sample_count += summary.schema_sample_count
+    acc.profile_token_counts.update({
+        token: summary.sample_count for token in summary.profile_tokens
+    })
+    acc.member_profiles.add(summary.profile_tokens)
+    acc.dominant_keys = _merge_dominant_keys(acc.dominant_keys, summary.dominant_keys)
+    _merge_representative_paths(acc.representative_paths, summary.representative_paths)
+
+
+def _merge_cluster_accumulators(
+    target: _ClusterAccumulator,
+    source: _ClusterAccumulator,
+    *,
+    reservoir_size: int | None = None,
+) -> None:
+    target.sample_count += source.sample_count
+    target.schema_sample_count += source.schema_sample_count
+    target.profile_token_counts.update(source.profile_token_counts)
+    target.member_profiles.update(source.member_profiles)
+    target.dominant_keys = _merge_dominant_keys(target.dominant_keys, source.dominant_keys)
+    _merge_representative_paths(target.representative_paths, source.representative_paths)
+    if reservoir_size is not None and source.reservoir_samples:
+        combined = list(zip(target.reservoir_samples, target.reservoir_conv_ids, strict=False))
+        combined.extend(zip(source.reservoir_samples, source.reservoir_conv_ids, strict=False))
+        if len(combined) > reservoir_size:
+            target.rng.shuffle(combined)
+            combined = combined[:reservoir_size]
+        target.reservoir_samples = [sample for sample, _conv_id in combined]
+        target.reservoir_conv_ids = [conv_id for _sample, conv_id in combined]
+
+
+def _refine_coarse_clusters(
+    coarse_clusters: list[_ClusterAccumulator],
+    *,
+    reservoir_size: int | None = None,
+) -> list[_ClusterAccumulator]:
+    clusters = list(coarse_clusters)
+    while True:
+        best_pair: tuple[int, int, float] | None = None
+        for left_index, left in enumerate(clusters):
+            for right_index in range(left_index + 1, len(clusters)):
+                right = clusters[right_index]
+                if left.artifact_kind != right.artifact_kind:
+                    continue
+                score = profile_similarity(
+                    set(_cluster_profile_tokens(left)),
+                    set(_cluster_profile_tokens(right)),
+                )
+                if score < _profile_similarity_threshold(left.artifact_kind):
+                    continue
+                if best_pair is None or score > best_pair[2]:
+                    best_pair = (left_index, right_index, score)
+
+        if best_pair is None:
+            return clusters
+
+        left_index, right_index, _score = best_pair
+        left = clusters[left_index]
+        right = clusters[right_index]
+        if (
+            right.sample_count > left.sample_count
+            or (
+                right.sample_count == left.sample_count
+                and right.schema_sample_count > left.schema_sample_count
+            )
+        ):
+            left_index, right_index = right_index, left_index
+            left, right = right, left
+
+        _merge_cluster_accumulators(left, right, reservoir_size=reservoir_size)
+        del clusters[right_index]
+
+
+def _update_cluster_reservoir(
+    acc: _ClusterAccumulator,
+    sample: dict[str, Any],
+    conversation_id: str | None,
+    *,
+    reservoir_size: int,
+) -> None:
+    acc.schema_sample_count += 1
+    if len(acc.reservoir_samples) < reservoir_size:
+        acc.reservoir_samples.append(sample)
+        acc.reservoir_conv_ids.append(conversation_id)
+        return
+
+    slot = acc.rng.randint(0, acc.schema_sample_count - 1)
+    if slot < reservoir_size:
+        acc.reservoir_samples[slot] = sample
+        acc.reservoir_conv_ids[slot] = conversation_id
+
+
+def _collect_cluster_accumulators(
+    provider: str,
+    *,
+    db_path: Path,
+    max_samples: int | None,
+    reservoir_size: int,
+) -> tuple[dict[str, _ClusterAccumulator], int, dict[str, int]]:
+    """Cluster schema units by heuristic profile similarity and collect reservoirs."""
+    profile_summaries: dict[tuple[str, tuple[str, ...]], _ProfileSummary] = {}
+    total_schema_samples = 0
+    artifact_counts: dict[str, int] = {}
+
+    for unit in iter_schema_units(provider, db_path=db_path, max_samples=max_samples):
+        summary_key = (unit.artifact_kind, unit.profile_tokens)
+        summary = profile_summaries.get(summary_key)
+        if summary is None:
+            summary = _ProfileSummary(
+                artifact_kind=unit.artifact_kind,
+                profile_tokens=unit.profile_tokens,
+                dominant_keys=_dominant_keys_for_payload(unit.cluster_payload)[:20],
+            )
+            profile_summaries[summary_key] = summary
+
+        summary.sample_count += 1
+        summary.schema_sample_count += len(unit.schema_samples)
+        artifact_counts[unit.artifact_kind] = artifact_counts.get(unit.artifact_kind, 0) + 1
+
+        if (
+            unit.source_path
+            and unit.source_path not in summary.representative_paths
+            and len(summary.representative_paths) < 5
+        ):
+            summary.representative_paths.append(unit.source_path)
+
+        total_schema_samples += len(unit.schema_samples)
+
+    coarse_clusters: list[_ClusterAccumulator] = []
+    ordered_summaries = sorted(
+        profile_summaries.items(),
+        key=lambda item: (
+            _artifact_priority(item[1].artifact_kind),
+            item[1].sample_count,
+            item[1].schema_sample_count,
+        ),
+        reverse=True,
+    )
+
+    for _summary_key, summary in ordered_summaries:
+        best_index: int | None = None
+        best_score = 0.0
+        for index, acc in enumerate(coarse_clusters):
+            if acc.artifact_kind != summary.artifact_kind:
+                continue
+            score = _cluster_similarity(acc, summary.profile_tokens)
+            if score > best_score:
+                best_score = score
+                best_index = index
+
+        if best_index is not None and best_score >= _profile_similarity_threshold(summary.artifact_kind):
+            _merge_profile_summary(coarse_clusters[best_index], summary)
+            continue
+
+        acc = _new_cluster_accumulator(
+            artifact_kind=summary.artifact_kind,
+            dominant_keys=summary.dominant_keys,
+        )
+        _merge_profile_summary(acc, summary)
+        coarse_clusters.append(acc)
+    coarse_clusters = _refine_coarse_clusters(coarse_clusters)
+
+    clusters: dict[str, _ClusterAccumulator] = {}
+    for acc in coarse_clusters:
+        cluster_id = profile_cluster_id(acc.artifact_kind, _cluster_profile_tokens(acc))
+        existing = clusters.get(cluster_id)
+        if existing is None:
+            clusters[cluster_id] = _new_cluster_accumulator(
+                artifact_kind=acc.artifact_kind,
+                dominant_keys=acc.dominant_keys,
+            )
+            clusters[cluster_id].representative_paths = list(acc.representative_paths)
+            clusters[cluster_id].profile_token_counts.update(acc.profile_token_counts)
+        else:
+            existing.dominant_keys = _merge_dominant_keys(existing.dominant_keys, acc.dominant_keys)
+            _merge_representative_paths(existing.representative_paths, acc.representative_paths)
+            existing.profile_token_counts.update(acc.profile_token_counts)
+
+    summary_cluster_ids: dict[tuple[str, tuple[str, ...]], str] = {}
+    for acc in coarse_clusters:
+        cluster_id = profile_cluster_id(acc.artifact_kind, _cluster_profile_tokens(acc))
+        for profile_tokens in acc.member_profiles:
+            summary_cluster_ids[(acc.artifact_kind, profile_tokens)] = cluster_id
+
+    for unit in iter_schema_units(provider, db_path=db_path, max_samples=max_samples):
+        cluster_id = summary_cluster_ids[(unit.artifact_kind, unit.profile_tokens)]
+        acc = clusters[cluster_id]
+        acc.sample_count += 1
+        acc.profile_token_counts.update(unit.profile_tokens)
+        if (
+            unit.source_path
+            and unit.source_path not in acc.representative_paths
+            and len(acc.representative_paths) < 5
+        ):
+            acc.representative_paths.append(unit.source_path)
+        for sample in unit.schema_samples:
+            _update_cluster_reservoir(
+                acc,
+                sample,
+                unit.conversation_id,
+                reservoir_size=reservoir_size,
+            )
+
+    refined_clusters = _refine_coarse_clusters(
+        list(clusters.values()),
+        reservoir_size=reservoir_size,
+    )
+    final_clusters: dict[str, _ClusterAccumulator] = {}
+    for acc in refined_clusters:
+        cluster_id = profile_cluster_id(acc.artifact_kind, _cluster_profile_tokens(acc))
+        existing = final_clusters.get(cluster_id)
+        if existing is None:
+            final_clusters[cluster_id] = acc
+        else:
+            _merge_cluster_accumulators(existing, acc, reservoir_size=reservoir_size)
+
+    return final_clusters, total_schema_samples, artifact_counts
+
+
+def _generate_cluster_schema(
+    provider: str,
+    config: ProviderConfig,
+    samples: list[dict[str, Any]],
+    conv_ids: list[str | None],
+    *,
+    privacy_config: Any | None,
+) -> tuple[dict[str, Any], SchemaReport | None]:
+    """Generate one schema version from the bounded cluster reservoir."""
+    if not samples:
+        return {"type": "object", "description": "No samples available"}, None
+
+    builder = SchemaBuilder()
+    fingerprint_counts: dict[Any, int] = {}
+    for sample in samples:
+        fingerprint = _structure_fingerprint(sample)
+        seen = fingerprint_counts.get(fingerprint, 0)
+        if seen < _STRUCTURE_EXEMPLARS_PER_FINGERPRINT:
+            builder.add_object(sample)
+            fingerprint_counts[fingerprint] = seen + 1
+
+    schema = builder.to_schema()
+    schema = collapse_dynamic_keys(schema)
+    schema = _remove_nested_required(schema)
+    if config.sample_granularity == "record":
+        schema.pop("required", None)
+
+    conv_ids_for_stats: list[str | None] | None = (
+        conv_ids if any(conv_id is not None for conv_id in conv_ids) else None
+    )
+    field_stats = _collect_field_stats(
+        samples,
+        conversation_ids=conv_ids_for_stats,
+    )
+    schema = _annotate_schema(
+        schema,
+        field_stats,
+        min_conversation_count=3,
+        privacy_config=privacy_config,
+    )
+    schema = _annotate_semantic_and_relational(schema, field_stats)
+    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+
+    redaction_report = _build_redaction_report(
+        provider,
+        field_stats,
+        schema,
+        privacy_config=privacy_config,
+        privacy_level=getattr(privacy_config, "level", "standard")
+        if privacy_config else "standard",
+    )
+    return schema, redaction_report
+
+
+def _apply_schema_metadata(
+    schema: dict[str, Any],
+    *,
+    provider: str,
+    config: ProviderConfig,
+    schema_sample_count: int,
+    cluster_id: str,
+    artifact_kind: str,
+    cluster_sample_count: int,
+) -> None:
+    schema["title"] = f"{provider} export format ({artifact_kind})"
+    schema["description"] = config.description
+    schema["x-polylogue-generated-at"] = datetime.now(tz=timezone.utc).isoformat()
+    schema["x-polylogue-sample-count"] = schema_sample_count
+    schema["x-polylogue-generator"] = "polylogue.schemas.schema_inference"
+    schema["x-polylogue-sample-granularity"] = config.sample_granularity
+    schema["x-polylogue-cluster-id"] = cluster_id
+    schema["x-polylogue-cluster-sample-count"] = cluster_sample_count
+    schema["x-polylogue-artifact-kind"] = artifact_kind
+
+
 def generate_schema_from_samples(
     samples: list[dict[str, Any]],
     *,
@@ -631,175 +1067,144 @@ def generate_provider_schema(
     max_samples: int | None = None,
     privacy_config: Any | None = None,
 ) -> GenerationResult:
-    """Generate schema for a provider."""
+    """Generate the default inferred schema for a provider."""
+    return _build_provider_bundle(
+        provider,
+        db_path=db_path,
+        max_samples=max_samples,
+        privacy_config=privacy_config,
+    ).result
+
+
+def _build_provider_bundle(
+    provider: str,
+    *,
+    db_path: Path | None,
+    max_samples: int | None,
+    privacy_config: Any | None,
+) -> _ProviderBundle:
+    """Generate all inferred schema versions plus the default result for a provider."""
+    provider_token = Provider.from_string(provider)
+    if provider_token not in PROVIDERS:
+        return _ProviderBundle(
+            result=GenerationResult(
+                provider=str(provider_token),
+                schema=None,
+                sample_count=0,
+                error=f"Unknown provider: {provider}. Known: {[str(item) for item in PROVIDERS.keys()]}",
+            ),
+        )
     if db_path is None:
         db_path = default_db_path()
     if not GENSON_AVAILABLE:
-        return GenerationResult(
-            provider=provider,
-            schema=None,
-            sample_count=0,
-            error="genson not installed",
+        return _ProviderBundle(
+            result=GenerationResult(
+                provider=str(provider_token),
+                schema=None,
+                sample_count=0,
+                error="genson not installed",
+            ),
         )
 
-    config = PROVIDERS.get(provider)
-    if not config:
-        return GenerationResult(
-            provider=provider,
-            schema=None,
-            sample_count=0,
-            error=f"Unknown provider: {provider}. Known: {list(PROVIDERS.keys())}",
-        )
+    config = _resolve_provider_config(provider_token)
 
     try:
-        redaction_report = None
-        if max_samples is not None:
-            if config.db_provider_name:
-                samples = load_samples_from_db(
-                    config.db_provider_name,
-                    db_path=db_path,
-                    max_samples=max_samples,
-                )
-            elif config.session_dir:
-                samples = load_samples_from_sessions(
-                    config.session_dir,
-                    max_sessions=config.max_sessions,
-                    max_samples=max_samples,
-                    record_type_key=config.record_type_key,
-                )
-            else:
-                samples = []
-
-            if not samples:
-                return GenerationResult(
-                    provider=provider,
+        clusters, sample_count, artifact_counts = _collect_cluster_accumulators(
+            provider,
+            db_path=db_path,
+            max_samples=max_samples,
+            reservoir_size=_cluster_reservoir_size(config, max_samples),
+        )
+        if not clusters:
+            return _ProviderBundle(
+            result=GenerationResult(
+                    provider=str(provider_token),
                     schema=None,
                     sample_count=0,
                     error="No samples found",
-                )
-
-            schema = generate_schema_from_samples(
-                samples,
-                max_genson_samples=max_samples,
+                ),
             )
-            sample_count = len(samples)
-        else:
-            import random
 
-            builder = SchemaBuilder()
-            reservoir: list[dict[str, Any]] = []
-            reservoir_conv_ids: list[str | None] = []
-            reservoir_size = 500
-            reservoir_rng = random.Random(42)
-            sample_count = 0
-            fingerprint_counts: dict[Any, int] = {}
+        ordered_clusters = sorted(
+            clusters.items(),
+            key=_cluster_sort_key,
+            reverse=True,
+        )
+        total_units = max(sum(acc.sample_count for _cluster_id, acc in ordered_clusters), 1)
+        timestamp = datetime.now(tz=timezone.utc).isoformat()
+        versioned_schemas: list[tuple[str, dict[str, Any]]] = []
+        manifest_clusters: list[SchemaCluster] = []
+        default_schema: dict[str, Any] | None = None
+        default_redaction_report: SchemaReport | None = None
+        default_version: str | None = None
 
-            # Use with_conv_ids=True for DB providers to enable the
-            # cross-conversation privacy threshold in _annotate_schema.
-            if config.db_provider_name:
-                sample_iter = _iter_samples_from_db(
-                    config.db_provider_name,
-                    db_path=db_path,
-                    config=config,
-                    with_conv_ids=True,
-                )
-                has_conv_ids = True
-            elif config.session_dir:
-                # Session files: use the file stem as a pseudo-conversation ID
-                sample_iter = (
-                    (sample, None)
-                    for sample in _iter_samples_from_sessions(
-                        config.session_dir,
-                        max_sessions=config.max_sessions,
-                    )
-                )
-                has_conv_ids = False
-            else:
-                sample_iter = iter(())
-                has_conv_ids = False
-
-            for item in sample_iter:
-                if has_conv_ids or isinstance(item, tuple):
-                    sample, conv_id = item
-                else:
-                    sample, conv_id = item, None
-
-                sample_count += 1
-                fingerprint = _structure_fingerprint(sample)
-                seen = fingerprint_counts.get(fingerprint, 0)
-                if seen < _STRUCTURE_EXEMPLARS_PER_FINGERPRINT:
-                    builder.add_object(sample)
-                    fingerprint_counts[fingerprint] = seen + 1
-
-                if len(reservoir) < reservoir_size:
-                    reservoir.append(sample)
-                    reservoir_conv_ids.append(conv_id)
-                else:
-                    j = reservoir_rng.randint(0, sample_count - 1)
-                    if j < reservoir_size:
-                        reservoir[j] = sample
-                        reservoir_conv_ids[j] = conv_id
-
-            if sample_count == 0:
-                return GenerationResult(
-                    provider=provider,
-                    schema=None,
-                    sample_count=0,
-                    error="No samples found",
-                )
-
-            schema = builder.to_schema()
-            schema = collapse_dynamic_keys(schema)
-            schema = _remove_nested_required(schema)
-            if config.sample_granularity == "record":
-                schema.pop("required", None)
-
-            # Pass conversation IDs through to enable the cross-conversation
-            # privacy threshold (values seen in <N conversations excluded).
-            conv_ids_for_stats: list[str | None] | None = (
-                reservoir_conv_ids if any(c is not None for c in reservoir_conv_ids) else None
-            )
-            field_stats = _collect_field_stats(
-                reservoir, conversation_ids=conv_ids_for_stats,
-            )
-            schema = _annotate_schema(
-                schema, field_stats, min_conversation_count=3,
+        for index, (cluster_id, acc) in enumerate(ordered_clusters, start=1):
+            version = f"v{index}"
+            schema, redaction_report = _generate_cluster_schema(
+                provider,
+                config,
+                acc.reservoir_samples,
+                acc.reservoir_conv_ids,
                 privacy_config=privacy_config,
             )
-            schema = _annotate_semantic_and_relational(schema, field_stats)
-
-            schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-
-            # Build redaction report from the diff between stats and annotated schema
-            redaction_report = _build_redaction_report(
-                provider, field_stats, schema,
-                privacy_config=privacy_config,
-                privacy_level=getattr(privacy_config, "level", "standard")
-                if privacy_config else "standard",
+            _apply_schema_metadata(
+                schema,
+                provider=str(provider_token),
+                config=config,
+                schema_sample_count=acc.schema_sample_count,
+                cluster_id=cluster_id,
+                artifact_kind=acc.artifact_kind,
+                cluster_sample_count=acc.sample_count,
             )
+            versioned_schemas.append((version, schema))
+            manifest_clusters.append(
+                SchemaCluster(
+                    cluster_id=cluster_id,
+                    provider=provider_token,
+                    sample_count=acc.sample_count,
+                    first_seen=timestamp,
+                    last_seen=timestamp,
+                    representative_paths=acc.representative_paths,
+                    dominant_keys=acc.dominant_keys,
+                    confidence=round(min(1.0, acc.sample_count / max(total_units * 0.1, 1)), 3),
+                    artifact_kind=acc.artifact_kind,
+                    profile_tokens=list(_cluster_profile_tokens(acc)),
+                    schema_version=version,
+                )
+            )
+            if default_schema is None:
+                default_schema = schema
+                default_redaction_report = redaction_report
+                default_version = version
 
-        schema["title"] = f"{provider} export format"
-        schema["description"] = config.description
-
-        schema["$id"] = f"polylogue://schemas/{provider}/v1"
-        schema["x-polylogue-version"] = 1
-        schema["x-polylogue-generated-at"] = datetime.now(tz=timezone.utc).isoformat()
-        schema["x-polylogue-sample-count"] = sample_count
-        schema["x-polylogue-generator"] = "polylogue.schemas.schema_inference"
-        schema["x-polylogue-sample-granularity"] = config.sample_granularity
-
-        return GenerationResult(
-            provider=provider,
-            schema=schema,
-            sample_count=sample_count,
-            redaction_report=redaction_report,
+        manifest = ClusterManifest(
+            provider=provider_token,
+            clusters=manifest_clusters,
+            artifact_counts=artifact_counts,
+            default_version=default_version,
+        )
+        return _ProviderBundle(
+            result=GenerationResult(
+                provider=str(provider_token),
+                schema=default_schema,
+                sample_count=sample_count,
+                redaction_report=default_redaction_report,
+                versions=[version for version, _schema in versioned_schemas],
+                default_version=default_version,
+                cluster_count=len(ordered_clusters),
+                artifact_counts=artifact_counts,
+            ),
+            versioned_schemas=versioned_schemas,
+            manifest=manifest,
         )
     except Exception as e:
-        return GenerationResult(
-            provider=provider,
-            schema=None,
-            sample_count=0,
-            error=str(e),
+        return _ProviderBundle(
+            result=GenerationResult(
+                provider=str(provider_token),
+                schema=None,
+                sample_count=0,
+                error=str(e),
+            ),
         )
 
 
@@ -810,7 +1215,7 @@ def generate_all_schemas(
     max_samples: int | None = None,
     privacy_config: Any | None = None,
 ) -> list[GenerationResult]:
-    """Generate schemas for all (or specified) providers."""
+    """Generate versioned schemas for all (or specified) providers."""
     if db_path is None:
         db_path = default_db_path()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -819,23 +1224,27 @@ def generate_all_schemas(
     results = []
 
     for provider in provider_list:
-        result = generate_provider_schema(
+        bundle = _build_provider_bundle(
             provider,
             db_path=db_path,
             max_samples=max_samples,
             privacy_config=privacy_config,
         )
+        result = bundle.result
         results.append(result)
 
-        if result.success and result.schema:
-            output_path = output_dir / f"{provider}.schema.json.gz"
-            compressed = gzip.compress(
-                json.dumps(result.schema, separators=(",", ":"), sort_keys=True).encode("utf-8"),
+        if result.success and bundle.manifest is not None:
+            registry = SchemaRegistry(storage_root=output_dir)
+            registry.replace_provider_schemas(
+                provider,
+                bundle.versioned_schemas,
+                manifest=bundle.manifest,
             )
-            output_path.write_bytes(compressed)
-            legacy_path = output_dir / f"{provider}.schema.json"
-            if legacy_path.exists():
-                legacy_path.unlink()
+
+            for legacy_name in (f"{provider}.schema.json.gz", f"{provider}.schema.json"):
+                legacy_path = output_dir / legacy_name
+                if legacy_path.exists():
+                    legacy_path.unlink()
 
     return results
 

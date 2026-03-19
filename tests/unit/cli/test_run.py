@@ -91,7 +91,7 @@ EMBED_BATCH_CASES = [
 
 STATUS_ROWS = [
     ("tags", ["important", "5", "review", "3", "3 total"], {"important": 5, "review": 3, "draft": 1}, []),
-    ("tags_provider", ["claude-tag"], {"claude-tag": 3}, ["-p", "claude"]),
+    ("tags_provider", ["claude-tag"], {"claude-tag": 3}, ["-p", "claude-ai"]),
 ]
 
 
@@ -333,10 +333,10 @@ class TestRunCommand:
 
 
 class TestTagsCommand:
-    @pytest.mark.parametrize(("tag_counts", "extra_args", "expected", "provider"), [({"important": 5, "review": 3, "draft": 1}, [], ["important", "5", "review", "3", "3 total"], "chatgpt"), ({"claude-tag": 3}, ["-p", "claude"], ["claude-tag"], "claude")])
+    @pytest.mark.parametrize(("tag_counts", "extra_args", "expected", "provider"), [({"important": 5, "review": 3, "draft": 1}, [], ["important", "5", "review", "3", "3 total"], "chatgpt"), ({"claude-tag": 3}, ["-p", "claude-ai"], ["claude-tag"], "claude-ai")])
     def test_tags_plain_output_matrix(self, runner, cli_workspace, tag_counts, extra_args, expected, provider):
         _seed_tag_counts(cli_workspace["db_path"], tag_counts, provider=provider)
-        if extra_args == ["-p", "claude"]:
+        if extra_args == ["-p", "claude-ai"]:
             _seed_tag_counts(cli_workspace["db_path"], {"chatgpt-tag": 4}, provider="chatgpt")
         result = runner.invoke(cli, ["tags", *extra_args])
         assert result.exit_code == 0

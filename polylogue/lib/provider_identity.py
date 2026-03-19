@@ -6,7 +6,7 @@ from typing import Final
 
 CORE_RUNTIME_PROVIDERS: Final[tuple[str, ...]] = (
     "chatgpt",
-    "claude",
+    "claude-ai",
     "claude-code",
     "codex",
     "gemini",
@@ -23,15 +23,6 @@ CORE_SCHEMA_PROVIDERS: Final[tuple[str, ...]] = (
 )
 
 _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
-    "gpt": "chatgpt",
-    "openai": "chatgpt",
-    "claude-ai": "claude",
-    "anthropic": "claude",
-    "claudecode": "claude-code",
-}
-
-_SCHEMA_PROVIDER_ALIASES: Final[dict[str, str]] = {
-    "claude": "claude-ai",
 }
 
 
@@ -45,7 +36,6 @@ def normalize_provider_token(value: str | None) -> str:
 def canonical_runtime_provider(
     value: str | None,
     *,
-    preserve_unknown: bool = False,
     default: str = "unknown",
 ) -> str:
     """Normalize provider names used by runtime parser/storage flows."""
@@ -56,24 +46,19 @@ def canonical_runtime_provider(
     canonical = _RUNTIME_PROVIDER_ALIASES.get(normalized, normalized)
     if canonical in CORE_RUNTIME_PROVIDERS:
         return canonical
-    if preserve_unknown:
-        return canonical
     return default
 
 
 def canonical_schema_provider(
     value: str | None,
     *,
-    preserve_unknown: bool = False,
     default: str = "unknown",
 ) -> str:
     """Normalize provider names to canonical schema identifiers."""
-    runtime = canonical_runtime_provider(
-        value,
-        preserve_unknown=preserve_unknown,
-        default=default,
-    )
-    return _SCHEMA_PROVIDER_ALIASES.get(runtime, runtime)
+    canonical = canonical_runtime_provider(value, default=default)
+    if canonical in CORE_SCHEMA_PROVIDERS:
+        return canonical
+    return default
 
 
 __all__ = [

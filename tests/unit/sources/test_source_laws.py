@@ -63,7 +63,7 @@ from tests.infra.strategies import (
 
 _CANONICAL_PROVIDERS = (
     Provider.CHATGPT.value,
-    Provider.CLAUDE.value,
+    Provider.CLAUDE_AI.value,
     Provider.CLAUDE_CODE.value,
     Provider.CODEX.value,
     Provider.GEMINI.value,
@@ -74,7 +74,7 @@ _CANONICAL_PROVIDERS = (
     provider_payload_case_strategy(
         (
             Provider.CHATGPT.value,
-            Provider.CLAUDE.value,
+            Provider.CLAUDE_AI.value,
             Provider.CLAUDE_CODE.value,
             Provider.CODEX.value,
             Provider.GEMINI.value,
@@ -88,14 +88,8 @@ def test_detect_provider_recognizes_generated_payloads(case: tuple[str, object])
     assert detect_provider(payload, Path("unknown.json")) == provider
 
 
-@given(st.sampled_from(_CANONICAL_PROVIDERS).flatmap(
-    lambda provider: provider_hint_path_strategy(provider).map(lambda path: (provider, path))
-))
-@settings(max_examples=30)
-def test_detect_provider_uses_path_hints_for_unknown_payload(case: tuple[str, Path]) -> None:
-    """Filename/path hints still classify unknown payload shapes."""
-    provider, path = case
-    assert detect_provider({"unrelated": True}, path) == provider
+def test_detect_provider_returns_none_for_unknown_payloads_without_shape_match() -> None:
+    assert detect_provider({"unrelated": True}, Path("chatgpt-export.json")) is None
 
 
 def test_detect_provider_prefers_payload_shape_over_conflicting_path_hint() -> None:
@@ -126,11 +120,32 @@ def test_parse_payload_generated_exports_produce_provider_named_conversations(ca
     assert all(conversation.provider_conversation_id for conversation in conversations)
 
 
+def test_parse_payload_accepts_provider_enum() -> None:
+    payload = {
+        "mapping": {
+            "root": {
+                "message": {
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["hello"]},
+                },
+                "children": [],
+            }
+        },
+        "current_node": "root",
+        "title": "Test",
+    }
+
+    conversations = parse_payload(Provider.CHATGPT, payload, "fallback-id")
+
+    assert len(conversations) == 1
+    assert conversations[0].provider_name is Provider.CHATGPT
+
+
 @pytest.mark.parametrize(
     ("provider", "wrapper"),
     [
         (Provider.CHATGPT.value, False),
-        (Provider.CLAUDE.value, False),
+        (Provider.CLAUDE_AI.value, False),
         (Provider.GEMINI.value, False),
         (Provider.CHATGPT.value, True),
     ],
@@ -265,7 +280,7 @@ def _write_generic_conversation(path: Path, conversation_id: str, text: str = "h
     provider_source_case_strategy(
         providers=(
             Provider.CHATGPT.value,
-            Provider.CLAUDE.value,
+            Provider.CLAUDE_AI.value,
             Provider.CLAUDE_CODE.value,
             Provider.CODEX.value,
             Provider.GEMINI.value,
@@ -293,7 +308,7 @@ def test_iter_source_conversations_round_trips_generated_exports(case: dict[str,
     provider_source_case_strategy(
         providers=(
             Provider.CHATGPT.value,
-            Provider.CLAUDE.value,
+            Provider.CLAUDE_AI.value,
             Provider.CLAUDE_CODE.value,
             Provider.CODEX.value,
             Provider.GEMINI.value,
@@ -710,7 +725,7 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
 
     monkeypatch.setattr(source_module.drive, "parse_chunked_prompt", fake_chunked)
     monkeypatch.setattr(source_module, "parse_payload", fake_parse_payload)
-    monkeypatch.setattr(source_module, "detect_provider", lambda payload, path: Provider.CHATGPT)
+    monkeypatch.setattr(source_module, "detect_provider", lambda payload, path=None: Provider.CHATGPT)
 
     chunked = parse_drive_payload("gemini", [{"role": "user", "text": "hello"}], "chunks")
     recursive = parse_drive_payload("drive", [{"mapping": {}, "id": "chatgpt-ish"}], "wrapped")
@@ -853,7 +868,7 @@ def test_log_source_iteration_summary_emits_only_relevant_messages(monkeypatch: 
 
 def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
     """Claude session-index lookup and enrichment must stay source-local and deterministic."""
-    session_dir = tmp_path / "claude"
+    session_dir = tmp_path / "claude-ai"
     session_dir.mkdir()
     session_file = session_dir / "session.jsonl"
     session_file.write_text("{}\n", encoding="utf-8")
@@ -927,7 +942,6 @@ def test_parse_sessions_index_contract(tmp_path: Path) -> None:
     )
 
     entries = parse_sessions_index(index_path)
-
     assert set(entries) == {"session-1"}
     assert entries["session-1"] == SessionIndexEntry(
         session_id="session-1",
@@ -942,6 +956,19 @@ def test_parse_sessions_index_contract(tmp_path: Path) -> None:
         is_sidechain=True,
         file_mtime=123,
     )
+
+
+def test_iter_source_conversations_skips_agent_meta_sidecars(tmp_path: Path) -> None:
+    source_dir = tmp_path / "claude-ai"
+    source_dir.mkdir()
+    (source_dir / "agent-a123.meta.json").write_text('{"agentType":"general-purpose"}', encoding="utf-8")
+
+    conversations = list(iter_source_conversations(Source(name="claude-code", path=source_dir)))
+    raw_items = list(iter_source_raw_data(Source(name="claude-code", path=source_dir)))
+
+    assert conversations == []
+    assert len(raw_items) == 1
+    assert raw_items[0].source_path.endswith("agent-a123.meta.json")
 
 
 def test_drive_cache_file_path_sanitizes_and_normalizes_suffix_contract(tmp_path: Path) -> None:
@@ -973,7 +1000,6 @@ def _parse_context(
         file_mtime="2026-03-11T00:00:00+00:00",
         capture_raw=capture_raw,
         session_index=session_index or {},
-        detect_path=Path(source_path).name and Path(source_path),
     )
 
 
@@ -1119,7 +1145,6 @@ def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contra
         file_mtime="2026-03-11T00:00:00+00:00",
         capture_raw=False,
         session_index={"session-1": entry},
-        detect_path=Path("session.jsonl"),
     )
     emitter = _ConversationEmitter(ctx)
     matching = ParsedConversation(
@@ -1157,9 +1182,9 @@ def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.Z
     ("source_name", "entries", "expected_kept", "expected_failed_count", "expected_failed_fragment"),
     [
         (
-            "claude",
+            "claude-ai",
             [_zip_entry("nested/conversations.json"), _zip_entry("nested/other.json")],
-            ["nested/conversations.json"],
+            ["nested/conversations.json", "nested/other.json"],
             0,
             None,
         ),
@@ -1203,7 +1228,7 @@ def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.Z
         ),
     ],
     ids=[
-        "claude-bundle-filter",
+        "claude-bundle-json-kept",
         "suspicious-entry-rejected",
         "supported-json-extensions-kept",
         "directories-and-unsupported-skipped",
@@ -1234,9 +1259,9 @@ def test_zip_entry_validator_policy_contract(
         assert expected_failed_fragment in cursor_state["failed_files"][0]["path"]
 
 
-def test_zip_entry_provider_hint_prefers_entry_name_contract() -> None:
-    assert _zip_entry_provider_hint("nested/chatgpt-export.json", Provider.CLAUDE) == Provider.CHATGPT
-    assert _zip_entry_provider_hint("nested/gemini/session.json", Provider.CHATGPT) == Provider.GEMINI
+def test_zip_entry_provider_hint_keeps_fallback_contract() -> None:
+    assert _zip_entry_provider_hint("nested/chatgpt-export.json", Provider.CLAUDE_AI) == Provider.CLAUDE_AI
+    assert _zip_entry_provider_hint("nested/gemini/session.json", Provider.CHATGPT) == Provider.CHATGPT
     assert _zip_entry_provider_hint("nested/session.jsonl", Provider.CLAUDE_CODE) == Provider.CLAUDE_CODE
 
 
@@ -1264,7 +1289,7 @@ class _StubDriveRawClient:
 
 
 def test_iter_drive_raw_data_contract() -> None:
-    source = Source(name="drive", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
+    source = Source(name="gemini", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
     files = [
         DriveFile("chatgpt-1", "chatgpt-export.json", "application/json", "2025-01-01T00:00:00Z", 12),
         DriveFile("gemini-1", "gemini-prompt.json", "application/json", "2025-01-01T00:05:00Z", 8),
@@ -1281,7 +1306,7 @@ def test_iter_drive_raw_data_contract() -> None:
         "/tmp/drive-cache/chatgpt-export.json",
         "/tmp/drive-cache/gemini-prompt.json",
     ]
-    assert [item.provider_hint for item in items] == ["chatgpt", "gemini"]
+    assert [item.provider_hint for item in items] == [Provider.GEMINI, Provider.GEMINI]
     assert [item.file_mtime for item in items] == ["2025-01-01T00:00:00Z", "2025-01-01T00:05:00Z"]
     assert cursor_state["file_count"] == 2
     assert cursor_state["latest_file_id"] == "gemini-1"
@@ -1289,7 +1314,7 @@ def test_iter_drive_raw_data_contract() -> None:
 
 
 def test_iter_drive_raw_data_skips_known_mtimes_and_tracks_failures() -> None:
-    source = Source(name="drive", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
+    source = Source(name="gemini", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
     files = [
         DriveFile("old", "cached.json", "application/json", "2025-01-01T00:00:00Z", 12),
         DriveFile("bad", "broken.json", "application/json", "2025-01-01T00:01:00Z", 12),
@@ -1368,7 +1393,7 @@ def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Pat
     assert zip_items[0].file_mtime is not None
 
 
-def test_iter_source_raw_data_uses_per_entry_provider_hints_for_mixed_zip_sources(tmp_path: Path) -> None:
+def test_iter_source_raw_data_keeps_source_family_hints_for_mixed_zip_sources(tmp_path: Path) -> None:
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("nested/chatgpt-export.json", b'{"mapping": {}, "id": "chatgpt-1"}')

@@ -121,7 +121,7 @@ class TestCheckCommand:
 
         factory.create_conversation(
             id="conv1",
-            provider="claude",
+            provider="claude-ai",
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
@@ -195,7 +195,7 @@ class TestCheckCommand:
         )
         factory.create_conversation(
             id="conv2",
-            provider="claude",
+            provider="claude-ai",
             messages=[{"id": "m2", "role": "user", "text": "world"}],
         )
 
@@ -209,7 +209,7 @@ class TestCheckCommand:
 
         # Verbose output should contain provider names for breakdowns
         # (provider_distribution check always has breakdown)
-        assert "chatgpt" in result_verbose.output or "claude" in result_verbose.output
+        assert "chatgpt" in result_verbose.output or "claude-ai" in result_verbose.output
 
     def test_check_detects_empty_conversations(self, db_path, cli_runner):
         """Check detects conversations with no messages (warning status)."""

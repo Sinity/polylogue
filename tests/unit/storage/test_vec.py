@@ -221,7 +221,7 @@ def test_upsert_noop_contract(mock_provider, messages, should_ensure) -> None:
 
 @pytest.mark.parametrize(
     ("provider_name", "expected_provider"),
-    [("claude", "claude"), (None, "unknown")],
+    [("claude-ai", "claude-ai"), (None, "unknown")],
     ids=["provider-row", "missing-provider-row"],
 )
 def test_upsert_persistence_contract(mock_provider, provider_name, expected_provider) -> None:
@@ -283,9 +283,9 @@ def test_upsert_closes_connection_on_embedding_error(mock_provider) -> None:
     ("method_name", "provider", "embedding_result"),
     [
         ("query", None, [[0.1, 0.2]]),
-        ("query_by_provider", "claude", [[0.1, 0.2]]),
+        ("query_by_provider", "claude-ai", [[0.1, 0.2]]),
         ("query", None, []),
-        ("query_by_provider", "claude", []),
+        ("query_by_provider", "claude-ai", []),
     ],
     ids=["query", "query-by-provider", "query-empty", "query-by-provider-empty"],
 )

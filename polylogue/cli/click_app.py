@@ -341,12 +341,12 @@ def cli(
     \b
     Query mode (default):
         polylogue "search terms"
-        polylogue -p claude --since "last week"
+        polylogue -p claude-ai --since "last week"
         polylogue --latest --output browser
 
     \b
     Combined filters:
-        polylogue "error" -p claude --since 2025-01 --list
+        polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
 

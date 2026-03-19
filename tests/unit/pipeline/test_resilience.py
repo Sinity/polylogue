@@ -383,7 +383,7 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
     validator = _SyntheticValidator()
 
     with patch(
-        "polylogue.schemas.validator.SchemaValidator.for_provider",
+        "polylogue.schemas.validator.SchemaValidator.for_payload",
         return_value=validator,
     ):
         with patch.dict("os.environ", {"POLYLOGUE_SCHEMA_VALIDATION": case.mode}, clear=False):

@@ -79,7 +79,7 @@ async def test_dashboard_provider_bars(storage_repository, conversation_builder)
     """Seed 2 providers → assert ProviderBar widgets rendered with correct counts."""
     conversation_builder("c1").provider("chatgpt").add_message("m1", text="A").save()
     conversation_builder("c2").provider("chatgpt").add_message("m2", text="B").save()
-    conversation_builder("c3").provider("claude").add_message("m3", text="C").save()
+    conversation_builder("c3").provider("claude-ai").add_message("m3", text="C").save()
 
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
@@ -90,7 +90,7 @@ async def test_dashboard_provider_bars(storage_repository, conversation_builder)
         # chatgpt should have 2, claude should have 1
         texts = [bar.render() for bar in bars]
         chatgpt_bar = [t for t in texts if "chatgpt" in t]
-        claude_bar = [t for t in texts if "claude" in t]
+        claude_bar = [t for t in texts if "claude-ai" in t]
         assert len(chatgpt_bar) == 1
         assert len(claude_bar) == 1
         assert "2" in chatgpt_bar[0]
@@ -192,7 +192,7 @@ async def test_browser_empty_db(storage_repository):
             await asyncio.sleep(0.1)
             await pilot.pause()
 
-        # Should have fallback providers (chatgpt, claude)
+        # Should have fallback providers (chatgpt, claude-ai)
         provider_names = [str(child.label) for child in tree.root.children]
         assert len(provider_names) >= 2
 

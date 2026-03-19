@@ -12,6 +12,7 @@ from polylogue.storage.store import (
     RawConversationRecord,
     RawConversationState,
 )
+from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 __all__ = [
     "raw_id_query",
@@ -56,7 +57,6 @@ def raw_id_query(
 
     predicate, scope_params = _build_source_scope_filter(
         source_names,
-        provider_column="provider_name",
         source_column="source_name",
     )
     if predicate:
@@ -179,25 +179,27 @@ async def mark_raw_parsed(
     raw_id: str,
     *,
     error: str | None = None,
-    payload_provider: str | None = None,
+    payload_provider: str | Provider | None = None,
     transaction_depth: int,
 ) -> None:
     """Mark a raw conversation as parsed (or record a parse error)."""
     from datetime import datetime, timezone
+
+    provider_token = str(Provider.from_string(payload_provider)) if payload_provider is not None else None
 
     if error is None:
         await conn.execute(
             "UPDATE raw_conversations "
             "SET parsed_at = ?, parse_error = NULL, payload_provider = COALESCE(?, payload_provider) "
             "WHERE raw_id = ?",
-            (datetime.now(timezone.utc).isoformat(), payload_provider, raw_id),
+            (datetime.now(timezone.utc).isoformat(), provider_token, raw_id),
         )
     else:
         await conn.execute(
             "UPDATE raw_conversations "
             "SET parse_error = ?, payload_provider = COALESCE(?, payload_provider) "
             "WHERE raw_id = ?",
-            (error[:2000], payload_provider, raw_id),
+            (error[:2000], provider_token, raw_id),
         )
     if transaction_depth == 0:
         await conn.commit()
@@ -207,19 +209,30 @@ async def mark_raw_validated(
     conn: aiosqlite.Connection,
     raw_id: str,
     *,
-    status: str,
+    status: ValidationStatus | str,
     error: str | None = None,
     drift_count: int = 0,
-    provider: str | None = None,
-    mode: str | None = None,
-    payload_provider: str | None = None,
+    provider: Provider | str | None = None,
+    mode: ValidationMode | str | None = None,
+    payload_provider: Provider | str | None = None,
     transaction_depth: int,
 ) -> None:
     """Persist validation status for a raw conversation record."""
     from datetime import datetime, timezone
 
-    if status not in {"passed", "failed", "skipped"}:
-        raise ValueError(f"Invalid validation status: {status}")
+    try:
+        validation_status = ValidationStatus.from_string(str(status))
+    except ValueError as exc:
+        raise ValueError(f"Invalid validation status: {status}") from exc
+
+    validation_provider = Provider.from_string(provider) if provider is not None else None
+
+    try:
+        validation_mode = ValidationMode.from_string(str(mode)) if mode is not None else None
+    except ValueError as exc:
+        raise ValueError(f"Invalid validation mode: {mode}") from exc
+
+    payload_token = Provider.from_string(payload_provider) if payload_provider is not None else None
 
     await conn.execute(
         """
@@ -235,12 +248,12 @@ async def mark_raw_validated(
         """,
         (
             datetime.now(timezone.utc).isoformat(),
-            status,
+            validation_status,
             (error[:2000] if error else None),
             max(0, int(drift_count)),
-            provider,
-            mode,
-            payload_provider,
+            validation_provider,
+            validation_mode,
+            payload_token,
             raw_id,
         ),
     )

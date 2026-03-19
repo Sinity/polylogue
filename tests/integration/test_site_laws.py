@@ -208,7 +208,7 @@ def test_site_builder_scan_archive_streaming_contract() -> None:
         specs = [
             ConversationSummarySpec(
                 conversation_id="conv-a",
-                provider="claude",
+                provider="claude-ai",
                 title="A",
                 summary="alpha",
                 tags=("law",),
@@ -269,7 +269,7 @@ def test_site_builder_root_and_provider_index_contract() -> None:
                 ConversationIndex(
                     id="conv-1",
                     title="One",
-                    provider="claude",
+                    provider="claude-ai",
                     created_at="2024-01-01",
                     updated_at="2024-01-01 00:00",
                     message_count=2,
@@ -277,9 +277,9 @@ def test_site_builder_root_and_provider_index_contract() -> None:
                     path="claude/conv-1/conversation.html",
                 )
             ],
-            provider_counts={"claude": 1, "chatgpt": 2},
-            provider_messages={"claude": 2, "chatgpt": 5},
-            provider_order=["claude", "chatgpt"],
+            provider_counts={"claude-ai": 1, "chatgpt": 2},
+            provider_messages={"claude-ai": 2, "chatgpt": 5},
+            provider_order=["claude-ai", "chatgpt"],
             total_conversations=3,
             total_messages=7,
         )
@@ -290,7 +290,7 @@ def test_site_builder_root_and_provider_index_contract() -> None:
                     ConversationIndex(
                         id=f"{provider}-1",
                         title=f"{provider} title",
-                        provider=provider or "claude",
+                        provider=provider or "claude-ai",
                         created_at="2024-01-01",
                         updated_at="2024-01-01 00:00",
                         message_count=1,
@@ -310,7 +310,7 @@ def test_site_builder_root_and_provider_index_contract() -> None:
         calls = builder._write_template_stream.await_args_list
         assert calls[0].args[1] == builder.output_dir / "index.html"
         assert calls[0].kwargs["conversations"] == archive_stats.root_page_conversations
-        assert calls[1].args[1] == builder.output_dir / safe_path_component("claude", fallback="provider") / "index.html"
+        assert calls[1].args[1] == builder.output_dir / safe_path_component("claude-ai", fallback="provider") / "index.html"
         assert calls[2].args[1] == builder.output_dir / safe_path_component("chatgpt", fallback="provider") / "index.html"
 
 

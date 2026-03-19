@@ -1,7 +1,7 @@
 """Provider/model pricing table for cost estimation across all AI providers.
 
-Polylogue directly captures cost for Claude Code sessions (stored in
-message metadata). For all other providers (ChatGPT, Claude web, Gemini)
+Polylogue directly captures actual cost for Claude Code sessions as
+conversation-level totals. For all other providers (ChatGPT, Claude web, Gemini)
 cost must be estimated from token counts using public pricing.
 """
 
@@ -89,11 +89,11 @@ def estimate_cost(
 def harmonize_session_cost(conversation: "Conversation") -> tuple[float, bool]:
     """Return (cost_usd, is_estimated) for a conversation.
 
-    - If Claude Code cost metadata is present, use it directly (is_estimated=False).
+    - If actual session cost metadata is present, use it directly (is_estimated=False).
     - Otherwise, sum token counts from messages and look up pricing (is_estimated=True).
     - Returns (0.0, True) if no cost data is available.
     """
-    # Claude Code stores actual cost in message metadata — use it directly
+    # Ingest persists actual Claude Code cost as conversation-level totals.
     actual = conversation.total_cost_usd
     if actual and actual > 0.0:
         return actual, False

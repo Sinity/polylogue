@@ -95,7 +95,7 @@ class TestComputeProviderComparison:
         """Single provider aggregation."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = make_conversation("conv-1", provider_name="claude", provider_meta={"source": "inbox"})
+        conv = make_conversation("conv-1", provider_name="claude-ai", provider_meta={"source": "inbox"})
         msgs = [
             make_message("msg-1", "conv-1", text="Hello world test"),
             make_message("msg-2", "conv-1", role="assistant", text="Response with more words for testing average calculation"),
@@ -105,7 +105,7 @@ class TestComputeProviderComparison:
         result = await compute_provider_comparison(db_path=db_path)
 
         assert len(result) == 1
-        assert result[0].provider_name == "claude"
+        assert result[0].provider_name == "claude-ai"
         assert result[0].conversation_count == 1
         assert result[0].message_count == 2
         assert result[0].user_message_count == 1
@@ -117,7 +117,7 @@ class TestComputeProviderComparison:
 
         # Create 2 claude conversations
         for i in range(2):
-            conv = make_conversation(f"claude-{i}", provider_name="claude", title=f"Claude {i}", provider_meta={"source": "inbox"})
+            conv = make_conversation(f"claude-{i}", provider_name="claude-ai", title=f"Claude {i}", provider_meta={"source": "inbox"})
             msgs = [make_message(f"cmsg-{i}", f"claude-{i}", text="Hello")]
             await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -133,7 +133,7 @@ class TestComputeProviderComparison:
         # ChatGPT has more conversations, should be first
         assert result[0].provider_name == "chatgpt"
         assert result[0].conversation_count == 3
-        assert result[1].provider_name == "claude"
+        assert result[1].provider_name == "claude-ai"
         assert result[1].conversation_count == 2
 
     async def test_user_assistant_segregation(self, workspace_env, storage_repository):
@@ -188,7 +188,7 @@ class TestComputeProviderComparison:
         """Tool use is detected from content_blocks."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = make_conversation("tool-conv", provider_name="claude", title="Tool Use Test", provider_meta={"source": "inbox"})
+        conv = make_conversation("tool-conv", provider_name="claude-ai", title="Tool Use Test", provider_meta={"source": "inbox"})
         msgs = [
             make_message("tool-msg-1", "tool-conv", role="assistant", text="Let me search for that",
                         provider_meta={"content_blocks": [{"type": "tool_use", "name": "search", "id": "toolu_123"}]}),
@@ -206,7 +206,7 @@ class TestComputeProviderComparison:
         """Thinking is detected from content_blocks."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = make_conversation("think-conv", provider_name="claude", title="Thinking Test", provider_meta={"source": "inbox"})
+        conv = make_conversation("think-conv", provider_name="claude-ai", title="Thinking Test", provider_meta={"source": "inbox"})
         msgs = [
             make_message("think-msg-1", "think-conv", role="assistant", text="Let me think about this",
                         provider_meta={"content_blocks": [{"type": "thinking", "thinking": "Reasoning..."}]}),
@@ -224,7 +224,7 @@ class TestComputeProviderComparison:
         """Multiple tool uses in same conversation counted once."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = make_conversation("multi-tool", provider_name="claude", title="Multi Tool", provider_meta={"source": "inbox"})
+        conv = make_conversation("multi-tool", provider_name="claude-ai", title="Multi Tool", provider_meta={"source": "inbox"})
         msgs = [
             make_message("mt-msg-1", "multi-tool", role="assistant", text="Tool 1",
                         provider_meta={"content_blocks": [{"type": "tool_use", "name": "a"}]}),

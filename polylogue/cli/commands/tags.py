@@ -24,7 +24,7 @@ def tags_command(
     \b
     Examples:
         polylogue tags                  # List all tags
-        polylogue tags -p claude        # Tags for Claude conversations only
+        polylogue tags -p claude-ai     # Tags for Claude conversations only
         polylogue tags --json           # Machine-readable output
         polylogue tags -n 10            # Top 10 tags
     """

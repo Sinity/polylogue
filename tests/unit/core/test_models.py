@@ -226,7 +226,7 @@ class TestConversationSummaryFromRecord:
     def test_from_record_projects_metadata(self):
         record = ConversationRecord(
             conversation_id="c1",
-            provider_name="claude",
+            provider_name="claude-ai",
             provider_conversation_id="prov-c1",
             content_hash="hash1",
             title="Test",
@@ -237,7 +237,7 @@ class TestConversationSummaryFromRecord:
         )
         summary = conversation_summary_from_record(record)
         assert summary.id == "c1"
-        assert summary.provider == "claude"
+        assert summary.provider == "claude-ai"
         assert summary.title == "Test"
         assert summary.tags == ["test"]
         assert summary.summary == "summary"
@@ -247,7 +247,7 @@ class TestConversationFromRecords:
     def test_from_records_attaches_records_to_messages(self):
         conversation_record = ConversationRecord(
             conversation_id="c1",
-            provider_name="claude",
+            provider_name="claude-ai",
             provider_conversation_id="prov-c1",
             content_hash="hash-c1",
             title="Test",
@@ -270,7 +270,7 @@ class TestConversationFromRecords:
         conversation = conversation_from_records(conversation_record, [message_record], [attachment_record])
 
         assert conversation.id == "c1"
-        assert conversation.provider == "claude"
+        assert conversation.provider == "claude-ai"
         assert len(conversation.messages) == 1
         assert conversation.messages[0].role == "user"
         assert [attachment.name for attachment in conversation.messages[0].attachments] == ["file.txt"]
@@ -364,44 +364,52 @@ def test_extract_code_block_returns_original_or_empty_for_non_code(text: str) ->
 
 
 def test_canonical_runtime_provider_aliases() -> None:
-    assert canonical_runtime_provider("gpt") == "chatgpt"
-    assert canonical_runtime_provider("openai") == "chatgpt"
-    assert canonical_runtime_provider("claude-ai") == "claude"
-    assert canonical_runtime_provider("anthropic") == "claude"
+    assert canonical_runtime_provider("gpt") == "unknown"
+    assert canonical_runtime_provider("openai") == "unknown"
+    assert canonical_runtime_provider("claude-ai") == "claude-ai"
     assert canonical_runtime_provider("CLAUDE_CODE") == "claude-code"
 
 
-def test_canonical_runtime_provider_preserves_unknown_when_requested() -> None:
-    assert canonical_runtime_provider("my-inbox", preserve_unknown=True) == "my-inbox"
-    assert canonical_runtime_provider("my-inbox", preserve_unknown=False) == "unknown"
+def test_canonical_runtime_provider_normalizes_unknowns_to_unknown() -> None:
+    assert canonical_runtime_provider("my-inbox") == "unknown"
 
 
 def test_canonical_schema_provider_mapping() -> None:
-    assert canonical_schema_provider("claude") == "claude-ai"
     assert canonical_schema_provider("claude-ai") == "claude-ai"
-    assert canonical_schema_provider("openai") == "chatgpt"
+    assert canonical_schema_provider("openai") == "unknown"
 
 
 def test_provider_enum_from_string_uses_shared_runtime_identity() -> None:
-    assert Provider.from_string("claude-ai") is Provider.CLAUDE
-    assert Provider.from_string("openai") is Provider.CHATGPT
+    assert Provider.from_string("claude-ai") is Provider.CLAUDE_AI
+    assert Provider.from_string("claude") is Provider.UNKNOWN
+    assert Provider.from_string("openai") is Provider.UNKNOWN
     assert Provider.from_string("nonexistent-provider") is Provider.UNKNOWN
 
 
 def test_build_raw_payload_envelope_normalizes_fallback_identity() -> None:
     raw = b'{"id":"x"}'  # not enough for detect_provider
-    assert build_raw_payload_envelope(raw, source_path=None, fallback_provider="claude-ai").provider == "claude"
-    assert build_raw_payload_envelope(raw, source_path=None, fallback_provider="my-inbox").provider == "my-inbox"
+    assert build_raw_payload_envelope(raw, source_path=None, fallback_provider="claude-ai").provider is Provider.CLAUDE_AI
+    assert build_raw_payload_envelope(raw, source_path=None, fallback_provider="my-inbox").provider is Provider.UNKNOWN
 
 
-def test_build_raw_payload_envelope_uses_zip_inner_path_for_detection() -> None:
+def test_build_raw_payload_envelope_returns_provider_enum_for_known_providers() -> None:
     raw = b'[{"id":"conv-1","mapping":{}}]'
     envelope = build_raw_payload_envelope(
         raw,
-        source_path="/tmp/export.zip:takeout/chatgpt/conversations.json",
+        source_path="/tmp/opaque/conversations.json",
+        fallback_provider="openai",
+    )
+    assert envelope.provider is Provider.CHATGPT
+
+
+def test_build_raw_payload_envelope_detects_payload_shape_without_path_hints() -> None:
+    raw = b'[{"id":"conv-1","mapping":{}}]'
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/export.zip:takeout/opaque/conversations.json",
         fallback_provider="archive-source",
     )
-    assert envelope.provider == "chatgpt"
+    assert envelope.provider is Provider.CHATGPT
 
 
 def test_build_raw_payload_envelope_reuses_persisted_payload_provider() -> None:
@@ -412,7 +420,7 @@ def test_build_raw_payload_envelope_reuses_persisted_payload_provider() -> None:
         fallback_provider="my-inbox",
         payload_provider="claude-ai",
     )
-    assert envelope.provider == "claude"
+    assert envelope.provider is Provider.CLAUDE_AI
 
 
 def test_build_raw_payload_envelope_keeps_gemini_json_documents_as_json() -> None:
@@ -424,3 +432,25 @@ def test_build_raw_payload_envelope_keeps_gemini_json_documents_as_json() -> Non
     )
     assert envelope.wire_format == "json"
     assert isinstance(envelope.payload, dict)
+
+
+def test_build_raw_payload_envelope_classifies_agent_meta_sidecars() -> None:
+    raw = b'{"agentType":"general-purpose"}'
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/claude/subagents/agent-abc.meta.json",
+        fallback_provider="claude-code",
+    )
+    assert envelope.artifact.kind.value == "agent_sidecar_meta"
+    assert envelope.artifact.parse_as_conversation is False
+
+
+def test_build_raw_payload_envelope_classifies_chatgpt_user_sidecars_as_metadata() -> None:
+    raw = b'{"id":"user-1","email":"test@example.com"}'
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/chatgpt-export/user.json",
+        fallback_provider="chatgpt",
+    )
+    assert envelope.artifact.kind.value == "metadata_document"
+    assert envelope.artifact.schema_eligible is False

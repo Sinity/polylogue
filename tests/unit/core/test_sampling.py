@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
 
@@ -67,9 +68,9 @@ class TestProvidersConfig:
     def test_chatgpt_has_db_provider(self) -> None:
         assert PROVIDERS["chatgpt"].db_provider_name == "chatgpt"
 
-    def test_claude_ai_db_name_is_claude(self) -> None:
-        # DB uses "claude" not "claude-ai"
-        assert PROVIDERS["claude-ai"].db_provider_name == "claude"
+    def test_claude_ai_db_name_is_canonical(self) -> None:
+        # Claude AI rows are stored under the canonical provider token.
+        assert PROVIDERS["claude-ai"].db_provider_name == "claude-ai"
 
     def test_claude_code_has_db_provider(self) -> None:
         assert PROVIDERS["claude-code"].db_provider_name == "claude-code"
@@ -119,6 +120,92 @@ class TestLoadSamplesFromDb:
         with patch("polylogue.schemas.sampling.default_db_path", return_value=fake_path):
             result = load_samples_from_db("chatgpt")
             assert result == []
+
+    def test_claude_ai_reads_db_rows_stored_under_claude(self, tmp_path: Path) -> None:
+        from polylogue.storage.backends.connection import open_connection
+
+        db = tmp_path / "claude.db"
+        raw_content = json.dumps([
+            {
+                "uuid": "conv-1",
+                "name": "Conversation",
+                "summary": "Summary",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:05:00Z",
+                "account": {"uuid": "acct-1"},
+                "chat_messages": [],
+            }
+        ]).encode("utf-8")
+
+        with open_connection(db) as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_conversations (
+                    raw_id, provider_name, payload_provider, source_name, source_path,
+                    source_index, raw_content, acquired_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "raw-claude-1",
+                    "claude-ai",
+                    "claude-ai",
+                    "claude-ai",
+                    "/tmp/conversations.json",
+                    0,
+                    raw_content,
+                    datetime.now(tz=timezone.utc).isoformat(),
+                ),
+            )
+            conn.commit()
+
+        result = load_samples_from_db("claude-ai", db_path=db)
+        assert len(result) == 1
+        assert result[0]["uuid"] == "conv-1"
+
+    def test_record_provider_sampling_streams_without_full_envelope(self, tmp_path: Path, monkeypatch) -> None:
+        from polylogue.storage.backends.connection import open_connection
+
+        db = tmp_path / "codex.db"
+        raw_content = "\n".join(
+            json.dumps(record)
+            for record in [
+                {"type": "session_meta", "id": "sess-1"},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "x" * 2048}]},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
+            ]
+        ).encode("utf-8")
+
+        with open_connection(db) as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_conversations (
+                    raw_id, provider_name, payload_provider, source_name, source_path,
+                    source_index, raw_content, acquired_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "raw-codex-1",
+                    "codex",
+                    "codex",
+                    "codex",
+                    "/tmp/session.jsonl",
+                    0,
+                    raw_content,
+                    datetime.now(tz=timezone.utc).isoformat(),
+                ),
+            )
+            conn.commit()
+
+        monkeypatch.setattr(
+            "polylogue.schemas.sampling.build_raw_payload_envelope",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not decode full payload")),
+        )
+
+        result = load_samples_from_db("codex", db_path=db, max_samples=2)
+        assert len(result) == 2
+        assert {sample["type"] for sample in result} == {"session_meta", "message"}
+        message_sample = next(sample for sample in result if sample["type"] == "message")
+        assert len(message_sample["content"][0]["text"]) == 1024
 
 
 class TestLoadSamplesFromSessions:

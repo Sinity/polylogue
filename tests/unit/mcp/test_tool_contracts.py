@@ -19,7 +19,7 @@ from tests.infra.mcp import (
 )
 
 STATS_CONFIGS = [
-    (100, 5000, {"claude": 50, "chatgpt": 30, "claude-code": 20}, 10, 200, 1048576, 1.0),
+    (100, 5000, {"claude-ai": 50, "chatgpt": 30, "claude-code": 20}, 10, 200, 1048576, 1.0),
     (0, 0, {}, 0, 0, 0, 0),
     (5, 20, {"test": 5}, 0, 0, None, 0),
 ]
@@ -35,10 +35,10 @@ QUERY_TOOL_CASES = [
     ),
     (
         "search",
-        {"query": "hello", "provider": "claude", "since": "2024-01-01", "limit": 5},
+        {"query": "hello", "provider": "claude-ai", "since": "2024-01-01", "limit": 5},
         {
             "contains": ("hello",),
-            "provider": ("claude",),
+            "provider": ("claude-ai",),
             "since": ("2024-01-01",),
             "limit": (5,),
         },
@@ -52,9 +52,9 @@ QUERY_TOOL_CASES = [
     ),
     (
         "list_conversations",
-        {"provider": "claude", "since": "2024-01-01", "tag": "bug", "title": "incident", "limit": 2},
+        {"provider": "claude-ai", "since": "2024-01-01", "tag": "bug", "title": "incident", "limit": 2},
         {
-            "provider": ("claude",),
+            "provider": ("claude-ai",),
             "since": ("2024-01-01",),
             "tag": ("bug",),
             "title": ("incident",),
@@ -266,13 +266,13 @@ class TestMutationTools:
     def test_list_tags_with_provider(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
-            mock_repo.list_tags.return_value = {"claude": 2}
+            mock_repo.list_tags.return_value = {"claude-ai": 2}
             mock_get_repo.return_value = mock_repo
 
-            result = invoke_surface(mcp_server._tool_manager._tools["list_tags"].fn, provider="claude")
+            result = invoke_surface(mcp_server._tool_manager._tools["list_tags"].fn, provider="claude-ai")
 
-        assert json.loads(result) == {"claude": 2}
-        mock_repo.list_tags.assert_called_once_with(provider="claude")
+        assert json.loads(result) == {"claude-ai": 2}
+        mock_repo.list_tags.assert_called_once_with(provider="claude-ai")
 
     def test_get_metadata_success(self, mcp_server):
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
@@ -427,7 +427,7 @@ class TestMutationTools:
     @pytest.mark.parametrize(
         ("group_by", "expected"),
         [
-            ("provider", {"chatgpt": 10, "claude": 5}),
+            ("provider", {"chatgpt": 10, "claude-ai": 5}),
             ("month", {"2024-01": 15, "2024-02": 20}),
         ],
     )

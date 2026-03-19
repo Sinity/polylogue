@@ -67,7 +67,7 @@ def test_bench_list_conversations_combined_filter(benchmark, bench_db_10k: Path)
     benchmark_store_call(
         benchmark,
         bench_db_10k,
-        lambda store: store.backend.list_conversations(provider="claude", has_tool_use=True, min_messages=2, limit=50),
+        lambda store: store.backend.list_conversations(provider="claude-ai", has_tool_use=True, min_messages=2, limit=50),
     )
 
 

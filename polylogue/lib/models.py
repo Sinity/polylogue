@@ -53,6 +53,34 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _coerce_optional_float(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_optional_int(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return None
+    return None
+
+
 class Attachment(BaseModel):
     id: str
     name: str | None = None
@@ -271,21 +299,19 @@ class Message(BaseModel):
 
     @property
     def cost_usd(self) -> float | None:
-        """Cost in USD (claude-code messages)."""
+        """Cost in USD when direct message metadata carries it."""
         if not self.provider_meta:
             return None
         raw = self.provider_meta.get("raw", self.provider_meta)
-        cost = raw.get("costUSD")
-        return float(cost) if isinstance(cost, (int, float)) else None
+        return _coerce_optional_float(raw.get("costUSD"))
 
     @property
     def duration_ms(self) -> int | None:
-        """Response duration in milliseconds (claude-code messages)."""
+        """Response duration in milliseconds when direct message metadata carries it."""
         if not self.provider_meta:
             return None
         raw = self.provider_meta.get("raw", self.provider_meta)
-        duration = raw.get("durationMs")
-        return int(duration) if isinstance(duration, (int, float)) else None
+        return _coerce_optional_int(raw.get("durationMs"))
 
     def extract_thinking(self) -> str | None:
         """Extract thinking content if present.
@@ -646,13 +672,23 @@ class Conversation(BaseModel):
 
     @property
     def total_cost_usd(self) -> float:
-        """Total cost in USD (sum of all message costs)."""
-        return sum(m.cost_usd or 0.0 for m in self.messages)
+        """Total cost in USD from message metadata or persisted conversation totals."""
+        message_total = sum(m.cost_usd or 0.0 for m in self.messages)
+        if message_total > 0.0:
+            return message_total
+        if not self.provider_meta:
+            return 0.0
+        return _coerce_optional_float(self.provider_meta.get("total_cost_usd")) or 0.0
 
     @property
     def total_duration_ms(self) -> int:
-        """Total response duration in milliseconds."""
-        return sum(m.duration_ms or 0 for m in self.messages)
+        """Total response duration in milliseconds from messages or persisted session totals."""
+        message_total = sum(m.duration_ms or 0 for m in self.messages)
+        if message_total > 0:
+            return message_total
+        if not self.provider_meta:
+            return 0
+        return _coerce_optional_int(self.provider_meta.get("total_duration_ms")) or 0
 
     # --- Projection API ---
 

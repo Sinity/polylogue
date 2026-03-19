@@ -179,7 +179,7 @@ def build_server() -> FastMCP:
         Args:
             query: Full-text search query
             limit: Max results (default: 10)
-            provider: Filter by provider (claude, chatgpt, claude-code, etc.)
+            provider: Filter by provider (claude-ai, chatgpt, claude-code, etc.)
             since: Only conversations updated after this date (ISO format or natural language like 'last week')
             has_tool_use: Only conversations with tool use blocks
             has_thinking: Only conversations with thinking blocks
@@ -235,7 +235,7 @@ def build_server() -> FastMCP:
 
         Args:
             limit: Max results (default: 10)
-            provider: Filter by provider (claude, chatgpt, claude-code, etc.)
+            provider: Filter by provider (claude-ai, chatgpt, claude-code, etc.)
             since: Only conversations updated after this date
             tag: Filter by tag
             title: Filter by title substring
@@ -685,7 +685,7 @@ def build_server() -> FastMCP:
         """Analyze error patterns and solutions across conversations.
 
         Args:
-            provider: Filter by provider (claude, chatgpt, etc.)
+            provider: Filter by provider (claude-ai, chatgpt, etc.)
             since: Only analyze conversations since this date
             limit: Max conversations to analyze (default: 50)
         """

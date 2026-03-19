@@ -13,10 +13,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
-from polylogue.lib.provider_identity import canonical_runtime_provider
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.store import RawConversationRecord
+from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -35,11 +35,11 @@ class _ValidationOutcome:
     state mutation — safe to produce from any thread.
     """
 
-    validation_status: str
+    validation_status: ValidationStatus
     validation_error: str | None
     parseable: bool
-    canonical_provider: str
-    payload_provider: str | None
+    canonical_provider: Provider
+    payload_provider: Provider | None
     drift_count: int
     counts_delta: dict[str, int] = field(default_factory=dict)
     drift_counts_delta: dict[str, int] = field(default_factory=dict)
@@ -47,7 +47,7 @@ class _ValidationOutcome:
 
 def _validate_record_sync(
     raw_record: RawConversationRecord,
-    validation_mode: str,
+    validation_mode: ValidationMode,
 ) -> _ValidationOutcome:
     """Run CPU-bound validation for a single raw record.
 
@@ -73,11 +73,7 @@ def _validate_record_sync(
     stored_payload_provider = getattr(raw_record, "payload_provider", None)
     if not isinstance(stored_payload_provider, str) or not stored_payload_provider.strip():
         stored_payload_provider = None
-    canonical_provider = canonical_runtime_provider(
-        stored_payload_provider or raw_record.provider_name,
-        preserve_unknown=True,
-        default=stored_payload_provider or raw_record.provider_name,
-    )
+    canonical_provider = Provider.from_string(stored_payload_provider or raw_record.provider_name)
     payload_provider = stored_payload_provider
 
     try:
@@ -93,7 +89,7 @@ def _validate_record_sync(
     except Exception as exc:
         counts_delta["errors"] += 1
         return _ValidationOutcome(
-            validation_status="failed",
+            validation_status=ValidationStatus.FAILED,
             validation_error=f"Unable to decode payload: {exc}",
             parseable=False,
             canonical_provider=canonical_provider,
@@ -102,17 +98,28 @@ def _validate_record_sync(
             counts_delta=counts_delta,
         )
 
-    validation_status = "passed"
+    validation_status = ValidationStatus.PASSED
     validation_error: str | None = None
     parseable = True
     drift_count = 0
 
+    if not envelope.artifact.schema_eligible:
+        return _ValidationOutcome(
+            validation_status=ValidationStatus.SKIPPED,
+            validation_error=f"Artifact excluded from conversation schema inference: {envelope.artifact.kind.value}",
+            parseable=False,
+            canonical_provider=canonical_provider,
+            payload_provider=payload_provider,
+            drift_count=0,
+            counts_delta=counts_delta,
+        )
+
     if malformed_lines:
         malformed_error = f"Malformed JSONL lines: {malformed_lines}"
-        if validation_mode == "strict":
+        if validation_mode is ValidationMode.STRICT:
             counts_delta["invalid"] += 1
             return _ValidationOutcome(
-                validation_status="failed",
+                validation_status=ValidationStatus.FAILED,
                 validation_error=malformed_error,
                 parseable=False,
                 canonical_provider=canonical_provider,
@@ -130,7 +137,11 @@ def _validate_record_sync(
 
     validator = None
     try:
-        validator = SchemaValidator.for_provider(envelope.provider)
+        validator = SchemaValidator.for_payload(
+            envelope.provider,
+            envelope.payload,
+            source_path=raw_record.source_path,
+        )
     except (FileNotFoundError, ImportError):
         counts_delta["skipped_no_schema"] += 1
 
@@ -162,9 +173,9 @@ def _validate_record_sync(
                     invalid_samples=invalid_count,
                     errors=collected_errors[:5],
                 )
-                if validation_mode == "strict":
+                if validation_mode is ValidationMode.STRICT:
                     first_error = collected_errors[0] if collected_errors else "unknown schema validation error"
-                    validation_status = "failed"
+                    validation_status = ValidationStatus.FAILED
                     validation_error = f"Schema validation failed for {canonical_provider}: {first_error}"
                     parseable = False
             else:
@@ -180,7 +191,7 @@ def _validate_record_sync(
                     drift=collected_drift[:10],
                 )
     elif parseable:
-        validation_status = "skipped"
+        validation_status = ValidationStatus.SKIPPED
 
     return _ValidationOutcome(
         validation_status=validation_status,
@@ -226,8 +237,8 @@ class ValidationService:
     """Validate raw payloads against provider schemas."""
 
     SCHEMA_VALIDATION_MODE_ENV = "POLYLOGUE_SCHEMA_VALIDATION"
-    SCHEMA_VALIDATION_DEFAULT = "strict"
-    SCHEMA_VALIDATION_MODES = frozenset({"off", "advisory", "strict"})
+    SCHEMA_VALIDATION_DEFAULT = ValidationMode.STRICT
+    SCHEMA_VALIDATION_MODES = frozenset(ValidationMode)
 
     # Keep batches aligned with parse batching.
     RAW_BATCH_SIZE = 50
@@ -235,12 +246,13 @@ class ValidationService:
     def __init__(self, backend: SQLiteBackend):
         self.backend = backend
 
-    def _schema_validation_mode(self) -> str:
+    def _schema_validation_mode(self) -> ValidationMode:
         """Return configured schema validation mode."""
-        raw = os.environ.get(self.SCHEMA_VALIDATION_MODE_ENV, self.SCHEMA_VALIDATION_DEFAULT)
-        mode = raw.strip().lower()
-        if mode in self.SCHEMA_VALIDATION_MODES:
-            return mode
+        raw = os.environ.get(self.SCHEMA_VALIDATION_MODE_ENV, str(self.SCHEMA_VALIDATION_DEFAULT))
+        try:
+            return ValidationMode.from_string(raw)
+        except ValueError:
+            pass
         logger.warning(
             "Invalid %s=%r, falling back to %s",
             self.SCHEMA_VALIDATION_MODE_ENV,
@@ -269,13 +281,13 @@ class ValidationService:
             progress_callback(0, desc=self._validation_progress_desc(0, total_raw_ids))
 
         validation_mode = self._schema_validation_mode()
-        if validation_mode == "off":
+        if validation_mode is ValidationMode.OFF:
             result = ValidateResult()
             for index, raw_id in enumerate(raw_ids, start=1):
                 if persist:
                     await self.backend.mark_raw_validated(
                         raw_id,
-                        status="skipped",
+                        status=ValidationStatus.SKIPPED,
                         mode=validation_mode,
                     )
                 result.parseable_raw_ids.append(raw_id)
@@ -316,7 +328,7 @@ class ValidationService:
         raw_records: list[RawConversationRecord],
         progress_callback: ProgressCallback | None = None,
         persist: bool = False,
-        mode: str | None = None,
+        mode: ValidationMode | None = None,
         progress_total: int | None = None,
         progress_offset: int = 0,
     ) -> ValidateResult:
@@ -334,12 +346,12 @@ class ValidationService:
             return result
 
         validation_mode = mode or self._schema_validation_mode()
-        if validation_mode == "off":
+        if validation_mode is ValidationMode.OFF:
             for raw_record in raw_records:
                 if persist:
                     await self.backend.mark_raw_validated(
                         raw_record.raw_id,
-                        status="skipped",
+                        status=ValidationStatus.SKIPPED,
                         mode=validation_mode,
                     )
                 result.parseable_raw_ids.append(raw_record.raw_id)

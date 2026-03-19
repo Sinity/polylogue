@@ -289,10 +289,10 @@ def test_formatted_conversation_dataclass_fields():
 
 def test_formatted_conversation_dataclass_equality():
     fc1 = FormattedConversation(
-        title="Test", provider="claude", conversation_id="c1", markdown_text="md", metadata={}
+        title="Test", provider="claude-ai", conversation_id="c1", markdown_text="md", metadata={}
     )
     fc2 = FormattedConversation(
-        title="Test", provider="claude", conversation_id="c1", markdown_text="md", metadata={}
+        title="Test", provider="claude-ai", conversation_id="c1", markdown_text="md", metadata={}
     )
     assert fc1 == fc2
 
@@ -676,7 +676,7 @@ class TestGoldenMarkdownRendering:
         factory = DbFactory(db_path)
         conv_id = "golden-claude-thinking"
         factory.create_conversation(
-            id=conv_id, provider="claude", title="Claude with Thinking",
+            id=conv_id, provider="claude-ai", title="Claude with Thinking",
             messages=[
                 {"id": "msg1", "role": "user", "text": "What is 2+2?", "timestamp": "2024-01-15T10:00:00Z"},
                 {"id": "msg2", "role": "assistant", "text": "<thinking>\nThis is a simple arithmetic question. 2+2 equals 4.\n</thinking>\n\nThe answer is 4.", "timestamp": "2024-01-15T10:00:05Z"},
@@ -818,7 +818,7 @@ class TestGoldenFileStructure:
             messages=[{"id": "msg1", "role": "user", "text": "Message 1"}],
         )
         factory.create_conversation(
-            id=conv2_id, provider="claude", title="Conversation 2",
+            id=conv2_id, provider="claude-ai", title="Conversation 2",
             messages=[{"id": "msg2", "role": "user", "text": "Message 2"}],
         )
         renderer = MarkdownRendererDirect(workspace_env["archive_root"])

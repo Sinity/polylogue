@@ -160,7 +160,7 @@ class TestFilterCombinations:
 
     def test_exclude_and_include_same_provider(self, runner: CliRunner, workspace_env) -> None:
         """Conflicting provider filters should not traceback."""
-        result = runner.invoke(cli, ["--plain", "--provider", "claude", "--exclude-provider", "claude", "--limit", "0"])
+        result = runner.invoke(cli, ["--plain", "--provider", "claude-ai", "--exclude-provider", "claude-ai", "--limit", "0"])
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_multiple_contain_terms(self, runner: CliRunner, workspace_env) -> None:

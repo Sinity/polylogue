@@ -63,7 +63,7 @@ async def test_search_includes_snippet(workspace_env, storage_repository):
 async def test_search_includes_conversation_metadata(workspace_env, storage_repository):
     """search_messages() includes conversation metadata in results."""
     conv = make_conversation(
-        "conv1", provider_name="claude", title="My Conversation", provider_meta={"source": "my-source"}
+        "conv1", provider_name="claude-ai", title="My Conversation", provider_meta={"source": "my-source"}
     )
     msg = make_message("msg1", "conv1", text="search query", timestamp="2024-01-01T10:30:00Z")
 
@@ -75,7 +75,7 @@ async def test_search_includes_conversation_metadata(workspace_env, storage_repo
     assert len(results.hits) == 1
     hit = results.hits[0]
     assert hit.conversation_id == "conv1"
-    assert hit.provider_name == "claude"
+    assert hit.provider_name == "claude-ai"
     assert hit.title == "My Conversation"
     assert hit.message_id == "msg1"
     assert hit.timestamp is not None and "2024-01-01" in hit.timestamp
@@ -284,7 +284,7 @@ def test_batch_index_10k_messages(test_conn):
 async def test_batch_index_search_returns_correct_provider(workspace_env, storage_repository):
     """Verify batch indexing allows retrieving correct provider_name via search."""
     # Create conversations with different providers
-    conv1 = make_conversation("conv1", provider_name="claude", title="Claude Conv")
+    conv1 = make_conversation("conv1", provider_name="claude-ai", title="Claude Conv")
     conv2 = make_conversation("conv2", provider_name="chatgpt", title="ChatGPT Conv")
 
     messages1 = [make_message(f"msg1-{i}", "conv1", text=f"claude text {i}") for i in range(5)]
@@ -297,7 +297,7 @@ async def test_batch_index_search_returns_correct_provider(workspace_env, storag
 
     # Verify provider names via search
     results1 = search_messages("claude", archive_root=workspace_env["archive_root"], limit=10)
-    assert all(hit.provider_name == "claude" for hit in results1.hits)
+    assert all(hit.provider_name == "claude-ai" for hit in results1.hits)
     assert len(results1.hits) == 1
 
     results2 = search_messages("chatgpt", archive_root=workspace_env["archive_root"], limit=10)
@@ -542,7 +542,7 @@ class TestFTS5Provider:
     @pytest.fixture
     async def populated_fts(self, workspace_env, storage_repository, fts_provider):
         """FTS provider with indexed test data."""
-        conv = make_conversation("fts-conv-1", provider_name="claude", title="FTS Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
+        conv = make_conversation("fts-conv-1", provider_name="claude-ai", title="FTS Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
         msgs = [
             make_message("fts-msg-1", "fts-conv-1", text="How do I implement quicksort in Python?", timestamp="1000"),
             make_message("fts-msg-2", "fts-conv-1", role="assistant", text="Quicksort is a divide-and-conquer algorithm for sorting", timestamp="1001"),

@@ -13,7 +13,7 @@ Example::
         print(f"{stats.conversation_count} conversations")
 
         # Query conversations
-        convs = await archive.filter().provider("claude").since("2024-01-01").list()
+        convs = await archive.filter().provider("claude-ai").since("2024-01-01").list()
         for conv in convs:
             print(f"{conv.display_title}: {conv.message_count} messages")
 

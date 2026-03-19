@@ -213,6 +213,28 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                 )
             )
 
+            provider_rows = conn.execute(
+                """
+                SELECT provider_name, COUNT(*) AS count
+                FROM conversations
+                GROUP BY provider_name
+                ORDER BY count DESC, provider_name ASC
+                """
+            ).fetchall()
+            provider_breakdown = {
+                str(row["provider_name"]): int(row["count"])
+                for row in provider_rows
+            }
+            checks.append(
+                HealthCheck(
+                    "provider_distribution",
+                    VerifyStatus.OK,
+                    count=sum(provider_breakdown.values()),
+                    detail=f"{len(provider_breakdown)} provider(s) represented",
+                    breakdown=provider_breakdown,
+                )
+            )
+
             # FTS sync check (verify messages_fts table exists and is in sync)
             try:
                 # Check if messages_fts table exists

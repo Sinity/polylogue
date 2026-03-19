@@ -120,8 +120,8 @@ def schema_infer(
                 click.echo(f"  [{c.cluster_id}] {c.sample_count:,} samples ({pct:.1f}%)")
                 click.echo(f"    confidence: {c.confidence}")
                 click.echo(f"    keys: {', '.join(c.dominant_keys[:10])}")
-                if c.promoted_version:
-                    click.echo(f"    promoted: {c.promoted_version}")
+                if c.schema_version:
+                    click.echo(f"    version: {c.schema_version}")
     else:
         if json_output:
             click.echo(json.dumps(result.schema, indent=2))
@@ -182,7 +182,7 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
             if manifest:
                 click.echo(f"\nCluster manifest ({len(manifest.clusters)} clusters):")
                 for c in manifest.clusters:
-                    status = f" [promoted: {c.promoted_version}]" if c.promoted_version else ""
+                    status = f" [version: {c.schema_version}]" if c.schema_version else ""
                     click.echo(f"  {c.cluster_id}: {c.sample_count:,} samples, confidence={c.confidence}{status}")
     else:
         providers = registry.list_providers()
@@ -302,7 +302,7 @@ def schema_promote(
         click.echo(json.dumps({
             "provider": provider,
             "cluster_id": cluster_id,
-            "promoted_version": new_version,
+            "schema_version": new_version,
             "schema": schema,
         }, indent=2))
     else:

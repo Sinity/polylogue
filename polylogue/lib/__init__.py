@@ -18,7 +18,7 @@ Example usage:
     repo = ConversationRepository(backend=create_default_backend())
 
     # Get a conversation with projection support
-    conv = await repo.get("claude:abc123")
+    conv = await repo.get("claude-ai:abc123")
     if conv:
         # Use semantic projections
         for pair in conv.iter_pairs():
@@ -34,22 +34,38 @@ Example usage:
         print(f"Words: {conv.word_count}")
 """
 
-from polylogue.lib.branch_type import BranchType
-from polylogue.lib.filters import ConversationFilter
-from polylogue.lib.messages import MessageCollection
-from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
-from polylogue.lib.projections import ConversationProjection
-from polylogue.lib.roles import Role
-from polylogue.lib.stats import ArchiveStats
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polylogue.lib.branch_type import BranchType
+    from polylogue.lib.filters import ConversationFilter
+    from polylogue.lib.messages import MessageCollection
+    from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
+    from polylogue.lib.projections import ConversationProjection
+    from polylogue.lib.roles import Role
+    from polylogue.lib.stats import ArchiveStats
+    from polylogue.storage.repository import ConversationRepository
 
 
 def __getattr__(name: str) -> object:
-    # Lazy import to break circular dependency:
-    # async_sqlite → polylogue.lib → storage.repository → async_sqlite
-    if name == "ConversationRepository":
-        from polylogue.storage.repository import ConversationRepository
-
-        return ConversationRepository
+    lazy_exports = {
+        "ArchiveStats": ("polylogue.lib.stats", "ArchiveStats"),
+        "Attachment": ("polylogue.lib.models", "Attachment"),
+        "BranchType": ("polylogue.lib.branch_type", "BranchType"),
+        "Conversation": ("polylogue.lib.models", "Conversation"),
+        "ConversationFilter": ("polylogue.lib.filters", "ConversationFilter"),
+        "ConversationProjection": ("polylogue.lib.projections", "ConversationProjection"),
+        "ConversationRepository": ("polylogue.storage.repository", "ConversationRepository"),
+        "DialoguePair": ("polylogue.lib.models", "DialoguePair"),
+        "Message": ("polylogue.lib.models", "Message"),
+        "MessageCollection": ("polylogue.lib.messages", "MessageCollection"),
+        "Role": ("polylogue.lib.roles", "Role"),
+    }
+    module_spec = lazy_exports.get(name)
+    if module_spec is not None:
+        module_name, attr_name = module_spec
+        module = __import__(module_name, fromlist=[attr_name])
+        return getattr(module, attr_name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

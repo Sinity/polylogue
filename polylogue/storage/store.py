@@ -11,8 +11,20 @@ from pydantic import BaseModel, Field, field_validator
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.json import dumps as json_dumps
+from polylogue.lib.roles import Role
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
-from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
+from polylogue.types import (
+    AttachmentId,
+    ContentBlockType,
+    ContentHash,
+    ConversationId,
+    MessageId,
+    PlanStage,
+    Provider,
+    SemanticBlockType,
+    ValidationMode,
+    ValidationStatus,
+)
 
 # Maximum reasonable file size (1TB)
 MAX_ATTACHMENT_SIZE = 1024 * 1024 * 1024 * 1024
@@ -63,14 +75,26 @@ class ContentBlockRecord(BaseModel):
     message_id: MessageId
     conversation_id: ConversationId
     block_index: int
-    type: str
+    type: ContentBlockType
     text: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None
     tool_input: str | None = None  # JSON-serialized dict
     media_type: str | None = None
     metadata: str | None = None  # JSON-serialized dict
-    semantic_type: str | None = None  # 'file_read'|'file_write'|'file_edit'|'shell'|'git'|'search'|'web'|'agent'|'subagent'|'thinking'|NULL
+    semantic_type: SemanticBlockType | None = None
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def coerce_block_type(cls, v: object) -> ContentBlockType:
+        return ContentBlockType.from_string(str(v))
+
+    @field_validator("semantic_type", mode="before")
+    @classmethod
+    def coerce_semantic_type(cls, v: object) -> SemanticBlockType | None:
+        if v is None:
+            return None
+        return SemanticBlockType.from_string(str(v))
 
     @classmethod
     def make_id(cls, message_id: str, block_index: int) -> str:
@@ -81,7 +105,7 @@ class MessageRecord(BaseModel):
     message_id: MessageId
     conversation_id: ConversationId
     provider_message_id: str | None = None
-    role: str | None = None
+    role: Role | None = None
     text: str | None = None  # Concatenated text from text-type content blocks
     sort_key: float | None = None  # Pre-computed numeric timestamp for ORDER BY
     content_hash: ContentHash
@@ -97,12 +121,21 @@ class MessageRecord(BaseModel):
     has_tool_use: int = 0   # 1 if any block.type in ('tool_use', 'tool_result')
     has_thinking: int = 0   # 1 if any block.type == 'thinking'
 
+    @field_validator("role", mode="before")
+    @classmethod
+    def coerce_role(cls, v: object) -> Role | None:
+        if v is None:
+            return None
+        if isinstance(v, Role):
+            return v
+        if isinstance(v, str) and not v.strip():
+            return Role.UNKNOWN
+        return Role.normalize(str(v))
+
     @property
-    def role_typed(self):
-        """Typed Role enum derived from role string."""
-        from polylogue.lib.roles import Role
-        raw = (self.role or "").strip() or "unknown"
-        return Role.normalize(raw)
+    def role_typed(self) -> Role:
+        """Typed role enum for callers that expect a non-null role."""
+        return self.role or Role.UNKNOWN
 
     @field_validator("message_id", "conversation_id", "content_hash")
     @classmethod
@@ -168,7 +201,7 @@ class RawConversationRecord(BaseModel):
     """
     raw_id: str  # SHA256 of raw_content
     provider_name: str  # Provenance/provider hint from acquisition time
-    payload_provider: str | None = None  # Durable provider classification from decoded payload
+    payload_provider: Provider | None = None  # Durable provider classification from decoded payload
     source_name: str | None = None  # Config source name (e.g., "inbox"), distinct from provider
     source_path: str
     source_index: int | None = None  # Position in bundle (e.g., conversations[3])
@@ -178,11 +211,11 @@ class RawConversationRecord(BaseModel):
     parsed_at: str | None = None  # ISO timestamp of last successful parse
     parse_error: str | None = None  # Error from last failed parse attempt
     validated_at: str | None = None  # ISO timestamp of last validation attempt
-    validation_status: str | None = None  # "passed" | "failed" | "skipped"
+    validation_status: ValidationStatus | None = None
     validation_error: str | None = None  # Error from last failed validation attempt
     validation_drift_count: int | None = None  # Drift warnings seen during last validation
-    validation_provider: str | None = None  # Canonical provider used for validation schema
-    validation_mode: str | None = None  # Validation mode used ("off" | "advisory" | "strict")
+    validation_provider: Provider | None = None
+    validation_mode: ValidationMode | None = None
 
     @field_validator("raw_id", "provider_name", "source_path")
     @classmethod
@@ -198,14 +231,51 @@ class RawConversationRecord(BaseModel):
             raise ValueError("raw_content cannot be empty")
         return v
 
+    @field_validator("validation_status", mode="before")
+    @classmethod
+    def coerce_validation_status(cls, v: object) -> ValidationStatus | None:
+        if v is None:
+            return None
+        return ValidationStatus.from_string(str(v))
+
+    @field_validator("payload_provider", mode="before")
+    @classmethod
+    def coerce_payload_provider(cls, v: object) -> Provider | None:
+        if v is None:
+            return None
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v))
+
+    @field_validator("validation_provider", mode="before")
+    @classmethod
+    def coerce_validation_provider(cls, v: object) -> Provider | None:
+        if v is None:
+            return None
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v))
+
+    @field_validator("validation_mode", mode="before")
+    @classmethod
+    def coerce_validation_mode(cls, v: object) -> ValidationMode | None:
+        if v is None:
+            return None
+        return ValidationMode.from_string(str(v))
+
 
 class PlanResult(BaseModel):
     timestamp: int
-    stage: str = "all"
+    stage: PlanStage = PlanStage.ALL
     counts: dict[str, int]
     details: dict[str, int] = Field(default_factory=dict)
     sources: list[str]
     cursors: dict[str, dict[str, Any]]
+
+    @field_validator("stage", mode="before")
+    @classmethod
+    def coerce_stage(cls, v: object) -> PlanStage:
+        return PlanStage.from_string(str(v))
 
 
 class RawConversationState(BaseModel):
@@ -214,9 +284,25 @@ class RawConversationState(BaseModel):
     source_path: str | None = None
     parsed_at: str | None = None
     parse_error: str | None = None
-    payload_provider: str | None = None
-    validation_status: str | None = None
-    validation_provider: str | None = None
+    payload_provider: Provider | None = None
+    validation_status: ValidationStatus | None = None
+    validation_provider: Provider | None = None
+
+    @field_validator("payload_provider", "validation_provider", mode="before")
+    @classmethod
+    def coerce_optional_provider(cls, v: object) -> Provider | None:
+        if v is None:
+            return None
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v))
+
+    @field_validator("validation_status", mode="before")
+    @classmethod
+    def coerce_state_validation_status(cls, v: object) -> ValidationStatus | None:
+        if v is None:
+            return None
+        return ValidationStatus.from_string(str(v))
 
 
 class RunResult(BaseModel):

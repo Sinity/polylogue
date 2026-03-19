@@ -122,7 +122,7 @@ class TestPolylogueParsing:
         assert result.counts["messages"] > 0
 
         # Verify we can retrieve the conversation
-        conversations = await archive.list_conversations(provider="claude")
+        conversations = await archive.list_conversations(provider="claude-ai")
         assert len(conversations) > 0
 
     @pytest.mark.asyncio
@@ -180,7 +180,7 @@ class TestPolylogueParsing:
 
         sources = [
             Source(name="chatgpt", path=sample_chatgpt_file),
-            Source(name="claude", path=sample_claude_file),
+            Source(name="claude-ai", path=sample_claude_file),
         ]
 
         result = await archive.parse_sources(sources=sources, download_assets=False)
@@ -190,7 +190,7 @@ class TestPolylogueParsing:
 
         # Verify we can list conversations from both providers
         chatgpt_convs = await archive.list_conversations(provider="chatgpt")
-        claude_convs = await archive.list_conversations(provider="claude")
+        claude_convs = await archive.list_conversations(provider="claude-ai")
         assert len(chatgpt_convs) > 0
         assert len(claude_convs) > 0
 
@@ -277,12 +277,12 @@ class TestPolylogueQuery:
 
         # Filter by provider
         chatgpt_convs = await archive.list_conversations(provider="chatgpt")
-        claude_convs = await archive.list_conversations(provider="claude")
+        claude_convs = await archive.list_conversations(provider="claude-ai")
 
         assert len(chatgpt_convs) > 0
         assert len(claude_convs) > 0
         assert all(c.provider == "chatgpt" for c in chatgpt_convs)
-        assert all(c.provider == "claude" for c in claude_convs)
+        assert all(c.provider == "claude-ai" for c in claude_convs)
 
     @pytest.mark.asyncio
     async def test_list_conversations_with_limit(self, workspace_env, sample_chatgpt_file):

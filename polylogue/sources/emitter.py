@@ -53,8 +53,24 @@ class _ConversationEmitter:
 
         if is_jsonl and self._ctx.should_group:
             yield from self._emit_grouped(handle, stream_name, pre_read_bytes)
-        else:
-            yield from self._emit_individual(handle, stream_name, pre_read_bytes=pre_read_bytes)
+            return
+
+        if is_jsonl:
+            sniff_bytes = pre_read_bytes if pre_read_bytes is not None else handle.read()
+            sniff_payloads = list(_iter_json_stream(BytesIO(sniff_bytes), stream_name))
+            sniff_provider = detect_provider(sniff_payloads) or self._ctx.provider_hint
+            from .source import _GROUP_PROVIDERS
+            if sniff_provider in _GROUP_PROVIDERS:
+                yield from self._emit_grouped(
+                    BytesIO(sniff_bytes),
+                    stream_name,
+                    sniff_bytes,
+                )
+                return
+            handle = BytesIO(sniff_bytes)
+            pre_read_bytes = sniff_bytes
+
+        yield from self._emit_individual(handle, stream_name, pre_read_bytes=pre_read_bytes)
 
     def _emit_grouped(
         self,
@@ -77,7 +93,7 @@ class _ConversationEmitter:
 
         raw_data = self._make_raw(raw_bytes) if raw_bytes else None
         from .source import detect_provider, parse_payload
-        provider = detect_provider(payloads, Path(stream_name)) or self._ctx.provider_hint
+        provider = detect_provider(payloads) or self._ctx.provider_hint
         for conv in parse_payload(provider, payloads, self._ctx.fallback_id):
             yield (raw_data, self._maybe_enrich(conv))
 
@@ -99,7 +115,7 @@ class _ConversationEmitter:
         from .source import detect_provider, parse_payload
         for payload in _iter_json_stream(handle, stream_name, unpack_lists=unpack):
             try:
-                provider = detect_provider(payload, self._ctx.detect_path) or self._ctx.provider_hint
+                provider = detect_provider(payload) or self._ctx.provider_hint
 
                 if whole_file_raw is not None:
                     raw_data: RawConversationData | None = whole_file_raw
@@ -121,7 +137,7 @@ class _ConversationEmitter:
         raw_bytes: bytes | None,
         *,
         source_index: int | None = None,
-        provider_override: str | None = None,
+        provider_override: Provider | None = None,
     ) -> RawConversationData | None:
         """Construct ``RawConversationData``, or ``None`` if no bytes."""
         if raw_bytes is None or not self._ctx.capture_raw:
@@ -137,12 +153,12 @@ class _ConversationEmitter:
     def _maybe_enrich(
         self,
         conv: ParsedConversation,
-        provider: str | None = None,
+        provider: Provider | None = None,
     ) -> ParsedConversation:
         """Apply Claude Code session index enrichment if applicable."""
         p = provider or self._ctx.provider_hint
         idx = self._ctx.session_index
-        if p == Provider.CLAUDE_CODE and conv.provider_conversation_id in idx:
+        if p is Provider.CLAUDE_CODE and conv.provider_conversation_id in idx:
             return enrich_conversation_from_index(conv, idx[conv.provider_conversation_id])
         return conv
 

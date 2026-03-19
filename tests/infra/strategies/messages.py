@@ -160,7 +160,7 @@ def conversation_strategy(
         providers: Allowed provider names
     """
     if providers is None:
-        providers = ["chatgpt", "claude", "claude-code", "codex"]
+        providers = ["chatgpt", "claude-ai", "claude-code", "codex"]
 
     messages = draw(st.lists(
         message_strategy(),
@@ -261,6 +261,6 @@ def conversation_model_strategy(draw: st.DrawFn, *, min_messages: int = 0, max_m
     messages = draw(st.lists(message_model_strategy(), min_size=min_messages, max_size=max_messages))
     return ConversationModel(
         id=draw(st.text(min_size=1, max_size=40, alphabet=st.characters(whitelist_categories=("L", "N")))),
-        provider=draw(st.sampled_from(["chatgpt", "claude", "claude-code", "codex", "gemini"])),
+        provider=draw(st.sampled_from(["chatgpt", "claude-ai", "claude-code", "codex", "gemini"])),
         messages=MessageCollection(messages=messages),
     )

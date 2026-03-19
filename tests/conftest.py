@@ -29,7 +29,7 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 
 @pytest.fixture(autouse=True)
-def _clear_polylogue_env(monkeypatch):
+def _clear_polylogue_env(monkeypatch, tmp_path):
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.
     from polylogue.storage.backends.connection import _clear_connection_cache
@@ -61,11 +61,15 @@ def _clear_polylogue_env(monkeypatch):
         # Clear Drive credentials to ensure test isolation
         "POLYLOGUE_CREDENTIAL_PATH",
         "POLYLOGUE_TOKEN_PATH",
-        # Don't inherit real user's XDG directories
         "XDG_DATA_HOME",
         "XDG_STATE_HOME",
+        "XDG_CONFIG_HOME",
     ):
         monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
 
 
 @pytest.fixture

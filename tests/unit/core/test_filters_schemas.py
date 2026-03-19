@@ -36,11 +36,11 @@ from polylogue.schemas.validator import (
 
 
 REASONING_TRACES_CASES = [
-    (None, "claude", 0, None, "empty_none_content"),
-    (["string", 123], "claude", 0, None, "non_dict_block"),
-    ([{"type": "thinking", "thinking": "Let me think..."}], "claude", 1, "Let me think...", "thinking_block"),
+    (None, "claude-ai", 0, None, "empty_none_content"),
+    (["string", 123], "claude-ai", 0, None, "non_dict_block"),
+    ([{"type": "thinking", "thinking": "Let me think..."}], "claude-ai", 1, "Let me think...", "thinking_block"),
     ([{"isThought": True, "text": "Gemini thinking"}], "gemini", 1, "Gemini thinking", "gemini_thought"),
-    ([{"type": "thinking", "text": "Fallback text"}], "claude", 1, "Fallback text", "thinking_fallback"),
+    ([{"type": "thinking", "text": "Fallback text"}], "claude-ai", 1, "Fallback text", "thinking_fallback"),
 ]
 
 CONTENT_BLOCKS_CASES = [
@@ -140,7 +140,7 @@ class TestUnifiedExtractHarmonizedMessage:
     def test_extract_harmonized_message_by_provider(self, provider, msg_key, description):
         if provider == "claude-code":
             raw = {"uuid": "msg1", "timestamp": "2024-01-01T00:00:00Z",
-                   "message": {"role": "user", "content": [{"type": "text", "text": "Hello"}], "model": "claude"}}
+                   "message": {"role": "user", "content": [{"type": "text", "text": "Hello"}], "model": "claude-ai"}}
         elif provider == "claude-ai":
             raw = {"uuid": "msg1", "sender": "user", "text": "Hello", "created_at": "2024-01-01T00:00:00Z"}
         elif provider == "chatgpt":
@@ -155,7 +155,7 @@ class TestUnifiedExtractHarmonizedMessage:
 
 class TestUnifiedHarmonizeParsedMessage:
     def test_harmonize_parsed_message_none_meta(self):
-        assert harmonize_parsed_message("claude", None) is None
+        assert harmonize_parsed_message("claude-ai", None) is None
 
     def test_harmonize_parsed_message_not_message_record(self):
         assert harmonize_parsed_message("claude-code", {"type": "metadata"}) is None
@@ -170,7 +170,7 @@ class TestUnifiedBulkHarmonize:
     def test_bulk_harmonize_no_provider_meta(self):
         class MockParsedMessage:
             pass
-        result = bulk_harmonize("claude", [MockParsedMessage()])
+        result = bulk_harmonize("claude-ai", [MockParsedMessage()])
         assert result == []
 
     def test_bulk_harmonize_mixed_valid_invalid(self):

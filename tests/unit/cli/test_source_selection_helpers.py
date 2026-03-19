@@ -78,7 +78,7 @@ def test_save_and_load_last_source_roundtrip(helpers_workspace: dict[str, Path])
     ("sources", "expected"),
     [
         (("chatgpt",), ["chatgpt"]),
-        (("chatgpt", "claude"), {"chatgpt", "claude"}),
+        (("chatgpt", "claude-ai"), {"chatgpt", "claude-ai"}),
         (("chatgpt", "chatgpt"), ["chatgpt"]),
         ((), None),
     ],
@@ -87,7 +87,7 @@ def test_resolve_sources_valid_cases(sources: tuple[str, ...], expected: list[st
     config = MagicMock()
     config.sources = [
         Source(name="chatgpt", path=Path("/data")),
-        Source(name="claude", path=Path("/data2")),
+        Source(name="claude-ai", path=Path("/data2")),
     ]
     result = helpers.resolve_sources(config, sources, "test_cmd")
     if isinstance(expected, set):
@@ -378,7 +378,7 @@ def test_print_summary_basic_contract(config: Config) -> None:
         verbose=False,
         plain=False,
         last_run=last_run,
-        counts=[("claude", 7), ("chatgpt", 3)],
+        counts=[("claude-ai", 7), ("chatgpt", 3)],
     )
 
     assert result["title"] == "Polylogue"
@@ -391,7 +391,7 @@ def test_print_summary_basic_contract(config: Config) -> None:
     ]
     assert "Archive:" in result["console"]
     assert "10 conversations" in result["console"]
-    assert "claude:" in result["console"]
+    assert "claude-ai:" in result["console"]
     result["mock_cached"].assert_called_once()
     result["mock_get_health"].assert_not_called()
 
@@ -427,7 +427,7 @@ def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status
 def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> None:
     metrics = [
         _metric(
-            "claude",
+            "claude-ai",
             7,
             message_count=70,
             avg_messages_per_conversation=10.0,
@@ -452,7 +452,7 @@ def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> N
         verbose=True,
         plain=False,
         health=_health_report(cached=None, age_seconds=None, checks=[]),
-        counts=[("claude", 7), ("chatgpt", 3)],
+        counts=[("claude-ai", 7), ("chatgpt", 3)],
         metrics=metrics,
     )
 
@@ -460,7 +460,7 @@ def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> N
     assert "Archive:" in result["console"]
     assert "10 conversations" in result["console"]
     assert "Deep Dive:" in result["console"]
-    assert "claude" in result["console"]
+    assert "claude-ai" in result["console"]
     assert "Messages: 70" in result["console"]
     assert "Tool Use: 5" in result["console"]
     assert "Thinking: 4" in result["console"]
@@ -485,8 +485,8 @@ def test_print_summary_omits_deep_dive_when_no_verbose_metrics(config: Config) -
         config,
         verbose=False,
         plain=True,
-        counts=[("claude", 1)],
-        metrics=[_metric("claude", 1, message_count=2, avg_messages_per_conversation=2.0)],
+        counts=[("claude-ai", 1)],
+        metrics=[_metric("claude-ai", 1, message_count=2, avg_messages_per_conversation=2.0)],
     )
 
     assert "Archive:" in result["console"]

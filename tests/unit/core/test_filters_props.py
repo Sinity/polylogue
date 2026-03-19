@@ -50,7 +50,7 @@ def filter_db(tmp_path):
     db_path = tmp_path / "filter_test.db"
 
     (ConversationBuilder(db_path, "claude-1")
-     .provider("claude")
+     .provider("claude-ai")
      .title("Python Error Handling")
      .add_message("m1", role="user", text="How do I handle errors in Python?")
      .add_message("m2", role="assistant", text="You can use try-except blocks.")
@@ -66,7 +66,7 @@ def filter_db(tmp_path):
      .save())
 
     (ConversationBuilder(db_path, "claude-2")
-     .provider("claude")
+     .provider("claude-ai")
      .title("Database Design")
      .add_message("m5", role="user", text="How to design a database schema?")
      .add_message("m6", role="assistant", text="Start with identifying entities.")
@@ -112,7 +112,7 @@ def filter_db_advanced(tmp_path):
     db_path = tmp_path / "filter_advanced.db"
 
     (ConversationBuilder(db_path, "conv-thinking")
-     .provider("claude")
+     .provider("claude-ai")
      .title("Complex Problem Analysis")
      .add_message("m1", role="user", text="Solve this complex math problem")
      .add_message("m2", role="assistant", text="The answer is 42.",
@@ -122,7 +122,7 @@ def filter_db_advanced(tmp_path):
      .save())
 
     (ConversationBuilder(db_path, "conv-tools")
-     .provider("claude")
+     .provider("claude-ai")
      .title("API Integration Help")
      .add_message("m4", role="user", text="How do I call an API?")
      .add_message("m5", role="assistant", text="I'll help you with that.",
@@ -142,7 +142,7 @@ def filter_db_advanced(tmp_path):
      .save())
 
     (ConversationBuilder(db_path, "conv-summary-only")
-     .provider("claude")
+     .provider("claude-ai")
      .title("Brief Chat")
      .add_message("m10", role="user", text="Hello there")
      .add_message("m11", role="assistant", text="Hi how are you")
@@ -161,7 +161,7 @@ def filter_db_advanced(tmp_path):
      .save())
 
     (ConversationBuilder(db_path, "conv-long-messages")
-     .provider("claude")
+     .provider("claude-ai")
      .title("Deep Discussion")
      .add_message("m15", role="user",
                   text="Tell me everything you know about quantum computing including the fundamentals principles and applications")
@@ -251,7 +251,7 @@ async def test_filter_chain_never_crashes_on_execution(make_filter_repo):
     from hypothesis import find
 
     repo = make_filter_repo([
-        {"id": "c1", "provider": "claude", "title": "Test",
+        {"id": "c1", "provider": "claude-ai", "title": "Test",
          "messages": [{"id": "m1", "role": "user", "text": "hello"}]},
         {"id": "c2", "provider": "chatgpt", "title": "Other",
          "messages": [{"id": "m2", "role": "user", "text": "world"}]},
@@ -259,10 +259,10 @@ async def test_filter_chain_never_crashes_on_execution(make_filter_repo):
 
     # Test a variety of filter chain combos
     chains = [
-        [{"type": "provider", "value": "claude"}],
+        [{"type": "provider", "value": "claude-ai"}],
         [{"type": "limit", "value": 1}],
         [{"type": "provider", "value": "chatgpt"}, {"type": "limit", "value": 5}],
-        [{"type": "contains", "value": "hello"}, {"type": "provider", "value": "claude"}],
+        [{"type": "contains", "value": "hello"}, {"type": "provider", "value": "claude-ai"}],
         [{"type": "sort", "field": "created_at", "direction": "desc"}],
     ]
     for chain in chains:
@@ -282,7 +282,7 @@ async def test_filter_chain_never_crashes_on_execution(make_filter_repo):
 async def test_filter_monotonicity_provider(filter_repo):
     """Adding a provider filter never increases result count."""
     all_count = await ConversationFilter(filter_repo).count()
-    filtered_count = await ConversationFilter(filter_repo).provider("claude").count()
+    filtered_count = await ConversationFilter(filter_repo).provider("claude-ai").count()
     assert filtered_count <= all_count
 
 
@@ -298,7 +298,7 @@ async def test_filter_monotonicity_limit(filter_repo):
 async def test_filter_monotonicity_exclude(filter_repo):
     """Adding an exclude filter never increases result count."""
     all_count = await ConversationFilter(filter_repo).count()
-    excluded = await ConversationFilter(filter_repo).exclude_provider("claude").list()
+    excluded = await ConversationFilter(filter_repo).exclude_provider("claude-ai").list()
     assert len(excluded) <= all_count
 
 
@@ -306,8 +306,8 @@ async def test_filter_monotonicity_exclude(filter_repo):
 async def test_filter_monotonicity_chained(filter_repo_advanced):
     """Stacking filters monotonically decreases results."""
     c0 = await ConversationFilter(filter_repo_advanced).count()
-    c1 = len(await ConversationFilter(filter_repo_advanced).provider("claude").list())
-    c2 = len(await ConversationFilter(filter_repo_advanced).provider("claude").has("thinking").list())
+    c1 = len(await ConversationFilter(filter_repo_advanced).provider("claude-ai").list())
+    c2 = len(await ConversationFilter(filter_repo_advanced).provider("claude-ai").has("thinking").list())
     assert c2 <= c1 <= c0
 
 
@@ -318,17 +318,17 @@ async def test_filter_monotonicity_chained(filter_repo_advanced):
 
 @pytest.mark.asyncio
 async def test_filter_idempotence_provider(filter_repo):
-    """Applying provider("claude") twice yields same results as once."""
-    once = await ConversationFilter(filter_repo).provider("claude").list()
-    twice = await ConversationFilter(filter_repo).provider("claude").provider("claude").list()
+    """Applying provider("claude-ai") twice yields same results as once."""
+    once = await ConversationFilter(filter_repo).provider("claude-ai").list()
+    twice = await ConversationFilter(filter_repo).provider("claude-ai").provider("claude-ai").list()
     assert {c.id for c in once} == {c.id for c in twice}
 
 
 @pytest.mark.asyncio
 async def test_filter_idempotence_exclude(filter_repo):
-    """Applying exclude_provider("claude") twice yields same results as once."""
-    once = await ConversationFilter(filter_repo).exclude_provider("claude").list()
-    twice = await ConversationFilter(filter_repo).exclude_provider("claude").exclude_provider("claude").list()
+    """Applying exclude_provider("claude-ai") twice yields same results as once."""
+    once = await ConversationFilter(filter_repo).exclude_provider("claude-ai").list()
+    twice = await ConversationFilter(filter_repo).exclude_provider("claude-ai").exclude_provider("claude-ai").list()
     assert {c.id for c in once} == {c.id for c in twice}
 
 
@@ -341,18 +341,18 @@ def test_sql_pushdown_provider():
     """SQL pushdown includes provider when set."""
     from unittest.mock import MagicMock
     f = ConversationFilter(MagicMock())
-    f.provider("claude")
+    f.provider("claude-ai")
     params = f._sql_pushdown_params()
-    assert params["provider"] == "claude"
+    assert params["provider"] == "claude-ai"
 
 
 def test_sql_pushdown_multi_provider():
     """SQL pushdown includes providers list when multiple set."""
     from unittest.mock import MagicMock
     f = ConversationFilter(MagicMock())
-    f.provider("claude", "chatgpt")
+    f.provider("claude-ai", "chatgpt")
     params = f._sql_pushdown_params()
-    assert params["providers"] == ["claude", "chatgpt"]
+    assert params["providers"] == ["claude-ai", "chatgpt"]
 
 
 def test_sql_pushdown_date_range():
@@ -383,8 +383,8 @@ def test_sql_pushdown_empty():
 
 
 @given(
-    st.lists(st.sampled_from(["chatgpt", "claude", "codex"]), min_size=1, max_size=3),
-    st.lists(st.sampled_from(["chatgpt", "claude", "codex"]), min_size=0, max_size=2),
+    st.lists(st.sampled_from(["chatgpt", "claude-ai", "codex"]), min_size=1, max_size=3),
+    st.lists(st.sampled_from(["chatgpt", "claude-ai", "codex"]), min_size=0, max_size=2),
 )
 def test_provider_filter_exclusion_disjoint(
     include_providers: list[str],
@@ -488,7 +488,7 @@ class TestConversationFilterChaining:
     def test_filter_returns_self(self, filter_repo):
         """Every fluent filter method must return self."""
         CHAINABLE_METHODS = [
-            lambda f: f.provider("claude"),
+            lambda f: f.provider("claude-ai"),
             lambda f: f.since("2024-01-01"),
             lambda f: f.until("2025-01-01"),
             lambda f: f.limit(10),
@@ -508,14 +508,14 @@ class TestConversationFilterChaining:
         """Chain must apply ALL filters — provider, limit both take effect."""
         result = await (
             ConversationFilter(filter_repo)
-            .provider("claude")
+            .provider("claude-ai")
             .limit(1)
             .sort("date")
             .list()
         )
         assert isinstance(result, list)
         assert len(result) <= 1
-        assert all(c.provider == "claude" for c in result)
+        assert all(c.provider == "claude-ai" for c in result)
 
 
 class TestConversationFilterTerminal:
@@ -539,7 +539,7 @@ class TestConversationFilterTerminal:
 
     @pytest.mark.asyncio
     async def test_filter_count_with_filter(self, filter_repo):
-        count = await ConversationFilter(filter_repo).provider("claude").count()
+        count = await ConversationFilter(filter_repo).provider("claude-ai").count()
         assert count == 2
 
     @pytest.mark.asyncio
@@ -619,13 +619,13 @@ class TestConversationFilterHasTypes:
     async def test_has_thinking_with_provider(self, filter_repo_advanced):
         result = await (
             ConversationFilter(filter_repo_advanced)
-            .provider("claude")
+            .provider("claude-ai")
             .has("thinking")
             .list()
         )
         assert len(result) >= 1
         for conv in result:
-            assert conv.provider == "claude"
+            assert conv.provider == "claude-ai"
             assert any(m.is_thinking for m in conv.messages)
 
 
@@ -642,11 +642,11 @@ class TestConversationFilterSample:
     async def test_sample_with_filter_respects_filters(self, filter_repo_advanced):
         result = await (
             ConversationFilter(filter_repo_advanced)
-            .provider("claude")
+            .provider("claude-ai")
             .sample(2)
             .list()
         )
-        assert all(c.provider == "claude" for c in result)
+        assert all(c.provider == "claude-ai" for c in result)
 
 
 class TestConversationFilterCombinedFilters:
@@ -656,11 +656,11 @@ class TestConversationFilterCombinedFilters:
     async def test_exclude_provider_and_exclude_tag(self, filter_repo_advanced):
         result = await (
             ConversationFilter(filter_repo_advanced)
-            .exclude_provider("claude")
+            .exclude_provider("claude-ai")
             .exclude_tag("quantum")
             .list()
         )
-        assert all(c.provider != "claude" for c in result)
+        assert all(c.provider != "claude-ai" for c in result)
         for conv in result:
             assert "quantum" not in conv.tags
 
@@ -668,11 +668,11 @@ class TestConversationFilterCombinedFilters:
     async def test_provider_with_exclude_tag(self, filter_repo_advanced):
         result = await (
             ConversationFilter(filter_repo_advanced)
-            .provider("claude")
+            .provider("claude-ai")
             .exclude_tag("simple")
             .list()
         )
-        assert all(c.provider == "claude" for c in result)
+        assert all(c.provider == "claude-ai" for c in result)
         for conv in result:
             assert "simple" not in conv.tags
 
@@ -680,11 +680,11 @@ class TestConversationFilterCombinedFilters:
     async def test_multiple_exclude_providers(self, filter_repo_advanced):
         result = await (
             ConversationFilter(filter_repo_advanced)
-            .exclude_provider("claude", "chatgpt")
+            .exclude_provider("claude-ai", "chatgpt")
             .list()
         )
         for conv in result:
-            assert conv.provider not in ("claude", "chatgpt")
+            assert conv.provider not in ("claude-ai", "chatgpt")
 
 
 class TestConversationFilterListSummaries:
@@ -708,7 +708,7 @@ class TestConversationFilterListSummaries:
         assert all(s.summary for s in result)
 
     def test_can_use_summaries_check(self, filter_repo_advanced):
-        simple = ConversationFilter(filter_repo_advanced).provider("claude")
+        simple = ConversationFilter(filter_repo_advanced).provider("claude-ai")
         assert simple.can_use_summaries() is True
         with_content = ConversationFilter(filter_repo_advanced).has("thinking")
         assert with_content.can_use_summaries() is False
@@ -750,15 +750,15 @@ class TestConversationFilterBranching:
             rebuild_index(conn)
 
         (ConversationBuilder(db_path, "root")
-         .provider("claude")
+         .provider("claude-ai")
          .save())
         (ConversationBuilder(db_path, "cont")
-         .provider("claude")
+         .provider("claude-ai")
          .parent_conversation("root")
          .branch_type("continuation")
          .save())
         (ConversationBuilder(db_path, "side")
-         .provider("claude")
+         .provider("claude-ai")
          .parent_conversation("root")
          .branch_type("sidechain")
          .save())
@@ -793,7 +793,7 @@ class TestFiltersPick:
             rebuild_index(conn)
         for i in range(5):
             (ConversationBuilder(db_path, f"conv{i}")
-             .provider("claude")
+             .provider("claude-ai")
              .title(f"Conversation {i}")
              .save())
         backend = SQLiteBackend(db_path)
@@ -816,9 +816,9 @@ class TestFtsWithProviderFilter:
 
     @pytest.mark.asyncio
     async def test_fts_with_provider_match(self, filter_repo):
-        result = await ConversationFilter(filter_repo).contains("errors").provider("claude").list()
+        result = await ConversationFilter(filter_repo).contains("errors").provider("claude-ai").list()
         assert len(result) > 0
-        assert all(c.provider == "claude" for c in result)
+        assert all(c.provider == "claude-ai" for c in result)
 
     @pytest.mark.asyncio
     async def test_fts_with_provider_mismatch(self, filter_repo):
@@ -836,7 +836,7 @@ class TestDeleteCascade:
         repo = ConversationRepository(backend=backend)
         conv = (
             ConversationBuilder(db_path, "cascade-conv")
-            .provider("claude")
+            .provider("claude-ai")
             .title("Cascade Test")
             .add_message("m1", role="user", text="Hello world")
             .add_message("m2", role="assistant", text="Hi there")
