@@ -47,6 +47,7 @@ from .parsers.claude import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.schemas.packages import SchemaResolution
     from ..storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
@@ -96,9 +97,22 @@ def detect_provider(payload: Any, path: Path | None = None) -> Provider | None:
     return _dispatch.detect_provider(payload, path)
 
 
-def parse_payload(provider: str | Provider, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
+def parse_payload(
+    provider: str | Provider,
+    payload: Any,
+    fallback_id: str,
+    _depth: int = 0,
+    *,
+    schema_resolution: SchemaResolution | None = None,
+) -> list[ParsedConversation]:
     _dispatch.extract_messages_from_list = extract_messages_from_list
-    return _dispatch.parse_payload(provider, payload, fallback_id, _depth)
+    return _dispatch.parse_payload(
+        provider,
+        payload,
+        fallback_id,
+        _depth,
+        schema_resolution=schema_resolution,
+    )
 
 
 def parse_drive_payload(provider: str | Provider, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:

@@ -17,11 +17,11 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
+from polylogue.lib.provider_identity import canonical_acquisition_provider
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.sources.source import iter_source_raw_data
 from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
-from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
@@ -328,10 +328,14 @@ class AcquisitionService:
 
         raw_id = hashlib.sha256(raw_data.raw_bytes).hexdigest()
         acquired_at = datetime.now(timezone.utc).isoformat()
+        provider_name = canonical_acquisition_provider(
+            str(raw_data.provider_hint) if raw_data.provider_hint is not None else None,
+            source_name=source_name,
+        )
 
         return RawConversationRecord(
             raw_id=raw_id,
-            provider_name=str(raw_data.provider_hint or source_name),
+            provider_name=provider_name,
             source_name=source_name,  # Config source name, distinct from provider
             source_path=raw_data.source_path,
             source_index=raw_data.source_index,

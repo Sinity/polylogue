@@ -31,6 +31,9 @@ __all__ = [
 ]
 
 
+_EFFECTIVE_RAW_PROVIDER_SQL = "COALESCE(payload_provider, provider_name)"
+
+
 def raw_id_query(
     *,
     source_names: list[str] | None = None,
@@ -48,7 +51,7 @@ def raw_id_query(
     if require_unvalidated:
         where_clauses.append("validated_at IS NULL")
     if provider_name:
-        where_clauses.append("provider_name = ?")
+        where_clauses.append(f"{_EFFECTIVE_RAW_PROVIDER_SQL} = ?")
         params.append(provider_name)
     if validation_statuses:
         placeholders = ",".join("?" for _ in validation_statuses)
@@ -286,7 +289,8 @@ async def reset_parse_status(
     if provider is not None:
         cursor = await conn.execute(
             "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
-            "WHERE provider_name = ? AND (parsed_at IS NOT NULL OR parse_error IS NOT NULL)",
+            f"WHERE {_EFFECTIVE_RAW_PROVIDER_SQL} = ? "
+            "AND (parsed_at IS NOT NULL OR parse_error IS NOT NULL)",
             (provider,),
         )
     else:
@@ -311,7 +315,7 @@ async def reset_validation_status(
             "UPDATE raw_conversations "
             "SET validated_at = NULL, validation_status = NULL, validation_error = NULL, "
             "validation_drift_count = NULL, validation_provider = NULL, validation_mode = NULL "
-            "WHERE provider_name = ? "
+            f"WHERE {_EFFECTIVE_RAW_PROVIDER_SQL} = ? "
             "AND (validated_at IS NOT NULL OR validation_status IS NOT NULL OR validation_error IS NOT NULL)",
             (provider,),
         )
@@ -400,7 +404,7 @@ async def iter_raw_conversations(
         params: list[str | int] = []
 
         if provider is not None:
-            query += " WHERE provider_name = ?"
+            query += f" WHERE {_EFFECTIVE_RAW_PROVIDER_SQL} = ?"
             params.append(provider)
 
         query += " ORDER BY acquired_at DESC"
@@ -432,7 +436,7 @@ async def get_raw_conversation_count(
     query = "SELECT COUNT(*) as cnt FROM raw_conversations"
     params: tuple[str, ...] = ()
     if provider is not None:
-        query += " WHERE provider_name = ?"
+        query += f" WHERE {_EFFECTIVE_RAW_PROVIDER_SQL} = ?"
         params = (provider,)
     cursor = await conn.execute(query, params)
     row = await cursor.fetchone()

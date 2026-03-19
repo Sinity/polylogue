@@ -262,6 +262,85 @@ async def test_prepare_records_stores_source_metadata(async_backend, test_reposi
     assert meta.get("source") == "my-export"
 
 
+async def test_prepare_records_backfills_structured_blocks_from_provider_meta(async_backend, test_repository, tmp_path):
+    conversation = ParsedConversation(
+        provider_name="gemini",
+        provider_conversation_id="gemini-structured-1",
+        title="Structured Gemini",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="msg-1",
+                role="assistant",
+                text=None,
+                timestamp="2024-01-01T00:00:00Z",
+                provider_meta={
+                    "content_blocks": [
+                        {"type": "text", "text": "inline"},
+                        {"type": "code", "text": "print('ok')", "language": "python"},
+                        {"type": "tool_result", "text": "ok"},
+                    ]
+                },
+            ),
+            ParsedMessage(
+                provider_message_id="msg-2",
+                role="assistant",
+                text=None,
+                timestamp="2024-01-01T00:00:01Z",
+                provider_meta={
+                    "content_blocks": [{"type": "thinking", "text": "reasoning"}],
+                    "reasoning_traces": [{"text": "reasoning", "token_count": 12, "provider": "gemini"}],
+                },
+            ),
+        ],
+        attachments=[],
+    )
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+
+    conversation_id, counts, _ = await prepare_records(
+        conversation,
+        "drive-export",
+        archive_root=archive_root,
+        backend=async_backend,
+        repository=test_repository,
+    )
+
+    assert counts["messages"] == 2
+    async with async_backend.connection() as conn:
+        block_rows = await (
+            await conn.execute(
+                """
+                SELECT m.provider_message_id, cb.type, cb.text
+                FROM content_blocks cb
+                JOIN messages m ON m.message_id = cb.message_id
+                WHERE cb.conversation_id = ?
+                ORDER BY m.provider_message_id, cb.block_index
+                """,
+                (conversation_id,),
+            )
+        ).fetchall()
+        message_rows = await (
+            await conn.execute(
+                "SELECT provider_message_id, text, has_thinking FROM messages WHERE conversation_id = ? ORDER BY provider_message_id",
+                (conversation_id,),
+            )
+        ).fetchall()
+
+    assert [(row["provider_message_id"], row["type"], row["text"]) for row in block_rows] == [
+        ("msg-1", "text", "inline"),
+        ("msg-1", "code", "print('ok')"),
+        ("msg-1", "tool_result", "ok"),
+        ("msg-2", "thinking", "reasoning"),
+    ]
+    assert [(row["provider_message_id"], row["text"], row["has_thinking"]) for row in message_rows] == [
+        ("msg-1", "inline\nprint('ok')\nok", 0),
+        ("msg-2", "reasoning", 1),
+    ]
+
+
 async def test_prepare_records_multiple_messages_get_unique_hashes(async_backend, test_repository, tmp_path):
     conversation = ParsedConversation(
         provider_name="test",

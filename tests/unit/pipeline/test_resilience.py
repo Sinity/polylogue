@@ -302,8 +302,8 @@ async def test_parse_gemini_missing_text_fields(tmp_path):
 
 @settings(max_examples=25, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 @given(acquisition_input_batch_strategy())
-async def test_acquisition_law_counts_unique_raws_and_uses_provider_fallback(batch) -> None:
-    """Acquisition should store each unique raw payload once and preserve fallback provider naming."""
+async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(batch) -> None:
+    """Acquisition should store each unique raw payload once and keep raw provider hints canonical."""
     with TemporaryDirectory() as tempdir:
         backend = SQLiteBackend(db_path=Path(tempdir) / "acquire.db")
         source_name = "generated-source"
@@ -320,7 +320,7 @@ async def test_acquisition_law_counts_unique_raws_and_uses_provider_fallback(bat
 
         expected_first_provider: dict[str, str] = {}
         for spec in batch:
-            expected_first_provider.setdefault(spec.payload_id, spec.provider_hint or source_name)
+            expected_first_provider.setdefault(spec.payload_id, spec.provider_hint or "unknown")
 
         try:
             with patch("polylogue.pipeline.services.acquisition.iter_source_raw_data", return_value=iter(raw_items)):
@@ -437,10 +437,14 @@ async def test_parse_raw_record_contract_updates_payload_provider_and_dispatches
         raw_id="raw-1",
     )
     envelope = MagicMock(provider="gemini", payload={"id": "parsed"})
+    schema_resolution = MagicMock(element_kind="conversation_document", package_version="v2")
+    schema_registry = MagicMock()
+    schema_registry.resolve_payload.return_value = schema_resolution
 
     with patch("polylogue.pipeline.services.parsing.build_raw_payload_envelope", return_value=envelope) as mock_envelope:
-        with patch("polylogue.pipeline.services.parsing.parse_payload", return_value=["parsed"]) as mock_parse:
-            result = await service._parse_raw_record(raw_record)
+        with patch("polylogue.pipeline.services.parsing.SchemaRegistry", return_value=schema_registry):
+            with patch("polylogue.pipeline.services.parsing.parse_payload", return_value=["parsed"]) as mock_parse:
+                result = await service._parse_raw_record(raw_record)
 
     mock_envelope.assert_called_once_with(
         raw_record.raw_content,
@@ -448,6 +452,16 @@ async def test_parse_raw_record_contract_updates_payload_provider_and_dispatches
         fallback_provider=raw_record.provider_name,
         payload_provider=None,
     )
-    mock_parse.assert_called_once_with("gemini", {"id": "parsed"}, "raw-1")
+    schema_registry.resolve_payload.assert_called_once_with(
+        "gemini",
+        {"id": "parsed"},
+        source_path=raw_record.source_path,
+    )
+    mock_parse.assert_called_once_with(
+        "gemini",
+        {"id": "parsed"},
+        "raw-1",
+        schema_resolution=schema_resolution,
+    )
     assert raw_record.payload_provider == "gemini"
     assert result == ["parsed"]

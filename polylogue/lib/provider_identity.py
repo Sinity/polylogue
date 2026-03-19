@@ -64,7 +64,28 @@ def canonical_schema_provider(
 __all__ = [
     "CORE_RUNTIME_PROVIDERS",
     "CORE_SCHEMA_PROVIDERS",
+    "canonical_acquisition_provider",
     "canonical_runtime_provider",
     "canonical_schema_provider",
     "normalize_provider_token",
 ]
+
+
+def canonical_acquisition_provider(
+    provider_hint: str | None,
+    *,
+    source_name: str | None = None,
+) -> str:
+    """Resolve the raw acquisition provider hint stored with raw payloads.
+
+    Acquisition-time provider identity must stay distinct from the configured
+    source name. Source names like ``inbox`` or ``seeded`` are operator scope,
+    not provider truth. Only store a provider token when either the scanned
+    payload hint or the source family itself resolves to a known runtime
+    provider; otherwise store ``unknown``.
+    """
+
+    provider = canonical_runtime_provider(provider_hint, default="")
+    if provider:
+        return provider
+    return canonical_runtime_provider(source_name)

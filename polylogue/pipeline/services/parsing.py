@@ -26,6 +26,7 @@ from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
 from polylogue.protocols import ProgressCallback
+from polylogue.schemas.registry import SchemaRegistry
 from polylogue.sources.source import parse_payload
 from polylogue.storage.store import RawConversationRecord
 
@@ -592,11 +593,18 @@ class ParsingService:
         if not envelope.artifact.parse_as_conversation:
             return []
 
+        schema_resolution = SchemaRegistry().resolve_payload(
+            envelope.provider,
+            envelope.payload,
+            source_path=raw_record.source_path,
+        )
+
         # Use the existing parser dispatcher
         return parse_payload(
             envelope.provider,
             envelope.payload,
             raw_record.raw_id,  # Use raw_id as fallback conversation ID
+            schema_resolution=schema_resolution,
         )
 
 __all__ = ["ParsingService", "ParseResult", "IngestResult"]

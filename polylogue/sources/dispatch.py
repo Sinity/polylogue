@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from io import BytesIO
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from polylogue.logging import get_logger
 from polylogue.types import Provider
@@ -12,6 +12,9 @@ from polylogue.types import Provider
 from .decoders import _decode_json_bytes, _iter_json_stream
 from .parsers import chatgpt, claude, codex, drive
 from .parsers.base import ParsedConversation, extract_messages_from_list
+
+if TYPE_CHECKING:
+    from polylogue.schemas.packages import SchemaResolution
 
 logger = get_logger(__name__)
 
@@ -93,17 +96,51 @@ def _parse_bundle_items(
     return [parser(item, f"{fallback_id}-{i}") for i, item in enumerate(payload) if isinstance(item, dict)]
 
 
-def parse_payload(provider: str | Provider, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
+def _schema_guided_payload(
+    provider: Provider,
+    payload: Any,
+    schema_resolution: SchemaResolution | None,
+) -> Any:
+    """Apply schema-derived structural hints before provider-specific lowering."""
+    if schema_resolution is None:
+        return payload
+    if schema_resolution.element_kind not in {"conversation_record_stream", "subagent_conversation_stream"}:
+        return payload
+    if provider in (Provider.CLAUDE_CODE, Provider.CODEX) and isinstance(payload, dict):
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            return messages
+        return [payload]
+    return payload
+
+
+def parse_payload(
+    provider: str | Provider,
+    payload: Any,
+    fallback_id: str,
+    _depth: int = 0,
+    *,
+    schema_resolution: SchemaResolution | None = None,
+) -> list[ParsedConversation]:
     """Dispatch parsed payload to the appropriate provider parser."""
     runtime_provider = Provider.from_string(provider)
     if _depth > _MAX_PARSE_DEPTH:
         logger.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
         return []
+    payload = _schema_guided_payload(runtime_provider, payload, schema_resolution)
     if isinstance(payload, dict) and isinstance(payload.get("conversations"), list):
         results: list[ParsedConversation] = []
         for i, item in enumerate(payload["conversations"]):
             if isinstance(item, dict):
-                results.extend(parse_payload(runtime_provider, item, f"{fallback_id}-{i}", _depth + 1))
+                results.extend(
+                    parse_payload(
+                        runtime_provider,
+                        item,
+                        f"{fallback_id}-{i}",
+                        _depth + 1,
+                        schema_resolution=schema_resolution,
+                    )
+                )
         return results
     if runtime_provider is Provider.CHATGPT:
         if isinstance(payload, list):
@@ -129,7 +166,15 @@ def parse_payload(provider: str | Provider, payload: Any, fallback_id: str, _dep
         if _looks_like_chunked_conversation_list(payload):
             results = []
             for i, item in enumerate(payload):
-                results.extend(parse_payload(runtime_provider, item, f"{fallback_id}-{i}", _depth + 1))
+                results.extend(
+                    parse_payload(
+                        runtime_provider,
+                        item,
+                        f"{fallback_id}-{i}",
+                        _depth + 1,
+                        schema_resolution=schema_resolution,
+                    )
+                )
             return results
         return [drive.parse_chunked_prompt(runtime_provider, {"chunks": payload}, fallback_id)]
 
