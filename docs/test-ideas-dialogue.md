@@ -155,7 +155,7 @@ now think about the exercise command itself, as well as set of exercises we've g
 
 ## MODEL ✨
 
-An analysis of the `xtask exercise` command in Sinex, compared against the `demo` and QA structure in Polylogue, reveals two distinct, powerful paradigms for validating complex systems. 
+An analysis of the `xtask exercise` command in Sinex, compared against the `generate` and `qa --only exercises` path in Polylogue, reveals two distinct, powerful paradigms for validating complex systems. 
 
 Here is a synthesis of both approaches, their strengths and weaknesses, and a superior framework that emerges from combining their best qualities.
 
@@ -176,9 +176,9 @@ In `xtask/src/commands/exercise.rs`, we see a massive (129KB) embedded integrati
 *   **No Audit Trail:** It prints pass/fail to the terminal but does not intrinsically generate a human-readable historical artifact of what exactly happened during the run.
 
 ### 2. Polylogue: The "Ex-Vivo" Artifact-Driven QA
-In `/realm/project/polylogue`, the QA process is driven by `QA_SESSION.md` and the `polylogue demo` command.
-*   **Deterministic Seeding (`demo --seed`):** Creates an isolated temporary directory and populates it with exact, known-good faux data.
-*   **Showcase (`demo --showcase`):** Runs a barrage of real CLI commands against the seeded data.
+In `/realm/project/polylogue`, the QA process is driven by `QA_SESSION.md` and the `polylogue generate` command.
+*   **Deterministic Seeding (`generate --seed`):** Creates an isolated temporary directory and populates it with exact, known-good faux data.
+*   **Showcase (`qa --only exercises`):** Runs a barrage of real CLI commands against the seeded data.
 *   **Artifact Generation (`qa_outputs/Q*.txt`):** The QA session manually/semi-manually saves the exact terminal outputs of sequential operations (e.g., `Q09_full_pipeline.txt`, `Q11_incremental_rerun.txt`) into an `INDEX.md` tracked archive.
 
 **Strengths:**
@@ -218,14 +218,14 @@ This replaces Polylogue's manual QA session with a perfectly reliable, machine-g
 The ideal test harness tests four distinct quadrants, which neither project perfectly achieves alone today:
 1.  **Pure Logic (Unit Tests):** Handled well by Rust `#[test]` / Python `pytest`.
 2.  **Structural CLI (Tier 1):** Handled perfectly by `xtask exercise`.
-3.  **Deterministic Integration (Seeded):** Handled perfectly by `polylogue demo`. (Missing in `xtask`).
+3.  **Deterministic Integration (Seeded):** Handled perfectly by `polylogue generate`. (Missing in `xtask`).
 4.  **Real-World Messiness (Workspace/Drive):** Handled by `xtask T3` and Polylogue's live Drive sync.
 
 ### Conclusion
 
 The `xtask` test suite is highly advanced but suffers from being tightly coupled to the slow, mutable reality of a real Rust workspace (making tests slow and sometimes flaky). Polylogue's QA is deterministically brilliant but requires manual discipline to maintain the artifact trail. 
 
-The superior framework merges them: **A CLI that carries a tiered, in-process testing harness (`exercise`), which can run against deterministically seeded fake data (`demo`), and automatically emits Markdown audit trails (`QA_SESSION`) as proof of its own health.**
+The superior framework merges them: **A CLI that carries a tiered, in-process testing harness (`exercise`), which can run against deterministically seeded fake data, and automatically emits Markdown audit trails (`QA_SESSION`) as proof of its own health.**
 
 
 ## USER 🧑‍💻
@@ -307,14 +307,14 @@ In `xtask`, Tier 1 tests are "Structural". They verify that the CLI binary parse
 **Polylogue's equivalent to Tier 1 is currently handled by its `pytest` suite.**
 If you look at the Polylogue QA output, the agent runs `nix develop -c pytest -q` which results in `4519 passed`. Within those 4,500 tests, there are Python unit tests that mock the Click CLI context and assert that commands don't crash.
 
-**Why isn't it in `polylogue demo`?**
-Because Polylogue's `demo` command is designed specifically for *data visualization and pipeline validation*, not interface validation. The `demo --showcase` command executes a preset list of queries against the seeded database to prove the *read/write pipelines* work.
+**Why isn't it in `polylogue generate`?**
+Because Polylogue's `demo` command is designed specifically for *data visualization and pipeline validation*, not interface validation. The `qa --only exercises` command executes a preset list of queries against the seeded database to prove the *read/write pipelines* work.
 
 **The automated QA convergence:**
 As you noted, the Polylogue QA session was run by a coding agent manually piping commands to files (`polylogue --stats > Q12_stats.txt`).
 If we take the "Superior Framework", Polylogue should have a `polylogue qa --audit` command that programmatically:
 1. Wipes the DB.
-2. Seeds it (`polylogue demo --seed`).
+2. Seeds it (`polylogue generate --seed`).
 3. Runs the showcase queries, capturing stdout/stderr automatically.
 4. Spits out the completed `QA_SESSION.md` file without human/agent manual labor.
 
@@ -340,11 +340,11 @@ Let's break down your desires and formulate a cohesive strategy for both project
 
 ### 1. The Core Desire: "Batch Manual Command Execution"
 
-You want the ability to run a command and visually (or automatically) verify, "Yes, this output makes sense and the system works," without having to type 20 commands yourself. This is exactly what `polylogue demo --showcase` does, and what `xtask exercise` *tries* to do.
+You want the ability to run a command and visually (or automatically) verify, "Yes, this output makes sense and the system works," without having to type 20 commands yourself. This is exactly what `polylogue qa --only exercises` does, and what `xtask exercise` *tries* to do.
 
 #### How to improve `polylogue`'s approach:
-Polylogue's `demo --showcase` currently runs commands and prints their output. To make it a true automated QA engine (like the agent did manually), you need to formalize the "Output Capture & Assertion" phase.
-*   **The Upgrade:** Introduce an `--audit-dir` flag to `demo --showcase`.
+Polylogue's `qa --only exercises` currently runs commands and prints their output. To make it a true automated QA engine (like the agent did manually), you need to formalize the "Output Capture & Assertion" phase.
+*   **The Upgrade:** Introduce an `--audit-dir` flag to `qa --only exercises`.
 *   **The Abstraction:** When running a command in showcase mode, the harness should intercept `stdout`/`stderr`. It should format this into a Markdown block and append it to an `AUDIT_LOG.md`. Furthermore, instead of just printing it, it could use snapshot testing (like `insta` in Rust, or `syrupy` in Python) to compare the *shape* of the output against a known-good baseline, masking out timestamps.
 *   **New Polylogue Exercises Needed:**
     *   **Incremental Ingestion Failures:** Manually corrupt a downloaded JSON line, run incremental ingest, and ensure the tool isolates the error without dropping the rest of the file.
@@ -408,7 +408,7 @@ If we zoom out, you are essentially building a tiered confidence platform:
 
 To achieve your goal of "batch manual command execution" and high-confidence AI coding, you should transition both tools toward **Auditable, Sandboxed Playbooks**.
 
-1.  **Stop writing "asserts" for manual tools.** Instead, write "Playbooks" (like `demo --showcase`).
+1.  **Stop writing "asserts" for manual tools.** Instead, write "Playbooks" (like `qa --only exercises`).
 2.  **Capture the narrative.** When a Playbook runs, it should automatically generate a `QA_SESSION.md` containing the exact inputs and outputs.
 3.  **Diff the narrative.** In CI (or locally), compare the generated `QA_SESSION.md` against the checked-in `QA_SESSION.md`. If the output changed (e.g., a table format shifted, or an error message lost its context), the diff will immediately show you the regression.
 4.  **Sandbox the blast radius.** For `xtask`, build a minimal lightweight fake cargo workspace in `/tmp/` specifically to test the heavy compilation/locking commands without destroying your local dev loop.
@@ -483,8 +483,8 @@ By leveraging what you already have, the complete, un-compromised testing framew
 *   **Where:** `#[test]` in Rust, `pytest` in Python.
 *   **What:** Deterministic data transformation (e.g., Polylogue parsing JSON lines, `xtask` hashing a directory).
 
-**Layer 2: Structural & State Verification (`xtask exercise` / `polylogue demo`)**
-*   **Where:** Compiled into the CLI, executed via `xtask exercise` or `polylogue demo --showcase`.
+**Layer 2: Structural & State Verification (`xtask exercise` / `polylogue generate`)**
+*   **Where:** Compiled into the CLI, executed via `xtask exercise` or `polylogue qa --only exercises`.
 *   **What:** Parses CLI flags, outputs JSON, respects `--seed` data.
 *   **Improvement:** These commands MUST output a deterministic Markdown `QA_SESSION.md` audit file, replacing manual testing.
 
@@ -504,7 +504,7 @@ By leveraging what you already have, the complete, un-compromised testing framew
 To make this vision a reality, I would recommend the following roadmap:
 
 1.  **Extract `exercise.rs`:** Break that 4,000-line file into modules to make it maintainable.
-2.  **Implement Audit Trails:** Add the `--audit-file QA_SESSION.md` flag to `xtask exercise` and `polylogue demo --showcase`.
+2.  **Implement Audit Trails:** Add the `--audit-file QA_SESSION.md` flag to `xtask exercise` and `polylogue qa --only exercises`.
 3.  **Create the `xtask` VM Suite:** Create a new test scenario in `tests/e2e/nixos-vm/` dedicated specifically to `xtask` concurrency, zombie reaping, and process-group signal handling.
 4.  **Connect it to CI:** Ensure `xtask vm test --category xtask` runs on PRs that touch `xtask/src/jobs/` or `xtask/src/coordinator.rs`.
 
@@ -583,7 +583,7 @@ NixOS VM tests exist to verify OS-level bindings: systemd service startup, socke
 
 `polylogue`, from my understanding, is primarily a CLI/TUI application that ingests data from APIs/files, puts it into an embedded DB (SQLite/DuckDB), and displays it.
 *   Because it doesn't hook into systemd, manage Linux user permissions, or require complex network topologies, spinning up a full Linux kernel to test it is mostly wasted overhead.
-*   The current approach (`polylogue demo --seed` creating an isolated temp dir) is the mathematically correct boundary for a tool like `polylogue`.
+*   The current approach (`polylogue generate --seed` creating an isolated temp dir) is the mathematically correct boundary for a tool like `polylogue`.
 
 ### Synthesis: Where to go from here
 
@@ -619,7 +619,7 @@ You do **Property-Based Testing** (randomizing inputs to a single function/prope
 
 *   *What MBT actually is:* In true MBT (using something like `proptest::state_machine` in Rust, or `hypothesis.stateful` in Python), you define a "Reference Model" (a simplified, pure-memory fake version of your app) and a set of "Transitions" (actions the user can take). The engine then generates randomized *sequences* of actions (e.g., `[Insert(A), Delete(A), Insert(B), ShutDown, Restart]`). After every action, it asserts that your real system's state exactly matches the simple fake Reference Model. If it fails, it mathematically "shrinks" the sequence to find the exact minimal series of steps that broke your app.
 *   *In Sinex:* You have `state_machine_chaos_test.rs` and `replay_state_machine_test.rs`, but looking at the code, these are manually authored, hard-coded sequences of actions running under concurrent load. They are excellent tests, but they are not driven by a randomized generative model.
-*   *In Polylogue:* Polylogue relies heavily on `pytest` and your `demo --showcase`. It does not use Python's `hypothesis.stateful` module to dynamically generate command chains.
+*   *In Polylogue:* Polylogue relies heavily on `pytest` and your `qa --only exercises`. It does not use Python's `hypothesis.stateful` module to dynamically generate command chains.
 
 **Should you?**
 For `polylogue`, no—it's likely overkill.
@@ -781,8 +781,8 @@ By cross-pollinating these approaches, you can dramatically increase coverage an
 ### 2. From `polylogue` ➔ to `sinex` and `xtask`
 
 **Idea C: The `--seed` Paradigm for the Whole Ecosystem**
-*   *In Polylogue:* You have `demo --seed` which creates a deterministic, isolated faux-database. This allows instant UI testing and demonstration.
-*   *Apply to Sinex:* `sinexctl` and `sinex-gateway` need a `sinexctl demo --seed` command. Instead of a developer having to run `sinex-system-ingestor` for 3 days to get enough data to test a Grafana dashboard or a composable query, this command should pump 10,000 semantically valid fake events (process creations, file writes, network connections) into the database in 2 seconds.
+*   *In Polylogue:* You have `generate --seed` which creates a deterministic, isolated faux-database. This allows instant UI testing and demonstration.
+*   *Apply to Sinex:* `sinexctl` and `sinex-gateway` need a `sinexctl generate --seed` command. Instead of a developer having to run `sinex-system-ingestor` for 3 days to get enough data to test a Grafana dashboard or a composable query, this command should pump 10,000 semantically valid fake events (process creations, file writes, network connections) into the database in 2 seconds.
 *   *Apply to xtask:* `xtask analytics --mock-history` should instantly allow you to test your heuristic logic against a perfectly known, static dataset, making the complex `T4` tests instantaneous.
 
 **Idea D: Snapshot Testing as a First-Class Artifact**
@@ -1046,9 +1046,9 @@ The author’s core thesis is that **testing isolated "Lego bricks" with mocks c
 Here is exactly how this philosophy maps to the successes and failures we just uncovered in the `sinex`, `xtask`, and `polylogue` test suites.
 
 ### 1. Polylogue: The Embodiment of the Ideal
-Of all your projects, `polylogue`’s `demo --showcase` combined with the `--seed` flag is the purest implementation of this author's philosophy.
+Of all your projects, `polylogue`’s `qa --only exercises` combined with the `--seed` flag is the purest implementation of this author's philosophy.
 *   **The Post says:** *"My approach prefers extracting IO operations to adapters... then using reliable fakes to test the bulk of the system’s behavior from the outside."*
-*   **Polylogue does this:** Instead of mocking Python classes (e.g., `Mock(ChatParser)`), `demo --seed` injects a reliable "fake" into the I/O layer—an isolated, deterministic database. `demo --showcase` then tests the application *from the outside* by running actual CLI queries against it.
+*   **Polylogue does this:** Instead of mocking Python classes (e.g., `Mock(ChatParser)`), `generate --seed` injects a reliable "fake" into the I/O layer—an isolated, deterministic database. `qa --only exercises` then tests the application *from the outside* by running actual CLI queries against it.
 *   **The Result:** If you refactor the internal Python classes (the Lego bricks), the `demo` tests won't break, because they only care that the user-facing output is correct.
 
 ### 2. Sinex: A Tale of Two Paradigms
@@ -1110,8 +1110,8 @@ You asked why I suggested `vhs` for Polylogue and `insta` for `xtask`, and wheth
 
 *   **Why `vhs` for Polylogue:** Polylogue is a TUI (`textual`). `vhs` is specifically designed to simulate human typing (`Sleep 1s`, `Type "hello"`) and record the *visual* output (a GIF/MP4). Yes, `vhs` allows strict control over terminal dimensionality (`Set Width 1200`, `Set Height 600`), font size, themes, and typing speed. However, `vhs` **cannot easily assert on the output**. It is primarily a documentation generator that doubles as a crash-detector.
 *   **Why `insta` with a PTY for `xtask`:** `xtask` is a CLI. You don't "interact" with it in the same way; you run a command and it streams output. `insta` is a Rust snapshot testing library. If you run `xtask check` inside a PTY, you capture the raw ANSI bytes (colors, progress bars). `insta` saves those bytes to a `.snap` file. If the output changes, the test fails, and you get a visual diff.
-*   **How to combine them:** They are complementary! You use `vhs` to generate beautiful visual QA documentation (like `QA_SESSION.md`), and you use `insta` (with `rexpect` or similar) inside your Rust/Python test suites to mathematically assert that the ANSI output hasn't regressed.
-*   **Integration with `exercise`/`demo`:** Yes, this should absolutely be integrated. `polylogue demo --audit` could trigger a `vhs` tape generation. `xtask exercise --audit` could run the commands through a PTY and write the ANSI snapshots to a folder.
+*   **How to combine them:** They are complementary. Use `vhs` to generate visual QA documentation, and `insta` (with `rexpect` or similar) inside Rust/Python test suites to assert ANSI output snapshots.
+*   **Integration with `exercise`/`qa`:** Yes, this should absolutely be integrated. `polylogue qa --only exercises` could trigger a `vhs` tape generation. `xtask exercise --audit` could run the commands through a PTY and write the ANSI snapshots to a folder.
 
 ### 2. The Sinex Observability Gap (Systemd Dependency)
 
@@ -1336,7 +1336,7 @@ To elevate `sinex` to a bulletproof platform, standard testing is insufficient.
 
 ## 5. `polylogue` Enhancements
 
-`polylogue` has the best sociability (`demo --seed` and `demo --showcase`), but relies on manual agent workflows.
+`polylogue` has the best sociability (`generate --seed` and `qa --only exercises`), but relies on manual agent workflows.
 
 ### 5.1. Automated Visual QA & Artifacts
 *   **VHS integration:** Use `vhs` (by Charm) to write `.tape` files that simulate human typing in the TUI. Run this in CI to automatically generate GIFs/MP4s of the interface. This provides visual regression testing and auto-updating documentation.
@@ -1444,8 +1444,8 @@ When discussing the NixOS VM tests for `xtask`'s process management, I mentioned
     4. Run `xtask jobs cancel` or `xtask jobs prune`.
     5. **Assert:** `xtask` reads `/proc/{pid}/cmdline`, realizes the PID belongs to an unrelated process (not "cargo"), and gracefully marks the job as `Failed` in the DB *without* killing the innocent dummy process.
 
-### 3. The `demo --showcase` Upgrade Mechanics (Diffing)
-We talked about having `QA_SESSION.md` be the output of `polylogue demo --showcase` (and `xtask exercise`). But the crucial workflow detail of *how* this prevents regressions was slightly glossed over.
+### 3. The `qa --only exercises` Upgrade Mechanics (Diffing)
+We talked about having `QA_SESSION.md` be the output of `polylogue qa --only exercises` (and `xtask exercise`). But the crucial workflow detail of *how* this prevents regressions was slightly glossed over.
 *   **The CI Diffing Strategy:** It is not enough to just generate the file. The CI pipeline must generate the `QA_SESSION.md`, and then run `git diff --exit-code QA_SESSION.md`. If the generated markdown differs from the checked-in markdown (even by a single table column alignment or missing context string), the CI fails. This is what turns "documentation generation" into "strict visual regression testing."
 
 ### 4. The JSON Schema Stability Invariant
@@ -1523,7 +1523,7 @@ The agent fully embraced `hypothesis` to replace manual example tables with gene
 
 ### 4. Idea D & QA Automation: Snapshots and Audit Trails
 *   **`b11ffa6a` (Syrupy Snapshots):** It deleted 84 lines of brittle `assert "<div>" in html` string-scraping tests and replaced them with `syrupy` snapshot testing. If the UI rendering changes, you now get a visual diff instead of a broken substring match.
-*   **`369aa0fc` (QA Session Audit Trail):** It successfully implemented the `--audit-dir` feature into `demo --showcase`. Crucially, it didn't just write the feature; it wrote 7 property laws to guarantee the `QA_SESSION.md` report is always internally consistent, valid JSON, and preserves the tier hierarchy.
+*   **`369aa0fc` (QA Session Audit Trail):** It successfully implemented the `--audit-dir` feature into `qa --only exercises`. Crucially, it didn't just write the feature; it wrote 7 property laws to guarantee the `QA_SESSION.md` report is always internally consistent, valid JSON, and preserves the tier hierarchy.
 
 ### Summary
 The agent successfully translated architectural philosophy into concrete Rust/Python reality.
@@ -1556,7 +1556,7 @@ Here is a breakdown of the remaining commits and how they fulfill the exact stra
 
 ### 2. QA Session Audit Trail (`369aa0fc`)
 **The Directive:** Elevate the Audit Trail to replace manual QA sessions with generated artifacts.
-**The Execution:** The agent implemented `write_qa_session` and wired the `--audit-dir` flag into `demo --showcase`. More importantly, it wrote **7 Property Laws** for the report generator itself. 
+**The Execution:** The agent implemented `write_qa_session` and wired the `--audit-dir` flag into `qa --only exercises`. More importantly, it wrote **7 Property Laws** for the report generator itself. 
 *   *Why this is brilliant:* Instead of just writing the feature, it used `hypothesis` to generate randomized sets of pass/fail/skip test results (`n_passed`, `n_failed`, `n_skipped`) and proved that the resulting `QA_SESSION.json` always maintains internal mathematical consistency (e.g., `total == passed + failed + skipped`), regardless of how many tests are fed into it.
 
 ### 3. Pipeline Fault Injection (`eb0c3854`)
@@ -1631,7 +1631,7 @@ However, the `--audit-dir` flag specifically writes the JSON file (`showcase-YYY
 ### 2. How does it handle ingestion? (Manual vs. Automated)
 This is the core gap.
 *   **Manual QA (from `qa_archive/QA_SESSION.md`):** The coding agent ran commands against your *actual, live system data* (`/home/sinity/.local/share/polylogue/inbox`, your real `~/.claude/projects`, etc.). It ran a destructive `reset --all --yes` and a full ingestion pipeline on real data.
-*   **Automated Showcase:** By default, `demo --showcase` runs against either `fixtures` or `synthetic` data (generated via `SyntheticCorpus`). If you pass `--live`, it runs against your real data, but the help text explicitly states: `--live: Exercise read-only against real data`. It is mathematically forbidden from testing `reset` or write-heavy ingestion on your real database to protect your data.
+*   **Automated Showcase:** By default, `qa --only exercises` runs against either `fixtures` or `synthetic` data (generated via `SyntheticCorpus`). If you pass `--live`, it runs against your real data, but the help text explicitly states: `--live: Exercise read-only against real data`. It is mathematically forbidden from testing `reset` or write-heavy ingestion on your real database to protect your data.
 
 ### 3. How to design a robust QA pipeline for Ingestion
 
@@ -2117,7 +2117,7 @@ If an end-user generates a custom schema that lacks semantic tags, `synthetic.py
 
 *For an end-user trying to test their custom parser, random alphanumeric strings are perfectly fine.* 
 
-*For you, generating the official `demo --showcase`, you use the LLM-enhanced schemas that produce beautiful narrative text.*
+*For you, generating the official `qa --only exercises`, you use the LLM-enhanced schemas that produce beautiful narrative text.*
 
 ### Summary of the Workflow
 
@@ -2281,7 +2281,7 @@ You are entirely correct. Testing ZIP extraction, byte-order marks (BOMs), and w
 You mentioned: *"I would still run on my data as a corpus, for my own use. but it doesn't need test infra support."*
 
 This is the perfect separation.
-1.  **The CI / Git Infrastructure:** Runs purely on `synthetic.py` (which we will upgrade with the semantic heuristics). It runs the `demo --showcase`, generates `vhs` gifs, and does `insta` snapshot testing. 100% deterministic, 0% privacy risk.
+1.  **The CI / Git Infrastructure:** Runs purely on `synthetic.py` (which we will upgrade with the semantic heuristics). It runs the `qa --only exercises`, generates `vhs` gifs, and does `insta` snapshot testing. 100% deterministic, 0% privacy risk.
 2.  **The Local Developer (You):** You have a local bash script or just use `polylogue run` against your massive 10GB historical archive. If it crashes, you investigate, realize OpenAI changed their format again, and update the parser.
 
 ### Conclusion
@@ -2469,9 +2469,9 @@ We established that testing against synthetic data derived from your own schema 
 We must implement a strict separation of concerns:
 
 ### Tier A: The Synthetic Pipeline (CI & Visuals)
-*   **What:** Eradicate the static `polylogue/showcase/fixtures/` directory entirely. Replace it with `demo --showcase --seed <hash>`.
+*   **What:** Eradicate the static `polylogue/showcase/fixtures/` directory entirely. Replace it with `qa --only exercises --seed <hash>`.
 *   **Why:** Static fixtures bloat the repository and are difficult to update. A seeded `synthetic.py` generator provides 100% deterministic, infinitely scalable data for CI fuzzing and visual snapshot testing (`vhs` / `insta`).
-*   **How:** The CI runs `demo --showcase`. It uses the inferred schemas to generate perfect, happy-path data. This pipeline tests *code logic boundaries*, UI rendering, and database schema constraints.
+*   **How:** The CI runs `qa --only exercises`. It uses the inferred schemas to generate perfect, happy-path data. This pipeline tests *code logic boundaries*, UI rendering, and database schema constraints.
 
 ### Tier B: The "Sanitized Reality" Pipeline (The Unknown Unknowns)
 *   **What:** A new `polylogue qa --run` command that executes a full ingestion cycle against a private, uncommitted directory of *actual* Google Takeout/Anthropic `.zip` exports.

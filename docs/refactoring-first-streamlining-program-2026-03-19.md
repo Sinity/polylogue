@@ -205,8 +205,8 @@ The root currently makes the project look more chaotic than it is:
 - many top-level artifact-looking directories
 - `docs/` mixing canonical docs with plans, dialogue notes, and artifact
   warehouses
-- stale public references to `polylogue demo` even though the current CLI uses
-  `generate` and `qa`
+- stale historical references to `polylogue demo` remain in dated planning notes,
+  while active docs and help surfaces now use `generate` and `qa`
 
 This is a real maintainability problem, not just aesthetics.
 

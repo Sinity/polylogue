@@ -970,9 +970,9 @@ Recommended outputs:
 - `showcase-cookbook.md`
 - `showcase-manifest.json`
 
-### G4. Teach `demo --showcase` to Emit Visual + Text Bundles
+### G4. Teach `qa --only exercises` to Emit Visual + Text Bundles
 
-`polylogue demo --showcase` should be able to:
+`polylogue qa --only exercises` should be able to:
 
 - seed data
 - run showcase scenarios
