@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import random
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -654,6 +655,68 @@ class TestProviderAvailability:
     def test_for_provider_raises_on_unknown(self) -> None:
         with pytest.raises((FileNotFoundError, ValueError)):
             SyntheticCorpus.for_provider("nonexistent-provider-xyz")
+
+    def test_for_provider_accepts_explicit_version_and_element(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import polylogue.schemas.synthetic.core as synthetic_core
+
+        fake_registry = MagicMock()
+        fake_package = MagicMock(
+            version="v2",
+            default_element_kind="conversation_record_stream",
+        )
+        fake_package.element.side_effect = (
+            lambda element_kind: {"element_kind": element_kind}
+            if element_kind == "conversation_record_stream"
+            else None
+        )
+        fake_schema = {"type": "object"}
+        fake_registry.get_package.return_value = fake_package
+        fake_registry.get_element_schema.return_value = fake_schema
+        monkeypatch.setattr(synthetic_core, "SchemaRegistry", lambda: fake_registry)
+
+        corpus = SyntheticCorpus.for_provider(
+            "chatgpt",
+            version="v2",
+            element_kind="conversation_record_stream",
+        )
+
+        assert isinstance(corpus, SyntheticCorpus)
+        fake_registry.get_package.assert_called_once_with("chatgpt", version="v2")
+        fake_registry.get_element_schema.assert_called_once_with(
+            "chatgpt",
+            version="v2",
+            element_kind="conversation_record_stream",
+        )
+        assert corpus.schema == fake_schema
+
+    def test_for_provider_rejects_unknown_element_when_package_exists(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import polylogue.schemas.synthetic.core as synthetic_core
+
+        fake_registry = MagicMock()
+        fake_package = MagicMock(
+            version="v2",
+            default_element_kind="conversation_record_stream",
+        )
+        fake_package.element.return_value = None
+        fake_registry.get_package.return_value = fake_package
+        monkeypatch.setattr(synthetic_core, "SchemaRegistry", lambda: fake_registry)
+
+        with pytest.raises(ValueError):
+            SyntheticCorpus.for_provider("chatgpt", version="v2", element_kind="unknown_element")
+
+        fake_registry.get_package.assert_called_once_with("chatgpt", version="v2")
+
+    def test_for_provider_rejects_element_without_package(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import polylogue.schemas.synthetic.core as synthetic_core
+
+        fake_registry = MagicMock()
+        fake_registry.get_package.return_value = None
+        fake_schema = {"type": "object"}
+        fake_registry.get_schema.return_value = fake_schema
+        monkeypatch.setattr(synthetic_core, "SchemaRegistry", lambda: fake_registry)
+
+        with pytest.raises(ValueError):
+            SyntheticCorpus.for_provider("chatgpt", element_kind="conversation_record_stream")
 
 
 # ---------------------------------------------------------------------------

@@ -67,21 +67,57 @@ class SyntheticCorpus:
         self._relation_solver = RelationConstraintSolver(schema)
 
     @classmethod
-    def for_provider(cls, provider: str) -> SyntheticCorpus:
-        """Create a corpus generator for a specific provider."""
+    def for_provider(
+        cls,
+        provider: str,
+        *,
+        version: str = "default",
+        element_kind: str | None = None,
+    ) -> SyntheticCorpus:
+        """Create a corpus generator for a specific provider.
+
+        Args:
+            provider: Provider token to generate from
+            version: Schema package version to use (or legacy aliases like
+                ``default``/``latest`` where supported by the registry).
+            element_kind: Optional element schema kind inside the package.
+                Uses the package default when omitted.
+        """
         canonical_provider = canonical_schema_provider(provider)
         registry = SchemaRegistry()
-        package = registry.get_package(canonical_provider, version="default") if hasattr(registry, "get_package") else None
+        package = registry.get_package(canonical_provider, version=version) if hasattr(registry, "get_package") else None
+        resolved_element_kind = element_kind
+
+        schema: dict[str, Any] | None
         if package is not None and hasattr(registry, "get_element_schema"):
+            if resolved_element_kind is None:
+                resolved_element_kind = package.default_element_kind
+            if resolved_element_kind == "default":
+                resolved_element_kind = package.default_element_kind
+            if package.element(resolved_element_kind) is None:
+                raise ValueError(
+                    "No element kind "
+                    f"{resolved_element_kind!r} in package {package.version} for provider "
+                    f"{canonical_provider}"
+                )
             schema = registry.get_element_schema(
-                canonical_provider,
-                version=package.version,
-                element_kind=package.default_element_kind,
+                canonical_provider, version=version, element_kind=resolved_element_kind
             )
+            canonical_version = package.version
         else:
-            schema = registry.get_schema(canonical_provider, version="latest")
+            if element_kind is not None and element_kind != "default":
+                raise ValueError(
+                    f"Element schemas are not available for provider {canonical_provider}; "
+                    f"cannot request element_kind={element_kind!r}"
+                )
+            schema = registry.get_schema(canonical_provider, version=version)
+            canonical_version = version
+            resolved_element_kind = None if element_kind is None else element_kind
         if schema is None:
-            raise FileNotFoundError(f"No schema for provider {provider} (canonical: {canonical_provider})")
+            raise FileNotFoundError(
+                f"No schema for provider {provider} (canonical: {canonical_provider}, "
+                f"version={canonical_version}, element_kind={resolved_element_kind})"
+            )
 
         wire_format = PROVIDER_WIRE_FORMATS.get(canonical_provider)
         if not wire_format:

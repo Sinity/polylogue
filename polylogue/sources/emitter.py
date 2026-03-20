@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from io import BytesIO
-from typing import BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.logging import get_logger
+from polylogue.schemas.packages import SchemaResolution
 from polylogue.types import Provider
 
 from .cursor import _ParseContext
@@ -17,7 +18,16 @@ from .dispatch import GROUP_PROVIDERS, detect_provider, parse_payload
 from .parsers.base import ParsedConversation, RawConversationData
 from .parsers.claude import enrich_conversation_from_index
 
+if TYPE_CHECKING:
+    from polylogue.schemas.registry import SchemaRegistry as SchemaRegistryType
+
 logger = get_logger(__name__)
+
+
+def _schema_registry_factory() -> "SchemaRegistry":
+    from polylogue.schemas.registry import SchemaRegistry
+
+    return SchemaRegistry()
 
 
 class _ConversationEmitter:
@@ -27,10 +37,14 @@ class _ConversationEmitter:
     that was previously duplicated across ZIP and filesystem code paths.
     """
 
-    __slots__ = ("_ctx",)
+    __slots__ = (
+        "_ctx",
+        "_schema_registry",
+    )
 
     def __init__(self, ctx: _ParseContext) -> None:
         self._ctx = ctx
+        self._schema_registry: SchemaRegistryType | None = None
 
     def emit(
         self,
@@ -100,7 +114,13 @@ class _ConversationEmitter:
         )
         if not artifact.parse_as_conversation:
             return
-        for conv in parse_payload(provider, payloads, self._ctx.fallback_id):
+        schema_resolution = self._resolve_schema(provider, payloads)
+        for conv in parse_payload(
+            provider,
+            payloads,
+            self._ctx.fallback_id,
+            schema_resolution=schema_resolution,
+        ):
             yield (raw_data, self._maybe_enrich(conv))
 
     def _emit_individual(
@@ -128,6 +148,7 @@ class _ConversationEmitter:
                 )
                 if not artifact.parse_as_conversation:
                     continue
+                schema_resolution = self._resolve_schema(provider, payload)
 
                 if whole_file_raw is not None:
                     raw_data: RawConversationData | None = whole_file_raw
@@ -137,12 +158,40 @@ class _ConversationEmitter:
                 else:
                     raw_data = None
 
-                for conv in parse_payload(provider, payload, self._ctx.fallback_id):
+                for conv in parse_payload(
+                    provider,
+                    payload,
+                    self._ctx.fallback_id,
+                    schema_resolution=schema_resolution,
+                ):
                     yield (raw_data, self._maybe_enrich(conv, provider))
                 source_index += 1
             except Exception:
                 logger.exception("Error processing payload from %s", stream_name)
                 raise
+
+    def _resolve_schema(
+        self,
+        provider: Provider,
+        payload: Any,
+    ) -> SchemaResolution | None:
+        """Resolve schema metadata for the payload, if schemas are available."""
+        if self._schema_registry is None:
+            self._schema_registry = _schema_registry_factory()
+        try:
+            return self._schema_registry.resolve_payload(
+                provider,
+                payload,
+                source_path=self._ctx.source_path_str,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Schema resolution failed for %s in %s: %s",
+                provider,
+                self._ctx.source_path_str,
+                exc,
+            )
+            return None
 
     def _make_raw(
         self,
