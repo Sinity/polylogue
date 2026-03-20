@@ -523,8 +523,7 @@ tests/
 | `raw_synthetic_samples` | session | Raw conversation data for unit tests |
 | `repository` | function | Fresh `ConversationRepository` with in-memory backend |
 
-All fixtures use the same `SyntheticCorpus` infrastructure as `polylogue demo --seed/--corpus`.
-Note: `polylogue demo --showcase` currently seeds from packaged static fixtures.
+All fixtures use the same `SyntheticCorpus` infrastructure as `polylogue generate --seed`.
 
 ### Test Markers
 
