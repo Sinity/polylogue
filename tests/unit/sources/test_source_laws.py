@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import zipfile
+from unittest.mock import MagicMock
 from io import BytesIO
 from pathlib import Path
 
@@ -1122,6 +1123,57 @@ def test_conversation_emitter_contract_matrix(
         assert len(emitted[0][1].messages) == expected_message_count
     if label.startswith("grouped"):
         assert emitted[0][0] is not None and emitted[0][0].raw_bytes == raw
+
+
+def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Conversation emitter should pass SchemaResolution into parse_payload."""
+    ctx = _parse_context(
+        Provider.CHATGPT.value,
+        should_group=False,
+        source_path="/tmp/session.jsonl",
+        fallback_id="session",
+    )
+
+    fake_registry = MagicMock()
+    fake_registry.resolve_payload.return_value = object()
+    fake_parse = MagicMock()
+    fake_message = ParsedMessage(provider_message_id="m1", role="user", text="hello")
+    fake_conversation = ParsedConversation(
+        provider_name=Provider.CLAUDE_CODE,
+        provider_conversation_id="session",
+        title="session",
+        created_at=None,
+        updated_at=None,
+        messages=[fake_message],
+    )
+    fake_parse.return_value = [fake_conversation]
+
+    def fake_parse_payload(
+        provider: object,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: object | None = None,
+    ) -> list[ParsedConversation]:
+        fake_parse(provider=provider, payload=payload, fallback_id=fallback_id, schema_resolution=schema_resolution)
+        return [fake_conversation]
+
+    monkeypatch.setattr("polylogue.sources.emitter._schema_registry_factory", lambda: fake_registry)
+    monkeypatch.setattr("polylogue.sources.emitter.parse_payload", fake_parse_payload)
+
+    raw = (
+        b'{"mapping":{"r1":{"message":{"author":{"role":"user"},"content":{"content_type":"text","parts":["first"]}}}}}\n'
+        b'{"mapping":{"r1":{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["second"]}}}}}\n'
+    )
+
+    emitted = list(_ConversationEmitter(ctx).emit(BytesIO(raw), "session.jsonl"))
+
+    assert emitted
+    assert fake_parse.call_count == 2
+    assert fake_registry.resolve_payload.call_count == 2
+    resolved_arg = fake_parse.call_args_list[0].kwargs["schema_resolution"]
+    assert resolved_arg is fake_registry.resolve_payload.return_value
 
 
 def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contract() -> None:
