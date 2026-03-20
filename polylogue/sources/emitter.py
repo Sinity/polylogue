@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.logging import get_logger
-from polylogue.schemas.packages import SchemaResolution
 from polylogue.types import Provider
 
 from .cursor import _ParseContext
@@ -20,6 +19,7 @@ from .parsers.claude import enrich_conversation_from_index
 
 if TYPE_CHECKING:
     from polylogue.schemas.registry import SchemaRegistry as SchemaRegistryType
+    from polylogue.schemas.packages import SchemaResolution
 
 logger = get_logger(__name__)
 
@@ -174,7 +174,7 @@ class _ConversationEmitter:
         self,
         provider: Provider,
         payload: Any,
-    ) -> SchemaResolution | None:
+    ) -> "SchemaResolution | None":
         """Resolve schema metadata for the payload, if schemas are available."""
         if self._schema_registry is None:
             self._schema_registry = _schema_registry_factory()
