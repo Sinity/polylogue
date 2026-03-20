@@ -92,7 +92,7 @@ Commands:
   check        Health check with optional repair.
   completions  Generate shell completion scripts.
   dashboard    Launch the Mission Control TUI dashboard.
-  demo         Generate synthetic conversations for demos, testing, and...
+  generate     Generate synthetic conversations for demos, testing, and...
   embed        Generate semantic embeddings for conversations.
   mcp          Start the MCP server for AI assistant integration.
   qa           Snapshot and index QA artifacts to a reproducible archive path.

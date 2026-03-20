@@ -7,7 +7,7 @@ on:
       - "demos/tapes/**"
       - "polylogue/cli/**"
       - "polylogue/ui/**"
-      - "demos/seed_demo.py"
+      - "demos/generate.sh"
       - "polylogue/schemas/synthetic.py"
   workflow_dispatch:
 
@@ -33,7 +33,7 @@ jobs:
 
       - name: Seed demo database
         run: |
-          eval $(uv run polylogue demo --seed --env-only)
+          eval $(uv run polylogue generate --seed --env-only)
           echo "XDG_DATA_HOME=$XDG_DATA_HOME" >> $GITHUB_ENV
           echo "XDG_STATE_HOME=$XDG_STATE_HOME" >> $GITHUB_ENV
           echo "POLYLOGUE_ARCHIVE_ROOT=$POLYLOGUE_ARCHIVE_ROOT" >> $GITHUB_ENV

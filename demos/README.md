@@ -36,7 +36,7 @@ realistic conversations for all supported providers. No real chat exports are ne
 
 ```
 generate.sh
-  ├── 1. seeds demo database (demos/seed_demo.py → SyntheticCorpus)
+  ├── 1. seeds demo database (polylogue generate --seed → SyntheticCorpus)
   ├── 2. exports env vars for isolation
   ├── 3. runs each .tape file via vhs
   └── 4. copies key GIFs to docs/assets/

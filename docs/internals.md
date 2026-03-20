@@ -274,12 +274,14 @@ polylogue://conversations?provider=claude-ai&tag=important&limit=50
 ## Demo & Synthetic Data
 
 ```bash
-polylogue demo --seed                    # Full demo environment
-polylogue demo --seed --env-only         # Shell-friendly (eval $(...))
-polylogue demo --corpus -p chatgpt -n 5  # Raw fixture files
+polylogue generate --seed                    # Full synthetic seed environment
+polylogue generate --seed --env-only         # Shell-friendly (eval $(...))
+polylogue generate -p chatgpt -n 5           # Raw fixture files
 ```
 
-Uses `SyntheticCorpus` from `polylogue.schemas.synthetic`. Shared with test fixtures (`seeded_db`, `synthetic_source`, `raw_synthetic_samples`). See [docs/demo.md](demo.md).
+Uses `SyntheticCorpus` from `polylogue.schemas.synthetic`. Shared with test fixtures (`seeded_db`, `synthetic_source`, `raw_synthetic_samples`). See [Generate](generate.md).
+
+For deterministic command-surface checks, use `polylogue qa --only exercises` (and optional `--tier`/`--live` options).
 
 ---
 
