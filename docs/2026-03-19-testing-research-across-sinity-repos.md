@@ -1,5 +1,13 @@
 # Testing Deep Research for Sinity Repos
 
+Status: analysis input, not the live execution queue
+Role: cross-repo testing research reference with a partial Polylogue section
+
+Current planning entrypoint:
+
+- `planning-and-analysis-map-2026-03-21.md`
+- `testing-reliability-expansion-program-2026-03-14.md`
+
 ## Executive summary
 
 Across the four allowed repositories, testing maturity is uneven but trending strong in the two “product” codebases.

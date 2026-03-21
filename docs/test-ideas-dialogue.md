@@ -1,3 +1,14 @@
+# Test Ideas Dialogue
+
+Status: raw design-input transcript, not a direct execution plan
+Role: ideation reservoir for testing/schema ambitions
+
+Current planning entrypoint:
+
+- `planning-and-analysis-map-2026-03-21.md`
+- `testing-reliability-expansion-program-2026-03-14.md`
+- `intentional-forward-program-2026-03-21.md`
+
 ## USER 🧑‍💻
 
 @.claude/includes/** @xtask/** @docs/planning/xtask-intelligence-platform.md verify completeness of the plan's implementation, as well as whether it's verified (test suite) as well as it could be; in general, whether test suite could be written in much smarter way. I put basically all the files you need into your context already, but feel free to peruse anything else to figure it out, and deliberate a lot

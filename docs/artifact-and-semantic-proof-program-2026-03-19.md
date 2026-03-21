@@ -1,6 +1,14 @@
 # Polylogue Artifact And Semantic Proof Program
 
 Date: 2026-03-19
+Status: reference program; artifact/cohort half partly executed, semantic-preservation half remains future work
+Role: narrower proof-oriented architecture program
+
+Current execution entrypoint:
+
+- `intentional-forward-program-2026-03-21.md`
+- `artifact-cohort-control-plane-program-2026-03-21.md`
+- `planning-and-analysis-map-2026-03-21.md`
 
 ## Purpose
 

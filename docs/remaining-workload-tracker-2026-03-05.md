@@ -1,5 +1,13 @@
 # Remaining Workload Tracker (2026-03-05)
 
+Status: historical closure/backlog tracker, not the live execution queue
+Role: archaeology for the March 5-7 schema-validation wave
+
+Current execution entrypoint:
+
+- `planning-and-analysis-map-2026-03-21.md`
+- `intentional-forward-program-2026-03-21.md`
+
 Canonical checkpoint for unfinished work. Originally updated to final closure state on 2026-03-06; expanded again on 2026-03-07 after deeper architecture and test-runtime audit.
 
 ## Status

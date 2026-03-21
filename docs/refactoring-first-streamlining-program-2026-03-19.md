@@ -1,6 +1,13 @@
 # Polylogue Refactoring-First Streamlining Program
 
 Date: 2026-03-19
+Status: strategic reference, not the live execution queue
+Role: broad simplification reservoir; much of its executable order was absorbed into the intentional forward program
+
+Current execution entrypoint:
+
+- `intentional-forward-program-2026-03-21.md`
+- `planning-and-analysis-map-2026-03-21.md`
 
 ## Purpose
 

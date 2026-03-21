@@ -1,5 +1,13 @@
 # Polylogue architectural anatomy and pathology audit
 
+Status: analysis input, not the live execution queue
+Role: external-style code-outward audit feeding later program docs
+
+Current execution entrypoint:
+
+- `planning-and-analysis-map-2026-03-21.md`
+- `intentional-forward-program-2026-03-21.md`
+
 ## Executive judgment
 
 Polylogue is materially more coherent than its repo topology first suggests: there is a **single, real operational spine** that governs most meaningful behavior—**Acquire → Validate → Parse → Prepare/Save → Render → Index**—and that spine is wired end-to-end through the CLI “run” command into a SQLite-backed archive. The system’s “center of gravity” is not any one folder name, but the interplay between **`polylogue.pipeline.*` orchestration**, **`polylogue.sources.source` ingestion/parsing**, and **`polylogue.storage.*` persistence/querying**. fileciteturn43file0L1-L1 fileciteturn16file0L1-L1 fileciteturn62file0L1-L1 fileciteturn64file0L1-L1

@@ -1,6 +1,14 @@
 # Artifact And Semantic Proof Program: 5-Commit Execution Plan
 
 Date: 2026-03-19
+Status: historical execution slice/reference, not the live execution queue
+Role: concrete decomposition of the narrower proof program
+
+Current execution entrypoint:
+
+- `intentional-forward-program-2026-03-21.md`
+- `artifact-cohort-control-plane-program-2026-03-21.md`
+- `planning-and-analysis-map-2026-03-21.md`
 
 ## Purpose
 

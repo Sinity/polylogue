@@ -1,6 +1,13 @@
 # Polylogue Testing, Reliability, and Showcase Expansion Program
 
 Date: 2026-03-14
+Status: active reference backlog, not the live execution queue
+Role: broad testing/showcase/runtime reliability program
+
+Current execution entrypoint:
+
+- `intentional-forward-program-2026-03-21.md`
+- `planning-and-analysis-map-2026-03-21.md`
 
 ## Purpose
 
