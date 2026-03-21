@@ -11,12 +11,12 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-from hypothesis import given, settings, HealthCheck
 import hypothesis.strategies as st
+import pytest
+from hypothesis import HealthCheck, given, settings
 
 from polylogue.config import Config, IndexConfig
-from polylogue.sources import RecordBundle, save_bundle
+from polylogue.pipeline.prepare import RecordBundle, save_bundle
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index, update_index_for_conversations
 from polylogue.storage.search import escape_fts5_query, search_messages

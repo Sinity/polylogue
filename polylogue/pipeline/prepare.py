@@ -6,9 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel
+
 from polylogue.lib.json import dumps as json_dumps
-from polylogue.logging import get_logger
 from polylogue.lib.viewports import ToolCategory, classify_tool
+from polylogue.logging import get_logger
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
@@ -26,7 +28,6 @@ from polylogue.pipeline.semantic import extract_tool_metadata
 from polylogue.schemas.code_detection import detect_language
 from polylogue.schemas.unified import harmonize_parsed_message
 from polylogue.sources.parsers.base import ParsedContentBlock
-from polylogue.sources.source import RecordBundle, save_bundle
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
@@ -42,6 +43,33 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
+
+
+class RecordBundle(BaseModel):
+    conversation: ConversationRecord
+    messages: list[MessageRecord]
+    attachments: list[AttachmentRecord]
+    content_blocks: list[ContentBlockRecord] = []
+
+
+class SaveResult(BaseModel):
+    conversations: int
+    messages: int
+    attachments: int
+    skipped_conversations: int
+    skipped_messages: int
+    skipped_attachments: int
+
+
+async def save_bundle(bundle: RecordBundle, repository: ConversationRepository) -> SaveResult:
+    """Save a bundle of prepared records into the repository."""
+    counts = await repository.save_conversation(
+        conversation=bundle.conversation,
+        messages=bundle.messages,
+        attachments=bundle.attachments,
+        content_blocks=bundle.content_blocks,
+    )
+    return SaveResult(**counts)
 
 
 def _timestamp_sort_key(ts: str | None) -> float | None:
@@ -544,17 +572,6 @@ def enrich_bundle_from_db(
     # Patch content blocks: stable message_id and conversation_id
     patched_blocks: list[ContentBlockRecord] = []
     for block_rec in transform.bundle.content_blocks:
-        # Find which message this block belongs to by block_index within conversation
-        # The block's message_id in the transform used candidate_cid; patch it to cid
-        # and remap through the stable message map.
-        # We identify the message by its provider_message_id via the message index.
-        # Since blocks were created in order with the same message_id from transform,
-        # we map old message_id → new stable message_id.
-        old_mid = block_rec.message_id
-        # Find provider_message_id for this message via transform map
-        # transform.message_id_map: provider_msg_id → old_mid
-        # Build reverse map once
-        # (built lazily below)
         patched_blocks.append(block_rec)
 
     # Build reverse map: old_mid → stable_mid
@@ -758,10 +775,13 @@ async def _build_single_cache(
 
 
 __all__ = [
+    "RecordBundle",
+    "SaveResult",
     "PrepareCache",
     "TransformResult",
     "EnrichedBundle",
     "_timestamp_sort_key",
+    "save_bundle",
     "transform_to_records",
     "enrich_bundle_from_db",
     "prepare_records",
