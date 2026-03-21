@@ -863,7 +863,7 @@ def test_codex_role_normalization_model_to_assistant():
 
 def test_parse_payload_recursion_depth_limit():
     """Test that deeply nested payloads don't cause stack overflow."""
-    from polylogue.sources.source import parse_payload
+    from polylogue.sources.dispatch import parse_payload
 
     # Build a deeply nested payload with conversations key at depth > 10
     # Start with depth 12 (exceeds MAX_PARSE_DEPTH=10)
@@ -924,7 +924,7 @@ def test_parse_payload_recursion_depth_limit():
 
 def test_parse_payload_shallow_nesting_succeeds():
     """Test that moderately nested payloads within depth limit are parsed."""
-    from polylogue.sources.source import parse_payload
+    from polylogue.sources.dispatch import parse_payload
 
     # Build a nested payload at depth 5 (within MAX_PARSE_DEPTH=10)
     payload = {

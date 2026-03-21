@@ -2,7 +2,7 @@
 
 - sources/parsers/: JSON → ParsedConversation for each provider
 - sources/providers/: Pydantic models for provider export formats
-- sources/source.py: File/Drive reading → RecordBundle
+- sources/source.py: Source walking and raw conversation iteration
 - sources/drive*.py: Google Drive integration
 """
 
@@ -10,13 +10,13 @@ from __future__ import annotations
 
 # Drive integration
 from .drive import download_drive_files, iter_drive_conversations
+from .drive_client import DriveClient
 from .drive_types import (
     DriveAuthError,
     DriveError,
     DriveFile,
     DriveNotFoundError,
 )
-from .drive_client import DriveClient
 
 # Core parsing
 from .source import (
@@ -26,7 +26,6 @@ from .source import (
     RecordBundle,
     SaveResult,
     iter_source_conversations,
-    parse_drive_payload,
     save_bundle,
 )
 
@@ -45,5 +44,4 @@ __all__ = [
     "save_bundle",
     "iter_drive_conversations",
     "iter_source_conversations",
-    "parse_drive_payload",
 ]
