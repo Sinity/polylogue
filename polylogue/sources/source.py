@@ -1,4 +1,4 @@
-"""Source detection, provider parsing, and conversation iteration."""
+"""Source walking, raw ingestion, and conversation iteration."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
 from pydantic import BaseModel
 
 from polylogue.config import Source
@@ -20,26 +21,26 @@ from polylogue.types import Provider
 from ..storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
 from . import cursor as _cursor
 from . import decoders as _decoders
-from . import dispatch as _dispatch
 from .cursor import (
-    _ParseContext,
-    _get_file_mtime,
     _initialize_cursor_state,
     _log_source_iteration_summary,
+    _ParseContext,
     _record_cursor_failure,
     _select_paths_for_processing,
 )
-from .decoders import MAX_COMPRESSION_RATIO, MAX_UNCOMPRESSED_SIZE, _ZipEntryValidator, _process_zip, _zip_entry_provider_hint
+from .decoders import (
+    _process_zip,
+    _zip_entry_provider_hint,
+    _ZipEntryValidator,
+)
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
 from .dispatch import _detect_provider_from_raw_bytes
 from .emitter import _ConversationEmitter
-from .parsers import chatgpt, claude, codex, drive
 from .parsers.base import (
     ParsedAttachment,
     ParsedConversation,
     ParsedMessage,
     RawConversationData,
-    extract_messages_from_list,
 )
 from .parsers.claude import (
     SessionIndexEntry,
@@ -47,15 +48,17 @@ from .parsers.claude import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.schemas.packages import SchemaResolution
     from ..storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 _cursor.logger = logger
 _decoders.logger = logger
+MAX_COMPRESSION_RATIO = _decoders.MAX_COMPRESSION_RATIO
+MAX_UNCOMPRESSED_SIZE = _decoders.MAX_UNCOMPRESSED_SIZE
 ijson = _decoders.ijson
 _decode_json_bytes = _decoders._decode_json_bytes
 _iter_json_stream = _decoders._iter_json_stream
+_get_file_mtime = _cursor._get_file_mtime
 
 
 class RecordBundle(BaseModel):
@@ -91,51 +94,6 @@ async def save_bundle(bundle: RecordBundle, repository: ConversationRepository) 
         content_blocks=bundle.content_blocks,
     )
     return SaveResult(**counts)
-
-
-def detect_provider(payload: Any, path: Path | None = None) -> Provider | None:
-    return _dispatch.detect_provider(payload, path)
-
-
-def parse_payload(
-    provider: str | Provider,
-    payload: Any,
-    fallback_id: str,
-    _depth: int = 0,
-    *,
-    schema_resolution: SchemaResolution | None = None,
-) -> list[ParsedConversation]:
-    _dispatch.extract_messages_from_list = extract_messages_from_list
-    return _dispatch.parse_payload(
-        provider,
-        payload,
-        fallback_id,
-        _depth,
-        schema_resolution=schema_resolution,
-    )
-
-
-def parse_drive_payload(provider: str | Provider, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
-    """Drive/Gemini wrapper kept on the source module for existing operator/tests."""
-    runtime_provider = Provider.from_string(provider)
-    if _depth > 10:
-        logger.warning("Recursion depth exceeded parsing drive payload %s", fallback_id)
-        return []
-    if isinstance(payload, list):
-        if payload and isinstance(payload[0], dict) and ("role" in payload[0] or "text" in payload[0]):
-            return [drive.parse_chunked_prompt(runtime_provider, {"chunks": payload}, fallback_id)]
-        results = []
-        for i, item in enumerate(payload):
-            results.extend(parse_drive_payload(runtime_provider, item, f"{fallback_id}-{i}", _depth + 1))
-        return results
-    if isinstance(payload, dict):
-        if "chunkedPrompt" in payload or "chunks" in payload:
-            return [drive.parse_chunked_prompt(runtime_provider, payload, fallback_id)]
-        detected = detect_provider(payload) or runtime_provider
-        return parse_payload(detected, payload, fallback_id)
-    return []
-
-
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
 
@@ -461,6 +419,4 @@ __all__ = [
     "iter_source_conversations",
     "iter_source_conversations_with_raw",
     "iter_source_raw_data",
-    "parse_payload",
-    "parse_drive_payload",
 ]

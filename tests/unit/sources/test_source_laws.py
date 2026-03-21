@@ -6,16 +6,22 @@ import json
 import os
 import tempfile
 import zipfile
-from unittest.mock import MagicMock
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
-from hypothesis import HealthCheck, example, given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.config import Source
+from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources import source as source_module
+from polylogue.sources.dispatch import (
+    detect_provider,
+    parse_drive_payload,
+    parse_payload,
+)
 from polylogue.sources.drive import (
     download_drive_files,
     drive_cache_file_path,
@@ -41,12 +47,9 @@ from polylogue.sources.source import (
     _select_paths_for_processing,
     _zip_entry_provider_hint,
     _ZipEntryValidator,
-    detect_provider,
     iter_source_conversations,
     iter_source_conversations_with_raw,
     iter_source_raw_data,
-    parse_drive_payload,
-    parse_payload,
 )
 from polylogue.types import Provider
 from tests.infra.source_builders import GenericConversationBuilder, make_claude_chat_message
@@ -56,7 +59,6 @@ from tests.infra.strategies import (
     json_document_strategy,
     jsonl_bytes_strategy,
     provider_export_strategy,
-    provider_hint_path_strategy,
     provider_payload_case_strategy,
     provider_payload_strategy,
     provider_source_case_strategy,
@@ -623,7 +625,7 @@ def test_parse_drive_payload_contract(
 def test_parse_payload_generic_messages_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel_messages = [ParsedMessage(provider_message_id="m1", role="user", text="hello")]
 
-    monkeypatch.setattr(source_module, "extract_messages_from_list", lambda messages: sentinel_messages)
+    monkeypatch.setattr(dispatch_module, "extract_messages_from_list", lambda messages: sentinel_messages)
 
     conversations = parse_payload(
         Provider.DRIVE.value,
@@ -652,7 +654,7 @@ def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pyte
             messages=[],
         )
 
-    monkeypatch.setattr(source_module.chatgpt, "parse", fake_parse)
+    monkeypatch.setattr(dispatch_module.chatgpt, "parse", fake_parse)
     payloads = [{"id": "one"}, {"id": "two"}]
 
     conversations = parse_payload(Provider.CHATGPT.value, payloads, "bundle")
@@ -675,7 +677,7 @@ def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkey
             messages=[],
         )
 
-    monkeypatch.setattr(source_module.claude, "parse_code", fake_parse_code)
+    monkeypatch.setattr(dispatch_module.claude, "parse_code", fake_parse_code)
 
     from_messages = parse_payload(
         Provider.CLAUDE_CODE.value,
@@ -724,9 +726,9 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
             )
         ]
 
-    monkeypatch.setattr(source_module.drive, "parse_chunked_prompt", fake_chunked)
-    monkeypatch.setattr(source_module, "parse_payload", fake_parse_payload)
-    monkeypatch.setattr(source_module, "detect_provider", lambda payload, path=None: Provider.CHATGPT)
+    monkeypatch.setattr(dispatch_module.drive, "parse_chunked_prompt", fake_chunked)
+    monkeypatch.setattr(dispatch_module, "parse_payload", fake_parse_payload)
+    monkeypatch.setattr(dispatch_module, "detect_provider", lambda payload, path=None: Provider.CHATGPT)
 
     chunked = parse_drive_payload("gemini", [{"role": "user", "text": "hello"}], "chunks")
     recursive = parse_drive_payload("drive", [{"mapping": {}, "id": "chatgpt-ish"}], "wrapped")
@@ -1567,7 +1569,6 @@ from polylogue.sources.providers.claude_code import (
     ClaudeCodeToolUse,
     ClaudeCodeUsage,
 )
-
 
 # ---------------------------------------------------------------------------
 # Law 1: normalize_role never raises for any non-empty string

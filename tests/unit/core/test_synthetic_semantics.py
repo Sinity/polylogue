@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import random
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -29,13 +29,12 @@ from polylogue.schemas.synthetic import (
     WireFormat,
 )
 from polylogue.schemas.synthetic.semantic_values import (
-    SemanticValueGenerator,
     _ROLE_TEXTS,
+    SemanticValueGenerator,
     _text_for_role,
 )
-from polylogue.schemas.synthetic.showcase import ConversationTheme, _SHOWCASE_THEMES
-from polylogue.sources.source import parse_payload
-
+from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES
+from polylogue.sources.dispatch import parse_payload
 
 # ---------------------------------------------------------------------------
 # _text_for_role

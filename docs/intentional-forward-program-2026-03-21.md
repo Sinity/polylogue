@@ -125,6 +125,11 @@ Primary deletions:
 - runtime monkeypatching at the source boundary
 - storage-owned concepts exported from `sources`
 
+Status:
+
+- parse authority moved to `dispatch.py` in this working pass
+- storage-owned `RecordBundle` / `save_bundle` cleanup remains
+
 ### Step 4: Proof And QA Surface Integration
 
 Goal:

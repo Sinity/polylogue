@@ -21,13 +21,13 @@ from typing import TYPE_CHECKING
 
 import orjson
 
-from polylogue.logging import get_logger
 from polylogue.lib.raw_payload import build_raw_payload_envelope
+from polylogue.logging import get_logger
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
 from polylogue.protocols import ProgressCallback
 from polylogue.schemas.registry import SchemaRegistry
-from polylogue.sources.source import parse_payload
+from polylogue.sources.dispatch import parse_payload
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
