@@ -1,6 +1,7 @@
 """Query modules for the async SQLite backend."""
 
 from polylogue.storage.backends.queries import (
+    artifacts,
     attachments,
     conversations,
     messages,
@@ -10,6 +11,7 @@ from polylogue.storage.backends.queries import (
 )
 
 __all__ = [
+    "artifacts",
     "attachments",
     "conversations",
     "messages",

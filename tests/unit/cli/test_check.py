@@ -12,6 +12,8 @@ from polylogue.cli import cli
 from polylogue.health import HealthCheck, HealthReport, VerifyStatus
 from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.store import ArtifactCohortSummary, ArtifactObservationRecord
+from polylogue.types import ArtifactSupportStatus, Provider
 from tests.infra.storage_records import DbFactory
 
 
@@ -641,3 +643,139 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         assert "Artifact proof:" in result.output
         assert "chatgpt: contract_backed=1" in result.output
+
+    def test_check_proof_forwards_artifact_scope(self, cli_workspace):
+        """Artifact provider/limit/offset are forwarded to the proof workflow."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = ArtifactProofReport(providers={}, total_records=0)
+
+        with patch(
+            "polylogue.schemas.verification.prove_raw_artifact_coverage",
+            return_value=fake_report,
+        ) as mock_prove:
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                [
+                    "--plain",
+                    "check",
+                    "--json",
+                    "--proof",
+                    "--artifact-provider",
+                    "claude-code",
+                    "--artifact-limit",
+                    "25",
+                    "--artifact-offset",
+                    "50",
+                ],
+            )
+
+        assert result.exit_code == 0
+        mock_prove.assert_called_once_with(
+            providers=["claude-code"],
+            record_limit=25,
+            record_offset=50,
+        )
+
+    def test_check_artifacts_json_output(self, cli_workspace):
+        """--artifacts adds artifact_observations rows to JSON output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_rows = [
+            ArtifactObservationRecord(
+                observation_id="obs-1",
+                raw_id="raw-1",
+                provider_name="chatgpt",
+                payload_provider=Provider.CHATGPT,
+                source_name="chatgpt",
+                source_path="/tmp/chatgpt.json",
+                source_index=0,
+                file_mtime=None,
+                wire_format="json",
+                artifact_kind="conversation_document",
+                classification_reason="conversation-bearing document",
+                parse_as_conversation=True,
+                schema_eligible=True,
+                support_status=ArtifactSupportStatus.SUPPORTED_PARSEABLE,
+                malformed_jsonl_lines=0,
+                decode_error=None,
+                bundle_scope="chatgpt",
+                cohort_id="cohort-1",
+                resolved_package_version="v1",
+                resolved_element_kind="conversation_document",
+                resolution_reason="exact_structure",
+                link_group_key=None,
+                sidecar_agent_type=None,
+                first_observed_at="2026-03-21T00:00:00+00:00",
+                last_observed_at="2026-03-21T00:00:00+00:00",
+            )
+        ]
+
+        with patch(
+            "polylogue.schemas.verification.list_artifact_observation_rows",
+            return_value=fake_rows,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                [
+                    "--plain",
+                    "check",
+                    "--json",
+                    "--artifacts",
+                    "--artifact-provider",
+                    "chatgpt",
+                    "--artifact-status",
+                    "supported_parseable",
+                    "--artifact-kind",
+                    "conversation_document",
+                ],
+            )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["artifact_observations"]["count"] == 1
+        assert data["artifact_observations"]["items"][0]["support_status"] == "supported_parseable"
+
+    def test_check_cohorts_plain_output(self, cli_workspace):
+        """--cohorts renders durable cohort summaries in plain output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_rows = [
+            ArtifactCohortSummary(
+                provider_name="claude-code",
+                payload_provider=Provider.CLAUDE_CODE,
+                artifact_kind="agent_sidecar_meta",
+                support_status=ArtifactSupportStatus.RECOGNIZED_UNPARSED,
+                cohort_id="cohort-sidecar",
+                observation_count=1,
+                unique_raw_ids=1,
+                first_observed_at="2026-03-21T00:00:00+00:00",
+                last_observed_at="2026-03-21T00:00:00+00:00",
+                bundle_scope_count=1,
+                sample_source_paths=["/tmp/subagents/agent-a123.meta.json"],
+                resolved_package_version=None,
+                resolved_element_kind=None,
+                resolution_reason=None,
+                link_group_count=1,
+                linked_sidecar_count=1,
+            )
+        ]
+
+        with patch(
+            "polylogue.schemas.verification.list_artifact_cohort_rows",
+            return_value=fake_rows,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["--plain", "check", "--cohorts"])
+
+        assert result.exit_code == 0
+        assert "Artifact cohorts: 1 cohorts" in result.output
+        assert "claude-code agent_sidecar_meta recognized_unparsed count=1" in result.output

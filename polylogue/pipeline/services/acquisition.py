@@ -16,11 +16,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from polylogue.logging import get_logger
 from polylogue.lib.provider_identity import canonical_acquisition_provider
+from polylogue.logging import get_logger
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.sources.source import iter_source_raw_data
+from polylogue.storage.artifact_observations import inspect_raw_artifact
 from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
 
 if TYPE_CHECKING:
@@ -83,7 +84,9 @@ class AcquisitionService:
     ) -> None:
         """Persist one raw record and update acquisition counters."""
         try:
+            observation = inspect_raw_artifact(record)
             inserted = await self.backend.save_raw_conversation(record)
+            await self.backend.save_artifact_observation(observation)
             if inserted:
                 result.counts["acquired"] += 1
                 result.raw_ids.append(record.raw_id)
@@ -169,14 +172,9 @@ class AcquisitionService:
         result = AcquireResult()
         flush_interval = 500
         items_since_flush = 0
-        seen_raw_ids: set[str] = set()
 
         async def _store(record: RawConversationRecord) -> None:
             nonlocal items_since_flush
-            if record.raw_id in seen_raw_ids:
-                result.counts["skipped"] += 1
-                return
-            seen_raw_ids.add(record.raw_id)
             await self._persist_record(record, result=result)
             items_since_flush += 1
             if items_since_flush >= flush_interval:
