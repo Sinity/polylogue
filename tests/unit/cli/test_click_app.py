@@ -448,12 +448,23 @@ class TestQaCommand:
     def test_json_output_uses_composed_qa_session_payload(self, cli_runner):
         from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
         from polylogue.schemas.audit import AuditReport
+        from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
         from polylogue.showcase.qa_runner import QAResult
 
         qa_result = QAResult(
             audit_report=AuditReport(checks=[
                 OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
             ]),
+            proof_report=ArtifactProofReport(
+                providers={
+                    "chatgpt": ProviderArtifactProof(
+                        provider="chatgpt",
+                        total_records=1,
+                        contract_backed_records=1,
+                    )
+                },
+                total_records=1,
+            ),
             exercises_skipped=True,
             invariants_skipped=True,
         )

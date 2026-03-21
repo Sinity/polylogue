@@ -24,6 +24,7 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.schemas.audit import AuditReport
+from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_runner import QAResult
@@ -140,6 +141,16 @@ class TestFrozenClockShowcaseReport:
             audit_report=AuditReport(checks=[
                 OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
             ]),
+            proof_report=ArtifactProofReport(
+                providers={
+                    "chatgpt": ProviderArtifactProof(
+                        provider="chatgpt",
+                        total_records=1,
+                        contract_backed_records=1,
+                    )
+                },
+                total_records=1,
+            ),
             showcase_result=showcase_result,
             invariant_results=[
                 InvariantResult("json_valid", "test-exercise", OutcomeStatus.OK),

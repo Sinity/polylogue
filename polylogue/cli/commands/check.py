@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 import time
 from typing import Any
@@ -25,6 +24,7 @@ from polylogue.storage.repair import run_all_repairs
 @click.option("--deep", is_flag=True, help="Run SQLite integrity check (slow on large databases)")
 @click.option("--runtime", is_flag=True, help="Run environment and runtime verification checks")
 @click.option("--schemas", "check_schemas", is_flag=True, help="Run raw-corpus schema verification (non-mutating)")
+@click.option("--proof", "check_proof", is_flag=True, help="Run raw-artifact support proof (non-mutating)")
 @click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)")
 @click.option(
     "--schema-samples",
@@ -61,6 +61,7 @@ def check_command(
     deep: bool,
     runtime: bool,
     check_schemas: bool,
+    check_proof: bool,
     schema_providers: tuple[str, ...],
     schema_samples: str,
     schema_record_limit: int | None,
@@ -93,6 +94,7 @@ def check_command(
     if runtime:
         runtime_report = run_runtime_health(config)
     schema_report = None
+    proof_report = None
     if check_schemas:
         from polylogue.schemas.verification import verify_raw_corpus
 
@@ -106,6 +108,10 @@ def check_command(
             progress_callback=_make_schema_progress_callback(),
         )
         print(file=sys.stderr)  # End the \r progress line
+    if check_proof:
+        from polylogue.schemas.verification import prove_raw_artifact_coverage
+
+        proof_report = prove_raw_artifact_coverage()
 
     # Run repairs before output so JSON mode includes repair results
     repair_results: list | None = None
@@ -129,6 +135,8 @@ def check_command(
             out["runtime"] = runtime_report.to_dict()
         if schema_report is not None:
             out["schema_verification"] = schema_report.to_dict()
+        if proof_report is not None:
+            out["artifact_proof"] = proof_report.to_dict()
         if repair_results is not None:
             out["repairs"] = [r.to_dict() for r in repair_results]
         if vacuum_result is not None:
@@ -178,6 +186,32 @@ def check_command(
                     f"drift={stats.drift_records:,} skipped={stats.skipped_no_schema:,} "
                     f"decode_errors={stats.decode_errors:,} quarantined={stats.quarantined_records:,}"
                 )
+
+    if proof_report is not None:
+        summary = proof_report.to_dict()["summary"]
+        lines.append("")
+        lines.append(
+            f"Artifact proof: {proof_report.total_records:,} raw records "
+            f"(contract_backed={summary['contract_backed_records']:,}, "
+            f"unsupported={summary['unsupported_parseable_records']:,}, "
+            f"non_parseable={summary['recognized_non_parseable_records']:,}, "
+            f"unknown={summary['unknown_records']:,}, "
+            f"decode_errors={summary['decode_errors']:,})"
+        )
+        if summary["subagent_streams"]:
+            lines.append(
+                f"  Claude subagents: linked_sidecars={summary['linked_sidecars']:,} "
+                f"orphan_sidecars={summary['orphan_sidecars']:,} "
+                f"streams={summary['subagent_streams']:,}"
+            )
+        for provider, stats in sorted(proof_report.providers.items()):
+            lines.append(
+                f"  {provider}: contract_backed={stats.contract_backed_records:,} "
+                f"unsupported={stats.unsupported_parseable_records:,} "
+                f"non_parseable={stats.recognized_non_parseable_records:,} "
+                f"unknown={stats.unknown_records:,} "
+                f"decode_errors={stats.decode_errors:,}"
+            )
 
     if runtime_report is not None:
         lines.append("")
