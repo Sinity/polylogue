@@ -13,9 +13,7 @@ import click
 from polylogue.cli.helpers import load_effective_config
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.types import AppEnv
-from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.paths import safe_path_component
-
 
 # ---------------------------------------------------------------------------
 # Archival helpers (preserved from the original qa command)
@@ -253,6 +251,7 @@ def qa_command(
         format_qa_summary,
         run_qa_session,
     )
+    from polylogue.showcase.report import generate_qa_session
 
     result = run_qa_session(
         live=live,
@@ -276,22 +275,7 @@ def qa_command(
 
     # --- Output ---
     if json_output:
-        qa_data = {
-            "audit_passed": result.audit_passed,
-            "audit_report": result.audit_report,
-            "showcase": {
-                "passed": result.showcase_result.passed if result.showcase_result else 0,
-                "failed": result.showcase_result.failed if result.showcase_result else 0,
-                "skipped": result.showcase_result.skipped if result.showcase_result else 0,
-            },
-            "invariants": {
-                "passed": sum(1 for r in result.invariant_results if r.status is OutcomeStatus.OK),
-                "failed": sum(1 for r in result.invariant_results if r.status is OutcomeStatus.ERROR),
-                "skipped": sum(1 for r in result.invariant_results if r.status is OutcomeStatus.SKIP),
-            },
-            "overall_passed": result.all_passed,
-        }
-        click.echo(json.dumps(qa_data, indent=2))
+        click.echo(json.dumps(generate_qa_session(result), indent=2))
     else:
         env.ui.console.print(format_qa_summary(result))
 

@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.cli.click_app import cli as click_cli, mcp_command
+from polylogue.cli.click_app import cli as click_cli
+from polylogue.cli.click_app import mcp_command
 from tests.infra.cli_subprocess import run_cli
 
 
@@ -443,6 +444,28 @@ class TestQaCommand:
         assert "--only" in result.output
         assert "--skip" in result.output
         assert "--snapshot" in result.output
+
+    def test_json_output_uses_composed_qa_session_payload(self, cli_runner):
+        from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+        from polylogue.schemas.audit import AuditReport
+        from polylogue.showcase.qa_runner import QAResult
+
+        qa_result = QAResult(
+            audit_report=AuditReport(checks=[
+                OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+            ]),
+            exercises_skipped=True,
+            invariants_skipped=True,
+        )
+
+        with patch("polylogue.showcase.qa_runner.run_qa_session", return_value=qa_result):
+            result = cli_runner.invoke(click_cli, ["qa", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output.split("\nPlain output active", 1)[0])
+        assert payload["audit"]["status"] == "ok"
+        assert payload["showcase"]["status"] == "skip"
+        assert payload["overall_status"] == "ok"
 
 
 

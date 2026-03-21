@@ -10,13 +10,12 @@ import asyncio
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.invariants import (
     InvariantResult,
     check_invariants,
-    format_invariant_summary,
 )
 from polylogue.showcase.runner import ShowcaseResult, ShowcaseRunner
 from polylogue.showcase.workspace import (
@@ -27,13 +26,16 @@ from polylogue.showcase.workspace import (
     run_pipeline_for_fixture_workspace,
 )
 
+if TYPE_CHECKING:
+    from polylogue.schemas.audit import AuditReport
+
 
 @dataclass
 class QAResult:
     """Complete QA session result."""
 
-    audit_passed: bool = False
-    audit_report: dict[str, Any] | None = None
+    audit_report: AuditReport | None = None
+    audit_error: str | None = None
     audit_skipped: bool = False
     showcase_result: ShowcaseResult | None = None
     exercises_skipped: bool = False
@@ -42,15 +44,53 @@ class QAResult:
     report_dir: Path | None = None
 
     @property
+    def audit_status(self) -> OutcomeStatus:
+        """Status for the schema audit stage."""
+        if self.audit_skipped:
+            return OutcomeStatus.SKIP
+        if self.audit_error is not None:
+            return OutcomeStatus.ERROR
+        if self.audit_report is None:
+            return OutcomeStatus.ERROR
+        return OutcomeStatus.OK if self.audit_report.all_passed else OutcomeStatus.ERROR
+
+    @property
+    def audit_passed(self) -> bool:
+        """True if the schema audit stage passed."""
+        return self.audit_status is OutcomeStatus.OK
+
+    @property
+    def showcase_status(self) -> OutcomeStatus:
+        """Status for the exercise stage."""
+        if self.exercises_skipped:
+            return OutcomeStatus.SKIP
+        if self.showcase_result is None:
+            return OutcomeStatus.ERROR
+        return OutcomeStatus.OK if self.showcase_result.failed == 0 else OutcomeStatus.ERROR
+
+    @property
+    def invariant_status(self) -> OutcomeStatus:
+        """Status for the invariant stage."""
+        if self.invariants_skipped or self.showcase_result is None:
+            return OutcomeStatus.SKIP
+        if any(r.status is OutcomeStatus.ERROR for r in self.invariant_results):
+            return OutcomeStatus.ERROR
+        return OutcomeStatus.OK
+
+    @property
+    def overall_status(self) -> OutcomeStatus:
+        """Aggregate status across all executed QA stages."""
+        if any(
+            stage is OutcomeStatus.ERROR
+            for stage in (self.audit_status, self.showcase_status, self.invariant_status)
+        ):
+            return OutcomeStatus.ERROR
+        return OutcomeStatus.OK
+
+    @property
     def all_passed(self) -> bool:
         """True if all executed stages passed."""
-        if not self.audit_skipped and not self.audit_passed:
-            return False
-        if self.showcase_result and self.showcase_result.failed > 0:
-            return False
-        if any(r.status is OutcomeStatus.ERROR for r in self.invariant_results):
-            return False
-        return True
+        return self.overall_status is OutcomeStatus.OK
 
 
 def _generate_extra_exercises() -> list:
@@ -153,26 +193,30 @@ def run_qa_session(
     # --- Step 1: Schema audit ---
     if skip_audit:
         result.audit_skipped = True
-        result.audit_passed = True  # Don't block exercises
     else:
         try:
             from polylogue.schemas.audit import audit_all_providers, audit_provider
 
-            if provider:
-                audit_report = audit_provider(provider)
-            else:
-                audit_report = audit_all_providers()
+            audit_report = audit_provider(provider) if provider else audit_all_providers()
 
-            result.audit_report = audit_report.to_json()
-            result.audit_passed = audit_report.all_passed
+            result.audit_report = audit_report
 
             if not audit_report.all_passed:
+                result.exercises_skipped = True
+                result.invariants_skipped = True
                 if verbose:
                     print(audit_report.format_text(), file=sys.stderr)
+                if report_dir:
+                    result.report_dir = report_dir
+                    _save_qa_reports(result, report_dir)
                 return result
         except Exception as e:
-            result.audit_report = {"error": str(e)}
-            result.audit_passed = False
+            result.audit_error = str(e)
+            result.exercises_skipped = True
+            result.invariants_skipped = True
+            if report_dir:
+                result.report_dir = report_dir
+                _save_qa_reports(result, report_dir)
             return result
 
     # --- Step 2: Exercises ---
@@ -214,83 +258,37 @@ def _save_qa_reports(result: QAResult, report_dir: Path) -> None:
 
     if result.audit_report:
         (report_dir / "schema-audit.json").write_text(
-            json.dumps(result.audit_report, indent=2)
+            json.dumps(result.audit_report.to_json(), indent=2)
+        )
+    elif result.audit_error:
+        (report_dir / "schema-audit.json").write_text(
+            json.dumps({"error": result.audit_error}, indent=2)
         )
 
-    invariant_data = [
-        {
-            "invariant": r.invariant_name,
-            "exercise": r.exercise_name,
-            "status": r.status.value,
-            "error": r.error,
-        }
-        for r in result.invariant_results
-    ]
-    if invariant_data:
-        (report_dir / "invariant-checks.json").write_text(
-            json.dumps(invariant_data, indent=2)
-        )
+    from polylogue.showcase.report import (
+        generate_qa_markdown,
+        generate_qa_session,
+        save_reports,
+    )
 
     if result.showcase_result:
-        from polylogue.showcase.report import (
-            generate_qa_markdown,
-            save_reports,
-        )
-
         save_reports(result.showcase_result)
-        qa_md = generate_qa_markdown(result.showcase_result)
 
-        if result.invariant_results:
-            invariant_summary = format_invariant_summary(result.invariant_results)
-            qa_md += f"\n\n## Invariant Checks\n\n```\n{invariant_summary}\n```\n"
-
-        (report_dir / "qa-session.md").write_text(qa_md)
+    qa_session = generate_qa_session(result)
+    (report_dir / "qa-session.json").write_text(
+        json.dumps(qa_session, indent=2, sort_keys=True)
+    )
+    (report_dir / "invariant-checks.json").write_text(
+        json.dumps(qa_session["invariants"]["checks"], indent=2, sort_keys=True)
+    )
+    (report_dir / "qa-session.md").write_text(generate_qa_markdown(result))
 
 
 def format_qa_summary(result: QAResult) -> str:
     """Format a human-readable QA session summary."""
-    lines: list[str] = []
+    from polylogue.showcase.report import generate_qa_summary
 
-    # Audit status
-    if result.audit_skipped:
-        lines.append("Schema Audit: SKIPPED")
-    elif result.audit_passed:
-        lines.append("Schema Audit: PASS")
-    else:
-        lines.append("Schema Audit: FAIL — halting QA")
-        return "\n".join(lines)
-
-    # Showcase status
-    if result.exercises_skipped:
-        lines.append("Exercises: SKIPPED")
-    elif result.showcase_result:
-        sr = result.showcase_result
-        total = len(sr.results)
-        lines.append(
-            f"Exercises: {sr.passed}/{total} passed, "
-            f"{sr.failed} failed, {sr.skipped} skipped "
-            f"({sr.total_duration_ms/1000:.1f}s)"
-        )
-
-    # Invariant status
-    if result.invariants_skipped:
-        lines.append("Invariants: SKIPPED")
-    elif result.invariant_results:
-        inv_passed = sum(1 for r in result.invariant_results if r.status is OutcomeStatus.OK)
-        inv_failed = sum(1 for r in result.invariant_results if r.status is OutcomeStatus.ERROR)
-        inv_skipped = sum(1 for r in result.invariant_results if r.status is OutcomeStatus.SKIP)
-        lines.append(
-            f"Invariants: {inv_passed} pass, {inv_failed} fail, {inv_skipped} skip"
-        )
-
-    # Overall
-    status = "PASS" if result.all_passed else "FAIL"
-    lines.append(f"\nOverall: {status}")
-
-    if result.report_dir:
-        lines.append(f"Reports: {result.report_dir}")
-
-    return "\n".join(lines)
+    return generate_qa_summary(result)
 
 
 __all__ = [

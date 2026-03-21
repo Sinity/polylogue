@@ -4,7 +4,7 @@ Verifies:
 1. `--json` output is always valid JSON (parseable by json.loads)
 2. `POLYLOGUE_FORCE_PLAIN=1` produces no ANSI escape codes
 3. Frozen clock produces deterministic timestamps in `check --json`
-4. Showcase report `generate_qa_session` produces deterministic timestamps
+4. QA report `generate_qa_session` produces deterministic timestamps
 5. Commands parametrized across `check`, `tags`, `sources` with `--json`
 """
 
@@ -22,7 +22,11 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
+from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.schemas.audit import AuditReport
 from polylogue.showcase.exercises import Exercise
+from polylogue.showcase.invariants import InvariantResult
+from polylogue.showcase.qa_runner import QAResult
 from polylogue.showcase.report import generate_qa_session
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
@@ -112,8 +116,8 @@ class TestFrozenClockShowcaseReport:
     FROZEN_DT = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
 
     @staticmethod
-    def _make_showcase_result() -> ShowcaseResult:
-        """Build a minimal ShowcaseResult for testing."""
+    def _make_qa_result() -> QAResult:
+        """Build a minimal QAResult for testing."""
         exercise = Exercise(
             name="test-exercise",
             group="structural",
@@ -128,14 +132,23 @@ class TestFrozenClockShowcaseReport:
             output="Usage: polylogue ...",
             duration_ms=42.0,
         )
-        return ShowcaseResult(
+        showcase_result = ShowcaseResult(
             results=[ex_result],
             total_duration_ms=42.0,
+        )
+        return QAResult(
+            audit_report=AuditReport(checks=[
+                OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+            ]),
+            showcase_result=showcase_result,
+            invariant_results=[
+                InvariantResult("json_valid", "test-exercise", OutcomeStatus.OK),
+            ],
         )
 
     def test_qa_session_timestamp_is_deterministic(self):
         """Two calls with same frozen clock produce identical timestamps."""
-        result = self._make_showcase_result()
+        result = self._make_qa_result()
 
         with patch(
             "polylogue.showcase.report.datetime"
@@ -156,7 +169,7 @@ class TestFrozenClockShowcaseReport:
 
     def test_qa_session_timestamp_changes_with_clock(self):
         """Different frozen times produce different timestamps."""
-        result = self._make_showcase_result()
+        result = self._make_qa_result()
 
         dt_a = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
         dt_b = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
