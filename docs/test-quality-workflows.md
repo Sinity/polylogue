@@ -84,7 +84,7 @@ and they are not needed in the fast local lane.
   Comprehensive end-to-end provider workflows.
 - [`test_schema_generation.py`](/realm/project/polylogue/tests/unit/core/test_schema_generation.py)
   Database-backed provider schema generation proof.
-- [`test_schema_verification.py`](/realm/project/polylogue/tests/unit/core/test_schema_verification.py)
+- [`test_schema_validation.py`](/realm/project/polylogue/tests/unit/core/test_schema_validation.py)
   Raw-corpus verification path using persisted payload-provider filtering.
 - [`test_scale.py`](/realm/project/polylogue/tests/unit/storage/test_scale.py)
   Fixed performance-budget checks.
@@ -96,11 +96,11 @@ and they are not needed in the fast local lane.
 These are expensive, but they are core generated-graph/storage correctness
 proofs rather than optional long proofs. They stay in the default lane.
 
-- [`test_repository_laws.py`](/realm/project/polylogue/tests/unit/storage/test_repository_laws.py)
+- [`test_store_ops.py`](/realm/project/polylogue/tests/unit/storage/test_store_ops.py)
   Generated repository graph/view/session/projection contracts.
-- [`test_crud_laws.py`](/realm/project/polylogue/tests/unit/storage/test_crud_laws.py)
+- [`test_store_ops.py`](/realm/project/polylogue/tests/unit/storage/test_store_ops.py)
   Backend ordering, filtering, deletion, and tag-distribution laws.
-- [`test_service_laws.py`](/realm/project/polylogue/tests/unit/pipeline/test_service_laws.py)
+- [`test_resilience.py`](/realm/project/polylogue/tests/unit/pipeline/test_resilience.py)
   Acquisition/planning invariants that still catch meaningful regressions.
 
 ## Slowest Observed Non-Benchmark Tests

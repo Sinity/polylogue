@@ -78,14 +78,14 @@ Comment:
 ## Group C: Documentation + Session Reports (non-runtime)
 - Modified docs: `docs/architecture.md`, `docs/cli-reference.md`, `docs/demo.md`
 - New report docs:
-  - `docs/session-recovery-2026-03-05.md`
-  - `docs/workload-schema-qa-2026-03-05.md`
-  - `docs/demo-parse-validate-audit-2026-03-05.md`
-  - `docs/task22-test-audit-2026-03-05.md`
-  - `docs/remaining-workload-tracker-2026-03-05.md`
-  - `docs/schema-composition-and-quarantine-report-2026-03-06.md`
-  - `docs/tasklist-master-2026-03-06.md`
-  - `docs/workload-closure-2026-03-06.md`
+  - `docs/archive/2026-03-05-07-closure-wave/session-recovery-2026-03-05.md`
+  - `docs/archive/2026-03-05-07-closure-wave/workload-schema-qa-2026-03-05.md`
+  - `docs/archive/2026-03-05-07-closure-wave/demo-parse-validate-audit-2026-03-05.md`
+  - `docs/archive/2026-03-05-07-closure-wave/task22-test-audit-2026-03-05.md`
+  - `docs/archive/2026-03-05-07-closure-wave/remaining-workload-tracker-2026-03-05.md`
+  - `docs/archive/2026-03-05-07-closure-wave/schema-composition-and-quarantine-report-2026-03-06.md`
+  - `docs/archive/2026-03-05-07-closure-wave/tasklist-master-2026-03-06.md`
+  - `docs/archive/2026-03-05-07-closure-wave/workload-closure-2026-03-06.md`
 
 Comment:
 - Keep these split from runtime commits; they are valuable continuity artifacts but not core executable changes.
