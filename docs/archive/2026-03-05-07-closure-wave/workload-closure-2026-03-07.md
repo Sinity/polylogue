@@ -4,7 +4,7 @@
 Close remaining schema/validation/pipeline refactor workload, reduce entropy, and preserve continuity artifacts.
 
 ## Completed In This Pass
-- Added dedicated triage/grouping tracker: `docs/triage-comment-grouping-2026-03-07.md`.
+- Added dedicated triage/grouping tracker: `docs/archive/2026-03-05-07-closure-wave/triage-comment-grouping-2026-03-07.md`.
 - Unified source iterators around shared file traversal/cursor/mtime logic in `polylogue/sources/source.py`.
 - Canonicalized run stage definitions via `RUN_STAGE_CHOICES` shared by runner and CLI.
 - Centralized schema provider canonicalization in `polylogue/schemas/registry.py` with `canonical_schema_provider()`.

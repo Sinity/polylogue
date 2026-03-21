@@ -40,8 +40,8 @@ Compact checkpoint for context-compaction recovery.
 
 ## Canonical Evidence
 
-- Workload closure: `docs/workload-closure-2026-03-06.md`
-- Remaining tracker: `docs/remaining-workload-tracker-2026-03-05.md`
+- Workload closure: `docs/archive/2026-03-05-07-closure-wave/workload-closure-2026-03-06.md`
+- Remaining tracker: `docs/archive/2026-03-05-07-closure-wave/remaining-workload-tracker-2026-03-05.md`
 - QA narrative: `QA_SESSION.md`
 - QA artifact index: `qa_outputs/INDEX.md`
 - Heavy full verification: `qa_outputs/schema-verification-heavy-full-2026-03-06.json`

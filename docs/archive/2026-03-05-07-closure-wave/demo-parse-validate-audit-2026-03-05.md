@@ -2,9 +2,9 @@
 
 > Status update (2026-03-06): Historical audit snapshot.
 > Active closure status and remaining workload are tracked in:
-> - `docs/tasklist-master-2026-03-06.md`
-> - `docs/workload-closure-2026-03-06.md`
-> - `docs/remaining-workload-tracker-2026-03-05.md`
+> - `docs/archive/2026-03-05-07-closure-wave/tasklist-master-2026-03-06.md`
+> - `docs/archive/2026-03-05-07-closure-wave/workload-closure-2026-03-06.md`
+> - `docs/archive/2026-03-05-07-closure-wave/remaining-workload-tracker-2026-03-05.md`
 
 ## Scope
 
