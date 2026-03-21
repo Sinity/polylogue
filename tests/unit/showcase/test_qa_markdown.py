@@ -1,4 +1,4 @@
-"""Tests for stable Markdown QA session reports and artifact manifests."""
+"""Tests for stable showcase Markdown reports and artifact manifests."""
 
 from __future__ import annotations
 
@@ -6,9 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from polylogue.showcase.report import generate_manifest, generate_qa_markdown
+from polylogue.showcase.report import generate_manifest, generate_showcase_markdown
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -60,26 +59,26 @@ def _make_showcase(results: list[ExerciseResult], output_dir: Path | None = None
 
 
 # ---------------------------------------------------------------------------
-# generate_qa_markdown tests
+# generate_showcase_markdown tests
 # ---------------------------------------------------------------------------
 
 
 class TestGenerateQaMarkdown:
-    """generate_qa_markdown produces stable, diffable output."""
+    """generate_showcase_markdown produces stable, diffable output."""
 
     def test_produces_markdown_header(self):
         sr = _make_showcase([_make_result()])
-        md = generate_qa_markdown(sr)
+        md = generate_showcase_markdown(sr)
         assert md.startswith("# Showcase QA Session")
 
     def test_includes_git_sha_when_provided(self):
         sr = _make_showcase([_make_result()])
-        md = generate_qa_markdown(sr, git_sha="abc123")
+        md = generate_showcase_markdown(sr, git_sha="abc123")
         assert "`abc123`" in md
 
     def test_no_git_sha_when_not_provided(self):
         sr = _make_showcase([_make_result()])
-        md = generate_qa_markdown(sr)
+        md = generate_showcase_markdown(sr)
         assert "Git SHA" not in md
 
     def test_no_timestamps_in_body(self):
@@ -87,7 +86,7 @@ class TestGenerateQaMarkdown:
             _make_result(passed=True),
             _make_result(name="f", passed=False, error="boom"),
         ])
-        md = generate_qa_markdown(sr)
+        md = generate_showcase_markdown(sr)
         # No ISO timestamp patterns in the body
         import re
         # Match typical ISO timestamps like 2026-03-15T12:34:56
@@ -99,7 +98,7 @@ class TestGenerateQaMarkdown:
             _make_result(passed=True),
             _make_result(name="f", passed=False, error="err"),
         ])
-        md = generate_qa_markdown(sr)
+        md = generate_showcase_markdown(sr)
         assert "## Summary" in md
         assert "| Total | 2 |" in md
         assert "| Passed | 1 |" in md
@@ -111,7 +110,7 @@ class TestGenerateQaMarkdown:
             _make_result(name="f", passed=False, error="err"),
             _make_result(name="s", skipped=True),
         ])
-        md = generate_qa_markdown(sr)
+        md = generate_showcase_markdown(sr)
         assert "[PASS]" in md
         assert "[FAIL]" in md
         assert "[SKIP]" in md
@@ -120,7 +119,7 @@ class TestGenerateQaMarkdown:
         sr = _make_showcase([
             _make_result(name="bad", passed=False, error="exit code 1, expected 0"),
         ])
-        md = generate_qa_markdown(sr)
+        md = generate_showcase_markdown(sr)
         assert "exit code 1, expected 0" in md
 
     def test_failed_exercise_shows_truncated_output(self):
@@ -128,7 +127,7 @@ class TestGenerateQaMarkdown:
         sr = _make_showcase([
             _make_result(name="verbose", passed=False, error="failed", output=long_output),
         ])
-        md = generate_qa_markdown(sr)
+        md = generate_showcase_markdown(sr)
         assert "line 0" in md
         assert "line 9" in md
         assert "10 more lines" in md
@@ -138,7 +137,7 @@ class TestGenerateQaMarkdown:
             _make_result(name="a", group="structural"),
             _make_result(name="b", group="query-read"),
         ])
-        md = generate_qa_markdown(sr)
+        md = generate_showcase_markdown(sr)
         assert "### structural" in md
         assert "### query-read" in md
 
@@ -148,8 +147,8 @@ class TestGenerateQaMarkdown:
             _make_result(name="a", passed=True),
             _make_result(name="b", passed=False, error="err"),
         ]
-        md1 = generate_qa_markdown(_make_showcase(results), git_sha="abc")
-        md2 = generate_qa_markdown(_make_showcase(results), git_sha="abc")
+        md1 = generate_showcase_markdown(_make_showcase(results), git_sha="abc")
+        md2 = generate_showcase_markdown(_make_showcase(results), git_sha="abc")
         assert md1 == md2
 
 

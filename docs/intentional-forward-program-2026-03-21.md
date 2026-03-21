@@ -94,6 +94,10 @@ Primary deletions:
 - lossy `audit_report.to_json()` storage at the QA core
 - repeated field projection logic across QA report outputs
 
+Status:
+
+- executed in this working pass
+
 ### Step 3: Source Boundary Collapse
 
 Goal:
