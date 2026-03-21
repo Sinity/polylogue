@@ -10,18 +10,30 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, BinaryIO
-
-import ijson
-from pydantic import BaseModel
+from typing import Any
 
 from polylogue.config import Source
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.log import get_logger
 from polylogue.types import Provider
 
-from ..storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
-from .parsers import chatgpt, claude, codex, drive
+from . import cursor as _cursor
+from . import decoders as _decoders
+from .cursor import (
+    _initialize_cursor_state,
+    _log_source_iteration_summary,
+    _ParseContext,
+    _record_cursor_failure,
+    _select_paths_for_processing,
+)
+from .decoders import (
+    _process_zip,
+    _zip_entry_provider_hint,
+    _ZipEntryValidator,
+)
+from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
+from .dispatch import _detect_provider_from_raw_bytes
+from .emitter import _ConversationEmitter
 from .parsers.base import (
     ParsedAttachment,
     ParsedConversation,
@@ -35,342 +47,15 @@ from .parsers.claude import (
     parse_sessions_index,
 )
 
-if TYPE_CHECKING:
-    from ..storage.repository import ConversationRepository
-
 logger = get_logger(__name__)
-
-
-class RecordBundle(BaseModel):
-    conversation: ConversationRecord
-    messages: list[MessageRecord]
-    attachments: list[AttachmentRecord]
-    content_blocks: list[ContentBlockRecord] = []
-
-
-class SaveResult(BaseModel):
-    conversations: int
-    messages: int
-    attachments: int
-    skipped_conversations: int
-    skipped_messages: int
-    skipped_attachments: int
-
-
-async def save_bundle(bundle: RecordBundle, repository: ConversationRepository) -> SaveResult:
-    """Save a bundle of records into the repository.
-
-    Args:
-        bundle: Bundle containing conversation, messages, and attachments
-        repository: Storage repository to save records to
-
-    Returns:
-        SaveResult with counts of imported/skipped items
-    """
-    counts = await repository.save_conversation(
-        conversation=bundle.conversation,
-        messages=bundle.messages,
-        attachments=bundle.attachments,
-        content_blocks=bundle.content_blocks,
-    )
-    return SaveResult(**counts)
-
-
-_ENCODING_GUESSES: tuple[str, ...] = (
-    "utf-8",
-    "utf-8-sig",
-    "utf-16",
-    "utf-16-le",
-    "utf-16-be",
-    "utf-32",
-    "utf-32-le",
-    "utf-32-be",
-)
-
-# ZIP bomb protection constants
-MAX_COMPRESSION_RATIO = 1000  # 1000x — JSON/JSONL compresses extremely well (100-500x typical)
-MAX_UNCOMPRESSED_SIZE = 10 * 1024 * 1024 * 1024  # 10GB — multi-year chat archives can be large
-
-
-def _decode_json_bytes(blob: bytes) -> str | None:
-    """Decode a JSON payload from bytes, trying multiple encodings."""
-
-    for encoding in _ENCODING_GUESSES:
-        try:
-            decoded = blob.decode(encoding)
-        except UnicodeError:
-            continue
-        cleaned = decoded.replace("\x00", "").lstrip("\ufeff")
-        if cleaned:
-            return cleaned
-    try:
-        decoded = blob.decode("utf-8", errors="ignore").replace("\x00", "")
-        return decoded if decoded else None
-    except (AttributeError, UnicodeDecodeError):
-        logger.debug("Failed to coerce JSON bytes after fallbacks.")
-        return None
-
-
-def detect_provider(payload: Any, path: Path) -> Provider | None:
-    if isinstance(payload, dict):
-        if chatgpt.looks_like(payload):
-            return Provider.CHATGPT
-        if claude.looks_like_ai(payload):
-            return Provider.CLAUDE
-        if claude.looks_like_code([payload]):
-            return Provider.CLAUDE_CODE
-        if codex.looks_like([payload]):
-            return Provider.CODEX
-        # Gemini content-based detection (chunkedPrompt or chunks list)
-        if "chunkedPrompt" in payload or ("chunks" in payload and isinstance(payload.get("chunks"), list)):
-            return Provider.GEMINI
-    if isinstance(payload, list):
-        if payload and isinstance(payload[0], dict):
-            first = payload[0]
-            # ChatGPT bundle export: list[conversation]
-            if isinstance(first.get("mapping"), dict):
-                return Provider.CHATGPT
-            # Claude AI bundle export: list[conversation]
-            if isinstance(first.get("chat_messages"), list):
-                return Provider.CLAUDE
-            # Gemini/Drive grouped list of conversations/chunks
-            if "chunkedPrompt" in first or ("chunks" in first and isinstance(first.get("chunks"), list)):
-                return Provider.GEMINI
-        if claude.looks_like_code(payload):
-            return Provider.CLAUDE_CODE
-        if codex.looks_like(payload):
-            return Provider.CODEX
-
-    # Check filename and parent directory for provider hints
-    name = path.name.lower()
-    path_str = str(path).lower()
-
-    if "chatgpt" in name or "chatgpt" in path_str:
-        return Provider.CHATGPT
-    if "claude-code" in name or "claude_code" in name or "claude-code" in path_str or "claude_code" in path_str:
-        return Provider.CLAUDE_CODE
-    if "claude" in name or "/claude/" in path_str:
-        return Provider.CLAUDE
-    if "codex" in name or "codex" in path_str:
-        return Provider.CODEX
-    if "gemini" in name or "gemini" in path_str:
-        return Provider.GEMINI
-    return None
-
-
-_MAX_PARSE_DEPTH = 10
-
-
-def _looks_like_chunked_conversation(payload: Any) -> bool:
-    return isinstance(payload, dict) and (
-        drive.looks_like(payload)
-        or isinstance(payload.get("chunks"), list)
-    )
-
-
-def _looks_like_chunked_conversation_list(payload: list[Any]) -> bool:
-    return bool(payload) and all(_looks_like_chunked_conversation(item) for item in payload)
-
-
-def parse_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
-    """Dispatch parsed payload to the appropriate provider parser.
-
-    This function is the central routing point for all conversation parsing.
-    Each provider has different wire formats:
-    - ChatGPT: nested mapping with node IDs (``parse``)
-    - Claude AI: ``{"conversations": [{"chat_messages": [...]}]}`` (``parse_ai``)
-    - Claude Code: JSONL entries with ``sessionId`` (``parse_code``)
-    - Codex: flat ``[{role, content}]`` message lists (``parse``)
-    - Gemini/Drive: ``{"chunkedPrompt": {"chunks": [...]}}`` (``parse_chunked_prompt``)
-
-    Signatures differ across providers because wire formats vary significantly.
-    Unifying them would require an abstraction layer that adds complexity
-    without value — the dispatch here IS the abstraction.
-
-    Args:
-        provider: Detected provider name (e.g. "chatgpt", "claude", "gemini")
-        payload: Deserialized JSON content (dict or list depending on format)
-        fallback_id: ID to use if the payload lacks an explicit conversation ID
-        _depth: Recursion guard for nested structures (max: _MAX_PARSE_DEPTH)
-
-    Returns:
-        List of ParsedConversation objects extracted from the payload
-    """
-    if _depth > _MAX_PARSE_DEPTH:
-        logger.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
-        return []
-    if isinstance(payload, dict) and isinstance(payload.get("conversations"), list):
-        results: list[ParsedConversation] = []
-        for i, item in enumerate(payload["conversations"]):
-            if isinstance(item, dict):
-                    results.extend(parse_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
-        return results
-    if provider == Provider.CHATGPT:
-        if isinstance(payload, list):
-            results: list[ParsedConversation] = []
-            for i, item in enumerate(payload):
-                if isinstance(item, dict):
-                    results.append(chatgpt.parse(item, f"{fallback_id}-{i}"))
-            return results
-        return [chatgpt.parse(payload, fallback_id)]
-    if provider == Provider.CLAUDE:
-        if isinstance(payload, list):
-            results: list[ParsedConversation] = []
-            for i, item in enumerate(payload):
-                if isinstance(item, dict):
-                    results.append(claude.parse_ai(item, f"{fallback_id}-{i}"))
-            return results
-        if isinstance(payload, dict) and isinstance(payload.get("conversations"), list):
-            results: list[ParsedConversation] = []
-            for i, item in enumerate(payload["conversations"]):
-                if isinstance(item, dict):
-                    results.append(claude.parse_ai(item, f"{fallback_id}-{i}"))
-            if results:
-                return results
-        return [claude.parse_ai(payload, fallback_id)]
-    if provider == Provider.CLAUDE_CODE:
-        if isinstance(payload, list):
-            return [claude.parse_code(payload, fallback_id)]
-        if isinstance(payload, dict):
-            if isinstance(payload.get("messages"), list):
-                return [claude.parse_code(payload["messages"], fallback_id)]
-            return [claude.parse_code([payload], fallback_id)]
-    if provider == Provider.CODEX:
-        if isinstance(payload, list):
-            return [codex.parse(payload, fallback_id)]
-        if isinstance(payload, dict):
-            return [codex.parse([payload], fallback_id)]
-    if provider in (Provider.GEMINI, Provider.DRIVE) and isinstance(payload, list):
-        if _looks_like_chunked_conversation_list(payload):
-            results = []
-            for i, item in enumerate(payload):
-                results.extend(parse_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
-            return results
-        return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
-
-    # Fallback / Generic
-    if isinstance(payload, dict):
-        # Generic "messages" support
-        if "messages" in payload and isinstance(payload["messages"], list):
-            messages = extract_messages_from_list(payload["messages"])
-            title = payload.get("title") or payload.get("name") or fallback_id
-            return [
-                ParsedConversation(
-                    provider_name=provider,
-                    provider_conversation_id=str(payload.get("id") or fallback_id),
-                    title=str(title),
-                    created_at=None,
-                    updated_at=None,
-                    messages=messages,
-                )
-            ]
-
-        if chatgpt.looks_like(payload):
-            return [chatgpt.parse(payload, fallback_id)]
-        if _looks_like_chunked_conversation(payload):
-            return [drive.parse_chunked_prompt(provider, payload, fallback_id)]
-        return []
-
-    return []
-
-
-def parse_drive_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
-    if _depth > _MAX_PARSE_DEPTH:
-        logger.warning("Recursion depth exceeded parsing drive payload %s", fallback_id)
-        return []
-    if isinstance(payload, list):
-        # Check if it looks like a list of conversations or a list of messages
-        # For drive/gemini, if it's a list, it's often a list of chunks
-        if payload and isinstance(payload[0], dict) and ("role" in payload[0] or "text" in payload[0]):
-            return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
-
-        results = []
-        for i, item in enumerate(payload):
-            results.extend(parse_drive_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
-        return results
-    if isinstance(payload, dict):
-        if "chunkedPrompt" in payload or "chunks" in payload:
-            return [drive.parse_chunked_prompt(provider, payload, fallback_id)]
-        detected = detect_provider(payload, Path(fallback_id)) or provider
-        return parse_payload(detected, payload, fallback_id)
-    return []
-
-
-def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists: bool = True) -> Iterable[Any]:
-    if path_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
-        error_count = 0
-        for line in handle:
-            raw = line.strip()
-            if not raw:
-                continue
-            if isinstance(raw, bytes):
-                decoded = _decode_json_bytes(raw)
-                if not decoded:
-                    logger.warning("Skipping undecodable line from %s", path_name)
-                    continue
-            else:
-                decoded = raw
-            try:
-                yield json.loads(decoded)
-            except json.JSONDecodeError as exc:
-                # Log first few errors, then summarize
-                error_count += 1
-                if error_count <= 3:
-                    logger.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
-                elif error_count == 4:
-                    logger.warning("Skipping further invalid JSON lines in %s...", path_name)
-                continue
-        if error_count > 3:
-            logger.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
-        return
-
-    if unpack_lists:
-        # Strategy 1: Try streaming root list
-        try:
-            found_any = False
-            for item in ijson.items(handle, "item"):
-                found_any = True
-                yield item
-            if found_any:
-                return
-        except ijson.common.JSONError:
-            if found_any:
-                return  # Already yielded items — don't retry to avoid duplicates
-        except Exception as exc:
-            logger.debug("Strategy 1 (ijson items) failed for %s: %s", path_name, exc)
-            if found_any:
-                return  # Already yielded items — don't retry to avoid duplicates
-
-        handle.seek(0)
-        # Strategy 2: Try streaming conversations list
-        try:
-            found_any = False
-            for item in ijson.items(handle, "conversations.item"):
-                found_any = True
-                yield item
-            if found_any:
-                return
-        except ijson.common.JSONError:
-            if found_any:
-                return  # Already yielded items — don't retry to avoid duplicates
-        except Exception as exc:
-            logger.debug("Strategy 2 (ijson conversations.item) failed for %s: %s", path_name, exc)
-            if found_any:
-                return  # Already yielded items — don't retry to avoid duplicates
-
-        handle.seek(0)
-    # Strategy 3: Load full object (fallback for single dicts or unknown structures)
-    # Let JSONDecodeError propagate so outer handler can track failed files
-    data = json.load(handle)
-    if isinstance(data, dict):
-        yield data
-    elif isinstance(data, list):
-        if unpack_lists:
-            yield from data
-        else:
-            yield data
-
-
+_cursor.logger = logger
+_decoders.logger = logger
+MAX_COMPRESSION_RATIO = _decoders.MAX_COMPRESSION_RATIO
+MAX_UNCOMPRESSED_SIZE = _decoders.MAX_UNCOMPRESSED_SIZE
+ijson = _decoders.ijson
+_decode_json_bytes = _decoders._decode_json_bytes
+_iter_json_stream = _decoders._iter_json_stream
+_get_file_mtime = _cursor._get_file_mtime
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
 
