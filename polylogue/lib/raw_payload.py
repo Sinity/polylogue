@@ -114,25 +114,15 @@ def _infer_payload_provider(
 ) -> str:
     """Infer canonical provider from payload/path, with fallback."""
     if payload_provider:
-        return canonical_runtime_provider(
-            payload_provider,
-            preserve_unknown=True,
-            default=payload_provider,
-        )
-    source_hint = str(source_path or "")
-    if source_hint:
-        inferred = detect_provider(payload, Path(source_hint))
-        if inferred:
-            return canonical_runtime_provider(
-                inferred,
-                preserve_unknown=True,
-                default=inferred,
-            )
-    return canonical_runtime_provider(
-        fallback_provider,
-        preserve_unknown=True,
-        default=fallback_provider,
-    )
+        return Provider.from_string(payload_provider)
+    fallback_token = Provider.from_string(fallback_provider)
+    normalized_path = str(source_path or "").replace("\\", "/").lower()
+    if fallback_token is Provider.CLAUDE_CODE and "/subagents/" in normalized_path:
+        return fallback_token
+    inferred = detect_provider(payload)
+    if inferred:
+        return inferred
+    return fallback_token
 
 
 def build_raw_payload_envelope(

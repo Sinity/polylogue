@@ -280,7 +280,12 @@ polylogue check --repair --vacuum         # Compact database after repair
 polylogue check --deep                    # Run SQLite integrity check
 polylogue check --json                    # Machine-readable output
 polylogue check --schemas                 # Raw-corpus schema verification gate
-polylogue check --proof                   # Raw-artifact support proof and sidecar linkage
+polylogue check --proof                   # Durable artifact support proof and sidecar linkage
+polylogue check --proof --artifact-provider claude-code
+polylogue check --artifacts --json        # Durable artifact observation rows
+polylogue check --artifacts --artifact-status unknown --artifact-limit 50
+polylogue check --cohorts                 # Durable artifact cohort summaries
+polylogue check --cohorts --artifact-provider chatgpt
 polylogue check --schemas --schema-provider chatgpt --schema-samples all
 polylogue check --schemas --schema-provider claude-code --schema-record-limit 500 --schema-record-offset 1000
 polylogue qa                              # Full synthetic QA (audit → proof → exercises → invariants)
@@ -299,6 +304,10 @@ polylogue reset --all --yes               # Non-interactive reset
 
 `polylogue qa` writes snapshots to `<archive_root>/qa/snapshots/<timestamp>-<name>` with
 `manifest.json` (hashes + metadata), `INDEX.md`, and a best-effort `latest` symlink.
+
+Artifact proof/listing/cohort commands hydrate missing historical
+`artifact_observations` rows from `raw_conversations` before reporting, so the
+durable control plane stays queryable for older archives too.
 
 ## Global Flags
 

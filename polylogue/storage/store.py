@@ -15,7 +15,19 @@ from polylogue.lib.branch_type import BranchType
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
-from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
+from polylogue.types import (
+    AttachmentId,
+    ArtifactSupportStatus,
+    ContentBlockType,
+    ContentHash,
+    ConversationId,
+    MessageId,
+    PlanStage,
+    Provider,
+    SemanticBlockType,
+    ValidationMode,
+    ValidationStatus,
+)
 
 # Maximum reasonable file size (1TB)
 MAX_ATTACHMENT_SIZE = 1024 * 1024 * 1024 * 1024
@@ -202,6 +214,101 @@ class RawConversationRecord(BaseModel):
         return v
 
 
+class ArtifactObservationRecord(BaseModel):
+    """Durable observation of one source artifact, separate from raw blob dedupe."""
+
+    observation_id: str
+    raw_id: str
+    provider_name: str
+    payload_provider: Provider | None = None
+    source_name: str | None = None
+    source_path: str
+    source_index: int | None = None
+    file_mtime: str | None = None
+    wire_format: str | None = None
+    artifact_kind: str
+    classification_reason: str
+    parse_as_conversation: bool
+    schema_eligible: bool
+    support_status: ArtifactSupportStatus
+    malformed_jsonl_lines: int = 0
+    decode_error: str | None = None
+    bundle_scope: str | None = None
+    cohort_id: str | None = None
+    resolved_package_version: str | None = None
+    resolved_element_kind: str | None = None
+    resolution_reason: str | None = None
+    link_group_key: str | None = None
+    sidecar_agent_type: str | None = None
+    first_observed_at: str
+    last_observed_at: str
+
+    @field_validator(
+        "observation_id",
+        "raw_id",
+        "provider_name",
+        "source_path",
+        "artifact_kind",
+        "classification_reason",
+        "first_observed_at",
+        "last_observed_at",
+    )
+    @classmethod
+    def observation_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+    @field_validator("payload_provider", mode="before")
+    @classmethod
+    def coerce_observation_payload_provider(cls, v: object) -> Provider | None:
+        if v is None:
+            return None
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v))
+
+    @field_validator("support_status", mode="before")
+    @classmethod
+    def coerce_support_status(cls, v: object) -> ArtifactSupportStatus:
+        return ArtifactSupportStatus.from_string(str(v))
+
+
+class ArtifactCohortSummary(BaseModel):
+    """Aggregate summary for one observed artifact cohort."""
+
+    provider_name: str
+    payload_provider: Provider | None = None
+    artifact_kind: str
+    support_status: ArtifactSupportStatus
+    cohort_id: str | None = None
+    observation_count: int = 0
+    unique_raw_ids: int = 0
+    first_observed_at: str | None = None
+    last_observed_at: str | None = None
+    bundle_scope_count: int = 0
+    sample_source_paths: list[str] = Field(default_factory=list)
+    resolved_package_version: str | None = None
+    resolved_element_kind: str | None = None
+    resolution_reason: str | None = None
+    link_group_count: int = 0
+    linked_sidecar_count: int = 0
+
+    @field_validator("payload_provider", mode="before")
+    @classmethod
+    def coerce_cohort_payload_provider(cls, v: object) -> Provider | None:
+        if v is None:
+            return None
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v))
+
+    @field_validator("support_status", mode="before")
+    @classmethod
+    def coerce_cohort_support_status(cls, v: object) -> ArtifactSupportStatus:
+        return ArtifactSupportStatus.from_string(str(v))
+
+
 class PlanResult(BaseModel):
     timestamp: int
     stage: str = "all"
@@ -366,6 +473,8 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
 
 __all__ = [
     "AttachmentRecord",
+    "ArtifactCohortSummary",
+    "ArtifactObservationRecord",
     "ContentBlockRecord",
     "ConversationRecord",
     "MAX_ATTACHMENT_SIZE",

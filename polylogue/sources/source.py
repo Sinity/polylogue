@@ -63,7 +63,6 @@ _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
 # These contain derived/analysis artifacts, not raw conversation data.
 _SKIP_DIRS = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
 
-
 def _has_supported_extension(path: Path) -> bool:
     """Check if path has a supported file extension (case-insensitive)."""
     name_lower = path.name.lower()

@@ -36,4 +36,170 @@ class Provider(str, Enum):
         return self.value
 
 
-__all__ = ["AttachmentId", "ContentHash", "ConversationId", "MessageId", "Provider"]
+class ContentBlockType(str, Enum):
+    """Canonical stored and parsed content block kinds."""
+
+    TEXT = "text"
+    THINKING = "thinking"
+    TOOL_USE = "tool_use"
+    TOOL_RESULT = "tool_result"
+    IMAGE = "image"
+    CODE = "code"
+    DOCUMENT = "document"
+
+    @classmethod
+    def from_string(cls, value: str | ContentBlockType) -> ContentBlockType:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class SemanticBlockType(str, Enum):
+    """Canonical semantic classifications for stored content blocks."""
+
+    FILE_READ = "file_read"
+    FILE_WRITE = "file_write"
+    FILE_EDIT = "file_edit"
+    SHELL = "shell"
+    GIT = "git"
+    SEARCH = "search"
+    WEB = "web"
+    AGENT = "agent"
+    SUBAGENT = "subagent"
+    THINKING = "thinking"
+
+    @classmethod
+    def from_string(cls, value: str | SemanticBlockType) -> SemanticBlockType:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class ValidationStatus(str, Enum):
+    """Persisted raw-schema validation outcome."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+    @classmethod
+    def from_string(cls, value: str | ValidationStatus) -> ValidationStatus:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class ValidationMode(str, Enum):
+    """Configured raw-schema validation strictness."""
+
+    OFF = "off"
+    ADVISORY = "advisory"
+    STRICT = "strict"
+
+    @classmethod
+    def from_string(cls, value: str | ValidationMode) -> ValidationMode:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class ArtifactSupportStatus(str, Enum):
+    """Durable support state for an observed raw artifact."""
+
+    SUPPORTED_PARSEABLE = "supported_parseable"
+    RECOGNIZED_UNPARSED = "recognized_unparsed"
+    UNSUPPORTED_PARSEABLE = "unsupported_parseable"
+    DECODE_FAILED = "decode_failed"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def from_string(cls, value: str | ArtifactSupportStatus) -> ArtifactSupportStatus:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class PlanStage(str, Enum):
+    """Supported ingest/runtime planning stages."""
+
+    ALL = "all"
+    ACQUIRE = "acquire"
+    VALIDATE = "validate"
+    PARSE = "parse"
+    INDEX = "index"
+    RENDER = "render"
+    GENERATE_SCHEMAS = "generate-schemas"
+
+    @classmethod
+    def from_string(cls, value: str | PlanStage) -> PlanStage:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class SearchProvider(str, Enum):
+    """Supported static-site search backends."""
+
+    PAGEFIND = "pagefind"
+    LUNR = "lunr"
+
+    @classmethod
+    def from_string(cls, value: str | SearchProvider) -> SearchProvider:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class ExerciseIOMode(str, Enum):
+    """Showcase exercise input/output mutability mode."""
+
+    READ = "read"
+    WRITE = "write"
+    IDEMPOTENT = "idempotent"
+
+    @classmethod
+    def from_string(cls, value: str | ExerciseIOMode) -> ExerciseIOMode:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+    def __str__(self) -> str:
+        return self.value
+
+
+__all__ = [
+    "AttachmentId",
+    "ArtifactSupportStatus",
+    "ContentBlockType",
+    "ContentHash",
+    "ConversationId",
+    "ExerciseIOMode",
+    "MessageId",
+    "PlanStage",
+    "Provider",
+    "SearchProvider",
+    "SemanticBlockType",
+    "ValidationMode",
+    "ValidationStatus",
+]

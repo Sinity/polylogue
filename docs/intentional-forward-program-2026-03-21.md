@@ -154,11 +154,14 @@ Scope:
 Status:
 
 - executed in this working pass as:
-  - `check --proof` over shared raw-artifact/schema-resolution facts
+  - durable `artifact_observations` control-plane rows in SQLite
+  - acquisition-time persistence of artifact observations
+  - `check --proof` over the durable artifact ledger
+  - `check --artifacts` and `check --cohorts` as sibling projections over the same ledger
   - QA report/session inclusion of artifact proof coverage
   - Claude `agent-*.meta.json` ↔ `agent-*.jsonl` linkage accounting
-- `check --artifacts` / `check --cohorts` remain later projections on top of
-  the same proof substrate
+  - source acquisition of `sessions-index.json` and `bridge-pointer.json`
+  - Claude subagent provider identity preservation for `/subagents/` paths
 
 ### Step 5: Publication And Repo Shape Cleanup
 

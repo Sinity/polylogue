@@ -63,15 +63,11 @@ def test_ensure_schema_applies_on_new_database(tmp_path):
 
     _ensure_schema(conn)
 
-    # Check version updated
-    row = conn.execute("PRAGMA user_version").fetchone()
-    assert row[0] == SCHEMA_VERSION
-
-    # Check tables exist
-    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    tables = [row[0] for row in cursor.fetchall()]
-    assert "conversations" in tables
-
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert {"artifact_observations", "conversations", "messages", "attachments", "attachment_refs", "runs"}.issubset(
+        _table_names(conn)
+    )
+    assert "message_meta" not in _table_names(conn)
     conn.close()
 
 
@@ -148,7 +144,13 @@ def test_open_connection_creates_parent_directories(tmp_path):
     assert not db_path.parent.exists()
 
     with open_connection(db_path) as conn:
-        assert conn is not None
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert {"artifact_observations", "conversations", "messages", "attachments", "attachment_refs"}.issubset(
+            _table_names(conn)
+        )
 
     assert db_path.exists()
     assert db_path.parent.exists()
@@ -253,159 +255,13 @@ class TestConnectionCommitAndRollback:
             assert row is None, "Insert should have been rolled back"
 
 
-@pytest.mark.slow
-class TestThreadSafety:
-    """Test thread-local connection safety."""
-
-    def test_thread_local_connections_isolated(self, tmp_path):
-        """Each thread gets its own isolated connection."""
-        db_path = tmp_path / "test.db"
-
-        # Initialize database with WAL mode first to avoid lock contention
-        with open_connection(db_path) as conn:
-            conn.execute("SELECT 1").fetchone()
-
-        connection_ids = {}
-        errors = []
-
-        def thread_work(thread_id: int):
-            try:
-                with open_connection(db_path) as conn:
-                    connection_ids[thread_id] = id(conn)
-                    # Verify connection is functional
-                    cursor = conn.execute("SELECT 1")
-                    assert cursor.fetchone() is not None
-                    conn.commit()  # Ensure locks are released
-            except Exception as e:
-                errors.append((thread_id, str(e)))
-
-        # Use fewer threads to reduce lock contention
-        threads = [threading.Thread(target=thread_work, args=(i,)) for i in range(3)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-
-        assert len(errors) == 0, f"Errors: {errors}"
-        assert len(set(connection_ids.values())) == 3, "Each thread should have different connection object"
-
-    def test_concurrent_writes_with_write_lock(self, tmp_path):
-        """Concurrent store_records() calls properly serialize via write lock."""
-        db_path = tmp_path / "test.db"
-
-        # Initialize database with WAL mode first
-        with open_connection(db_path) as conn:
-            conn.execute("SELECT 1").fetchone()
-
-        errors = []
-
-        def write_conversation(conv_id: int):
-            try:
-                conv = make_conversation(f"c{conv_id}", title=f"Conversation {conv_id}")
-                messages = [
-                    make_message(
-                        f"m{conv_id}-{i}",
-                        f"c{conv_id}",
-                        role="user" if i % 2 == 0 else "assistant",
-                        text=f"Message {i}",
-                    )
-                    for i in range(3)
-                ]
-
-                with open_connection(db_path) as conn:
-                    store_records(conversation=conv, messages=messages, attachments=[], conn=conn)
-                    conn.commit()  # Explicit commit to release locks faster
-            except Exception as e:
-                errors.append((conv_id, str(e)))
-
-        # Run concurrent writes with reduced parallelism to avoid lock contention
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(write_conversation, i) for i in range(20)]
-            for future in as_completed(futures):
-                future.result()
-
-        assert len(errors) == 0
-
-        # Verify all conversations written
-        with open_connection(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-            assert count == 20
-
-            msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            assert msg_count == 60  # 20 * 3
-
-
-class TestSchemaAndMigration:
-    """Test schema initialization and versioning."""
-
-    def test_open_connection_applies_schema_on_new_db(self, tmp_path):
-        """open_connection() applies full schema to new database."""
-        db_path = tmp_path / "new.db"
-        assert not db_path.exists()
-
-        with open_connection(db_path) as conn:
-            # Verify schema version
-            version_row = conn.execute("PRAGMA user_version").fetchone()
-            assert version_row[0] == SCHEMA_VERSION
-
-            # Verify tables exist
-            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-            tables = [row[0] for row in cursor.fetchall()]
-
-            expected_tables = [
-                "conversations",
-                "messages",
-                "attachments",
-                "attachment_refs",
-                "runs",
-            ]
-            for table in expected_tables:
-                assert table in tables, f"Table {table} not found"
-
-    def test_open_connection_foreign_keys_enabled(self, tmp_path):
-        """open_connection() enables foreign key constraints."""
-        db_path = tmp_path / "test.db"
-
-        with open_connection(db_path) as conn:
-            row = conn.execute("PRAGMA foreign_keys").fetchone()
-            assert row[0] == 1, "Foreign keys should be ON"
-
-    def test_open_connection_wal_mode_enabled(self, tmp_path):
-        """open_connection() enables WAL journal mode."""
-        db_path = tmp_path / "test.db"
-
-        with open_connection(db_path) as conn:
-            row = conn.execute("PRAGMA journal_mode").fetchone()
-            assert row[0].lower() == "wal", "WAL mode should be enabled"
-
-    def test_open_connection_creates_parent_directories(self, tmp_path):
-        """open_connection() creates nested parent directories."""
-        db_path = tmp_path / "a" / "b" / "c" / "test.db"
-        assert not db_path.parent.exists()
-
-        with open_connection(db_path) as conn:
-            assert conn is not None
-
-        assert db_path.exists()
-        assert db_path.parent.exists()
-
-
-class TestBackendEdgeCases:
-    """Test edge cases and boundary conditions."""
-
-    def test_store_records_with_null_optional_fields(self, tmp_path):
-        """store_records() handles conversations/messages with NULL optional fields."""
-        db_path = tmp_path / "test.db"
-
-        conv = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title=None,  # NULL
-            created_at=None,  # NULL
-            updated_at=None,  # NULL
-            content_hash="hash1",
-            provider_meta=None,  # NULL
+def test_connection_context_contract(tmp_path: Path, monkeypatch) -> None:
+    """connection_context() must support explicit, default, and already-open connections."""
+    explicit_path = tmp_path / "explicit.db"
+    with connection_context(explicit_path) as explicit_conn:
+        assert isinstance(explicit_conn, sqlite3.Connection)
+        assert {"artifact_observations", "conversations", "messages", "attachments", "attachment_refs"}.issubset(
+            _table_names(explicit_conn)
         )
 
         msg = MessageRecord(

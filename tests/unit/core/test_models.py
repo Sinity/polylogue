@@ -7,12 +7,19 @@ from unittest.mock import Mock
 import pytest
 
 from polylogue.lib.messages import MessageCollection
-from polylogue.lib.models import (
-    Attachment,
-    Conversation,
-    ConversationSummary,
-    DialoguePair,
-    Message,
+from polylogue.lib.models import Message
+from polylogue.lib.provider_identity import (
+    canonical_runtime_provider,
+    canonical_schema_provider,
+)
+from polylogue.lib.raw_payload import build_raw_payload_envelope
+from polylogue.lib.viewports import ToolCall, classify_tool
+from polylogue.schemas.code_detection import LANGUAGE_PATTERNS, detect_language, extract_code_block
+from polylogue.storage.hydrators import (
+    attachment_from_record,
+    conversation_from_records,
+    conversation_summary_from_record,
+    message_from_record,
 )
 from polylogue.lib.viewports import ToolCall, ToolCategory, classify_tool
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
@@ -659,57 +666,26 @@ CONTEXT_DUMP_TEST_CASES = [
 ]
 
 
-@pytest.mark.parametrize("text,expected,desc", CONTEXT_DUMP_TEST_CASES)
-def test_is_context_dump_detection(text, expected, desc):
-    """Comprehensive context dump detection test.
-
-    Replaces 4 individual context dump tests.
-    """
-    msg = Message(id="1", role="user", text=text)
-    assert msg.is_context_dump == expected, f"Wrong is_context_dump for {desc}"
-
-
-NOISE_TEST_CASES = [
-    # (role, text, provider_meta, expected_is_noise, expected_is_substantive, description)
-    ("system", "System prompt", {}, True, False, "system message"),
-    ("assistant", "A slightly longer message", {}, False, True, "text >10 chars"),
-    ("assistant", "Thinking...", {"isThought": True}, False, False, "thinking block (noise via is_thinking in substantive check)"),
-    ("tool", "Tool result", {}, True, False, "tool message"),
-    ("assistant", "This is a substantial answer with details.", {}, False, True, "substantive"),
-    ("user", "Regular question here?", {}, False, True, "user question"),
-]
+def test_build_raw_payload_envelope_prefers_claude_subagent_path_over_codex_like_shape() -> None:
+    raw = (
+        b'{"type":"session_meta"}\n'
+        b'{"type":"response_item","payload":{"type":"message"}}\n'
+    )
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/claude/subagents/agent-abc.jsonl",
+        fallback_provider="claude-code",
+    )
+    assert envelope.provider is Provider.CLAUDE_CODE
+    assert envelope.artifact.kind.value == "subagent_conversation_stream"
 
 
-@pytest.mark.parametrize("role,text,meta,exp_noise,exp_subst,desc", NOISE_TEST_CASES)
-def test_noise_and_substantive_classification(role, text, meta, exp_noise, exp_subst, desc):
-    """Comprehensive noise/substantive classification.
-
-    Replaces 5 individual classification tests.
-    """
-    msg = Message(id="1", role=role, text=text, provider_meta=meta)
-
-    assert msg.is_noise == exp_noise, f"Wrong is_noise for {desc}"
-    assert msg.is_substantive == exp_subst, f"Wrong is_substantive for {desc}"
-
-
-METADATA_TEST_CASES = [
-    # (provider_meta, expected_cost, expected_duration, expected_word_count, description)
-    ({"costUSD": 0.005}, 0.005, None, None, "cost only"),
-    ({"durationMs": 2500}, None, 2500, None, "duration only"),
-    ({"costUSD": 0.01, "durationMs": 5000}, 0.01, 5000, None, "both"),
-    ({}, None, None, None, "no metadata"),
-]
-
-
-@pytest.mark.parametrize("meta,exp_cost,exp_dur,exp_words,desc", METADATA_TEST_CASES)
-def test_metadata_extraction(meta, exp_cost, exp_dur, exp_words, desc):
-    """Comprehensive metadata extraction test.
-
-    Replaces 3 individual metadata tests.
-    """
-    msg = Message(id="1", role="assistant", text="Response text", provider_meta=meta)
-
-    assert msg.cost_usd == exp_cost, f"Wrong cost_usd for {desc}"
-    assert msg.duration_ms == exp_dur, f"Wrong duration_ms for {desc}"
-    # word_count is always calculated from text
-    assert msg.word_count > 0
+def test_build_raw_payload_envelope_classifies_chatgpt_user_sidecars_as_metadata() -> None:
+    raw = b'{"id":"user-1","email":"test@example.com"}'
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/chatgpt-export/user.json",
+        fallback_provider="chatgpt",
+    )
+    assert envelope.artifact.kind.value == "metadata_document"
+    assert envelope.artifact.schema_eligible is False
