@@ -16,6 +16,8 @@ from polylogue.schemas.verification import (
     ProviderArtifactProof,
     ProviderSchemaVerification,
     SchemaVerificationReport,
+    list_artifact_cohort_rows,
+    list_artifact_observation_rows,
     prove_raw_artifact_coverage,
     verify_raw_corpus,
 )
@@ -445,8 +447,8 @@ class TestProveRawArtifactCoverage:
                 return package
             return None
 
-        monkeypatch.setattr("polylogue.schemas.verification.SchemaRegistry.resolve_payload", _resolve_payload)
-        monkeypatch.setattr("polylogue.schemas.verification.SchemaRegistry.get_package", _get_package)
+        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.get_package", _get_package)
 
         report = prove_raw_artifact_coverage(db_path=db_path)
 
@@ -468,3 +470,108 @@ class TestProveRawArtifactCoverage:
         assert chatgpt_stats.package_versions == {"v1": 1}
         assert chatgpt_stats.element_kinds == {"conversation_document": 1}
         assert chatgpt_stats.resolution_reasons == {"exact_structure": 1}
+
+        with open_connection(db_path) as conn:
+            observation_count = conn.execute(
+                "SELECT COUNT(*) FROM artifact_observations"
+            ).fetchone()[0]
+        assert observation_count == 5
+
+    def test_lists_artifact_rows_and_cohorts_from_durable_control_plane(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "artifacts.db"
+        with open_connection(db_path):
+            pass
+
+        _insert_raw_record(
+            db_path=db_path,
+            raw_id="raw-chatgpt-1",
+            provider_name="chatgpt",
+            source_name="chatgpt",
+            source_path="/tmp/chatgpt.json",
+            raw_content=b'{"id":"one","mapping":{}}',
+        )
+        _insert_raw_record(
+            db_path=db_path,
+            raw_id="raw-sidecar-1",
+            provider_name="claude-code",
+            source_name="claude-code",
+            source_path="/tmp/subagents/agent-a123.meta.json",
+            raw_content=b'{"agentType":"general-purpose"}',
+        )
+        _insert_raw_record(
+            db_path=db_path,
+            raw_id="raw-subagent-1",
+            provider_name="claude-code",
+            source_name="claude-code",
+            source_path="/tmp/subagents/agent-a123.jsonl",
+            raw_content=(
+                b'{"type":"session_meta"}\n'
+                b'{"type":"response_item","payload":{"type":"message"}}\n'
+            ),
+        )
+
+        package = SchemaVersionPackage(
+            provider="chatgpt",
+            version="v1",
+            anchor_kind="conversation_document",
+            default_element_kind="conversation_document",
+            first_seen="2026-03-01T00:00:00+00:00",
+            last_seen="2026-03-01T00:00:00+00:00",
+            bundle_scope_count=1,
+            sample_count=1,
+            elements=[
+                SchemaElementManifest(
+                    element_kind="conversation_document",
+                    schema_file="chatgpt-v1.json",
+                    sample_count=1,
+                    artifact_count=1,
+                )
+            ],
+        )
+
+        def _resolve_payload(self, provider, payload, *, source_path=None):
+            if str(provider) == "chatgpt":
+                return SchemaResolution(
+                    provider="chatgpt",
+                    package_version="v1",
+                    element_kind="conversation_document",
+                    exact_structure_id=None,
+                    bundle_scope=None,
+                    reason="exact_structure",
+                )
+            return None
+
+        def _get_package(self, provider, version="default"):
+            if str(provider) == "chatgpt" and version == "v1":
+                return package
+            return None
+
+        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.get_package", _get_package)
+
+        rows = list_artifact_observation_rows(db_path=db_path)
+        assert len(rows) == 3
+        assert {row.artifact_kind for row in rows} == {
+            "conversation_document",
+            "agent_sidecar_meta",
+            "subagent_conversation_stream",
+        }
+
+        supported_rows = list_artifact_observation_rows(
+            db_path=db_path,
+            support_statuses=["supported_parseable"],
+        )
+        assert len(supported_rows) == 1
+        assert supported_rows[0].resolved_package_version == "v1"
+
+        cohorts = list_artifact_cohort_rows(db_path=db_path)
+        assert len(cohorts) == 3
+        chatgpt_cohort = next(row for row in cohorts if row.provider_name == "chatgpt")
+        assert chatgpt_cohort.support_status.value == "supported_parseable"
+        assert chatgpt_cohort.resolved_package_version == "v1"
+        sidecar_cohort = next(row for row in cohorts if row.artifact_kind == "agent_sidecar_meta")
+        assert sidecar_cohort.linked_sidecar_count == 1

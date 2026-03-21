@@ -19,8 +19,19 @@ from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.paths import db_path as default_db_path
 from polylogue.protocols import ProgressCallback
 from polylogue.schemas.packages import SchemaElementManifest, SchemaVersionPackage
-from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.validator import SchemaValidator
+from polylogue.storage.artifact_observations import (
+    ensure_artifact_observations,
+)
+from polylogue.storage.artifact_observations import (
+    list_artifact_cohorts as list_durable_artifact_cohorts,
+)
+from polylogue.storage.artifact_observations import (
+    list_artifact_observations as list_durable_artifact_observations,
+)
+from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.store import ArtifactCohortSummary, ArtifactObservationRecord
+from polylogue.types import ArtifactSupportStatus, Provider
 
 
 @dataclass
@@ -328,6 +339,60 @@ def _register_resolution(
     _increment_count(stats.resolution_reasons, reason)
 
 
+def list_artifact_observation_rows(
+    *,
+    db_path: Path | None = None,
+    providers: list[str] | None = None,
+    support_statuses: list[str] | None = None,
+    artifact_kinds: list[str] | None = None,
+    record_limit: int | None = None,
+    record_offset: int = 0,
+) -> list[ArtifactObservationRecord]:
+    """Return durable artifact observations, hydrating historical rows as needed."""
+    db_path = db_path or default_db_path()
+    if not db_path.exists():
+        return []
+
+    bounded_limit, bounded_offset = _bounded_window(record_limit, record_offset)
+    with open_connection(db_path) as conn:
+        ensure_artifact_observations(conn, providers=providers)
+        return list_durable_artifact_observations(
+            conn,
+            providers=providers,
+            support_statuses=support_statuses,
+            artifact_kinds=artifact_kinds,
+            limit=bounded_limit,
+            offset=bounded_offset,
+        )
+
+
+def list_artifact_cohort_rows(
+    *,
+    db_path: Path | None = None,
+    providers: list[str] | None = None,
+    support_statuses: list[str] | None = None,
+    artifact_kinds: list[str] | None = None,
+    record_limit: int | None = None,
+    record_offset: int = 0,
+) -> list[ArtifactCohortSummary]:
+    """Return durable artifact cohort summaries, hydrating historical rows as needed."""
+    db_path = db_path or default_db_path()
+    if not db_path.exists():
+        return []
+
+    bounded_limit, bounded_offset = _bounded_window(record_limit, record_offset)
+    with open_connection(db_path) as conn:
+        ensure_artifact_observations(conn, providers=providers)
+        return list_durable_artifact_cohorts(
+            conn,
+            providers=providers,
+            support_statuses=support_statuses,
+            artifact_kinds=artifact_kinds,
+            limit=bounded_limit,
+            offset=bounded_offset,
+        )
+
+
 def prove_raw_artifact_coverage(
     *,
     db_path: Path | None = None,
@@ -335,7 +400,7 @@ def prove_raw_artifact_coverage(
     record_limit: int | None = None,
     record_offset: int = 0,
 ) -> ArtifactProofReport:
-    """Report raw-artifact support, unknowns, and Claude sidecar linkage."""
+    """Report durable artifact support, unknowns, and Claude sidecar linkage."""
     db_path = db_path or default_db_path()
     bounded_limit, bounded_offset = _bounded_window(record_limit, record_offset)
     if not db_path.exists():
@@ -348,112 +413,59 @@ def prove_raw_artifact_coverage(
 
     stats_by_provider: dict[str, ProviderArtifactProof] = {}
     linkage_state: dict[str, dict[str, set[str]]] = {}
-    total_records = 0
-    provider_filter = set(providers or [])
-    registry = SchemaRegistry()
+    observations = list_artifact_observation_rows(
+        db_path=db_path,
+        providers=providers,
+        record_limit=record_limit,
+        record_offset=record_offset,
+    )
+    total_records = len(observations)
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        _ignored_limit, _ignored_offset, rows = _iter_verification_rows(
-            conn,
-            providers=providers,
-            record_limit=record_limit,
-            record_offset=record_offset,
+    for observation in observations:
+        provider = str(observation.payload_provider or Provider.from_string(observation.provider_name))
+        stats = stats_by_provider.setdefault(
+            provider,
+            ProviderArtifactProof(provider=provider),
         )
-        for row in rows:
-            candidate_provider, stored_payload_provider = _candidate_provider(row)
-            raw_provider = str(row["provider_name"])
-            source_path = str(row["source_path"] or "")
-            try:
-                envelope = build_raw_payload_envelope(
-                    row["raw_content"],
-                    source_path=source_path,
-                    fallback_provider=raw_provider,
-                    payload_provider=stored_payload_provider,
-                    jsonl_dict_only=False,
-                )
-            except Exception:
-                if provider_filter and candidate_provider not in provider_filter:
-                    continue
-                total_records += 1
-                stats = stats_by_provider.setdefault(
-                    candidate_provider,
-                    ProviderArtifactProof(provider=candidate_provider),
-                )
-                stats.total_records += 1
-                stats.decode_errors += 1
-                continue
+        stats.total_records += 1
+        _increment_count(stats.artifact_counts, observation.artifact_kind)
 
-            provider = str(envelope.provider)
-            if provider_filter and provider not in provider_filter:
-                continue
+        if observation.link_group_key is not None:
+            state = linkage_state.setdefault(provider, {"sidecars": set(), "streams": set()})
+            if observation.artifact_kind == ArtifactKind.AGENT_SIDECAR_META.value:
+                state["sidecars"].add(observation.link_group_key)
+                if observation.sidecar_agent_type is not None:
+                    _increment_count(stats.sidecar_agent_types, observation.sidecar_agent_type)
+            elif observation.artifact_kind == ArtifactKind.SUBAGENT_CONVERSATION_STREAM.value:
+                state["streams"].add(observation.link_group_key)
 
-            total_records += 1
-            stats = stats_by_provider.setdefault(
-                provider,
-                ProviderArtifactProof(provider=provider),
-            )
-            stats.total_records += 1
-            _increment_count(stats.artifact_counts, envelope.artifact.kind.value)
+        if observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE:
+            stats.contract_backed_records += 1
+            if observation.resolved_package_version is not None:
+                _increment_count(stats.package_versions, observation.resolved_package_version)
+            if observation.resolved_element_kind is not None:
+                _increment_count(stats.element_kinds, observation.resolved_element_kind)
+            if observation.resolution_reason is not None:
+                _increment_count(stats.resolution_reasons, observation.resolution_reason)
+        elif observation.support_status is ArtifactSupportStatus.UNSUPPORTED_PARSEABLE:
+            stats.unsupported_parseable_records += 1
+        elif observation.support_status is ArtifactSupportStatus.RECOGNIZED_UNPARSED:
+            stats.recognized_non_parseable_records += 1
+        elif observation.support_status is ArtifactSupportStatus.UNKNOWN:
+            stats.unknown_records += 1
+        elif observation.support_status is ArtifactSupportStatus.DECODE_FAILED:
+            stats.decode_errors += 1
 
-            link_key = _subagent_link_key(source_path)
-            if link_key is not None:
-                state = linkage_state.setdefault(provider, {"sidecars": set(), "streams": set()})
-                if envelope.artifact.kind is ArtifactKind.AGENT_SIDECAR_META:
-                    state["sidecars"].add(link_key)
-                    agent_type = _sidecar_agent_type(envelope.payload)
-                    if agent_type is not None:
-                        _increment_count(stats.sidecar_agent_types, agent_type)
-                elif envelope.artifact.kind is ArtifactKind.SUBAGENT_CONVERSATION_STREAM:
-                    state["streams"].add(link_key)
-
-            if envelope.malformed_jsonl_lines:
-                stats.decode_errors += 1
-                continue
-
-            if envelope.artifact.kind is ArtifactKind.UNKNOWN:
-                stats.unknown_records += 1
-                continue
-
-            if not envelope.artifact.schema_eligible or not envelope.artifact.parse_as_conversation:
-                stats.recognized_non_parseable_records += 1
-                continue
-
-            resolution = registry.resolve_payload(
-                provider,
-                envelope.payload,
-                source_path=source_path,
-            )
-            if resolution is None:
-                stats.unsupported_parseable_records += 1
-                continue
-
-            package = registry.get_package(provider, version=resolution.package_version)
-            element = package.element(resolution.element_kind) if package is not None else None
-            if package is None or element is None or not element.supported:
-                stats.unsupported_parseable_records += 1
-                continue
-
-            _register_resolution(
-                stats,
-                package=package,
-                element=element,
-                reason=resolution.reason,
-            )
-
-        for provider, state in linkage_state.items():
-            stats = stats_by_provider.setdefault(
-                provider,
-                ProviderArtifactProof(provider=provider),
-            )
-            linked = state["sidecars"] & state["streams"]
-            stats.linked_sidecars = len(linked)
-            stats.orphan_sidecars = len(state["sidecars"] - state["streams"])
-            stats.subagent_streams = len(state["streams"])
-            stats.streams_with_sidecars = len(linked)
-    finally:
-        conn.close()
+    for provider, state in linkage_state.items():
+        stats = stats_by_provider.setdefault(
+            provider,
+            ProviderArtifactProof(provider=provider),
+        )
+        linked = state["sidecars"] & state["streams"]
+        stats.linked_sidecars = len(linked)
+        stats.orphan_sidecars = len(state["sidecars"] - state["streams"])
+        stats.subagent_streams = len(state["streams"])
+        stats.streams_with_sidecars = len(linked)
 
     return ArtifactProofReport(
         providers=stats_by_provider,

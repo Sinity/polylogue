@@ -48,7 +48,7 @@ def test_ensure_schema_contract(tmp_path: Path) -> None:
     _ensure_schema(conn)
 
     assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    assert {"conversations", "messages", "attachments", "attachment_refs", "runs"}.issubset(
+    assert {"artifact_observations", "conversations", "messages", "attachments", "attachment_refs", "runs"}.issubset(
         _table_names(conn)
     )
     assert "message_meta" not in _table_names(conn)
@@ -79,7 +79,7 @@ def test_open_connection_contract(tmp_path: Path) -> None:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
         assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert {"conversations", "messages", "attachments", "attachment_refs"}.issubset(
+        assert {"artifact_observations", "conversations", "messages", "attachments", "attachment_refs"}.issubset(
             _table_names(conn)
         )
 
@@ -123,7 +123,7 @@ def test_connection_context_contract(tmp_path: Path, monkeypatch) -> None:
     explicit_path = tmp_path / "explicit.db"
     with connection_context(explicit_path) as explicit_conn:
         assert isinstance(explicit_conn, sqlite3.Connection)
-        assert {"conversations", "messages", "attachments", "attachment_refs"}.issubset(
+        assert {"artifact_observations", "conversations", "messages", "attachments", "attachment_refs"}.issubset(
             _table_names(explicit_conn)
         )
 

@@ -19,21 +19,34 @@ from pathlib import Path
 import aiosqlite
 
 import polylogue.paths as _paths
-from polylogue.lib.json import dumps as json_dumps
 from polylogue.logging import get_logger
 from polylogue.storage.backends.connection import (
     DB_TIMEOUT,
 )
-from polylogue.storage.backends.query_store import SQLiteQueryStore
+from polylogue.storage.backends.queries import (
+    artifacts as artifacts_q,
+)
 from polylogue.storage.backends.queries import (
     attachments as attachments_q,
+)
+from polylogue.storage.backends.queries import (
     conversations as conversations_q,
+)
+from polylogue.storage.backends.queries import (
     messages as messages_q,
+)
+from polylogue.storage.backends.queries import (
     raw as raw_queries,
+)
+from polylogue.storage.backends.queries import (
     runs as runs_q,
+)
+from polylogue.storage.backends.queries import (
     stats as stats_q,
 )
+from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.store import (
+    ArtifactObservationRecord,
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
@@ -265,6 +278,7 @@ class SQLiteBackend:
         For any other version: raise — wipe DB and re-run.
         """
         from polylogue.storage.backends.schema import (
+            _ARTIFACT_OBSERVATION_DDL,
             _VEC0_DDL,
             SCHEMA_DDL,
             SCHEMA_VERSION,
@@ -285,7 +299,7 @@ class SQLiteBackend:
             await conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await conn.commit()
         elif current_version == SCHEMA_VERSION:
-            pass  # Already at target version
+            await conn.executescript(_ARTIFACT_OBSERVATION_DDL)
         else:
             from polylogue.errors import DatabaseError
 
@@ -833,6 +847,13 @@ class SQLiteBackend:
         """Save a raw conversation record. Returns True if inserted."""
         async with self._get_connection() as conn:
             return await raw_queries.save_raw_conversation(
+                conn, record, self._transaction_depth
+            )
+
+    async def save_artifact_observation(self, record: ArtifactObservationRecord) -> bool:
+        """Persist or refresh one durable artifact observation."""
+        async with self._get_connection() as conn:
+            return await artifacts_q.save_artifact_observation(
                 conn, record, self._transaction_depth
             )
 

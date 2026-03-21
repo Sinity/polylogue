@@ -60,12 +60,6 @@ _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
 # These contain derived/analysis artifacts, not raw conversation data.
 _SKIP_DIRS = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
 
-# Files to skip by exact name (case-insensitive).
-# bridge-pointer.json: Claude Code project↔session pointer ({sessionId, environmentId, source})
-# sessions-index.json: Claude Code session index (metadata, not conversations)
-_SKIP_FILES = frozenset({"bridge-pointer.json", "sessions-index.json"})
-
-
 def _has_supported_extension(path: Path) -> bool:
     """Check if path has a supported file extension (case-insensitive)."""
     name_lower = path.name.lower()
@@ -80,14 +74,12 @@ def _has_supported_extension(path: Path) -> bool:
 def _walk_source_paths(base: Path) -> list[Path]:
     """Walk a directory and return sorted paths with supported extensions.
 
-    Prunes ``_SKIP_DIRS`` during traversal and ``_SKIP_FILES`` by filename.
+    Prunes ``_SKIP_DIRS`` during traversal.
     """
     paths: list[Path] = []
     for root, dirs, files in os.walk(base, followlinks=True):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
         for filename in files:
-            if filename.lower() in _SKIP_FILES:
-                continue
             file_path = Path(root) / filename
             if _has_supported_extension(file_path):
                 paths.append(file_path)
