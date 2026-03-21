@@ -280,11 +280,12 @@ polylogue check --repair --vacuum         # Compact database after repair
 polylogue check --deep                    # Run SQLite integrity check
 polylogue check --json                    # Machine-readable output
 polylogue check --schemas                 # Raw-corpus schema verification gate
+polylogue check --proof                   # Raw-artifact support proof and sidecar linkage
 polylogue check --schemas --schema-provider chatgpt --schema-samples all
 polylogue check --schemas --schema-provider claude-code --schema-record-limit 500 --schema-record-offset 1000
-polylogue qa                              # Snapshot qa_outputs/qa_archive into archive_root
-polylogue qa --source qa_outputs --source qa_archive
-polylogue qa --name nightly --json
+polylogue qa                              # Full synthetic QA (audit → proof → exercises → invariants)
+polylogue qa --live                       # QA against real data
+polylogue qa --only audit --json          # Schema audit with JSON output
 polylogue auth                            # OAuth flow for Google Drive
 polylogue auth --refresh                  # Force token refresh
 polylogue auth --revoke                   # Revoke stored credentials
@@ -398,6 +399,7 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 - `polylogue check --repair` fixes issues that can be auto-fixed.
 - `polylogue check --vacuum` compacts the database and reclaims space.
 - `polylogue check --schemas` runs non-mutating schema verification over `raw_conversations`.
+- `polylogue check --proof` reports artifact support coverage, unknowns, decode gaps, and Claude sidecar linkage.
 - Use `--schema-provider` to scope providers, `--schema-samples` for per-record sample depth (`N` or `all`), and `--schema-record-limit/--schema-record-offset` for chunked verification on large corpora.
 
 ## Examples

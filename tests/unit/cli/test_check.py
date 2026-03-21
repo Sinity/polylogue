@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from polylogue.cli import cli
 from polylogue.health import HealthCheck, HealthReport, VerifyStatus
+from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
 from polylogue.storage.backends.connection import open_connection
 from tests.infra.helpers import DbFactory
 
@@ -645,3 +646,66 @@ class TestCheckCommandSupplementary:
             record_offset=0,
             quarantine_malformed=True,
         )
+
+    def test_check_proof_json_output(self, cli_workspace):
+        """--proof adds artifact_proof block to JSON output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = ArtifactProofReport(
+            providers={
+                "claude-code": ProviderArtifactProof(
+                    provider="claude-code",
+                    total_records=2,
+                    recognized_non_parseable_records=1,
+                    unsupported_parseable_records=1,
+                    linked_sidecars=1,
+                    subagent_streams=1,
+                    streams_with_sidecars=1,
+                )
+            },
+            total_records=2,
+        )
+
+        with patch(
+            "polylogue.schemas.verification.prove_raw_artifact_coverage",
+            return_value=fake_report,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["--plain", "check", "--json", "--proof"])
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert "artifact_proof" in data
+        assert data["artifact_proof"]["total_records"] == 2
+        assert data["artifact_proof"]["summary"]["linked_sidecars"] == 1
+        assert data["artifact_proof"]["summary"]["unsupported_parseable_records"] == 1
+
+    def test_check_proof_plain_output(self, cli_workspace):
+        """--proof renders the artifact proof summary in plain output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = ArtifactProofReport(
+            providers={
+                "chatgpt": ProviderArtifactProof(
+                    provider="chatgpt",
+                    total_records=1,
+                    contract_backed_records=1,
+                )
+            },
+            total_records=1,
+        )
+
+        with patch(
+            "polylogue.schemas.verification.prove_raw_artifact_coverage",
+            return_value=fake_report,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["--plain", "check", "--proof"])
+
+        assert result.exit_code == 0
+        assert "Artifact proof:" in result.output
+        assert "chatgpt: contract_backed=1" in result.output

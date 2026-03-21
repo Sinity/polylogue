@@ -15,7 +15,19 @@ from unittest.mock import MagicMock
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from polylogue.showcase.report import generate_json_report, generate_qa_session, write_qa_session
+from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.schemas.audit import AuditReport
+from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
+from polylogue.showcase.invariants import InvariantResult
+from polylogue.showcase.qa_runner import QAResult
+from polylogue.showcase.report import (
+    generate_json_report,
+    generate_qa_markdown,
+    generate_qa_session,
+    generate_qa_summary,
+    generate_showcase_session,
+    write_showcase_session,
+)
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
 # ---------------------------------------------------------------------------
@@ -203,3 +215,105 @@ def test_qa_session_exercise_tier_preserved():
     session = generate_qa_session(_make_showcase(results))
     tiers = {e["name"]: e["tier"] for e in session["exercises"]}
     assert tiers == {"e1": 1, "e2": 2, "e3": 3}
+
+
+def test_full_qa_session_contains_composed_stage_payloads():
+    """generate_qa_session preserves audit/showcase/invariant truth in one payload."""
+    showcase = _make_showcase([_make_result(passed=True), _make_result(passed=False, error="boom")])
+    audit = AuditReport(checks=[
+        OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+    ])
+    qa_result = QAResult(
+        audit_report=audit,
+        proof_report=ArtifactProofReport(
+            providers={
+                "chatgpt": ProviderArtifactProof(
+                    provider="chatgpt",
+                    total_records=2,
+                    contract_backed_records=1,
+                    unsupported_parseable_records=1,
+                )
+            },
+            total_records=2,
+        ),
+        showcase_result=showcase,
+        invariant_results=[
+            InvariantResult("json_valid", "ex", OutcomeStatus.OK),
+            InvariantResult("exit_code", "ex", OutcomeStatus.ERROR, error="bad exit"),
+        ],
+    )
+
+    session = generate_qa_session(qa_result)
+
+    assert session["audit"]["status"] == "ok"
+    assert session["audit"]["report"]["summary"] == {"passed": 1, "warned": 0, "failed": 0}
+    assert session["proof"]["status"] == "error"
+    assert session["proof"]["report"]["summary"]["contract_backed_records"] == 1
+    assert session["proof"]["report"]["summary"]["unsupported_parseable_records"] == 1
+    assert session["showcase"]["summary"] == {
+        "total": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0,
+        "total_duration_ms": 84.0,
+    }
+    assert session["invariants"]["summary"] == {"passed": 1, "failed": 1, "skipped": 0}
+    assert session["overall_status"] == "error"
+
+
+def test_generate_qa_summary_reports_stage_statuses():
+    """generate_qa_summary renders the composed session instead of hand-built counts."""
+    qa_result = QAResult(
+        audit_report=AuditReport(checks=[
+            OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+        ]),
+        proof_report=ArtifactProofReport(
+            providers={
+                "chatgpt": ProviderArtifactProof(
+                    provider="chatgpt",
+                    total_records=1,
+                    contract_backed_records=1,
+                )
+            },
+            total_records=1,
+        ),
+        exercises_skipped=True,
+        invariants_skipped=True,
+    )
+
+    summary = generate_qa_summary(qa_result)
+
+    assert "Schema Audit: PASS" in summary
+    assert "Artifact Proof: contract_backed=1" in summary
+    assert "Exercises: SKIPPED" in summary
+    assert "Invariants: SKIPPED" in summary
+
+
+def test_generate_qa_markdown_includes_artifact_proof_section():
+    qa_result = QAResult(
+        audit_report=AuditReport(checks=[
+            OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+        ]),
+        proof_report=ArtifactProofReport(
+            providers={
+                "claude-code": ProviderArtifactProof(
+                    provider="claude-code",
+                    total_records=2,
+                    recognized_non_parseable_records=1,
+                    unsupported_parseable_records=1,
+                    linked_sidecars=1,
+                    subagent_streams=1,
+                    streams_with_sidecars=1,
+                )
+            },
+            total_records=2,
+        ),
+        exercises_skipped=True,
+        invariants_skipped=True,
+    )
+
+    markdown = generate_qa_markdown(qa_result)
+
+    assert "## Artifact Proof" in markdown
+    assert "| Unsupported parseable | 1 |" in markdown
+    assert "| claude-code | 2 | 0 | 1 | 1 | 0 | 0 |" in markdown
