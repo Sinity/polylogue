@@ -2,6 +2,11 @@
 
 Date: 2026-03-21
 Status: executed
+Role: executed subprogram of the intentional forward program's proof/control-plane work
+
+See also:
+
+- `planning-and-analysis-map-2026-03-21.md`
 
 ## Goal
 

@@ -1,5 +1,13 @@
 # Polylogue Master Tasklist (2026-03-06)
 
+Status: historical closure checkpoint, not the live execution queue
+Role: compact archaeology snapshot for the March 5-7 closure wave
+
+Current execution entrypoint:
+
+- `planning-and-analysis-map-2026-03-21.md`
+- `intentional-forward-program-2026-03-21.md`
+
 Compact checkpoint for context-compaction recovery.
 
 ## Closed / Completed

@@ -1,6 +1,12 @@
 # Polylogue Intentional Forward Program
 
 Date: 2026-03-21
+Status: current execution program
+Role: canonical live queue for the post-2026-03-19 planning wave
+
+See also:
+
+- `planning-and-analysis-map-2026-03-21.md`
 
 Collates and updates:
 
