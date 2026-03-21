@@ -1,7 +1,7 @@
 """Gemini AI Studio provider-specific typed models.
 
 These models match the Gemini message format from polylogue imports.
-Derived from schema: polylogue/schemas/providers/gemini.schema.json
+Derived from schema package: polylogue/schemas/providers/gemini/versions/v1/elements/conversation_document.schema.json.gz
 """
 
 from __future__ import annotations

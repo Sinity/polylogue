@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.publication import OutputManifest
 from polylogue.showcase.exercises import GROUPS
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
@@ -78,6 +78,10 @@ def _status_label(status: OutcomeStatus) -> str:
         OutcomeStatus.ERROR: "FAIL",
         OutcomeStatus.SKIP: "SKIPPED",
     }[status]
+
+
+def _format_count_mapping(counts: dict[str, int]) -> str:
+    return ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
 
 
 def generate_summary(result: ShowcaseResult) -> str:
@@ -312,6 +316,13 @@ def generate_qa_session(result: QAResult) -> dict[str, Any]:
         for invariant_result in result.invariant_results
     ]
     invariant_summary = _summarize_invariants(result.invariant_results)
+    proof_payload: dict[str, Any] = {
+        "status": result.proof_status.value,
+    }
+    if result.proof_report is not None:
+        proof_payload["report"] = result.proof_report.to_dict()
+    if result.proof_error is not None:
+        proof_payload["error"] = result.proof_error
 
     showcase_payload: dict[str, Any] = {
         "status": result.showcase_status.value,
@@ -325,6 +336,7 @@ def generate_qa_session(result: QAResult) -> dict[str, Any]:
         "schema_version": 1,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "audit": audit_payload,
+        "proof": proof_payload,
         "showcase": showcase_payload,
         "invariants": {
             "status": result.invariant_status.value,
@@ -342,8 +354,26 @@ def generate_qa_summary(result: QAResult) -> str:
     """Generate a human-readable summary for a full QA run."""
     session = generate_qa_session(result)
     lines: list[str] = []
+    proof_summary = session["proof"].get("report", {}).get("summary")
 
     lines.append(f"Schema Audit: {_status_label(result.audit_status)}")
+    if result.proof_error:
+        lines.append(f"Artifact Proof: FAIL ({result.proof_error})")
+    elif proof_summary is not None:
+        lines.append(
+            "Artifact Proof: "
+            f"contract_backed={proof_summary['contract_backed_records']}, "
+            f"unsupported={proof_summary['unsupported_parseable_records']}, "
+            f"non_parseable={proof_summary['recognized_non_parseable_records']}, "
+            f"unknown={proof_summary['unknown_records']}, "
+            f"decode_errors={proof_summary['decode_errors']}"
+        )
+        if proof_summary["package_versions"]:
+            lines.append(f"  Packages: {_format_count_mapping(proof_summary['package_versions'])}")
+        if proof_summary["element_kinds"]:
+            lines.append(f"  Elements: {_format_count_mapping(proof_summary['element_kinds'])}")
+        if proof_summary["resolution_reasons"]:
+            lines.append(f"  Reasons: {_format_count_mapping(proof_summary['resolution_reasons'])}")
     if result.audit_status is OutcomeStatus.ERROR:
         if result.audit_error:
             lines.append(f"  Error: {result.audit_error}")
@@ -399,6 +429,7 @@ def generate_qa_markdown(result: QAResult, *, git_sha: str | None = None) -> str
     lines.append("| Stage | Status |")
     lines.append("| --- | --- |")
     lines.append(f"| Schema Audit | {_status_label(result.audit_status)} |")
+    lines.append(f"| Artifact Proof | {_status_label(result.proof_status)} |")
     lines.append(f"| Exercises | {_status_label(result.showcase_status)} |")
     lines.append(f"| Invariants | {_status_label(result.invariant_status)} |")
     lines.append(f"| Overall | {_status_label(result.overall_status)} |")
@@ -422,6 +453,64 @@ def generate_qa_markdown(result: QAResult, *, git_sha: str | None = None) -> str
         lines.append("## Schema Audit")
         lines.append("")
         lines.append(f"- Error: {result.audit_error}")
+        lines.append("")
+
+    proof_report = session["proof"].get("report")
+    if proof_report is not None:
+        proof_summary = proof_report["summary"]
+        lines.append("## Artifact Proof")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("| --- | ---: |")
+        lines.append(f"| Total raw records | {proof_report['total_records']} |")
+        lines.append(f"| Contract-backed | {proof_summary['contract_backed_records']} |")
+        lines.append(f"| Unsupported parseable | {proof_summary['unsupported_parseable_records']} |")
+        lines.append(f"| Recognized non-parseable | {proof_summary['recognized_non_parseable_records']} |")
+        lines.append(f"| Unknown | {proof_summary['unknown_records']} |")
+        lines.append(f"| Decode errors | {proof_summary['decode_errors']} |")
+        lines.append(f"| Linked sidecars | {proof_summary['linked_sidecars']} |")
+        lines.append(f"| Orphan sidecars | {proof_summary['orphan_sidecars']} |")
+        lines.append("")
+        if proof_summary["package_versions"]:
+            lines.append("### Resolved Packages")
+            lines.append("")
+            lines.append("| Package | Count |")
+            lines.append("| --- | ---: |")
+            for version, count in proof_summary["package_versions"].items():
+                lines.append(f"| {version} | {count} |")
+            lines.append("")
+        if proof_summary["element_kinds"]:
+            lines.append("### Resolved Elements")
+            lines.append("")
+            lines.append("| Element kind | Count |")
+            lines.append("| --- | ---: |")
+            for element_kind, count in proof_summary["element_kinds"].items():
+                lines.append(f"| {element_kind} | {count} |")
+            lines.append("")
+        if proof_summary["resolution_reasons"]:
+            lines.append("### Resolution Reasons")
+            lines.append("")
+            lines.append("| Reason | Count |")
+            lines.append("| --- | ---: |")
+            for reason, count in proof_summary["resolution_reasons"].items():
+                lines.append(f"| {reason} | {count} |")
+            lines.append("")
+        if proof_report["providers"]:
+            lines.append("### Providers")
+            lines.append("")
+            lines.append("| Provider | Total | Contract-backed | Unsupported | Non-parseable | Unknown | Decode errors |")
+            lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+            for provider, stats in proof_report["providers"].items():
+                lines.append(
+                    f"| {provider} | {stats['total_records']} | {stats['contract_backed_records']} | "
+                    f"{stats['unsupported_parseable_records']} | {stats['recognized_non_parseable_records']} | "
+                    f"{stats['unknown_records']} | {stats['decode_errors']} |"
+                )
+            lines.append("")
+    elif result.proof_error:
+        lines.append("## Artifact Proof")
+        lines.append("")
+        lines.append(f"- Error: {result.proof_error}")
         lines.append("")
 
     showcase_summary = session["showcase"]["summary"]
@@ -479,29 +568,13 @@ def generate_manifest(
     Scans the output directory (if set) for files and records their
     relative paths and optional SHA-256 hashes.
     """
-    entries: list[dict] = []
-
-    if result.output_dir and result.output_dir.exists():
-        for path in sorted(result.output_dir.rglob("*")):
-            if not path.is_file():
-                continue
-            entry: dict = {
-                "relative_path": str(path.relative_to(result.output_dir)),
-                "size_bytes": path.stat().st_size,
-            }
-            if include_hashes:
-                digest = hashlib.sha256()
-                with path.open("rb") as fh:
-                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                        digest.update(chunk)
-                entry["sha256"] = digest.hexdigest()
-            entries.append(entry)
-
-    return {
-        "schema_version": 1,
-        "entry_count": len(entries),
-        "entries": entries,
-    }
+    if not result.output_dir:
+        return OutputManifest().model_dump(mode="json")
+    return OutputManifest.scan(
+        result.output_dir,
+        include_hashes=include_hashes,
+        exclude_paths={"showcase-manifest.json"},
+    ).model_dump(mode="json", exclude_none=True)
 
 
 def save_reports(result: ShowcaseResult) -> None:

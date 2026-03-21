@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 import time
 from typing import Any
@@ -16,6 +15,10 @@ from polylogue.health import VerifyStatus, get_health, run_runtime_health
 from polylogue.storage.repair import run_all_repairs
 
 
+def _format_count_mapping(counts: dict[str, int]) -> str:
+    return ", ".join(f"{key}={value:,}" for key, value in sorted(counts.items()))
+
+
 @click.command("check")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.option("--verbose", "-v", is_flag=True, help="Show breakdown by provider")
@@ -25,7 +28,41 @@ from polylogue.storage.repair import run_all_repairs
 @click.option("--deep", is_flag=True, help="Run SQLite integrity check (slow on large databases)")
 @click.option("--runtime", is_flag=True, help="Run environment and runtime verification checks")
 @click.option("--schemas", "check_schemas", is_flag=True, help="Run raw-corpus schema verification (non-mutating)")
+@click.option("--proof", "check_proof", is_flag=True, help="Run durable artifact support proof")
+@click.option("--artifacts", "check_artifacts", is_flag=True, help="List durable artifact observations")
+@click.option("--cohorts", "check_cohorts", is_flag=True, help="Summarize durable artifact cohorts")
 @click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)")
+@click.option(
+    "--artifact-provider",
+    "artifact_providers",
+    multiple=True,
+    help="Limit artifact proof/listing/cohorting to effective provider (repeatable)",
+)
+@click.option(
+    "--artifact-status",
+    "artifact_statuses",
+    multiple=True,
+    help="Limit artifact listing/cohorting to support status (repeatable)",
+)
+@click.option(
+    "--artifact-kind",
+    "artifact_kinds",
+    multiple=True,
+    help="Limit artifact listing/cohorting to artifact kind (repeatable)",
+)
+@click.option(
+    "--artifact-limit",
+    type=int,
+    default=None,
+    help="Limit artifact proof/listing/cohorting to N observation rows",
+)
+@click.option(
+    "--artifact-offset",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Start offset for artifact proof/listing/cohorting",
+)
 @click.option(
     "--schema-samples",
     default="all",
@@ -61,7 +98,15 @@ def check_command(
     deep: bool,
     runtime: bool,
     check_schemas: bool,
+    check_proof: bool,
+    check_artifacts: bool,
+    check_cohorts: bool,
     schema_providers: tuple[str, ...],
+    artifact_providers: tuple[str, ...],
+    artifact_statuses: tuple[str, ...],
+    artifact_kinds: tuple[str, ...],
+    artifact_limit: int | None,
+    artifact_offset: int,
     schema_samples: str,
     schema_record_limit: int | None,
     schema_record_offset: int,
@@ -82,10 +127,24 @@ def check_command(
         fail("check", "--schema-record-offset requires --schemas")
     if schema_quarantine_malformed and not check_schemas:
         fail("check", "--schema-quarantine-malformed requires --schemas")
+    if artifact_providers and not (check_proof or check_artifacts or check_cohorts):
+        fail("check", "--artifact-provider requires --proof, --artifacts, or --cohorts")
+    if artifact_statuses and not (check_artifacts or check_cohorts):
+        fail("check", "--artifact-status requires --artifacts or --cohorts")
+    if artifact_kinds and not (check_artifacts or check_cohorts):
+        fail("check", "--artifact-kind requires --artifacts or --cohorts")
+    if artifact_limit is not None and not (check_proof or check_artifacts or check_cohorts):
+        fail("check", "--artifact-limit requires --proof, --artifacts, or --cohorts")
+    if artifact_offset != 0 and not (check_proof or check_artifacts or check_cohorts):
+        fail("check", "--artifact-offset requires --proof, --artifacts, or --cohorts")
     if schema_record_limit is not None and schema_record_limit <= 0:
         fail("check", "--schema-record-limit must be a positive integer")
     if schema_record_offset < 0:
         fail("check", "--schema-record-offset must be >= 0")
+    if artifact_limit is not None and artifact_limit <= 0:
+        fail("check", "--artifact-limit must be a positive integer")
+    if artifact_offset < 0:
+        fail("check", "--artifact-offset must be >= 0")
 
     config = load_effective_config(env)
     report = get_health(config, deep=deep)
@@ -93,6 +152,9 @@ def check_command(
     if runtime:
         runtime_report = run_runtime_health(config)
     schema_report = None
+    proof_report = None
+    artifact_rows = None
+    cohort_rows = None
     if check_schemas:
         from polylogue.schemas.verification import verify_raw_corpus
 
@@ -106,6 +168,34 @@ def check_command(
             progress_callback=_make_schema_progress_callback(),
         )
         print(file=sys.stderr)  # End the \r progress line
+    if check_proof:
+        from polylogue.schemas.verification import prove_raw_artifact_coverage
+
+        proof_report = prove_raw_artifact_coverage(
+            providers=list(artifact_providers) if artifact_providers else None,
+            record_limit=artifact_limit,
+            record_offset=artifact_offset,
+        )
+    if check_artifacts:
+        from polylogue.schemas.verification import list_artifact_observation_rows
+
+        artifact_rows = list_artifact_observation_rows(
+            providers=list(artifact_providers) if artifact_providers else None,
+            support_statuses=list(artifact_statuses) if artifact_statuses else None,
+            artifact_kinds=list(artifact_kinds) if artifact_kinds else None,
+            record_limit=artifact_limit,
+            record_offset=artifact_offset,
+        )
+    if check_cohorts:
+        from polylogue.schemas.verification import list_artifact_cohort_rows
+
+        cohort_rows = list_artifact_cohort_rows(
+            providers=list(artifact_providers) if artifact_providers else None,
+            support_statuses=list(artifact_statuses) if artifact_statuses else None,
+            artifact_kinds=list(artifact_kinds) if artifact_kinds else None,
+            record_limit=artifact_limit,
+            record_offset=artifact_offset,
+        )
 
     # Run repairs before output so JSON mode includes repair results
     repair_results: list | None = None
@@ -129,6 +219,22 @@ def check_command(
             out["runtime"] = runtime_report.to_dict()
         if schema_report is not None:
             out["schema_verification"] = schema_report.to_dict()
+        if proof_report is not None:
+            out["artifact_proof"] = proof_report.to_dict()
+        if artifact_rows is not None:
+            out["artifact_observations"] = {
+                "record_limit": artifact_limit if artifact_limit is not None else "all",
+                "record_offset": max(0, artifact_offset),
+                "count": len(artifact_rows),
+                "items": [row.model_dump(mode="json") for row in artifact_rows],
+            }
+        if cohort_rows is not None:
+            out["artifact_cohorts"] = {
+                "record_limit": artifact_limit if artifact_limit is not None else "all",
+                "record_offset": max(0, artifact_offset),
+                "count": len(cohort_rows),
+                "items": [row.model_dump(mode="json") for row in cohort_rows],
+            }
         if repair_results is not None:
             out["repairs"] = [r.to_dict() for r in repair_results]
         if vacuum_result is not None:
@@ -178,6 +284,70 @@ def check_command(
                     f"drift={stats.drift_records:,} skipped={stats.skipped_no_schema:,} "
                     f"decode_errors={stats.decode_errors:,} quarantined={stats.quarantined_records:,}"
                 )
+
+    if proof_report is not None:
+        summary = proof_report.to_dict()["summary"]
+        lines.append("")
+        lines.append(
+            f"Artifact proof: {proof_report.total_records:,} artifact observations "
+            f"(contract_backed={summary['contract_backed_records']:,}, "
+            f"unsupported={summary['unsupported_parseable_records']:,}, "
+            f"non_parseable={summary['recognized_non_parseable_records']:,}, "
+            f"unknown={summary['unknown_records']:,}, "
+            f"decode_errors={summary['decode_errors']:,})"
+        )
+        if summary["subagent_streams"]:
+            lines.append(
+                f"  Claude subagents: linked_sidecars={summary['linked_sidecars']:,} "
+                f"orphan_sidecars={summary['orphan_sidecars']:,} "
+                f"streams={summary['subagent_streams']:,}"
+            )
+        if summary["package_versions"]:
+            lines.append(f"  Resolved packages: {_format_count_mapping(summary['package_versions'])}")
+        if summary["element_kinds"]:
+            lines.append(f"  Resolved elements: {_format_count_mapping(summary['element_kinds'])}")
+        if summary["resolution_reasons"]:
+            lines.append(f"  Resolution reasons: {_format_count_mapping(summary['resolution_reasons'])}")
+        for provider, stats in sorted(proof_report.providers.items()):
+            lines.append(
+                f"  {provider}: contract_backed={stats.contract_backed_records:,} "
+                f"unsupported={stats.unsupported_parseable_records:,} "
+                f"non_parseable={stats.recognized_non_parseable_records:,} "
+                f"unknown={stats.unknown_records:,} "
+                f"decode_errors={stats.decode_errors:,}"
+            )
+            if stats.package_versions:
+                lines.append(f"    packages: {_format_count_mapping(stats.package_versions)}")
+            if stats.element_kinds:
+                lines.append(f"    elements: {_format_count_mapping(stats.element_kinds)}")
+            if stats.resolution_reasons:
+                lines.append(f"    reasons: {_format_count_mapping(stats.resolution_reasons)}")
+
+    if artifact_rows is not None:
+        lines.append("")
+        lines.append(f"Artifact observations: {len(artifact_rows):,} rows")
+        for row in artifact_rows:
+            resolved = ""
+            if row.resolved_package_version and row.resolved_element_kind:
+                resolved = (
+                    f" -> {row.resolved_package_version}/{row.resolved_element_kind}"
+                    f" [{row.resolution_reason}]"
+                )
+            lines.append(
+                f"  {row.support_status} {row.payload_provider or row.provider_name} "
+                f"{row.artifact_kind} {row.source_path}{resolved}"
+            )
+
+    if cohort_rows is not None:
+        lines.append("")
+        lines.append(f"Artifact cohorts: {len(cohort_rows):,} cohorts")
+        for row in cohort_rows:
+            lines.append(
+                f"  {row.provider_name} {row.artifact_kind} {row.support_status} "
+                f"count={row.observation_count:,} cohort={row.cohort_id or '-'} "
+                f"version={row.resolved_package_version or '-'} "
+                f"element={row.resolved_element_kind or '-'}"
+            )
 
     if runtime_report is not None:
         lines.append("")

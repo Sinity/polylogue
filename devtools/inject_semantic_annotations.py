@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from polylogue.schemas.registry import SchemaRegistry
 
 SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "polylogue" / "schemas" / "providers"
 
@@ -208,9 +209,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Show what would be changed without modifying files")
     args = parser.parse_args(argv)
 
+    registry = SchemaRegistry(storage_root=SCHEMAS_DIR)
     total = 0
     for provider in ANNOTATION_MAP:
-        schema_path = SCHEMAS_DIR / f"{provider}.schema.json.gz"
+        package = registry.get_package(provider, version="default")
+        if package is None:
+            print(f"SKIP: no bundled schema package found for {provider}")
+            continue
+        element = package.element(package.default_element_kind)
+        if element is None or element.schema_file is None:
+            print(f"SKIP: no default element schema found for {provider}")
+            continue
+        schema_path = (
+            SCHEMAS_DIR
+            / provider
+            / "versions"
+            / package.version
+            / "elements"
+            / element.schema_file
+        )
         if not schema_path.exists():
             print(f"SKIP: {schema_path} not found")
             continue

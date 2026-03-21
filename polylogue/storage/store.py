@@ -14,6 +14,7 @@ from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.roles import Role
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
 from polylogue.types import (
+    ArtifactSupportStatus,
     AttachmentId,
     ContentBlockType,
     ContentHash,
@@ -189,6 +190,29 @@ class RunRecord(BaseModel):
     duration_ms: int | None = None
 
 
+class PublicationRecord(BaseModel):
+    """Durable persisted publication manifest."""
+
+    publication_id: str
+    publication_kind: str
+    generated_at: str
+    output_dir: str
+    duration_ms: int | None = None
+    manifest: dict[str, Any]
+
+    @field_validator(
+        "publication_id",
+        "publication_kind",
+        "generated_at",
+        "output_dir",
+    )
+    @classmethod
+    def publication_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+
 class RawConversationRecord(BaseModel):
     """Record storing original raw JSON/JSONL bytes before parsing.
 
@@ -262,6 +286,101 @@ class RawConversationRecord(BaseModel):
         if v is None:
             return None
         return ValidationMode.from_string(str(v))
+
+
+class ArtifactObservationRecord(BaseModel):
+    """Durable observation of one source artifact, separate from raw blob dedupe."""
+
+    observation_id: str
+    raw_id: str
+    provider_name: str
+    payload_provider: Provider | None = None
+    source_name: str | None = None
+    source_path: str
+    source_index: int | None = None
+    file_mtime: str | None = None
+    wire_format: str | None = None
+    artifact_kind: str
+    classification_reason: str
+    parse_as_conversation: bool
+    schema_eligible: bool
+    support_status: ArtifactSupportStatus
+    malformed_jsonl_lines: int = 0
+    decode_error: str | None = None
+    bundle_scope: str | None = None
+    cohort_id: str | None = None
+    resolved_package_version: str | None = None
+    resolved_element_kind: str | None = None
+    resolution_reason: str | None = None
+    link_group_key: str | None = None
+    sidecar_agent_type: str | None = None
+    first_observed_at: str
+    last_observed_at: str
+
+    @field_validator(
+        "observation_id",
+        "raw_id",
+        "provider_name",
+        "source_path",
+        "artifact_kind",
+        "classification_reason",
+        "first_observed_at",
+        "last_observed_at",
+    )
+    @classmethod
+    def observation_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+    @field_validator("payload_provider", mode="before")
+    @classmethod
+    def coerce_observation_payload_provider(cls, v: object) -> Provider | None:
+        if v is None:
+            return None
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v))
+
+    @field_validator("support_status", mode="before")
+    @classmethod
+    def coerce_support_status(cls, v: object) -> ArtifactSupportStatus:
+        return ArtifactSupportStatus.from_string(str(v))
+
+
+class ArtifactCohortSummary(BaseModel):
+    """Aggregate summary for one observed artifact cohort."""
+
+    provider_name: str
+    payload_provider: Provider | None = None
+    artifact_kind: str
+    support_status: ArtifactSupportStatus
+    cohort_id: str | None = None
+    observation_count: int = 0
+    unique_raw_ids: int = 0
+    first_observed_at: str | None = None
+    last_observed_at: str | None = None
+    bundle_scope_count: int = 0
+    sample_source_paths: list[str] = Field(default_factory=list)
+    resolved_package_version: str | None = None
+    resolved_element_kind: str | None = None
+    resolution_reason: str | None = None
+    link_group_count: int = 0
+    linked_sidecar_count: int = 0
+
+    @field_validator("payload_provider", mode="before")
+    @classmethod
+    def coerce_cohort_payload_provider(cls, v: object) -> Provider | None:
+        if v is None:
+            return None
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v))
+
+    @field_validator("support_status", mode="before")
+    @classmethod
+    def coerce_cohort_support_status(cls, v: object) -> ArtifactSupportStatus:
+        return ArtifactSupportStatus.from_string(str(v))
 
 
 class PlanResult(BaseModel):
@@ -345,10 +464,13 @@ def _make_ref_id(attachment_id: AttachmentId, conversation_id: ConversationId, m
 
 __all__ = [
     "AttachmentRecord",
+    "ArtifactCohortSummary",
+    "ArtifactObservationRecord",
     "ContentBlockRecord",
     "ConversationRecord",
     "MAX_ATTACHMENT_SIZE",
     "MessageRecord",
+    "PublicationRecord",
     "RawConversationRecord",
     "RunRecord",
 ]

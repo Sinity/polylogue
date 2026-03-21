@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
+from functools import partial
 from unittest.mock import patch
 
 import pytest
 
 from polylogue.schemas import ValidationResult
+from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validator import SchemaValidator, validate_provider_export
 from polylogue.schemas.verification import verify_raw_corpus
@@ -17,17 +18,10 @@ from polylogue.types import Provider
 
 
 def _patch_validator_registry(mock_schema_dir):
-    class _MockRegistry:
-        def get_schema(self, provider: str, version: str = "latest"):
-            path = mock_schema_dir / f"{provider}.schema.json"
-            if not path.exists():
-                return None
-            return json.loads(path.read_text(encoding="utf-8"))
-
-        def list_providers(self):
-            return sorted(path.name.removesuffix(".schema.json") for path in mock_schema_dir.glob("*.schema.json"))
-
-    return patch("polylogue.schemas.validator.SchemaRegistry", _MockRegistry)
+    return patch(
+        "polylogue.schemas.validator.SchemaRegistry",
+        partial(SchemaRegistry, storage_root=mock_schema_dir),
+    )
 
 
 def test_schema_validator_loads_provider(mock_schema_dir):
@@ -85,7 +79,7 @@ def test_schema_validator_loads_canonical_claude_ai_provider(mock_schema_dir):
         "required": ["uuid"],
         "additionalProperties": False,
     }
-    (mock_schema_dir / "claude-ai.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    SchemaRegistry(storage_root=mock_schema_dir).write_schema_version("claude-ai", "v1", schema)
 
     with _patch_validator_registry(mock_schema_dir):
         SchemaValidator._cache.clear()
@@ -103,7 +97,7 @@ def test_schema_validator_accepts_provider_enum(mock_schema_dir):
         "required": ["uuid"],
         "additionalProperties": False,
     }
-    (mock_schema_dir / "claude-ai.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    SchemaRegistry(storage_root=mock_schema_dir).write_schema_version("claude-ai", "v1", schema)
 
     with _patch_validator_registry(mock_schema_dir):
         SchemaValidator._cache.clear()

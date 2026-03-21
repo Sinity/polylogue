@@ -453,6 +453,51 @@ class TestAcquisitionServiceIntegration:
         assert result.counts["acquired"] == 1
         assert len(result.raw_ids) == 1
 
+    async def test_acquire_claude_code_sidecars_into_artifact_ledger(self, tmp_path: Path):
+        from polylogue.pipeline.services.acquisition import AcquisitionService
+        from polylogue.schemas.verification import list_artifact_observation_rows
+
+        session_dir = tmp_path / "claude-code" / "project-a" / "session-1"
+        subagents_dir = session_dir / "subagents"
+        subagents_dir.mkdir(parents=True)
+
+        (session_dir / "session-1.jsonl").write_text(
+            '{"type":"session_meta"}\n{"type":"response_item","payload":{"type":"message"}}\n',
+            encoding="utf-8",
+        )
+        (session_dir / "sessions-index.json").write_text(
+            json.dumps({"session-1": {"summary": "Session 1"}}),
+            encoding="utf-8",
+        )
+        (session_dir / "bridge-pointer.json").write_text(
+            json.dumps({"sessionId": "session-1", "environmentId": "env-1", "source": "project-a"}),
+            encoding="utf-8",
+        )
+        (subagents_dir / "agent-a123.meta.json").write_text(
+            json.dumps({"agentType": "general-purpose"}),
+            encoding="utf-8",
+        )
+        (subagents_dir / "agent-a123.jsonl").write_text(
+            '{"type":"session_meta"}\n{"type":"response_item","payload":{"type":"message"}}\n',
+            encoding="utf-8",
+        )
+
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        result = await AcquisitionService(backend=backend).acquire_sources(
+            [Source(name="claude-code", path=session_dir)]
+        )
+
+        assert result.counts["acquired"] == 4
+        observations = list_artifact_observation_rows(db_path=backend.db_path)
+        assert len(observations) == 5
+        assert {row.artifact_kind for row in observations} == {
+            "conversation_record_stream",
+            "session_index",
+            "bridge_pointer",
+            "agent_sidecar_meta",
+            "subagent_conversation_stream",
+        }
+
 
 # =====================================================================
 # Merged from test_runner_preview.py (runner/source tests)

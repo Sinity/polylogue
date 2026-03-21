@@ -1,7 +1,7 @@
 # Overview tape — shows `polylogue` (no args) → stats panels
 # Generated demo data is pre-seeded via `polylogue generate --seed`
 
-Output demos/output/01-overview.gif
+Output artifacts/demos/01-overview.gif
 
 Set Theme "Catppuccin Mocha"
 Set Width 1200

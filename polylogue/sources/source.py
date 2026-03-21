@@ -9,16 +9,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-from pydantic import BaseModel
+from typing import Any
 
 from polylogue.config import Source
 from polylogue.lib.artifact_taxonomy import classify_artifact_path
 from polylogue.logging import get_logger
 from polylogue.types import Provider
 
-from ..storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
 from . import cursor as _cursor
 from . import decoders as _decoders
 from .cursor import (
@@ -47,9 +44,6 @@ from .parsers.claude import (
     parse_sessions_index,
 )
 
-if TYPE_CHECKING:
-    from ..storage.repository import ConversationRepository
-
 logger = get_logger(__name__)
 _cursor.logger = logger
 _decoders.logger = logger
@@ -59,53 +53,12 @@ ijson = _decoders.ijson
 _decode_json_bytes = _decoders._decode_json_bytes
 _iter_json_stream = _decoders._iter_json_stream
 _get_file_mtime = _cursor._get_file_mtime
-
-
-class RecordBundle(BaseModel):
-    conversation: ConversationRecord
-    messages: list[MessageRecord]
-    attachments: list[AttachmentRecord]
-    content_blocks: list[ContentBlockRecord] = []
-
-
-class SaveResult(BaseModel):
-    conversations: int
-    messages: int
-    attachments: int
-    skipped_conversations: int
-    skipped_messages: int
-    skipped_attachments: int
-
-
-async def save_bundle(bundle: RecordBundle, repository: ConversationRepository) -> SaveResult:
-    """Save a bundle of records into the repository.
-
-    Args:
-        bundle: Bundle containing conversation, messages, and attachments
-        repository: Storage repository to save records to
-
-    Returns:
-        SaveResult with counts of imported/skipped items
-    """
-    counts = await repository.save_conversation(
-        conversation=bundle.conversation,
-        messages=bundle.messages,
-        attachments=bundle.attachments,
-        content_blocks=bundle.content_blocks,
-    )
-    return SaveResult(**counts)
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
 
 # Directories to skip during source parsing.
 # These contain derived/analysis artifacts, not raw conversation data.
 _SKIP_DIRS = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
-
-# Files to skip by exact name (case-insensitive).
-# bridge-pointer.json: Claude Code project↔session pointer ({sessionId, environmentId, source})
-# sessions-index.json: Claude Code session index (metadata, not conversations)
-_SKIP_FILES = frozenset({"bridge-pointer.json", "sessions-index.json"})
-
 
 def _has_supported_extension(path: Path) -> bool:
     """Check if path has a supported file extension (case-insensitive)."""
@@ -121,14 +74,12 @@ def _has_supported_extension(path: Path) -> bool:
 def _walk_source_paths(base: Path) -> list[Path]:
     """Walk a directory and return sorted paths with supported extensions.
 
-    Prunes ``_SKIP_DIRS`` during traversal and ``_SKIP_FILES`` by filename.
+    Prunes ``_SKIP_DIRS`` during traversal.
     """
     paths: list[Path] = []
     for root, dirs, files in os.walk(base, followlinks=True):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
         for filename in files:
-            if filename.lower() in _SKIP_FILES:
-                continue
             file_path = Path(root) / filename
             if _has_supported_extension(file_path):
                 paths.append(file_path)

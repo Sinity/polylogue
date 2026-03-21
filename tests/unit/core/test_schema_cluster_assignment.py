@@ -18,7 +18,6 @@ import pytest
 
 from polylogue.schemas.registry import (
     ClusterManifest,
-    SchemaCluster,
     SchemaRegistry,
     _fingerprint_hash,
 )
@@ -299,7 +298,7 @@ class TestManifestMembership:
         restored = ClusterManifest.from_dict(d)
         assert restored.provider == manifest.provider
         assert len(restored.clusters) == len(manifest.clusters)
-        for orig, rest in zip(manifest.clusters, restored.clusters):
+        for orig, rest in zip(manifest.clusters, restored.clusters, strict=True):
             assert orig.cluster_id == rest.cluster_id
             assert orig.sample_count == rest.sample_count
             assert orig.confidence == rest.confidence
@@ -324,7 +323,7 @@ class TestManifestMembership:
 
         reloaded = registry.load_cluster_manifest("promo-prov")
         assert reloaded is not None
-        assert reloaded.clusters[0].schema_version == version
+        assert reloaded.clusters[0].promoted_package_version == version
 
 
 # =============================================================================

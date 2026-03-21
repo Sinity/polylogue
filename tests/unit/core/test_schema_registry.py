@@ -174,7 +174,7 @@ class TestSchemaCluster:
         assert d["cluster_id"] == "abc123"
         assert d["sample_count"] == 100
         assert d["confidence"] == 0.95
-        assert d["schema_version"] is None
+        assert d["promoted_package_version"] is None
 
 
 class TestClusterManifest:
@@ -188,7 +188,7 @@ class TestClusterManifest:
             dominant_keys=["a", "b"],
             confidence=0.8,
             artifact_kind="conversation_document",
-            schema_version="v2",
+            promoted_package_version="v2",
         )
         manifest = ClusterManifest(
             provider="test",
@@ -205,7 +205,7 @@ class TestClusterManifest:
         assert restored.provider == "test"
         assert len(restored.clusters) == 1
         assert restored.clusters[0].cluster_id == "xyz"
-        assert restored.clusters[0].schema_version == "v2"
+        assert restored.clusters[0].promoted_package_version == "v2"
         assert restored.default_version == "v2"
 
     def test_generated_at_auto_set(self) -> None:
@@ -283,7 +283,8 @@ class TestRegistryPromotion:
         assert version == "v1"
         schema = tmp_registry.get_schema("test-prov", version=version)
         assert schema is not None
-        assert schema["x-polylogue-cluster-id"] == cluster_id
+        assert schema["x-polylogue-anchor-profile-family-id"] == cluster_id
+        assert schema["x-polylogue-observed-artifact-count"] == 2
 
     def test_promote_cluster_without_samples(self, tmp_registry: SchemaRegistry) -> None:
         """Promotion without samples creates a minimal stub schema."""
@@ -310,7 +311,7 @@ class TestRegistryPromotion:
 
         reloaded = tmp_registry.load_cluster_manifest("up-prov")
         assert reloaded is not None
-        assert reloaded.clusters[0].schema_version == version
+        assert reloaded.clusters[0].promoted_package_version == version
 
     def test_promote_cluster_already_promoted_raises(self, tmp_registry: SchemaRegistry) -> None:
         samples = [{"x": 1}]
@@ -456,7 +457,7 @@ class TestPromotionVisibility:
         # Should be the latest
         latest = tmp_registry.get_schema("vis-prov", version="latest")
         assert latest is not None
-        assert latest.get("x-polylogue-cluster-id") == cluster_id
+        assert latest.get("x-polylogue-anchor-profile-family-id") == cluster_id
 
     def test_schema_version_in_list_versions(self, tmp_registry: SchemaRegistry) -> None:
         samples = [{"k": "v"}]
@@ -475,7 +476,45 @@ class TestPromotionVisibility:
         tmp_registry.save_cluster_manifest(manifest)
 
         cluster_id = manifest.clusters[0].cluster_id
-        version = tmp_registry.promote_cluster("prov-prov", cluster_id, samples=samples)
+        tmp_registry.promote_cluster("prov-prov", cluster_id, samples=samples)
+
+
+class TestPackageEvidenceRoundtrip:
+    def test_write_schema_version_preserves_package_and_element_evidence(
+        self,
+        tmp_registry: SchemaRegistry,
+    ) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "x-polylogue-generated-at": "2026-01-01T00:00:00+00:00",
+            "x-polylogue-anchor-profile-family-id": "family-a",
+            "x-polylogue-element-first-seen": "2026-01-01T00:00:00+00:00",
+            "x-polylogue-element-last-seen": "2026-01-02T00:00:00+00:00",
+            "x-polylogue-element-bundle-scope-count": 3,
+            "x-polylogue-observed-artifact-count": 7,
+            "x-polylogue-profile-family-ids": ["family-a", "family-b"],
+            "x-polylogue-package-profile-family-ids": ["family-a", "family-b", "family-c"],
+            "x-polylogue-exact-structure-ids": ["exact-a"],
+        }
+
+        tmp_registry.write_schema_version("pkg-prov", "v1", schema)
+        package = tmp_registry.get_package("pkg-prov", version="v1")
+
+        assert package is not None
+        assert package.anchor_profile_family_id == "family-a"
+        assert package.profile_family_ids == ["family-a", "family-b", "family-c"]
+        assert package.first_seen == "2026-01-01T00:00:00+00:00"
+        assert package.last_seen == "2026-01-01T00:00:00+00:00"
+
+        element = package.element("conversation_document")
+        assert element is not None
+        assert element.first_seen == "2026-01-01T00:00:00+00:00"
+        assert element.last_seen == "2026-01-02T00:00:00+00:00"
+        assert element.bundle_scope_count == 3
+        assert element.artifact_count == 7
+        assert element.observed_artifact_count == 7
+        assert element.profile_family_ids == ["family-a", "family-b"]
 
 
 class TestManifestVersionSelection:
@@ -499,7 +538,7 @@ class TestManifestVersionSelection:
                     last_seen="2026-01-01T00:00:00Z",
                     artifact_kind="conversation_document",
                     profile_tokens=["field:mapping", "shape:mapping:object", "anchor:mapping"],
-                    schema_version="v1",
+                    promoted_package_version="v1",
                 ),
                 SchemaCluster(
                     cluster_id="cluster-sidecar",
@@ -509,7 +548,7 @@ class TestManifestVersionSelection:
                     last_seen="2026-01-01T00:00:00Z",
                     artifact_kind="subagent_conversation_stream",
                     profile_tokens=["bucket:type:user", "field:type:user:message"],
-                    schema_version="v2",
+                    promoted_package_version="v2",
                 ),
             ],
         )
@@ -557,7 +596,7 @@ class TestFingerprintHash:
 
 def _provider_schema_paths() -> list[Path]:
     schema_dir = Path(__file__).resolve().parents[3] / "polylogue" / "schemas" / "providers"
-    return sorted(schema_dir.glob("*.schema.json.gz"))
+    return sorted(schema_dir.glob("*/versions/*/elements/*.schema.json.gz"))
 
 
 @pytest.mark.parametrize("schema_path", _provider_schema_paths(), ids=lambda p: p.name)

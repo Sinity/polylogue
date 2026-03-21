@@ -1,6 +1,6 @@
 # Run tape — shows `polylogue run --preview` then `polylogue run`
 
-Output demos/output/02-run.gif
+Output artifacts/demos/02-run.gif
 
 Set Theme "Catppuccin Mocha"
 Set Width 1200
