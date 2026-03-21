@@ -151,6 +151,15 @@ Scope:
 - QA report inclusion of proof/support coverage
 - Claude `subagents/` sidecar linkage proofing
 
+Status:
+
+- executed in this working pass as:
+  - `check --proof` over shared raw-artifact/schema-resolution facts
+  - QA report/session inclusion of artifact proof coverage
+  - Claude `agent-*.meta.json` ↔ `agent-*.jsonl` linkage accounting
+- `check --artifacts` / `check --cohorts` remain later projections on top of
+  the same proof substrate
+
 ### Step 5: Publication And Repo Shape Cleanup
 
 Goal:

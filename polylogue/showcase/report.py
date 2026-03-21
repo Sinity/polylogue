@@ -312,6 +312,13 @@ def generate_qa_session(result: QAResult) -> dict[str, Any]:
         for invariant_result in result.invariant_results
     ]
     invariant_summary = _summarize_invariants(result.invariant_results)
+    proof_payload: dict[str, Any] = {
+        "status": result.proof_status.value,
+    }
+    if result.proof_report is not None:
+        proof_payload["report"] = result.proof_report.to_dict()
+    if result.proof_error is not None:
+        proof_payload["error"] = result.proof_error
 
     showcase_payload: dict[str, Any] = {
         "status": result.showcase_status.value,
@@ -325,6 +332,7 @@ def generate_qa_session(result: QAResult) -> dict[str, Any]:
         "schema_version": 1,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "audit": audit_payload,
+        "proof": proof_payload,
         "showcase": showcase_payload,
         "invariants": {
             "status": result.invariant_status.value,
@@ -342,8 +350,20 @@ def generate_qa_summary(result: QAResult) -> str:
     """Generate a human-readable summary for a full QA run."""
     session = generate_qa_session(result)
     lines: list[str] = []
+    proof_summary = session["proof"].get("report", {}).get("summary")
 
     lines.append(f"Schema Audit: {_status_label(result.audit_status)}")
+    if result.proof_error:
+        lines.append(f"Artifact Proof: FAIL ({result.proof_error})")
+    elif proof_summary is not None:
+        lines.append(
+            "Artifact Proof: "
+            f"contract_backed={proof_summary['contract_backed_records']}, "
+            f"unsupported={proof_summary['unsupported_parseable_records']}, "
+            f"non_parseable={proof_summary['recognized_non_parseable_records']}, "
+            f"unknown={proof_summary['unknown_records']}, "
+            f"decode_errors={proof_summary['decode_errors']}"
+        )
     if result.audit_status is OutcomeStatus.ERROR:
         if result.audit_error:
             lines.append(f"  Error: {result.audit_error}")
@@ -399,6 +419,7 @@ def generate_qa_markdown(result: QAResult, *, git_sha: str | None = None) -> str
     lines.append("| Stage | Status |")
     lines.append("| --- | --- |")
     lines.append(f"| Schema Audit | {_status_label(result.audit_status)} |")
+    lines.append(f"| Artifact Proof | {_status_label(result.proof_status)} |")
     lines.append(f"| Exercises | {_status_label(result.showcase_status)} |")
     lines.append(f"| Invariants | {_status_label(result.invariant_status)} |")
     lines.append(f"| Overall | {_status_label(result.overall_status)} |")
@@ -422,6 +443,40 @@ def generate_qa_markdown(result: QAResult, *, git_sha: str | None = None) -> str
         lines.append("## Schema Audit")
         lines.append("")
         lines.append(f"- Error: {result.audit_error}")
+        lines.append("")
+
+    proof_report = session["proof"].get("report")
+    if proof_report is not None:
+        proof_summary = proof_report["summary"]
+        lines.append("## Artifact Proof")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("| --- | ---: |")
+        lines.append(f"| Total raw records | {proof_report['total_records']} |")
+        lines.append(f"| Contract-backed | {proof_summary['contract_backed_records']} |")
+        lines.append(f"| Unsupported parseable | {proof_summary['unsupported_parseable_records']} |")
+        lines.append(f"| Recognized non-parseable | {proof_summary['recognized_non_parseable_records']} |")
+        lines.append(f"| Unknown | {proof_summary['unknown_records']} |")
+        lines.append(f"| Decode errors | {proof_summary['decode_errors']} |")
+        lines.append(f"| Linked sidecars | {proof_summary['linked_sidecars']} |")
+        lines.append(f"| Orphan sidecars | {proof_summary['orphan_sidecars']} |")
+        lines.append("")
+        if proof_report["providers"]:
+            lines.append("### Providers")
+            lines.append("")
+            lines.append("| Provider | Total | Contract-backed | Unsupported | Non-parseable | Unknown | Decode errors |")
+            lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+            for provider, stats in proof_report["providers"].items():
+                lines.append(
+                    f"| {provider} | {stats['total_records']} | {stats['contract_backed_records']} | "
+                    f"{stats['unsupported_parseable_records']} | {stats['recognized_non_parseable_records']} | "
+                    f"{stats['unknown_records']} | {stats['decode_errors']} |"
+                )
+            lines.append("")
+    elif result.proof_error:
+        lines.append("## Artifact Proof")
+        lines.append("")
+        lines.append(f"- Error: {result.proof_error}")
         lines.append("")
 
     showcase_summary = session["showcase"]["summary"]
