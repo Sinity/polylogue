@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.publication import OutputManifest
 from polylogue.showcase.exercises import GROUPS
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
@@ -534,29 +534,13 @@ def generate_manifest(
     Scans the output directory (if set) for files and records their
     relative paths and optional SHA-256 hashes.
     """
-    entries: list[dict] = []
-
-    if result.output_dir and result.output_dir.exists():
-        for path in sorted(result.output_dir.rglob("*")):
-            if not path.is_file():
-                continue
-            entry: dict = {
-                "relative_path": str(path.relative_to(result.output_dir)),
-                "size_bytes": path.stat().st_size,
-            }
-            if include_hashes:
-                digest = hashlib.sha256()
-                with path.open("rb") as fh:
-                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                        digest.update(chunk)
-                entry["sha256"] = digest.hexdigest()
-            entries.append(entry)
-
-    return {
-        "schema_version": 1,
-        "entry_count": len(entries),
-        "entries": entries,
-    }
+    if not result.output_dir:
+        return OutputManifest().model_dump(mode="json")
+    return OutputManifest.scan(
+        result.output_dir,
+        include_hashes=include_hashes,
+        exclude_paths={"showcase-manifest.json"},
+    ).model_dump(mode="json", exclude_none=True)
 
 
 def save_reports(result: ShowcaseResult) -> None:

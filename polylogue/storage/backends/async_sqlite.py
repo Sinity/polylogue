@@ -36,6 +36,9 @@ from polylogue.storage.backends.queries import (
     messages as messages_q,
 )
 from polylogue.storage.backends.queries import (
+    publications as publications_q,
+)
+from polylogue.storage.backends.queries import (
     raw as raw_queries,
 )
 from polylogue.storage.backends.queries import (
@@ -51,6 +54,7 @@ from polylogue.storage.store import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    PublicationRecord,
     RawConversationRecord,
     RawConversationState,
     RunRecord,
@@ -829,6 +833,13 @@ class SQLiteBackend:
         """Fetch the most recent pipeline run record."""
         return await self.queries.get_latest_run()
 
+    async def get_latest_publication(
+        self,
+        publication_kind: str,
+    ) -> PublicationRecord | None:
+        """Fetch the most recent publication record for one publication kind."""
+        return await self.queries.get_latest_publication(publication_kind)
+
     async def close(self) -> None:
         """Close database connections."""
         if self._txn_conn is not None:
@@ -840,6 +851,11 @@ class SQLiteBackend:
         """Record a pipeline run audit entry."""
         async with self.transaction(), self._get_connection() as conn:
             await runs_q.record_run(conn, record, self._transaction_depth)
+
+    async def record_publication(self, record: PublicationRecord) -> None:
+        """Persist one publication manifest."""
+        async with self.transaction(), self._get_connection() as conn:
+            await publications_q.record_publication(conn, record, self._transaction_depth)
 
     # --- Raw Conversation Storage ---
 

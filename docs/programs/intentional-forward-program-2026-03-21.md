@@ -184,6 +184,18 @@ Scope:
 - managed artifact placement
 - stale demo-era references
 
+Status:
+
+- partially executed as the publication control-plane slice:
+  - typed `SitePublicationManifest` build results
+  - durable SQLite `publications` records
+  - `site-manifest.json` materialization
+  - `polylogue site --json` typed output
+  - site manifest embedding of latest run and durable artifact-proof summary
+  - shared output-manifest scanning reused by both `site` and `showcase`
+- remaining open scope is the repo-shape/document/generated-artifact slimming
+  side, plus any deeper `site/builder.py` decomposition work
+
 ## Architectural Rules
 
 ### 1. Do Not Force One Universal Report Type
