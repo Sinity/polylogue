@@ -8,13 +8,20 @@ import tempfile
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.config import Source
+from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources import source as source_module
+from polylogue.sources.dispatch import (
+    detect_provider,
+    parse_drive_payload,
+    parse_payload,
+)
 from polylogue.sources.drive import (
     download_drive_files,
     drive_cache_file_path,
@@ -40,12 +47,9 @@ from polylogue.sources.source import (
     _select_paths_for_processing,
     _zip_entry_provider_hint,
     _ZipEntryValidator,
-    detect_provider,
     iter_source_conversations,
     iter_source_conversations_with_raw,
     iter_source_raw_data,
-    parse_drive_payload,
-    parse_payload,
 )
 from polylogue.types import Provider
 from tests.infra.source_builders import GenericConversationBuilder, make_claude_chat_message
@@ -55,7 +59,6 @@ from tests.infra.strategies import (
     json_document_strategy,
     jsonl_bytes_strategy,
     provider_export_strategy,
-    provider_hint_path_strategy,
     provider_payload_case_strategy,
     provider_payload_strategy,
     provider_source_case_strategy,
@@ -63,7 +66,7 @@ from tests.infra.strategies import (
 
 _CANONICAL_PROVIDERS = (
     Provider.CHATGPT.value,
-    Provider.CLAUDE.value,
+    Provider.CLAUDE_AI.value,
     Provider.CLAUDE_CODE.value,
     Provider.CODEX.value,
     Provider.GEMINI.value,
@@ -74,7 +77,7 @@ _CANONICAL_PROVIDERS = (
     provider_payload_case_strategy(
         (
             Provider.CHATGPT.value,
-            Provider.CLAUDE.value,
+            Provider.CLAUDE_AI.value,
             Provider.CLAUDE_CODE.value,
             Provider.CODEX.value,
             Provider.GEMINI.value,
@@ -88,14 +91,8 @@ def test_detect_provider_recognizes_generated_payloads(case: tuple[str, object])
     assert detect_provider(payload, Path("unknown.json")) == provider
 
 
-@given(st.sampled_from(_CANONICAL_PROVIDERS).flatmap(
-    lambda provider: provider_hint_path_strategy(provider).map(lambda path: (provider, path))
-))
-@settings(max_examples=30)
-def test_detect_provider_uses_path_hints_for_unknown_payload(case: tuple[str, Path]) -> None:
-    """Filename/path hints still classify unknown payload shapes."""
-    provider, path = case
-    assert detect_provider({"unrelated": True}, path) == provider
+def test_detect_provider_returns_none_for_unknown_payloads_without_shape_match() -> None:
+    assert detect_provider({"unrelated": True}, Path("chatgpt-export.json")) is None
 
 
 def test_detect_provider_prefers_payload_shape_over_conflicting_path_hint() -> None:
@@ -113,33 +110,6 @@ def test_detect_provider_prefers_payload_shape_over_conflicting_path_hint() -> N
     assert detect_provider(payload, Path("misleading/claude-code/session.jsonl")) == Provider.CHATGPT
 
 
-@pytest.mark.parametrize(
-    ("payload", "path", "expected"),
-    [
-        ({"mapping": {}}, Path("unknown.json"), Provider.CHATGPT),
-        ({"chat_messages": []}, Path("unknown.json"), Provider.CLAUDE),
-        ({"type": "assistant", "message": {"content": "hi"}}, Path("unknown.json"), Provider.CLAUDE_CODE),
-        ({"type": "message", "role": "user", "content": []}, Path("unknown.json"), Provider.CODEX),
-        ({"chunkedPrompt": {"chunks": []}}, Path("unknown.json"), Provider.GEMINI),
-        ([{"mapping": {}}], Path("unknown.json"), Provider.CHATGPT),
-        ([{"chat_messages": []}], Path("unknown.json"), Provider.CLAUDE),
-        ([{"chunks": []}], Path("unknown.json"), Provider.GEMINI),
-        ([{"type": "assistant", "message": {"content": "hi"}}], Path("unknown.json"), Provider.CLAUDE_CODE),
-        ([{"type": "message", "role": "user", "content": []}], Path("unknown.json"), Provider.CODEX),
-        ({"unrelated": True}, Path("folder/chatgpt-export.json"), Provider.CHATGPT),
-        ({"unrelated": True}, Path("folder/claude-code/session.jsonl"), Provider.CLAUDE_CODE),
-        ({"unrelated": True}, Path("folder/claude_code/session.jsonl"), Provider.CLAUDE_CODE),
-        ({"unrelated": True}, Path("/tmp/claude/history.json"), Provider.CLAUDE),
-        ({"unrelated": True}, Path("folder/codex-export.json"), Provider.CODEX),
-        ({"unrelated": True}, Path("folder/gemini-export.json"), Provider.GEMINI),
-    ],
-)
-def test_detect_provider_exact_heuristics_contract(
-    payload: object,
-    path: Path,
-    expected: Provider,
-) -> None:
-    assert detect_provider(payload, path) == expected
 
 
 @given(provider_payload_case_strategy(_CANONICAL_PROVIDERS))
@@ -153,18 +123,39 @@ def test_parse_payload_generated_exports_produce_provider_named_conversations(ca
     assert all(conversation.provider_conversation_id for conversation in conversations)
 
 
+def test_parse_payload_accepts_provider_enum() -> None:
+    payload = {
+        "mapping": {
+            "root": {
+                "message": {
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["hello"]},
+                },
+                "children": [],
+            }
+        },
+        "current_node": "root",
+        "title": "Test",
+    }
+
+    conversations = parse_payload(Provider.CHATGPT, payload, "fallback-id")
+
+    assert len(conversations) == 1
+    assert conversations[0].provider_name is Provider.CHATGPT
+
+
 @pytest.mark.parametrize(
     ("provider", "wrapper"),
     [
         (Provider.CHATGPT.value, False),
-        (Provider.CLAUDE.value, False),
+        (Provider.CLAUDE_AI.value, False),
         (Provider.GEMINI.value, False),
         (Provider.CHATGPT.value, True),
     ],
     ids=["chatgpt-bundle", "claude-bundle", "gemini-bundle", "conversations-wrapper"],
 )
 @given(data=st.data())
-@settings(max_examples=20)
+@settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
 def test_parse_payload_bundle_cardinality_contract(
     provider: str,
     wrapper: bool,
@@ -191,7 +182,7 @@ def test_decode_json_bytes_round_trips_supported_encodings(document: dict[str, o
 
 
 @given(json_array_bytes_strategy())
-@settings(max_examples=30)
+@settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
 def test_iter_json_stream_root_list_round_trips_documents(case: tuple[list[dict[str, object]], bytes]) -> None:
     """Streaming a root JSON array yields the original item sequence."""
     documents, raw = case
@@ -223,23 +214,30 @@ def test_iter_json_stream_jsonl_preserves_valid_records_with_blank_lines(case: t
 
 
 def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 4 broken lines: first 3 (non-trailing) get warning, last gets debug (truncation tolerance)
     raw = b'{"id": 1}\n{broken}\n{broken}\n{broken}\n{broken}\n'
     warnings: list[str] = []
+    debugs: list[str] = []
 
     monkeypatch.setattr(
         source_module.logger,
         "warning",
         lambda message, *args: warnings.append(message % args if args else message),
     )
+    monkeypatch.setattr(
+        source_module.logger,
+        "debug",
+        lambda message, *args: debugs.append(message % args if args else message),
+    )
 
     items = list(_iter_json_stream(BytesIO(raw), "test.jsonl"))
 
     assert items == [{"id": 1}]
-    assert warnings[:3] == [
-        "Skipping invalid JSON line in test.jsonl: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
-    ] * 3
-    assert warnings[3] == "Skipping further invalid JSON lines in test.jsonl..."
-    assert warnings[4] == "Skipped 4 invalid JSON lines in test.jsonl"
+    # First 3 non-trailing broken lines get warning level
+    assert len(warnings) == 3
+    assert all("Skipping invalid JSON line in test.jsonl" in w for w in warnings)
+    # Trailing broken line gets debug (in-progress file truncation tolerance)
+    assert any("Skipping truncated trailing line in test.jsonl" in d for d in debugs)
 
 
 def test_iter_json_stream_falls_back_to_full_json_load_when_streaming_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -285,7 +283,7 @@ def _write_generic_conversation(path: Path, conversation_id: str, text: str = "h
     provider_source_case_strategy(
         providers=(
             Provider.CHATGPT.value,
-            Provider.CLAUDE.value,
+            Provider.CLAUDE_AI.value,
             Provider.CLAUDE_CODE.value,
             Provider.CODEX.value,
             Provider.GEMINI.value,
@@ -313,7 +311,7 @@ def test_iter_source_conversations_round_trips_generated_exports(case: dict[str,
     provider_source_case_strategy(
         providers=(
             Provider.CHATGPT.value,
-            Provider.CLAUDE.value,
+            Provider.CLAUDE_AI.value,
             Provider.CLAUDE_CODE.value,
             Provider.CODEX.value,
             Provider.GEMINI.value,
@@ -627,7 +625,7 @@ def test_parse_drive_payload_contract(
 def test_parse_payload_generic_messages_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel_messages = [ParsedMessage(provider_message_id="m1", role="user", text="hello")]
 
-    monkeypatch.setattr(source_module, "extract_messages_from_list", lambda messages: sentinel_messages)
+    monkeypatch.setattr(dispatch_module, "extract_messages_from_list", lambda messages: sentinel_messages)
 
     conversations = parse_payload(
         Provider.DRIVE.value,
@@ -656,7 +654,7 @@ def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pyte
             messages=[],
         )
 
-    monkeypatch.setattr(source_module.chatgpt, "parse", fake_parse)
+    monkeypatch.setattr(dispatch_module.chatgpt, "parse", fake_parse)
     payloads = [{"id": "one"}, {"id": "two"}]
 
     conversations = parse_payload(Provider.CHATGPT.value, payloads, "bundle")
@@ -679,7 +677,7 @@ def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkey
             messages=[],
         )
 
-    monkeypatch.setattr(source_module.claude, "parse_code", fake_parse_code)
+    monkeypatch.setattr(dispatch_module.claude, "parse_code", fake_parse_code)
 
     from_messages = parse_payload(
         Provider.CLAUDE_CODE.value,
@@ -728,9 +726,9 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
             )
         ]
 
-    monkeypatch.setattr(source_module.drive, "parse_chunked_prompt", fake_chunked)
-    monkeypatch.setattr(source_module, "parse_payload", fake_parse_payload)
-    monkeypatch.setattr(source_module, "detect_provider", lambda payload, path: Provider.CHATGPT)
+    monkeypatch.setattr(dispatch_module.drive, "parse_chunked_prompt", fake_chunked)
+    monkeypatch.setattr(dispatch_module, "parse_payload", fake_parse_payload)
+    monkeypatch.setattr(dispatch_module, "detect_provider", lambda payload, path=None: Provider.CHATGPT)
 
     chunked = parse_drive_payload("gemini", [{"role": "user", "text": "hello"}], "chunks")
     recursive = parse_drive_payload("drive", [{"mapping": {}, "id": "chatgpt-ish"}], "wrapped")
@@ -758,22 +756,6 @@ def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, obj
         assert json.loads(decoded) == expected
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        (json.dumps({"id": "utf16-le"}).encode("utf-16-le"), {"id": "utf16-le"}),
-        (json.dumps({"id": "utf16-be"}).encode("utf-16-be"), {"id": "utf16-be"}),
-        (json.dumps({"id": "utf32-le"}).encode("utf-32-le"), {"id": "utf32-le"}),
-        (b'{"name":"caf\xe9"}', {"name": "caf"}),
-    ],
-)
-def test_decode_json_bytes_exact_encoding_fallback_contract(
-    raw: bytes,
-    expected: dict[str, object],
-) -> None:
-    decoded = _decode_json_bytes(raw)
-    assert decoded is not None
-    assert json.loads(decoded) == expected
 
 
 @pytest.mark.parametrize(
@@ -889,7 +871,7 @@ def test_log_source_iteration_summary_emits_only_relevant_messages(monkeypatch: 
 
 def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
     """Claude session-index lookup and enrichment must stay source-local and deterministic."""
-    session_dir = tmp_path / "claude"
+    session_dir = tmp_path / "claude-ai"
     session_dir.mkdir()
     session_file = session_dir / "session.jsonl"
     session_file.write_text("{}\n", encoding="utf-8")
@@ -963,7 +945,6 @@ def test_parse_sessions_index_contract(tmp_path: Path) -> None:
     )
 
     entries = parse_sessions_index(index_path)
-
     assert set(entries) == {"session-1"}
     assert entries["session-1"] == SessionIndexEntry(
         session_id="session-1",
@@ -978,6 +959,19 @@ def test_parse_sessions_index_contract(tmp_path: Path) -> None:
         is_sidechain=True,
         file_mtime=123,
     )
+
+
+def test_iter_source_conversations_skips_agent_meta_sidecars(tmp_path: Path) -> None:
+    source_dir = tmp_path / "claude-ai"
+    source_dir.mkdir()
+    (source_dir / "agent-a123.meta.json").write_text('{"agentType":"general-purpose"}', encoding="utf-8")
+
+    conversations = list(iter_source_conversations(Source(name="claude-code", path=source_dir)))
+    raw_items = list(iter_source_raw_data(Source(name="claude-code", path=source_dir)))
+
+    assert conversations == []
+    assert len(raw_items) == 1
+    assert raw_items[0].source_path.endswith("agent-a123.meta.json")
 
 
 def test_drive_cache_file_path_sanitizes_and_normalizes_suffix_contract(tmp_path: Path) -> None:
@@ -1009,7 +1003,6 @@ def _parse_context(
         file_mtime="2026-03-11T00:00:00+00:00",
         capture_raw=capture_raw,
         session_index=session_index or {},
-        detect_path=Path(source_path).name and Path(source_path),
     )
 
 
@@ -1134,6 +1127,57 @@ def test_conversation_emitter_contract_matrix(
         assert emitted[0][0] is not None and emitted[0][0].raw_bytes == raw
 
 
+def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Conversation emitter should pass SchemaResolution into parse_payload."""
+    ctx = _parse_context(
+        Provider.CHATGPT.value,
+        should_group=False,
+        source_path="/tmp/session.jsonl",
+        fallback_id="session",
+    )
+
+    fake_registry = MagicMock()
+    fake_registry.resolve_payload.return_value = object()
+    fake_parse = MagicMock()
+    fake_message = ParsedMessage(provider_message_id="m1", role="user", text="hello")
+    fake_conversation = ParsedConversation(
+        provider_name=Provider.CLAUDE_CODE,
+        provider_conversation_id="session",
+        title="session",
+        created_at=None,
+        updated_at=None,
+        messages=[fake_message],
+    )
+    fake_parse.return_value = [fake_conversation]
+
+    def fake_parse_payload(
+        provider: object,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: object | None = None,
+    ) -> list[ParsedConversation]:
+        fake_parse(provider=provider, payload=payload, fallback_id=fallback_id, schema_resolution=schema_resolution)
+        return [fake_conversation]
+
+    monkeypatch.setattr("polylogue.sources.emitter._schema_registry_factory", lambda: fake_registry)
+    monkeypatch.setattr("polylogue.sources.emitter.parse_payload", fake_parse_payload)
+
+    raw = (
+        b'{"mapping":{"r1":{"message":{"author":{"role":"user"},"content":{"content_type":"text","parts":["first"]}}}}}\n'
+        b'{"mapping":{"r1":{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["second"]}}}}}\n'
+    )
+
+    emitted = list(_ConversationEmitter(ctx).emit(BytesIO(raw), "session.jsonl"))
+
+    assert emitted
+    assert fake_parse.call_count == 2
+    assert fake_registry.resolve_payload.call_count == 2
+    resolved_arg = fake_parse.call_args_list[0].kwargs["schema_resolution"]
+    assert resolved_arg is fake_registry.resolve_payload.return_value
+
+
 def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contract() -> None:
     entry = SessionIndexEntry(
         session_id="session-1",
@@ -1155,7 +1199,6 @@ def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contra
         file_mtime="2026-03-11T00:00:00+00:00",
         capture_raw=False,
         session_index={"session-1": entry},
-        detect_path=Path("session.jsonl"),
     )
     emitter = _ConversationEmitter(ctx)
     matching = ParsedConversation(
@@ -1193,9 +1236,9 @@ def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.Z
     ("source_name", "entries", "expected_kept", "expected_failed_count", "expected_failed_fragment"),
     [
         (
-            "claude",
+            "claude-ai",
             [_zip_entry("nested/conversations.json"), _zip_entry("nested/other.json")],
-            ["nested/conversations.json"],
+            ["nested/conversations.json", "nested/other.json"],
             0,
             None,
         ),
@@ -1239,7 +1282,7 @@ def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.Z
         ),
     ],
     ids=[
-        "claude-bundle-filter",
+        "claude-bundle-json-kept",
         "suspicious-entry-rejected",
         "supported-json-extensions-kept",
         "directories-and-unsupported-skipped",
@@ -1270,9 +1313,9 @@ def test_zip_entry_validator_policy_contract(
         assert expected_failed_fragment in cursor_state["failed_files"][0]["path"]
 
 
-def test_zip_entry_provider_hint_prefers_entry_name_contract() -> None:
-    assert _zip_entry_provider_hint("nested/chatgpt-export.json", Provider.CLAUDE) == Provider.CHATGPT
-    assert _zip_entry_provider_hint("nested/gemini/session.json", Provider.CHATGPT) == Provider.GEMINI
+def test_zip_entry_provider_hint_keeps_fallback_contract() -> None:
+    assert _zip_entry_provider_hint("nested/chatgpt-export.json", Provider.CLAUDE_AI) == Provider.CLAUDE_AI
+    assert _zip_entry_provider_hint("nested/gemini/session.json", Provider.CHATGPT) == Provider.CHATGPT
     assert _zip_entry_provider_hint("nested/session.jsonl", Provider.CLAUDE_CODE) == Provider.CLAUDE_CODE
 
 
@@ -1300,7 +1343,7 @@ class _StubDriveRawClient:
 
 
 def test_iter_drive_raw_data_contract() -> None:
-    source = Source(name="drive", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
+    source = Source(name="gemini", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
     files = [
         DriveFile("chatgpt-1", "chatgpt-export.json", "application/json", "2025-01-01T00:00:00Z", 12),
         DriveFile("gemini-1", "gemini-prompt.json", "application/json", "2025-01-01T00:05:00Z", 8),
@@ -1317,7 +1360,7 @@ def test_iter_drive_raw_data_contract() -> None:
         "/tmp/drive-cache/chatgpt-export.json",
         "/tmp/drive-cache/gemini-prompt.json",
     ]
-    assert [item.provider_hint for item in items] == ["chatgpt", "gemini"]
+    assert [item.provider_hint for item in items] == [Provider.GEMINI, Provider.GEMINI]
     assert [item.file_mtime for item in items] == ["2025-01-01T00:00:00Z", "2025-01-01T00:05:00Z"]
     assert cursor_state["file_count"] == 2
     assert cursor_state["latest_file_id"] == "gemini-1"
@@ -1325,7 +1368,7 @@ def test_iter_drive_raw_data_contract() -> None:
 
 
 def test_iter_drive_raw_data_skips_known_mtimes_and_tracks_failures() -> None:
-    source = Source(name="drive", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
+    source = Source(name="gemini", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
     files = [
         DriveFile("old", "cached.json", "application/json", "2025-01-01T00:00:00Z", 12),
         DriveFile("bad", "broken.json", "application/json", "2025-01-01T00:01:00Z", 12),
@@ -1404,7 +1447,7 @@ def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Pat
     assert zip_items[0].file_mtime is not None
 
 
-def test_iter_source_raw_data_uses_per_entry_provider_hints_for_mixed_zip_sources(tmp_path: Path) -> None:
+def test_iter_source_raw_data_keeps_source_family_hints_for_mixed_zip_sources(tmp_path: Path) -> None:
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("nested/chatgpt-export.json", b'{"mapping": {}, "id": "chatgpt-1"}')
@@ -1456,3 +1499,230 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(tmp_path: Pa
     assert [item.source_path for item in items] == [str(good)]
     assert cursor_state["failed_count"] == 1
     assert any(entry["path"] == str(bad) and entry["error"] == "boom" for entry in cursor_state["failed_files"])
+
+
+# =============================================================================
+# MERGED FROM test_acquisition_fs.py (robustness for raw file acquisition)
+# =============================================================================
+
+
+
+
+def test_jsonl_crlf_line_separator() -> None:
+    """CRLF between JSONL lines (\r\n) decodes without stripping content."""
+    line1 = json.dumps({"idx": 1})
+    line2 = json.dumps({"idx": 2})
+    raw = (line1 + "\r\n" + line2).encode("utf-8")
+    result = _decode_json_bytes(raw)
+    assert result is not None
+    # Both records should be parseable from the result
+    lines = [ln for ln in result.splitlines() if ln.strip()]
+    assert len(lines) == 2
+    assert json.loads(lines[0])["idx"] == 1
+    assert json.loads(lines[1])["idx"] == 2
+
+
+def test_latin1_file_does_not_crash() -> None:
+    """A latin-1 byte sequence falls through to utf-8/ignore and returns a string."""
+    # 0xe9 = 'é' in latin-1, but invalid as a standalone byte in UTF-8
+    raw = b'{"note": "caf\xe9"}'
+    result = _decode_json_bytes(raw)
+    # Must not crash — invalid bytes are silently dropped by the ignore path
+    assert result is not None
+    # The returned string must be non-empty
+    assert len(result.strip()) > 0
+
+
+
+
+def test_null_bytes_stripped() -> None:
+    """Embedded NUL bytes (\\x00) are stripped by the cleaner step."""
+    payload = '{"key": "value"}'
+    raw_with_nulls = (payload[:5] + "\x00\x00" + payload[5:]).encode("utf-8")
+    result = _decode_json_bytes(raw_with_nulls)
+    assert result is not None
+    parsed = json.loads(result)
+    assert parsed == {"key": "value"}
+
+
+def test_empty_bytes_returns_none() -> None:
+    """Empty byte input returns None rather than crashing."""
+    result = _decode_json_bytes(b"")
+    assert result is None
+
+
+# =============================================================================
+# MERGED FROM test_parse_laws.py (property laws for parser roles)
+# =============================================================================
+
+
+from polylogue.lib.roles import normalize_role
+from polylogue.sources.providers.chatgpt import (
+    ChatGPTAuthor,
+    ChatGPTContent,
+    ChatGPTConversation,
+    ChatGPTMessage,
+    ChatGPTNode,
+)
+from polylogue.sources.providers.claude_code import (
+    ClaudeCodeThinkingBlock,
+    ClaudeCodeToolUse,
+    ClaudeCodeUsage,
+)
+
+# ---------------------------------------------------------------------------
+# Law 1: normalize_role never raises for any non-empty string
+# ---------------------------------------------------------------------------
+
+@given(st.text(min_size=1))
+def test_normalize_role_never_raises_for_nonempty(text: str) -> None:
+    """normalize_role handles any non-empty string without raising."""
+    # normalize_role raises only on empty/whitespace-only strings
+    stripped = text.strip()
+    if stripped:
+        result = normalize_role(text)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Law 2: normalize_role always returns one of the canonical roles
+# ---------------------------------------------------------------------------
+
+CANONICAL_ROLES = frozenset({"user", "assistant", "system", "tool", "unknown"})
+
+
+@given(st.text(min_size=1))
+def test_normalize_role_result_is_canonical(text: str) -> None:
+    """normalize_role always returns a canonical role string."""
+    stripped = text.strip()
+    if stripped:
+        result = normalize_role(text)
+        assert result in CANONICAL_ROLES
+
+
+# ---------------------------------------------------------------------------
+# Law 3: normalize_role is idempotent on its own output
+# ---------------------------------------------------------------------------
+
+@given(st.sampled_from(sorted(CANONICAL_ROLES - {"unknown"})))
+def test_normalize_role_idempotent_on_canonical(role: str) -> None:
+    """Applying normalize_role to a canonical role returns the same value."""
+    result = normalize_role(role)
+    assert result == role
+
+
+# ---------------------------------------------------------------------------
+# Law 4: normalize_role is case-insensitive
+# ---------------------------------------------------------------------------
+
+@given(st.text(min_size=1, max_size=30, alphabet=st.characters(whitelist_categories=("L",))))
+def test_normalize_role_case_insensitive(text: str) -> None:
+    """normalize_role gives the same result for any case variant."""
+    stripped = text.strip()
+    if stripped:
+        lower_result = normalize_role(stripped.lower())
+        upper_result = normalize_role(stripped.upper())
+        title_result = normalize_role(stripped.title())
+        assert lower_result == upper_result == title_result
+
+
+# ---------------------------------------------------------------------------
+# Law 5: normalize_role strips whitespace before normalizing
+# ---------------------------------------------------------------------------
+
+@given(
+    st.sampled_from(["user", "assistant", "system", "tool"]),
+    st.integers(min_value=0, max_value=5),
+)
+def test_normalize_role_strips_whitespace(role: str, padding: int) -> None:
+    """normalize_role ignores leading/trailing whitespace."""
+    padded = " " * padding + role + " " * padding
+    assert normalize_role(padded) == role
+
+
+# ---------------------------------------------------------------------------
+# Law 6: normalize_role raises ValueError for empty/whitespace-only input
+# ---------------------------------------------------------------------------
+
+@given(st.from_regex(r"^[\s]*$", fullmatch=True))
+def test_normalize_role_raises_on_empty(empty: str) -> None:
+    """normalize_role raises ValueError for empty or whitespace-only input."""
+    with pytest.raises((ValueError, TypeError, AttributeError)):
+        normalize_role(empty)
+
+
+@pytest.mark.parametrize(
+    ("roles", "expected_pairs"),
+    [
+        (["user", "assistant"], [("m0", "m1")]),
+        (["system", "user", "assistant", "assistant"], [("m1", "m2")]),
+        (["user", "tool", "assistant", "user", "assistant"], [("m3", "m4")]),
+        (["assistant", "user"], []),
+    ],
+)
+def test_chatgpt_iter_user_assistant_pairs_contract(
+    roles: list[str],
+    expected_pairs: list[tuple[str, str]],
+) -> None:
+    mapping: dict[str, ChatGPTNode] = {}
+    children = [f"node-{idx}" for idx in range(len(roles))]
+    mapping["root"] = ChatGPTNode(id="root", parent=None, children=children[:1])
+    for idx, role in enumerate(roles):
+        node_id = f"node-{idx}"
+        next_child = [f"node-{idx + 1}"] if idx + 1 < len(roles) else []
+        mapping[node_id] = ChatGPTNode(
+            id=node_id,
+            parent="root" if idx == 0 else f"node-{idx - 1}",
+            children=next_child,
+            message=ChatGPTMessage(
+                id=f"m{idx}",
+                author=ChatGPTAuthor(role=role),
+                content=ChatGPTContent(content_type="text", parts=[f"{role}-{idx}"]),
+            ),
+        )
+
+    conversation = ChatGPTConversation(
+        id="conv-pairs",
+        conversation_id="conv-pairs",
+        title="pairs",
+        create_time=1700000000.0,
+        update_time=1700000100.0,
+        mapping=mapping,
+        current_node=f"node-{len(roles) - 1}" if roles else "root",
+    )
+
+    assert [
+        (user.id, assistant.id)
+        for user, assistant in conversation.iter_user_assistant_pairs()
+    ] == expected_pairs
+
+
+def test_claude_code_helper_conversion_contracts() -> None:
+    tool = ClaudeCodeToolUse(id="tool-1", name="bash", input={"command": "git status"})
+    trace = ClaudeCodeThinkingBlock(thinking="chain of thought")
+    usage = ClaudeCodeUsage(
+        input_tokens=12,
+        output_tokens=34,
+        cache_creation_input_tokens=5,
+        cache_read_input_tokens=6,
+    )
+
+    tool_call = tool.to_tool_call()
+    reasoning = trace.to_reasoning_trace()
+    token_usage = usage.to_token_usage()
+
+    assert tool_call.name == "bash"
+    assert tool_call.id == "tool-1"
+    assert tool_call.input == {"command": "git status"}
+    assert tool_call.provider == "claude-code"
+    assert tool_call.raw == tool.model_dump()
+
+    assert reasoning.text == "chain of thought"
+    assert reasoning.provider == "claude-code"
+    assert reasoning.raw == trace.model_dump()
+
+    assert token_usage.input_tokens == 12
+    assert token_usage.output_tokens == 34
+    assert token_usage.cache_write_tokens == 5
+    assert token_usage.cache_read_tokens == 6

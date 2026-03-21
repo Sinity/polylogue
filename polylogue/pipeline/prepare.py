@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.logging import get_logger
-from polylogue.lib.viewports import classify_tool
+from polylogue.lib.viewports import ToolCategory, classify_tool
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
@@ -24,6 +24,8 @@ from polylogue.pipeline.ids import (
 )
 from polylogue.pipeline.semantic import extract_tool_metadata
 from polylogue.schemas.code_detection import detect_language
+from polylogue.schemas.unified import harmonize_parsed_message
+from polylogue.sources.parsers.base import ParsedContentBlock
 from polylogue.sources.source import RecordBundle, save_bundle
 from polylogue.storage.store import (
     AttachmentRecord,
@@ -35,7 +37,7 @@ from polylogue.storage.store import (
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
 if TYPE_CHECKING:
-    from polylogue.sources.parsers.types import ParsedConversation
+    from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
 
@@ -190,6 +192,94 @@ class EnrichedBundle:
     changed: bool
 
 
+def _parsed_block_from_harmonized(block) -> ParsedContentBlock | None:
+    metadata: dict[str, object] | None = dict(block.raw) if isinstance(block.raw, dict) and block.raw else None
+
+    if block.type.name == "TOOL_USE" and block.tool_call is not None:
+        return ParsedContentBlock(
+            type="tool_use",
+            text=block.text,
+            tool_name=block.tool_call.name,
+            tool_id=block.tool_call.id,
+            tool_input=block.tool_call.input or None,
+            metadata=metadata,
+        )
+    if block.type.name == "TOOL_RESULT":
+        tool_id = None
+        if isinstance(block.raw, dict):
+            raw_tool_id = block.raw.get("tool_use_id") or block.raw.get("tool_id")
+            if isinstance(raw_tool_id, str) and raw_tool_id:
+                tool_id = raw_tool_id
+        return ParsedContentBlock(
+            type="tool_result",
+            text=block.text,
+            tool_id=tool_id,
+            metadata=metadata,
+        )
+    if block.type.name == "CODE":
+        if block.language:
+            metadata = dict(metadata or {})
+            metadata.setdefault("language", block.language)
+        return ParsedContentBlock(type="code", text=block.text, metadata=metadata)
+    if block.type.name == "THINKING":
+        return ParsedContentBlock(type="thinking", text=block.text, metadata=metadata)
+    if block.type.name == "IMAGE":
+        return ParsedContentBlock(
+            type="image",
+            text=block.text,
+            media_type=block.mime_type,
+            metadata=metadata,
+        )
+    if block.type.name in {"FILE", "AUDIO", "VIDEO"}:
+        return ParsedContentBlock(
+            type="document",
+            text=block.text,
+            media_type=block.mime_type,
+            metadata=metadata,
+        )
+    if block.type.name in {"TEXT", "SYSTEM", "ERROR", "UNKNOWN"}:
+        return ParsedContentBlock(type="text", text=block.text, metadata=metadata)
+    return None
+
+
+def _canonicalize_message_content(
+    provider_name: str,
+    message: ParsedMessage,
+) -> ParsedMessage:
+    harmonized = harmonize_parsed_message(
+        provider_name,
+        message.provider_meta,
+        message_id=message.provider_message_id,
+        role=str(message.role),
+        text=message.text,
+        timestamp=message.timestamp,
+    )
+    if harmonized is None:
+        return message
+
+    updates: dict[str, object] = {}
+    if not message.text and harmonized.text:
+        updates["text"] = harmonized.text
+    if not message.content_blocks and harmonized.content_blocks:
+        content_blocks = [
+            parsed_block
+            for block in harmonized.content_blocks
+            if (parsed_block := _parsed_block_from_harmonized(block)) is not None
+        ]
+        if content_blocks:
+            updates["content_blocks"] = content_blocks
+    if not updates:
+        return message
+    return message.model_copy(update=updates)
+
+
+def _canonicalize_conversation_content(convo: ParsedConversation) -> ParsedConversation:
+    messages = [_canonicalize_message_content(str(convo.provider_name), message) for message in convo.messages]
+    if all(original == updated for original, updated in zip(convo.messages, messages, strict=True)):
+        return convo
+    return convo.model_copy(update={"messages": messages})
+
+
 def transform_to_records(
     convo: ParsedConversation,
     source_name: str,
@@ -202,6 +292,7 @@ def transform_to_records(
     The returned TransformResult carries enough context for enrich_bundle_from_db
     to apply DB-derived ID mappings and determine the change flag.
     """
+    convo = _canonicalize_conversation_content(convo)
     content_hash = conversation_content_hash(convo)
     candidate_cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
 
@@ -284,7 +375,7 @@ def transform_to_records(
 
             if block.type == "tool_use" and block.tool_name:
                 category = classify_tool(block.tool_name, block.tool_input or {})
-                semantic_type = category.value
+                semantic_type = None if category is ToolCategory.OTHER else category.value
                 # Extract structured metadata for semantically meaningful tool calls
                 tool_meta = extract_tool_metadata(block.tool_name, block.tool_input or {})
                 if tool_meta is not None:

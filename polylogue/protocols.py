@@ -44,11 +44,11 @@ class VectorProvider(Protocol):
     """
 
     def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None:
-        """Embed and store vectors for a conversation's messages."""
+        """Synchronously embed and store vectors for a conversation's messages."""
         ...
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
-        """Semantic search returning (conversation_id, similarity_score) tuples."""
+        """Synchronously return ranked ``(message_id, distance)`` search results."""
         ...
 
 

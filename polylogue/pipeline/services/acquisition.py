@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
-from polylogue.lib.provider_identity import canonical_runtime_provider
+from polylogue.lib.provider_identity import canonical_acquisition_provider
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.sources.source import iter_source_raw_data
@@ -110,7 +110,7 @@ class AcquisitionService:
     ) -> ScanResult:
         """Visit source raw payloads incrementally without forcing list materialization."""
         result = ScanResult()
-        known_mtimes = await self.backend.get_known_source_mtimes()
+        known_mtimes = await self.backend.queries.get_known_source_mtimes()
 
         async def _consume(record: RawConversationRecord) -> None:
             if on_record is not None:
@@ -328,14 +328,14 @@ class AcquisitionService:
 
         raw_id = hashlib.sha256(raw_data.raw_bytes).hexdigest()
         acquired_at = datetime.now(timezone.utc).isoformat()
+        provider_name = canonical_acquisition_provider(
+            str(raw_data.provider_hint) if raw_data.provider_hint is not None else None,
+            source_name=source_name,
+        )
 
         return RawConversationRecord(
             raw_id=raw_id,
-            provider_name=canonical_runtime_provider(
-                raw_data.provider_hint or source_name,
-                preserve_unknown=True,
-                default=source_name,
-            ),
+            provider_name=provider_name,
             source_name=source_name,  # Config source name, distinct from provider
             source_path=raw_data.source_path,
             source_index=raw_data.source_index,

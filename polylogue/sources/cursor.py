@@ -116,7 +116,6 @@ class _ParseContext:
     file_mtime: str | None
     capture_raw: bool
     session_index: dict[str, SessionIndexEntry]
-    detect_path: Path  # For detect_provider calls on individual payloads
 
 
 __all__ = [

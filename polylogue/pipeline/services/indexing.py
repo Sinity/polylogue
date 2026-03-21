@@ -7,6 +7,13 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
+from polylogue.storage.fts_lifecycle import (
+    ensure_fts_index_async,
+    fts_index_status_async,
+    rebuild_fts_index_async,
+    repair_fts_index_async,
+)
+from polylogue.storage.search_cache import invalidate_search_cache
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -18,79 +25,32 @@ __all__ = ["IndexService"]
 
 
 async def ensure_index(backend: SQLiteBackend) -> None:
-    """Create the FTS5 index table if it does not exist."""
+    """Ensure the FTS5 table exists on the archive backend."""
     async with backend.connection() as conn:
-        await conn.execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-                message_id UNINDEXED,
-                conversation_id UNINDEXED,
-                text,
-                tokenize='unicode61'
-            );
-            """
-        )
+        await ensure_fts_index_async(conn)
 
 
 async def rebuild_index(backend: SQLiteBackend) -> None:
-    """Rebuild the entire FTS5 index from message rows."""
+    """Rebuild the entire FTS5 index from persisted message rows."""
     async with backend.connection() as conn:
-        await ensure_index(backend)
-        await conn.execute("DELETE FROM messages_fts")
-        await conn.execute(
-            """
-            INSERT INTO messages_fts (message_id, conversation_id, text)
-            SELECT messages.message_id, messages.conversation_id, messages.text
-            FROM messages
-            WHERE messages.text IS NOT NULL
-            """
-        )
+        await rebuild_fts_index_async(conn)
         await conn.commit()
+    invalidate_search_cache()
 
 
 async def update_index_for_conversations(
     conversation_ids: Iterable[str] | AsyncIterable[str],
     backend: SQLiteBackend,
 ) -> None:
-    """Update the FTS5 index for the provided conversations."""
+    """Repair FTS rows for the provided conversations from persisted message rows."""
+    conversation_id_list = [conversation_id async for conversation_id in _iter_ids(conversation_ids)]
+    changed = bool(conversation_id_list)
+
     async with backend.connection() as conn:
-        await ensure_index(backend)
-
-        async for chunk_ids in _chunked_ids(conversation_ids, size=500):
-            placeholders = ", ".join("?" for _ in chunk_ids)
-            params = tuple(chunk_ids)
-
-            await conn.execute(
-                f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
-                params,
-            )
-            await conn.execute(
-                f"""
-                INSERT INTO messages_fts (message_id, conversation_id, text)
-                SELECT message_id, conversation_id, text
-                FROM messages
-                WHERE text IS NOT NULL AND conversation_id IN ({placeholders})
-                """,
-                params,
-            )
-
+        await repair_fts_index_async(conn, conversation_id_list)
         await conn.commit()
-
-
-async def _chunked_ids(
-    items: Iterable[str] | AsyncIterable[str],
-    *,
-    size: int,
-) -> AsyncIterator[list[str]]:
-    chunk: list[str] = []
-    async for item in _iter_ids(items):
-        chunk.append(item)
-        if len(chunk) >= size:
-            yield chunk
-            chunk = []
-
-    if chunk:
-        yield chunk
+    if changed:
+        invalidate_search_cache()
 
 
 async def _iter_ids(items: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[str]:
@@ -106,17 +66,7 @@ async def _iter_ids(items: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[
 async def index_status(backend: SQLiteBackend) -> dict[str, object]:
     """Return whether the FTS5 index exists and how many docs it contains."""
     async with backend.connection() as conn:
-        cursor = await conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-        )
-        row = await cursor.fetchone()
-        exists = bool(row)
-        count = 0
-        if exists:
-            cursor = await conn.execute("SELECT COUNT(*) FROM messages_fts_docsize")
-            row = await cursor.fetchone()
-            count = row[0] if row else 0
-        return {"exists": exists, "count": int(count)}
+        return await fts_index_status_async(conn)
 
 
 class IndexService:

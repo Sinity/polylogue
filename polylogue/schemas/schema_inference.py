@@ -31,6 +31,10 @@ from polylogue.schemas.privacy import (
     _is_content_field,
     _is_safe_enum_value,
 )
+from polylogue.schemas.privacy_config import (
+    PrivacyConfig,
+    load_privacy_config,
+)
 from polylogue.schemas.sampling import (
     PROVIDERS,
     ProviderConfig,
@@ -42,9 +46,18 @@ from polylogue.schemas.sampling import (
     load_samples_from_db,
     load_samples_from_sessions,
 )
+from polylogue.schemas.relational_inference import (
+    ForeignKeyRelation,
+    MutualExclusion,
+    RelationalAnnotations,
+    StringLengthProfile,
+    TimeDeltaRelation,
+    infer_relations,
+)
 from polylogue.schemas.schema_generation import (
     GenerationResult,
     _annotate_schema,
+    _annotate_semantic_and_relational,
     _merge_schemas,
     _remove_nested_required,
     _structure_fingerprint,
@@ -52,6 +65,12 @@ from polylogue.schemas.schema_generation import (
     generate_all_schemas,
     generate_provider_schema,
     generate_schema_from_samples,
+)
+from polylogue.schemas.semantic_inference import (
+    SemanticCandidate,
+    SEMANTIC_ROLES,
+    infer_semantic_roles,
+    select_best_roles,
 )
 
 
@@ -137,6 +156,9 @@ __all__ = [
     # From privacy
     "_is_content_field",
     "_is_safe_enum_value",
+    # From privacy_config
+    "PrivacyConfig",
+    "load_privacy_config",
     # From sampling
     "PROVIDERS",
     "ProviderConfig",
@@ -147,9 +169,22 @@ __all__ = [
     "get_sample_count_from_db",
     "load_samples_from_db",
     "load_samples_from_sessions",
+    # From semantic_inference
+    "SemanticCandidate",
+    "SEMANTIC_ROLES",
+    "infer_semantic_roles",
+    "select_best_roles",
+    # From relational_inference
+    "ForeignKeyRelation",
+    "MutualExclusion",
+    "RelationalAnnotations",
+    "StringLengthProfile",
+    "TimeDeltaRelation",
+    "infer_relations",
     # From schema_generation
     "GenerationResult",
     "_annotate_schema",
+    "_annotate_semantic_and_relational",
     "_merge_schemas",
     "_remove_nested_required",
     "_structure_fingerprint",

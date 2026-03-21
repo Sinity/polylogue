@@ -21,6 +21,8 @@ from polylogue.cli.commands.run import (
 )
 from polylogue.cli.run_observers import (
     PlainProgressObserver as _PlainProgressObserver,
+)
+from polylogue.cli.run_observers import (
     _format_elapsed,
 )
 from polylogue.config import Config, get_config
@@ -312,6 +314,6 @@ def test_plain_progress_observer_completion_contract() -> None:
     lines = [call.args[0] for call in mock_print.call_args_list if call.args]
     assert lines == [
         "Syncing...",
-        "  Counts: 3 conv",
+        "  Counts: 3 conv (3 new)",
         "  Pipeline complete in 5s",
     ]

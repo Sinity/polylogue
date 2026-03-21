@@ -7,7 +7,7 @@ from polylogue.lib.roles import Role
 from polylogue.sources.providers.gemini import GeminiMessage
 from polylogue.types import Provider
 
-from .base import ParsedAttachment, ParsedConversation, ParsedMessage
+from .base import ParsedAttachment, ParsedContentBlock, ParsedConversation, ParsedMessage
 
 _logger = get_logger(__name__)
 
@@ -86,6 +86,30 @@ def _attachment_from_doc(doc: dict[str, object] | str, message_id: str | None) -
         path=None,
         provider_meta=doc,
     )
+
+
+def _parsed_content_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
+    if not isinstance(blocks, list):
+        return []
+    parsed: list[ParsedContentBlock] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if not isinstance(block_type, str) or not block_type:
+            continue
+        metadata: dict[str, object] | None = None
+        language = block.get("language")
+        if isinstance(language, str) and language:
+            metadata = {"language": language}
+        parsed.append(
+            ParsedContentBlock(
+                type=block_type,
+                text=block.get("text") if isinstance(block.get("text"), str) else None,
+                metadata=metadata,
+            )
+        )
+    return parsed
 
 
 def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], fallback_id: str) -> ParsedConversation:
@@ -209,6 +233,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
                 role=role,
                 text=text,
                 timestamp=default_timestamp,
+                content_blocks=_parsed_content_blocks_from_meta(meta.get("content_blocks")),
                 provider_meta=meta,
             )
         )

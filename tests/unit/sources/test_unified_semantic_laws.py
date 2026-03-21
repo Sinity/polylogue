@@ -53,10 +53,14 @@ from tests.infra.strategies import (
     chatgpt_semantic_message_strategy,
     claude_ai_semantic_message_strategy,
     claude_code_semantic_record_strategy,
+    code_block_strategy,
     codex_semantic_record_strategy,
     content_block_strategy,
     gemini_semantic_message_strategy,
     provider_semantic_case_strategy,
+    text_content_strategy,
+    thinking_block_strategy,
+    tool_use_block_strategy,
 )
 
 _VALID_VIEWPORT_ROLES = {"user", "assistant", "system", "tool", "unknown", "model"}
@@ -188,6 +192,11 @@ def _expected_content_types(content: list[object]) -> list[ContentType]:
     ]
 
 
+# =============================================================================
+# Property-based laws (@given) — kept unchanged
+# =============================================================================
+
+
 @given(provider_semantic_case_strategy())
 @settings(max_examples=40, deadline=None)
 def test_unified_semantic_equivalence_for_rich_provider_cases(case: tuple[str, dict[str, object]]) -> None:
@@ -248,50 +257,41 @@ def test_harmonize_parsed_message_matches_bulk_harmonize(case: tuple[str, dict[s
     assert bulk == [individual]
 
 
-@pytest.mark.parametrize(
-    ("provider", "raw", "expected"),
-    [
-        ("claude-code", {"type": "user"}, True),
-        ("claude-code", {"type": "assistant"}, True),
-        ("claude-code", {"type": "system"}, True),
-        ("claude-code", {"type": "progress"}, False),
-        ("claude-code", {"type": "summary"}, False),
-        ("claude-code", {}, True),
-        ("chatgpt", {"anything": "goes"}, True),
-        ("gemini", {"role": "model"}, True),
-    ],
-)
-def test_is_message_record_contract(provider: str, raw: dict[str, object], expected: bool) -> None:
-    assert is_message_record(provider, raw) is expected
-
-
 @given(st.sampled_from(["user", "assistant", "system", "tool", "unknown", "human", "model", "ASSISTANT", "SYSTEM", "USER"]))
 def test_harmonized_message_role_coercion_contract(role_str: str) -> None:
     msg = HarmonizedMessage(role=role_str, text="test", provider="claude-code")
     assert msg.role.value in _VALID_VIEWPORT_ROLES
 
 
-@given(st.sampled_from(["chatgpt", "claude", "claude-code", "gemini", "codex"]))
+@given(st.sampled_from(["chatgpt", "claude-ai", "claude-code", "gemini", "codex"]))
 def test_harmonized_message_provider_coercion_contract(provider_str: str) -> None:
     msg = HarmonizedMessage(role="user", text="test", provider=provider_str)
     assert msg.provider.value == provider_str
 
 
-@pytest.mark.parametrize(
-    ("label", "action", "match"),
-    [
-        ("missing-role", lambda: _missing_role(), "Message has no role"),
-        ("unknown-provider", lambda: extract_harmonized_message("unknown_provider", {}), "Unknown provider"),
-        (
-            "claude-code-empty-message",
-            lambda: extract_harmonized_message("claude-code", {"uuid": "m1", "type": "human", "message": {}}),
-            "no role",
+@given(
+    st.lists(
+        st.one_of(
+            thinking_block_strategy(),
+            tool_use_block_strategy(),
+            code_block_strategy(),
+            text_content_strategy(),
         ),
-    ],
+        max_size=10,
+    ),
+    st.sampled_from(["claude-code", "claude-ai", "chatgpt", "gemini", "codex"]),
 )
-def test_invalid_semantic_surface_contract(label: str, action, match: str) -> None:
-    with pytest.raises(ValueError, match=match):
-        action()
+def test_typed_content_blocks_extract_without_crash(
+    content: list[dict[str, object]],
+    provider: str,
+) -> None:
+    """Typed content block strategies always produce extractable blocks."""
+    blocks = extract_content_blocks(content)
+    traces = extract_reasoning_traces(content, provider)
+    calls = extract_tool_calls(content, provider)
+    assert isinstance(blocks, list)
+    assert isinstance(traces, list)
+    assert isinstance(calls, list)
 
 
 @given(
@@ -304,7 +304,7 @@ def test_invalid_semantic_surface_contract(label: str, action, match: str) -> No
         ),
         max_size=10,
     ),
-    st.sampled_from(["claude-code", "claude", "chatgpt", "gemini", "codex"]),
+    st.sampled_from(["claude-code", "claude-ai", "chatgpt", "gemini", "codex"]),
 )
 def test_extract_reasoning_traces_preserve_reasoning_blocks_contract(
     content: list[object],
@@ -324,7 +324,7 @@ def test_extract_reasoning_traces_preserve_reasoning_blocks_contract(
         ),
         max_size=10,
     ),
-    st.sampled_from(["claude-code", "claude", "chatgpt", "gemini", "codex"]),
+    st.sampled_from(["claude-code", "claude-ai", "chatgpt", "gemini", "codex"]),
 )
 def test_extract_tool_calls_preserve_tool_use_blocks_contract(
     content: list[object],
@@ -385,113 +385,6 @@ def test_extract_codex_text_prefers_first_available_text_field_contract(content:
     assert extract_codex_text(content) == "\n".join(expected)
 
 
-def test_coerce_extracted_viewports_skip_invalid_items_and_inject_provider_contract() -> None:
-    trace = ReasoningTrace(text="kept-trace", provider="claude-code")
-    call = ToolCall(name="Read", input={"path": "README.md"}, provider="claude-code")
-    block = ContentBlock(type=ContentType.TEXT, text="kept-block", raw={"text": "kept-block"})
-
-    coerced_traces = _coerce_reasoning_traces(
-        [trace, {"text": "dict-trace"}, {"text": None}, "ignored"],
-        "claude-code",
-    )
-    coerced_calls = _coerce_tool_calls(
-        [call, {"name": "Write", "input": {"path": "notes.txt"}}, {"name": None}, "ignored"],
-        "claude-code",
-    )
-    coerced_blocks = _coerce_content_blocks(
-        [block, {"type": "text", "text": "dict-block", "raw": {"text": "dict-block"}}, {"type": "text"}, 123]
-    )
-
-    assert [item.text for item in coerced_traces] == ["kept-trace", "dict-trace"]
-    assert all(item.provider == "claude-code" for item in coerced_traces)
-    assert [item.name for item in coerced_calls] == ["Read", "Write"]
-    assert all(item.provider == "claude-code" for item in coerced_calls)
-    assert [item.text for item in coerced_blocks] == ["kept-block", "dict-block", None]
-
-
-def test_extract_generic_tokens_and_cost_contract() -> None:
-    usage = {"input_tokens": 10, "output_tokens": 12, "cache_read_input_tokens": 3, "cache_creation_input_tokens": 4}
-
-    assert _extract_generic_tokens({"usage": usage}) == extract_token_usage(usage)
-    assert _extract_generic_tokens({"tokens": {"output_tokens": 7}}) == TokenUsage(output_tokens=7)
-    assert _extract_generic_tokens({"tokenCount": 9}) == TokenUsage(output_tokens=9)
-    assert _extract_generic_tokens({"tokens": {"output_tokens": "bad"}}) is None
-
-    assert _extract_generic_cost({"cost": {"total_usd": 0.25}}) == CostInfo(total_usd=0.25)
-    assert _extract_generic_cost({"costUSD": 1.5}) == CostInfo(total_usd=1.5)
-    assert _extract_generic_cost({"cost": {"total_usd": "bad"}}) is None
-
-
-def test_harmonize_extracted_provider_meta_derives_text_reasoning_tools_and_overlays_contract() -> None:
-    provider_meta = {
-        "content_blocks": [
-            {"type": "text", "text": "plain text", "raw": {"text": "plain text"}},
-            {"type": "thinking", "text": "private reasoning", "raw": {"thinking": "private reasoning"}},
-            {
-                "type": "tool_use",
-                "tool_call": {"name": "Read", "id": "tool-1", "input": {"path": "README.md"}},
-                "raw": {"type": "tool_use"},
-            },
-        ],
-        "tokens": {"output_tokens": 5},
-        "costUSD": 0.25,
-        "durationMs": 12,
-        "sender": "assistant",
-        "created_at": "2025-01-01T00:00:00Z",
-    }
-
-    harmonized = _harmonize_extracted_provider_meta(
-        "claude-code",
-        provider_meta,
-        message_id="msg-1",
-        text=None,
-        role=None,
-        timestamp=None,
-    )
-
-    assert harmonized.id == "msg-1"
-    assert harmonized.role.value == "assistant"
-    assert harmonized.text == "plain text\nprivate reasoning"
-    assert [trace.text for trace in harmonized.reasoning_traces] == ["private reasoning"]
-    assert [call.name for call in harmonized.tool_calls] == ["Read"]
-    assert harmonized.tokens == TokenUsage(output_tokens=5)
-    assert harmonized.cost == CostInfo(total_usd=0.25)
-    assert harmonized.duration_ms == 12
-    assert harmonized.timestamp is not None
-
-
-def test_has_extracted_viewports_and_overlay_message_context_contract() -> None:
-    message = extract_harmonized_message(
-        "claude-ai",
-        {"uuid": "m1", "sender": "assistant", "text": "hello", "created_at": "2025-01-01T00:00:00Z"},
-    )
-    unknown = message.model_copy(update={"id": None, "role": "unknown", "text": "", "timestamp": None})
-
-    assert _has_extracted_viewports({"content_blocks": [], "duration_ms": 1}) is True
-    assert _has_extracted_viewports({"sender": "assistant", "text": "hello"}) is False
-
-    overlaid = _overlay_message_context(
-        unknown,
-        message_id="db-id",
-        role="assistant",
-        text="db text",
-        timestamp="2025-01-02T00:00:00Z",
-    )
-    untouched = _overlay_message_context(
-        message,
-        message_id="db-id",
-        role="user",
-        text="db text",
-        timestamp="2025-01-02T00:00:00Z",
-    )
-
-    assert overlaid.id == "db-id"
-    assert overlaid.role.value == "assistant"
-    assert overlaid.text == "db text"
-    assert overlaid.timestamp is not None
-    assert untouched == message
-
-
 @given(
     chatgpt_semantic_message_strategy(),
     claude_ai_semantic_message_strategy(),
@@ -512,66 +405,6 @@ def test_rich_semantic_cases_are_message_records(
     assert is_message_record("claude-code", claude_code_raw)
     assert is_message_record("codex", codex_raw)
     assert is_message_record("gemini", gemini_raw)
-
-
-def test_chatgpt_iter_user_assistant_pairs_contract() -> None:
-    conversation = ChatGPTConversation.model_validate(
-        {
-            "id": "conv-pairs",
-            "conversation_id": "conv-pairs",
-            "title": "Pairs",
-            "create_time": 1700000000.0,
-            "update_time": 1700000001.0,
-            "current_node": "n4",
-            "mapping": {
-                "n0": {"id": "n0", "parent": None, "children": ["n1"], "message": None},
-                "n1": {
-                    "id": "n1",
-                    "parent": "n0",
-                    "children": ["n2"],
-                    "message": {
-                        "id": "m1",
-                        "author": {"role": "user"},
-                        "content": {"content_type": "text", "parts": ["q1"]},
-                    },
-                },
-                "n2": {
-                    "id": "n2",
-                    "parent": "n1",
-                    "children": ["n3"],
-                    "message": {
-                        "id": "m2",
-                        "author": {"role": "assistant"},
-                        "content": {"content_type": "text", "parts": ["a1"]},
-                    },
-                },
-                "n3": {
-                    "id": "n3",
-                    "parent": "n2",
-                    "children": ["n4"],
-                    "message": {
-                        "id": "m3",
-                        "author": {"role": "user"},
-                        "content": {"content_type": "text", "parts": ["q2"]},
-                    },
-                },
-                "n4": {
-                    "id": "n4",
-                    "parent": "n3",
-                    "children": [],
-                    "message": {
-                        "id": "m4",
-                        "author": {"role": "assistant"},
-                        "content": {"content_type": "text", "parts": ["a2"]},
-                    },
-                },
-            },
-        }
-    )
-
-    pairs = list(conversation.iter_user_assistant_pairs())
-
-    assert [(user.id, assistant.id) for user, assistant in pairs] == [("m1", "m2"), ("m3", "m4")]
 
 
 @given(provider_semantic_case_strategy())
@@ -716,7 +549,238 @@ def test_structured_provider_meta_overlay_contract(case: tuple[str, dict[str, ob
     assert harmonized.timestamp == meta.timestamp
 
 
-def test_generic_unified_extractors_preserve_nested_text_and_tool_metadata() -> None:
+# =============================================================================
+# Unique hand-written tests (non-consolidatable)
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("provider", "raw", "expected"),
+    [
+        ("claude-code", {"type": "user"}, True),
+        ("claude-code", {"type": "assistant"}, True),
+        ("claude-code", {"type": "system"}, True),
+        ("claude-code", {"type": "progress"}, False),
+        ("claude-code", {"type": "summary"}, False),
+        ("claude-code", {}, True),
+        ("chatgpt", {"anything": "goes"}, True),
+        ("gemini", {"role": "model"}, True),
+    ],
+)
+def test_is_message_record_contract(provider: str, raw: dict[str, object], expected: bool) -> None:
+    assert is_message_record(provider, raw) is expected
+
+
+@pytest.mark.parametrize(
+    ("label", "action", "match"),
+    [
+        ("missing-role", lambda: _missing_role(), "Message has no role"),
+        ("unknown-provider", lambda: extract_harmonized_message("unknown_provider", {}), "Unknown provider"),
+        (
+            "claude-code-empty-message",
+            lambda: extract_harmonized_message("claude-code", {"uuid": "m1", "type": "human", "message": {}}),
+            "no role",
+        ),
+    ],
+)
+def test_invalid_semantic_surface_contract(label: str, action, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        action()
+
+
+def test_chatgpt_iter_user_assistant_pairs_contract() -> None:
+    conversation = ChatGPTConversation.model_validate(
+        {
+            "id": "conv-pairs",
+            "conversation_id": "conv-pairs",
+            "title": "Pairs",
+            "create_time": 1700000000.0,
+            "update_time": 1700000001.0,
+            "current_node": "n4",
+            "mapping": {
+                "n0": {"id": "n0", "parent": None, "children": ["n1"], "message": None},
+                "n1": {
+                    "id": "n1",
+                    "parent": "n0",
+                    "children": ["n2"],
+                    "message": {
+                        "id": "m1",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["q1"]},
+                    },
+                },
+                "n2": {
+                    "id": "n2",
+                    "parent": "n1",
+                    "children": ["n3"],
+                    "message": {
+                        "id": "m2",
+                        "author": {"role": "assistant"},
+                        "content": {"content_type": "text", "parts": ["a1"]},
+                    },
+                },
+                "n3": {
+                    "id": "n3",
+                    "parent": "n2",
+                    "children": ["n4"],
+                    "message": {
+                        "id": "m3",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["q2"]},
+                    },
+                },
+                "n4": {
+                    "id": "n4",
+                    "parent": "n3",
+                    "children": [],
+                    "message": {
+                        "id": "m4",
+                        "author": {"role": "assistant"},
+                        "content": {"content_type": "text", "parts": ["a2"]},
+                    },
+                },
+            },
+        }
+    )
+
+    pairs = list(conversation.iter_user_assistant_pairs())
+
+    assert [(user.id, assistant.id) for user, assistant in pairs] == [("m1", "m2"), ("m3", "m4")]
+
+
+# =============================================================================
+# Consolidated hand-written tests
+# =============================================================================
+
+
+def test_coercion_and_token_cost_internals_contract() -> None:
+    """Consolidated: coerce helpers, extract_token_usage, _extract_generic_tokens/cost."""
+    # --- Coercion: skip invalid items, inject provider ---
+    trace = ReasoningTrace(text="kept-trace", provider="claude-code")
+    call = ToolCall(name="Read", input={"path": "README.md"}, provider="claude-code")
+    block = ContentBlock(type=ContentType.TEXT, text="kept-block", raw={"text": "kept-block"})
+
+    coerced_traces = _coerce_reasoning_traces(
+        [trace, {"text": "dict-trace"}, {"text": None}, "ignored"],
+        "claude-code",
+    )
+    coerced_calls = _coerce_tool_calls(
+        [call, {"name": "Write", "input": {"path": "notes.txt"}}, {"name": None}, "ignored"],
+        "claude-code",
+    )
+    coerced_blocks = _coerce_content_blocks(
+        [block, {"type": "text", "text": "dict-block", "raw": {"text": "dict-block"}}, {"type": "text"}, 123]
+    )
+
+    assert [item.text for item in coerced_traces] == ["kept-trace", "dict-trace"]
+    assert all(item.provider == "claude-code" for item in coerced_traces)
+    assert [item.name for item in coerced_calls] == ["Read", "Write"]
+    assert all(item.provider == "claude-code" for item in coerced_calls)
+    assert [item.text for item in coerced_blocks] == ["kept-block", "dict-block", None]
+
+    # --- extract_token_usage with cache fields ---
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 12,
+        "cache_read_input_tokens": 3,
+        "cache_creation_input_tokens": 4,
+        "total_tokens": 29,
+    }
+    tokens = extract_token_usage(usage)
+    assert tokens is not None
+    assert tokens.input_tokens == 10
+    assert tokens.output_tokens == 12
+    assert tokens.cache_read_tokens == 3
+    assert tokens.cache_write_tokens == 4
+    assert tokens.total_tokens == 29
+
+    # --- _extract_generic_tokens ---
+    assert _extract_generic_tokens({"usage": usage}) == extract_token_usage(usage)
+    assert _extract_generic_tokens({"tokens": {"output_tokens": 7}}) == TokenUsage(output_tokens=7)
+    assert _extract_generic_tokens({"tokenCount": 9}) == TokenUsage(output_tokens=9)
+    assert _extract_generic_tokens({"tokens": {"output_tokens": "bad"}}) is None
+
+    # --- _extract_generic_cost ---
+    assert _extract_generic_cost({"cost": {"total_usd": 0.25}}) == CostInfo(total_usd=0.25)
+    assert _extract_generic_cost({"costUSD": 1.5}) == CostInfo(total_usd=1.5)
+    assert _extract_generic_cost({"cost": {"total_usd": "bad"}}) is None
+
+
+def test_harmonization_pipeline_internals_contract() -> None:
+    """Consolidated: _harmonize_extracted_provider_meta, _has_extracted_viewports, _overlay_message_context."""
+    # --- _harmonize_extracted_provider_meta ---
+    provider_meta = {
+        "content_blocks": [
+            {"type": "text", "text": "plain text", "raw": {"text": "plain text"}},
+            {"type": "thinking", "text": "private reasoning", "raw": {"thinking": "private reasoning"}},
+            {
+                "type": "tool_use",
+                "tool_call": {"name": "Read", "id": "tool-1", "input": {"path": "README.md"}},
+                "raw": {"type": "tool_use"},
+            },
+        ],
+        "tokens": {"output_tokens": 5},
+        "costUSD": 0.25,
+        "durationMs": 12,
+        "sender": "assistant",
+        "created_at": "2025-01-01T00:00:00Z",
+    }
+
+    harmonized = _harmonize_extracted_provider_meta(
+        "claude-code",
+        provider_meta,
+        message_id="msg-1",
+        text=None,
+        role=None,
+        timestamp=None,
+    )
+
+    assert harmonized.id == "msg-1"
+    assert harmonized.role.value == "assistant"
+    assert harmonized.text == "plain text\nprivate reasoning"
+    assert [trace.text for trace in harmonized.reasoning_traces] == ["private reasoning"]
+    assert [call.name for call in harmonized.tool_calls] == ["Read"]
+    assert harmonized.tokens == TokenUsage(output_tokens=5)
+    assert harmonized.cost == CostInfo(total_usd=0.25)
+    assert harmonized.duration_ms == 12
+    assert harmonized.timestamp is not None
+
+    # --- _has_extracted_viewports ---
+    assert _has_extracted_viewports({"content_blocks": [], "duration_ms": 1}) is True
+    assert _has_extracted_viewports({"sender": "assistant", "text": "hello"}) is False
+
+    # --- _overlay_message_context ---
+    message = extract_harmonized_message(
+        "claude-ai",
+        {"uuid": "m1", "sender": "assistant", "text": "hello", "created_at": "2025-01-01T00:00:00Z"},
+    )
+    unknown = message.model_copy(update={"id": None, "role": "unknown", "text": "", "timestamp": None})
+
+    overlaid = _overlay_message_context(
+        unknown,
+        message_id="db-id",
+        role="assistant",
+        text="db text",
+        timestamp="2025-01-02T00:00:00Z",
+    )
+    untouched = _overlay_message_context(
+        message,
+        message_id="db-id",
+        role="user",
+        text="db text",
+        timestamp="2025-01-02T00:00:00Z",
+    )
+
+    assert overlaid.id == "db-id"
+    assert overlaid.role.value == "assistant"
+    assert overlaid.text == "db text"
+    assert overlaid.timestamp is not None
+    assert untouched == message
+
+
+def test_generic_content_extraction_contract() -> None:
+    """Consolidated: generic extractors with nested text/tool metadata + claude-code text filtering."""
+    # --- Generic unified extractors ---
     content = [
         {"type": "text", "text": "plain"},
         {"type": "thinking", "thinking": "reason"},
@@ -742,40 +806,21 @@ def test_generic_unified_extractors_preserve_nested_text_and_tool_metadata() -> 
     assert calls[0].name == "Read"
     assert calls[0].input == {"path": "README.md"}
 
-
-def test_extract_claude_code_text_excludes_non_text_blocks_contract() -> None:
-    content = [
+    # --- Claude Code text: excludes non-text blocks ---
+    cc_content = [
         {"type": "text", "text": "hello"},
         {"type": "thinking", "thinking": "reason"},
         {"type": "tool_result", "content": "done"},
         {"type": "text", "text": "world"},
         "ignored",
     ]
-
-    assert extract_claude_code_text(content) == "hello\nworld"
-
-
-def test_extract_token_usage_maps_cache_fields_contract() -> None:
-    usage = {
-        "input_tokens": 10,
-        "output_tokens": 12,
-        "cache_read_input_tokens": 3,
-        "cache_creation_input_tokens": 4,
-        "total_tokens": 29,
-    }
-
-    tokens = extract_token_usage(usage)
-
-    assert tokens is not None
-    assert tokens.input_tokens == 10
-    assert tokens.output_tokens == 12
-    assert tokens.cache_read_tokens == 3
-    assert tokens.cache_write_tokens == 4
-    assert tokens.total_tokens == 29
+    assert extract_claude_code_text(cc_content) == "hello\nworld"
 
 
-def test_extract_from_provider_meta_rebuilds_text_and_overlay_metadata_contract() -> None:
-    provider_meta = {
+def test_extract_from_provider_meta_integration_contract() -> None:
+    """Consolidated: extract_from_provider_meta with plain blocks, structured blocks+tools, and multi-provider overlay."""
+    # --- Plain content blocks with tokens/cost/duration ---
+    provider_meta_plain = {
         "content_blocks": [
             {"type": "text", "text": "plain text"},
             {"type": "code", "text": "print('x')", "language": "python"},
@@ -788,7 +833,7 @@ def test_extract_from_provider_meta_rebuilds_text_and_overlay_metadata_contract(
 
     harmonized = extract_from_provider_meta(
         "claude-code",
-        provider_meta,
+        provider_meta_plain,
         message_id="msg-1",
         role="assistant",
         timestamp="2025-01-01T00:00:00Z",
@@ -801,35 +846,91 @@ def test_extract_from_provider_meta_rebuilds_text_and_overlay_metadata_contract(
     assert harmonized.cost is not None and harmonized.cost.total_usd == 0.25
     assert harmonized.duration_ms == 12
 
+    # --- Structured blocks with tool_calls and reasoning_traces ---
+    provider_meta_structured = {
+        "content_blocks": [
+            {"type": "text", "text": "plain text"},
+            {"type": "tool_use", "tool_call": {"name": "Read", "id": "tool-1", "input": {"path": "README.md"}}},
+            {"type": "tool_result", "text": "tool output"},
+            {"type": "code", "text": "print('x')", "language": "python"},
+        ],
+        "reasoning_traces": [{"text": "reason", "provider": "claude-code"}],
+        "tool_calls": [{"name": "Read", "id": "tool-1", "input": {"path": "README.md"}, "provider": "claude-code"}],
+        "tokens": {"output_tokens": 5},
+        "cost": {"total_usd": 0.25},
+        "duration_ms": 12,
+    }
 
-def test_extract_harmonized_message_chatgpt_fallback_preserves_dict_text_parts() -> None:
-    raw = {
+    harmonized2 = extract_from_provider_meta(
+        "claude-code",
+        provider_meta_structured,
+        message_id="msg-1",
+        role="assistant",
+        timestamp="2025-01-01T00:00:00Z",
+    )
+
+    assert harmonized2.id == "msg-1"
+    assert harmonized2.role.value == "assistant"
+    assert harmonized2.text == "plain text\ntool output\nprint('x')"
+    assert [block.type for block in harmonized2.content_blocks] == [
+        ContentType.TEXT,
+        ContentType.TOOL_USE,
+        ContentType.TOOL_RESULT,
+        ContentType.CODE,
+    ]
+
+    # --- Multi-provider overlay: DB fields fill in when provider_meta lacks them ---
+    for provider, provider_meta, message_id, role, text, expected_provider in [
+        ("claude-ai", {"sender": "human", "text": ""}, "db-message-id", "user", "DB fallback text", "claude-ai"),
+        ("gemini", {"role": "model", "text": "", "tokenCount": {"invalid": True}}, "db-gemini-id", "assistant", "DB Gemini fallback text", "gemini"),
+        ("codex", {"payload": "not-a-dict", "content": []}, "db-codex-id", "assistant", "DB Codex fallback text", "codex"),
+        ("codex", {"raw": {"payload": "not-a-dict", "content": []}}, "db-codex-raw-id", "assistant", "DB raw fallback text", "codex"),
+    ]:
+        msg = extract_from_provider_meta(
+            provider,
+            provider_meta,
+            message_id=message_id,
+            role=role,
+            text=text,
+            timestamp="2024-01-15T10:30:00Z",
+        )
+        assert msg.id == message_id
+        assert msg.role.value == role
+        assert msg.text == text
+        assert msg.timestamp is not None
+        assert msg.provider.value == expected_provider
+
+
+def test_extract_harmonized_message_fallback_contract() -> None:
+    """Consolidated: extract_harmonized_message edge cases across providers.
+
+    Covers ChatGPT dict-text-parts fallback, ChatGPT direct text preference,
+    Claude Code full semantic fields, Claude Code type fallback,
+    and malformed payloads for claude-ai/gemini/codex.
+    """
+    # --- ChatGPT: dict text parts fallback ---
+    chatgpt_raw = {
         "id": "chatgpt-fallback",
         "author": {"role": "assistant"},
         "create_time": 1700000000.0,
         "content": {"parts": ["hello", {"text": "world"}]},
         "metadata": {"model_slug": "gpt-4o"},
     }
+    msg_cg = extract_harmonized_message("chatgpt", chatgpt_raw)
+    assert msg_cg.id == "chatgpt-fallback"
+    assert msg_cg.role.value == "assistant"
+    assert msg_cg.text == "hello\nworld"
 
-    harmonized = extract_harmonized_message("chatgpt", raw)
-
-    assert harmonized.id == "chatgpt-fallback"
-    assert harmonized.role.value == "assistant"
-    assert harmonized.text == "hello\nworld"
-
-
-def test_extract_chatgpt_text_prefers_direct_text_contract() -> None:
-    content = {
+    # --- ChatGPT: direct text preferred over parts ---
+    content_direct = {
         "content_type": "code",
         "text": "print('ok')",
         "parts": ["ignored", {"text": "still ignored"}],
     }
+    assert extract_chatgpt_text(content_direct) == "print('ok')"
 
-    assert extract_chatgpt_text(content) == "print('ok')"
-
-
-def test_extract_harmonized_message_claude_code_fallback_preserves_semantic_fields_contract() -> None:
-    raw = {
+    # --- Claude Code: full semantic fields preserved ---
+    cc_raw = {
         "uuid": "claude-fallback",
         "type": "assistant",
         "timestamp": "2025-01-01T00:00:00Z",
@@ -853,253 +954,97 @@ def test_extract_harmonized_message_claude_code_fallback_preserves_semantic_fiel
             ],
         },
     }
-
-    msg = extract_harmonized_message("claude-code", raw)
-
-    assert msg.id == "claude-fallback"
-    assert msg.role == "assistant"
-    assert msg.text == "hello"
-    assert msg.timestamp is not None
-    assert msg.duration_ms == 99
-    assert msg.model == "claude-sonnet-4"
-    assert msg.cost is not None and msg.cost.total_usd == 0.25
-    assert msg.tokens is not None
-    assert msg.tokens.input_tokens == 10
-    assert msg.tokens.output_tokens == 12
-    assert msg.tokens.cache_read_tokens == 2
-    assert msg.tokens.cache_write_tokens == 3
-    assert [block.type for block in msg.content_blocks] == [
+    msg_cc = extract_harmonized_message("claude-code", cc_raw)
+    assert msg_cc.id == "claude-fallback"
+    assert msg_cc.role == "assistant"
+    assert msg_cc.text == "hello"
+    assert msg_cc.timestamp is not None
+    assert msg_cc.duration_ms == 99
+    assert msg_cc.model == "claude-sonnet-4"
+    assert msg_cc.cost is not None and msg_cc.cost.total_usd == 0.25
+    assert msg_cc.tokens is not None
+    assert msg_cc.tokens.input_tokens == 10
+    assert msg_cc.tokens.output_tokens == 12
+    assert msg_cc.tokens.cache_read_tokens == 2
+    assert msg_cc.tokens.cache_write_tokens == 3
+    assert [block.type for block in msg_cc.content_blocks] == [
         ContentType.TEXT,
         ContentType.THINKING,
         ContentType.TOOL_USE,
         ContentType.TOOL_RESULT,
         ContentType.CODE,
     ]
-    assert msg.reasoning_traces and msg.reasoning_traces[0].text == "reason"
-    assert msg.tool_calls and msg.tool_calls[0].name == "Read"
-    assert msg.tool_calls[0].input == {"path": "README.md"}
+    assert msg_cc.reasoning_traces and msg_cc.reasoning_traces[0].text == "reason"
+    assert msg_cc.tool_calls and msg_cc.tool_calls[0].name == "Read"
+    assert msg_cc.tool_calls[0].input == {"path": "README.md"}
 
+    # --- Claude Code: type field fallback for role ---
+    for raw, expected_role in [
+        ({"uuid": "m1", "type": "human", "message": "not-a-dict"}, "user"),
+        ({"uuid": "m1", "type": "assistant", "message": "not-a-dict"}, "assistant"),
+    ]:
+        msg = extract_harmonized_message("claude-code", raw)
+        assert msg.role.value == expected_role
+        assert msg.id == "m1"
 
-def test_extract_from_provider_meta_structured_blocks_preserve_overlay_and_tools_contract() -> None:
-    provider_meta = {
-        "content_blocks": [
-            {"type": "text", "text": "plain text"},
-            {"type": "tool_use", "tool_call": {"name": "Read", "id": "tool-1", "input": {"path": "README.md"}}},
-            {"type": "tool_result", "text": "tool output"},
-            {"type": "code", "text": "print('x')", "language": "python"},
-        ],
-        "reasoning_traces": [{"text": "reason", "provider": "claude-code"}],
-        "tool_calls": [{"name": "Read", "id": "tool-1", "input": {"path": "README.md"}, "provider": "claude-code"}],
-        "tokens": {"output_tokens": 5},
-        "cost": {"total_usd": 0.25},
-        "duration_ms": 12,
-    }
-
-    harmonized = extract_from_provider_meta(
-        "claude-code",
-        provider_meta,
-        message_id="msg-1",
-        role="assistant",
-        timestamp="2025-01-01T00:00:00Z",
-    )
-
-    assert harmonized.id == "msg-1"
-    assert harmonized.role.value == "assistant"
-    assert harmonized.text == "plain text\ntool output\nprint('x')"
-    assert [block.type for block in harmonized.content_blocks] == [
-        ContentType.TEXT,
-        ContentType.TOOL_USE,
-        ContentType.TOOL_RESULT,
-        ContentType.CODE,
-    ]
-
-
-@pytest.mark.parametrize(
-    ("provider", "raw", "expected_role", "expected_text", "expected_provider", "reasoning_text"),
-    [
+    # --- Malformed payloads across providers ---
+    for provider, raw, expected_role, expected_text, expected_provider, reasoning_text in [
         (
             "claude-ai",
-            {
-                "sender": "human",
-                "text": "Fallback Claude AI text",
-                "created_at": "2024-01-15T10:30:00Z",
-            },
-            "user",
-            "Fallback Claude AI text",
-            "claude",
-            None,
+            {"sender": "human", "text": "Fallback Claude AI text", "created_at": "2024-01-15T10:30:00Z"},
+            "user", "Fallback Claude AI text", "claude-ai", None,
         ),
         (
             "gemini",
-            {
-                "role": "model",
-                "text": "Fallback Gemini text",
-                "tokenCount": {"invalid": True},
-                "isThought": True,
-                "thinkingBudget": 256,
-            },
-            "assistant",
-            "Fallback Gemini text",
-            "gemini",
-            "Fallback Gemini text",
+            {"role": "model", "text": "Fallback Gemini text", "tokenCount": {"invalid": True}, "isThought": True, "thinkingBudget": 256},
+            "assistant", "Fallback Gemini text", "gemini", "Fallback Gemini text",
         ),
         (
             "codex",
-            {
-                "id": "codex-fallback",
-                "timestamp": "2024-01-15T10:30:00Z",
-                "payload": "not-a-dict",
-                "content": [{"type": "input_text", "text": "Fallback Codex text"}],
-            },
-            "unknown",
-            "Fallback Codex text",
-            "codex",
-            None,
+            {"id": "codex-fallback", "timestamp": "2024-01-15T10:30:00Z", "payload": "not-a-dict", "content": [{"type": "input_text", "text": "Fallback Codex text"}]},
+            "unknown", "Fallback Codex text", "codex", None,
         ),
-    ],
-)
-def test_extract_harmonized_message_malformed_payload_contract(
-    provider: str,
-    raw: dict[str, object],
-    expected_role: str,
-    expected_text: str,
-    expected_provider: str,
-    reasoning_text: str | None,
-) -> None:
-    msg = extract_harmonized_message(provider, raw)
-
-    assert msg.role.value == expected_role
-    assert msg.text == expected_text
-    assert msg.provider.value == expected_provider
-    if reasoning_text is None:
-        assert not msg.reasoning_traces
-    else:
-        assert [trace.text for trace in msg.reasoning_traces] == [reasoning_text]
+    ]:
+        msg = extract_harmonized_message(provider, raw)
+        assert msg.role.value == expected_role
+        assert msg.text == expected_text
+        assert msg.provider.value == expected_provider
+        if reasoning_text is None:
+            assert not msg.reasoning_traces
+        else:
+            assert [trace.text for trace in msg.reasoning_traces] == [reasoning_text]
 
 
-@pytest.mark.parametrize(
-    ("provider", "provider_meta", "message_id", "role", "text", "expected_provider"),
-    [
-        (
-            "claude-ai",
-            {"sender": "human", "text": ""},
-            "db-message-id",
-            "user",
-            "DB fallback text",
-            "claude",
-        ),
-        (
-            "gemini",
-            {"role": "model", "text": "", "tokenCount": {"invalid": True}},
-            "db-gemini-id",
-            "assistant",
-            "DB Gemini fallback text",
-            "gemini",
-        ),
-        (
-            "codex",
-            {"payload": "not-a-dict", "content": []},
-            "db-codex-id",
-            "assistant",
-            "DB Codex fallback text",
-            "codex",
-        ),
-        (
-            "codex",
-            {"raw": {"payload": "not-a-dict", "content": []}},
-            "db-codex-raw-id",
-            "assistant",
-            "DB raw fallback text",
-            "codex",
-        ),
-    ],
-)
-def test_extract_from_provider_meta_overlay_contract(
-    provider: str,
-    provider_meta: dict[str, object],
-    message_id: str,
-    role: str,
-    text: str,
-    expected_provider: str,
-) -> None:
-    msg = extract_from_provider_meta(
-        provider,
-        provider_meta,
-        message_id=message_id,
-        role=role,
-        text=text,
-        timestamp="2024-01-15T10:30:00Z",
-    )
-
-    assert msg.id == message_id
-    assert msg.role.value == role
-    assert msg.text == text
-    assert msg.timestamp is not None
-    assert msg.provider.value == expected_provider
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected_role"),
-    [
-        (
-            {"uuid": "m1", "type": "human", "message": "not-a-dict"},
-            "user",
-        ),
-        (
-            {"uuid": "m1", "type": "assistant", "message": "not-a-dict"},
-            "assistant",
-        ),
-    ],
-)
-def test_extract_harmonized_message_claude_code_type_fallback_contract(
-    raw: dict[str, object],
-    expected_role: str,
-) -> None:
-    msg = extract_harmonized_message("claude-code", raw)
-
-    assert msg.role.value == expected_role
-    assert msg.id == "m1"
-
-
-@pytest.mark.parametrize(
-    ("content_type", "parts", "language", "expected_type", "expected_text"),
-    [
+def test_provider_content_block_detail_contract() -> None:
+    """Consolidated: ChatGPT and Codex content block field details (type, text, language, raw)."""
+    # --- ChatGPT content types ---
+    for content_type, parts, language, expected_type, expected_text in [
         ("text", ["plain"], None, ContentType.TEXT, "plain"),
         ("code", ["print('hi')"], "python", ContentType.CODE, "print('hi')"),
         ("tether_browsing_display", ["search hit"], None, ContentType.TOOL_RESULT, "search hit"),
         ("multimodal_image", ["opaque"], None, ContentType.UNKNOWN, "opaque"),
-    ],
-)
-def test_chatgpt_content_blocks_preserve_type_text_language_and_raw_contract(
-    content_type: str,
-    parts: list[str],
-    language: str | None,
-    expected_type: ContentType,
-    expected_text: str,
-) -> None:
-    message = ChatGPTMessage.model_validate(
-        {
-            "id": "chatgpt-blocks",
-            "author": {"role": "assistant"},
-            "content": {"content_type": content_type, "parts": parts, "language": language},
-            "create_time": 1700000000.0,
-        }
-    )
+    ]:
+        message = ChatGPTMessage.model_validate(
+            {
+                "id": "chatgpt-blocks",
+                "author": {"role": "assistant"},
+                "content": {"content_type": content_type, "parts": parts, "language": language},
+                "create_time": 1700000000.0,
+            }
+        )
+        blocks = message.to_content_blocks()
+        meta = message.to_meta()
 
-    blocks = message.to_content_blocks()
-    meta = message.to_meta()
+        assert len(blocks) == 1
+        assert blocks[0].type == expected_type
+        assert blocks[0].text == expected_text
+        assert blocks[0].raw == message.content.model_dump()
+        assert blocks[0].language == language
+        assert meta.id == "chatgpt-blocks"
+        assert meta.role == "assistant"
+        assert meta.provider == "chatgpt"
 
-    assert len(blocks) == 1
-    assert blocks[0].type == expected_type
-    assert blocks[0].text == expected_text
-    assert blocks[0].raw == message.content.model_dump()
-    assert blocks[0].language == language
-    assert meta.id == "chatgpt-blocks"
-    assert meta.role == "assistant"
-    assert meta.provider == "chatgpt"
-
-
-def test_codex_content_blocks_preserve_text_language_unknown_and_raw_contract() -> None:
+    # --- Codex content blocks ---
     record = CodexRecord.model_validate(
         {
             "id": "codex-blocks",

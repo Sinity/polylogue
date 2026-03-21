@@ -10,7 +10,7 @@ Example::
 
     async with Polylogue() as p:
         # Get recent Claude conversations
-        convs = await p.filter().provider("claude").since("2024-01-01").limit(10).list()
+        convs = await p.filter().provider("claude-ai").since("2024-01-01").limit(10).list()
 
         # Search for errors in ChatGPT
         convs = await p.filter().provider("chatgpt").contains("error").list()
@@ -59,7 +59,7 @@ class ConversationFilter:
     Terminal methods (list, first, count, delete) execute the query.
 
     Example:
-        filter.provider("claude").since("2024-01-01").limit(10).list()
+        filter.provider("claude-ai").since("2024-01-01").limit(10).list()
     """
 
     def __init__(
@@ -643,8 +643,7 @@ class ConversationFilter:
         deleted_count = 0
 
         for conv in results:
-            # Access the backend through the repository
-            if await self._repo.backend.delete_conversation(str(conv.id)):
+            if await self._repo.delete_conversation(str(conv.id)):
                 deleted_count += 1
 
         return deleted_count

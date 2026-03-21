@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.schema_inference import (
     PROVIDERS,
     GenerationResult,
@@ -19,6 +21,8 @@ from polylogue.schemas.schema_inference import (
     load_samples_from_db,
     load_samples_from_sessions,
 )
+from polylogue.schemas.sampling import SchemaUnit
+from polylogue.schemas.schema_generation import _collect_cluster_accumulators
 
 
 class TestProviderSchemaGeneration:
@@ -184,7 +188,7 @@ class TestGetSampleCountFromDb:
             )
             conn.commit()
 
-        assert get_sample_count_from_db("claude", db_path=db_path) == 0
+        assert get_sample_count_from_db("claude-ai", db_path=db_path) == 0
 
 
 class TestGenerateSchemaFromSamples:
@@ -242,14 +246,61 @@ class TestGenerateAllSchemas:
 
     def test_creates_output_directory(self, tmp_path):
         output_dir = tmp_path / "schemas" / "nested"
-        fake_result = GenerationResult(provider="test", sample_count=1, schema={"type": "object"}, error=None)
+        package = SchemaVersionPackage(
+            provider="chatgpt",
+            version="v1",
+            anchor_kind="conversation_document",
+            default_element_kind="conversation_document",
+            first_seen="2026-01-01T00:00:00+00:00",
+            last_seen="2026-01-01T00:00:00+00:00",
+            bundle_scope_count=1,
+            sample_count=1,
+            elements=[
+                SchemaElementManifest(
+                    element_kind="conversation_document",
+                    schema_file="conversation_document.schema.json.gz",
+                    sample_count=1,
+                    artifact_count=1,
+                )
+            ],
+        )
+        fake_result = GenerationResult(
+            provider="chatgpt",
+            sample_count=1,
+            schema={"type": "object"},
+            error=None,
+            versions=["v1"],
+            default_version="v1",
+            package_count=1,
+            cluster_count=1,
+        )
+        fake_bundle = SimpleNamespace(
+            result=fake_result,
+            catalog=SchemaPackageCatalog(
+                provider="chatgpt",
+                packages=[package],
+                latest_version="v1",
+                default_version="v1",
+                recommended_version="v1",
+            ),
+            package_schemas={
+                "v1": {
+                    "conversation_document": {"type": "object", "properties": {"id": {"type": "string"}}}
+                }
+            },
+            manifest=SimpleNamespace(to_dict=lambda: {"provider": "chatgpt", "clusters": []}),
+        )
 
-        with patch("polylogue.schemas.schema_generation.generate_provider_schema", return_value=fake_result):
-            results = generate_all_schemas(output_dir, providers=["test"])
+        with (
+            patch("polylogue.schemas.schema_generation._build_provider_bundle", return_value=fake_bundle),
+            patch("polylogue.schemas.registry.SchemaRegistry.save_cluster_manifest", return_value=output_dir / "chatgpt" / "manifest.json"),
+        ):
+            results = generate_all_schemas(output_dir, providers=["chatgpt"])
 
         assert output_dir.exists()
         assert len(results) == 1
-        assert (output_dir / "test.schema.json.gz").exists()
+        assert (output_dir / "chatgpt" / "catalog.json").exists()
+        assert (output_dir / "chatgpt" / "versions" / "v1" / "elements" / "conversation_document.schema.json.gz").exists()
 
     def test_skips_failed_schemas(self, tmp_path):
         failed_result = GenerationResult(provider="broken", sample_count=0, schema=None, error="No samples")
@@ -257,8 +308,49 @@ class TestGenerateAllSchemas:
         with patch("polylogue.schemas.schema_generation.generate_provider_schema", return_value=failed_result):
             results = generate_all_schemas(tmp_path, providers=["broken"])
 
-        assert not (tmp_path / "broken.schema.json.gz").exists()
+        assert not (tmp_path / "broken" / "v1.schema.json.gz").exists()
         assert results[0].success is False
+
+
+class TestProfileClustering:
+    def test_collect_cluster_accumulators_merges_same_profile_documents(self, monkeypatch, tmp_path):
+        units = [
+            SchemaUnit(
+                cluster_payload={"id": "1", "mapping": {"node-1": {"message": {"id": "m1"}}}},
+                schema_samples=[{"id": "1", "mapping": {"node-1": {"message": {"id": "m1"}}}}],
+                artifact_kind="conversation_document",
+                conversation_id="conv-1",
+                source_path="/tmp/one.json",
+                profile_tokens=("field:id", "field:mapping", "shape:mapping:object", "anchor:mapping"),
+            ),
+            SchemaUnit(
+                cluster_payload={"id": "2", "mapping": {"node-9": {"message": {"author": {"role": "user"}}}}},
+                schema_samples=[{"id": "2", "mapping": {"node-9": {"message": {"author": {"role": "user"}}}}}],
+                artifact_kind="conversation_document",
+                conversation_id="conv-2",
+                source_path="/tmp/two.json",
+                profile_tokens=("field:id", "field:mapping", "shape:mapping:object", "anchor:mapping"),
+            ),
+        ]
+
+        monkeypatch.setattr(
+            "polylogue.schemas.schema_generation.iter_schema_units",
+            lambda *args, **kwargs: iter(units),
+        )
+
+        clusters, memberships, sample_count, artifact_counts = _collect_cluster_accumulators(
+            "chatgpt",
+            db_path=tmp_path / "unused.db",
+            max_samples=None,
+            reservoir_size=8,
+        )
+
+        assert len(memberships) == 2
+        assert sample_count == 2
+        assert artifact_counts == {"conversation_document": 2}
+        assert len(clusters) == 1
+        acc = next(iter(clusters.values()))
+        assert acc.sample_count == 2
 
 
 class TestCliMain:

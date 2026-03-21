@@ -53,7 +53,7 @@ async def output_stats_sql(
             env.ui.console.print("No conversations in archive.")
             return
 
-    stats = await repo.aggregate_message_stats(conv_ids)
+    stats = await repo.queries.aggregate_message_stats(conv_ids)
 
     date_range = ""
     if stats["min_sort_key"] and stats["max_sort_key"]:
@@ -270,7 +270,7 @@ async def _output_summary_list(
     msg_counts: dict[str, int] = {}
     if repo:
         ids = [str(s.id) for s in summaries]
-        msg_counts = await repo.get_message_counts_batch(ids)
+        msg_counts = await repo.queries.get_message_counts_batch(ids)
 
     fields = params.get("fields")
     selected: set[str] | None = None
@@ -440,12 +440,12 @@ async def stream_conversation(
     message_limit: int | None = None,
 ) -> int:
     """Stream conversation messages to stdout without buffering."""
-    conv_record = await repo.get_conversation(conversation_id)
+    conv_record = await repo.queries.get_conversation(conversation_id)
     if not conv_record:
         click.echo(f"Conversation not found: {conversation_id}", err=True)
         raise SystemExit(1)
 
-    stats = await repo.get_conversation_stats(conversation_id)
+    stats = await repo.queries.get_conversation_stats(conversation_id)
 
     if output_format == "markdown":
         title = conv_record.title or conversation_id[:24]

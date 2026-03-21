@@ -27,7 +27,7 @@ Polylogue archives AI conversations from **ChatGPT, Claude, Claude Code, Gemini,
 No data needed. Generate a synthetic archive and explore:
 
 ```bash
-eval $(polylogue demo --seed --env-only)
+eval $(polylogue generate --seed --env-only)
 
 polylogue                              # Archive stats
 polylogue "error handling"             # Full-text search
@@ -380,9 +380,9 @@ async with Polylogue() as archive:
 
 [Full library API documentation →](docs/library-api.md)
 
-## Demo & Showcase
+## Generate & QA
 
-Polylogue includes a complete demo system for exploring features without real data.
+Polylogue includes synthetic data generation for safe feature exploration and QA.
 
 ### Seed Mode
 
@@ -390,13 +390,13 @@ Create a full demo environment — synthetic database with realistic conversatio
 
 ```bash
 # Interactive — prints env vars and instructions
-polylogue demo --seed
+polylogue generate --seed
 
 # Shell integration — eval sets env vars in current shell
-eval $(polylogue demo --seed --env-only)
+eval $(polylogue generate --seed --env-only)
 
 # Customize
-polylogue demo --seed -p chatgpt,claude -n 10
+polylogue generate --seed -p chatgpt,claude-ai -n 10
 ```
 
 The seeded environment runs through the real pipeline (`acquire → parse → render → index`), so the demo exercises the exact same code paths as production.
@@ -406,27 +406,26 @@ The seeded environment runs through the real pipeline (`acquire → parse → re
 Write raw provider-format files (JSON, JSONL) to disk for inspection:
 
 ```bash
-polylogue demo --corpus                       # All providers, 3 each
-polylogue demo --corpus -p chatgpt -n 5       # ChatGPT only, 5 files
-polylogue demo --corpus -o /tmp/corpus        # Custom output directory
+polylogue generate                           # All providers, 3 each
+polylogue generate -p chatgpt -n 5            # ChatGPT only, 5 files
+polylogue generate -o /tmp/corpus             # Custom output directory
 ```
 
 Useful for inspecting wire formats, testing parser changes, or generating fixture data.
 
-### Showcase Mode
+### QA Mode
 
-Exercise the entire CLI surface area (58 exercises across 7 groups) and generate a verification report:
+Run synthetic QA checks, including deterministic command exercises:
 
 ```bash
-polylogue demo --showcase                     # Full validation
-polylogue demo --showcase --live              # Read-only against real data
-polylogue demo --showcase --json              # Machine-readable report
-polylogue demo --showcase --verbose           # Print each exercise output
+polylogue qa                                # Full synthetic QA
+polylogue qa --only exercises --tier 0       # Quick exercise smoke
+polylogue qa --only exercises --json         # Machine-readable exercise output
 ```
 
-The showcase seeds a workspace, runs every query mode, output format, filter combination, and mutation — then produces a summary report, JSON results, and a markdown cookbook of all commands with output.
+The QA command seeds a disposable synthetic workspace, runs exercise catalogs, and writes structured reports.
 
-[Full demo documentation →](docs/demo.md)
+[Synthetic generation docs →](docs/generate.md)
 
 ## Configuration
 
@@ -461,7 +460,7 @@ The showcase seeds a workspace, runs every query mode, output format, filter com
 | [Configuration](docs/configuration.md) | XDG paths, environment variables, observability |
 | [Architecture](docs/architecture.md) | System design, layers, data flow, thread safety |
 | [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server for Claude Desktop/Code |
-| [Demo & Showcase](docs/demo.md) | Demo command, synthetic data, surface-area validation |
+| [Generate](docs/generate.md) | Synthetic data generation, fixture output, and seed mode |
 | [Providers](docs/providers/) | Provider formats, detection, session integration |
 | [Internals](docs/internals.md) | Developer reference — invariants, schemas, debugging |
 

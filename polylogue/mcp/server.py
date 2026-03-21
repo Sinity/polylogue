@@ -32,6 +32,7 @@ from polylogue.mcp.payloads import (
     MCPStatsByPayload,
     MCPTagCountsPayload,
 )
+from polylogue.operations import ArchiveOperations
 from polylogue.services import RuntimeServices, build_runtime_services
 
 if TYPE_CHECKING:
@@ -137,6 +138,17 @@ def _get_config():
     return _get_runtime_services().get_config()
 
 
+def _get_archive_ops() -> ArchiveOperations:
+    """Return canonical archive operations for MCP read surfaces."""
+    repo = _get_repo()
+    services = _runtime_services
+    return ArchiveOperations(
+        config=services.config if services is not None else None,
+        repository=repo,
+        backend=getattr(repo, "backend", None),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Build the FastMCP server
 # ---------------------------------------------------------------------------
@@ -179,7 +191,7 @@ def build_server() -> FastMCP:
         Args:
             query: Full-text search query
             limit: Max results (default: 10)
-            provider: Filter by provider (claude, chatgpt, claude-code, etc.)
+            provider: Filter by provider (claude-ai, chatgpt, claude-code, etc.)
             since: Only conversations updated after this date (ISO format or natural language like 'last week')
             has_tool_use: Only conversations with tool use blocks
             has_thinking: Only conversations with thinking blocks
@@ -190,7 +202,7 @@ def build_server() -> FastMCP:
             has_subagent: Only conversations that spawned subagents
         """
         async def _run() -> str:
-            repo = _get_repo()
+            ops = _get_archive_ops()
             spec = ConversationQuerySpec(
                 query_terms=(query,),
                 providers=(provider,) if provider else (),
@@ -204,7 +216,7 @@ def build_server() -> FastMCP:
                 filter_has_git_ops=has_git_ops,
                 filter_has_subagent=has_subagent,
             )
-            results = await spec.build_filter(repo).list()
+            results = await ops.query_conversations(spec)
             return _json_payload(
                 MCPConversationSummaryListPayload(
                     root=[
@@ -235,7 +247,7 @@ def build_server() -> FastMCP:
 
         Args:
             limit: Max results (default: 10)
-            provider: Filter by provider (claude, chatgpt, claude-code, etc.)
+            provider: Filter by provider (claude-ai, chatgpt, claude-code, etc.)
             since: Only conversations updated after this date
             tag: Filter by tag
             title: Filter by title substring
@@ -249,7 +261,7 @@ def build_server() -> FastMCP:
             has_subagent: Only conversations that spawned subagents
         """
         async def _run() -> str:
-            repo = _get_repo()
+            ops = _get_archive_ops()
             spec = ConversationQuerySpec(
                 providers=(provider,) if provider else (),
                 tags=(tag,) if tag else (),
@@ -265,7 +277,7 @@ def build_server() -> FastMCP:
                 filter_has_git_ops=has_git_ops,
                 filter_has_subagent=has_subagent,
             )
-            conversations = await spec.build_filter(repo).list()
+            conversations = await ops.query_conversations(spec)
             return _json_payload(
                 MCPConversationSummaryListPayload(
                     root=[
@@ -284,8 +296,7 @@ def build_server() -> FastMCP:
             id: Conversation ID or unique prefix
         """
         async def _run() -> str:
-            repo = _get_repo()
-            conv = await repo.view(id)
+            conv = await _get_archive_ops().get_conversation(id)
             if conv is None:
                 return _error_json(f"Conversation not found: {id}")
             return _json_payload(MCPConversationDetailPayload.from_conversation(conv))
@@ -295,8 +306,7 @@ def build_server() -> FastMCP:
     async def stats() -> str:
         """Get archive statistics: total conversations, messages, provider breakdown, database size."""
         async def _run() -> str:
-            repo = _get_repo()
-            archive_stats = await repo.get_archive_stats()
+            archive_stats = await _get_archive_ops().storage_stats()
             return _json_payload(
                 MCPArchiveStatsPayload.from_archive_stats(
                     archive_stats,
@@ -468,7 +478,7 @@ def build_server() -> FastMCP:
             summary = await repo.get_summary(full_id)
             if summary is None:
                 return _error_json(f"Conversation not found: {id}")
-            stats = await repo.get_conversation_stats(str(full_id))
+            stats = await repo.queries.get_conversation_stats(str(full_id))
             return _json_payload(
                 MCPConversationSummaryPayload.from_summary(
                     summary,
@@ -506,7 +516,7 @@ def build_server() -> FastMCP:
         """
         async def _run() -> str:
             repo = _get_repo()
-            return _json_payload(MCPStatsByPayload(root=await repo.get_stats_by(group_by)))
+            return _json_payload(MCPStatsByPayload(root=await repo.queries.get_stats_by(group_by)))
         return await _async_safe_call("get_stats_by", _run)
 
     @mcp.tool()
@@ -685,7 +695,7 @@ def build_server() -> FastMCP:
         """Analyze error patterns and solutions across conversations.
 
         Args:
-            provider: Filter by provider (claude, chatgpt, etc.)
+            provider: Filter by provider (claude-ai, chatgpt, etc.)
             since: Only analyze conversations since this date
             limit: Max conversations to analyze (default: 50)
         """
@@ -889,6 +899,103 @@ Your task:
 Conversation summaries:
 {json.dumps(summaries, indent=2)}
 """
+
+    # ----- Tier 3: Session Profile & Coverage tools -----
+
+    @mcp.tool()
+    async def session_profile(conversation_id: str) -> str:
+        """Get a rich semantic profile for a single conversation.
+
+        Returns work events, phases, attribution, and cost/duration data.
+
+        Args:
+            conversation_id: Full or prefix conversation ID
+        """
+        async def _run() -> str:
+            from polylogue.lib.session_profile import build_session_profile
+
+            repo = _get_repo()
+            conv = await repo.view(conversation_id)
+            if conv is None:
+                return _error_json("Conversation not found", conversation_id=conversation_id)
+            profile = build_session_profile(conv)
+            return json.dumps(profile.to_dict(), indent=2, default=str)
+
+        return await _async_safe_call("session_profile", _run)
+
+    @mcp.tool()
+    async def session_profiles(
+        since: str | None = None,
+        until: str | None = None,
+        provider: str | None = None,
+        limit: int = 50,
+    ) -> str:
+        """Get semantic profiles for multiple conversations.
+
+        Returns a list of session profiles with work events, attribution, and costs.
+
+        Args:
+            since: Start date (ISO format)
+            until: End date (ISO format)
+            provider: Filter by provider name
+            limit: Maximum profiles to return (default 50)
+        """
+        async def _run() -> str:
+            from polylogue.lib.session_profile import build_session_profile
+
+            kwargs: dict[str, Any] = {"limit": _clamp_limit(limit)}
+            if provider:
+                kwargs["provider"] = provider
+            if since:
+                kwargs["since"] = since
+            if until:
+                kwargs["until"] = until
+
+            summaries = await _get_repo().list_summaries(**kwargs)
+            ids = [str(s.id) for s in summaries]
+            convs = await _get_repo().get_many(ids)
+
+            profiles = []
+            for conv in convs:
+                try:
+                    profile = build_session_profile(conv)
+                    profiles.append(profile.to_dict())
+                except Exception as exc:
+                    logger.debug("Failed to profile %s: %s", conv.id, exc)
+
+            return json.dumps({"count": len(profiles), "profiles": profiles}, indent=2, default=str)
+
+        return await _async_safe_call("session_profiles", _run)
+
+    @mcp.tool()
+    async def archive_coverage() -> str:
+        """Get completeness diagnostics for the conversation archive.
+
+        Returns provider ranges, gaps, truncated sessions, and total counts.
+        """
+        async def _run() -> str:
+            from polylogue.lib.coverage import analyze_coverage
+
+            repo = _get_repo()
+            summaries = await repo.list_summaries()
+            coverage = analyze_coverage(summaries)
+            return json.dumps({
+                "total_conversations": coverage.total_conversations,
+                "total_messages": coverage.total_messages,
+                "provider_counts": coverage.provider_counts,
+                "provider_ranges": [
+                    {"provider": r.provider, "first_date": r.first_date.isoformat(), "last_date": r.last_date.isoformat(), "count": r.count}
+                    for r in coverage.provider_ranges
+                ],
+                "gaps": [
+                    {"start_date": g.start_date.isoformat(), "end_date": g.end_date.isoformat(), "days": g.days}
+                    for g in coverage.gaps
+                ],
+                "truncated_sessions": coverage.truncated_sessions,
+                "date_range": [d.isoformat() if d else None for d in coverage.date_range],
+            }, indent=2)
+
+        return await _async_safe_call("archive_coverage", _run)
 
     return mcp
 

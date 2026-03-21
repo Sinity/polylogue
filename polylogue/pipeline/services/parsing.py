@@ -21,13 +21,13 @@ from typing import TYPE_CHECKING
 
 import orjson
 
-from polylogue.logging import get_logger
 from polylogue.lib.raw_payload import build_raw_payload_envelope
+from polylogue.logging import get_logger
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
 from polylogue.protocols import ProgressCallback
-from polylogue.sources.source import parse_payload
-from polylogue.storage.search_cache import invalidate_search_cache
+from polylogue.schemas.registry import SchemaRegistry
+from polylogue.sources.dispatch import parse_payload
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
@@ -246,29 +246,42 @@ class ParsingService:
         ui: object | None = None,
         progress_callback: ProgressCallback | None = None,
         parse_records: bool = True,
+        skip_acquire: bool = False,
+        skip_validate: bool = False,
     ) -> IngestResult:
         """Canonical ingestion orchestration for runtime callers.
 
         Flow:
         1. Acquire raw payloads directly into ``raw_conversations`` (streaming)
+           — skipped when ``skip_acquire=True`` (stage=="validate"|"parse")
         2. Collect pending validation backlog scoped to the selected sources
         3. Validate pending raw payloads (new + backlog)
+           — skipped when ``skip_validate=True`` (stage=="parse")
         4. Optionally parse validated raw payloads
+
+        Stage independence:
+        - ``stage=="validate"``: ``skip_acquire=True`` — validates backlog without re-acquiring
+        - ``stage=="parse"``: ``skip_acquire=True, skip_validate=True`` — parses backlog without re-running predecessors
+        - ``stage=="all"``: full pipeline (default, no skips)
         """
-        from polylogue.pipeline.services.acquisition import AcquisitionService
+        from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
         from polylogue.pipeline.services.planning import PlanningService
         from polylogue.pipeline.services.validation import ValidationService
 
         backend = self._require_backend()
-
-        acquire_service = AcquisitionService(backend=backend)
-        acquire_result = await acquire_service.acquire_sources(
-            sources,
-            ui=ui,
-            progress_callback=progress_callback,
-            drive_config=self.config.drive_config,
-        )
         source_names = [source.name for source in sources]
+
+        # --- Acquire ---
+        if skip_acquire:
+            acquire_result = AcquireResult()
+        else:
+            acquire_service = AcquisitionService(backend=backend)
+            acquire_result = await acquire_service.acquire_sources(
+                sources,
+                ui=ui,
+                progress_callback=progress_callback,
+                drive_config=self.config.drive_config,
+            )
         ingest_state = IngestState(
             source_names=tuple(source_names),
             parse_requested=parse_records,
@@ -276,26 +289,34 @@ class ParsingService:
         ingest_state.record_acquired(acquire_result.raw_ids)
 
         planning_service = PlanningService(backend=backend, config=self.config)
-        validation_ids = list(acquire_result.raw_ids)
-        if stage in {"validate", "parse", "all"}:
-            validation_ids.extend(
-                await planning_service.collect_validation_backlog(
-                    source_names=source_names or None,
-                    exclude_raw_ids=validation_ids,
-                )
-            )
-        ingest_state.record_validation_candidates(validation_ids)
 
+        # --- Validate ---
         validation_result = None
-        if validation_ids:
-            validation_service = ValidationService(backend=backend)
-            validation_result = await validation_service.validate_raw_ids(
-                raw_ids=validation_ids,
-                progress_callback=progress_callback,
+        validation_ids: list[str] = []
+        if skip_validate:
+            # Advance IngestState through validation phases with empty data
+            ingest_state.record_validation_candidates([])
+            ingest_state.record_validation_result([])
+        else:
+            validation_ids = list(acquire_result.raw_ids)
+            if stage in {"validate", "parse", "all"}:
+                validation_ids.extend(
+                    await planning_service.collect_validation_backlog(
+                        source_names=source_names or None,
+                        exclude_raw_ids=validation_ids,
+                    )
+                )
+            ingest_state.record_validation_candidates(validation_ids)
+
+            if validation_ids:
+                validation_service = ValidationService(backend=backend)
+                validation_result = await validation_service.validate_raw_ids(
+                    raw_ids=validation_ids,
+                    progress_callback=progress_callback,
+                )
+            ingest_state.record_validation_result(
+                validation_result.parseable_raw_ids if validation_result else [],
             )
-        ingest_state.record_validation_result(
-            validation_result.parseable_raw_ids if validation_result else [],
-        )
 
         parse_raw_ids: list[str] = []
         parse_result = ParseResult()
@@ -385,7 +406,7 @@ class ParsingService:
             if progress_callback is not None:
                 progress_callback(0, desc="Parsing")
             batch_ids: list[str] = []
-            async for raw_id in backend.iter_raw_ids(provider_name=provider):
+            async for raw_id in backend.queries.iter_raw_ids(provider_name=provider):
                 batch_ids.append(raw_id)
                 if len(batch_ids) >= self.RAW_BATCH_SIZE:
                     await self._process_raw_batch(
@@ -402,10 +423,6 @@ class ParsingService:
                     result,
                     progress_callback,
                 )
-
-        if result.processed_ids:
-            invalidate_search_cache()
-            logger.debug("Search cache invalidated after parsing %d conversations", len(result.processed_ids))
 
         return result
 
@@ -432,11 +449,15 @@ class ParsingService:
         work_items: list[tuple[ParsedConversation, str, str]] = []  # (convo, source_name, raw_id)
         failed_raw_ids: dict[str, str] = {}  # raw_id -> error message
         payload_providers: dict[str, str | None] = {}
+        skipped_raw_ids: set[str] = set()
 
         for raw_record in raw_records:
             try:
                 parsed_convos = await self._parse_raw_record(raw_record)
                 payload_providers[raw_record.raw_id] = raw_record.payload_provider
+                if not parsed_convos:
+                    skipped_raw_ids.add(raw_record.raw_id)
+                    continue
                 source_name = raw_record.source_name or raw_record.source_path
                 for convo in parsed_convos:
                     work_items.append((convo, source_name, raw_record.raw_id))
@@ -534,6 +555,9 @@ class ParsingService:
         for rid in succeeded_raw_ids:
             if rid not in failed_raw_ids:
                 await backend.mark_raw_parsed(rid, payload_provider=payload_providers.get(rid))
+        for rid in skipped_raw_ids:
+            if rid not in failed_raw_ids and rid not in succeeded_raw_ids:
+                await backend.mark_raw_parsed(rid, payload_provider=payload_providers.get(rid))
         for rid, error in failed_raw_ids.items():
             await backend.mark_raw_parsed(
                 rid,
@@ -566,12 +590,21 @@ class ParsingService:
             payload_provider=stored_payload_provider,
         )
         raw_record.payload_provider = envelope.provider
+        if not envelope.artifact.parse_as_conversation:
+            return []
+
+        schema_resolution = SchemaRegistry().resolve_payload(
+            envelope.provider,
+            envelope.payload,
+            source_path=raw_record.source_path,
+        )
 
         # Use the existing parser dispatcher
         return parse_payload(
             envelope.provider,
             envelope.payload,
             raw_record.raw_id,  # Use raw_id as fallback conversation ID
+            schema_resolution=schema_resolution,
         )
 
 __all__ = ["ParsingService", "ParseResult", "IngestResult"]

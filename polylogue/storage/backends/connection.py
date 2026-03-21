@@ -157,27 +157,43 @@ def create_default_backend() -> object:
     return SQLiteBackend(db_path=None)
 
 
-def _build_source_scope_filter(
+def _build_scope_filter(
     names: Sequence[str] | None,
     *,
-    provider_column: str = "provider_name",
-    source_column: str = "source_name",
+    column: str,
 ) -> tuple[str, list[str]]:
-    """Build a source-scope predicate matching source names and legacy provider names."""
+    """Build a simple IN predicate for one scoped column."""
     if names is None:
         return "", []
     if not names:
         return "0", []
 
     placeholders = ",".join("?" for _ in names)
-    return (
-        f"({provider_column} IN ({placeholders}) OR {source_column} IN ({placeholders}))",
-        [*names, *names],
-    )
+    return f"{column} IN ({placeholders})", list(names)
+
+
+def _build_source_scope_filter(
+    names: Sequence[str] | None,
+    *,
+    source_column: str = "source_name",
+) -> tuple[str, list[str]]:
+    """Build a source-name predicate. Source scoping is no longer conflated with providers."""
+    return _build_scope_filter(names, column=source_column)
+
+
+def _build_provider_scope_filter(
+    names: Sequence[str] | None,
+    *,
+    provider_column: str = "provider_name",
+) -> tuple[str, list[str]]:
+    """Build a provider-name predicate."""
+    return _build_scope_filter(names, column=provider_column)
 
 
 __all__ = [
     "DB_TIMEOUT",
+    "_build_provider_scope_filter",
+    "_build_scope_filter",
     "_build_source_scope_filter",
     "connection_context",
     "create_default_backend",

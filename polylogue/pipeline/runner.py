@@ -18,8 +18,8 @@ from uuid import uuid4
 
 from polylogue.config import Config, Source
 from polylogue.lib.json import dumps
-from polylogue.logging import get_logger
 from polylogue.lib.metrics import PipelineMetrics
+from polylogue.logging import get_logger
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.backends import SQLiteBackend, create_backend
 from polylogue.storage.repository import ConversationRepository
@@ -138,10 +138,10 @@ async def _run_index_stage(
         if progress_callback is not None:
             progress_callback(0, desc="Indexing")
         if source_names:
-            total = await backend.count_conversation_ids(source_names=list(source_names))
+            total = await backend.queries.count_conversation_ids(source_names=list(source_names))
             return (
                 await index_service.update_index(
-                    backend.iter_conversation_ids(source_names=list(source_names)),
+                    backend.queries.iter_conversation_ids(source_names=list(source_names)),
                 ),
                 total,
             )
@@ -155,8 +155,10 @@ async def _run_index_stage(
             return await index_service.rebuild_index(), len(processed_ids)
         if processed_ids:
             if progress_callback is not None:
-                progress_callback(0, desc=f"Indexing: {len(processed_ids)} conversations")
-            return await index_service.update_index(list(processed_ids)), len(processed_ids)
+                progress_callback(0, desc=f"Index verified: {len(processed_ids)} conversations")
+            # Live writes already maintain FTS rows via schema triggers; in the
+            # common `all` path we only need to ensure the index still exists.
+            return await index_service.ensure_index_exists(), len(processed_ids)
 
     return False, 0
 
@@ -273,6 +275,8 @@ async def run_sources(
                 ui=ui,
                 progress_callback=progress_callback,
                 parse_records=stage in _PARSE_STAGES,
+                skip_acquire=stage in {"validate", "parse"},
+                skip_validate=stage == "parse",
             )
             acquire_result = ingest_result.acquire_result
             validation_result = ingest_result.validation_result
@@ -313,11 +317,12 @@ async def run_sources(
                 )
 
         if stage == "generate-schemas":
+            from polylogue.paths import data_home as _data_home
             from polylogue.paths import db_path as _db_path
             from polylogue.schemas.schema_inference import generate_all_schemas
 
             stage_t0 = time.perf_counter()
-            output_dir = config.archive_root.parent / "schemas"
+            output_dir = _data_home() / "schemas"
             results = await asyncio.to_thread(
                 generate_all_schemas,
                 output_dir=output_dir,
@@ -340,10 +345,10 @@ async def run_sources(
             render_ids = None
             render_total = 0
             if stage == "render":
-                render_total = await active_backend.count_conversation_ids(
+                render_total = await active_backend.queries.count_conversation_ids(
                     source_names=list(source_names) if source_names is not None else None
                 )
-                render_ids = active_backend.iter_conversation_ids(
+                render_ids = active_backend.queries.iter_conversation_ids(
                     source_names=list(source_names) if source_names is not None else None
                 )
             else:
@@ -406,15 +411,18 @@ async def run_sources(
         logger.info("Index stage complete", **sm.to_dict(), indexed=indexed)
 
         duration_ms = int((time.perf_counter() - start) * 1000)
+        new_counts = {
+            "conversations": max(counts["conversations"] - changed_counts["conversations"], 0),
+            "messages": max(counts["messages"] - changed_counts["messages"], 0),
+            "attachments": max(counts["attachments"] - changed_counts["attachments"], 0),
+        }
+        counts["new_conversations"] = new_counts["conversations"]
+        counts["changed_conversations"] = changed_counts["conversations"]
         drift = {
-            "new": {"conversations": 0, "messages": 0, "attachments": 0},
+            "new": new_counts,
             "removed": {"conversations": 0, "messages": 0, "attachments": 0},
             "changed": dict(changed_counts),
         }
-
-        drift["new"]["conversations"] = counts["conversations"]
-        drift["new"]["messages"] = counts["messages"]
-        drift["new"]["attachments"] = counts["attachments"]
 
         run_id = uuid4().hex
         run_payload = {
@@ -469,7 +477,7 @@ async def latest_run(backend: SQLiteBackend | None = None) -> RunRecord | None:
     owns_backend = backend is None
     active_backend = backend or create_backend()
     try:
-        return await active_backend.get_latest_run()
+        return await active_backend.queries.get_latest_run()
     finally:
         if owns_backend:
             await active_backend.close()

@@ -167,14 +167,14 @@ class TestRawConversationEdgeCases:
                 (raw_id, provider_name, source_path, raw_content, acquired_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                ("raw-123", "claude", "/path/to/file.jsonl", b"content", "2024-01-01T00:00:00Z"),
+                ("raw-123", "claude-ai", "/path/to/file.jsonl", b"content", "2024-01-01T00:00:00Z"),
             )
             conn.commit()
 
         # Create conversation linked to raw data
         conv = ConversationRecord(
             conversation_id="conv-with-raw",
-            provider_name="claude",
+            provider_name="claude-ai",
             provider_conversation_id="claude-123",
             content_hash=make_hash("conv-with-raw"),
             title="Test Conv",

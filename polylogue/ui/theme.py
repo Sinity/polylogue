@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from polylogue.lib.roles import Role
+
 # =============================================================================
 # Provider brand colors
 # =============================================================================
@@ -37,7 +39,7 @@ class ProviderColor:
 
 
 PROVIDER_COLORS: dict[str, ProviderColor] = {
-    "claude": ProviderColor("#d97757"),
+    "claude-ai": ProviderColor("#d97757"),
     "claude-code": ProviderColor("#d97757"),
     "chatgpt": ProviderColor("#10a37f"),
     "gemini": ProviderColor("#4285f4"),
@@ -51,7 +53,7 @@ DEFAULT_PROVIDER_COLOR = ProviderColor("#e5e7eb")
 def provider_color(name: str) -> ProviderColor:
     """Look up a provider color by name, with fuzzy matching.
 
-    Matches on substring so 'claude-code' matches 'claude',
+    Matches on substring so 'claude-code' matches 'claude-ai',
     'openai-codex' matches 'codex', etc.
     """
     # Exact match first
@@ -101,9 +103,14 @@ ROLE_COLORS: dict[str, RoleColor] = {
 DEFAULT_ROLE_COLOR = RoleColor(hex="#94a3b8", label="#94a3b8")
 
 
-def role_color(role: str) -> RoleColor:
+def role_color(role: str | Role) -> RoleColor:
     """Look up a role color."""
-    return ROLE_COLORS.get(role, DEFAULT_ROLE_COLOR)
+    if isinstance(role, Role):
+        normalized = role
+    else:
+        raw = str(role).strip()
+        normalized = Role.normalize(raw) if raw else Role.UNKNOWN
+    return ROLE_COLORS.get(str(normalized), DEFAULT_ROLE_COLOR)
 
 
 # =============================================================================

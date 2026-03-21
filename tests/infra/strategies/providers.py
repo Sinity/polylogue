@@ -34,20 +34,11 @@ _CORPUS_CACHE: dict[str, SyntheticCorpus] = {}
 _JSONL_PROVIDERS = frozenset({"claude-code", "codex"})
 _PROVIDER_HINT_PATHS: dict[str, tuple[str, ...]] = {
     "chatgpt": ("chatgpt-export.json", "exports/chatgpt/session.json"),
-    "claude": ("claude-export.json", "exports/claude/session.json"),
     "claude-ai": ("claude-export.json", "exports/claude/session.json"),
     "claude-code": ("claude-code-session.jsonl", "exports/claude_code/session.jsonl"),
     "codex": ("codex-session.jsonl", "exports/codex/session.jsonl"),
     "gemini": ("gemini-export.json", "exports/gemini/session.json"),
 }
-_CORPUS_PROVIDER_ALIASES = {
-    "claude": "claude-ai",
-}
-
-
-def _corpus_provider(provider: str) -> str:
-    """Map runtime provider names to synthetic-corpus provider names."""
-    return _CORPUS_PROVIDER_ALIASES.get(provider, provider)
 
 
 def decode_provider_payload(provider: str, raw: bytes) -> Any:
@@ -101,17 +92,6 @@ def chatgpt_message_node_strategy(
 # =============================================================================
 # Claude AI Strategies
 # =============================================================================
-
-
-@st.composite
-def claude_ai_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
-    """Generate a single Claude AI chat_messages entry."""
-    export = draw(claude_ai_export_strategy(min_messages=2, max_messages=6))
-    messages = export.get("chat_messages", [])
-    if not messages:
-        return {"uuid": "fallback", "sender": "human", "text": "test"}
-    idx = draw(st.integers(min_value=0, max_value=len(messages) - 1))
-    return messages[idx]
 
 
 @st.composite
@@ -429,7 +409,7 @@ def provider_export_strategy(
 
     Returns raw wire-format bytes suitable for feeding to a parser.
     """
-    corpus = _corpus_for(_corpus_provider(provider))
+    corpus = _corpus_for(provider)
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_msgs, 2), max_value=max_msgs))
     return corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
@@ -450,7 +430,7 @@ def provider_payload_strategy(
 @st.composite
 def provider_payload_case_strategy(
     draw: st.DrawFn,
-    providers: tuple[str, ...] = ("chatgpt", "claude", "claude-code", "codex", "gemini"),
+    providers: tuple[str, ...] = ("chatgpt", "claude-ai", "claude-code", "codex", "gemini"),
     min_msgs: int = 1,
     max_msgs: int = 10,
 ) -> tuple[str, Any]:

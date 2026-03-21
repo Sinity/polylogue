@@ -14,7 +14,8 @@ polylogue sources [OPTIONS...]                    # List configured sources
 polylogue dashboard                               # Launch TUI dashboard
 polylogue mcp                                     # MCP server mode
 polylogue check                                   # Health check
-polylogue qa                                      # Snapshot/index QA artifacts
+polylogue qa                                      # Composable QA (audit, exercises, invariants)
+polylogue generate                                # Synthetic data generation
 polylogue auth                                    # OAuth flow (Drive)
 polylogue reset                                   # Reset database/state
 polylogue completions --shell SHELL               # Generate shell completions
@@ -106,7 +107,7 @@ Date range: 2025-01-18 to 2025-01-24
 
 ```bash
 polylogue --stats-by month                        # Activity histogram by month
-polylogue -p claude --stats-by provider           # Provider breakdown for Claude
+polylogue -p claude-ai --stats-by provider           # Provider breakdown for Claude
 polylogue --stats-by year                         # Year-by-year overview
 polylogue --since 2025-01 --stats-by day          # Daily breakdown
 ```
@@ -149,7 +150,7 @@ polylogue -p old --delete --force                  # Skip confirmation
 
 ```
   ID (24 chars)             DATE        [PROVIDER    ]  TITLE (MSG COUNT)
-  claude:a8f2c3d4e5f6...    2025-01-24  [claude-code ]  Debugging OAuth (42 msgs)
+  claude-ai:a8f2c3d4e5f6...    2025-01-24  [claude-code ]  Debugging OAuth (42 msgs)
   chatgpt:b9d8e7f6a5...     2025-01-23  [chatgpt     ]  Python patterns (18 msgs)
 ```
 
@@ -159,15 +160,15 @@ polylogue -p old --delete --force                  # Skip confirmation
 
 ```bash
 polylogue run                             # Run pipeline on all sources
-polylogue run --source claude             # Run only for claude source
+polylogue run --source claude-ai             # Run only for claude source
 polylogue run --preview                   # Preview counts, confirm before writing
 polylogue run --stage parse               # Run only parse stage
 polylogue run --stage all                 # Run all stages (default)
 polylogue run --format markdown           # Render as Markdown (default: html)
 polylogue run --watch                     # Watch sources and sync continuously
-polylogue run --watch --notify            # Desktop notification on new conversations
-polylogue run --watch --exec "echo new"   # Execute command on new conversations
-polylogue run --watch --webhook URL       # Call webhook on new conversations
+polylogue run --watch --notify            # Desktop notification on conversation changes
+polylogue run --watch --exec "echo changes"   # Execute command on conversation changes
+polylogue run --watch --webhook URL       # Call webhook on conversation changes
 ```
 
 **Pipeline stages**: `acquire` → `validate` → `parse` → `render` → `index` → `generate-schemas`. Default runs all stages. `parse` consumes only rows marked `validation_status=passed|skipped`.
@@ -195,7 +196,7 @@ Generates vector embeddings using Voyage AI, stored in sqlite-vec for semantic s
 
 ```bash
 polylogue tags                            # List all tags with counts
-polylogue tags -p claude                  # Tags for Claude conversations only
+polylogue tags -p claude-ai                  # Tags for Claude conversations only
 polylogue tags --json                     # Machine-readable output
 polylogue tags -n 10                      # Top 10 tags
 ```
@@ -228,45 +229,62 @@ polylogue dashboard                       # Launch TUI dashboard
 
 Opens the Textual-based TUI (Mission Control) for interactive browsing.
 
-## Demo
+## Generate
 
 Generate synthetic conversations for testing and exploration:
 
 ```bash
-polylogue demo --seed                       # Seed demo DB, print env vars
-polylogue demo --seed --env-only            # Shell-friendly (for eval)
-polylogue demo --corpus                     # Write raw provider-format files
-polylogue demo --corpus -p chatgpt -n 5     # ChatGPT only, 5 conversations
-polylogue demo --corpus -o /tmp/corpus      # Custom output directory
-polylogue demo --showcase                   # Full CLI surface-area validation
-polylogue demo --showcase --showcase-data synthetic -n 5
-polylogue demo --showcase --live            # Read-only against real data
-polylogue demo --showcase --json            # Machine-readable report
-polylogue demo --showcase --verbose         # Print each exercise output
+polylogue generate                          # Raw provider-format files
+polylogue generate -p chatgpt -n 5          # ChatGPT only, 5 conversations
+polylogue generate -o /tmp/corpus           # Custom output directory
+polylogue generate --seed                   # Full demo environment
+polylogue generate --seed --env-only | eval # Shell-friendly
 ```
-
-**Three modes:**
-
-- `--seed`: Creates a full demo environment (database + rendered files) and prints environment variables (`POLYLOGUE_ARCHIVE_ROOT`, etc.) to point your shell at the demo data. Use `eval $(polylogue demo --seed --env-only)` for seamless shell integration.
-- `--corpus`: Writes raw provider-format files (JSON, JSONL) to disk for inspection. Useful for understanding wire formats or testing parsers.
-- `--showcase`: Exercises the entire CLI surface area (58 exercises across 7 groups) and generates verification reports — a summary, JSON results, and a markdown cookbook of all commands with output. Default seed source is packaged fixtures; use `--showcase-data synthetic` for schema-driven seeding.
 
 **Options:**
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--seed` | | Create full demo environment |
-| `--corpus` | | Generate raw fixture files |
-| `--showcase` | | Exercise all CLI commands and generate reports |
-| `--showcase-data fixtures\|synthetic` | | Showcase seed source (default: fixtures) |
 | `--provider NAME` | `-p` | Providers to include (repeatable, default: all) |
 | `--count N` | `-n` | Conversations per provider (default: 3) |
 | `--output-dir PATH` | `-o` | Output directory |
-| `--env-only` | | Print export statements only (for eval) |
-| `--live` | | Run showcase against real data (read-only) |
-| `--fail-fast` | | Stop showcase on first failure |
-| `--json` | | Output showcase results as JSON |
-| `--verbose` | | Print each exercise output |
+| `--seed` | | Run pipeline to produce usable demo environment |
+| `--env-only` | | Print export statements only (requires `--seed`) |
+
+## QA
+
+Composable quality assurance: schema audit, CLI exercises, and invariant checks.
+
+```bash
+polylogue qa                                # Full synthetic QA
+polylogue qa --live                         # Exercises against real data
+polylogue qa --source inbox                 # Fresh workspace from inbox data
+polylogue qa --only audit                   # Schema audit only
+polylogue qa --only exercises --tier 0      # Tier-0 smoke test
+polylogue qa --skip invariants              # Skip invariant checks
+polylogue qa --snapshot release-v3          # QA + archive results
+polylogue qa --snapshot-from ./qa_outputs   # Archive existing directory
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--synthetic` / `--live` | Data source (default: synthetic) |
+| `--source NAME` | Specific real source(s) in fresh workspace (repeatable) |
+| `--fresh` | Isolated temp workspace (default for synthetic) |
+| `--workspace DIR` | Reuse a specific workspace directory |
+| `--ingest` | Run ingestion pipeline (auto for synthetic/fresh) |
+| `--schemas` | Regenerate schemas during pipeline |
+| `--only STAGE` | Run only: `audit`, `exercises`, or `invariants` |
+| `--skip STAGE` | Skip stage (repeatable) |
+| `--tier N` | Exercise tier filter (0/1/2) |
+| `--fail-fast` | Stop on first exercise failure |
+| `--report-dir DIR` | Artifact directory |
+| `--json` | Machine-readable output |
+| `--verbose` | Print exercise outputs |
+| `--snapshot [LABEL]` | Archive results after QA |
+| `--snapshot-from DIR` | Archive existing directory (skip QA) |
 
 ## Other Modes
 
@@ -282,9 +300,9 @@ polylogue check --json                    # Machine-readable output
 polylogue check --schemas                 # Raw-corpus schema verification gate
 polylogue check --schemas --schema-provider chatgpt --schema-samples all
 polylogue check --schemas --schema-provider claude-code --schema-record-limit 500 --schema-record-offset 1000
-polylogue qa                              # Snapshot qa_outputs/qa_archive into archive_root
-polylogue qa --source qa_outputs --source qa_archive
-polylogue qa --name nightly --json
+polylogue qa                              # Full synthetic QA (audit → exercises → invariants)
+polylogue qa --live                       # QA against real data
+polylogue qa --only audit --json          # Schema audit with JSON output
 polylogue auth                            # OAuth flow for Google Drive
 polylogue auth --refresh                  # Force token refresh
 polylogue auth --revoke                   # Revoke stored credentials
@@ -296,7 +314,7 @@ polylogue reset --all                     # Reset everything
 polylogue reset --all --yes               # Non-interactive reset
 ```
 
-`polylogue qa` writes snapshots to `<archive_root>/qa/snapshots/<timestamp>-<name>` with
+`polylogue qa --snapshot` writes snapshots to `<archive_root>/qa/snapshots/<timestamp>-<label>` with
 `manifest.json` (hashes + metadata), `INDEX.md`, and a best-effort `latest` symlink.
 
 ## Global Flags
@@ -408,10 +426,10 @@ polylogue
 
 # Search
 polylogue "OAuth bug"
-polylogue "error" "python" -p claude,chatgpt
+polylogue "error" "python" -p claude-ai,chatgpt
 
 # Filter and output
-polylogue -p claude --has thinking --output browser
+polylogue -p claude-ai --has thinking --output browser
 polylogue --latest --output browser,clipboard
 
 # Sorting and sampling
@@ -420,11 +438,11 @@ polylogue --sort random --limit 5                # Random 5
 polylogue --sample 10                            # Random sample of 10
 
 # Field selection
-polylogue -p claude --fields id,title,tokens --format json
+polylogue -p claude-ai --fields id,title,tokens --format json
 
 # Aggregation
 polylogue --stats-by month                       # Activity by month
-polylogue -p claude --stats-by provider          # Provider breakdown
+polylogue -p claude-ai --stats-by provider          # Provider breakdown
 
 # Exclusions
 polylogue "error" --exclude-text "warning" --exclude-provider gemini
@@ -439,7 +457,7 @@ polylogue --latest --stream                      # Stream most recent
 polylogue -i abc123 --stream -d                  # Stream dialogue only
 
 # Count
-polylogue -p claude --count                      # Quick count
+polylogue -p claude-ai --count                      # Quick count
 
 # Metadata
 polylogue -i abc123 --set title "The OAuth Fix"
@@ -448,12 +466,12 @@ polylogue -i abc123 --add-tag project:polylogue,important
 polylogue --tag project:polylogue --list
 
 # Bulk operations with safety
-polylogue -p claude --since "last month" --add-tag review --dry-run
+polylogue -p claude-ai --since "last month" --add-tag review --dry-run
 polylogue -p old --delete --dry-run
 
 # Run pipeline
 polylogue run
-polylogue run --source claude
+polylogue run --source claude-ai
 polylogue run --preview
 polylogue run --watch --notify
 

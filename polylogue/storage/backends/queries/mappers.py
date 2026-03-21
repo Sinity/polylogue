@@ -14,7 +14,15 @@ from polylogue.storage.store import (
     MessageRecord,
     RawConversationRecord,
 )
-from polylogue.types import ConversationId, MessageId
+from polylogue.types import (
+    ContentBlockType,
+    ConversationId,
+    MessageId,
+    Provider,
+    SemanticBlockType,
+    ValidationMode,
+    ValidationStatus,
+)
 
 
 def _parse_json(raw: str | None, *, field: str = "", record_id: str = "") -> Any:
@@ -87,14 +95,18 @@ def _row_to_content_block(row: sqlite3.Row) -> ContentBlockRecord:
         message_id=MessageId(row["message_id"]),
         conversation_id=ConversationId(row["conversation_id"]),
         block_index=row["block_index"],
-        type=row["type"],
+        type=ContentBlockType.from_string(row["type"]),
         text=_row_get(row, "text"),
         tool_name=_row_get(row, "tool_name"),
         tool_id=_row_get(row, "tool_id"),
         tool_input=_row_get(row, "tool_input"),
         media_type=_row_get(row, "media_type"),
         metadata=_row_get(row, "metadata"),
-        semantic_type=_row_get(row, "semantic_type"),
+        semantic_type=(
+            SemanticBlockType.from_string(_row_get(row, "semantic_type"))
+            if _row_get(row, "semantic_type") is not None
+            else None
+        ),
     )
 
 
@@ -103,7 +115,11 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
     return RawConversationRecord(
         raw_id=row["raw_id"],
         provider_name=row["provider_name"],
-        payload_provider=_row_get(row, "payload_provider"),
+        payload_provider=(
+            Provider.from_string(_row_get(row, "payload_provider"))
+            if _row_get(row, "payload_provider") is not None
+            else None
+        ),
         source_name=row["source_name"],
         source_path=row["source_path"],
         source_index=row["source_index"],
@@ -113,9 +129,21 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
         parsed_at=_row_get(row, "parsed_at"),
         parse_error=_row_get(row, "parse_error"),
         validated_at=_row_get(row, "validated_at"),
-        validation_status=_row_get(row, "validation_status"),
+        validation_status=(
+            ValidationStatus.from_string(_row_get(row, "validation_status"))
+            if _row_get(row, "validation_status") is not None
+            else None
+        ),
         validation_error=_row_get(row, "validation_error"),
         validation_drift_count=_row_get(row, "validation_drift_count"),
-        validation_provider=_row_get(row, "validation_provider"),
-        validation_mode=_row_get(row, "validation_mode"),
+        validation_provider=(
+            Provider.from_string(_row_get(row, "validation_provider"))
+            if _row_get(row, "validation_provider") is not None
+            else None
+        ),
+        validation_mode=(
+            ValidationMode.from_string(_row_get(row, "validation_mode"))
+            if _row_get(row, "validation_mode") is not None
+            else None
+        ),
     )

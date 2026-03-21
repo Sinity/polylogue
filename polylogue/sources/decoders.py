@@ -10,6 +10,7 @@ from typing import IO, Any, BinaryIO
 
 import ijson
 
+from polylogue.lib.artifact_taxonomy import classify_artifact_path
 from polylogue.logging import get_logger
 from polylogue.types import Provider
 
@@ -57,27 +58,43 @@ def _decode_json_bytes(blob: bytes) -> str | None:
 def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists: bool = True) -> Iterable[Any]:
     if path_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
         error_count = 0
+        # One-ahead buffer: process `pending` only when we know it's NOT the last line.
+        # Truncated trailing lines (from in-progress session files) are debug-logged only.
+        pending: bytes | str | None = None
+
+        def _yield_pending(raw_pending: bytes | str, *, is_last: bool) -> Iterable[Any]:
+            nonlocal error_count
+            if isinstance(raw_pending, bytes):
+                decoded: str | None = _decode_json_bytes(raw_pending)
+                if not decoded:
+                    if is_last:
+                        logger.debug("Skipping undecodable trailing line from %s", path_name)
+                    else:
+                        logger.warning("Skipping undecodable line from %s", path_name)
+                    return
+            else:
+                decoded = raw_pending
+            try:
+                yield json.loads(decoded)
+            except json.JSONDecodeError as exc:
+                if is_last:
+                    logger.debug("Skipping truncated trailing line in %s: %s", path_name, exc)
+                else:
+                    error_count += 1
+                    if error_count <= 3:
+                        logger.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
+                    elif error_count == 4:
+                        logger.warning("Skipping further invalid JSON lines in %s...", path_name)
+
         for line in handle:
             raw = line.strip()
             if not raw:
                 continue
-            if isinstance(raw, bytes):
-                decoded = _decode_json_bytes(raw)
-                if not decoded:
-                    logger.warning("Skipping undecodable line from %s", path_name)
-                    continue
-            else:
-                decoded = raw
-            try:
-                yield json.loads(decoded)
-            except json.JSONDecodeError as exc:
-                # Log first few errors, then summarize
-                error_count += 1
-                if error_count <= 3:
-                    logger.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
-                elif error_count == 4:
-                    logger.warning("Skipping further invalid JSON lines in %s...", path_name)
-                continue
+            if pending is not None:
+                yield from _yield_pending(pending, is_last=False)
+            pending = raw
+        if pending is not None:
+            yield from _yield_pending(pending, is_last=True)
         if error_count > 3:
             logger.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
         return
@@ -132,18 +149,20 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
 class _ZipEntryValidator:
     """Validate ZIP entries for security and relevance."""
 
-    __slots__ = ("_provider_hint", "_cursor_state", "_zip_path")
+    __slots__ = ("_provider_hint", "_cursor_state", "_zip_path", "_conversation_only")
 
     def __init__(
         self,
-        provider_hint: str,
+        provider_hint: str | Provider,
         *,
         cursor_state: dict[str, Any] | None,
         zip_path: Path,
+        conversation_only: bool = False,
     ) -> None:
-        self._provider_hint = provider_hint
+        self._provider_hint = Provider.from_string(provider_hint)
         self._cursor_state = cursor_state
         self._zip_path = zip_path
+        self._conversation_only = conversation_only
 
     def filter_entries(self, entries: list[zipfile.ZipInfo]) -> Iterable[zipfile.ZipInfo]:
         """Yield safe, relevant entries.  Record failures in cursor_state."""
@@ -152,12 +171,6 @@ class _ZipEntryValidator:
                 continue
             name = info.filename
             lower_name = name.lower()
-
-            # Filter Claude AI ZIP: only process conversations.json
-            if self._provider_hint in ("claude", "claude-ai"):
-                basename = lower_name.split("/")[-1]
-                if basename not in ("conversations.json",):
-                    continue
 
             # ZIP bomb protection: compression ratio
             if info.compress_size > 0:
@@ -193,18 +206,24 @@ class _ZipEntryValidator:
 
             # Only yield entries with supported JSON extensions
             if lower_name.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
+                if self._conversation_only:
+                    path_classification = classify_artifact_path(
+                        f"{self._zip_path}:{name}",
+                        provider=self._provider_hint,
+                    )
+                    if path_classification is not None and not path_classification.parse_as_conversation:
+                        continue
                 yield info
 
 
 def _zip_entry_provider_hint(entry_name: str, fallback_provider: str | Provider) -> Provider:
-    from .source import detect_provider
-    return detect_provider(None, Path(entry_name)) or Provider.from_string(fallback_provider)
+    return Provider.from_string(fallback_provider)
 
 
 def _process_zip(
     zip_path: Path,
     *,
-    provider_hint: str,
+    provider_hint: Provider,
     should_group: bool,
     file_mtime: str | None,
     capture_raw: bool,
@@ -212,15 +231,20 @@ def _process_zip(
 ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
     """Process a ZIP file, yielding conversations from its entries."""
     from .emitter import _ConversationEmitter, _ParseContext
-    from .source import _GROUP_PROVIDERS
+    from .dispatch import GROUP_PROVIDERS
 
-    validator = _ZipEntryValidator(provider_hint, cursor_state=cursor_state, zip_path=zip_path)
+    validator = _ZipEntryValidator(
+        provider_hint,
+        cursor_state=cursor_state,
+        zip_path=zip_path,
+        conversation_only=True,
+    )
 
     with zipfile.ZipFile(zip_path) as zf:
         for info in validator.filter_entries(zf.infolist()):
             name = info.filename
             entry_provider_hint = _zip_entry_provider_hint(name, provider_hint)
-            entry_should_group = entry_provider_hint in _GROUP_PROVIDERS
+            entry_should_group = entry_provider_hint in GROUP_PROVIDERS
             ctx = _ParseContext(
                 provider_hint=entry_provider_hint,
                 should_group=entry_should_group,
@@ -229,7 +253,6 @@ def _process_zip(
                 file_mtime=file_mtime,
                 capture_raw=capture_raw,
                 session_index={},  # ZIP files don't have session indices
-                detect_path=Path(name),
             )
             emitter = _ConversationEmitter(ctx)
             with zf.open(name) as handle:

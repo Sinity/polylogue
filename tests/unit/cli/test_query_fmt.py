@@ -61,7 +61,7 @@ FILTER_CASES = (
         "mixed_filters",
         {
             "query": ("python", "errors"),
-            "provider": "claude",
+            "provider": "claude-ai",
             "exclude_provider": "chatgpt",
             "tag": "important",
             "exclude_tag": "spam",
@@ -73,7 +73,7 @@ FILTER_CASES = (
         },
         (
             "search: python errors",
-            "provider: claude",
+            "provider: claude-ai",
             "exclude provider: chatgpt",
             "tag: important",
             "exclude tag: spam",
@@ -117,7 +117,7 @@ CONVERSATION_FORMAT_CASES = (
         "obsidian",
         "obsidian",
         None,
-        ("---", "provider: claude", "tags:", "# Example Conversation"),
+        ("---", "provider: claude-ai", "tags:", "# Example Conversation"),
     ),
     ConversationFormatCase(
         "org",
@@ -129,20 +129,20 @@ CONVERSATION_FORMAT_CASES = (
         "json_full",
         "json",
         None,
-        ('"provider": "claude"', '"messages": [', '"role": "assistant"'),
+        ('"provider": "claude-ai"', '"messages": [', '"role": "assistant"'),
     ),
     ConversationFormatCase(
         "json_selected",
         "json",
         "id,provider,title",
-        ('"provider": "claude"', '"title": "Example Conversation"'),
+        ('"provider": "claude-ai"', '"title": "Example Conversation"'),
         excluded=('"messages": [',),
     ),
     ConversationFormatCase(
         "yaml_full",
         "yaml",
         None,
-        ("provider: claude", "messages:", "- id: msg-user"),
+        ("provider: claude-ai", "messages:", "- id: msg-user"),
     ),
     ConversationFormatCase(
         "yaml_selected",
@@ -159,19 +159,19 @@ LIST_FORMAT_CASES = (
         "text",
         "text",
         None,
-        ("conv-1234567890abcdef", "claude", "Example Conversation"),
+        ("conv-1234567890abcdef", "claude-ai", "Example Conversation"),
     ),
     ListFormatCase(
         "json",
         "json",
         None,
-        ('"provider": "claude"', '"summary": "Synthetic summary"'),
+        ('"provider": "claude-ai"', '"summary": "Synthetic summary"'),
     ),
     ListFormatCase(
         "yaml",
         "yaml",
         None,
-        ("provider: claude", "summary: Synthetic summary"),
+        ("provider: claude-ai", "summary: Synthetic summary"),
     ),
     ListFormatCase(
         "csv",
@@ -199,17 +199,17 @@ STATS_CASES = (
     (
         "provider",
         [
-            ("conv-1", "claude", datetime(2025, 3, 1, tzinfo=timezone.utc), ["hello there", "more words"]),
+            ("conv-1", "claude-ai", datetime(2025, 3, 1, tzinfo=timezone.utc), ["hello there", "more words"]),
             ("conv-2", "chatgpt", datetime(2025, 2, 1, tzinfo=timezone.utc), ["other text"]),
-            ("conv-3", "claude", datetime(2025, 1, 1, tzinfo=timezone.utc), ["final message"]),
+            ("conv-3", "claude-ai", datetime(2025, 1, 1, tzinfo=timezone.utc), ["final message"]),
         ],
-        ("Matched: 3 conversations (by provider)", "claude", "chatgpt", "TOTAL"),
+        ("Matched: 3 conversations (by provider)", "claude-ai", "chatgpt", "TOTAL"),
     ),
     (
         "month",
         [
-            ("conv-1", "claude", datetime(2025, 3, 5, tzinfo=timezone.utc), ["month three"]),
-            ("conv-2", "claude", datetime(2025, 1, 6, tzinfo=timezone.utc), ["month one"]),
+            ("conv-1", "claude-ai", datetime(2025, 3, 5, tzinfo=timezone.utc), ["month three"]),
+            ("conv-2", "claude-ai", datetime(2025, 1, 6, tzinfo=timezone.utc), ["month one"]),
         ],
         ("Matched: 2 conversations (by month)", "2025-03", "2025-01", "TOTAL"),
     ),
@@ -233,7 +233,7 @@ def _make_msg(
 
 def _make_conv(
     id: str = "conv-1234567890abcdef",
-    provider: str = "claude",
+    provider: str = "claude-ai",
     title: str | None = "Example Conversation",
     messages: list[Message] | None = None,
     **kwargs: object,
@@ -358,7 +358,7 @@ class TestListFormatting:
         if case.name == "yaml":
             payload = yaml.safe_load(rendered)
             assert payload[0]["id"] == "conv-1234567890abcdef"
-            assert payload[0]["provider"] == "claude"
+            assert payload[0]["provider"] == "claude-ai"
 
 
 class TestStreamingOutput:

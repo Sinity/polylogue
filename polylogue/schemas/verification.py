@@ -14,6 +14,7 @@ from typing import Any
 
 from polylogue.lib.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.lib.raw_payload import build_raw_payload_envelope
+from polylogue.protocols import ProgressCallback
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.paths import db_path as default_db_path
 
@@ -90,6 +91,7 @@ def verify_raw_corpus(
     record_limit: int | None = None,
     record_offset: int = 0,
     quarantine_malformed: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> SchemaVerificationReport:
     """Run non-mutating schema verification over ``raw_conversations``.
 
@@ -117,29 +119,68 @@ def verify_raw_corpus(
     bounded_limit = max(1, int(record_limit)) if record_limit is not None else None
     provider_filter = set(providers or [])
 
+    _BATCH_SIZE = 50  # Small batches — raw_content blobs can be 50–200 MB each
+
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        params: list[Any] = []
-        query = (
-            "SELECT raw_id, provider_name, payload_provider, source_path, raw_content "
+        # Build filter clause (provider filter only — no ORDER BY, we use rowid cursor)
+        provider_where: str = ""
+        where_params: tuple[Any, ...] = ()
+        if providers:
+            provider_where, where_params = _verification_provider_clause(providers)
+
+        # Resolve starting rowid for record_offset (single cheap rowid-only scan)
+        last_rowid: int = 0
+        if bounded_offset > 0:
+            offset_query = "SELECT rowid FROM raw_conversations "
+            if provider_where:
+                offset_query += f"WHERE {provider_where} "
+            offset_query += "ORDER BY rowid LIMIT 1 OFFSET ?"
+            row = conn.execute(offset_query, (*where_params, bounded_offset - 1)).fetchone()
+            if row is None:
+                # Offset beyond end of table
+                return SchemaVerificationReport(
+                    providers={},
+                    max_samples=max_samples,
+                    total_records=0,
+                    record_limit=bounded_limit,
+                    record_offset=bounded_offset,
+                )
+            last_rowid = row[0]
+
+        # Keyset pagination: WHERE rowid > :last ORDER BY rowid LIMIT N
+        # Each batch is O(log n) via SQLite's implicit rowid B-tree index —
+        # no O(n²) re-scan from row 0 unlike LIMIT/OFFSET on unindexed columns.
+        base_query = (
+            "SELECT rowid, raw_id, provider_name, payload_provider, source_path, raw_content "
             "FROM raw_conversations "
         )
-        if providers:
-            where_clause, where_params = _verification_provider_clause(providers)
-            query += f"WHERE {where_clause} "
-            params.extend(where_params)
-        query += "ORDER BY acquired_at DESC "
-        if bounded_limit is not None:
-            query += "LIMIT ? OFFSET ?"
-            params.extend([bounded_limit, bounded_offset])
 
-        cursor = conn.execute(query, tuple(params))
         quarantine_updates: list[tuple[str, str, str, str | None]] = []
+        records_fetched = 0
         while True:
-            rows = cursor.fetchmany(250)
+            if bounded_limit is not None:
+                remaining = bounded_limit - records_fetched
+                if remaining <= 0:
+                    break
+                batch_size = min(_BATCH_SIZE, remaining)
+            else:
+                batch_size = _BATCH_SIZE
+
+            # Compose keyset WHERE: rowid cursor + optional provider filter
+            if provider_where:
+                query = base_query + f"WHERE rowid > ? AND ({provider_where}) ORDER BY rowid LIMIT ?"
+                params: tuple[Any, ...] = (last_rowid, *where_params, batch_size)
+            else:
+                query = base_query + "WHERE rowid > ? ORDER BY rowid LIMIT ?"
+                params = (last_rowid, batch_size)
+
+            rows = conn.execute(query, params).fetchall()
             if not rows:
                 break
+            last_rowid = rows[-1]["rowid"]
+            records_fetched += len(rows)
             for row in rows:
                 raw_provider = str(row["provider_name"])
                 stored_payload_provider = row["payload_provider"]
@@ -170,6 +211,8 @@ def verify_raw_corpus(
                         reason = f"Unable to decode payload: {type(exc).__name__}"
                         quarantine_updates.append((raw_id, reason, candidate_provider, stored_payload_provider))
                         provider_stats.quarantined_records += 1
+                    if progress_callback is not None:
+                        progress_callback(1)
                     continue
                 actual_provider = envelope.provider
                 if provider_filter and actual_provider not in provider_filter:
@@ -180,6 +223,11 @@ def verify_raw_corpus(
                     ProviderSchemaVerification(provider=actual_provider),
                 )
                 provider_stats.total_records += 1
+                if not envelope.artifact.schema_eligible:
+                    provider_stats.skipped_no_schema += 1
+                    if progress_callback is not None:
+                        progress_callback(1)
+                    continue
                 if malformed_lines:
                     provider_stats.decode_errors += 1
                     if quarantine_malformed:
@@ -187,12 +235,20 @@ def verify_raw_corpus(
                         reason = f"Malformed JSONL lines: {malformed_lines}"
                         quarantine_updates.append((raw_id, reason, actual_provider, actual_provider))
                         provider_stats.quarantined_records += 1
+                    if progress_callback is not None:
+                        progress_callback(1)
                     continue
 
                 try:
-                    validator = SchemaValidator.for_provider(actual_provider)
+                    validator = SchemaValidator.for_payload(
+                        actual_provider,
+                        payload,
+                        source_path=str(row["source_path"] or ""),
+                    )
                 except (FileNotFoundError, ImportError):
                     provider_stats.skipped_no_schema += 1
+                    if progress_callback is not None:
+                        progress_callback(1)
                     continue
 
                 samples = validator.validation_samples(
@@ -201,6 +257,8 @@ def verify_raw_corpus(
                 )
                 if not samples:
                     provider_stats.valid_records += 1
+                    if progress_callback is not None:
+                        progress_callback(1)
                     continue
 
                 invalid_found = False
@@ -218,6 +276,11 @@ def verify_raw_corpus(
                     provider_stats.valid_records += 1
                 if drift_found:
                     provider_stats.drift_records += 1
+
+                if progress_callback is not None:
+                    progress_callback(1)
+
+            del rows  # Release batch before fetching next — prevents RSS accumulation
 
         if quarantine_updates:
             validated_at = datetime.now(tz=timezone.utc).isoformat()

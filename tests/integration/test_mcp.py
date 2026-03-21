@@ -59,8 +59,8 @@ class TestMCPRealRepositoryPaths:
             )
             await _insert_conversation(
                 repo,
-                conversation_id="claude:other",
-                provider="claude",
+                conversation_id="claude-ai:other",
+                provider="claude-ai",
                 provider_conversation_id="other",
                 text="something unrelated",
             )
@@ -93,8 +93,8 @@ class TestMCPRealRepositoryPaths:
             )
             await _insert_conversation(
                 repo,
-                conversation_id="claude:one",
-                provider="claude",
+                conversation_id="claude-ai:one",
+                provider="claude-ai",
                 provider_conversation_id="one",
                 text="claude content",
             )
@@ -103,14 +103,14 @@ class TestMCPRealRepositoryPaths:
                 server = build_server()
                 result = await invoke_surface_async(
                     server._tool_manager._tools["list_conversations"].fn,
-                    provider="claude",
+                    provider="claude-ai",
                     limit=10,
                 )
 
             parsed = json.loads(result)
             assert len(parsed) == 1
-            assert parsed[0]["id"] == "claude:one"
-            assert parsed[0]["provider"] == "claude"
+            assert parsed[0]["id"] == "claude-ai:one"
+            assert parsed[0]["provider"] == "claude-ai"
         finally:
             await backend.close()
 
