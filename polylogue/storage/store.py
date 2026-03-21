@@ -16,8 +16,8 @@ from polylogue.lib.hashing import hash_text
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
 from polylogue.types import (
-    AttachmentId,
     ArtifactSupportStatus,
+    AttachmentId,
     ContentBlockType,
     ContentHash,
     ConversationId,
@@ -169,6 +169,29 @@ class RunRecord(BaseModel):
     drift: dict[str, Any] | None = None
     indexed: bool | None = None
     duration_ms: int | None = None
+
+
+class PublicationRecord(BaseModel):
+    """Durable persisted publication manifest."""
+
+    publication_id: str
+    publication_kind: str
+    generated_at: str
+    output_dir: str
+    duration_ms: int | None = None
+    manifest: dict[str, Any]
+
+    @field_validator(
+        "publication_id",
+        "publication_kind",
+        "generated_at",
+        "output_dir",
+    )
+    @classmethod
+    def publication_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
 
 
 class RawConversationRecord(BaseModel):
@@ -479,6 +502,7 @@ __all__ = [
     "ConversationRecord",
     "MAX_ATTACHMENT_SIZE",
     "MessageRecord",
+    "PublicationRecord",
     "RawConversationRecord",
     "RunRecord",
     "_row_to_content_block",

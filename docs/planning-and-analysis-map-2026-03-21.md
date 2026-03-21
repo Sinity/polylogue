@@ -26,6 +26,7 @@ Read in this order:
 | --- | --- | --- |
 | [programs/intentional-forward-program-2026-03-21.md](./programs/intentional-forward-program-2026-03-21.md) | Live execution queue for the post-2026-03-19 planning wave | Current canonical program |
 | [programs/artifact-cohort-control-plane-program-2026-03-21.md](./programs/artifact-cohort-control-plane-program-2026-03-21.md) | Executed subprogram covering durable artifact/cohort/proof surfaces | Executed and retained as concrete shape |
+| [programs/publication-control-plane-program-2026-03-22.md](./programs/publication-control-plane-program-2026-03-22.md) | Executed subprogram covering typed site publication manifests and durable publication records | Executed and retained as the Step 5 publication slice |
 
 ## Strategic Reference Programs
 
@@ -101,7 +102,8 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current open frontier in the canonical program is Step 5 from [programs/intentional-forward-program-2026-03-21.md](./programs/intentional-forward-program-2026-03-21.md): publication and repo-shape cleanup
+- the publication-control-plane half of Step 5 from [programs/intentional-forward-program-2026-03-21.md](./programs/intentional-forward-program-2026-03-21.md) has been executed via [programs/publication-control-plane-program-2026-03-22.md](./programs/publication-control-plane-program-2026-03-22.md)
+- the current open frontier inside Step 5 is now the remaining repo-shape/document/generated-artifact slimming and any deeper `site/builder.py` decomposition
 - the main still-active adjacent design lane not yet fully absorbed into a committed canonical program is schema package/version correction, currently best captured by `.claude/scratch/018-wave0-schema-package-design.md` and `.claude/scratch/026-schema-taxonomy-and-versioning.md`
 - testing/showcase expansion remains a backlog reservoir in [programs/testing-reliability-expansion-program-2026-03-14.md](./programs/testing-reliability-expansion-program-2026-03-14.md), not the immediate execution queue
 

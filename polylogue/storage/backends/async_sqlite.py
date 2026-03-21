@@ -36,6 +36,9 @@ from polylogue.storage.backends.queries import (
     messages as messages_q,
 )
 from polylogue.storage.backends.queries import (
+    publications as publications_q,
+)
+from polylogue.storage.backends.queries import (
     raw as raw_queries,
 )
 from polylogue.storage.backends.queries import (
@@ -51,6 +54,7 @@ from polylogue.storage.store import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    PublicationRecord,
     RawConversationRecord,
     RawConversationState,
     RunRecord,
@@ -1977,6 +1981,13 @@ class SQLiteBackend:
             duration_ms=row["duration_ms"],
         )
 
+    async def get_latest_publication(
+        self,
+        publication_kind: str,
+    ) -> PublicationRecord | None:
+        """Fetch the most recent publication record for one publication kind."""
+        return await self.queries.get_latest_publication(publication_kind)
+
     async def close(self) -> None:
         """Close database connections.
 
@@ -2019,6 +2030,11 @@ class SQLiteBackend:
             )
             if self._transaction_depth == 0:
                 await conn.commit()
+
+    async def record_publication(self, record: PublicationRecord) -> None:
+        """Persist one publication manifest."""
+        async with self.transaction(), self._get_connection() as conn:
+            await publications_q.record_publication(conn, record, self._transaction_depth)
 
     # --- Raw Conversation Storage ---
 

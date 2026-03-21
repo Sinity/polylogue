@@ -15,15 +15,22 @@ import builtins
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from polylogue.lib.log import get_logger
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.logging import get_logger
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.hydrators import (
+    conversation_from_records,
+    conversation_summary_from_record,
+    message_from_record,
+)
+from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
     ConversationRenderProjection,
     MessageRecord,
+    PublicationRecord,
     RunRecord,
 )
 from polylogue.types import ConversationId
@@ -927,6 +934,17 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             record: Run record to persist
         """
         await self._backend.record_run(record)
+
+    async def record_publication(self, record: PublicationRecord) -> None:
+        """Persist one publication manifest."""
+        await self._backend.record_publication(record)
+
+    async def get_latest_publication(
+        self,
+        publication_kind: str,
+    ) -> PublicationRecord | None:
+        """Fetch the most recent publication record for one publication kind."""
+        return await self._backend.get_latest_publication(publication_kind)
 
     # --- Metadata CRUD ---
 
