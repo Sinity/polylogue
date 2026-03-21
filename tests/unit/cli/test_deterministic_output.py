@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import re
 import sys
-import time
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -23,9 +22,9 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
+from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.report import generate_qa_session
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
-from polylogue.showcase.exercises import Exercise
 
 # ANSI escape code pattern: ESC[ ... final-byte
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\[.*?m")
@@ -492,6 +491,15 @@ def test_format_cursors_contract(cursors: dict[str, object], expected_parts: tup
     ("counts", "expected_parts"),
     [
         ({"conversations": 10, "messages": 100}, ("10 conv", "100 msg")),
+        (
+            {
+                "conversations": 3,
+                "new_conversations": 2,
+                "changed_conversations": 1,
+                "messages": 30,
+            },
+            ("3 conv (2 new, 1 changed)", "30 msg"),
+        ),
         ({"conversations": 5, "messages": 50, "rendered": 5}, ("5 rendered",)),
         ({"acquired": 4, "validated": 4, "validation_drift": 2}, ("4 acquired", "4 validated", "2 drift")),
         ({"conversations": 5, "messages": 50, "rendered": 0}, ("5 conv", "50 msg")),

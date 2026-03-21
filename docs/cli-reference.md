@@ -166,9 +166,9 @@ polylogue run --stage parse               # Run only parse stage
 polylogue run --stage all                 # Run all stages (default)
 polylogue run --format markdown           # Render as Markdown (default: html)
 polylogue run --watch                     # Watch sources and sync continuously
-polylogue run --watch --notify            # Desktop notification on new conversations
-polylogue run --watch --exec "echo new"   # Execute command on new conversations
-polylogue run --watch --webhook URL       # Call webhook on new conversations
+polylogue run --watch --notify            # Desktop notification on conversation changes
+polylogue run --watch --exec "echo changes"   # Execute command on conversation changes
+polylogue run --watch --webhook URL       # Call webhook on conversation changes
 ```
 
 **Pipeline stages**: `acquire` → `validate` → `parse` → `render` → `index` → `generate-schemas`. Default runs all stages. `parse` consumes only rows marked `validation_status=passed|skipped`.

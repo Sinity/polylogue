@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 
 import click
@@ -16,18 +15,18 @@ from polylogue.cli.formatting import (
     format_plan_details,
     format_run_details,
 )
-from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.helpers import (
     fail,
     maybe_prompt_sources,
     resolve_sources,
 )
+from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.run_observers import (
-    _format_elapsed,
     progress_observer as _progress_observer,
 )
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
+from polylogue.lib.run_activity import conversation_activity_counts
 from polylogue.lib.timestamps import format_timestamp
 from polylogue.pipeline.observers import (
     CompositeObserver,
@@ -185,7 +184,7 @@ def _display_result(
 
 
 class _WatchDisplayObserver(RunObserver):
-    """Prints result summary when new conversations arrive in watch mode."""
+    """Prints result summary when conversation changes arrive in watch mode."""
 
     def __init__(self, env: AppEnv, cfg: Config, stage: str, selected_sources: list[str] | None) -> None:
         self._env = env
@@ -194,7 +193,8 @@ class _WatchDisplayObserver(RunObserver):
         self._selected_sources = selected_sources
 
     def on_completed(self, result: RunResult) -> None:
-        if result.counts.get("conversations", 0) > 0:
+        activity_count, _, _ = conversation_activity_counts(result.counts, result.drift)
+        if activity_count > 0:
             _display_result(self._env, self._cfg, result, self._stage, self._selected_sources)
 
 
@@ -202,7 +202,7 @@ class _WatchStatusObserver(RunObserver):
     """Prints idle and error status in watch mode."""
 
     def on_idle(self, result: RunResult) -> None:
-        click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
+        click.echo(f"No conversation changes at {time.strftime('%H:%M:%S')}")
 
     def on_error(self, exc: Exception) -> None:
         if isinstance(exc, DriveError):
@@ -239,9 +239,9 @@ class _WatchStatusObserver(RunObserver):
     help="Output format for rendering (markdown or html)",
 )
 @click.option("--watch", is_flag=True, help="Watch sources for changes and run continuously")
-@click.option("--notify", is_flag=True, help="Desktop notification on new conversations (requires --watch)")
-@click.option("--exec", "exec_cmd", help="Execute command on new conversations (requires --watch)")
-@click.option("--webhook", help="Call webhook URL on new conversations (requires --watch)")
+@click.option("--notify", is_flag=True, help="Desktop notification on conversation changes (requires --watch)")
+@click.option("--exec", "exec_cmd", help="Execute command on conversation changes (requires --watch)")
+@click.option("--webhook", help="Call webhook URL on conversation changes (requires --watch)")
 @click.option("--reparse", is_flag=True, help="Force re-parsing of all raw conversations (clears parse tracking)")
 @click.pass_obj
 def run_command(

@@ -11,12 +11,19 @@ from polylogue.pipeline.observers import (
     NotificationObserver,
     WebhookObserver,
 )
-from polylogue.pipeline.services.rendering import RenderResult, RenderService
+from polylogue.pipeline.services.rendering import RenderService
 
 
 def _make_result(count: int = 5) -> MagicMock:
     """Create a mock RunResult."""
-    return MagicMock(counts={"conversations": count})
+    return MagicMock(
+        counts={
+            "conversations": count,
+            "new_conversations": count,
+            "changed_conversations": 0,
+        },
+        drift={"new": {"conversations": count}, "changed": {"conversations": 0}},
+    )
 
 
 class TestNotificationObserver:
@@ -67,7 +74,9 @@ class TestWebhookObserver:
                     call_kwargs = mock_req.call_args[1]
                     payload = json.loads(call_kwargs["data"].decode())
                     assert payload["event"] == "sync"
+                    assert payload["conversation_activity_count"] == 7
                     assert payload["new_conversations"] == 7
+                    assert payload["changed_conversations"] == 0
 
     def test_skips_when_no_new(self):
         with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=self._FAKE_ADDRINFO):
@@ -93,7 +102,9 @@ class TestExecObserver:
             call_args = mock_run.call_args[0]
             assert call_args[0] == ["echo", "hello"]
             call_kwargs = mock_run.call_args[1]
-            assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == "3"
+            assert call_kwargs["env"]["POLYLOGUE_ACTIVITY_COUNT"] == "3"
+            assert call_kwargs["env"]["POLYLOGUE_NEW_CONVERSATION_COUNT"] == "3"
+            assert call_kwargs["env"]["POLYLOGUE_CHANGED_CONVERSATION_COUNT"] == "0"
 
     def test_skips_when_no_new(self):
         with patch("subprocess.run") as mock_run:

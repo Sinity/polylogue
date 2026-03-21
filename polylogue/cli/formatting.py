@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from polylogue.config import Source
+from polylogue.lib.run_activity import conversation_activity_counts
 from polylogue.lib.timestamps import format_timestamp
 
 _FALSEY_ENV_VALUES = frozenset({"0", "false", "no"})
@@ -71,13 +72,23 @@ def format_counts(counts: Mapping[str, object]) -> str:
         ("validation_drift", "drift"),
         ("validation_skipped_no_schema", "no schema"),
         ("validation_errors", "validation errors"),
-        ("conversations", "conv"),
         ("messages", "msg"),
         ("attachments", "att"),
         ("rendered", "rendered"),
         ("render_failures", "render failures"),
     ]
     parts: list[str] = []
+    total_conv, new_conv, changed_conv = conversation_activity_counts(counts)
+    if total_conv:
+        detail_parts: list[str] = []
+        if new_conv:
+            detail_parts.append(f"{new_conv} new")
+        if changed_conv:
+            detail_parts.append(f"{changed_conv} changed")
+        if detail_parts:
+            parts.append(f"{total_conv} conv ({', '.join(detail_parts)})")
+        else:
+            parts.append(f"{total_conv} conv")
     for key, label in ordered_labels:
         value = counts.get(key)
         if isinstance(value, int) and value:
@@ -92,6 +103,7 @@ def format_counts(counts: Mapping[str, object]) -> str:
 
 def format_run_details(counts: Mapping[str, object]) -> list[str]:
     lines: list[str] = []
+    total_conv, new_conv, changed_conv = conversation_activity_counts(counts)
 
     acquire_parts = [
         (counts.get("acquired"), "acquired"),
@@ -120,6 +132,16 @@ def format_run_details(counts: Mapping[str, object]) -> list[str]:
     )
     if validate_line:
         lines.append(f"Validate: {validate_line}")
+
+    activity_parts = []
+    if new_conv:
+        activity_parts.append(f"{new_conv} new")
+    if changed_conv:
+        activity_parts.append(f"{changed_conv} changed")
+    if activity_parts:
+        lines.append(f"Conversations: {', '.join(activity_parts)}")
+    elif total_conv:
+        lines.append(f"Conversations: {total_conv} touched")
 
     parse_failures = counts.get("parse_failures")
     if isinstance(parse_failures, int) and parse_failures:

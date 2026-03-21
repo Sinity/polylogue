@@ -16,11 +16,11 @@ Options:
   --format [markdown|html]        Output format for rendering (markdown or html)
                                   [default: html]
   --watch                         Watch sources for changes and run continuously
-  --notify                        Desktop notification on new conversations
+  --notify                        Desktop notification on conversation changes
                                   (requires --watch)
-  --exec TEXT                     Execute command on new conversations (requires
+  --exec TEXT                     Execute command on conversation changes (requires
                                   --watch)
-  --webhook TEXT                  Call webhook URL on new conversations
+  --webhook TEXT                  Call webhook URL on conversation changes
                                   (requires --watch)
   --reparse                       Force re-parsing of all raw conversations
                                   (clears parse tracking)

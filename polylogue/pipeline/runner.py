@@ -18,8 +18,8 @@ from uuid import uuid4
 
 from polylogue.config import Config, Source
 from polylogue.lib.json import dumps
-from polylogue.logging import get_logger
 from polylogue.lib.metrics import PipelineMetrics
+from polylogue.logging import get_logger
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.backends import SQLiteBackend, create_backend
 from polylogue.storage.repository import ConversationRepository
@@ -317,7 +317,8 @@ async def run_sources(
                 )
 
         if stage == "generate-schemas":
-            from polylogue.paths import data_home as _data_home, db_path as _db_path
+            from polylogue.paths import data_home as _data_home
+            from polylogue.paths import db_path as _db_path
             from polylogue.schemas.schema_inference import generate_all_schemas
 
             stage_t0 = time.perf_counter()
@@ -410,15 +411,18 @@ async def run_sources(
         logger.info("Index stage complete", **sm.to_dict(), indexed=indexed)
 
         duration_ms = int((time.perf_counter() - start) * 1000)
+        new_counts = {
+            "conversations": max(counts["conversations"] - changed_counts["conversations"], 0),
+            "messages": max(counts["messages"] - changed_counts["messages"], 0),
+            "attachments": max(counts["attachments"] - changed_counts["attachments"], 0),
+        }
+        counts["new_conversations"] = new_counts["conversations"]
+        counts["changed_conversations"] = changed_counts["conversations"]
         drift = {
-            "new": {"conversations": 0, "messages": 0, "attachments": 0},
+            "new": new_counts,
             "removed": {"conversations": 0, "messages": 0, "attachments": 0},
             "changed": dict(changed_counts),
         }
-
-        drift["new"]["conversations"] = counts["conversations"]
-        drift["new"]["messages"] = counts["messages"]
-        drift["new"]["attachments"] = counts["attachments"]
 
         run_id = uuid4().hex
         run_payload = {

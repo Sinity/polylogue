@@ -9,6 +9,7 @@ import socket
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from polylogue.lib.run_activity import conversation_activity_counts
 from polylogue.logging import get_logger
 
 if TYPE_CHECKING:
@@ -20,9 +21,8 @@ logger = get_logger(__name__)
 _UNSAFE_PATTERN = re.compile(r'[;&|`(){}[\]<>!\\]|\$\(')
 
 
-def _new_conversation_count(result: RunResult) -> int:
-    value = result.counts.get("conversations", 0)
-    return value if isinstance(value, int) else 0
+def _conversation_activity(result: RunResult) -> tuple[int, int, int]:
+    return conversation_activity_counts(result.counts, getattr(result, "drift", None))
 
 
 class RunObserver:
@@ -73,14 +73,20 @@ class NotificationObserver(RunObserver):
     """Desktop notification via ``notify-send`` (or equivalent)."""
 
     def on_completed(self, result: RunResult) -> None:
-        count = _new_conversation_count(result)
-        if count <= 0:
+        activity_count, new_count, changed_count = _conversation_activity(result)
+        if activity_count <= 0:
             return
         try:
             import subprocess
 
+            detail_parts: list[str] = []
+            if new_count:
+                detail_parts.append(f"{new_count} new")
+            if changed_count:
+                detail_parts.append(f"{changed_count} changed")
+            detail = f" ({', '.join(detail_parts)})" if detail_parts else ""
             subprocess.run(
-                ["notify-send", "Polylogue", f"Synced {count} new conversation(s)"],
+                ["notify-send", "Polylogue", f"Synced {activity_count} conversation change(s){detail}"],
                 capture_output=True,
                 check=False,
             )
@@ -113,7 +119,7 @@ def _validate_webhook_url(url: str) -> None:
 
 
 class WebhookObserver(RunObserver):
-    """POST to webhook URL when a run produces new conversations."""
+    """POST to webhook URL when a run produces conversation changes."""
 
     __slots__ = ("_url",)
 
@@ -122,8 +128,8 @@ class WebhookObserver(RunObserver):
         self._url = url
 
     def on_completed(self, result: RunResult) -> None:
-        count = _new_conversation_count(result)
-        if count <= 0:
+        activity_count, new_count, changed_count = _conversation_activity(result)
+        if activity_count <= 0:
             return
         try:
             import json
@@ -131,7 +137,14 @@ class WebhookObserver(RunObserver):
 
             _validate_webhook_url(self._url)
 
-            data = json.dumps({"event": "sync", "new_conversations": count}).encode()
+            data = json.dumps(
+                {
+                    "event": "sync",
+                    "conversation_activity_count": activity_count,
+                    "new_conversations": new_count,
+                    "changed_conversations": changed_count,
+                }
+            ).encode()
             req = urllib.request.Request(
                 self._url,
                 data=data,
@@ -168,7 +181,7 @@ def _validate_exec_command(command: str) -> list[str]:
 
 
 class ExecObserver(RunObserver):
-    """Run a command when a run produces new conversations."""
+    """Run a command when a run produces conversation changes."""
 
     __slots__ = ("_argv",)
 
@@ -176,14 +189,16 @@ class ExecObserver(RunObserver):
         self._argv = _validate_exec_command(command)
 
     def on_completed(self, result: RunResult) -> None:
-        count = _new_conversation_count(result)
-        if count <= 0:
+        activity_count, new_count, changed_count = _conversation_activity(result)
+        if activity_count <= 0:
             return
         import os
         import subprocess
 
         env = os.environ.copy()
-        env["POLYLOGUE_NEW_COUNT"] = str(count)
+        env["POLYLOGUE_ACTIVITY_COUNT"] = str(activity_count)
+        env["POLYLOGUE_NEW_CONVERSATION_COUNT"] = str(new_count)
+        env["POLYLOGUE_CHANGED_CONVERSATION_COUNT"] = str(changed_count)
         subprocess.run(self._argv, env=env, check=False)
 
 
