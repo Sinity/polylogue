@@ -223,7 +223,35 @@ class TestRunSourcesIntegration:
         asyncio.run(run_sources(config=config, stage="acquire"))
         asyncio.run(run_sources(config=config, stage="validate"))
         result = asyncio.run(run_sources(config=config, stage="parse", plan=None))
-        assert result.drift["new"]["conversations"] == result.counts["conversations"]
+        assert result.drift["new"]["conversations"] == result.counts["new_conversations"]
+        assert result.counts["conversations"] == (
+            result.counts["new_conversations"] + result.counts["changed_conversations"]
+        )
+
+    def test_changed_conversation_is_not_reported_as_new(self, workspace_env, tmp_path: Path):
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        export_path = inbox / "conversations.json"
+        _write_chatgpt_export(export_path, "conv-update")
+        config = Config(
+            sources=[Source(name="test-drift", path=inbox)],
+            archive_root=workspace_env["archive_root"],
+            render_root=workspace_env["archive_root"] / "render",
+        )
+
+        asyncio.run(run_sources(config=config, stage="all"))
+
+        payload = json.loads(export_path.read_text())
+        payload[0]["title"] = "Updated title"
+        export_path.write_text(json.dumps(payload))
+
+        second = asyncio.run(run_sources(config=config, stage="all"))
+
+        assert second.counts["conversations"] == 1
+        assert second.counts["new_conversations"] == 0
+        assert second.counts["changed_conversations"] == 1
+        assert second.drift["new"]["conversations"] == 0
+        assert second.drift["changed"]["conversations"] == 1
 
     def test_run_json_written(self, workspace_env):
         config = Config(
@@ -563,8 +591,9 @@ class TestPlanSources:
 
 class TestWriteRunJson:
     def test_creates_runs_directory(self, tmp_path):
-        from polylogue.pipeline.runner import _write_run_json
         import time
+
+        from polylogue.pipeline.runner import _write_run_json
 
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
@@ -575,8 +604,9 @@ class TestWriteRunJson:
         assert result.exists()
 
     def test_writes_correct_content(self, tmp_path):
-        from polylogue.pipeline.runner import _write_run_json
         import time
+
+        from polylogue.pipeline.runner import _write_run_json
 
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
