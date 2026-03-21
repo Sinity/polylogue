@@ -1,6 +1,13 @@
 # Polylogue Canonical Archive Platform Program
 
 Date: 2026-03-19
+Status: strategic reference, not the live execution queue
+Role: broad north-star architecture program
+
+Current execution entrypoint:
+
+- `intentional-forward-program-2026-03-21.md`
+- `planning-and-analysis-map-2026-03-21.md`
 
 Supersedes, at the program level:
 

@@ -1,3 +1,14 @@
+# Testing Gaps According To Gemini Still 2
+
+Status: external gap memo, not a canonical backlog document
+Role: input memo derived from external analysis and git-history review
+
+Current planning entrypoint:
+
+- `planning-and-analysis-map-2026-03-21.md`
+- `testing-reliability-expansion-program-2026-03-14.md`
+- `intentional-forward-program-2026-03-21.md`
+
 
 ---
 
