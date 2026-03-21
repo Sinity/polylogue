@@ -83,6 +83,21 @@ _ARTIFACT_OBSERVATION_DDL = """
 """
 
 
+_PUBLICATION_DDL = """
+        CREATE TABLE IF NOT EXISTS publications (
+            publication_id TEXT PRIMARY KEY,
+            publication_kind TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            output_dir TEXT NOT NULL,
+            duration_ms INTEGER,
+            manifest_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_publications_kind_generated
+        ON publications(publication_kind, generated_at DESC);
+"""
+
+
 # Complete target schema applied to fresh databases.
 SCHEMA_DDL = """
         CREATE TABLE IF NOT EXISTS raw_conversations (
@@ -125,6 +140,8 @@ SCHEMA_DDL = """
           AND (validation_status IS NULL OR validation_status != 'failed');
 
 """ + _ARTIFACT_OBSERVATION_DDL + """
+
+""" + _PUBLICATION_DDL + """
 
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
@@ -357,6 +374,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
     if current_version == SCHEMA_VERSION:
         conn.executescript(_ARTIFACT_OBSERVATION_DDL)
+        conn.executescript(_PUBLICATION_DDL)
         _ensure_vec0_table(conn)
         return
 

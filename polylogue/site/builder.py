@@ -10,16 +10,27 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import IO, TYPE_CHECKING
+from uuid import uuid4
 
 from jinja2 import DictLoader, Environment, Template, select_autoescape
 
 from polylogue.logging import get_logger
 from polylogue.paths import safe_path_component
+from polylogue.publication import (
+    ArchivePublicationSummary,
+    ArtifactProofSummary,
+    OutputManifest,
+    PublicationRunSummary,
+    SiteOutputSummary,
+    SitePublicationManifest,
+)
 from polylogue.rendering.core import build_rendered_message_payload
 from polylogue.rendering.renderers.html import MarkdownRenderer, PygmentsHighlighter
+from polylogue.storage.store import PublicationRecord
 from polylogue.types import SearchProvider
 
 if TYPE_CHECKING:
@@ -749,6 +760,25 @@ class ArchiveIndexStats:
         )
 
 
+@dataclass
+class ConversationPageBuildStats:
+    """Conversation-page materialization counts for one site build."""
+
+    total: int = 0
+    rendered: int = 0
+    reused: int = 0
+    failed: int = 0
+
+    def record(self, status: str) -> None:
+        self.total += 1
+        if status == "rendered":
+            self.rendered += 1
+        elif status == "reused":
+            self.reused += 1
+        elif status == "failed":
+            self.failed += 1
+
+
 class SiteBuilder:
     """Build a static HTML site from a polylogue archive.
 
@@ -822,7 +852,7 @@ class SiteBuilder:
             self._repository = ConversationRepository(backend=self._backend)
         return self._backend, self._repository
 
-    def build(self, incremental: bool = True) -> dict[str, int]:
+    def build(self, incremental: bool = True) -> SitePublicationManifest:
         """Build complete static site (sync entry point).
 
         Args:
@@ -830,41 +860,112 @@ class SiteBuilder:
                 than the conversation's updated_at timestamp.
 
         Returns:
-            Dict with counts: {"conversations": N, "index_pages": N}
+            Typed publication manifest for the completed site build.
         """
         return asyncio.run(self._build_async(incremental))
 
-    async def _build_async(self, incremental: bool = True) -> dict[str, int]:
+    async def _build_async(self, incremental: bool = True) -> SitePublicationManifest:
         """Async implementation of the site build."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        build_started = perf_counter()
         try:
-            generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+            generated_display = datetime.now().strftime("%Y-%m-%d %H:%M")
+            generated_at = datetime.now(timezone.utc).isoformat()
             archive_stats, conversation_pages = await self._scan_archive(
                 incremental=incremental
             )
 
             # Generate pages (index pages always rebuilt; conversation pages respect incremental)
-            await self._generate_root_index(archive_stats, generated_at=generated_at)
-            provider_count = await self._generate_provider_indexes(
+            await self._generate_root_index(archive_stats, generated_at=generated_display)
+            provider_index_pages = await self._generate_provider_indexes(
                 archive_stats,
-                generated_at=generated_at,
+                generated_at=generated_display,
             )
 
+            dashboard_pages = 0
             if self.config.include_dashboard:
                 await self._generate_dashboard(
                     archive_stats,
-                    generated_at=generated_at,
+                    generated_at=generated_display,
                 )
+                dashboard_pages = 1
 
             # Generate search index
+            search_status = "disabled"
             if self.config.enable_search and self.config.search_provider == "pagefind":
-                self._generate_pagefind_config()
+                search_status = await asyncio.to_thread(self._generate_pagefind_config)
+            elif self.config.enable_search:
+                search_status = "json_index_written"
 
-            return {
-                "conversations": archive_stats.total_conversations,
-                "conversation_pages": conversation_pages,
-                "index_pages": 1 + provider_count + (1 if self.config.include_dashboard else 0),
-            }
+            proof_summary = await self._artifact_proof_summary()
+            latest_run = await self._latest_run_summary()
+            artifact_manifest = await asyncio.to_thread(
+                OutputManifest.scan,
+                self.output_dir,
+                include_hashes=True,
+                exclude_paths={"site-manifest.json"},
+            )
+            duration_ms = int((perf_counter() - build_started) * 1000)
+            manifest = SitePublicationManifest(
+                publication_id=f"site-{uuid4().hex[:16]}",
+                generated_at=generated_at,
+                output_dir=str(self.output_dir),
+                duration_ms=duration_ms,
+                config={
+                    "title": self.config.title,
+                    "description": self.config.description,
+                    "enable_search": self.config.enable_search,
+                    "search_provider": str(self.config.search_provider),
+                    "conversations_per_page": self.config.conversations_per_page,
+                    "include_dashboard": self.config.include_dashboard,
+                },
+                archive=ArchivePublicationSummary(
+                    total_conversations=archive_stats.total_conversations,
+                    total_messages=archive_stats.total_messages,
+                    provider_count=len(archive_stats.provider_counts),
+                    provider_counts=dict(sorted(archive_stats.provider_counts.items())),
+                    provider_messages=dict(sorted(archive_stats.provider_messages.items())),
+                ),
+                outputs=SiteOutputSummary(
+                    root_index_pages=1,
+                    provider_index_pages=provider_index_pages,
+                    dashboard_pages=dashboard_pages,
+                    total_index_pages=1 + provider_index_pages + dashboard_pages,
+                    total_conversation_pages=conversation_pages.total,
+                    rendered_conversation_pages=conversation_pages.rendered,
+                    reused_conversation_pages=conversation_pages.reused,
+                    failed_conversation_pages=conversation_pages.failed,
+                    search_documents=(
+                        archive_stats.total_conversations if self.config.enable_search else 0
+                    ),
+                    search_enabled=self.config.enable_search,
+                    search_provider=(
+                        str(self.config.search_provider) if self.config.enable_search else None
+                    ),
+                    search_status=search_status,
+                    incremental=incremental,
+                ),
+                latest_run=latest_run,
+                artifact_proof=proof_summary,
+                artifacts=artifact_manifest,
+            )
+            manifest_path = self.output_dir / "site-manifest.json"
+            manifest_path.write_text(
+                json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            _, repository = self._open_storage()
+            await repository.record_publication(
+                PublicationRecord(
+                    publication_id=manifest.publication_id,
+                    publication_kind=manifest.publication_kind,
+                    generated_at=manifest.generated_at,
+                    output_dir=manifest.output_dir,
+                    duration_ms=manifest.duration_ms,
+                    manifest=manifest.model_dump(mode="json"),
+                )
+            )
+            return manifest
         finally:
             if self._owns_storage and self._backend is not None:
                 await self._backend.close()
@@ -905,11 +1006,15 @@ class SiteBuilder:
             "path": conversation.path,
         }
 
-    async def _scan_archive(self, *, incremental: bool) -> tuple[ArchiveIndexStats, int]:
+    async def _scan_archive(
+        self,
+        *,
+        incremental: bool,
+    ) -> tuple[ArchiveIndexStats, ConversationPageBuildStats]:
         """Scan archive summaries once and drive streaming site outputs from that pass."""
         _backend, repository = self._open_storage()
         stats = ArchiveIndexStats()
-        available_pages = 0
+        page_stats = ConversationPageBuildStats()
         search_path = self.output_dir / "search-index.json"
         search_handle: IO[str] | None = None
         wrote_search_entry = False
@@ -932,11 +1037,11 @@ class SiteBuilder:
                         search_handle.write(",")
                     json.dump(self._search_document(conversation), search_handle)
                     wrote_search_entry = True
-                available_pages += await self._generate_conversation_page(
+                page_stats.record(await self._generate_conversation_page(
                     repository,
                     conversation,
                     incremental=incremental,
-                )
+                ))
         except Exception:
             if search_handle is not None:
                 search_handle.close()
@@ -948,7 +1053,7 @@ class SiteBuilder:
                 search_handle.write("]")
                 search_handle.close()
 
-        return stats, available_pages
+        return stats, page_stats
 
     async def _iter_conversation_page_messages(
         self,
@@ -960,10 +1065,12 @@ class SiteBuilder:
             if not msg.text:
                 continue
             yield build_rendered_message_payload(
-                message_id=msg.message_id,
+                message_id=msg.id,
                 role=msg.role or "unknown",
                 text=msg.text,
-                timestamp=msg.sort_key,
+                timestamp=msg.timestamp,
+                parent_message_id=msg.parent_id,
+                branch_index=msg.branch_index,
                 render_html=self._md_renderer.render,
             )
 
@@ -973,7 +1080,7 @@ class SiteBuilder:
         conversation: ConversationIndex,
         *,
         incremental: bool = True,
-    ) -> int:
+    ) -> str:
         """Generate one conversation page, or keep an up-to-date existing one."""
         template = self.page_env.get_template("conversation.html")
         page_path = self.output_dir / conversation.path
@@ -985,11 +1092,11 @@ class SiteBuilder:
                     file_mtime = datetime.fromtimestamp(page_path.stat().st_mtime)
                     conv_updated = datetime.fromisoformat(conversation.updated_at)
                     if file_mtime > conv_updated:
-                        return 1
+                        return "reused"
                 except (ValueError, OSError):
                     pass
             else:
-                return 1
+                return "reused"
 
         try:
             await self._write_template_stream(
@@ -1004,7 +1111,7 @@ class SiteBuilder:
                     conversation.id,
                 ),
             )
-            return 1
+            return "rendered"
         except Exception as exc:
             page_path.unlink(missing_ok=True)
             logger.warning(
@@ -1012,7 +1119,7 @@ class SiteBuilder:
                 conversation.id,
                 exc,
             )
-            return 0
+            return "failed"
 
     async def _write_template_stream(
         self,
@@ -1098,6 +1205,46 @@ class SiteBuilder:
             generated_at=generated_at,
         )
 
+    async def _latest_run_summary(self) -> PublicationRunSummary | None:
+        """Return the latest pipeline run summary for manifest embedding."""
+        backend, _repository = self._open_storage()
+        record = await backend.get_latest_run()
+        if record is None:
+            return None
+        return PublicationRunSummary(
+            run_id=record.run_id,
+            timestamp=record.timestamp,
+            counts=record.counts,
+            indexed=record.indexed,
+            duration_ms=record.duration_ms,
+        )
+
+    async def _artifact_proof_summary(self) -> ArtifactProofSummary | None:
+        """Return durable artifact-proof summary for manifest embedding."""
+        backend, _repository = self._open_storage()
+
+        def _load() -> ArtifactProofSummary | None:
+            from polylogue.schemas.verification import prove_raw_artifact_coverage
+
+            report = prove_raw_artifact_coverage(db_path=backend.db_path)
+            return ArtifactProofSummary(
+                total_records=report.total_records,
+                provider_count=len(report.providers),
+                contract_backed_records=report.contract_backed_records,
+                unsupported_parseable_records=report.unsupported_parseable_records,
+                recognized_non_parseable_records=report.recognized_non_parseable_records,
+                unknown_records=report.unknown_records,
+                decode_errors=report.decode_errors,
+                linked_sidecars=report.linked_sidecars,
+                orphan_sidecars=report.orphan_sidecars,
+                subagent_streams=report.subagent_streams,
+                streams_with_sidecars=report.streams_with_sidecars,
+                artifact_counts=report.artifact_counts,
+                clean=report.is_clean,
+            )
+
+        return await asyncio.to_thread(_load)
+
     def _search_markup(self) -> str:
         """Render the search UI snippet for index pages."""
         if not self.config.enable_search:
@@ -1175,7 +1322,7 @@ class SiteBuilder:
         </script>
 """
 
-    def _generate_pagefind_config(self) -> None:
+    def _generate_pagefind_config(self) -> str:
         """Generate pagefind index.
 
         Writes pagefind config and attempts to run pagefind to build the
@@ -1205,15 +1352,12 @@ class SiteBuilder:
                     timeout=300,
                     check=True,
                 )
-                logger.info("Pagefind search index built successfully")
-            except subprocess.CalledProcessError as exc:
-                logger.warning("Pagefind indexing failed: %s", exc.stderr)
+                return "built"
+            except subprocess.CalledProcessError:
+                return "failed"
             except FileNotFoundError:
-                logger.info("Pagefind not found — search index not built")
+                return "pending"
         else:
-            logger.info(
-                "Pagefind not found in PATH. Run 'pagefind --site %s' to build search index.",
-                self.output_dir,
-            )
+            return "pending"
 
 __all__ = ["SiteBuilder", "SiteConfig", "ConversationIndex"]

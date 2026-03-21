@@ -9,16 +9,30 @@ import aiosqlite
 
 from polylogue.storage.backends.queries import (
     attachments as attachments_q,
+)
+from polylogue.storage.backends.queries import (
     conversations as conversations_q,
+)
+from polylogue.storage.backends.queries import (
     messages as messages_q,
+)
+from polylogue.storage.backends.queries import (
+    publications as publications_q,
+)
+from polylogue.storage.backends.queries import (
     raw as raw_queries,
+)
+from polylogue.storage.backends.queries import (
     runs as runs_q,
+)
+from polylogue.storage.backends.queries import (
     stats as stats_q,
 )
 from polylogue.storage.store import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    PublicationRecord,
     RunRecord,
 )
 
@@ -299,6 +313,14 @@ class SQLiteQueryStore:
         """Fetch the most recent pipeline run record."""
         async with self._connection_factory() as conn:
             return await runs_q.get_latest_run(conn)
+
+    async def get_latest_publication(
+        self,
+        publication_kind: str,
+    ) -> PublicationRecord | None:
+        """Fetch the most recent publication record for one publication kind."""
+        async with self._connection_factory() as conn:
+            return await publications_q.get_latest_publication(conn, publication_kind)
 
 
 __all__ = ["SQLiteQueryStore"]
