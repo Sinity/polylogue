@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import pytest
 
 from polylogue.lib.messages import MessageCollection
-from polylogue.lib.models import Attachment, Conversation, ConversationSummary, Message
+from polylogue.lib.models import Message
 from polylogue.lib.provider_identity import (
     canonical_runtime_provider,
     canonical_schema_provider,
@@ -443,6 +443,20 @@ def test_build_raw_payload_envelope_classifies_agent_meta_sidecars() -> None:
     )
     assert envelope.artifact.kind.value == "agent_sidecar_meta"
     assert envelope.artifact.parse_as_conversation is False
+
+
+def test_build_raw_payload_envelope_prefers_claude_subagent_path_over_codex_like_shape() -> None:
+    raw = (
+        b'{"type":"session_meta"}\n'
+        b'{"type":"response_item","payload":{"type":"message"}}\n'
+    )
+    envelope = build_raw_payload_envelope(
+        raw,
+        source_path="/tmp/claude/subagents/agent-abc.jsonl",
+        fallback_provider="claude-code",
+    )
+    assert envelope.provider is Provider.CLAUDE_CODE
+    assert envelope.artifact.kind.value == "subagent_conversation_stream"
 
 
 def test_build_raw_payload_envelope_classifies_chatgpt_user_sidecars_as_metadata() -> None:
