@@ -7,11 +7,13 @@ import csv
 import io
 import json
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
+from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
 from rich.console import Console
 
@@ -55,6 +57,16 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
     ui.plain = True
     ui.console = MagicMock()
     ui.confirm = MagicMock(return_value=True)
+    if repo is not None:
+        queries = repo.queries
+        if not isinstance(queries.get_conversation, AsyncMock):
+            queries.get_conversation = AsyncMock(return_value=None)
+        if not isinstance(queries.get_conversation_stats, AsyncMock):
+            queries.get_conversation_stats = AsyncMock(return_value={})
+        if not isinstance(queries.get_message_counts_batch, AsyncMock):
+            queries.get_message_counts_batch = AsyncMock(return_value={})
+        if not isinstance(queries.aggregate_message_stats, AsyncMock):
+            queries.aggregate_message_stats = AsyncMock(return_value={})
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
 
 
@@ -94,7 +106,7 @@ def _csv_rows(case) -> list[dict[str, str]]:
 def _sample_summary_spec() -> ConversationSummarySpec:
     return ConversationSummarySpec(
         conversation_id="conv-law-1",
-        provider="claude",
+        provider="claude-ai",
         title="Lawful Conversation",
         summary="summary",
         tags=("law",),
@@ -144,7 +156,7 @@ def _build_plan(case: str) -> QueryExecutionPlan:
 def _sample_conversation() -> Conversation:
     return Conversation(
         id="conv-transform",
-        provider="claude",
+        provider="claude-ai",
         title="Transform Contract",
         messages=[
             Message(id="m-user", role="user", text="hello"),
@@ -163,7 +175,7 @@ def _sample_conversation() -> Conversation:
 def _sample_output_conversation(conversation_id: str = "conv-output") -> Conversation:
     return Conversation(
         id=conversation_id,
-        provider="claude",
+        provider="claude-ai",
         title="Output Contract",
         messages=[
             Message(id=f"{conversation_id}-user", role="user", text="hello"),
@@ -291,7 +303,7 @@ def test_delete_conversations_contract(case) -> None:
 @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
 def test_output_summary_list_contract(case, output_format: str) -> None:
     repo = MagicMock()
-    repo.get_message_counts_batch = AsyncMock(return_value=build_message_counts(case.summaries))
+    repo.queries.get_message_counts_batch = AsyncMock(return_value=build_message_counts(case.summaries))
     env = _make_env(repo=repo)
     summaries = [build_conversation_summary(spec) for spec in case.summaries]
     params = {"output_format": output_format}
@@ -481,7 +493,7 @@ def test_render_conversation_rich_contract() -> None:
     env, buffer = _make_recording_env()
     conversation = Conversation(
         id="conv-rich",
-        provider="claude",
+        provider="claude-ai",
         title="Rich Contract",
         messages=[
             Message(id="m-user", role="user", text="**Hello** world"),
@@ -499,7 +511,7 @@ def test_render_conversation_rich_contract() -> None:
 
     rendered = buffer.getvalue()
     assert "Rich Contract" in rendered
-    assert "claude" in rendered
+    assert "claude-ai" in rendered
     assert "User" in rendered
     assert "Hello" in rendered
     assert "Thinking" in rendered
@@ -568,7 +580,7 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         patch("polylogue.cli.query_actions.resolve_stream_target", new_callable=AsyncMock, return_value="conv-stream") as mock_stream_target,
         patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock) as mock_stream_conversation,
     ):
-        repo.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
+        repo.queries.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
         asyncio.run(async_execute_query(env, {"limit": 7}))
 
     plan.selection.build_filter.assert_called_once_with(repo, vector_provider=None)
@@ -585,7 +597,7 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
     elif expected_helper == "stats_by_summaries":
         filter_chain.list.assert_not_called()
         filter_chain.list_summaries.assert_awaited_once()
-        repo.get_message_counts_batch.assert_awaited_once_with([str(summary.id)])
+        repo.queries.get_message_counts_batch.assert_awaited_once_with([str(summary.id)])
         mock_output_stats_by_summaries.assert_called_once()
         mock_output_stats_by.assert_not_called()
     elif expected_helper == "modify":
@@ -721,14 +733,14 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
 @pytest.mark.parametrize(
     ("params", "expected_lines"),
     [
-        (
-            {"provider": "claude", "limit": 5},
-            [
-                "No conversations matched filters:",
-                "  provider: claude",
-                "Hint: try broadening your filters or use --list to browse",
-            ],
-        ),
+            (
+                {"provider": "claude-ai", "limit": 5},
+                [
+                    "No conversations matched filters:",
+                    "  provider: claude-ai",
+                    "Hint: try broadening your filters or use --list to browse",
+                ],
+            ),
         (
             ConversationQuerySpec(),
             ["No conversations matched."],
@@ -773,7 +785,7 @@ def test_apply_transform_contract(transform: str, expected_ids: list[str]) -> No
 async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
     env = _make_env()
     repo = MagicMock()
-    repo.aggregate_message_stats = AsyncMock(
+    repo.queries.aggregate_message_stats = AsyncMock(
         return_value={
             "total": 9,
             "user": 4,
@@ -782,13 +794,13 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
             "attachments": 2,
             "min_sort_key": 1704067200,
             "max_sort_key": 1704153600,
-            "providers": {"claude": 2, "chatgpt": 1},
+            "providers": {"claude-ai": 2, "chatgpt": 1},
         }
     )
     summary_specs = (
         ConversationSummarySpec(
             conversation_id="conv-a",
-            provider="claude",
+            provider="claude-ai",
             title="A",
             summary="",
             tags=(),
@@ -809,7 +821,7 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
     )
     summaries = [build_conversation_summary(spec) for spec in summary_specs]
     filter_chain = MagicMock()
-    filter_chain.describe.return_value = ["provider=claude", "tag=law"]
+    filter_chain.describe.return_value = ["provider=claude-ai", "tag=law"]
     filter_chain.can_use_summaries.return_value = True
     filter_chain.list_summaries = AsyncMock(return_value=summaries)
 
@@ -817,13 +829,13 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
 
     filter_chain.list_summaries.assert_awaited_once()
     filter_chain.count.assert_not_called()
-    repo.aggregate_message_stats.assert_awaited_once_with(["conv-a", "conv-b"])
+    repo.queries.aggregate_message_stats.assert_awaited_once_with(["conv-a", "conv-b"])
     printed = [call.args[0] for call in env.ui.console.print.call_args_list if call.args]
     assert printed == [
         "\nConversations: 2\n",
         "Messages: 9 total (4 user, 5 assistant)",
         "Words: ~42",
-        "Providers: claude (2), chatgpt (1)",
+        "Providers: claude-ai (2), chatgpt (1)",
         "Attachments: 2",
         "Date range: 2024-01-01 to 2024-01-02",
     ]
@@ -833,14 +845,14 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
 @pytest.mark.parametrize(
     ("described", "can_use_summaries", "expected_message"),
     [
-        (["provider=claude"], True, "No conversations matched."),
+        (["provider=claude-ai"], True, "No conversations matched."),
         ([], False, "No conversations in archive."),
     ],
 )
 async def test_output_stats_sql_empty_paths_contract(described: list[str], can_use_summaries: bool, expected_message: str) -> None:
     env = _make_env()
     repo = MagicMock()
-    repo.aggregate_message_stats = AsyncMock()
+    repo.queries.aggregate_message_stats = AsyncMock()
 
     filter_chain = MagicMock()
     filter_chain.describe.return_value = described
@@ -851,4 +863,161 @@ async def test_output_stats_sql_empty_paths_contract(described: list[str], can_u
     await output_stats_sql(env, filter_chain, repo)
 
     env.ui.console.print.assert_called_once_with(expected_message)
-    repo.aggregate_message_stats.assert_not_called()
+    repo.queries.aggregate_message_stats.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Merged from test_search.py (2026-03-15)
+# ---------------------------------------------------------------------------
+
+# =============================================================================
+# TEST DATA TABLES (module-level constants)
+# =============================================================================
+
+SEARCH_FILTER_CASES = [
+    ("provider", ["Python", "-p", "chatgpt"], 0, None),
+    ("since_valid", ["Python", "--since", "__DYNAMIC_DATE__"], 0, None),
+    ("since_invalid", ["Python", "--since", "not-a-date"], 1, "date"),
+    ("limit_list", ["JavaScript", "--limit", "1", "--list"], 0, None),
+]
+
+SEARCH_FORMAT_CASES = [
+    ("json_list", ["Python", "-f", "json", "--list"], "json_list"),
+    ("json_single", ["JavaScript", "-f", "json", "--limit", "1"], "json_single"),
+    ("list_mode", ["async", "--list"], "plain_list"),
+    ("markdown", ["Rust", "-f", "markdown", "--limit", "1"], "markdown"),
+]
+
+
+class TestSearchQueryContracts:
+    """Matrix coverage for search filters and output formats."""
+
+    @pytest.mark.parametrize(
+        "case_id,args,expected_exit,error_hint",
+        SEARCH_FILTER_CASES,
+    )
+    def test_filter_contract(self, search_workspace, case_id, args, expected_exit, error_hint):
+        """Filter flags produce expected status codes and validation behavior."""
+        from datetime import datetime, timedelta
+        from polylogue.cli import cli
+
+        runner = CliRunner()
+        resolved_args = list(args)
+        if "__DYNAMIC_DATE__" in resolved_args:
+            idx = resolved_args.index("__DYNAMIC_DATE__")
+            resolved_args[idx] = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+
+        result = runner.invoke(cli, ["--plain", *resolved_args])
+        assert result.exit_code == expected_exit, case_id
+        if error_hint:
+            assert error_hint in result.output.lower(), case_id
+
+    @pytest.mark.parametrize(
+        "case_id,args,expectation",
+        SEARCH_FORMAT_CASES,
+    )
+    def test_output_contract(self, search_workspace, case_id, args, expectation):
+        """Output format combinations produce parseable and mode-consistent output."""
+        from polylogue.cli import cli
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--plain", *args])
+        assert result.exit_code == 0, case_id
+
+        if expectation == "json_list":
+            data = json.loads(result.output)
+            assert isinstance(data, list), case_id
+            assert data and "id" in data[0], case_id
+        elif expectation == "json_single":
+            data = json.loads(result.output)
+            assert isinstance(data, (list, dict)), case_id
+        elif expectation == "plain_list":
+            assert result.output.strip(), case_id
+        elif expectation == "markdown":
+            assert "#" in result.output or "Rust" in result.output, case_id
+
+
+class TestSearchEdgeCases:
+    """Tests for edge cases and error handling."""
+
+    def test_search_no_results(self, search_workspace):
+        """Handle query with no matching results."""
+        from polylogue.cli import cli
+        runner = CliRunner()
+        # Query mode with non-matching term
+        result = runner.invoke(cli, ["--plain", "nonexistent_term_xyz"])
+        # exit_code 2 = no results (valid outcome)
+        assert result.exit_code == 2
+        assert "no conversation" in result.output.lower() or "matched" in result.output.lower()
+
+    def test_stats_mode_no_filters(self, cli_workspace, monkeypatch):
+        """Stats mode when no query terms or filters provided."""
+        from polylogue.cli import cli
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
+        monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        runner = CliRunner()
+        # No args = stats mode in query-first CLI
+        result = runner.invoke(cli, ["--plain"])
+        assert result.exit_code == 0
+        # Should show stats, not require query
+
+    def test_search_case_insensitive(self, search_workspace):
+        """Search is case-insensitive."""
+        from polylogue.cli import cli
+        runner = CliRunner()
+        # Query mode with --list to ensure consistent output
+        result_lower = runner.invoke(cli, ["--plain", "python", "-f", "json", "--list"])
+        result_upper = runner.invoke(cli, ["--plain", "PYTHON", "-f", "json", "--list"])
+
+        # Both should have same exit code
+        assert result_lower.exit_code == result_upper.exit_code
+
+        if result_lower.exit_code == 0:
+            # Both should find results (FTS5 is case-insensitive by default)
+            data_lower = json.loads(result_lower.output)
+            data_upper = json.loads(result_upper.output)
+            assert len(data_lower) > 0
+            assert len(data_upper) > 0
+
+    def test_search_multiple_terms(self, search_workspace):
+        """Search with multiple query terms."""
+        from polylogue.cli import cli
+        runner = CliRunner()
+        # Query mode: multiple positional args = multiple query terms
+        result = runner.invoke(cli, ["--plain", "Python", "exception", "-f", "json", "--list"])
+        assert result.exit_code in (0, 2)
+        if result.exit_code == 0:
+            data = json.loads(result.output)
+            assert isinstance(data, list)
+
+
+class TestSearchIndexRebuild:
+    """Tests for automatic index rebuild on missing index."""
+
+    def test_search_handles_missing_index(self, cli_workspace, monkeypatch):
+        """Search handles missing index gracefully."""
+        from polylogue.cli import cli
+        from tests.infra.storage_records import DbFactory
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
+        monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        # Create conversation without building index
+        db_path = cli_workspace["db_path"]
+        factory = DbFactory(db_path)
+        factory.create_conversation(
+            id="c1",
+            provider="test",
+            title="Test",
+            messages=[{"id": "m1", "role": "user", "text": "searchable content"}],
+        )
+
+        runner = CliRunner()
+        # Query mode
+        result = runner.invoke(cli, ["--plain", "searchable"])
+        # Should either succeed (rebuild worked) or report no results.
+        assert result.exit_code in (0, 2)
+        if result.exit_code == 0:
+            assert "searchable" in result.output.lower() or "c1" in result.output
+        else:
+            assert "no conversation" in result.output.lower() or "matched" in result.output.lower()

@@ -7,14 +7,20 @@ clearest specification.
 
 from __future__ import annotations
 
+import subprocess
+import tempfile
+import webbrowser
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import click
 import pytest
 
+from polylogue.cli.click_app import cli as click_cli
+from polylogue.cli.query_plan import QueryAction, QueryRoute
 from polylogue.cli.types import AppEnv
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
@@ -27,7 +33,7 @@ def _make_msg(id: str, role: str, text: str, *, timestamp=None, provider_meta=No
 
 def _make_conv(
     id: str = "conv-1",
-    provider: str = "claude",
+    provider: str = "claude-ai",
     title: str = "Test Conversation",
     messages: list[Message] | None = None,
 ) -> Conversation:
@@ -42,7 +48,7 @@ def _make_conv(
 def _make_summary(id: str = "conv-1") -> ConversationSummary:
     return ConversationSummary(
         id=id,
-        provider="claude",
+        provider="claude-ai",
         title="Test",
         created_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
         updated_at=datetime(2025, 1, 15, tzinfo=timezone.utc),
@@ -55,6 +61,16 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
     ui.plain = True
     ui.console = MagicMock()
     ui.confirm = MagicMock(return_value=True)
+    if repo is not None:
+        queries = repo.queries
+        if not isinstance(queries.get_conversation, AsyncMock):
+            queries.get_conversation = AsyncMock(return_value=None)
+        if not isinstance(queries.get_conversation_stats, AsyncMock):
+            queries.get_conversation_stats = AsyncMock(return_value={})
+        if not isinstance(queries.get_message_counts_batch, AsyncMock):
+            queries.get_message_counts_batch = AsyncMock(return_value={})
+        if not isinstance(queries.aggregate_message_stats, AsyncMock):
+            queries.aggregate_message_stats = AsyncMock(return_value={})
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
 
 
@@ -153,8 +169,8 @@ async def test_stream_conversation_output_contract(output_format: str, dialogue_
     from polylogue.cli.query_output import stream_conversation
 
     repo = MagicMock()
-    repo.get_conversation = AsyncMock(return_value=SimpleNamespace(title="Test Title"))
-    repo.get_conversation_stats = AsyncMock(return_value={"dialogue_messages": 1, "total_messages": 2})
+    repo.queries.get_conversation = AsyncMock(return_value=SimpleNamespace(title="Test Title"))
+    repo.queries.get_conversation_stats = AsyncMock(return_value={"dialogue_messages": 1, "total_messages": 2})
 
     async def _iter_messages(*_args, **_kwargs):
         messages = [_make_msg("m1", "user", "Hello"), _make_msg("m2", "assistant", "Hi")]
@@ -181,7 +197,7 @@ async def test_stream_conversation_errors_for_missing_conversation() -> None:
     from polylogue.cli.query_output import stream_conversation
 
     repo = MagicMock()
-    repo.get_conversation = AsyncMock(return_value=None)
+    repo.queries.get_conversation = AsyncMock(return_value=None)
     env = _make_env(repo=repo, config=MagicMock())
 
     with patch("click.echo") as mock_echo, pytest.raises(SystemExit) as exc_info:
@@ -288,3 +304,111 @@ def test_open_result_contract(results, render_root_exists: bool, html_exists: bo
             assert expected_open_name in opened
             env.ui.console.print.assert_called_once()
             mock_echo.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Merged from test_query.py (2026-03-15)
+# ---------------------------------------------------------------------------
+
+# Note: test_execute_query_stream_target_resolution_contract and related streaming
+# tests from test_query.py are already in this file above (lines 101-140).
+# The parametrize decorator was missing in the original test_query_exec.py and
+# is now added via merge from test_query.py.
+
+
+# ---------------------------------------------------------------------------
+# Merged from test_query_plan.py (2026-03-15)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildQueryExecutionPlan:
+    def test_delete_without_filters_raises(self) -> None:
+        from polylogue.cli.query_plan import QueryPlanError, build_query_execution_plan
+        with pytest.raises(QueryPlanError, match="--delete requires at least one filter"):
+            build_query_execution_plan({"delete_matched": True, "query": ()})
+
+    @pytest.mark.parametrize(
+        ("params", "expected_action"),
+        [
+            ({"count_only": True, "query": ()}, QueryAction.COUNT),
+            ({"stream": True, "query": ("abc",)}, QueryAction.STREAM),
+            ({"stats_only": True, "query": ()}, QueryAction.STATS),
+            ({"stats_by": "provider", "query": ()}, QueryAction.STATS_BY),
+            ({"add_tag": ["x"], "query": ()}, QueryAction.MODIFY),
+            ({"delete_matched": True, "provider": "claude-ai", "query": ()}, QueryAction.DELETE),
+            ({"open_result": True, "query": ("abc",)}, QueryAction.OPEN),
+            ({"query": ("abc",)}, QueryAction.SHOW),
+        ],
+    )
+    def test_action_selection(self, params: dict[str, object], expected_action: QueryAction) -> None:
+        from polylogue.cli.query_plan import build_query_execution_plan
+        plan = build_query_execution_plan(params)
+        assert plan.action == expected_action
+
+    def test_stream_format_converts_json_to_json_lines(self) -> None:
+        from polylogue.cli.query_plan import build_query_execution_plan
+        plan = build_query_execution_plan({"stream": True, "output_format": "json", "query": ("abc",)})
+        assert plan.output.stream_format() == "json-lines"
+
+    def test_summary_list_preference_requires_plain_listing_shape(self) -> None:
+        from polylogue.cli.query_plan import build_query_execution_plan
+        plan = build_query_execution_plan({"list_mode": True, "query": ("abc",)})
+        assert plan.prefers_summary_list() is True
+
+        transformed = build_query_execution_plan({"list_mode": True, "transform": "strip-tools", "query": ("abc",)})
+        assert transformed.prefers_summary_list() is False
+
+    def test_mutation_fields_are_normalized(self) -> None:
+        from polylogue.cli.query_plan import build_query_execution_plan
+        plan = build_query_execution_plan(
+            {
+                "set_meta": [("priority", 3)],
+                "add_tag": ["todo", "review"],
+                "force": True,
+                "dry_run": True,
+                "provider": "claude-ai",
+                "query": (),
+            }
+        )
+        assert plan.mutation.set_meta == (("priority", "3"),)
+        assert plan.mutation.add_tags == ("todo", "review")
+        assert plan.mutation.force is True
+        assert plan.mutation.dry_run is True
+
+    @pytest.mark.parametrize(
+        ("params", "can_use_summaries", "expected_route"),
+        [
+            ({"count_only": True, "query": ()}, False, QueryRoute.COUNT),
+            ({"list_mode": True, "query": ("abc",)}, True, QueryRoute.SUMMARY_LIST),
+            ({"list_mode": True, "query": ("abc",)}, False, QueryRoute.SHOW),
+            ({"stream": True, "query": ("abc",)}, False, QueryRoute.STREAM),
+            ({"stats_only": True, "query": ()}, True, QueryRoute.STATS_SQL),
+            ({"stats_by": "provider", "query": ()}, True, QueryRoute.SUMMARY_STATS),
+            ({"stats_by": "provider", "query": ()}, False, QueryRoute.STATS_BY),
+            (
+                {"set_meta": [("priority", "1")], "query": ("abc",)},
+                True,
+                QueryRoute.SUMMARY_MODIFY,
+            ),
+            (
+                {"set_meta": [("priority", "1")], "query": ("abc",)},
+                False,
+                QueryRoute.MODIFY,
+            ),
+            (
+                {"delete_matched": True, "provider": "claude-ai", "query": ()},
+                True,
+                QueryRoute.SUMMARY_DELETE,
+            ),
+            (
+                {"delete_matched": True, "provider": "claude-ai", "query": ()},
+                False,
+                QueryRoute.DELETE,
+            ),
+            ({"open_result": True, "query": ("abc",)}, False, QueryRoute.OPEN),
+        ],
+    )
+    def test_route_resolution(self, params: dict[str, object], can_use_summaries: bool, expected_route: QueryRoute) -> None:
+        from polylogue.cli.query_plan import build_query_execution_plan, resolve_query_route
+        plan = build_query_execution_plan(params)
+        assert resolve_query_route(plan, can_use_summaries=can_use_summaries) == expected_route

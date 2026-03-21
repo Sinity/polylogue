@@ -28,7 +28,7 @@ def _table_names(conn: sqlite3.Connection) -> set[str]:
 def _build_record(conversation_id: str = "conv-1") -> ConversationRecord:
     return ConversationRecord(
         conversation_id=conversation_id,
-        provider_name="claude",
+        provider_name="claude-ai",
         provider_conversation_id=conversation_id,
         title="Test",
         created_at="2025-01-01T00:00:00Z",
@@ -51,6 +51,7 @@ def test_ensure_schema_contract(tmp_path: Path) -> None:
     assert {"conversations", "messages", "attachments", "attachment_refs", "runs"}.issubset(
         _table_names(conn)
     )
+    assert "message_meta" not in _table_names(conn)
     conn.close()
 
 

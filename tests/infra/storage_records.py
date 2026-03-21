@@ -596,7 +596,7 @@ def make_conversation(
     """Quick conversation record creation without storing.
 
     Usage:
-        conv = make_conversation("conv1", provider_name="claude", title="My Conv")
+        conv = make_conversation("conv1", provider_name="claude-ai", title="My Conv")
     """
     now = datetime.now(timezone.utc).isoformat()
     return ConversationRecord(

@@ -1,0 +1,26 @@
+Usage: cli site [OPTIONS]
+
+  Generate a static HTML site from the archive.
+
+  Creates a browsable website with:
+
+  - Index page with recent conversations
+  - Per-provider index pages
+  - Dashboard with archive statistics
+  - Client-side search (pagefind or lunr.js)
+
+  Examples:
+      polylogue site                       # Build to default location
+      polylogue site -o ./public           # Build to custom directory
+      polylogue site --title "My Archive"  # Custom site title
+      polylogue site --no-search           # Disable search index
+
+Options:
+  -o, --output PATH               Output directory for generated site (default:
+                                  ~/.local/share/polylogue/site)
+  --title TEXT                    Site title
+  --search / --no-search          Enable client-side search (default: enabled)
+  --search-provider [pagefind|lunr]
+                                  Search index provider (default: pagefind)
+  --dashboard / --no-dashboard    Generate dashboard page (default: enabled)
+  -h, --help                      Show this message and exit.

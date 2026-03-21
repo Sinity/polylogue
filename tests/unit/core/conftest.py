@@ -31,7 +31,7 @@ def populated_db(db_path: Path) -> Path:
      .save())
 
     (ConversationBuilder(db_path, "conv-2")
-     .provider("claude")
+     .provider("claude-ai")
      .title("With Attachments")
      .add_message("msg-2-1", role="user", text="Here is an image")
      .add_attachment("att-1", message_id="msg-2-1", mime_type="image/png", size_bytes=1024)
@@ -58,10 +58,10 @@ def mock_schema_dir(tmp_path):
         "additionalProperties": False,
     }
 
-    (schema_dir / "test-provider.schema.json").write_text(json.dumps(test_schema), encoding="utf-8")
+    (schema_dir / "chatgpt.schema.json").write_text(json.dumps(test_schema), encoding="utf-8")
 
     open_schema = {"type": "object", "properties": {"id": {"type": "string"}}, "additionalProperties": {}}
-    (schema_dir / "open-provider.schema.json").write_text(json.dumps(open_schema), encoding="utf-8")
+    (schema_dir / "codex.schema.json").write_text(json.dumps(open_schema), encoding="utf-8")
 
     return schema_dir
 
@@ -74,10 +74,10 @@ def make_filter_repo(tmp_path):
 
         async def test_something(make_filter_repo):
             repo = make_filter_repo([
-                {"id": "c1", "provider": "claude", "title": "Test Conv",
+                {"id": "c1", "provider": "claude-ai", "title": "Test Conv",
                  "messages": [{"id": "m1", "role": "user", "text": "hello"}]},
             ])
-            result = await ConversationFilter(repo).provider("claude").list()
+            result = await ConversationFilter(repo).provider("claude-ai").list()
 
     Each conversation dict accepts:
         id (str): required

@@ -24,7 +24,9 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from polylogue.sources.parsers import chatgpt, claude, codex
+from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.sources import iter_source_conversations
+from polylogue.sources.parsers import chatgpt, claude, codex, drive
 from polylogue.sources.parsers.base import ParsedConversation, attachment_from_meta, extract_messages_from_list
 from tests.infra.strategies import (
     chatgpt_export_strategy,
@@ -32,6 +34,7 @@ from tests.infra.strategies import (
     claude_ai_export_strategy,
     claude_code_message_strategy,
     codex_message_strategy,
+    gemini_export_strategy,
     message_strategy,
 )
 from tests.infra.strategies.providers import claude_code_session_strategy, codex_session_strategy
@@ -58,6 +61,11 @@ def _claude_ai_message_count(export: dict[str, Any]) -> int:
 
 def _jsonl_record_count(records: list[dict[str, Any]]) -> int:
     return len([record for record in records if isinstance(record, dict)])
+
+
+def _gemini_chunk_count(export: dict[str, Any]) -> int:
+    chunks = export.get("chunkedPrompt", {}).get("chunks", [])
+    return len([c for c in chunks if isinstance(c, dict) and c.get("text") and c.get("role")])
 
 
 @dataclass(frozen=True)
@@ -120,7 +128,7 @@ PARSER_CASES: tuple[ParserCase, ...] = (
         strategy=claude_ai_export_strategy(min_messages=1, max_messages=10),
         parse=lambda payload: claude.parse_ai(payload, "fallback"),
         looks_like=claude.looks_like_ai,
-        expected_provider="claude",
+        expected_provider="claude-ai",
         message_cap=_claude_ai_message_count,
         id_oracle=lambda export: str(
             export.get("id") or export.get("uuid") or export.get("conversation_id") or "fallback"
@@ -143,6 +151,14 @@ PARSER_CASES: tuple[ParserCase, ...] = (
         expected_provider="codex",
         message_cap=_jsonl_record_count,
         extra_assertion=_assert_codex_text_recovery,
+    ),
+    ParserCase(
+        name="gemini",
+        strategy=gemini_export_strategy(min_messages=1, max_messages=10),
+        parse=lambda payload: drive.parse_chunked_prompt("gemini", payload, "fallback"),
+        looks_like=drive.looks_like,
+        expected_provider="gemini",
+        message_cap=_gemini_chunk_count,
     ),
 )
 
@@ -210,7 +226,14 @@ def test_claude_code_message_type_contract(msg: dict[str, Any]) -> None:
     if not result.messages:
         return
     parsed = result.messages[0]
-    if msg.get("type") == "user":
+    # ClaudeCodeRecord.role precedence: message.role > type field.
+    # When message.role is present and valid, it overrides the type field.
+    inner_role = None
+    if isinstance(msg.get("message"), dict):
+        inner_role = msg["message"].get("role")
+    if isinstance(inner_role, str) and inner_role in {"user", "assistant", "system", "tool"}:
+        assert parsed.role == inner_role
+    elif msg.get("type") == "user":
         assert parsed.role == "user"
     elif msg.get("type") == "assistant":
         assert parsed.role == "assistant"
@@ -292,3 +315,94 @@ def test_attachment_extraction_preserves_metadata(attachment_meta: dict[str, Any
             assert any(c in result.name for c in original_name if c.isprintable())
     assert result.mime_type == attachment_meta["mime_type"]
     assert result.size_bytes == attachment_meta["size"]
+
+
+# =============================================================================
+# MERGED FROM test_seeded_parser_contracts.py (contract tests for seeded data)
+# =============================================================================
+
+
+@pytest.fixture(params=sorted(SyntheticCorpus.available_providers()) or ["chatgpt"])
+def provider_conversations(request, synthetic_source):
+    """Parse synthetic data for each available provider."""
+    provider = request.param
+    try:
+        source = synthetic_source(provider, count=3, seed=42)
+    except FileNotFoundError:
+        pytest.skip(f"No schema for {provider}")
+
+    convos = list(iter_source_conversations(source))
+    if not convos:
+        pytest.skip(f"No conversations parsed for {provider}")
+
+    return provider, convos
+
+
+class TestTimestampParseability:
+    """All parsed timestamps should be valid ISO 8601 or epoch values."""
+
+    def test_message_timestamps_are_parseable(self, provider_conversations):
+        """Every message with a timestamp has a parseable value."""
+        from polylogue.lib.timestamps import parse_timestamp
+
+        provider, convos = provider_conversations
+        for conv in convos:
+            for msg in conv.messages:
+                if msg.timestamp is not None:
+                    # Should be a datetime already (parsed by provider parser)
+                    # or a string that parse_timestamp can handle
+                    if isinstance(msg.timestamp, str):
+                        parsed = parse_timestamp(msg.timestamp)
+                        assert parsed is not None, (
+                            f"{provider}: unparseable timestamp {msg.timestamp!r} "
+                            f"in conversation {conv.provider_conversation_id}"
+                        )
+
+
+class TestConversationIdUniqueness:
+    """Parsed conversations should have unique IDs within a provider."""
+
+    def test_conversation_ids_are_unique(self, provider_conversations):
+        """No duplicate provider_conversation_id within one parse run."""
+        provider, convos = provider_conversations
+        ids = [c.provider_conversation_id for c in convos]
+        assert len(ids) == len(set(ids)), (
+            f"{provider}: duplicate conversation IDs: "
+            f"{[cid for cid in ids if ids.count(cid) > 1]}"
+        )
+
+
+class TestMessageOrderConsistency:
+    """Messages within a conversation should maintain insertion order."""
+
+    def test_messages_have_consistent_roles(self, provider_conversations):
+        """Messages alternate between user-like and assistant-like roles."""
+        provider, convos = provider_conversations
+        user_roles = {"user", "human"}
+        assistant_roles = {"assistant", "model"}
+
+        for conv in convos:
+            if len(conv.messages) < 2:
+                continue
+            # Verify at least one user and one assistant message exist
+            roles = {m.role for m in conv.messages}
+            has_user = bool(roles & user_roles)
+            has_assistant = bool(roles & assistant_roles)
+            assert has_user or has_assistant, (
+                f"{provider}: conversation has no user or assistant messages, "
+                f"roles: {roles}"
+            )
+
+
+class TestNonEmptyContent:
+    """Parsed conversations should have meaningful content."""
+
+    def test_at_least_one_message_has_text(self, provider_conversations):
+        """Every conversation has at least one message with non-empty text."""
+        provider, convos = provider_conversations
+        for conv in convos:
+            texts = [m.text for m in conv.messages if m.text]
+            assert len(texts) > 0, (
+                f"{provider}: conversation {conv.provider_conversation_id} "
+                f"has no messages with text"
+            )

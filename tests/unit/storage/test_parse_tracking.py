@@ -213,7 +213,7 @@ class TestResetParseStatus:
 
     async def _populate(self, backend: SQLiteBackend) -> None:
         """Create 3 raw records, mark 2 as parsed."""
-        for i, provider in enumerate(["chatgpt", "chatgpt", "claude"]):
+        for i, provider in enumerate(["chatgpt", "chatgpt", "claude-ai"]):
             await backend.save_raw_conversation(RawConversationRecord(
                 raw_id=f"raw-{i}",
                 provider_name=provider,
@@ -273,7 +273,7 @@ class TestResetValidationStatus:
         return SQLiteBackend(db_path=tmp_path / "test.db")
 
     async def _populate(self, backend: SQLiteBackend) -> None:
-        for i, provider in enumerate(["chatgpt", "chatgpt", "claude"]):
+        for i, provider in enumerate(["chatgpt", "chatgpt", "claude-ai"]):
             await backend.save_raw_conversation(RawConversationRecord(
                 raw_id=f"raw-{i}",
                 provider_name=provider,
@@ -292,9 +292,9 @@ class TestResetValidationStatus:
             "raw-2",
             status="failed",
             error="bad schema",
-            provider="claude",
+            provider="claude-ai",
             mode="strict",
-            payload_provider="claude",
+            payload_provider="claude-ai",
         )
 
     async def test_reset_all(self, backend: SQLiteBackend) -> None:
@@ -312,7 +312,7 @@ class TestResetValidationStatus:
         rec2 = await backend.get_raw_conversation("raw-2")
         assert rec0 is not None and rec2 is not None
         assert rec0.payload_provider == "chatgpt"
-        assert rec2.payload_provider == "claude"
+        assert rec2.payload_provider == "claude-ai"
 
     async def test_reset_by_provider(self, backend: SQLiteBackend) -> None:
         await self._populate(backend)
@@ -325,7 +325,7 @@ class TestResetValidationStatus:
         assert rec0.validation_status is None
         assert rec2.validation_status == "failed"
         assert rec0.payload_provider == "chatgpt"
-        assert rec2.payload_provider == "claude"
+        assert rec2.payload_provider == "claude-ai"
 
 
 # ─── Mtime skip integration test ──────────────────────────────────────────

@@ -29,8 +29,9 @@ except ImportError:
 
 from polylogue.lib.raw_payload import extract_payload_samples
 from polylogue.schemas.registry import SchemaRegistry, canonical_schema_provider
+from polylogue.types import Provider
 
-_RECORD_VALIDATION_PROVIDERS = {"claude-code", "codex"}
+_RECORD_VALIDATION_PROVIDERS = {Provider.CLAUDE_CODE, Provider.CODEX}
 
 _UUID_KEY_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -73,9 +74,9 @@ class SchemaValidator:
 
     # Class-level cache: avoids re-reading schema files and re-compiling
     # validators for the same provider during a pipeline run.
-    _cache: dict[tuple[str, bool], SchemaValidator] = {}
+    _cache: dict[tuple[str, str, str, bool], SchemaValidator] = {}
 
-    def __init__(self, schema: dict[str, Any], strict: bool = True, provider: str | None = None):
+    def __init__(self, schema: dict[str, Any], strict: bool = True, provider: Provider | None = None):
         """Initialize validator with a schema.
 
         Args:
@@ -91,12 +92,12 @@ class SchemaValidator:
         self._validator = Draft202012Validator(schema)
 
     @classmethod
-    def canonical_provider(cls, provider: str) -> str:
-        """Map runtime provider aliases to canonical schema provider names."""
-        return canonical_schema_provider(provider)
+    def canonical_provider(cls, provider: str | Provider) -> Provider:
+        """Normalize provider names to canonical schema provider names."""
+        return Provider.from_string(canonical_schema_provider(str(provider)))
 
     @classmethod
-    def for_provider(cls, provider: str, strict: bool = True) -> SchemaValidator:
+    def for_provider(cls, provider: str | Provider, strict: bool = True) -> SchemaValidator:
         """Create a validator for a specific provider, caching by (provider, strict).
 
         Args:
@@ -110,14 +111,70 @@ class SchemaValidator:
             FileNotFoundError: If no schema exists for the provider
         """
         canonical_provider = cls.canonical_provider(provider)
-        key = (canonical_provider, strict)
+        registry = SchemaRegistry()
+        package = registry.get_package(str(canonical_provider), version="default") if hasattr(registry, "get_package") else None
+        package_version = package.version if package is not None else "latest"
+        element_kind = package.default_element_kind if package is not None else "default"
+        key = (str(canonical_provider), package_version, element_kind, strict)
         cached = cls._cache.get(key)
         if cached is not None:
             return cached
 
-        schema = SchemaRegistry().get_schema(canonical_provider, version="latest")
+        if package is not None and hasattr(registry, "get_element_schema"):
+            schema = registry.get_element_schema(
+                str(canonical_provider),
+                version=package.version,
+                element_kind=package.default_element_kind,
+            )
+        else:
+            schema = registry.get_schema(str(canonical_provider), version="latest")
         if schema is None:
             raise FileNotFoundError(f"No schema found for provider: {provider} (canonical: {canonical_provider})")
+        instance = cls(schema, strict=strict, provider=canonical_provider)
+        cls._cache[key] = instance
+        return instance
+
+    @classmethod
+    def for_payload(
+        cls,
+        provider: str | Provider,
+        payload: Any,
+        *,
+        source_path: str | None = None,
+        strict: bool = True,
+    ) -> SchemaValidator:
+        """Create a validator matched to the most likely schema version."""
+        canonical_provider = cls.canonical_provider(provider)
+        registry = SchemaRegistry()
+        resolution = (
+            registry.resolve_payload(
+                str(canonical_provider),
+                payload,
+                source_path=source_path,
+            )
+            if hasattr(registry, "resolve_payload")
+            else None
+        )
+        package_version = resolution.package_version if resolution is not None else "latest"
+        element_kind = resolution.element_kind if resolution is not None else "default"
+        key = (str(canonical_provider), package_version, element_kind, strict)
+        cached = cls._cache.get(key)
+        if cached is not None:
+            return cached
+
+        if hasattr(registry, "get_element_schema"):
+            schema = registry.get_element_schema(
+                str(canonical_provider),
+                version=package_version,
+                element_kind=None if element_kind == "default" else element_kind,
+            )
+        else:
+            schema = registry.get_schema(str(canonical_provider), version=package_version)
+        if schema is None:
+            raise FileNotFoundError(
+                "No schema found for provider: "
+                f"{provider} (canonical: {canonical_provider}, package: {package_version}, element: {element_kind})"
+            )
         instance = cls(schema, strict=strict, provider=canonical_provider)
         cls._cache[key] = instance
         return instance
@@ -231,7 +288,7 @@ class SchemaValidator:
 
 def validate_provider_export(
     data: Any,
-    provider: str,
+    provider: str | Provider,
     strict: bool = True,
 ) -> ValidationResult:
     """Convenience function to validate a provider export.

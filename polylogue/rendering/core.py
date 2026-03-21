@@ -14,8 +14,10 @@ if TYPE_CHECKING:
     from polylogue.storage.store import ConversationRenderProjection
 
 from polylogue.assets import asset_path
+from polylogue.lib.roles import Role
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.types import Provider
 
 
 def format_message_text(text: str) -> str:
@@ -50,7 +52,7 @@ def append_attachment_markdown(att: dict[str, Any], lines: list[str], archive_ro
 def render_markdown_document(
     *,
     title: str,
-    provider: str,
+    provider: Provider | str,
     conversation_id: str,
     messages: list[dict[str, Any]],
     attachments_by_message: dict[str | None, list[dict[str, Any]]],
@@ -131,16 +133,12 @@ def _normalize_markdown_message(
     role: Any,
     text: str | None,
     timestamp: Any,
-    default_role: str,
+    default_role: Role | str,
 ) -> dict[str, Any]:
-    normalized_role = (
-        (role.value if hasattr(role, "value") else str(role))
-        if role
-        else default_role
-    )
+    normalized_role = role if isinstance(role, Role) else (Role.normalize(str(role)) if role else default_role)
     return {
         "message_id": message_id,
-        "role": normalized_role,
+        "role": str(normalized_role),
         "text": text,
         "timestamp": _normalize_markdown_timestamp(timestamp),
     }
@@ -221,7 +219,7 @@ class ConversationFormatter:
         conversation = projection.conversation
         conversation_id = str(conversation.conversation_id)
         title = conversation.title or conversation_id
-        provider = conversation.provider_name
+        provider = conversation.provider_name or "unknown"
         normalized_messages = [
             _normalize_markdown_message(
                 message_id=message.message_id,
@@ -302,7 +300,7 @@ def format_conversation_markdown(conv: Conversation) -> str:
                 role=msg.role,
                 text=msg.text,
                 timestamp=msg.timestamp,
-                default_role="unknown",
+                default_role="message",
             )
         )
         if getattr(msg, "attachments", None):

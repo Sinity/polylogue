@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import json
+import os
+import sys
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from polylogue.cli.click_app import cli as click_cli
+from polylogue.cli.click_app import mcp_command
+from tests.infra.cli_subprocess import run_cli
 
 
 class TestHandleQueryMode:
@@ -86,7 +96,7 @@ class TestHandleQueryMode:
     def test_filter_flags_trigger_query(self):
         for params in (
             self._make_params(conv_id="abc123"),
-            self._make_params(provider="claude"),
+            self._make_params(provider="claude-ai"),
             self._make_params(tag="important"),
             self._make_params(contains=("error",)),
             self._make_params(has_type=("thinking",)),
@@ -153,9 +163,9 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_execute:
-            cli_runner.invoke(cli, ["-p", "claude", "search_term", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["-p", "claude-ai", "search_term", "--plain"], catch_exceptions=False)
         _, params = mock_execute.call_args[0]
-        assert params.get("provider") == "claude"
+        assert params.get("provider") == "claude-ai"
         assert "search_term" in params.get("query", ())
 
     def test_mixed_options_and_positionals(self, cli_runner):
@@ -164,11 +174,11 @@ class TestQueryFirstGroupParseArgs:
         with patch("polylogue.cli.query.execute_query") as mock_execute:
             cli_runner.invoke(
                 cli,
-                ["error", "-p", "claude", "handling", "--latest", "--plain"],
+                ["error", "-p", "claude-ai", "handling", "--latest", "--plain"],
                 catch_exceptions=False,
             )
         _, params = mock_execute.call_args[0]
-        assert params.get("provider") == "claude"
+        assert params.get("provider") == "claude-ai"
         assert params.get("latest") is True
         assert set(params.get("query", ())) == {"error", "handling"}
 
@@ -345,10 +355,278 @@ class TestCliMetadata:
             "auth",
             "completions",
             "dashboard",
-            "demo",
+            "generate",
             "embed",
             "qa",
+            "schema",
             "site",
             "tags",
         }
         assert set(cli.commands.keys()) == expected
+
+
+# ---------------------------------------------------------------------------
+# Generate command tests (replaces test_demo.py)
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateSeed:
+    """``polylogue generate --seed`` creates a full demo environment."""
+
+    def test_seed_creates_database(self, cli_runner, tmp_path):
+        result = cli_runner.invoke(click_cli, [
+            "generate", "--seed", "-o", str(tmp_path),
+            "-n", "1", "-p", "chatgpt",
+        ])
+        assert result.exit_code == 0
+        db_path = tmp_path / "data" / "polylogue" / "polylogue.db"
+        assert db_path.exists()
+
+    def test_seed_restores_environment(self, cli_runner, monkeypatch, tmp_path):
+        monkeypatch.setenv("XDG_DATA_HOME", "/tmp/original-data")
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "/tmp/original-archive")
+
+        with patch("polylogue.pipeline.runner.run_sources", new=AsyncMock(return_value=type(
+            "_Result",
+            (),
+            {"counts": {"conversations": 0, "messages": 0}},
+        )())):
+            result = cli_runner.invoke(
+                click_cli,
+                ["generate", "--seed", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
+            )
+
+        assert result.exit_code == 0
+        assert os.environ["XDG_DATA_HOME"] == "/tmp/original-data"
+        assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == "/tmp/original-archive"
+
+    def test_env_only_requires_seed(self, cli_runner):
+        result = cli_runner.invoke(click_cli, ["generate", "--env-only"])
+        assert result.exit_code != 0
+        assert "requires --seed" in result.output.lower() or "error" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# QA command tests
+# ---------------------------------------------------------------------------
+
+
+class TestQaCommand:
+    """``polylogue qa`` flag validation and wiring."""
+
+    def test_only_and_skip_mutually_exclusive(self, cli_runner):
+        result = cli_runner.invoke(
+            click_cli,
+            ["qa", "--only", "audit", "--skip", "exercises"],
+        )
+        assert result.exit_code != 0
+
+    def test_snapshot_from_skips_qa(self, cli_runner, tmp_path):
+        """--snapshot-from archives a directory without running QA."""
+        source = tmp_path / "source"
+        source.mkdir()
+        (source / "report.json").write_text("{}")
+
+        output_root = tmp_path / "snapshots"
+
+        result = cli_runner.invoke(
+            click_cli,
+            ["qa", "--snapshot-from", str(source), "--report-dir", str(output_root)],
+        )
+        assert result.exit_code == 0
+        # A snapshot directory should have been created
+        assert any(output_root.iterdir())
+
+    def test_qa_help_shows_key_flags(self, cli_runner):
+        result = cli_runner.invoke(click_cli, ["qa", "--help"])
+        assert result.exit_code == 0
+        assert "--live" in result.output
+        assert "--only" in result.output
+        assert "--skip" in result.output
+        assert "--snapshot" in result.output
+
+    def test_json_output_uses_composed_qa_session_payload(self, cli_runner):
+        from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+        from polylogue.schemas.audit import AuditReport
+        from polylogue.showcase.qa_runner import QAResult
+
+        qa_result = QAResult(
+            audit_report=AuditReport(checks=[
+                OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+            ]),
+            exercises_skipped=True,
+            invariants_skipped=True,
+        )
+
+        with patch("polylogue.showcase.qa_runner.run_qa_session", return_value=qa_result):
+            result = cli_runner.invoke(click_cli, ["qa", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output.split("\nPlain output active", 1)[0])
+        assert payload["audit"]["status"] == "ok"
+        assert payload["showcase"]["status"] == "skip"
+        assert payload["overall_status"] == "ok"
+
+
+
+# ---------------------------------------------------------------------------
+# Merged from test_cli_subprocess.py (2026-03-15)
+# ---------------------------------------------------------------------------
+
+
+def test_run_cli_honors_explicit_cwd(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("MUTANT_UNDER_TEST", raising=False)
+    monkeypatch.delenv("PY_IGNORE_IMPORTMISMATCH", raising=False)
+    completed = MagicMock(returncode=0, stdout="ok", stderr="")
+
+    with patch("tests.infra.cli_subprocess.subprocess.run", return_value=completed) as mock_run:
+        run_cli(["--help"], cwd=tmp_path)
+
+    command = mock_run.call_args.args[0]
+    kwargs = mock_run.call_args.kwargs
+
+    assert kwargs["cwd"] == tmp_path
+    assert command[:4] == ["uv", "run", "--project", str(Path(__file__).parents[3])]
+
+
+def test_run_cli_defaults_cwd_to_project_root(monkeypatch) -> None:
+    monkeypatch.delenv("MUTANT_UNDER_TEST", raising=False)
+    monkeypatch.delenv("PY_IGNORE_IMPORTMISMATCH", raising=False)
+    completed = MagicMock(returncode=0, stdout="ok", stderr="")
+
+    with patch("tests.infra.cli_subprocess.subprocess.run", return_value=completed) as mock_run:
+        run_cli(["--help"])
+
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["cwd"] == Path(__file__).parents[3]
+
+
+def test_run_cli_uses_python_bootstrap_under_mutmut(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MUTANT_UNDER_TEST", "stats")
+    monkeypatch.setenv("PY_IGNORE_IMPORTMISMATCH", "1")
+    completed = MagicMock(returncode=0, stdout="ok", stderr="")
+
+    with patch("tests.infra.cli_subprocess.subprocess.run", return_value=completed) as mock_run:
+        run_cli(["--help"], cwd=tmp_path)
+
+    command = mock_run.call_args.args[0]
+    kwargs = mock_run.call_args.kwargs
+    env = kwargs["env"]
+
+    assert kwargs["cwd"] == tmp_path
+    assert "python" in Path(command[0]).name
+    assert command[1] == "-c"
+    assert "ensure_config_loaded" in command[2]
+    assert command[3:] == ["--help"]
+    assert env["MUTANT_UNDER_TEST"] == "stats"
+    assert env["PY_IGNORE_IMPORTMISMATCH"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# Merged from test_command_surfaces.py (2026-03-15)
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardCommand:
+    def test_dashboard_launches_app(self, cli_runner, cli_workspace) -> None:
+        with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
+            result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
+        assert result.exit_code == 0
+        mock_app.run.assert_called_once()
+
+    def test_dashboard_creates_app_with_config(self, cli_runner, cli_workspace) -> None:
+        with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
+            mock_app = MagicMock()
+            mock_app_cls.return_value = mock_app
+            result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
+        assert result.exit_code == 0
+        kwargs = mock_app_cls.call_args.kwargs
+        assert kwargs["config"].archive_root == cli_workspace["archive_root"]
+        assert kwargs["repository"] is not None
+
+
+class TestSourcesCommand:
+    def test_sources_lists_configured(self, cli_runner, monkeypatch, cli_workspace) -> None:
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
+        monkeypatch.setenv("XDG_DATA_HOME", str(cli_workspace["data_root"]))
+        result = cli_runner.invoke(click_cli, ["sources"])
+        assert result.exit_code == 0
+
+    def test_sources_json_output(self, cli_runner, monkeypatch, cli_workspace) -> None:
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
+        monkeypatch.setenv("XDG_DATA_HOME", str(cli_workspace["data_root"]))
+        result = cli_runner.invoke(click_cli, ["sources", "--json"])
+        assert result.exit_code == 0
+        envelope = json.loads(result.output)
+        assert isinstance(envelope.get("result", {}).get("sources", envelope), list)
+
+
+class TestCompletionsCommand:
+    @pytest.mark.parametrize("shell", ["bash", "zsh", "fish"])
+    def test_completion_generates_script(self, cli_runner, shell: str) -> None:
+        result = cli_runner.invoke(click_cli, ["completions", "--shell", shell])
+        assert result.exit_code == 0
+        assert "polylogue" in result.output.lower() or "complete" in result.output.lower()
+
+    def test_shell_option_is_required(self, cli_runner) -> None:
+        result = cli_runner.invoke(click_cli, ["completions"])
+        assert result.exit_code != 0
+        assert "missing option" in result.output.lower() or "required" in result.output.lower()
+
+    def test_invalid_shell_rejected(self, cli_runner) -> None:
+        result = cli_runner.invoke(click_cli, ["completions", "--shell", "powershell"])
+        assert result.exit_code != 0
+        assert "invalid value" in result.output.lower() or "choice" in result.output.lower()
+
+
+class TestMcpCommandUnit:
+    @pytest.fixture
+    def mock_env(self):
+        mock_ui = MagicMock()
+        mock_ui.plain = True
+        mock_ui.console = MagicMock()
+        env = MagicMock()
+        env.ui = mock_ui
+        return env
+
+    def test_default_transport_is_stdio(self, cli_runner, mock_env) -> None:
+        with patch("polylogue.mcp.server.serve_stdio") as mock_serve:
+            result = cli_runner.invoke(mcp_command, [], obj=mock_env)
+        mock_serve.assert_called_once()
+        assert result.exit_code == 0
+
+    def test_explicit_stdio_transport_works(self, cli_runner, mock_env) -> None:
+        with patch("polylogue.mcp.server.serve_stdio") as mock_serve:
+            result = cli_runner.invoke(mcp_command, ["--transport", "stdio"], obj=mock_env)
+        mock_serve.assert_called_once()
+        assert result.exit_code == 0
+
+    def test_missing_mcp_dependencies_error(self, cli_runner, mock_env) -> None:
+        with patch.dict(sys.modules, {"polylogue.mcp.server": None}):
+            def mock_import(*args, **kwargs):
+                raise ImportError("No module named 'mcp'")
+
+            with patch("builtins.__import__", side_effect=mock_import):
+                result = cli_runner.invoke(mcp_command, [], obj=mock_env)
+        assert result.exit_code != 0 or mock_env.ui.console.print.called
+
+    def test_unsupported_transport_error(self, cli_runner, mock_env) -> None:
+        result = cli_runner.invoke(click_cli, ["mcp", "--transport", "http"])
+        assert result.exit_code != 0
+
+    def test_mcp_help_shows_description(self, cli_runner) -> None:
+        result = cli_runner.invoke(click_cli, ["mcp", "--help"])
+        assert result.exit_code == 0
+        assert "mcp" in result.output.lower()
+        assert "server" in result.output.lower() or "protocol" in result.output.lower()
+
+
+class TestMcpServerImport:
+    def test_serve_stdio_can_be_imported(self) -> None:
+        try:
+            from polylogue.mcp.server import serve_stdio
+            assert callable(serve_stdio)
+        except ImportError:
+            pytest.skip("MCP dependencies not installed")

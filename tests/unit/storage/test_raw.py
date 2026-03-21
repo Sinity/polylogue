@@ -135,7 +135,7 @@ class TestRawConversationStorage:
         records = [
             RawConversationRecord(
                 raw_id=f"raw-{i}",
-                provider_name="chatgpt" if i % 2 == 0 else "claude",
+                provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
                 raw_content=b'{}',
                 acquired_at=datetime.now(timezone.utc).isoformat(),
@@ -149,7 +149,7 @@ class TestRawConversationStorage:
         chatgpt_records = [r async for r in backend.iter_raw_conversations(provider="chatgpt")]
         assert len(chatgpt_records) == 3
 
-        claude_records = [r async for r in backend.iter_raw_conversations(provider="claude")]
+        claude_records = [r async for r in backend.iter_raw_conversations(provider="claude-ai")]
         assert len(claude_records) == 3
 
     async def test_iter_raw_ids_by_provider_name(self, backend: SQLiteBackend) -> None:
@@ -161,7 +161,7 @@ class TestRawConversationStorage:
         records = [
             RawConversationRecord(
                 raw_id=f"raw-id-{i}",
-                provider_name="chatgpt" if i % 2 == 0 else "claude",
+                provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
                 raw_content=b'{}',
                 acquired_at=datetime.now(timezone.utc).isoformat(),
@@ -173,11 +173,37 @@ class TestRawConversationStorage:
             await backend.save_raw_conversation(record)
 
         chatgpt_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="chatgpt")]
-        claude_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="claude")]
+        claude_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="claude-ai")]
 
         assert len(chatgpt_ids) == 3
         assert len(claude_ids) == 3
         assert all(raw_id.startswith("raw-id-") for raw_id in chatgpt_ids + claude_ids)
+
+    async def test_raw_provider_filters_prefer_payload_provider_when_present(self, backend: SQLiteBackend) -> None:
+        """Raw provider filtering should use payload_provider when validation/parsing has classified the payload."""
+        from datetime import datetime, timezone
+
+        from polylogue.storage.store import RawConversationRecord
+
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-generic",
+                provider_name="unknown",
+                payload_provider="chatgpt",
+                source_name="inbox",
+                source_path="/path/raw.json",
+                raw_content=b'{}',
+                acquired_at=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+
+        matched_records = [record async for record in backend.iter_raw_conversations(provider="chatgpt")]
+        matched_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="chatgpt")]
+        matched_count = await backend.get_raw_conversation_count(provider="chatgpt")
+
+        assert [record.raw_id for record in matched_records] == ["raw-generic"]
+        assert matched_ids == ["raw-generic"]
+        assert matched_count == 1
 
     async def test_iter_raw_conversations_with_limit(self, backend: SQLiteBackend) -> None:
         """Limit the number of records returned."""
@@ -278,7 +304,7 @@ class TestRawConversationStorage:
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"count-{i}",
-                    provider_name="chatgpt" if i < 3 else "claude",
+                    provider_name="chatgpt" if i < 3 else "claude-ai",
                     source_path=f"/path/{i}.json",
                     raw_content=b'{}',
                     acquired_at=datetime.now(timezone.utc).isoformat(),
@@ -290,7 +316,7 @@ class TestRawConversationStorage:
 
         # Filtered count
         assert await backend.get_raw_conversation_count(provider="chatgpt") == 3
-        assert await backend.get_raw_conversation_count(provider="claude") == 2
+        assert await backend.get_raw_conversation_count(provider="claude-ai") == 2
         assert await backend.get_raw_conversation_count(provider="codex") == 0
 
     async def test_iter_raw_conversations_without_limit_returns_all(self, backend: SQLiteBackend) -> None:

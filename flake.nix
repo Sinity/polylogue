@@ -39,6 +39,10 @@
             hatchling
           ];
 
+          nativeBuildInputs = [
+            pkgs.makeWrapper
+          ];
+
           dependencies = with pkgs.python313Packages; [
             google-auth-oauthlib
             google-api-python-client
@@ -69,6 +73,15 @@
           doCheck = false;
           pythonImportsCheck = [ "polylogue" ];
           dontCheckRuntimeDeps = true;
+
+          postFixup = ''
+            wrapProgram "$out/bin/polylogue" \
+              --unset PYTHONPATH \
+              --unset PYTHONHOME \
+              --unset PYTHONBREAKPOINT \
+              --unset PYTHONUSERBASE \
+              --unset VIRTUAL_ENV
+          '';
 
           meta = {
             description = "Polylogue archive Python package and CLI";

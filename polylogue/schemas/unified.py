@@ -193,7 +193,7 @@ def _validate_codex_record(raw: dict[str, Any]) -> Any:
 
 _ADAPTER_BUILDERS = {
     Provider.CLAUDE_CODE: _validate_claude_code_record,
-    Provider.CLAUDE: _validate_claude_ai_message,
+    Provider.CLAUDE_AI: _validate_claude_ai_message,
     Provider.CHATGPT: _validate_chatgpt_message,
     Provider.GEMINI: _validate_gemini_message,
     Provider.CODEX: _validate_codex_record,
@@ -255,7 +255,7 @@ def _fallback_extract_claude_ai(raw: dict[str, Any]) -> HarmonizedMessage:
         role=Role.normalize(raw.get("sender") or _missing_role()),
         text=raw.get("text", ""),
         timestamp=parse_timestamp(raw.get("created_at")),
-        provider=Provider.CLAUDE,
+        provider=Provider.CLAUDE_AI,
         raw=raw,
     )
 
@@ -336,7 +336,7 @@ def _fallback_extract_codex(raw: dict[str, Any]) -> HarmonizedMessage:
 
 _FALLBACK_EXTRACTORS = {
     Provider.CLAUDE_CODE: _fallback_extract_claude_code,
-    Provider.CLAUDE: _fallback_extract_claude_ai,
+    Provider.CLAUDE_AI: _fallback_extract_claude_ai,
     Provider.CHATGPT: _fallback_extract_chatgpt,
     Provider.GEMINI: _fallback_extract_gemini,
     Provider.CODEX: _fallback_extract_codex,

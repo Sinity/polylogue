@@ -23,7 +23,7 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 
-PROVIDERS = ["chatgpt", "claude", "claude-code", "gemini"]
+PROVIDERS = ["chatgpt", "claude-ai", "claude-code", "gemini"]
 # Words used to make FTS5 searches meaningful
 _WORD_POOL = [
     "python", "function", "error", "test", "data", "model", "training",

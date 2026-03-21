@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.storage.backends.connection import _build_source_scope_filter
+from polylogue.storage.backends.connection import _build_provider_scope_filter
 
 
 def _iso_to_epoch(iso_str: str) -> float:
@@ -55,10 +55,9 @@ def _build_conversation_filters(
         where_clauses.append("c.provider_name = ?" if needs_stats_join else "provider_name = ?")
         params.append(provider)
     if providers:
-        source_scope_sql, source_scope_params = _build_source_scope_filter(
+        source_scope_sql, source_scope_params = _build_provider_scope_filter(
             providers,
             provider_column="c.provider_name" if needs_stats_join else "provider_name",
-            source_column="c.source_name" if needs_stats_join else "source_name",
         )
         where_clauses.append(source_scope_sql)
         params.extend(source_scope_params)

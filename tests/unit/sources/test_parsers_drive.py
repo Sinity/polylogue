@@ -169,6 +169,9 @@ def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachme
         "msg-thought",
         "msg-code",
     ]
+    assert [block.type for block in result.messages[0].content_blocks] == ["text"]
+    assert [block.type for block in result.messages[1].content_blocks] == ["thinking"]
+    assert [block.type for block in result.messages[2].content_blocks] == ["text", "code", "tool_result"]
     assert result.messages[0].provider_meta["content_blocks"] == [{"type": "text", "text": "question"}]
     assert result.messages[1].provider_meta["content_blocks"] == [{"type": "thinking", "text": "reasoning"}]
     assert result.messages[1].provider_meta["reasoning_traces"] == [

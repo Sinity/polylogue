@@ -27,20 +27,26 @@ async def get_content_blocks(
     conn: aiosqlite.Connection,
     message_ids: list[str],
 ) -> dict[str, list[ContentBlockRecord]]:
-    """Get content blocks for a list of message IDs."""
+    """Get content blocks for a list of message IDs.
+
+    Batches queries to stay under SQLite's 999-variable limit.
+    """
     if not message_ids:
         return {}
     result: dict[str, list[ContentBlockRecord]] = {mid: [] for mid in message_ids}
-    placeholders = ",".join("?" for _ in message_ids)
-    cursor = await conn.execute(
-        f"SELECT * FROM content_blocks WHERE message_id IN ({placeholders}) ORDER BY message_id, block_index",
-        message_ids,
-    )
-    rows = await cursor.fetchall()
-    for row in rows:
-        mid = row["message_id"]
-        if mid in result:
-            result[mid].append(_row_to_content_block(row))
+    batch_size = 900  # stay well under SQLite's 999-variable limit
+    for i in range(0, len(message_ids), batch_size):
+        batch = message_ids[i : i + batch_size]
+        placeholders = ",".join("?" for _ in batch)
+        cursor = await conn.execute(
+            f"SELECT * FROM content_blocks WHERE message_id IN ({placeholders}) ORDER BY message_id, block_index",
+            batch,
+        )
+        rows = await cursor.fetchall()
+        for row in rows:
+            mid = row["message_id"]
+            if mid in result:
+                result[mid].append(_row_to_content_block(row))
     return result
 
 

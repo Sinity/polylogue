@@ -20,6 +20,7 @@ from polylogue.logging import get_logger
 from polylogue.paths import safe_path_component
 from polylogue.rendering.core import build_rendered_message_payload
 from polylogue.rendering.renderers.html import MarkdownRenderer, PygmentsHighlighter
+from polylogue.types import SearchProvider
 
 if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -686,7 +687,7 @@ class SiteConfig:
     title: str = "Polylogue Archive"
     description: str = "AI conversation archive"
     enable_search: bool = True
-    search_provider: str = "pagefind"  # or "lunr"
+    search_provider: SearchProvider = SearchProvider.PAGEFIND
     conversations_per_page: int = 100
     include_dashboard: bool = True
 
@@ -885,7 +886,7 @@ class SiteBuilder:
             page_size=self.SUMMARY_PAGE_SIZE,
             provider=provider,
         ):
-            message_counts = await backend.get_message_counts_batch(
+            message_counts = await backend.queries.get_message_counts_batch(
                 [str(summary.id) for summary in summaries]
             )
             for summary in summaries:

@@ -327,7 +327,7 @@ def test_search_conversations_provider_filter() -> None:
     ])
     conn.executemany("INSERT INTO conversations VALUES (?, ?, ?)", [
         ("conv_chatgpt", "chatgpt", "chatgpt"),
-        ("conv_claude", "claude", "claude"),
+        ("conv_claude", "claude-ai", "claude-ai"),
     ])
     conn.commit()
     fts.db_path = conn

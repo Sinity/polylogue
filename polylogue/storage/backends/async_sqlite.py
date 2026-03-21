@@ -24,6 +24,7 @@ from polylogue.logging import get_logger
 from polylogue.storage.backends.connection import (
     DB_TIMEOUT,
 )
+from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.backends.queries import (
     attachments as attachments_q,
     conversations as conversations_q,
@@ -41,9 +42,9 @@ from polylogue.storage.store import (
     RawConversationState,
     RunRecord,
 )
+from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 logger = get_logger(__name__)
-
 
 
 def default_db_path() -> Path:
@@ -111,6 +112,9 @@ class SQLiteBackend:
 
         # Connection pool for concurrent read operations (e.g., rendering)
         self._read_pool: asyncio.Queue[aiosqlite.Connection] | None = None
+
+        # Canonical low-level read/query surface.
+        self.queries = SQLiteQueryStore(connection_factory=self._get_connection)
 
     @property
     def db_path(self) -> Path:
@@ -376,16 +380,14 @@ class SQLiteBackend:
 
     async def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
         """Retrieve a conversation by ID."""
-        async with self._get_connection() as conn:
-            return await conversations_q.get_conversation(conn, conversation_id)
+        return await self.queries.get_conversation(conversation_id)
 
     async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
         """Retrieve multiple conversations in a single query.
 
         Preserves the order of input IDs. Missing IDs are silently skipped.
         """
-        async with self._get_connection() as conn:
-            return await conversations_q.get_conversations_batch(conn, ids)
+        return await self.queries.get_conversations_batch(ids)
 
     async def list_conversations(
         self,
@@ -408,27 +410,25 @@ class SQLiteBackend:
         has_subagent: bool = False,
     ) -> list[ConversationRecord]:
         """List conversations with optional filtering and pagination."""
-        async with self._get_connection() as conn:
-            return await conversations_q.list_conversations(
-                conn,
-                source=source,
-                provider=provider,
-                providers=providers,
-                parent_id=parent_id,
-                since=since,
-                until=until,
-                title_contains=title_contains,
-                limit=limit,
-                offset=offset,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
-            )
+        return await self.queries.list_conversations(
+            source=source,
+            provider=provider,
+            providers=providers,
+            parent_id=parent_id,
+            since=since,
+            until=until,
+            title_contains=title_contains,
+            limit=limit,
+            offset=offset,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            has_file_ops=has_file_ops,
+            has_git_ops=has_git_ops,
+            has_subagent=has_subagent,
+        )
 
     async def count_conversations(
         self,
@@ -448,37 +448,33 @@ class SQLiteBackend:
         has_subagent: bool = False,
     ) -> int:
         """Count conversations matching filters without loading records."""
-        async with self._get_connection() as conn:
-            return await conversations_q.count_conversations(
-                conn,
-                source=source,
-                provider=provider,
-                providers=providers,
-                since=since,
-                until=until,
-                title_contains=title_contains,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
-            )
+        return await self.queries.count_conversations(
+            source=source,
+            provider=provider,
+            providers=providers,
+            since=since,
+            until=until,
+            title_contains=title_contains,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            has_file_ops=has_file_ops,
+            has_git_ops=has_git_ops,
+            has_subagent=has_subagent,
+        )
 
     async def aggregate_message_stats(
         self,
         conversation_ids: list[str] | None = None,
     ) -> dict[str, int]:
         """Compute aggregate message statistics via SQL."""
-        async with self._get_connection() as conn:
-            return await stats_q.aggregate_message_stats(conn, conversation_ids)
+        return await self.queries.aggregate_message_stats(conversation_ids)
 
     async def conversation_exists_by_hash(self, content_hash: str) -> bool:
         """Check if conversation with given content hash exists."""
-        async with self._get_connection() as conn:
-            return await conversations_q.conversation_exists_by_hash(conn, content_hash)
+        return await self.queries.conversation_exists_by_hash(content_hash)
 
     async def save_conversation_record(self, record: ConversationRecord) -> None:
         """Persist a conversation record with upsert semantics."""
@@ -525,34 +521,11 @@ class SQLiteBackend:
 
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
         """Get all messages for a conversation, with content_blocks attached."""
-        async with self._get_connection() as conn:
-            msgs = await messages_q.get_messages(conn, conversation_id)
-        if msgs:
-            msg_ids = [m.message_id for m in msgs]
-            blocks_by_msg = await self.get_content_blocks(msg_ids)
-            msgs = [
-                m.model_copy(update={"content_blocks": blocks_by_msg.get(m.message_id, [])})
-                for m in msgs
-            ]
-        return msgs
+        return await self.queries.get_messages(conversation_id)
 
     async def get_messages_batch(self, conversation_ids: list[str]) -> dict[str, list[MessageRecord]]:
         """Get messages for multiple conversations in a single query, with content_blocks."""
-        if not conversation_ids:
-            return {}
-        async with self._get_connection() as conn:
-            result, all_messages = await messages_q.get_messages_batch(conn, conversation_ids)
-
-        if all_messages:
-            msg_ids = [m.message_id for m in all_messages]
-            blocks_by_msg = await self.get_content_blocks(msg_ids)
-            for cid in result:
-                result[cid] = [
-                    m.model_copy(update={"content_blocks": blocks_by_msg.get(m.message_id, [])})
-                    for m in result[cid]
-                ]
-
-        return result
+        return await self.queries.get_messages_batch(conversation_ids)
 
     @staticmethod
     def _topo_sort_messages(records: list[MessageRecord]) -> list[MessageRecord]:
@@ -583,8 +556,7 @@ class SQLiteBackend:
 
     async def get_content_blocks(self, message_ids: list[str]) -> dict[str, list[ContentBlockRecord]]:
         """Get content blocks for a list of message IDs."""
-        async with self._get_connection() as conn:
-            return await attachments_q.get_content_blocks(conn, message_ids)
+        return await self.queries.get_content_blocks(message_ids)
 
     async def get_attachments(self, conversation_id: str) -> list[AttachmentRecord]:
         """Get all attachments for a conversation."""
@@ -619,13 +591,11 @@ class SQLiteBackend:
 
     async def resolve_id(self, id_prefix: str) -> str | None:
         """Resolve a partial conversation ID to a full ID."""
-        async with self._get_connection() as conn:
-            return await conversations_q.resolve_id(conn, id_prefix)
+        return await self.queries.resolve_id(id_prefix)
 
     async def get_last_sync_timestamp(self) -> str | None:
         """Return the timestamp of the most recent ingestion run, or None."""
-        async with self._get_connection() as conn:
-            return await conversations_q.get_last_sync_timestamp(conn)
+        return await self.queries.get_last_sync_timestamp()
 
     def _conversation_id_query(
         self,
@@ -633,7 +603,7 @@ class SQLiteBackend:
         source_names: list[str] | None = None,
     ) -> tuple[str, tuple[str, ...]]:
         """Build the canonical scoped conversation-ID query."""
-        return conversations_q.conversation_id_query(source_names=source_names)
+        return self.queries.conversation_id_query(source_names=source_names)
 
     async def count_conversation_ids(
         self,
@@ -641,8 +611,7 @@ class SQLiteBackend:
         source_names: list[str] | None = None,
     ) -> int:
         """Count conversation IDs, optionally scoped to source names."""
-        async with self._get_connection() as conn:
-            return await conversations_q.count_conversation_ids(conn, source_names=source_names)
+        return await self.queries.count_conversation_ids(source_names=source_names)
 
     async def iter_conversation_ids(
         self,
@@ -651,11 +620,10 @@ class SQLiteBackend:
         page_size: int = 1000,
     ) -> AsyncIterator[str]:
         """Iterate conversation IDs in bounded fetch batches."""
-        async with self._get_connection() as conn:
-            async for cid in conversations_q.iter_conversation_ids(
-                conn, source_names=source_names, page_size=page_size
-            ):
-                yield cid
+        async for cid in self.queries.iter_conversation_ids(
+            source_names=source_names, page_size=page_size
+        ):
+            yield cid
 
     def _raw_id_query(
         self,
@@ -667,7 +635,7 @@ class SQLiteBackend:
         validation_statuses: list[str] | None = None,
     ) -> tuple[str, tuple[str, ...]]:
         """Build the canonical scoped raw-ID query."""
-        return raw_queries.raw_id_query(
+        return self.queries.raw_id_query(
             source_names=source_names,
             provider_name=provider_name,
             require_unparsed=require_unparsed,
@@ -686,24 +654,21 @@ class SQLiteBackend:
         page_size: int = 1000,
     ) -> AsyncIterator[str]:
         """Iterate raw conversation IDs for a pipeline state slice."""
-        async with self._get_connection() as conn:
-            async for rid in raw_queries.iter_raw_ids(
-                conn,
-                source_names=source_names,
-                provider_name=provider_name,
-                require_unparsed=require_unparsed,
-                require_unvalidated=require_unvalidated,
-                validation_statuses=validation_statuses,
-                page_size=page_size,
-            ):
-                yield rid
+        async for rid in self.queries.iter_raw_ids(
+            source_names=source_names,
+            provider_name=provider_name,
+            require_unparsed=require_unparsed,
+            require_unvalidated=require_unvalidated,
+            validation_statuses=validation_statuses,
+            page_size=page_size,
+        ):
+            yield rid
 
     async def search_conversations(
         self, query: str, limit: int = 100, providers: list[str] | None = None
     ) -> list[str]:
         """Search conversations using the canonical ranked FTS conversation query."""
-        async with self._get_connection() as conn:
-            return await conversations_q.search_conversations(conn, query, limit, providers)
+        return await self.queries.search_conversations(query, limit, providers)
 
     # --- Metadata CRUD ---
 
@@ -828,33 +793,27 @@ class SQLiteBackend:
 
     async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]:
         """Get message counts without loading messages."""
-        async with self._get_connection() as conn:
-            return await messages_q.get_conversation_stats(conn, conversation_id)
+        return await self.queries.get_conversation_stats(conversation_id)
 
     async def get_message_counts_batch(self, conversation_ids: list[str]) -> dict[str, int]:
         """Get message counts for multiple conversations in a single query."""
-        async with self._get_connection() as conn:
-            return await messages_q.get_message_counts_batch(conn, conversation_ids)
+        return await self.queries.get_message_counts_batch(conversation_ids)
 
     async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
         """Get conversation counts grouped by provider, month, or year."""
-        async with self._get_connection() as conn:
-            return await stats_q.get_stats_by(conn, group_by)
+        return await self.queries.get_stats_by(group_by)
 
     async def get_provider_conversation_counts(self) -> list[dict[str, object]]:
         """Return conversation counts per provider."""
-        async with self._get_connection() as conn:
-            return await stats_q.get_provider_conversation_counts(conn)
+        return await self.queries.get_provider_conversation_counts()
 
     async def get_provider_metrics_rows(self) -> list[dict[str, object]]:
         """Return raw provider aggregation rows for analytics reporting."""
-        async with self._get_connection() as conn:
-            return await stats_q.get_provider_metrics_rows(conn)
+        return await self.queries.get_provider_metrics_rows()
 
     async def get_latest_run(self) -> RunRecord | None:
         """Fetch the most recent pipeline run record."""
-        async with self._get_connection() as conn:
-            return await runs_q.get_latest_run(conn)
+        return await self.queries.get_latest_run()
 
     async def close(self) -> None:
         """Close database connections."""
@@ -887,7 +846,7 @@ class SQLiteBackend:
         raw_id: str,
         *,
         error: str | None = None,
-        payload_provider: str | None = None,
+        payload_provider: Provider | str | None = None,
     ) -> None:
         """Mark a raw conversation as parsed (or record a parse error)."""
         async with self._get_connection() as conn:
@@ -902,12 +861,12 @@ class SQLiteBackend:
         self,
         raw_id: str,
         *,
-        status: str,
+        status: ValidationStatus | str,
         error: str | None = None,
         drift_count: int = 0,
-        provider: str | None = None,
-        mode: str | None = None,
-        payload_provider: str | None = None,
+        provider: Provider | str | None = None,
+        mode: ValidationMode | str | None = None,
+        payload_provider: Provider | str | None = None,
     ) -> None:
         """Persist validation status for a raw conversation record."""
         async with self._get_connection() as conn:
@@ -924,8 +883,7 @@ class SQLiteBackend:
 
     async def get_known_source_mtimes(self) -> dict[str, str]:
         """Return {source_path: file_mtime} for all raw records with an mtime."""
-        async with self._get_connection() as conn:
-            return await raw_queries.get_known_source_mtimes(conn)
+        return await self.queries.get_known_source_mtimes()
 
     async def reset_parse_status(self, *, provider: str | None = None) -> int:
         """Clear parsed_at/parse_error to force re-parsing on next run."""

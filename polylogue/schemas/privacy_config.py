@@ -1,0 +1,192 @@
+"""Config-driven privacy for schema generation.
+
+Provides a ``PrivacyConfig`` dataclass that controls all privacy heuristics.
+Supports three presets (strict/standard/permissive), field-level overrides,
+and value-level glob patterns.  Configuration cascades from XDG base →
+project-level → CLI flags.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from fnmatch import fnmatch
+from pathlib import Path
+from typing import Any, Literal
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python <3.11
+    import tomli as tomllib  # type: ignore[no-redef]
+
+
+# ---------------------------------------------------------------------------
+# Preset definitions
+# ---------------------------------------------------------------------------
+
+_PRESETS: dict[str, dict[str, Any]] = {
+    "strict": {
+        "safe_enum_max_length": 30,
+        "high_entropy_min_length": 8,
+        "cross_conv_min_count": 5,
+        "cross_conv_proportional": True,
+    },
+    "standard": {
+        "safe_enum_max_length": 50,
+        "high_entropy_min_length": 10,
+        "cross_conv_min_count": 3,
+        "cross_conv_proportional": False,
+    },
+    "permissive": {
+        "safe_enum_max_length": 80,
+        "high_entropy_min_length": 16,
+        "cross_conv_min_count": 1,
+        "cross_conv_proportional": False,
+    },
+}
+
+
+@dataclass
+class PrivacyConfig:
+    """Controls all privacy heuristics in schema generation.
+
+    Attributes:
+        level: Preset name ("strict", "standard", "permissive").
+        safe_enum_max_length: Max string length for enum values.
+        high_entropy_min_length: Min token length for high-entropy detection.
+        cross_conv_min_count: Minimum conversations a value must appear in.
+        cross_conv_proportional: If True, threshold = max(3, corpus_size * 0.02).
+        field_overrides: Path glob → "allow" | "deny" | "default".
+        allow_value_patterns: Glob patterns for values to always include.
+        deny_value_patterns: Glob patterns for values to always reject.
+    """
+
+    level: Literal["strict", "standard", "permissive"] = "standard"
+    safe_enum_max_length: int = 50
+    high_entropy_min_length: int = 10
+    cross_conv_min_count: int = 3
+    cross_conv_proportional: bool = False
+    field_overrides: dict[str, str] = field(default_factory=dict)
+    allow_value_patterns: list[str] = field(default_factory=list)
+    deny_value_patterns: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Apply preset values as defaults (explicit overrides take precedence)
+        preset = _PRESETS.get(self.level, _PRESETS["standard"])
+        for attr, default_val in preset.items():
+            # Only apply preset if attribute is still at the dataclass default
+            # (i.e. caller didn't override it explicitly)
+            # We detect this by checking if the value matches the standard preset
+            standard = _PRESETS["standard"]
+            if getattr(self, attr) == standard.get(attr) and attr in preset:
+                setattr(self, attr, preset[attr])
+
+    def effective_cross_conv_threshold(self, corpus_size: int) -> int:
+        """Compute the effective cross-conversation threshold."""
+        if self.cross_conv_proportional:
+            return max(3, int(corpus_size * 0.02))
+        return self.cross_conv_min_count
+
+    def field_override(self, path: str) -> str | None:
+        """Return "allow", "deny", or None for a field path."""
+        for pattern, action in self.field_overrides.items():
+            if fnmatch(path, pattern):
+                return action
+        return None
+
+    def is_value_allowed(self, value: str) -> bool | None:
+        """Check value against allow/deny patterns.
+
+        Returns True (force-allow), False (force-deny), or None (use heuristics).
+        """
+        for pattern in self.deny_value_patterns:
+            if fnmatch(value, pattern):
+                return False
+        for pattern in self.allow_value_patterns:
+            if fnmatch(value, pattern):
+                return True
+        return None
+
+
+def _xdg_config_home() -> Path:
+    """Return XDG_CONFIG_HOME, defaulting to ~/.config."""
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+
+
+def load_privacy_config(
+    *,
+    cli_overrides: dict[str, Any] | None = None,
+    project_path: Path | None = None,
+) -> PrivacyConfig:
+    """Load privacy config with XDG base + project-level + CLI cascade.
+
+    Merge order: XDG defaults → project file → CLI flags.
+    Field overrides from all levels merge (later wins per path).
+    """
+    merged: dict[str, Any] = {}
+    merged_field_overrides: dict[str, str] = {}
+    merged_allow_patterns: list[str] = []
+    merged_deny_patterns: list[str] = []
+
+    # 1. XDG base config
+    xdg_path = _xdg_config_home() / "polylogue" / "schemas.toml"
+    if xdg_path.exists():
+        section = _load_toml_section(xdg_path)
+        _merge_into(section, merged, merged_field_overrides,
+                    merged_allow_patterns, merged_deny_patterns)
+
+    # 2. Project-level config
+    if project_path is None:
+        project_path = Path.cwd()
+    project_file = project_path / "polylogue-schemas.toml"
+    if project_file.exists():
+        section = _load_toml_section(project_file)
+        _merge_into(section, merged, merged_field_overrides,
+                    merged_allow_patterns, merged_deny_patterns)
+
+    # 3. CLI overrides
+    if cli_overrides:
+        _merge_into(cli_overrides, merged, merged_field_overrides,
+                    merged_allow_patterns, merged_deny_patterns)
+
+    # Build final config
+    if merged_field_overrides:
+        merged["field_overrides"] = merged_field_overrides
+    if merged_allow_patterns:
+        merged["allow_value_patterns"] = merged_allow_patterns
+    if merged_deny_patterns:
+        merged["deny_value_patterns"] = merged_deny_patterns
+
+    return PrivacyConfig(**{k: v for k, v in merged.items() if v is not None})
+
+
+def _load_toml_section(path: Path) -> dict[str, Any]:
+    """Load the [schema.privacy] section from a TOML file."""
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+    return data.get("schema", {}).get("privacy", {})
+
+
+def _merge_into(
+    source: dict[str, Any],
+    merged: dict[str, Any],
+    field_overrides: dict[str, str],
+    allow_patterns: list[str],
+    deny_patterns: list[str],
+) -> None:
+    """Merge a source dict into the accumulated config."""
+    for key, value in source.items():
+        if key == "field_overrides" and isinstance(value, dict):
+            field_overrides.update(value)
+        elif key == "allow_value_patterns" and isinstance(value, list):
+            allow_patterns.extend(value)
+        elif key == "deny_value_patterns" and isinstance(value, list):
+            deny_patterns.extend(value)
+        else:
+            merged[key] = value
+
+
+__all__ = [
+    "PrivacyConfig",
+    "load_privacy_config",
+]

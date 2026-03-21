@@ -4,19 +4,30 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from io import BytesIO
-from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
+from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.logging import get_logger
 from polylogue.types import Provider
 
 from .cursor import _ParseContext
 from .decoders import _iter_json_stream
+from .dispatch import GROUP_PROVIDERS, detect_provider, parse_payload
 from .parsers.base import ParsedConversation, RawConversationData
 from .parsers.claude import enrich_conversation_from_index
 
+if TYPE_CHECKING:
+    from polylogue.schemas.registry import SchemaRegistry as SchemaRegistryType
+    from polylogue.schemas.packages import SchemaResolution
+
 logger = get_logger(__name__)
+
+
+def _schema_registry_factory() -> "SchemaRegistry":
+    from polylogue.schemas.registry import SchemaRegistry
+
+    return SchemaRegistry()
 
 
 class _ConversationEmitter:
@@ -26,10 +37,14 @@ class _ConversationEmitter:
     that was previously duplicated across ZIP and filesystem code paths.
     """
 
-    __slots__ = ("_ctx",)
+    __slots__ = (
+        "_ctx",
+        "_schema_registry",
+    )
 
     def __init__(self, ctx: _ParseContext) -> None:
         self._ctx = ctx
+        self._schema_registry: SchemaRegistryType | None = None
 
     def emit(
         self,
@@ -53,8 +68,23 @@ class _ConversationEmitter:
 
         if is_jsonl and self._ctx.should_group:
             yield from self._emit_grouped(handle, stream_name, pre_read_bytes)
-        else:
-            yield from self._emit_individual(handle, stream_name, pre_read_bytes=pre_read_bytes)
+            return
+
+        if is_jsonl:
+            sniff_bytes = pre_read_bytes if pre_read_bytes is not None else handle.read()
+            sniff_payloads = list(_iter_json_stream(BytesIO(sniff_bytes), stream_name))
+            sniff_provider = detect_provider(sniff_payloads) or self._ctx.provider_hint
+            if sniff_provider in GROUP_PROVIDERS:
+                yield from self._emit_grouped(
+                    BytesIO(sniff_bytes),
+                    stream_name,
+                    sniff_bytes,
+                )
+                return
+            handle = BytesIO(sniff_bytes)
+            pre_read_bytes = sniff_bytes
+
+        yield from self._emit_individual(handle, stream_name, pre_read_bytes=pre_read_bytes)
 
     def _emit_grouped(
         self,
@@ -76,9 +106,21 @@ class _ConversationEmitter:
             return
 
         raw_data = self._make_raw(raw_bytes) if raw_bytes else None
-        from .source import detect_provider, parse_payload
-        provider = detect_provider(payloads, Path(stream_name)) or self._ctx.provider_hint
-        for conv in parse_payload(provider, payloads, self._ctx.fallback_id):
+        provider = detect_provider(payloads) or self._ctx.provider_hint
+        artifact = classify_artifact(
+            payloads,
+            provider=provider,
+            source_path=self._ctx.source_path_str,
+        )
+        if not artifact.parse_as_conversation:
+            return
+        schema_resolution = self._resolve_schema(provider, payloads)
+        for conv in parse_payload(
+            provider,
+            payloads,
+            self._ctx.fallback_id,
+            schema_resolution=schema_resolution,
+        ):
             yield (raw_data, self._maybe_enrich(conv))
 
     def _emit_individual(
@@ -96,10 +138,17 @@ class _ConversationEmitter:
         whole_file_raw = self._make_raw(pre_read_bytes) if pre_read_bytes is not None else None
 
         source_index = 0
-        from .source import detect_provider, parse_payload
         for payload in _iter_json_stream(handle, stream_name, unpack_lists=unpack):
             try:
-                provider = detect_provider(payload, self._ctx.detect_path) or self._ctx.provider_hint
+                provider = detect_provider(payload) or self._ctx.provider_hint
+                artifact = classify_artifact(
+                    payload,
+                    provider=provider,
+                    source_path=self._ctx.source_path_str,
+                )
+                if not artifact.parse_as_conversation:
+                    continue
+                schema_resolution = self._resolve_schema(provider, payload)
 
                 if whole_file_raw is not None:
                     raw_data: RawConversationData | None = whole_file_raw
@@ -109,19 +158,47 @@ class _ConversationEmitter:
                 else:
                     raw_data = None
 
-                for conv in parse_payload(provider, payload, self._ctx.fallback_id):
+                for conv in parse_payload(
+                    provider,
+                    payload,
+                    self._ctx.fallback_id,
+                    schema_resolution=schema_resolution,
+                ):
                     yield (raw_data, self._maybe_enrich(conv, provider))
                 source_index += 1
             except Exception:
                 logger.exception("Error processing payload from %s", stream_name)
                 raise
 
+    def _resolve_schema(
+        self,
+        provider: Provider,
+        payload: Any,
+    ) -> "SchemaResolution | None":
+        """Resolve schema metadata for the payload, if schemas are available."""
+        if self._schema_registry is None:
+            self._schema_registry = _schema_registry_factory()
+        try:
+            return self._schema_registry.resolve_payload(
+                provider,
+                payload,
+                source_path=self._ctx.source_path_str,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Schema resolution failed for %s in %s: %s",
+                provider,
+                self._ctx.source_path_str,
+                exc,
+            )
+            return None
+
     def _make_raw(
         self,
         raw_bytes: bytes | None,
         *,
         source_index: int | None = None,
-        provider_override: str | None = None,
+        provider_override: Provider | None = None,
     ) -> RawConversationData | None:
         """Construct ``RawConversationData``, or ``None`` if no bytes."""
         if raw_bytes is None or not self._ctx.capture_raw:
@@ -137,12 +214,12 @@ class _ConversationEmitter:
     def _maybe_enrich(
         self,
         conv: ParsedConversation,
-        provider: str | None = None,
+        provider: Provider | None = None,
     ) -> ParsedConversation:
         """Apply Claude Code session index enrichment if applicable."""
         p = provider or self._ctx.provider_hint
         idx = self._ctx.session_index
-        if p == Provider.CLAUDE_CODE and conv.provider_conversation_id in idx:
+        if p is Provider.CLAUDE_CODE and conv.provider_conversation_id in idx:
             return enrich_conversation_from_index(conv, idx[conv.provider_conversation_id])
         return conv
 
