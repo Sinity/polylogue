@@ -128,7 +128,7 @@ Primary deletions:
 Status:
 
 - parse authority moved to `dispatch.py` in this working pass
-- storage-owned `RecordBundle` / `save_bundle` cleanup remains
+- storage-owned `RecordBundle` / `save_bundle` moved to `pipeline.prepare`
 
 ### Step 4: Proof And QA Surface Integration
 

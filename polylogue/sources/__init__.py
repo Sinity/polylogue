@@ -23,10 +23,7 @@ from .source import (
     ParsedAttachment,
     ParsedConversation,
     ParsedMessage,
-    RecordBundle,
-    SaveResult,
     iter_source_conversations,
-    save_bundle,
 )
 
 __all__ = [
@@ -35,13 +32,10 @@ __all__ = [
     "DriveError",
     "DriveFile",
     "DriveNotFoundError",
-    "RecordBundle",
-    "SaveResult",
     "ParsedAttachment",
     "ParsedConversation",
     "ParsedMessage",
     "download_drive_files",
-    "save_bundle",
     "iter_drive_conversations",
     "iter_source_conversations",
 ]
