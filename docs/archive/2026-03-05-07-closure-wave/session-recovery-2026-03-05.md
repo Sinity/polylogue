@@ -2,9 +2,9 @@
 
 > Status update (2026-03-06): This recovery document is a historical snapshot.
 > Current authoritative closure state is tracked in:
-> - `docs/tasklist-master-2026-03-06.md`
-> - `docs/workload-closure-2026-03-06.md`
-> - `docs/remaining-workload-tracker-2026-03-05.md`
+> - `docs/archive/2026-03-05-07-closure-wave/tasklist-master-2026-03-06.md`
+> - `docs/archive/2026-03-05-07-closure-wave/workload-closure-2026-03-06.md`
+> - `docs/archive/2026-03-05-07-closure-wave/remaining-workload-tracker-2026-03-05.md`
 
 ## Scope And Purpose
 
@@ -20,8 +20,8 @@ Secondary focus:
 Date of this recovery: 2026-03-05.
 
 Follow-up reports:
-- `docs/workload-schema-qa-2026-03-05.md` (workload consolidation, schema deep dive, QA artifact organization)
-- `docs/remaining-workload-tracker-2026-03-05.md` (canonical checklist for unfinished work)
+- `docs/archive/2026-03-05-07-closure-wave/workload-schema-qa-2026-03-05.md` (workload consolidation, schema deep dive, QA artifact organization)
+- `docs/archive/2026-03-05-07-closure-wave/remaining-workload-tracker-2026-03-05.md` (canonical checklist for unfinished work)
 
 ---
 
@@ -401,7 +401,7 @@ Major new outcomes:
 
 1. Task 22 audit completed:
    - Explorer report produced and persisted to:
-     - `docs/task22-test-audit-2026-03-05.md`
+     - `docs/archive/2026-03-05-07-closure-wave/task22-test-audit-2026-03-05.md`
    - Key result: 24 test-quality issues (8 broken, 10 misleading, 3 redundant, 3 maintenance-risk).
 
 2. Critical runtime issue discovered during Task 15 profiling:

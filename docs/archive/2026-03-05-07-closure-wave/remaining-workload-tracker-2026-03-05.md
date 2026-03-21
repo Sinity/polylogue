@@ -43,8 +43,8 @@ Canonical checkpoint for unfinished work. Originally updated to final closure st
 
 ## Canonical Evidence
 
-- `docs/tasklist-master-2026-03-06.md`
-- `docs/workload-closure-2026-03-06.md`
+- `docs/archive/2026-03-05-07-closure-wave/tasklist-master-2026-03-06.md`
+- `docs/archive/2026-03-05-07-closure-wave/workload-closure-2026-03-06.md`
 - `QA_SESSION.md`
 - `qa_outputs/INDEX.md`
 - `qa_outputs/schema-verification-heavy-full-2026-03-06.json`

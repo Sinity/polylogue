@@ -25,8 +25,10 @@ reading `docs/` as one undifferentiated list.
 ## Planning And Analysis
 
 - [planning-and-analysis-map-2026-03-21.md](./planning-and-analysis-map-2026-03-21.md) - canonical index for plans, backlog docs, audits, and scratch notes
-- [intentional-forward-program-2026-03-21.md](./intentional-forward-program-2026-03-21.md) - current live execution program
-- [artifact-cohort-control-plane-program-2026-03-21.md](./artifact-cohort-control-plane-program-2026-03-21.md) - latest executed subprogram
+- [programs/README.md](./programs/README.md) - program and execution-plan docs
+- [analysis/README.md](./analysis/README.md) - audits, research reports, and raw design inputs
+- [programs/intentional-forward-program-2026-03-21.md](./programs/intentional-forward-program-2026-03-21.md) - current live execution program
+- [programs/artifact-cohort-control-plane-program-2026-03-21.md](./programs/artifact-cohort-control-plane-program-2026-03-21.md) - latest executed subprogram
 
 ## Generated Campaign Artifacts
 
@@ -35,6 +37,9 @@ reading `docs/` as one undifferentiated list.
 
 ## Historical Note
 
-The March 5-7 closure/tasklist docs are still useful as archaeology, but they
-are not the live queue. The planning map above marks which planning materials
-are current, reference-only, raw input, or historical.
+The March 5-7 closure/tasklist cluster now lives under:
+
+- [archive/2026-03-05-07-closure-wave/README.md](./archive/2026-03-05-07-closure-wave/README.md)
+
+The planning map marks which materials are current, reference-only, raw input,
+or historical.
