@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.logging import get_logger
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.embedding_stats import read_embedding_stats_async
 from polylogue.storage.hydrators import (
     conversation_from_records,
     conversation_summary_from_record,
@@ -1138,19 +1139,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             provider_rows = await cursor.fetchall()
             providers = {row["provider_name"]: row["count"] for row in provider_rows}
 
-            # Check embedding status if table exists
-            embedded_convs = 0
-            embedded_msgs = 0
-            try:
-                cursor = await conn.execute(
-                    "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
-                )
-                embedded_convs = (await cursor.fetchone())[0]
-
-                cursor = await conn.execute("SELECT COUNT(*) FROM message_embeddings")
-                embedded_msgs = (await cursor.fetchone())[0]
-            except Exception as exc:
-                logger.warning("Embedding stats query failed: %s", exc)
+            embedding_stats = await read_embedding_stats_async(conn)
 
         # Get database size
         db_size = 0
@@ -1165,8 +1154,8 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             total_messages=msg_count,
             total_attachments=att_count,
             providers=providers,
-            embedded_conversations=embedded_convs,
-            embedded_messages=embedded_msgs,
+            embedded_conversations=embedding_stats.embedded_conversations,
+            embedded_messages=embedding_stats.embedded_messages,
             db_size_bytes=db_size,
         )
 
