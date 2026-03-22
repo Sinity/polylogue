@@ -195,6 +195,8 @@ Status:
   - shared output-manifest scanning reused by both `site` and `showcase`
 - remaining open scope is the repo-shape/document/generated-artifact slimming
   side, plus any deeper `site/builder.py` decomposition work
+- that remaining scope is now broken out concretely in:
+  - `programs/site-and-repo-shape-streamlining-program-2026-03-22.md`
 
 ## Architectural Rules
 
