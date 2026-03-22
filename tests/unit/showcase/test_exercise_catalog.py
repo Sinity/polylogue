@@ -53,6 +53,8 @@ class TestExercisesByGroup:
             "check-cohorts-json",
             "check-semantic-proof",
             "check-semantic-proof-json",
+            "check-semantic-proof-read-surfaces",
+            "check-semantic-proof-read-surfaces-json",
         } <= names
 
 

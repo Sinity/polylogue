@@ -1,4 +1,4 @@
-"""Semantic preservation proofing for canonical render and export surfaces."""
+"""Semantic preservation proofing for render, export, query, stream, and MCP surfaces."""
 
 from __future__ import annotations
 
@@ -13,7 +13,14 @@ from html import unescape as html_unescape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from polylogue.cli.query_output import format_summary_list, render_stream_transcript
+from polylogue.lib.models import ConversationSummary
 from polylogue.lib.roles import Role
+from polylogue.mcp.payloads import (
+    MCPConversationDetailPayload,
+    MCPConversationSummaryListPayload,
+    MCPConversationSummaryPayload,
+)
 from polylogue.paths import archive_root as default_archive_root
 from polylogue.paths import db_path as default_db_path
 from polylogue.rendering.core import ConversationFormatter
@@ -35,6 +42,15 @@ DEFAULT_SEMANTIC_SURFACES: tuple[str, ...] = (
     "export_html_v1",
     "export_obsidian_v1",
     "export_org_v1",
+    "query_summary_json_v1",
+    "query_summary_yaml_v1",
+    "query_summary_csv_v1",
+    "query_summary_text_v1",
+    "query_stream_plaintext_v1",
+    "query_stream_markdown_v1",
+    "query_stream_json_lines_v1",
+    "mcp_summary_json_v1",
+    "mcp_detail_json_v1",
 )
 
 _SURFACE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -49,7 +65,56 @@ _SURFACE_ALIASES: dict[str, tuple[str, ...]] = {
     "html": ("export_html_v1",),
     "obsidian": ("export_obsidian_v1",),
     "org": ("export_org_v1",),
-    "export_all": tuple(surface for surface in DEFAULT_SEMANTIC_SURFACES if surface != "canonical_markdown_v1"),
+    "query_summary_json": ("query_summary_json_v1",),
+    "query_summary_yaml": ("query_summary_yaml_v1",),
+    "query_summary_csv": ("query_summary_csv_v1",),
+    "query_summary_text": ("query_summary_text_v1",),
+    "query_summary_all": (
+        "query_summary_json_v1",
+        "query_summary_yaml_v1",
+        "query_summary_csv_v1",
+        "query_summary_text_v1",
+    ),
+    "stream_plaintext": ("query_stream_plaintext_v1",),
+    "stream_markdown": ("query_stream_markdown_v1",),
+    "stream_json_lines": ("query_stream_json_lines_v1",),
+    "stream_all": (
+        "query_stream_plaintext_v1",
+        "query_stream_markdown_v1",
+        "query_stream_json_lines_v1",
+    ),
+    "query_all": (
+        "query_summary_json_v1",
+        "query_summary_yaml_v1",
+        "query_summary_csv_v1",
+        "query_summary_text_v1",
+        "query_stream_plaintext_v1",
+        "query_stream_markdown_v1",
+        "query_stream_json_lines_v1",
+    ),
+    "mcp_summary": ("mcp_summary_json_v1",),
+    "mcp_detail": ("mcp_detail_json_v1",),
+    "mcp_all": ("mcp_summary_json_v1", "mcp_detail_json_v1"),
+    "read_all": (
+        "query_summary_json_v1",
+        "query_summary_yaml_v1",
+        "query_summary_csv_v1",
+        "query_summary_text_v1",
+        "query_stream_plaintext_v1",
+        "query_stream_markdown_v1",
+        "query_stream_json_lines_v1",
+        "mcp_summary_json_v1",
+        "mcp_detail_json_v1",
+    ),
+    "export_all": (
+        "export_json_v1",
+        "export_yaml_v1",
+        "export_csv_v1",
+        "export_markdown_v1",
+        "export_html_v1",
+        "export_obsidian_v1",
+        "export_org_v1",
+    ),
 }
 
 _EXPORT_SURFACE_FORMATS: dict[str, str] = {
@@ -233,6 +298,252 @@ def _conversation_input_facts(conversation: Conversation) -> dict[str, Any]:
         "thinking_messages": thinking_messages,
         "tool_messages": tool_messages,
         "branch_messages": branch_messages,
+    }
+
+
+def _summary_input_facts(summary: ConversationSummary, message_count: int) -> dict[str, Any]:
+    return {
+        "conversation_id": str(summary.id),
+        "provider": str(summary.provider),
+        "title": summary.display_title,
+        "date": summary.display_date.isoformat() if summary.display_date else None,
+        "messages": message_count,
+        "tags": list(summary.tags),
+        "summary": summary.summary,
+    }
+
+
+def _summary_output_facts(payload: dict[str, Any]) -> dict[str, Any]:
+    tags = payload.get("tags")
+    if not isinstance(tags, list):
+        tags = []
+    return {
+        "conversation_id": str(payload.get("id") or ""),
+        "provider": str(payload.get("provider") or ""),
+        "title": payload.get("title"),
+        "date": payload.get("date"),
+        "messages": int(payload.get("messages") or 0),
+        "tags": [str(tag) for tag in tags],
+        "summary": payload.get("summary"),
+    }
+
+
+def _summary_csv_output_facts(csv_text: str) -> list[dict[str, Any]]:
+    reader = csv.DictReader(io.StringIO(csv_text))
+    rows: list[dict[str, Any]] = []
+    for row in reader:
+        tags_text = str(row.get("tags") or "")
+        rows.append(
+            {
+                "conversation_id": str(row.get("id") or ""),
+                "provider": str(row.get("provider") or ""),
+                "title": row.get("title"),
+                "date": row.get("date") or None,
+                "messages": int(row.get("messages") or 0),
+                "tags": [tag for tag in tags_text.split(",") if tag],
+                "summary": row.get("summary") or None,
+            }
+        )
+    return rows
+
+
+_SUMMARY_TEXT_RE = re.compile(
+    r"^(?P<id>.{1,24})\s{2,}(?P<date>\S*)\s{2,}(?P<provider>\S+)\s{2,}(?P<title>.*) \((?P<messages>\d+) msgs\)$"
+)
+
+
+def _summary_text_output_facts(text: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        match = _SUMMARY_TEXT_RE.match(line.rstrip())
+        if match is None:
+            continue
+        rows.append(
+            {
+                "conversation_id_prefix": match.group("id").strip(),
+                "provider": match.group("provider").strip(),
+                "date": match.group("date").strip() or None,
+                "title": match.group("title").strip(),
+                "messages": int(match.group("messages")),
+            }
+        )
+    return rows
+
+
+def _stream_input_facts(
+    conversation: Conversation,
+    *,
+    dialogue_only: bool = False,
+    message_limit: int | None = None,
+) -> dict[str, Any]:
+    filtered_messages = [
+        message
+        for message in conversation.messages
+        if (not dialogue_only or message.is_dialogue)
+    ]
+    if message_limit is not None:
+        filtered_messages = filtered_messages[:message_limit]
+
+    visible_messages = [message for message in filtered_messages if _is_text_message(message)]
+    role_counts: Counter[str] = Counter(_normalized_role_label(message.role) for message in visible_messages)
+    timestamped_messages = sum(1 for message in visible_messages if message.timestamp is not None)
+
+    return {
+        "conversation_id": str(conversation.id),
+        "provider": str(conversation.provider),
+        "title": conversation.display_title,
+        "date": conversation.display_date.isoformat() if conversation.display_date else None,
+        "text_messages": len(visible_messages),
+        "text_message_ids": [str(message.id) for message in visible_messages],
+        "text_role_counts": _sorted_counts(dict(role_counts)),
+        "timestamped_text_messages": timestamped_messages,
+        "attachment_count": sum(len(message.attachments) for message in filtered_messages),
+        "thinking_messages": sum(1 for message in filtered_messages if message.is_thinking),
+        "tool_messages": sum(1 for message in filtered_messages if message.is_tool_use),
+        "branch_messages": sum(1 for message in filtered_messages if message.branch_index > 0),
+        "dialogue_only": dialogue_only,
+        "message_limit": message_limit,
+    }
+
+
+def _stream_markdown_output_facts(text: str) -> dict[str, Any]:
+    title: str | None = None
+    provider: str | None = None
+    has_date = False
+    message_sections = 0
+    role_counts: Counter[str] = Counter()
+    for line in text.splitlines():
+        if title is None and line.startswith("# "):
+            title = line[2:].strip()
+        elif line.startswith("**Provider**: "):
+            provider = line.split(": ", 1)[1].strip()
+        elif line.startswith("**Date**: "):
+            has_date = True
+        elif line.startswith("## "):
+            role = line[3:].strip()
+            message_sections += 1
+            role_counts[_normalized_role_label(role)] += 1
+    footer_match = re.search(r"_Streamed (\d+) messages_", text)
+    return {
+        "title": title,
+        "provider": provider,
+        "has_date": has_date,
+        "message_sections": message_sections,
+        "role_counts": _sorted_counts(dict(role_counts)),
+        "footer_count": int(footer_match.group(1)) if footer_match else 0,
+    }
+
+
+def _stream_plaintext_output_facts(text: str) -> dict[str, Any]:
+    role_counts: Counter[str] = Counter()
+    message_sections = 0
+    for line in text.splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            role = line[1:-1].strip()
+            message_sections += 1
+            role_counts[_normalized_role_label(role)] += 1
+    return {
+        "message_sections": message_sections,
+        "role_counts": _sorted_counts(dict(role_counts)),
+        "title": None,
+        "provider": None,
+        "has_date": False,
+    }
+
+
+def _stream_json_lines_output_facts(text: str) -> dict[str, Any]:
+    header: dict[str, Any] = {}
+    footer: dict[str, Any] = {}
+    message_ids: list[str] = []
+    role_counts: Counter[str] = Counter()
+    timestamped_messages = 0
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        record_type = payload.get("type")
+        if record_type == "header":
+            header = payload
+        elif record_type == "footer":
+            footer = payload
+        elif record_type == "message":
+            message_ids.append(str(payload.get("id") or ""))
+            role_counts[_normalized_role_label(payload.get("role"))] += 1
+            if payload.get("timestamp"):
+                timestamped_messages += 1
+
+    return {
+        "conversation_id": str(header.get("conversation_id") or ""),
+        "title": header.get("title"),
+        "provider": str(header.get("provider") or ""),
+        "date": header.get("date"),
+        "message_ids": message_ids,
+        "message_sections": len(message_ids),
+        "role_counts": _sorted_counts(dict(role_counts)),
+        "timestamped_messages": timestamped_messages,
+        "footer_count": int(footer.get("message_count") or 0),
+    }
+
+
+def _mcp_summary_output_facts(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "conversation_id": str(payload.get("id") or ""),
+        "provider": str(payload.get("provider") or ""),
+        "title": payload.get("title"),
+        "messages": int(payload.get("message_count") or 0),
+        "created_at": payload.get("created_at"),
+        "updated_at": payload.get("updated_at"),
+    }
+
+
+def _mcp_detail_input_facts(conversation: Conversation) -> dict[str, Any]:
+    input_facts = _conversation_input_facts(conversation)
+    return {
+        "conversation_id": input_facts["conversation_id"],
+        "provider": input_facts["provider"],
+        "title": input_facts["title"],
+        "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
+        "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "messages": input_facts["total_messages"],
+        "message_ids": input_facts["message_ids"],
+        "role_counts": input_facts["text_role_counts"],
+        "timestamped_messages": input_facts["timestamped_text_messages"],
+        "attachment_count": input_facts["attachment_count"],
+        "thinking_messages": input_facts["thinking_messages"],
+        "tool_messages": input_facts["tool_messages"],
+        "branch_messages": input_facts["branch_messages"],
+    }
+
+
+def _mcp_detail_output_facts(payload: dict[str, Any]) -> dict[str, Any]:
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+    role_counts: Counter[str] = Counter()
+    message_ids: list[str] = []
+    timestamped_messages = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_ids.append(str(message.get("id") or ""))
+        role_counts[_normalized_role_label(message.get("role"))] += 1
+        if message.get("timestamp"):
+            timestamped_messages += 1
+    return {
+        "conversation_id": str(payload.get("id") or ""),
+        "provider": str(payload.get("provider") or ""),
+        "title": payload.get("title"),
+        "created_at": payload.get("created_at"),
+        "updated_at": payload.get("updated_at"),
+        "messages": len(message_ids),
+        "message_ids": message_ids,
+        "role_counts": _sorted_counts(dict(role_counts)),
+        "timestamped_messages": timestamped_messages,
     }
 
 
@@ -1316,6 +1627,639 @@ def prove_export_surface_semantics(
     raise ValueError(f"Unsupported semantic surface: {surface}")
 
 
+def _summary_record_from_conversation(conversation: Conversation) -> ConversationSummary:
+    return ConversationSummary(
+        id=conversation.id,
+        provider=conversation.provider,
+        title=conversation.title,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        provider_meta=conversation.provider_meta,
+        metadata=conversation.metadata,
+        parent_id=conversation.parent_id,
+        branch_type=conversation.branch_type,
+        message_count=len(conversation.messages),
+    )
+
+
+def _prove_query_summary_json_like_surface(
+    *,
+    summary: ConversationSummary,
+    message_count: int,
+    rendered_text: str,
+    surface: str,
+) -> SemanticConversationProof:
+    try:
+        if surface == "query_summary_yaml_v1":
+            import yaml
+
+            parsed = yaml.safe_load(rendered_text)
+        else:
+            parsed = json.loads(rendered_text)
+    except Exception:
+        parsed = []
+
+    row = parsed[0] if isinstance(parsed, list) and parsed else {}
+    payload = row if isinstance(row, dict) else {}
+    input_facts = _summary_input_facts(summary, message_count)
+    output_facts = _summary_output_facts(payload)
+    checks = [
+        _critical_or_preserved(
+            metric="conversation_id",
+            policy=f"{surface} must preserve the conversation identifier",
+            input_value=input_facts["conversation_id"],
+            output_value=output_facts["conversation_id"],
+        ),
+        _critical_or_preserved(
+            metric="provider_identity",
+            policy=f"{surface} must preserve provider identity",
+            input_value=input_facts["provider"],
+            output_value=output_facts["provider"],
+        ),
+        _critical_or_preserved(
+            metric="title_metadata",
+            policy=f"{surface} must preserve the display title",
+            input_value=input_facts["title"],
+            output_value=output_facts["title"],
+        ),
+        _critical_or_preserved(
+            metric="date_metadata",
+            policy=f"{surface} must preserve the summary display date",
+            input_value=input_facts["date"],
+            output_value=output_facts["date"],
+        ),
+        _critical_or_preserved(
+            metric="message_count",
+            policy=f"{surface} must preserve summary message counts",
+            input_value=input_facts["messages"],
+            output_value=output_facts["messages"],
+        ),
+        _critical_or_preserved(
+            metric="tag_values",
+            policy=f"{surface} must preserve summary tag values",
+            input_value=input_facts["tags"],
+            output_value=output_facts["tags"],
+        ),
+        _critical_or_preserved(
+            metric="summary_text",
+            policy=f"{surface} must preserve summary text",
+            input_value=input_facts["summary"],
+            output_value=output_facts["summary"],
+        ),
+    ]
+    return SemanticConversationProof(
+        conversation_id=input_facts["conversation_id"],
+        provider=input_facts["provider"],
+        surface=surface,
+        input_facts=input_facts,
+        output_facts=output_facts,
+        checks=checks,
+    )
+
+
+def _prove_query_summary_csv_surface(
+    *,
+    summary: ConversationSummary,
+    message_count: int,
+    rendered_text: str,
+) -> SemanticConversationProof:
+    rows = _summary_csv_output_facts(rendered_text)
+    output_facts = rows[0] if rows else {}
+    input_facts = _summary_input_facts(summary, message_count)
+    checks = [
+        _critical_or_preserved(
+            metric="conversation_id",
+            policy="query_summary_csv_v1 must preserve the conversation identifier",
+            input_value=input_facts["conversation_id"],
+            output_value=output_facts.get("conversation_id", ""),
+        ),
+        _critical_or_preserved(
+            metric="provider_identity",
+            policy="query_summary_csv_v1 must preserve provider identity",
+            input_value=input_facts["provider"],
+            output_value=output_facts.get("provider", ""),
+        ),
+        _critical_or_preserved(
+            metric="title_metadata",
+            policy="query_summary_csv_v1 must preserve the display title",
+            input_value=input_facts["title"],
+            output_value=output_facts.get("title"),
+        ),
+        _critical_or_preserved(
+            metric="date_metadata",
+            policy="query_summary_csv_v1 must preserve the summary display date",
+            input_value=input_facts["date"][:10] if input_facts["date"] else None,
+            output_value=output_facts.get("date"),
+        ),
+        _critical_or_preserved(
+            metric="message_count",
+            policy="query_summary_csv_v1 must preserve summary message counts",
+            input_value=input_facts["messages"],
+            output_value=output_facts.get("messages", 0),
+        ),
+        _critical_or_preserved(
+            metric="tag_values",
+            policy="query_summary_csv_v1 must preserve summary tag values",
+            input_value=input_facts["tags"],
+            output_value=output_facts.get("tags", []),
+        ),
+        _critical_or_preserved(
+            metric="summary_text",
+            policy="query_summary_csv_v1 must preserve summary text",
+            input_value=input_facts["summary"],
+            output_value=output_facts.get("summary"),
+        ),
+    ]
+    return SemanticConversationProof(
+        conversation_id=input_facts["conversation_id"],
+        provider=input_facts["provider"],
+        surface="query_summary_csv_v1",
+        input_facts=input_facts,
+        output_facts=output_facts,
+        checks=checks,
+    )
+
+
+def _prove_query_summary_text_surface(
+    *,
+    summary: ConversationSummary,
+    message_count: int,
+    rendered_text: str,
+) -> SemanticConversationProof:
+    rows = _summary_text_output_facts(rendered_text)
+    output_facts = rows[0] if rows else {}
+    input_facts = _summary_input_facts(summary, message_count)
+    raw_title = input_facts["title"] or input_facts["conversation_id"][:20]
+    expected_title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
+    checks = [
+        _critical_or_preserved(
+            metric="conversation_id_prefix",
+            policy="query_summary_text_v1 must preserve the visible conversation id prefix",
+            input_value=input_facts["conversation_id"][:24],
+            output_value=output_facts.get("conversation_id_prefix", ""),
+        ),
+        _critical_or_preserved(
+            metric="provider_identity",
+            policy="query_summary_text_v1 must preserve provider identity",
+            input_value=input_facts["provider"],
+            output_value=output_facts.get("provider", ""),
+        ),
+        _critical_or_preserved(
+            metric="date_metadata",
+            policy="query_summary_text_v1 must preserve the visible summary date",
+            input_value=input_facts["date"][:10] if input_facts["date"] else None,
+            output_value=output_facts.get("date"),
+        ),
+        _critical_or_preserved(
+            metric="title_projection",
+            policy="query_summary_text_v1 must preserve the deterministic visible title projection",
+            input_value=expected_title,
+            output_value=output_facts.get("title", ""),
+        ),
+        _critical_or_preserved(
+            metric="message_count",
+            policy="query_summary_text_v1 must preserve summary message counts",
+            input_value=input_facts["messages"],
+            output_value=output_facts.get("messages", 0),
+        ),
+        _declared_loss_or_preserved(
+            metric="tag_values",
+            policy="query_summary_text_v1 intentionally omits tag values",
+            input_value=len(input_facts["tags"]),
+        ),
+        _declared_loss_or_preserved(
+            metric="summary_text",
+            policy="query_summary_text_v1 intentionally omits summary text",
+            input_value=1 if input_facts["summary"] else 0,
+        ),
+    ]
+    return SemanticConversationProof(
+        conversation_id=input_facts["conversation_id"],
+        provider=input_facts["provider"],
+        surface="query_summary_text_v1",
+        input_facts=input_facts,
+        output_facts=output_facts,
+        checks=checks,
+    )
+
+
+def _prove_query_stream_plaintext_surface(
+    *,
+    conversation: Conversation,
+    rendered_text: str,
+) -> SemanticConversationProof:
+    input_facts = _stream_input_facts(conversation)
+    output_facts = _stream_plaintext_output_facts(rendered_text)
+    checks = [
+        _critical_or_preserved(
+            metric="text_messages",
+            policy="query_stream_plaintext_v1 must preserve one visible block per text-bearing message",
+            input_value=input_facts["text_messages"],
+            output_value=output_facts["message_sections"],
+        ),
+        _critical_or_preserved(
+            metric="role_sections",
+            policy="query_stream_plaintext_v1 must preserve visible role labels for streamed messages",
+            input_value=input_facts["text_role_counts"],
+            output_value=output_facts["role_counts"],
+        ),
+        _declared_loss_or_preserved(
+            metric="title_metadata",
+            policy="query_stream_plaintext_v1 intentionally omits title metadata",
+            input_value=1 if input_facts["title"] else 0,
+        ),
+        _declared_loss_or_preserved(
+            metric="provider_identity",
+            policy="query_stream_plaintext_v1 intentionally omits provider metadata",
+            input_value=1 if input_facts["provider"] else 0,
+        ),
+        _declared_loss_or_preserved(
+            metric="date_metadata",
+            policy="query_stream_plaintext_v1 intentionally omits date metadata",
+            input_value=1 if input_facts["date"] else 0,
+        ),
+        _declared_loss_or_preserved(
+            metric="timestamp_values",
+            policy="query_stream_plaintext_v1 intentionally omits per-message timestamps",
+            input_value=input_facts["timestamped_text_messages"],
+        ),
+        _declared_loss_or_preserved(
+            metric="attachment_semantics",
+            policy="query_stream_plaintext_v1 intentionally omits attachment semantics",
+            input_value=input_facts["attachment_count"],
+        ),
+        _declared_loss_or_preserved(
+            metric="thinking_semantics",
+            policy="query_stream_plaintext_v1 preserves display text but not typed thinking markers",
+            input_value=input_facts["thinking_messages"],
+        ),
+        _declared_loss_or_preserved(
+            metric="tool_semantics",
+            policy="query_stream_plaintext_v1 preserves display text but not typed tool markers",
+            input_value=input_facts["tool_messages"],
+        ),
+        _declared_loss_or_preserved(
+            metric="branch_structure",
+            policy="query_stream_plaintext_v1 intentionally omits explicit branch topology",
+            input_value=input_facts["branch_messages"],
+        ),
+    ]
+    return SemanticConversationProof(
+        conversation_id=str(conversation.id),
+        provider=str(conversation.provider),
+        surface="query_stream_plaintext_v1",
+        input_facts=input_facts,
+        output_facts=output_facts,
+        checks=checks,
+    )
+
+
+def _prove_query_stream_markdown_surface(
+    *,
+    conversation: Conversation,
+    rendered_text: str,
+) -> SemanticConversationProof:
+    input_facts = _stream_input_facts(conversation)
+    output_facts = _stream_markdown_output_facts(rendered_text)
+    checks = [
+        _critical_or_preserved(
+            metric="title_metadata",
+            policy="query_stream_markdown_v1 must preserve the conversation title",
+            input_value=input_facts["title"],
+            output_value=output_facts["title"],
+        ),
+        _critical_or_preserved(
+            metric="provider_identity",
+            policy="query_stream_markdown_v1 must preserve provider identity in the stream header",
+            input_value=input_facts["provider"],
+            output_value=output_facts["provider"],
+        ),
+        _presence_check(
+            metric="date_metadata",
+            policy="query_stream_markdown_v1 must preserve conversation date presence in the stream header",
+            input_value=input_facts["date"],
+            output_present=bool(output_facts["has_date"]),
+        ),
+        _critical_or_preserved(
+            metric="text_messages",
+            policy="query_stream_markdown_v1 must preserve one visible section per text-bearing message",
+            input_value=input_facts["text_messages"],
+            output_value=output_facts["message_sections"],
+        ),
+        _critical_or_preserved(
+            metric="role_sections",
+            policy="query_stream_markdown_v1 must preserve visible role headings for streamed messages",
+            input_value=input_facts["text_role_counts"],
+            output_value=output_facts["role_counts"],
+        ),
+        _critical_or_preserved(
+            metric="footer_count",
+            policy="query_stream_markdown_v1 must report the number of emitted messages honestly",
+            input_value=input_facts["text_messages"],
+            output_value=output_facts["footer_count"],
+        ),
+        _declared_loss_or_preserved(
+            metric="timestamp_values",
+            policy="query_stream_markdown_v1 intentionally omits per-message timestamps",
+            input_value=input_facts["timestamped_text_messages"],
+        ),
+        _declared_loss_or_preserved(
+            metric="attachment_semantics",
+            policy="query_stream_markdown_v1 intentionally omits attachment semantics",
+            input_value=input_facts["attachment_count"],
+        ),
+        _declared_loss_or_preserved(
+            metric="thinking_semantics",
+            policy="query_stream_markdown_v1 preserves display text but not typed thinking markers",
+            input_value=input_facts["thinking_messages"],
+        ),
+        _declared_loss_or_preserved(
+            metric="tool_semantics",
+            policy="query_stream_markdown_v1 preserves display text but not typed tool markers",
+            input_value=input_facts["tool_messages"],
+        ),
+        _declared_loss_or_preserved(
+            metric="branch_structure",
+            policy="query_stream_markdown_v1 intentionally omits explicit branch topology",
+            input_value=input_facts["branch_messages"],
+        ),
+    ]
+    return SemanticConversationProof(
+        conversation_id=str(conversation.id),
+        provider=str(conversation.provider),
+        surface="query_stream_markdown_v1",
+        input_facts=input_facts,
+        output_facts=output_facts,
+        checks=checks,
+    )
+
+
+def _prove_query_stream_json_lines_surface(
+    *,
+    conversation: Conversation,
+    rendered_text: str,
+) -> SemanticConversationProof:
+    input_facts = _stream_input_facts(conversation)
+    output_facts = _stream_json_lines_output_facts(rendered_text)
+    checks = [
+        _critical_or_preserved(
+            metric="conversation_id",
+            policy="query_stream_json_lines_v1 must preserve the conversation identifier in the header",
+            input_value=input_facts["conversation_id"],
+            output_value=output_facts["conversation_id"],
+        ),
+        _critical_or_preserved(
+            metric="title_metadata",
+            policy="query_stream_json_lines_v1 must preserve the title in the header",
+            input_value=input_facts["title"],
+            output_value=output_facts["title"],
+        ),
+        _critical_or_preserved(
+            metric="provider_identity",
+            policy="query_stream_json_lines_v1 must preserve provider identity in the header",
+            input_value=input_facts["provider"],
+            output_value=output_facts["provider"],
+        ),
+        _critical_or_preserved(
+            metric="date_metadata",
+            policy="query_stream_json_lines_v1 must preserve the conversation date in the header",
+            input_value=input_facts["date"],
+            output_value=output_facts["date"],
+        ),
+        _critical_or_preserved(
+            metric="text_message_ids",
+            policy="query_stream_json_lines_v1 must preserve identifiers for emitted messages",
+            input_value=input_facts["text_message_ids"],
+            output_value=output_facts["message_ids"],
+        ),
+        _critical_or_preserved(
+            metric="role_sections",
+            policy="query_stream_json_lines_v1 must preserve role distribution for emitted messages",
+            input_value=input_facts["text_role_counts"],
+            output_value=output_facts["role_counts"],
+        ),
+        _critical_or_preserved(
+            metric="timestamp_values",
+            policy="query_stream_json_lines_v1 must preserve timestamps for emitted messages",
+            input_value=input_facts["timestamped_text_messages"],
+            output_value=output_facts["timestamped_messages"],
+        ),
+        _critical_or_preserved(
+            metric="footer_count",
+            policy="query_stream_json_lines_v1 must report the number of emitted messages honestly",
+            input_value=input_facts["text_messages"],
+            output_value=output_facts["footer_count"],
+        ),
+        _declared_loss_or_preserved(
+            metric="attachment_semantics",
+            policy="query_stream_json_lines_v1 intentionally omits attachment semantics",
+            input_value=input_facts["attachment_count"],
+        ),
+        _declared_loss_or_preserved(
+            metric="thinking_semantics",
+            policy="query_stream_json_lines_v1 preserves display text but not typed thinking markers",
+            input_value=input_facts["thinking_messages"],
+        ),
+        _declared_loss_or_preserved(
+            metric="tool_semantics",
+            policy="query_stream_json_lines_v1 preserves display text but not typed tool markers",
+            input_value=input_facts["tool_messages"],
+        ),
+        _declared_loss_or_preserved(
+            metric="branch_structure",
+            policy="query_stream_json_lines_v1 intentionally omits explicit branch topology",
+            input_value=input_facts["branch_messages"],
+        ),
+    ]
+    return SemanticConversationProof(
+        conversation_id=str(conversation.id),
+        provider=str(conversation.provider),
+        surface="query_stream_json_lines_v1",
+        input_facts=input_facts,
+        output_facts=output_facts,
+        checks=checks,
+    )
+
+
+def _prove_mcp_summary_surface(
+    *,
+    summary: ConversationSummary,
+    message_count: int,
+    rendered_text: str,
+) -> SemanticConversationProof:
+    try:
+        parsed = json.loads(rendered_text)
+    except Exception:
+        parsed = []
+    row = parsed[0] if isinstance(parsed, list) and parsed else {}
+    payload = row if isinstance(row, dict) else {}
+    input_facts = {
+        "conversation_id": str(summary.id),
+        "provider": str(summary.provider),
+        "title": summary.display_title,
+        "messages": message_count,
+        "created_at": summary.created_at.isoformat() if summary.created_at else None,
+        "updated_at": summary.updated_at.isoformat() if summary.updated_at else None,
+        "tags": list(summary.tags),
+        "summary": summary.summary,
+    }
+    output_facts = _mcp_summary_output_facts(payload)
+    checks = [
+        _critical_or_preserved(
+            metric="conversation_id",
+            policy="mcp_summary_json_v1 must preserve the conversation identifier",
+            input_value=input_facts["conversation_id"],
+            output_value=output_facts["conversation_id"],
+        ),
+        _critical_or_preserved(
+            metric="provider_identity",
+            policy="mcp_summary_json_v1 must preserve provider identity",
+            input_value=input_facts["provider"],
+            output_value=output_facts["provider"],
+        ),
+        _critical_or_preserved(
+            metric="title_metadata",
+            policy="mcp_summary_json_v1 must preserve the display title",
+            input_value=input_facts["title"],
+            output_value=output_facts["title"],
+        ),
+        _critical_or_preserved(
+            metric="message_count",
+            policy="mcp_summary_json_v1 must preserve summary message counts",
+            input_value=input_facts["messages"],
+            output_value=output_facts["messages"],
+        ),
+        _critical_or_preserved(
+            metric="created_at",
+            policy="mcp_summary_json_v1 must preserve the created_at timestamp when present",
+            input_value=input_facts["created_at"],
+            output_value=output_facts["created_at"],
+        ),
+        _critical_or_preserved(
+            metric="updated_at",
+            policy="mcp_summary_json_v1 must preserve the updated_at timestamp when present",
+            input_value=input_facts["updated_at"],
+            output_value=output_facts["updated_at"],
+        ),
+        _declared_loss_or_preserved(
+            metric="tag_values",
+            policy="mcp_summary_json_v1 intentionally omits tags",
+            input_value=len(input_facts["tags"]),
+        ),
+        _declared_loss_or_preserved(
+            metric="summary_text",
+            policy="mcp_summary_json_v1 intentionally omits summary text",
+            input_value=1 if input_facts["summary"] else 0,
+        ),
+    ]
+    return SemanticConversationProof(
+        conversation_id=input_facts["conversation_id"],
+        provider=input_facts["provider"],
+        surface="mcp_summary_json_v1",
+        input_facts=input_facts,
+        output_facts=output_facts,
+        checks=checks,
+    )
+
+
+def _prove_mcp_detail_surface(
+    *,
+    conversation: Conversation,
+    rendered_text: str,
+) -> SemanticConversationProof:
+    try:
+        parsed = json.loads(rendered_text)
+    except Exception:
+        parsed = {}
+    payload = parsed if isinstance(parsed, dict) else {}
+    input_facts = _mcp_detail_input_facts(conversation)
+    output_facts = _mcp_detail_output_facts(payload)
+    checks = [
+        _critical_or_preserved(
+            metric="conversation_id",
+            policy="mcp_detail_json_v1 must preserve the conversation identifier",
+            input_value=input_facts["conversation_id"],
+            output_value=output_facts["conversation_id"],
+        ),
+        _critical_or_preserved(
+            metric="provider_identity",
+            policy="mcp_detail_json_v1 must preserve provider identity",
+            input_value=input_facts["provider"],
+            output_value=output_facts["provider"],
+        ),
+        _critical_or_preserved(
+            metric="title_metadata",
+            policy="mcp_detail_json_v1 must preserve the display title",
+            input_value=input_facts["title"],
+            output_value=output_facts["title"],
+        ),
+        _critical_or_preserved(
+            metric="created_at",
+            policy="mcp_detail_json_v1 must preserve the created_at timestamp when present",
+            input_value=input_facts["created_at"],
+            output_value=output_facts["created_at"],
+        ),
+        _critical_or_preserved(
+            metric="updated_at",
+            policy="mcp_detail_json_v1 must preserve the updated_at timestamp when present",
+            input_value=input_facts["updated_at"],
+            output_value=output_facts["updated_at"],
+        ),
+        _critical_or_preserved(
+            metric="message_entries",
+            policy="mcp_detail_json_v1 must preserve every message entry",
+            input_value=input_facts["messages"],
+            output_value=output_facts["messages"],
+        ),
+        _critical_or_preserved(
+            metric="message_ids",
+            policy="mcp_detail_json_v1 must preserve message identifiers",
+            input_value=input_facts["message_ids"],
+            output_value=output_facts["message_ids"],
+        ),
+        _critical_or_preserved(
+            metric="role_entries",
+            policy="mcp_detail_json_v1 must preserve message role distribution",
+            input_value=input_facts["role_counts"],
+            output_value=output_facts["role_counts"],
+        ),
+        _critical_or_preserved(
+            metric="timestamp_values",
+            policy="mcp_detail_json_v1 must preserve message timestamps",
+            input_value=input_facts["timestamped_messages"],
+            output_value=output_facts["timestamped_messages"],
+        ),
+        _declared_loss_or_preserved(
+            metric="attachment_semantics",
+            policy="mcp_detail_json_v1 intentionally omits attachment payload semantics",
+            input_value=input_facts["attachment_count"],
+        ),
+        _declared_loss_or_preserved(
+            metric="thinking_semantics",
+            policy="mcp_detail_json_v1 preserves display text but not typed thinking markers",
+            input_value=input_facts["thinking_messages"],
+        ),
+        _declared_loss_or_preserved(
+            metric="tool_semantics",
+            policy="mcp_detail_json_v1 preserves display text but not typed tool markers",
+            input_value=input_facts["tool_messages"],
+        ),
+        _declared_loss_or_preserved(
+            metric="branch_structure",
+            policy="mcp_detail_json_v1 intentionally omits explicit branch topology",
+            input_value=input_facts["branch_messages"],
+        ),
+    ]
+    return SemanticConversationProof(
+        conversation_id=input_facts["conversation_id"],
+        provider=input_facts["provider"],
+        surface="mcp_detail_json_v1",
+        input_facts=input_facts,
+        output_facts=output_facts,
+        checks=checks,
+    )
+
+
 def _empty_surface_report(
     surface: str,
     *,
@@ -1352,11 +2296,112 @@ async def _prove_semantic_surface_suite_async(
             providers=providers,
         )
         proofs_by_surface: dict[str, list[SemanticConversationProof]] = {surface: [] for surface in surfaces}
-        need_export_surfaces = any(surface != "canonical_markdown_v1" for surface in surfaces)
+        summary_surfaces = {
+            "query_summary_json_v1",
+            "query_summary_yaml_v1",
+            "query_summary_csv_v1",
+            "query_summary_text_v1",
+        }
+        stream_surfaces = {
+            "query_stream_plaintext_v1",
+            "query_stream_markdown_v1",
+            "query_stream_json_lines_v1",
+        }
+        export_surfaces = set(_EXPORT_SURFACE_FORMATS)
+        summary_json_surfaces = {
+            "query_summary_json_v1",
+            "query_summary_yaml_v1",
+        }
+        need_message_counts = any(surface in summary_surfaces or surface == "mcp_summary_json_v1" for surface in surfaces)
+        need_full_conversations = any(
+            surface in export_surfaces
+            or surface in stream_surfaces
+            or surface == "mcp_detail_json_v1"
+            for surface in surfaces
+        )
+
+        summary_ids = [str(summary.id) for summary in summaries]
+        message_counts = (
+            await repository.queries.get_message_counts_batch(summary_ids)
+            if summary_ids and need_message_counts
+            else {}
+        )
+        conversations_by_id: dict[str, Conversation] = {}
+        if need_full_conversations and summary_ids:
+            conversations = await repository.get_many(summary_ids)
+            conversations_by_id = {str(conversation.id): conversation for conversation in conversations}
 
         for summary in summaries:
             conversation_id = str(summary.id)
-            conversation = await repository.view(conversation_id) if need_export_surfaces else None
+            conversation = conversations_by_id.get(conversation_id) if need_full_conversations else None
+            message_count = message_counts.get(
+                conversation_id,
+                len(conversation.messages) if conversation is not None else 0,
+            )
+            if summary_json_surfaces & set(surfaces):
+                for surface in sorted(summary_json_surfaces & set(surfaces)):
+                    rendered_text = format_summary_list(
+                        [summary],
+                        "json" if surface == "query_summary_json_v1" else "yaml",
+                        None,
+                        message_counts={conversation_id: message_count},
+                    )
+                    proofs_by_surface[surface].append(
+                        _prove_query_summary_json_like_surface(
+                            summary=summary,
+                            message_count=message_count,
+                            rendered_text=rendered_text,
+                            surface=surface,
+                        )
+                    )
+
+            if "query_summary_csv_v1" in surfaces:
+                rendered_text = format_summary_list(
+                    [summary],
+                    "csv",
+                    None,
+                    message_counts={conversation_id: message_count},
+                )
+                proofs_by_surface["query_summary_csv_v1"].append(
+                    _prove_query_summary_csv_surface(
+                        summary=summary,
+                        message_count=message_count,
+                        rendered_text=rendered_text,
+                    )
+                )
+
+            if "query_summary_text_v1" in surfaces:
+                rendered_text = format_summary_list(
+                    [summary],
+                    "text",
+                    None,
+                    message_counts={conversation_id: message_count},
+                )
+                proofs_by_surface["query_summary_text_v1"].append(
+                    _prove_query_summary_text_surface(
+                        summary=summary,
+                        message_count=message_count,
+                        rendered_text=rendered_text,
+                    )
+                )
+
+            if "mcp_summary_json_v1" in surfaces:
+                rendered_text = MCPConversationSummaryListPayload(
+                    root=[
+                        MCPConversationSummaryPayload.from_summary(
+                            summary,
+                            message_count=message_count,
+                        )
+                    ]
+                ).to_json()
+                proofs_by_surface["mcp_summary_json_v1"].append(
+                    _prove_mcp_summary_surface(
+                        summary=summary,
+                        message_count=message_count,
+                        rendered_text=rendered_text,
+                    )
+                )
+
             projection = None
             for surface in surfaces:
                 if surface == "canonical_markdown_v1":
@@ -1370,12 +2415,69 @@ async def _prove_semantic_surface_suite_async(
                     )
                     continue
 
-                if conversation is None:
+                if surface in export_surfaces:
+                    if conversation is None:
+                        continue
+                    rendered_text = format_conversation(conversation, _EXPORT_SURFACE_FORMATS[surface], None)
+                    proofs_by_surface[surface].append(
+                        prove_export_surface_semantics(conversation, surface, rendered_text)
+                    )
                     continue
-                rendered_text = format_conversation(conversation, _EXPORT_SURFACE_FORMATS[surface], None)
-                proofs_by_surface[surface].append(
-                    prove_export_surface_semantics(conversation, surface, rendered_text)
-                )
+
+                if surface in stream_surfaces:
+                    if conversation is None:
+                        continue
+                    rendered_text, _ = render_stream_transcript(
+                        conversation_id=conversation_id,
+                        title=conversation.display_title,
+                        provider=str(conversation.provider),
+                        display_date=conversation.display_date,
+                        messages=list(conversation.messages),
+                        output_format={
+                            "query_stream_plaintext_v1": "plaintext",
+                            "query_stream_markdown_v1": "markdown",
+                            "query_stream_json_lines_v1": "json-lines",
+                        }[surface],
+                        dialogue_only=False,
+                        message_limit=None,
+                        stats={
+                            "total_messages": len(conversation.messages),
+                            "dialogue_messages": sum(1 for message in conversation.messages if message.is_dialogue),
+                        },
+                    )
+                    if surface == "query_stream_plaintext_v1":
+                        proofs_by_surface[surface].append(
+                            _prove_query_stream_plaintext_surface(
+                                conversation=conversation,
+                                rendered_text=rendered_text,
+                            )
+                        )
+                    elif surface == "query_stream_markdown_v1":
+                        proofs_by_surface[surface].append(
+                            _prove_query_stream_markdown_surface(
+                                conversation=conversation,
+                                rendered_text=rendered_text,
+                            )
+                        )
+                    else:
+                        proofs_by_surface[surface].append(
+                            _prove_query_stream_json_lines_surface(
+                                conversation=conversation,
+                                rendered_text=rendered_text,
+                            )
+                        )
+                    continue
+
+                if surface == "mcp_detail_json_v1":
+                    if conversation is None:
+                        continue
+                    rendered_text = MCPConversationDetailPayload.from_conversation(conversation).to_json()
+                    proofs_by_surface[surface].append(
+                        _prove_mcp_detail_surface(
+                            conversation=conversation,
+                            rendered_text=rendered_text,
+                        )
+                    )
 
         provider_filters = list(providers or [])
         return SemanticProofSuiteReport(

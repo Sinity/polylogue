@@ -46,7 +46,7 @@ def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -
     "--semantic-proof",
     "check_semantic_proof",
     is_flag=True,
-    help="Run semantic preservation proof across canonical render and export surfaces",
+    help="Run semantic preservation proof across canonical, export, query, stream, and MCP read surfaces",
 )
 @click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)")
 @click.option(
@@ -90,7 +90,7 @@ def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -
     "--semantic-surface",
     "semantic_surfaces",
     multiple=True,
-    help="Limit semantic proof to surfaces such as canonical, json, yaml, csv, markdown, html, obsidian, org, or all",
+    help="Limit semantic proof to canonical/export/query/stream/MCP surfaces such as canonical, export_all, query_all, stream_all, mcp_all, read_all, or all",
 )
 @click.option(
     "--semantic-limit",
