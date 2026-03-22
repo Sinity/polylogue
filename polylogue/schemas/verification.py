@@ -178,6 +178,30 @@ class ArtifactProofReport:
         return dict(sorted(counts.items()))
 
     @property
+    def package_versions(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for stats in self.providers.values():
+            for version, count in stats.package_versions.items():
+                counts[version] = counts.get(version, 0) + count
+        return dict(sorted(counts.items()))
+
+    @property
+    def element_kinds(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for stats in self.providers.values():
+            for element_kind, count in stats.element_kinds.items():
+                counts[element_kind] = counts.get(element_kind, 0) + count
+        return dict(sorted(counts.items()))
+
+    @property
+    def resolution_reasons(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for stats in self.providers.values():
+            for reason, count in stats.resolution_reasons.items():
+                counts[reason] = counts.get(reason, 0) + count
+        return dict(sorted(counts.items()))
+
+    @property
     def is_clean(self) -> bool:
         return (
             self.unsupported_parseable_records == 0
@@ -201,6 +225,9 @@ class ArtifactProofReport:
                 "subagent_streams": self.subagent_streams,
                 "streams_with_sidecars": self.streams_with_sidecars,
                 "artifact_counts": self.artifact_counts,
+                "package_versions": self.package_versions,
+                "element_kinds": self.element_kinds,
+                "resolution_reasons": self.resolution_reasons,
                 "clean": self.is_clean,
             },
             "providers": {

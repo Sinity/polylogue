@@ -65,6 +65,9 @@ def test_site_builder_returns_typed_manifest_and_persists_it(db_path, tmp_path) 
     assert manifest.latest_run is not None
     assert manifest.latest_run.run_id == "run-001"
     assert manifest.artifact_proof is not None
+    assert manifest.artifact_proof.package_versions == {}
+    assert manifest.artifact_proof.element_kinds == {}
+    assert manifest.artifact_proof.resolution_reasons == {}
     assert (tmp_path / "site" / "site-manifest.json").exists()
     assert "site-manifest.json" not in {
         entry.relative_path for entry in manifest.artifacts.entries

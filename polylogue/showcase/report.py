@@ -80,6 +80,10 @@ def _status_label(status: OutcomeStatus) -> str:
     }[status]
 
 
+def _format_count_mapping(counts: dict[str, int]) -> str:
+    return ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
+
+
 def generate_summary(result: ShowcaseResult) -> str:
     """Generate a human-readable summary table."""
     lines: list[str] = []
@@ -364,6 +368,12 @@ def generate_qa_summary(result: QAResult) -> str:
             f"unknown={proof_summary['unknown_records']}, "
             f"decode_errors={proof_summary['decode_errors']}"
         )
+        if proof_summary["package_versions"]:
+            lines.append(f"  Packages: {_format_count_mapping(proof_summary['package_versions'])}")
+        if proof_summary["element_kinds"]:
+            lines.append(f"  Elements: {_format_count_mapping(proof_summary['element_kinds'])}")
+        if proof_summary["resolution_reasons"]:
+            lines.append(f"  Reasons: {_format_count_mapping(proof_summary['resolution_reasons'])}")
     if result.audit_status is OutcomeStatus.ERROR:
         if result.audit_error:
             lines.append(f"  Error: {result.audit_error}")
@@ -461,6 +471,30 @@ def generate_qa_markdown(result: QAResult, *, git_sha: str | None = None) -> str
         lines.append(f"| Linked sidecars | {proof_summary['linked_sidecars']} |")
         lines.append(f"| Orphan sidecars | {proof_summary['orphan_sidecars']} |")
         lines.append("")
+        if proof_summary["package_versions"]:
+            lines.append("### Resolved Packages")
+            lines.append("")
+            lines.append("| Package | Count |")
+            lines.append("| --- | ---: |")
+            for version, count in proof_summary["package_versions"].items():
+                lines.append(f"| {version} | {count} |")
+            lines.append("")
+        if proof_summary["element_kinds"]:
+            lines.append("### Resolved Elements")
+            lines.append("")
+            lines.append("| Element kind | Count |")
+            lines.append("| --- | ---: |")
+            for element_kind, count in proof_summary["element_kinds"].items():
+                lines.append(f"| {element_kind} | {count} |")
+            lines.append("")
+        if proof_summary["resolution_reasons"]:
+            lines.append("### Resolution Reasons")
+            lines.append("")
+            lines.append("| Reason | Count |")
+            lines.append("| --- | ---: |")
+            for reason, count in proof_summary["resolution_reasons"].items():
+                lines.append(f"| {reason} | {count} |")
+            lines.append("")
         if proof_report["providers"]:
             lines.append("### Providers")
             lines.append("")
