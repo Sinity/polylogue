@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 from textual.containers import Container
 from textual.widgets import Markdown as MarkdownWidget
 
-from polylogue.config import Config
 from polylogue.rendering.core import format_conversation_markdown
 
 if TYPE_CHECKING:
@@ -22,11 +21,9 @@ class RepositoryBoundContainer(Container):
 
     def __init__(
         self,
-        config: Config | None = None,
         repository: ConversationRepository | None = None,
     ) -> None:
         super().__init__()
-        self.config = config
         self._repository = repository
 
     def _get_repo(self, owner_name: str) -> ConversationRepository:
