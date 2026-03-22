@@ -48,7 +48,7 @@ jobs:
       - name: Copy assets
         run: |
           mkdir -p docs/assets
-          [ -f demos/output/01-overview.gif ] && cp demos/output/01-overview.gif docs/assets/demo-overview.gif || true
+          [ -f artifacts/demos/01-overview.gif ] && cp artifacts/demos/01-overview.gif docs/assets/demo-overview.gif || true
 
       - name: Generate static assets
         run: uv run python demos/generate_assets.py
@@ -57,4 +57,4 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: regenerate demo screencasts"
-          file_pattern: "demos/output/*.gif docs/assets/*"
+          file_pattern: "docs/assets/*"

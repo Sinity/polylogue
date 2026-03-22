@@ -91,7 +91,7 @@ polylogue run
 
 Auto-detects provider format from file content. Handles JSON, JSONL, ZIP archives (with bomb protection), and Google Drive sync.
 
-<img src="demos/output/02-run.gif" alt="polylogue run" width="100%">
+Local screencast output lives under `artifacts/demos/` when generated.
 
 </td>
 <td width="50%">
@@ -105,7 +105,7 @@ polylogue --has thinking --since "last week"
 
 Filter by provider, date, content type, tags — combine any filters freely.
 
-<img src="demos/output/03-search.gif" alt="polylogue search" width="100%">
+Durable documentation visuals live under `docs/assets/`.
 
 </td>
 </tr>
@@ -120,7 +120,7 @@ polylogue dashboard
 
 Textual-based TUI for browsing, searching, and reading conversations interactively.
 
-<img src="demos/output/04-dashboard.gif" alt="polylogue dashboard" width="100%">
+The dashboard surface is exercised through the showcase and demo workflow rather than committed runtime GIF output.
 
 </td>
 <td width="50%">
@@ -133,7 +133,7 @@ polylogue site -o ./public
 
 Browsable HTML archive with per-provider views, statistics dashboard, and client-side search.
 
-<img src="demos/output/05-site.gif" alt="polylogue site" width="100%">
+The site surface now publishes a typed `site-manifest.json` and durable publication record in addition to local demo captures.
 
 </td>
 </tr>

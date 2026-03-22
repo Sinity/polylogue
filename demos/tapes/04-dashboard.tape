@@ -1,6 +1,6 @@
 # Dashboard tape — launches TUI and browses tabs
 
-Output demos/output/04-dashboard.gif
+Output artifacts/demos/04-dashboard.gif
 
 Set Theme "Catppuccin Mocha"
 Set Width 1200

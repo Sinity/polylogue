@@ -12,7 +12,6 @@ __pycache__
 *.pyc
 *.pyo
 *.egg-info/
-dist/
 build/
 
 # Dev environment
@@ -32,14 +31,8 @@ venv/
 coverage.json
 htmlcov/
 
-# Mutation testing
-mutants/
-
 # Nix build output
 result
-
-# Demo output (regenerated via demos/)
-demos/output/
 
 .scratch
 
@@ -48,9 +41,13 @@ AGENTS.override.md
 # Local tooling/session artifacts
 .cclsp.json
 .mcp.json
-QA_SESSION.md
-qa_outputs/
-qa_archive/
+
+# Local generated artifacts (kept out of the repo root)
+/artifacts/*
+!/artifacts/README.md
+
+# Legacy build-tool defaults that may still appear at the repo root
+dist/
 
 # Generated agent surface
 AGENTS.md
