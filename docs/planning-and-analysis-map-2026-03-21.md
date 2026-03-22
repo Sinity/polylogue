@@ -24,6 +24,7 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
+| [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md) | Most recent executed closure slice for the remaining machine/runtime/testing frontier | Executed; current canonical record of the runtime-contract and validation-lane closure |
 | [programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md) | Most recent executed proof program covering query summary/list surfaces, stream surfaces, MCP read payloads, and showcase hardening | Executed; current canonical record of the read-surface proof lane |
 | [programs/multi-surface-semantic-proof-program-2026-03-22.md](./programs/multi-surface-semantic-proof-program-2026-03-22.md) | Executed semantic/export proof program extending proof from canonical markdown to broader export/query surfaces | Executed; predecessor proof-lane record |
 | [programs/schema-package-authority-program-2026-03-22.md](./programs/schema-package-authority-program-2026-03-22.md) | Most recent major implementation program for finishing schema package/version authority | Executed; predecessor canonical record |
@@ -114,7 +115,8 @@ As of this map:
 - the next broad frontier is no longer schema authority; the canonical markdown semantic-proof slice has now been executed via [programs/semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md](./programs/semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md)
 - the multi-surface proof lane is now executed via [programs/multi-surface-semantic-proof-program-2026-03-22.md](./programs/multi-surface-semantic-proof-program-2026-03-22.md), which extended semantic proof across export/query surfaces and routed that suite through QA/publication/showcase
 - the read-surface proof and showcase-hardening lane is now executed via [programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md), which covers query summary/list surfaces, stream surfaces, MCP read payloads, and matching showcase proof coverage
-- the remaining backlog reservoir is now the broader runtime/testing expansion work, especially machine-consumable CLI failure contracts, live/chaos/long-haul validation, and TUI/query-routing hardening, with [programs/testing-reliability-expansion-program-2026-03-14.md](./programs/testing-reliability-expansion-program-2026-03-14.md) and [programs/artifact-and-semantic-proof-program-2026-03-19.md](./programs/artifact-and-semantic-proof-program-2026-03-19.md) as the main references
+- the remaining runtime/testing reservoir has now been executed via [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md), which closes the root machine contract, query/TUI hardening, and named validation lanes for chaos/scale/live operator workflows
+- the next frontier is therefore no longer the old testing-reliability backlog bucket; future work should be selected intentionally from the strategic-reference programs rather than assumed from unresolved reservoir notes
 
 ## Maintenance Rule
 

@@ -18,7 +18,7 @@ from tests.infra.chaos_sources import (
 )
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.chaos]
 
 
 # =============================================================================
