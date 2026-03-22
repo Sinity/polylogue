@@ -7,9 +7,6 @@ field statistics.
 
 from __future__ import annotations
 
-import gzip
-import json
-import re
 import random
 from collections import Counter
 from dataclasses import dataclass, field
@@ -23,11 +20,17 @@ try:
 except ImportError:
     GENSON_AVAILABLE = False
 
+from polylogue.paths import db_path as default_db_path
 from polylogue.schemas.field_stats import (
-    FieldStats,
     UUID_PATTERN,
+    FieldStats,
     _collect_field_stats,
     is_dynamic_key,
+)
+from polylogue.schemas.packages import (
+    SchemaElementManifest,
+    SchemaPackageCatalog,
+    SchemaVersionPackage,
 )
 from polylogue.schemas.privacy import (
     _is_content_field,
@@ -39,20 +42,16 @@ from polylogue.schemas.redaction_report import (
     RedactionDecision,
     SchemaReport,
 )
-from polylogue.schemas.packages import (
-    SchemaElementManifest,
-    SchemaPackageCatalog,
-    SchemaVersionPackage,
-)
+from polylogue.schemas.registry import ClusterManifest, SchemaCluster, SchemaRegistry
 from polylogue.schemas.relational_inference import (
     infer_relations,
 )
 from polylogue.schemas.sampling import (
     PROVIDERS,
     ProviderConfig,
+    SchemaUnit,
     _resolve_provider_config,
     iter_schema_units,
-    SchemaUnit,
     profile_cluster_id,
     profile_similarity,
 )
@@ -60,8 +59,6 @@ from polylogue.schemas.semantic_inference import (
     infer_semantic_roles,
     select_best_roles,
 )
-from polylogue.schemas.registry import ClusterManifest, SchemaCluster, SchemaRegistry
-from polylogue.paths import db_path as default_db_path
 from polylogue.types import Provider
 
 _HIGH_CARDINALITY_KEY_THRESHOLD = 128
@@ -408,7 +405,7 @@ def _build_redaction_report(
             return
         vals = s.get("x-polylogue-values")
         if isinstance(vals, list):
-            schema_values[path] = set(str(v) for v in vals)
+            schema_values[path] = {str(v) for v in vals}
         if "properties" in s:
             for name, prop in s["properties"].items():
                 _collect_schema_values(prop, f"{path}.{name}")
@@ -657,7 +654,7 @@ class _PackageAccumulator:
     memberships: list[_UnitMembership] = field(default_factory=list)
     bundle_scopes: set[str] = field(default_factory=set)
     representative_paths: list[str] = field(default_factory=list)
-    source_cluster_ids: set[str] = field(default_factory=set)
+    profile_family_ids: set[str] = field(default_factory=set)
     first_seen: str | None = None
     last_seen: str | None = None
 
@@ -725,10 +722,7 @@ def _cluster_profile_tokens(acc: _ClusterAccumulator) -> tuple[str, ...]:
         dominant_keys = getattr(acc, "dominant_keys", ())
         return tuple(f"field:{key}" for key in dominant_keys[:_PROFILE_MAX_TOKENS])
 
-    if acc.sample_count <= 2:
-        min_count = 1
-    else:
-        min_count = max(2, int(acc.sample_count * _PROFILE_CORE_MIN_RATIO))
+    min_count = 1 if acc.sample_count <= 2 else max(2, int(acc.sample_count * _PROFILE_CORE_MIN_RATIO))
 
     tokens = sorted(
         token
@@ -758,6 +752,21 @@ def _merge_representative_paths(target: list[str], source: list[str]) -> None:
             target.append(path)
 
 
+def _membership_observed_window(memberships: list[_UnitMembership]) -> tuple[str, str] | tuple[None, None]:
+    first_seen: str | None = None
+    last_seen: str | None = None
+    for membership in memberships:
+        parsed = _parse_observed_at(membership.unit.observed_at)
+        if parsed is None:
+            continue
+        iso = parsed.astimezone(timezone.utc).isoformat()
+        if first_seen is None or parsed < _parse_observed_at(first_seen):
+            first_seen = iso
+        if last_seen is None or parsed > _parse_observed_at(last_seen):
+            last_seen = iso
+    return first_seen, last_seen
+
+
 def _merge_dominant_keys(target: list[str], source: list[str]) -> list[str]:
     merged = list(dict.fromkeys([*target, *source]))
     return merged[:20]
@@ -780,9 +789,7 @@ def _merge_profile_summary(
 ) -> None:
     acc.sample_count += summary.sample_count
     acc.schema_sample_count += summary.schema_sample_count
-    acc.profile_token_counts.update({
-        token: summary.sample_count for token in summary.profile_tokens
-    })
+    acc.profile_token_counts.update(dict.fromkeys(summary.profile_tokens, summary.sample_count))
     acc.member_profiles.add(summary.profile_tokens)
     acc.dominant_keys = _merge_dominant_keys(acc.dominant_keys, summary.dominant_keys)
     _merge_representative_paths(acc.representative_paths, summary.representative_paths)
@@ -1144,7 +1151,7 @@ def _attach_package_membership(
 ) -> None:
     package.memberships.append(membership)
     package.bundle_scopes.add(scope)
-    package.source_cluster_ids.add(membership.profile_family_id)
+    package.profile_family_ids.add(membership.profile_family_id)
     if membership.unit.source_path:
         _merge_representative_paths(package.representative_paths, [membership.unit.source_path])
     _update_observed_window(package, membership.unit.observed_at)
@@ -1299,7 +1306,7 @@ def _build_provider_bundle(
                 provider=str(provider_token),
                 schema=None,
                 sample_count=0,
-                error=f"Unknown provider: {provider}. Known: {[str(item) for item in PROVIDERS.keys()]}",
+                error=f"Unknown provider: {provider}. Known: {[str(item) for item in PROVIDERS]}",
             ),
         )
     if db_path is None:
@@ -1397,6 +1404,14 @@ def _build_provider_bundle(
                 representative_paths: list[str] = []
                 exact_structure_ids = sorted({membership.unit.exact_structure_id for membership in kind_memberships})
                 profile_family_ids = sorted({membership.profile_family_id for membership in kind_memberships})
+                element_bundle_scopes = sorted(
+                    {
+                        membership.unit.bundle_scope
+                        for membership in kind_memberships
+                        if membership.unit.bundle_scope
+                    }
+                )
+                element_first_seen, element_last_seen = _membership_observed_window(kind_memberships)
                 for membership in kind_memberships:
                     schema_samples.extend(membership.unit.schema_samples)
                     conv_ids.extend([membership.unit.conversation_id] * len(membership.unit.schema_samples))
@@ -1423,6 +1438,13 @@ def _build_provider_bundle(
                 schema["x-polylogue-package-version"] = version
                 schema["x-polylogue-profile-family-ids"] = profile_family_ids
                 schema["x-polylogue-exact-structure-ids"] = exact_structure_ids
+                if element_first_seen:
+                    schema["x-polylogue-element-first-seen"] = element_first_seen
+                if element_last_seen:
+                    schema["x-polylogue-element-last-seen"] = element_last_seen
+                schema["x-polylogue-element-bundle-scope-count"] = len(element_bundle_scopes)
+                schema["x-polylogue-anchor-profile-family-id"] = package_acc.anchor_family_id
+                schema["x-polylogue-package-profile-family-ids"] = sorted(package_acc.profile_family_ids)
                 package_schemas[version][element_kind] = schema
                 package_reports[version][element_kind] = redaction_report
                 elements.append(
@@ -1431,6 +1453,10 @@ def _build_provider_bundle(
                         schema_file=f"{element_kind}.schema.json.gz",
                         sample_count=len(schema_samples),
                         artifact_count=len(kind_memberships),
+                        first_seen=element_first_seen or "",
+                        last_seen=element_last_seen or "",
+                        bundle_scope_count=len(element_bundle_scopes),
+                        bundle_scopes=element_bundle_scopes,
                         exact_structure_ids=exact_structure_ids,
                         profile_family_ids=profile_family_ids,
                         profile_tokens=_element_profile_tokens(kind_memberships),
@@ -1448,13 +1474,14 @@ def _build_provider_bundle(
                 last_seen=package_acc.last_seen or package_acc.first_seen or datetime.now(tz=timezone.utc).isoformat(),
                 bundle_scope_count=len(package_acc.bundle_scopes),
                 sample_count=total_package_samples,
+                anchor_profile_family_id=package_acc.anchor_family_id,
                 bundle_scopes=sorted(package_acc.bundle_scopes),
-                source_cluster_ids=sorted(package_acc.source_cluster_ids),
+                profile_family_ids=sorted(package_acc.profile_family_ids),
                 representative_paths=package_acc.representative_paths,
                 elements=elements,
             )
             catalog_packages.append(package)
-            for cluster_id in package.source_cluster_ids:
+            for cluster_id in package.profile_family_ids:
                 cluster_to_package_version[cluster_id] = version
 
         latest_version = catalog_packages[-1].version if catalog_packages else None

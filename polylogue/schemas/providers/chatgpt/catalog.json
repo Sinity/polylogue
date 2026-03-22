@@ -15,8 +15,9 @@
       "last_seen": "2026-03-16T12:23:13.488818+00:00",
       "bundle_scope_count": 0,
       "sample_count": 2122,
+      "anchor_profile_family_id": "",
       "bundle_scopes": [],
-      "source_cluster_ids": [],
+      "profile_family_ids": [],
       "representative_paths": [],
       "elements": [
         {
@@ -25,6 +26,10 @@
           "sample_count": 2122,
           "artifact_count": 2122,
           "supported": true,
+          "first_seen": "2026-03-16T12:23:13.488818+00:00",
+          "last_seen": "2026-03-16T12:23:13.488818+00:00",
+          "bundle_scope_count": 0,
+          "bundle_scopes": [],
           "exact_structure_ids": [],
           "profile_family_ids": [],
           "profile_tokens": [],
