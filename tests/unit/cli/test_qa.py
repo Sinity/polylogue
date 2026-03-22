@@ -7,11 +7,8 @@ and that output directories can be customized.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-import pytest
-
-from polylogue.showcase.exercises import EXERCISES, Exercise, Validation
+from polylogue.showcase.exercises import Exercise, Validation
 from polylogue.showcase.report import (
     generate_cookbook,
     generate_json_report,
