@@ -12,6 +12,8 @@ from typing import Any
 
 from polylogue.lib.provider_identity import (
     canonical_schema_provider as _canonical_schema_provider,
+)
+from polylogue.lib.provider_identity import (
     normalize_provider_token,
 )
 from polylogue.paths import data_home
@@ -25,15 +27,17 @@ from polylogue.schemas.sampling import (
     _resolve_provider_config,
     derive_bundle_scope,
     extract_schema_units_from_payload,
-    fingerprint_hash as _stable_fingerprint_hash,
     profile_similarity,
     schema_cluster_id,
+)
+from polylogue.schemas.sampling import (
+    fingerprint_hash as _stable_fingerprint_hash,
 )
 from polylogue.types import Provider
 
 SCHEMA_DIR = Path(__file__).parent / "providers"
 
-type SchemaProvider = Provider | str
+SchemaProvider = Provider | str
 
 
 def canonical_schema_provider(provider: str | Provider) -> SchemaProvider:
@@ -240,7 +244,7 @@ class ClusterManifest:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ClusterManifest":
+    def from_dict(cls, data: dict[str, Any]) -> ClusterManifest:
         return cls(
             provider=canonical_schema_provider(data["provider"]),
             clusters=[
@@ -299,6 +303,22 @@ class SchemaRegistry:
     def _provider_dir(self, provider: str | Provider) -> Path:
         return self.storage_root / str(canonical_schema_provider(provider))
 
+    def _bundled_provider_dir(self, provider: str | Provider) -> Path:
+        return SCHEMA_DIR / str(canonical_schema_provider(provider))
+
+    def _provider_search_roots(self, provider: str | Provider) -> list[Path]:
+        roots: list[Path] = []
+        seen: set[Path] = set()
+        for candidate in (
+            self._provider_dir(provider),
+            self._bundled_provider_dir(provider),
+        ):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            roots.append(candidate)
+        return roots
+
     def _catalog_path(self, provider: str | Provider) -> Path:
         return self._provider_dir(provider) / "catalog.json"
 
@@ -311,10 +331,27 @@ class SchemaRegistry:
     def _element_schema_path(self, provider: str | Provider, version: str, element_kind: str) -> Path:
         return self._package_dir(provider, version) / "elements" / f"{element_kind}.schema.json.gz"
 
+    def _catalog_path_in(self, provider_dir: Path) -> Path:
+        return provider_dir / "catalog.json"
+
+    def _provider_dir_for_catalog(self, provider: str | Provider) -> Path | None:
+        for provider_dir in self._provider_search_roots(provider):
+            if self._catalog_path_in(provider_dir).exists():
+                return provider_dir
+        return None
+
+    def _provider_dir_for_package(self, provider: str | Provider, version: str) -> Path | None:
+        for provider_dir in self._provider_search_roots(provider):
+            manifest_path = provider_dir / "versions" / version / "package.json"
+            if manifest_path.exists():
+                return provider_dir
+        return None
+
     def load_package_catalog(self, provider: str | Provider) -> SchemaPackageCatalog | None:
-        path = self._catalog_path(provider)
-        if not path.exists():
+        provider_dir = self._provider_dir_for_catalog(provider)
+        if provider_dir is None:
             return None
+        path = self._catalog_path_in(provider_dir)
         return SchemaPackageCatalog.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def save_package_catalog(self, catalog: SchemaPackageCatalog) -> Path:
@@ -413,14 +450,12 @@ class SchemaRegistry:
             element = package.element(element_kind)
             if element is None or element.schema_file is None:
                 return None
-            path = self._package_dir(provider_token, package.version) / "elements" / element.schema_file
+            provider_dir = self._provider_dir_for_package(provider_token, package.version)
+            if provider_dir is None:
+                return None
+            path = provider_dir / "versions" / package.version / "elements" / element.schema_file
             if path.exists():
                 return json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
-        schema = self._load_versioned(provider_token, version)
-        if schema is not None:
-            return schema
-        if version in {"v1", "default", "latest"}:
-            return self._load_baseline(provider_token)
         return None
 
     def get_schema(self, provider: str | Provider, version: str = "default") -> dict[str, Any] | None:
@@ -431,25 +466,17 @@ class SchemaRegistry:
         catalog = self.load_package_catalog(provider_token)
         if catalog is not None:
             return sorted((package.version for package in catalog.packages), key=lambda value: int(value[1:]))
-        provider_dir = self._provider_dir(provider_token)
-        if not provider_dir.exists():
-            return ["v1"] if self._baseline_exists(provider_token) else []
-        versions = [path.name.split(".")[0] for path in provider_dir.glob("v*.schema.json.gz")]
-        if "v1" not in versions and self._baseline_exists(provider_token):
-            versions.append("v1")
-        return sorted(versions, key=lambda value: int(value[1:]))
+        return []
 
     def list_providers(self) -> list[str]:
         providers: set[str] = set()
-        for pattern in ("*.schema.json.gz", "*.schema.json"):
-            for path in SCHEMA_DIR.glob(pattern):
-                providers.add(path.name.replace(".schema.json.gz", "").replace(".schema.json", ""))
-        if self.storage_root.exists():
-            for path in self.storage_root.iterdir():
-                if path.is_dir() and (
-                    (path / "catalog.json").exists()
-                    or any(path.glob("v*.schema.json.gz"))
-                ):
+        scanned_roots: set[Path] = set()
+        for root in (self.storage_root, SCHEMA_DIR):
+            if root in scanned_roots or not root.exists():
+                continue
+            scanned_roots.add(root)
+            for path in root.iterdir():
+                if path.is_dir() and (path / "catalog.json").exists():
                     providers.add(path.name)
         return sorted(providers)
 
@@ -465,13 +492,14 @@ class SchemaRegistry:
     ) -> tuple[SchemaVersionPackage, dict[str, dict[str, Any]]]:
         provider_token = canonical_schema_provider(provider)
         now = datetime.now(tz=timezone.utc).isoformat()
+        observed_at = schema.get("x-polylogue-generated-at")
         package = SchemaVersionPackage(
             provider=provider_token,
             version=version,
             anchor_kind=element_kind,
             default_element_kind=element_kind,
-            first_seen=first_seen or now,
-            last_seen=last_seen or first_seen or now,
+            first_seen=first_seen or observed_at or now,
+            last_seen=last_seen or first_seen or observed_at or now,
             bundle_scope_count=0,
             sample_count=int(schema.get("x-polylogue-sample-count", 0) or 0),
             elements=[
@@ -570,17 +598,7 @@ class SchemaRegistry:
             except (ValueError, TypeError):
                 return None
             return delta.days
-        schema = self.get_schema(provider, version="latest")
-        if schema is None:
-            return None
-        generated_at = schema.get("x-polylogue-generated-at")
-        if not generated_at:
-            return None
-        try:
-            delta = datetime.now(tz=timezone.utc) - datetime.fromisoformat(generated_at)
-        except (ValueError, TypeError):
-            return None
-        return delta.days
+        return None
 
     def cluster_samples(
         self,
@@ -789,30 +807,6 @@ class SchemaRegistry:
             manifest.default_version = new_version
         self.save_cluster_manifest(manifest)
         return new_version
-
-    def _baseline_path(self, provider: SchemaProvider) -> Path:
-        return SCHEMA_DIR / f"{provider}.schema.json.gz"
-
-    def _baseline_path_plain(self, provider: SchemaProvider) -> Path:
-        return SCHEMA_DIR / f"{provider}.schema.json"
-
-    def _baseline_exists(self, provider: SchemaProvider) -> bool:
-        return self._baseline_path(provider).exists() or self._baseline_path_plain(provider).exists()
-
-    def _load_baseline(self, provider: SchemaProvider) -> dict[str, Any] | None:
-        gz_path = self._baseline_path(provider)
-        if gz_path.exists():
-            return json.loads(gzip.decompress(gz_path.read_bytes()).decode("utf-8"))
-        plain_path = self._baseline_path_plain(provider)
-        if plain_path.exists():
-            return json.loads(plain_path.read_text(encoding="utf-8"))
-        return None
-
-    def _load_versioned(self, provider: SchemaProvider, version: str) -> dict[str, Any] | None:
-        path = self.storage_root / str(provider) / f"{version}.schema.json.gz"
-        if not path.exists():
-            return None
-        return json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
 
     def _diff_schemas(
         self,

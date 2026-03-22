@@ -1,0 +1,38 @@
+{
+  "provider": "claude-code",
+  "generated_at": "2026-03-16T12:26:03.827336+00:00",
+  "latest_version": "v1",
+  "default_version": "v1",
+  "recommended_version": "v1",
+  "orphan_adjunct_counts": {},
+  "packages": [
+    {
+      "provider": "claude-code",
+      "version": "v1",
+      "anchor_kind": "conversation_record_stream",
+      "default_element_kind": "conversation_record_stream",
+      "first_seen": "2026-03-16T12:26:03.827336+00:00",
+      "last_seen": "2026-03-16T12:26:03.827336+00:00",
+      "bundle_scope_count": 0,
+      "sample_count": 2171910,
+      "bundle_scopes": [],
+      "source_cluster_ids": [],
+      "representative_paths": [],
+      "elements": [
+        {
+          "element_kind": "conversation_record_stream",
+          "schema_file": "conversation_record_stream.schema.json.gz",
+          "sample_count": 2171910,
+          "artifact_count": 2171910,
+          "supported": true,
+          "exact_structure_ids": [],
+          "profile_family_ids": [],
+          "profile_tokens": [],
+          "representative_paths": [],
+          "observed_artifact_count": 2171910
+        }
+      ],
+      "orphan_adjunct_counts": {}
+    }
+  ]
+}
