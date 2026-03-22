@@ -1,13 +1,19 @@
-"""Tests for semantic preservation proofing over canonical markdown rendering."""
+"""Tests for semantic preservation proofing across render and export surfaces."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 
 from polylogue.rendering.core import ConversationFormatter
+from polylogue.rendering.formatting import format_conversation
 from polylogue.rendering.semantic_proof import (
+    DEFAULT_SEMANTIC_SURFACES,
+    prove_export_surface_semantics,
     prove_markdown_projection_semantics,
     prove_markdown_render_semantics,
+    prove_semantic_surface_suite,
+    resolve_semantic_surfaces,
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -19,6 +25,15 @@ async def _load_projection(db_path, conversation_id: str):
     repository = ConversationRepository(backend=backend)
     try:
         return await repository.get_render_projection(conversation_id)
+    finally:
+        await backend.close()
+
+
+async def _load_conversation(db_path, conversation_id: str):
+    backend = SQLiteBackend(db_path=db_path)
+    repository = ConversationRepository(backend=backend)
+    try:
+        return await repository.view(conversation_id)
     finally:
         await backend.close()
 
@@ -90,23 +105,99 @@ def test_markdown_projection_semantics_detects_critical_loss(db_path, tmp_path):
     }
 
 
-def test_markdown_render_semantics_aggregates_provider_reports(db_path, tmp_path):
-    """Conversation-level proofs roll up into provider and report summaries."""
+def test_export_json_surface_detects_message_loss(db_path):
+    """Structured export proof flags silently dropped message rows as critical loss."""
     (
         ConversationBuilder(db_path, "conv-semantic-3")
         .provider("chatgpt")
-        .title("ChatGPT Semantic")
+        .title("JSON Semantic")
         .updated_at("2026-03-22T12:10:00+00:00")
-        .add_message("conv3-m1", role="user", text="hello")
+        .add_message("json-m1", role="user", text="hello")
+        .add_message("json-m2", role="assistant", text="world")
+        .save()
+    )
+
+    conversation = asyncio.run(_load_conversation(db_path, "conv-semantic-3"))
+    assert conversation is not None
+    payload = json.loads(format_conversation(conversation, "json", None))
+    payload["messages"] = payload["messages"][:-1]
+
+    report = prove_export_surface_semantics(
+        conversation,
+        "export_json_v1",
+        json.dumps(payload),
+    )
+
+    assert report.is_clean is False
+    assert {check.metric for check in report.critical_loss_checks} >= {
+        "message_entries",
+        "message_ids",
+        "role_entries",
+        "timestamp_values",
+    }
+
+
+def test_semantic_surface_suite_aggregates_export_and_canonical_surfaces(db_path, tmp_path):
+    """Suite proof aggregates canonical and export surfaces with explicit loss policies."""
+    (
+        ConversationBuilder(db_path, "conv-semantic-4")
+        .provider("chatgpt")
+        .title("ChatGPT Semantic")
+        .updated_at("2026-03-22T12:20:00+00:00")
+        .add_message("conv4-m1", role="user", text="hello")
+        .add_message("conv4-m2", role="assistant", text="branch-root")
+        .add_message(
+            "conv4-b1",
+            role="assistant",
+            text="branch alternative",
+            parent_message_id="conv4-m1",
+            branch_index=1,
+            provider_meta={"content_blocks": [{"type": "thinking", "text": "inner"}]},
+            has_thinking=1,
+        )
+        .add_attachment("att1", message_id="conv4-b1", path="/tmp/att1.txt")
         .save()
     )
     (
-        ConversationBuilder(db_path, "conv-semantic-4")
+        ConversationBuilder(db_path, "conv-semantic-5")
         .provider("claude-ai")
         .title("Claude Semantic")
-        .updated_at("2026-03-22T12:15:00+00:00")
+        .updated_at("2026-03-22T12:25:00+00:00")
+        .add_message("conv5-m1", role="assistant", text="tool output", has_tool_use=1)
+        .save()
+    )
+
+    suite = prove_semantic_surface_suite(
+        db_path=db_path,
+        archive_root=tmp_path,
+        surfaces=["canonical", "json", "html", "csv", "obsidian"],
+    )
+
+    assert suite.surface_count == 5
+    assert suite.total_conversations == 10
+    assert set(suite.surfaces) == {
+        "canonical_markdown_v1",
+        "export_json_v1",
+        "export_html_v1",
+        "export_csv_v1",
+        "export_obsidian_v1",
+    }
+    assert suite.surfaces["canonical_markdown_v1"].providers["chatgpt"].declared_loss_checks >= 1
+    assert suite.surfaces["export_json_v1"].providers["chatgpt"].declared_loss_checks >= 1
+    assert suite.surfaces["export_html_v1"].metric_summary["branch_structure"]["preserved"] == 1
+    assert suite.surfaces["export_csv_v1"].metric_summary["provider_identity"]["declared_loss"] == 2
+    assert suite.to_dict()["summary"]["surface_count"] == 5
+
+
+def test_markdown_render_semantics_returns_single_surface_report(db_path, tmp_path):
+    """Legacy single-surface helper remains a canonical-markdown projection of the suite."""
+    (
+        ConversationBuilder(db_path, "conv-semantic-6")
+        .provider("claude-ai")
+        .title("Single Surface")
+        .updated_at("2026-03-22T12:30:00+00:00")
         .add_message(
-            "conv4-m1",
+            "conv6-m1",
             role="assistant",
             text="thinking aloud",
             provider_meta={"content_blocks": [{"type": "thinking", "text": "inner"}]},
@@ -121,9 +212,11 @@ def test_markdown_render_semantics_aggregates_provider_reports(db_path, tmp_path
     )
 
     assert report.surface == "canonical_markdown_v1"
-    assert report.total_conversations == 2
-    assert report.provider_count == 2
-    assert report.providers["chatgpt"].clean is True
+    assert report.total_conversations == 1
+    assert report.provider_count == 1
     assert report.providers["claude-ai"].declared_loss_checks == 1
-    assert report.metric_summary["thinking_semantics"]["declared_loss"] == 1
-    assert report.to_dict()["summary"]["provider_count"] == 2
+
+
+def test_resolve_semantic_surfaces_expands_aliases():
+    """Surface aliases expand to canonical suite surface names."""
+    assert resolve_semantic_surfaces(["canonical", "json", "all"]) == list(DEFAULT_SEMANTIC_SURFACES)

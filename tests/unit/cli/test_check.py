@@ -15,6 +15,7 @@ from polylogue.rendering.semantic_proof import (
     SemanticConversationProof,
     SemanticMetricCheck,
     SemanticProofReport,
+    SemanticProofSuiteReport,
 )
 from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
 from polylogue.storage.backends.connection import open_connection
@@ -44,7 +45,7 @@ def _extract_json(output: str) -> dict:
     return data
 
 
-def _make_semantic_report(*, critical: bool = False) -> SemanticProofReport:
+def _make_semantic_report(*, critical: bool = False) -> SemanticProofSuiteReport:
     checks = [
         SemanticMetricCheck(
             metric="renderable_messages",
@@ -61,7 +62,7 @@ def _make_semantic_report(*, critical: bool = False) -> SemanticProofReport:
             output_value=0,
         ),
     ]
-    return SemanticProofReport(
+    canonical_report = SemanticProofReport(
         surface="canonical_markdown_v1",
         conversations=[
             SemanticConversationProof(
@@ -95,6 +96,63 @@ def _make_semantic_report(*, critical: bool = False) -> SemanticProofReport:
                     },
                 },
             )
+        },
+    )
+    html_report = SemanticProofReport(
+        surface="export_html_v1",
+        conversations=[
+            SemanticConversationProof(
+                conversation_id="conv-1",
+                provider="chatgpt",
+                surface="export_html_v1",
+                input_facts={"text_messages": 2},
+                output_facts={"message_sections": 1 if critical else 2},
+                checks=[
+                    SemanticMetricCheck(
+                        metric="text_messages",
+                        status="critical_loss" if critical else "preserved",
+                        policy="export_html_v1 must preserve visible message sections for text-bearing messages",
+                        input_value=2,
+                        output_value=1 if critical else 2,
+                    ),
+                    SemanticMetricCheck(
+                        metric="branch_structure",
+                        status="preserved",
+                        policy="export_html_v1 must preserve visible branch groupings for branched messages",
+                        input_value=0,
+                        output_value=0,
+                    ),
+                ],
+            )
+        ],
+        provider_reports={
+            "chatgpt": ProviderSemanticProof(
+                provider="chatgpt",
+                total_conversations=1,
+                clean_conversations=0 if critical else 1,
+                critical_conversations=1 if critical else 0,
+                preserved_checks=1 if critical else 2,
+                declared_loss_checks=0,
+                critical_loss_checks=1 if critical else 0,
+                metric_summary={
+                    "text_messages": {
+                        "preserved": 0 if critical else 1,
+                        "declared_loss": 0,
+                        "critical_loss": 1 if critical else 0,
+                    },
+                    "branch_structure": {
+                        "preserved": 1,
+                        "declared_loss": 0,
+                        "critical_loss": 0,
+                    },
+                },
+            )
+        },
+    )
+    return SemanticProofSuiteReport(
+        surface_reports={
+            "canonical_markdown_v1": canonical_report,
+            "export_html_v1": html_report,
         },
     )
 
@@ -458,6 +516,7 @@ class TestCheckCommandSupplementary:
         (["check", "--schema-record-offset", "10"], "--schema-record-offset requires --schemas"),
         (["check", "--schema-quarantine-malformed"], "--schema-quarantine-malformed requires --schemas"),
         (["check", "--semantic-provider", "chatgpt"], "--semantic-provider requires --semantic-proof"),
+        (["check", "--semantic-surface", "html"], "--semantic-surface requires --semantic-proof"),
         (["check", "--semantic-limit", "10"], "--semantic-limit requires --semantic-proof"),
         (["check", "--semantic-offset", "10"], "--semantic-offset requires --semantic-proof"),
         (["check", "--schemas", "--schema-samples", "0"], "--schema-samples must be a positive integer or 'all'"),
@@ -766,7 +825,7 @@ class TestCheckCommandSupplementary:
         fake_report = _make_semantic_report()
 
         with patch(
-            "polylogue.rendering.semantic_proof.prove_markdown_render_semantics",
+            "polylogue.rendering.semantic_proof.prove_semantic_surface_suite",
             return_value=fake_report,
         ):
             runner = CliRunner()
@@ -775,9 +834,10 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         data = _extract_json(result.output)
         assert "semantic_proof" in data
-        assert data["semantic_proof"]["surface"] == "canonical_markdown_v1"
-        assert data["semantic_proof"]["summary"]["clean_conversations"] == 1
+        assert data["semantic_proof"]["summary"]["surface_count"] == 2
+        assert data["semantic_proof"]["summary"]["clean_surfaces"] == 2
         assert data["semantic_proof"]["summary"]["metric_summary"]["thinking_semantics"]["declared_loss"] == 1
+        assert "export_html_v1" in data["semantic_proof"]["surfaces"]
 
     def test_check_semantic_proof_plain_output(self, cli_workspace):
         """--semantic-proof renders the semantic proof summary in plain output."""
@@ -788,7 +848,7 @@ class TestCheckCommandSupplementary:
         fake_report = _make_semantic_report(critical=True)
 
         with patch(
-            "polylogue.rendering.semantic_proof.prove_markdown_render_semantics",
+            "polylogue.rendering.semantic_proof.prove_semantic_surface_suite",
             return_value=fake_report,
         ):
             runner = CliRunner()
@@ -796,12 +856,14 @@ class TestCheckCommandSupplementary:
 
         assert result.exit_code == 0
         assert "Semantic proof:" in result.output
-        assert "critical=1" in result.output
+        assert "critical=2" in result.output
         assert "renderable_messages(preserved=0, declared_loss=0, critical_loss=1)" in result.output
+        assert "canonical_markdown_v1: conversations=1 clean=0 critical=1" in result.output
+        assert "export_html_v1: conversations=1 clean=0 critical=1" in result.output
         assert "chatgpt: conversations=1 clean=0 critical=1" in result.output
 
     def test_check_semantic_proof_forwards_scope(self, cli_workspace):
-        """Semantic provider/limit/offset are forwarded to the proof workflow."""
+        """Semantic provider/surface/limit/offset are forwarded to the proof workflow."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
@@ -809,7 +871,7 @@ class TestCheckCommandSupplementary:
         fake_report = _make_semantic_report()
 
         with patch(
-            "polylogue.rendering.semantic_proof.prove_markdown_render_semantics",
+            "polylogue.rendering.semantic_proof.prove_semantic_surface_suite",
             return_value=fake_report,
         ) as mock_prove:
             runner = CliRunner()
@@ -822,6 +884,8 @@ class TestCheckCommandSupplementary:
                     "--semantic-proof",
                     "--semantic-provider",
                     "chatgpt",
+                    "--semantic-surface",
+                    "html",
                     "--semantic-limit",
                     "25",
                     "--semantic-offset",
@@ -832,6 +896,7 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         mock_prove.assert_called_once_with(
             providers=["chatgpt"],
+            surfaces=["html"],
             record_limit=25,
             record_offset=50,
         )
