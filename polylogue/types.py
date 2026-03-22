@@ -116,6 +116,25 @@ class ValidationMode(str, Enum):
         return self.value
 
 
+class ArtifactSupportStatus(str, Enum):
+    """Durable support state for an observed raw artifact."""
+
+    SUPPORTED_PARSEABLE = "supported_parseable"
+    RECOGNIZED_UNPARSED = "recognized_unparsed"
+    UNSUPPORTED_PARSEABLE = "unsupported_parseable"
+    DECODE_FAILED = "decode_failed"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def from_string(cls, value: str | ArtifactSupportStatus) -> ArtifactSupportStatus:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+    def __str__(self) -> str:
+        return self.value
+
+
 class PlanStage(str, Enum):
     """Supported ingest/runtime planning stages."""
 
@@ -172,6 +191,7 @@ class ExerciseIOMode(str, Enum):
 
 __all__ = [
     "AttachmentId",
+    "ArtifactSupportStatus",
     "ContentBlockType",
     "ContentHash",
     "ConversationId",

@@ -17,10 +17,12 @@ from hypothesis import strategies as st
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.schemas.audit import AuditReport
+from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_runner import QAResult
 from polylogue.showcase.report import (
     generate_json_report,
+    generate_qa_markdown,
     generate_qa_session,
     generate_qa_summary,
     generate_showcase_session,
@@ -223,6 +225,20 @@ def test_full_qa_session_contains_composed_stage_payloads():
     ])
     qa_result = QAResult(
         audit_report=audit,
+        proof_report=ArtifactProofReport(
+            providers={
+                "chatgpt": ProviderArtifactProof(
+                    provider="chatgpt",
+                    total_records=2,
+                    contract_backed_records=1,
+                    unsupported_parseable_records=1,
+                    package_versions={"v1": 1},
+                    element_kinds={"conversation_document": 1},
+                    resolution_reasons={"exact_structure": 1},
+                )
+            },
+            total_records=2,
+        ),
         showcase_result=showcase,
         invariant_results=[
             InvariantResult("json_valid", "ex", OutcomeStatus.OK),
@@ -234,6 +250,11 @@ def test_full_qa_session_contains_composed_stage_payloads():
 
     assert session["audit"]["status"] == "ok"
     assert session["audit"]["report"]["summary"] == {"passed": 1, "warned": 0, "failed": 0}
+    assert session["proof"]["status"] == "error"
+    assert session["proof"]["report"]["summary"]["contract_backed_records"] == 1
+    assert session["proof"]["report"]["summary"]["unsupported_parseable_records"] == 1
+    assert session["proof"]["report"]["summary"]["package_versions"] == {"v1": 1}
+    assert session["proof"]["report"]["summary"]["element_kinds"] == {"conversation_document": 1}
     assert session["showcase"]["summary"] == {
         "total": 2,
         "passed": 1,
@@ -251,6 +272,19 @@ def test_generate_qa_summary_reports_stage_statuses():
         audit_report=AuditReport(checks=[
             OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
         ]),
+        proof_report=ArtifactProofReport(
+            providers={
+                "chatgpt": ProviderArtifactProof(
+                    provider="chatgpt",
+                    total_records=1,
+                    contract_backed_records=1,
+                    package_versions={"v1": 1},
+                    element_kinds={"conversation_document": 1},
+                    resolution_reasons={"exact_structure": 1},
+                )
+            },
+            total_records=1,
+        ),
         exercises_skipped=True,
         invariants_skipped=True,
     )
@@ -258,6 +292,44 @@ def test_generate_qa_summary_reports_stage_statuses():
     summary = generate_qa_summary(qa_result)
 
     assert "Schema Audit: PASS" in summary
+    assert "Artifact Proof: contract_backed=1" in summary
+    assert "Packages: v1=1" in summary
+    assert "Elements: conversation_document=1" in summary
     assert "Exercises: SKIPPED" in summary
     assert "Invariants: SKIPPED" in summary
-    assert "Overall: PASS" in summary
+
+
+def test_generate_qa_markdown_includes_artifact_proof_section():
+    qa_result = QAResult(
+        audit_report=AuditReport(checks=[
+            OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+        ]),
+        proof_report=ArtifactProofReport(
+            providers={
+                "claude-code": ProviderArtifactProof(
+                    provider="claude-code",
+                    total_records=2,
+                    recognized_non_parseable_records=1,
+                    unsupported_parseable_records=1,
+                    package_versions={"v4": 1},
+                    element_kinds={"subagent_conversation_stream": 1},
+                    resolution_reasons={"bundle_scope": 1},
+                    linked_sidecars=1,
+                    subagent_streams=1,
+                    streams_with_sidecars=1,
+                )
+            },
+            total_records=2,
+        ),
+        exercises_skipped=True,
+        invariants_skipped=True,
+    )
+
+    markdown = generate_qa_markdown(qa_result)
+
+    assert "## Artifact Proof" in markdown
+    assert "| Unsupported parseable | 1 |" in markdown
+    assert "| v4 | 1 |" in markdown
+    assert "| subagent_conversation_stream | 1 |" in markdown
+    assert "| bundle_scope | 1 |" in markdown
+    assert "| claude-code | 2 | 0 | 1 | 1 | 0 | 0 |" in markdown

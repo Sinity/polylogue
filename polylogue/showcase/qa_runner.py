@@ -22,12 +22,14 @@ from polylogue.showcase.workspace import (
     create_verification_workspace,
     ensure_report_dir,
     generate_synthetic_fixtures,
+    override_workspace_env,
     run_pipeline_for_configured_sources,
     run_pipeline_for_fixture_workspace,
 )
 
 if TYPE_CHECKING:
     from polylogue.schemas.audit import AuditReport
+    from polylogue.schemas.verification import ArtifactProofReport
 
 
 @dataclass
@@ -37,6 +39,8 @@ class QAResult:
     audit_report: AuditReport | None = None
     audit_error: str | None = None
     audit_skipped: bool = False
+    proof_report: ArtifactProofReport | None = None
+    proof_error: str | None = None
     showcase_result: ShowcaseResult | None = None
     exercises_skipped: bool = False
     invariant_results: list[InvariantResult] = field(default_factory=list)
@@ -58,6 +62,15 @@ class QAResult:
     def audit_passed(self) -> bool:
         """True if the schema audit stage passed."""
         return self.audit_status is OutcomeStatus.OK
+
+    @property
+    def proof_status(self) -> OutcomeStatus:
+        """Status for the artifact proof stage."""
+        if self.proof_error is not None:
+            return OutcomeStatus.ERROR
+        if self.proof_report is None:
+            return OutcomeStatus.ERROR
+        return OutcomeStatus.OK if self.proof_report.is_clean else OutcomeStatus.ERROR
 
     @property
     def showcase_status(self) -> OutcomeStatus:
@@ -82,7 +95,12 @@ class QAResult:
         """Aggregate status across all executed QA stages."""
         if any(
             stage is OutcomeStatus.ERROR
-            for stage in (self.audit_status, self.showcase_status, self.invariant_status)
+            for stage in (
+                self.audit_status,
+                self.proof_status,
+                self.showcase_status,
+                self.invariant_status,
+            )
         ):
             return OutcomeStatus.ERROR
         return OutcomeStatus.OK
@@ -104,6 +122,24 @@ def _generate_extra_exercises() -> list:
     exercises.extend(generate_schema_exercises())
     exercises.extend(generate_format_exercises())
     return exercises
+
+
+def _populate_proof(
+    result: QAResult,
+    *,
+    workspace_env: dict[str, str] | None,
+) -> None:
+    """Populate the artifact proof stage against the active archive."""
+    from polylogue.schemas.verification import prove_raw_artifact_coverage
+
+    try:
+        if workspace_env:
+            with override_workspace_env(workspace_env):
+                result.proof_report = prove_raw_artifact_coverage()
+        else:
+            result.proof_report = prove_raw_artifact_coverage()
+    except Exception as exc:
+        result.proof_error = str(exc)
 
 
 def run_qa_session(
@@ -129,9 +165,10 @@ def run_qa_session(
 
     Stages (in order, each skippable):
       1. Schema audit
-      2. Exercises (showcase)
-      3. Invariant checks
-      4. Report generation
+      2. Artifact proof
+      3. Exercises (showcase)
+      4. Invariant checks
+      5. Report generation
     """
     result = QAResult(report_dir=report_dir)
     workspace_env_for_runner: dict[str, str] | None = workspace_env
@@ -202,6 +239,7 @@ def run_qa_session(
             result.audit_report = audit_report
 
             if not audit_report.all_passed:
+                _populate_proof(result, workspace_env=workspace_env_for_runner)
                 result.exercises_skipped = True
                 result.invariants_skipped = True
                 if verbose:
@@ -212,6 +250,7 @@ def run_qa_session(
                 return result
         except Exception as e:
             result.audit_error = str(e)
+            _populate_proof(result, workspace_env=workspace_env_for_runner)
             result.exercises_skipped = True
             result.invariants_skipped = True
             if report_dir:
@@ -219,7 +258,10 @@ def run_qa_session(
                 _save_qa_reports(result, report_dir)
             return result
 
-    # --- Step 2: Exercises ---
+    # --- Step 2: Artifact proof ---
+    _populate_proof(result, workspace_env=workspace_env_for_runner)
+
+    # --- Step 3: Exercises ---
     if skip_exercises:
         result.exercises_skipped = True
     else:
@@ -236,13 +278,13 @@ def run_qa_session(
         showcase_result = runner.run()
         result.showcase_result = showcase_result
 
-    # --- Step 3: Invariant checks ---
+    # --- Step 4: Invariant checks ---
     if skip_invariants:
         result.invariants_skipped = True
     elif result.showcase_result:
         result.invariant_results = check_invariants(result.showcase_result.results)
 
-    # --- Step 4: Save reports ---
+    # --- Step 5: Save reports ---
     if report_dir:
         result.report_dir = report_dir
         _save_qa_reports(result, report_dir)
@@ -263,6 +305,15 @@ def _save_qa_reports(result: QAResult, report_dir: Path) -> None:
     elif result.audit_error:
         (report_dir / "schema-audit.json").write_text(
             json.dumps({"error": result.audit_error}, indent=2)
+        )
+
+    if result.proof_report is not None:
+        (report_dir / "artifact-proof.json").write_text(
+            json.dumps(result.proof_report.to_dict(), indent=2, sort_keys=True)
+        )
+    elif result.proof_error is not None:
+        (report_dir / "artifact-proof.json").write_text(
+            json.dumps({"error": result.proof_error}, indent=2, sort_keys=True)
         )
 
     from polylogue.showcase.report import (

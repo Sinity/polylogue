@@ -1,0 +1,33 @@
+{
+  "provider": "claude-ai",
+  "version": "v1",
+  "anchor_kind": "conversation_document",
+  "default_element_kind": "conversation_document",
+  "first_seen": "2026-03-16T12:26:05.820998+00:00",
+  "last_seen": "2026-03-16T12:26:05.820998+00:00",
+  "bundle_scope_count": 0,
+  "sample_count": 904,
+  "anchor_profile_family_id": "",
+  "bundle_scopes": [],
+  "profile_family_ids": [],
+  "representative_paths": [],
+  "elements": [
+    {
+      "element_kind": "conversation_document",
+      "schema_file": "conversation_document.schema.json.gz",
+      "sample_count": 904,
+      "artifact_count": 904,
+      "supported": true,
+      "first_seen": "2026-03-16T12:26:05.820998+00:00",
+      "last_seen": "2026-03-16T12:26:05.820998+00:00",
+      "bundle_scope_count": 0,
+      "bundle_scopes": [],
+      "exact_structure_ids": [],
+      "profile_family_ids": [],
+      "profile_tokens": [],
+      "representative_paths": [],
+      "observed_artifact_count": 904
+    }
+  ],
+  "orphan_adjunct_counts": {}
+}
