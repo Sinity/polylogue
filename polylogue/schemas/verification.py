@@ -382,7 +382,7 @@ def list_artifact_observation_rows(
 
     bounded_limit, bounded_offset = _bounded_window(record_limit, record_offset)
     with open_connection(db_path) as conn:
-        ensure_artifact_observations(conn, providers=providers)
+        ensure_artifact_observations(conn, providers=providers, refresh_resolutions=True)
         return list_durable_artifact_observations(
             conn,
             providers=providers,
@@ -409,7 +409,7 @@ def list_artifact_cohort_rows(
 
     bounded_limit, bounded_offset = _bounded_window(record_limit, record_offset)
     with open_connection(db_path) as conn:
-        ensure_artifact_observations(conn, providers=providers)
+        ensure_artifact_observations(conn, providers=providers, refresh_resolutions=True)
         return list_durable_artifact_cohorts(
             conn,
             providers=providers,
