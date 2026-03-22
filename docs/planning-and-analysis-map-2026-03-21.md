@@ -24,7 +24,8 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/schema-package-authority-program-2026-03-22.md](./programs/schema-package-authority-program-2026-03-22.md) | Most recent major implementation program for finishing schema package/version authority | Executed; current canonical record of that lane |
+| [programs/multi-surface-semantic-proof-program-2026-03-22.md](./programs/multi-surface-semantic-proof-program-2026-03-22.md) | Most recent executed semantic/export proof program extending proof from canonical markdown to broader export/query surfaces | Executed; current canonical record of the multi-surface proof lane |
+| [programs/schema-package-authority-program-2026-03-22.md](./programs/schema-package-authority-program-2026-03-22.md) | Most recent major implementation program for finishing schema package/version authority | Executed; predecessor canonical record |
 | [programs/semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md](./programs/semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md) | Executed semantic-preservation proof slice for canonical markdown plus proof-lane showcase coverage | Executed and retained as the current semantic-proof implementation record |
 | [programs/intentional-forward-program-2026-03-21.md](./programs/intentional-forward-program-2026-03-21.md) | Executed umbrella program for the post-2026-03-19 planning wave | Executed umbrella; Step 6 split into the schema package authority program |
 | [programs/artifact-cohort-control-plane-program-2026-03-21.md](./programs/artifact-cohort-control-plane-program-2026-03-21.md) | Executed subprogram covering durable artifact/cohort/proof surfaces | Executed and retained as concrete shape |
@@ -110,7 +111,8 @@ As of this map:
 - schema package/version authority correction has now been executed via [programs/schema-package-authority-program-2026-03-22.md](./programs/schema-package-authority-program-2026-03-22.md)
 - the older scratch notes `.claude/scratch/018-wave0-schema-package-design.md` and `.claude/scratch/026-schema-taxonomy-and-versioning.md` remain useful implementation references, but no longer serve as the live authority
 - the next broad frontier is no longer schema authority; the canonical markdown semantic-proof slice has now been executed via [programs/semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md](./programs/semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md)
-- the remaining frontier is broader testing/showcase hardening plus semantic-preservation proofing for additional transform/query/export surfaces, with [programs/testing-reliability-expansion-program-2026-03-14.md](./programs/testing-reliability-expansion-program-2026-03-14.md) and [programs/artifact-and-semantic-proof-program-2026-03-19.md](./programs/artifact-and-semantic-proof-program-2026-03-19.md) as the main backlog reservoirs
+- the multi-surface proof lane is now executed via [programs/multi-surface-semantic-proof-program-2026-03-22.md](./programs/multi-surface-semantic-proof-program-2026-03-22.md), which extends semantic proof across export/query surfaces and routes that suite through QA/publication/showcase
+- the remaining frontier is broader testing/showcase hardening and further proofing of transform/query/list/stream surfaces, with [programs/testing-reliability-expansion-program-2026-03-14.md](./programs/testing-reliability-expansion-program-2026-03-14.md) and [programs/artifact-and-semantic-proof-program-2026-03-19.md](./programs/artifact-and-semantic-proof-program-2026-03-19.md) as the main backlog reservoirs
 
 ## Maintenance Rule
 

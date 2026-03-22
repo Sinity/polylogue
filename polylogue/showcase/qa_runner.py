@@ -28,7 +28,7 @@ from polylogue.showcase.workspace import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.rendering.semantic_proof import SemanticProofReport
+    from polylogue.rendering.semantic_proof import SemanticProofSuiteReport
     from polylogue.schemas.audit import AuditReport
     from polylogue.schemas.verification import ArtifactProofReport
 
@@ -42,7 +42,7 @@ class QAResult:
     audit_skipped: bool = False
     proof_report: ArtifactProofReport | None = None
     proof_error: str | None = None
-    semantic_proof_report: SemanticProofReport | None = None
+    semantic_proof_report: SemanticProofSuiteReport | None = None
     semantic_proof_error: str | None = None
     showcase_result: ShowcaseResult | None = None
     exercises_skipped: bool = False
@@ -161,14 +161,14 @@ def _populate_semantic_proof(
     workspace_env: dict[str, str] | None,
 ) -> None:
     """Populate the semantic proof stage against the active archive."""
-    from polylogue.rendering.semantic_proof import prove_markdown_render_semantics
+    from polylogue.rendering.semantic_proof import prove_semantic_surface_suite
 
     try:
         if workspace_env:
             with override_workspace_env(workspace_env):
-                result.semantic_proof_report = prove_markdown_render_semantics()
+                result.semantic_proof_report = prove_semantic_surface_suite()
         else:
-            result.semantic_proof_report = prove_markdown_render_semantics()
+            result.semantic_proof_report = prove_semantic_surface_suite()
     except Exception as exc:
         result.semantic_proof_error = str(exc)
 

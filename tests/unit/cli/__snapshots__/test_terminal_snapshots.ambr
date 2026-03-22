@@ -22,8 +22,8 @@
     --proof                         Run durable artifact support proof
     --artifacts                     List durable artifact observations
     --cohorts                       Summarize durable artifact cohorts
-    --semantic-proof                Run semantic preservation proof over
-                                    canonical markdown rendering
+    --semantic-proof                Run semantic preservation proof across
+                                    canonical render and export surfaces
     --schema-provider TEXT          Limit schema verification to DB provider
                                     name (repeatable)
     --artifact-provider TEXT        Limit artifact proof<PATH> to
@@ -38,6 +38,9 @@
                                     proof<PATH>  [default: 0]
     --semantic-provider TEXT        Limit semantic proof to conversation
                                     providers (repeatable)
+    --semantic-surface TEXT         Limit semantic proof to surfaces such as
+                                    canonical, json, yaml, csv, markdown, html,
+                                    obsidian, org, or all
     --semantic-limit INTEGER        Limit semantic proof to N conversations
     --semantic-offset INTEGER       Start offset for semantic proof  [default:
                                     0]
