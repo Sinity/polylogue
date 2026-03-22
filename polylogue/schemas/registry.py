@@ -213,7 +213,7 @@ class SchemaCluster:
     profile_tokens: list[str] = field(default_factory=list)
     exact_structure_ids: list[str] = field(default_factory=list)
     bundle_scope_count: int = 0
-    schema_version: str | None = None
+    promoted_package_version: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -261,7 +261,7 @@ class ClusterManifest:
                     profile_tokens=list(cluster.get("profile_tokens", [])),
                     exact_structure_ids=list(cluster.get("exact_structure_ids", [])),
                     bundle_scope_count=int(cluster.get("bundle_scope_count", 0)),
-                    schema_version=cluster.get("schema_version"),
+                    promoted_package_version=cluster.get("promoted_package_version"),
                 )
                 for cluster in data.get("clusters", [])
             ],
@@ -493,6 +493,30 @@ class SchemaRegistry:
         provider_token = canonical_schema_provider(provider)
         now = datetime.now(tz=timezone.utc).isoformat()
         observed_at = schema.get("x-polylogue-generated-at")
+        profile_family_ids = [
+            str(item)
+            for item in schema.get(
+                "x-polylogue-package-profile-family-ids",
+                schema.get("x-polylogue-profile-family-ids", []),
+            )
+            if isinstance(item, str)
+        ]
+        if not profile_family_ids:
+            profile_family_ids = [
+                str(item)
+                for item in schema.get("x-polylogue-profile-family-ids", [])
+                if isinstance(item, str)
+            ]
+        element_profile_family_ids = [
+            str(item)
+            for item in schema.get("x-polylogue-profile-family-ids", profile_family_ids)
+            if isinstance(item, str)
+        ]
+        anchor_profile_family_id = str(schema.get("x-polylogue-anchor-profile-family-id", "")).strip() or next(
+            (item for item in profile_family_ids if item),
+            "",
+        )
+        observed_artifact_count = int(schema.get("x-polylogue-observed-artifact-count", 0) or 0)
         package = SchemaVersionPackage(
             provider=provider_token,
             version=version,
@@ -502,30 +526,19 @@ class SchemaRegistry:
             last_seen=last_seen or first_seen or observed_at or now,
             bundle_scope_count=0,
             sample_count=int(schema.get("x-polylogue-sample-count", 0) or 0),
-            anchor_profile_family_id=next(
-                (
-                    str(item)
-                    for item in schema.get("x-polylogue-profile-family-ids", [])
-                    if isinstance(item, str)
-                ),
-                "",
-            ),
-            profile_family_ids=[
-                str(item)
-                for item in schema.get("x-polylogue-profile-family-ids", [])
-                if isinstance(item, str)
-            ],
+            anchor_profile_family_id=anchor_profile_family_id,
+            profile_family_ids=profile_family_ids,
             elements=[
                 SchemaElementManifest(
                     element_kind=element_kind,
                     schema_file=f"{element_kind}.schema.json.gz",
                     sample_count=int(schema.get("x-polylogue-sample-count", 0) or 0),
-                    artifact_count=int(schema.get("x-polylogue-cluster-sample-count", 0) or 0),
+                    artifact_count=observed_artifact_count,
                     first_seen=str(schema.get("x-polylogue-element-first-seen", observed_at or "")),
                     last_seen=str(schema.get("x-polylogue-element-last-seen", observed_at or "")),
                     bundle_scope_count=int(schema.get("x-polylogue-element-bundle-scope-count", 0) or 0),
                     exact_structure_ids=[str(item) for item in schema.get("x-polylogue-exact-structure-ids", [])],
-                    profile_family_ids=[str(item) for item in schema.get("x-polylogue-profile-family-ids", [])],
+                    profile_family_ids=element_profile_family_ids,
                     profile_tokens=[
                         str(item)
                         for item in schema.get("x-polylogue-profile-tokens", [])
@@ -536,7 +549,7 @@ class SchemaRegistry:
                         for item in schema.get("x-polylogue-representative-paths", [])
                         if isinstance(item, str)
                     ],
-                    observed_artifact_count=int(schema.get("x-polylogue-cluster-sample-count", 0) or 0),
+                    observed_artifact_count=observed_artifact_count,
                 )
             ],
         )
@@ -798,8 +811,10 @@ class SchemaRegistry:
         target_cluster = next((cluster for cluster in manifest.clusters if cluster.cluster_id == cluster_id), None)
         if target_cluster is None:
             raise ValueError(f"Cluster {cluster_id} not found for {provider_token}")
-        if target_cluster.schema_version is not None:
-            raise ValueError(f"Cluster {cluster_id} already promoted as {target_cluster.schema_version}")
+        if target_cluster.promoted_package_version is not None:
+            raise ValueError(
+                f"Cluster {cluster_id} already promoted as {target_cluster.promoted_package_version}"
+            )
 
         if samples:
             from polylogue.schemas.schema_generation import generate_schema_from_samples
@@ -808,17 +823,21 @@ class SchemaRegistry:
             schema = {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
-                "title": f"{provider_token} export format (cluster {cluster_id})",
+                "title": f"{provider_token} export format ({target_cluster.artifact_kind})",
                 "properties": {key: {} for key in target_cluster.dominant_keys},
             }
 
-        schema["x-polylogue-cluster-id"] = cluster_id
-        schema["x-polylogue-cluster-sample-count"] = target_cluster.sample_count
-        schema["x-polylogue-cluster-confidence"] = target_cluster.confidence
+        schema["title"] = schema.get("title") or f"{provider_token} export format ({target_cluster.artifact_kind})"
+        schema["x-polylogue-anchor-profile-family-id"] = cluster_id
+        schema["x-polylogue-profile-family-ids"] = [cluster_id]
+        schema["x-polylogue-package-profile-family-ids"] = [cluster_id]
+        schema["x-polylogue-observed-artifact-count"] = target_cluster.sample_count
+        schema["x-polylogue-evidence-confidence"] = target_cluster.confidence
+        schema["x-polylogue-artifact-kind"] = target_cluster.artifact_kind
         schema["x-polylogue-promoted-at"] = datetime.now(tz=timezone.utc).isoformat()
 
         new_version = self.register_schema(provider_token, schema)
-        target_cluster.schema_version = new_version
+        target_cluster.promoted_package_version = new_version
         if manifest.default_version is None:
             manifest.default_version = new_version
         self.save_cluster_manifest(manifest)

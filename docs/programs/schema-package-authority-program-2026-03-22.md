@@ -175,6 +175,29 @@ Required outcomes:
 - cluster language is clearly evidence/provenance language, not release
   authority language
 
+Status:
+
+- executed in this working pass
+
+Delivered so far:
+
+- cluster manifests now record `promoted_package_version` instead of the
+  misleading `schema_version`
+- schema CLI wording now distinguishes:
+  - evidence clusters
+  - evidence manifests
+  - promoted packages
+- cluster evidence still remains visible, but no longer presents itself as the
+  release authority
+- generated and promoted schemas now carry package/evidence metadata using:
+  - `x-polylogue-anchor-profile-family-id`
+  - `x-polylogue-profile-family-ids`
+  - `x-polylogue-package-profile-family-ids`
+  - `x-polylogue-observed-artifact-count`
+  - `x-polylogue-evidence-confidence`
+- schema explain output now surfaces those package/evidence fields directly
+  instead of the stale `x-polylogue-cluster-*` metadata family
+
 ### Step 5: Package-Aware Backfill, Proof, And Synthetic Convergence
 
 Goal:

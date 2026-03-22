@@ -111,16 +111,18 @@ def schema_infer(
         if json_output:
             click.echo(json.dumps(manifest.to_dict(), indent=2))
         else:
-            click.echo(f"Clustered {result.sample_count:,} samples into {len(manifest.clusters)} cluster(s)")
-            click.echo(f"Manifest saved to: {manifest_path}")
+            click.echo(
+                f"Clustered {result.sample_count:,} samples into {len(manifest.clusters)} evidence cluster(s)"
+            )
+            click.echo(f"Evidence manifest saved to: {manifest_path}")
             click.echo()
             for c in manifest.clusters:
                 pct = (c.sample_count / result.sample_count * 100) if result.sample_count else 0
                 click.echo(f"  [{c.cluster_id}] {c.sample_count:,} samples ({pct:.1f}%)")
                 click.echo(f"    confidence: {c.confidence}")
                 click.echo(f"    keys: {', '.join(c.dominant_keys[:10])}")
-                if c.schema_version:
-                    click.echo(f"    version: {c.schema_version}")
+                if c.promoted_package_version:
+                    click.echo(f"    promoted package: {c.promoted_package_version}")
     else:
         if json_output:
             click.echo(json.dumps(result.schema, indent=2))
@@ -207,9 +209,13 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
                             click.echo(f"Sample count: {sample_count:,}")
 
             if manifest:
-                click.echo(f"\nCluster manifest ({len(manifest.clusters)} clusters):")
+                click.echo(f"\nEvidence manifest ({len(manifest.clusters)} clusters):")
                 for c in manifest.clusters:
-                    status = f" [version: {c.schema_version}]" if c.schema_version else ""
+                    status = (
+                        f" [promoted package: {c.promoted_package_version}]"
+                        if c.promoted_package_version
+                        else ""
+                    )
                     click.echo(f"  {c.cluster_id}: {c.sample_count:,} samples, confidence={c.confidence}{status}")
     else:
         providers = registry.list_providers()
@@ -282,7 +288,7 @@ def schema_compare(
 
 @schema_command.command("promote")
 @click.option("--provider", required=True, help="Provider name")
-@click.option("--cluster", "cluster_id", required=True, help="Cluster ID to promote")
+@click.option("--cluster", "cluster_id", required=True, help="Evidence cluster ID to promote")
 @click.option("--with-samples", is_flag=True, help="Re-load samples for full schema generation")
 @click.option("--max-samples", type=int, default=500, help="Max samples when using --with-samples")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
@@ -295,7 +301,7 @@ def schema_promote(
     max_samples: int,
     json_output: bool,
 ) -> None:
-    """Promote a cluster's schema to a new registered version."""
+    """Promote an evidence cluster to a new registered package version."""
     from polylogue.schemas.registry import SchemaRegistry
 
     registry = SchemaRegistry()
@@ -455,9 +461,11 @@ def schema_explain(
         ("x-polylogue-promoted-at", "Promoted"),
         ("x-polylogue-sample-count", "Samples"),
         ("x-polylogue-sample-granularity", "Granularity"),
-        ("x-polylogue-cluster-id", "Cluster ID"),
-        ("x-polylogue-cluster-sample-count", "Cluster samples"),
-        ("x-polylogue-cluster-confidence", "Cluster confidence"),
+        ("x-polylogue-anchor-profile-family-id", "Anchor profile family"),
+        ("x-polylogue-profile-family-ids", "Element profile families"),
+        ("x-polylogue-package-profile-family-ids", "Package profile families"),
+        ("x-polylogue-observed-artifact-count", "Observed artifacts"),
+        ("x-polylogue-evidence-confidence", "Evidence confidence"),
     ]
     click.echo("  Metadata:")
     for key, label in meta_keys:
