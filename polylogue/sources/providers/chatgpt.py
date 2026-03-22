@@ -1,7 +1,7 @@
 """ChatGPT provider-specific typed models.
 
 These models match the ChatGPT export format exactly.
-Derived from schema: polylogue/schemas/providers/chatgpt.schema.json
+Derived from schema package: polylogue/schemas/providers/chatgpt/versions/v1/elements/conversation_document.schema.json.gz
 """
 
 from __future__ import annotations

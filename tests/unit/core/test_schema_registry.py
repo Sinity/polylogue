@@ -475,7 +475,7 @@ class TestPromotionVisibility:
         tmp_registry.save_cluster_manifest(manifest)
 
         cluster_id = manifest.clusters[0].cluster_id
-        version = tmp_registry.promote_cluster("prov-prov", cluster_id, samples=samples)
+        tmp_registry.promote_cluster("prov-prov", cluster_id, samples=samples)
 
 
 class TestManifestVersionSelection:
@@ -557,7 +557,7 @@ class TestFingerprintHash:
 
 def _provider_schema_paths() -> list[Path]:
     schema_dir = Path(__file__).resolve().parents[3] / "polylogue" / "schemas" / "providers"
-    return sorted(schema_dir.glob("*.schema.json.gz"))
+    return sorted(schema_dir.glob("*/versions/*/elements/*.schema.json.gz"))
 
 
 @pytest.mark.parametrize("schema_path", _provider_schema_paths(), ids=lambda p: p.name)

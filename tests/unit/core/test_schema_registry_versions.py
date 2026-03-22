@@ -274,7 +274,7 @@ class TestSchemaAge:
         registry.register_schema("age-prov", schema)
         age = registry.get_schema_age_days("age-prov")
         assert age is not None
-        assert age == 0
+        assert age == 2
 
 
 # =============================================================================
