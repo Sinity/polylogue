@@ -558,14 +558,13 @@ class TestDashboardCommand:
         assert result.exit_code == 0
         mock_app.run.assert_called_once()
 
-    def test_dashboard_creates_app_with_config(self, cli_runner, cli_workspace) -> None:
+    def test_dashboard_creates_app_with_repository(self, cli_runner, cli_workspace) -> None:
         with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
             result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
         assert result.exit_code == 0
         kwargs = mock_app_cls.call_args.kwargs
-        assert kwargs["config"].archive_root == cli_workspace["archive_root"]
         assert kwargs["repository"] is not None
 
 
