@@ -502,12 +502,28 @@ class SchemaRegistry:
             last_seen=last_seen or first_seen or observed_at or now,
             bundle_scope_count=0,
             sample_count=int(schema.get("x-polylogue-sample-count", 0) or 0),
+            anchor_profile_family_id=next(
+                (
+                    str(item)
+                    for item in schema.get("x-polylogue-profile-family-ids", [])
+                    if isinstance(item, str)
+                ),
+                "",
+            ),
+            profile_family_ids=[
+                str(item)
+                for item in schema.get("x-polylogue-profile-family-ids", [])
+                if isinstance(item, str)
+            ],
             elements=[
                 SchemaElementManifest(
                     element_kind=element_kind,
                     schema_file=f"{element_kind}.schema.json.gz",
                     sample_count=int(schema.get("x-polylogue-sample-count", 0) or 0),
                     artifact_count=int(schema.get("x-polylogue-cluster-sample-count", 0) or 0),
+                    first_seen=str(schema.get("x-polylogue-element-first-seen", observed_at or "")),
+                    last_seen=str(schema.get("x-polylogue-element-last-seen", observed_at or "")),
+                    bundle_scope_count=int(schema.get("x-polylogue-element-bundle-scope-count", 0) or 0),
                     exact_structure_ids=[str(item) for item in schema.get("x-polylogue-exact-structure-ids", [])],
                     profile_family_ids=[str(item) for item in schema.get("x-polylogue-profile-family-ids", [])],
                     profile_tokens=[

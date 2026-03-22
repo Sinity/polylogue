@@ -75,7 +75,6 @@ def schema_infer(
 
     # Redaction report (when --report is set)
     if report and result.redaction_report:
-        import sys
 
         click.echo(result.redaction_report.format_summary(), err=True)
         if not json_output:
@@ -181,13 +180,17 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
                 for package in catalog.packages:
                     click.echo(
                         f"  {package.version}: anchor={package.anchor_kind}, "
-                        f"default={package.default_element_kind}, scopes={package.bundle_scope_count}, "
+                        f"default={package.default_element_kind}, "
+                        f"anchor-family={package.anchor_profile_family_id or 'n/a'}, "
+                        f"profiles={len(package.profile_family_ids)}, scopes={package.bundle_scope_count}, "
                         f"window={package.first_seen} -> {package.last_seen}"
                     )
                     for element in package.elements:
                         click.echo(
                             f"    - {element.element_kind}: "
-                            f"{element.sample_count} samples / {element.artifact_count} artifacts"
+                            f"{element.sample_count} samples / {element.artifact_count} artifacts, "
+                            f"profiles={len(element.profile_family_ids)}, scopes={element.bundle_scope_count}, "
+                            f"window={element.first_seen or 'unknown'} -> {element.last_seen or 'unknown'}"
                         )
             else:
                 latest = versions[-1] if versions else None
@@ -299,9 +302,9 @@ def schema_promote(
 
     samples: list[dict[str, Any]] | None = None
     if with_samples:
-        from polylogue.schemas.schema_generation import _structure_fingerprint
         from polylogue.schemas.registry import _fingerprint_hash
         from polylogue.schemas.sampling import PROVIDERS, load_samples_from_db
+        from polylogue.schemas.schema_generation import _structure_fingerprint
 
         config = PROVIDERS.get(provider)
         if config is None:
@@ -423,7 +426,9 @@ def schema_explain(
     click.echo(f"Schema: {provider} {version} [{resolved_element}]")
     if package is not None:
         click.echo(
-            f"  Package anchor={package.anchor_kind}, scopes={package.bundle_scope_count}, "
+            f"  Package anchor={package.anchor_kind}, "
+            f"anchor-family={package.anchor_profile_family_id or 'n/a'}, "
+            f"profiles={len(package.profile_family_ids)}, scopes={package.bundle_scope_count}, "
             f"window={package.first_seen} -> {package.last_seen}"
         )
     click.echo(
@@ -577,10 +582,7 @@ def schema_audit(
     """Run automated quality checks on committed schemas."""
     from polylogue.schemas.audit import audit_all_providers, audit_provider
 
-    if provider:
-        report = audit_provider(provider)
-    else:
-        report = audit_all_providers()
+    report = audit_provider(provider) if provider else audit_all_providers()
 
     if json_output:
         click.echo(json.dumps(report.to_json(), indent=2))
