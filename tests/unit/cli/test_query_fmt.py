@@ -25,10 +25,16 @@ import yaml
 from rich.console import Console
 
 from polylogue.cli.query_helpers import describe_query_filters
-from polylogue.cli.query_output import _format_list, _output_stats_by, _write_message_streaming
-from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_conversation
+from polylogue.cli.query_output import (
+    _format_list,
+    _output_stats_by,
+    _write_message_streaming,
+    format_summary_list,
+    render_stream_transcript,
+)
 from polylogue.lib.messages import MessageCollection
-from polylogue.lib.models import Conversation, Message
+from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_conversation
 
 
 @dataclass(frozen=True)
@@ -360,6 +366,42 @@ class TestListFormatting:
             assert payload[0]["id"] == "conv-1234567890abcdef"
             assert payload[0]["provider"] == "claude-ai"
 
+    @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
+    def test_format_summary_list_contract(self, output_format: str) -> None:
+        summary = ConversationSummary(
+            id="conv-summary-1",
+            provider="claude-ai",
+            title="Summary Conversation",
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
+            metadata={"tags": ["alpha", "beta"], "summary": "Summary text"},
+        )
+
+        rendered = format_summary_list(
+            [summary],
+            output_format,
+            None,
+            message_counts={"conv-summary-1": 7},
+        )
+
+        if output_format == "json":
+            payload = json.loads(rendered)
+            assert payload[0]["id"] == "conv-summary-1"
+            assert payload[0]["messages"] == 7
+            assert payload[0]["tags"] == ["alpha", "beta"]
+        elif output_format == "yaml":
+            payload = yaml.safe_load(rendered)
+            assert payload[0]["provider"] == "claude-ai"
+            assert payload[0]["summary"] == "Summary text"
+        elif output_format == "csv":
+            assert "id,date,provider,title,messages,tags,summary" in rendered
+            assert "conv-summary-1" in rendered
+            assert "alpha,beta" in rendered
+        else:
+            assert "conv-summary-1" in rendered
+            assert "claude-ai" in rendered
+            assert "(7 msgs)" in rendered
+
 
 class TestStreamingOutput:
     @pytest.mark.parametrize("output_format,expected_role,expected_text", STREAM_CASES)
@@ -380,6 +422,29 @@ class TestStreamingOutput:
             payload = json.loads(output)
             assert payload["id"] == "stream-1"
             assert payload["word_count"] == message.word_count
+
+    @pytest.mark.parametrize(
+        ("output_format", "expected_tokens"),
+        [
+            ("markdown", ("# Example Conversation", "**Provider**: claude-ai", "**Date**: 2025-06-15 12:30", "_Streamed 2 messages_")),
+            ("json-lines", ('"type": "header"', '"provider": "claude-ai"', '"date": "2025-06-15T12:30:00+00:00"', '"type": "footer"')),
+            ("plaintext", ("[USER]", "[ASSISTANT]")),
+        ],
+    )
+    def test_render_stream_transcript_contract(self, sample_conversation: Conversation, output_format: str, expected_tokens: tuple[str, ...]) -> None:
+        rendered, emitted = render_stream_transcript(
+            conversation_id=str(sample_conversation.id),
+            title=sample_conversation.display_title,
+            provider=str(sample_conversation.provider),
+            display_date=sample_conversation.display_date,
+            messages=list(sample_conversation.messages),
+            output_format=output_format,
+            stats={"total_messages": len(sample_conversation.messages), "dialogue_messages": len(list(sample_conversation.iter_dialogue()))},
+        )
+
+        assert emitted == 2
+        for token in expected_tokens:
+            assert token in rendered
 
 
 class TestGroupedStatsOutput:
