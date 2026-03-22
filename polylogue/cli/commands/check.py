@@ -15,6 +15,10 @@ from polylogue.health import VerifyStatus, get_health, run_runtime_health
 from polylogue.storage.repair import run_all_repairs
 
 
+def _format_count_mapping(counts: dict[str, int]) -> str:
+    return ", ".join(f"{key}={value:,}" for key, value in sorted(counts.items()))
+
+
 @click.command("check")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.option("--verbose", "-v", is_flag=True, help="Show breakdown by provider")
@@ -298,6 +302,12 @@ def check_command(
                 f"orphan_sidecars={summary['orphan_sidecars']:,} "
                 f"streams={summary['subagent_streams']:,}"
             )
+        if summary["package_versions"]:
+            lines.append(f"  Resolved packages: {_format_count_mapping(summary['package_versions'])}")
+        if summary["element_kinds"]:
+            lines.append(f"  Resolved elements: {_format_count_mapping(summary['element_kinds'])}")
+        if summary["resolution_reasons"]:
+            lines.append(f"  Resolution reasons: {_format_count_mapping(summary['resolution_reasons'])}")
         for provider, stats in sorted(proof_report.providers.items()):
             lines.append(
                 f"  {provider}: contract_backed={stats.contract_backed_records:,} "
@@ -306,6 +316,12 @@ def check_command(
                 f"unknown={stats.unknown_records:,} "
                 f"decode_errors={stats.decode_errors:,}"
             )
+            if stats.package_versions:
+                lines.append(f"    packages: {_format_count_mapping(stats.package_versions)}")
+            if stats.element_kinds:
+                lines.append(f"    elements: {_format_count_mapping(stats.element_kinds)}")
+            if stats.resolution_reasons:
+                lines.append(f"    reasons: {_format_count_mapping(stats.resolution_reasons)}")
 
     if artifact_rows is not None:
         lines.append("")
