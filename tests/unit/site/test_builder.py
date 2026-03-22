@@ -68,6 +68,9 @@ def test_site_builder_returns_typed_manifest_and_persists_it(db_path, tmp_path) 
     assert manifest.artifact_proof.package_versions == {}
     assert manifest.artifact_proof.element_kinds == {}
     assert manifest.artifact_proof.resolution_reasons == {}
+    assert manifest.semantic_proof is not None
+    assert manifest.semantic_proof.surface == "canonical_markdown_v1"
+    assert manifest.semantic_proof.total_conversations == 1
     assert (tmp_path / "site" / "site-manifest.json").exists()
     assert "site-manifest.json" not in {
         entry.relative_path for entry in manifest.artifacts.entries
@@ -75,6 +78,7 @@ def test_site_builder_returns_typed_manifest_and_persists_it(db_path, tmp_path) 
     assert persisted is not None
     assert persisted.publication_id == manifest.publication_id
     assert persisted.manifest["outputs"]["rendered_conversation_pages"] == 1
+    assert persisted.manifest["semantic_proof"]["total_conversations"] == 1
 
 
 def test_site_builder_reports_reused_pages_on_incremental_rebuild(db_path, tmp_path) -> None:

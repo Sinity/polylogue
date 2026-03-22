@@ -23,6 +23,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.rendering.semantic_proof import SemanticProofReport
 from polylogue.schemas.audit import AuditReport
 from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercises import Exercise
@@ -150,6 +151,11 @@ class TestFrozenClockShowcaseReport:
                     )
                 },
                 total_records=1,
+            ),
+            semantic_proof_report=SemanticProofReport(
+                surface="canonical_markdown_v1",
+                conversations=[],
+                provider_reports={},
             ),
             showcase_result=showcase_result,
             invariant_results=[
