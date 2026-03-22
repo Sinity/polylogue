@@ -16,6 +16,9 @@ python -m devtools.run_campaign --scale small --campaign fts-rebuild
 
 # List available campaigns
 python -m devtools.run_campaign --list
+
+# Or use the named validation lane
+python -m devtools.run_validation_lanes --lane long-haul-small
 ```
 
 ## Scale Levels
@@ -50,7 +53,7 @@ The benchmark infrastructure consists of:
 2. **`devtools/benchmark_campaigns.py`** -- Campaign runner with timing instrumentation
 3. **`devtools/campaign_report.py`** -- Markdown/JSON report generator
 4. **`devtools/run_campaign.py`** -- CLI entry point (`python -m devtools.run_campaign`)
-5. **`tests/unit/storage/test_scale_budgets.py`** -- Pytest-integrated performance budget assertions
+5. **`tests/unit/storage/test_scale.py`** -- Pytest-integrated performance budget assertions
 
 ## Reproducibility
 
