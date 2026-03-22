@@ -19,6 +19,17 @@ def _format_count_mapping(counts: dict[str, int]) -> str:
     return ", ".join(f"{key}={value:,}" for key, value in sorted(counts.items()))
 
 
+def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -> str:
+    return ", ".join(
+        (
+            f"{metric}(preserved={counts.get('preserved', 0):,}, "
+            f"declared_loss={counts.get('declared_loss', 0):,}, "
+            f"critical_loss={counts.get('critical_loss', 0):,})"
+        )
+        for metric, counts in sorted(metric_summary.items())
+    )
+
+
 @click.command("check")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.option("--verbose", "-v", is_flag=True, help="Show breakdown by provider")
@@ -31,6 +42,7 @@ def _format_count_mapping(counts: dict[str, int]) -> str:
 @click.option("--proof", "check_proof", is_flag=True, help="Run durable artifact support proof")
 @click.option("--artifacts", "check_artifacts", is_flag=True, help="List durable artifact observations")
 @click.option("--cohorts", "check_cohorts", is_flag=True, help="Summarize durable artifact cohorts")
+@click.option("--semantic-proof", "check_semantic_proof", is_flag=True, help="Run semantic preservation proof over canonical markdown rendering")
 @click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)")
 @click.option(
     "--artifact-provider",
@@ -62,6 +74,25 @@ def _format_count_mapping(counts: dict[str, int]) -> str:
     default=0,
     show_default=True,
     help="Start offset for artifact proof/listing/cohorting",
+)
+@click.option(
+    "--semantic-provider",
+    "semantic_providers",
+    multiple=True,
+    help="Limit semantic proof to conversation providers (repeatable)",
+)
+@click.option(
+    "--semantic-limit",
+    type=int,
+    default=None,
+    help="Limit semantic proof to N conversations",
+)
+@click.option(
+    "--semantic-offset",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Start offset for semantic proof",
 )
 @click.option(
     "--schema-samples",
@@ -101,12 +132,16 @@ def check_command(
     check_proof: bool,
     check_artifacts: bool,
     check_cohorts: bool,
+    check_semantic_proof: bool,
     schema_providers: tuple[str, ...],
     artifact_providers: tuple[str, ...],
     artifact_statuses: tuple[str, ...],
     artifact_kinds: tuple[str, ...],
     artifact_limit: int | None,
     artifact_offset: int,
+    semantic_providers: tuple[str, ...],
+    semantic_limit: int | None,
+    semantic_offset: int,
     schema_samples: str,
     schema_record_limit: int | None,
     schema_record_offset: int,
@@ -137,6 +172,12 @@ def check_command(
         fail("check", "--artifact-limit requires --proof, --artifacts, or --cohorts")
     if artifact_offset != 0 and not (check_proof or check_artifacts or check_cohorts):
         fail("check", "--artifact-offset requires --proof, --artifacts, or --cohorts")
+    if semantic_providers and not check_semantic_proof:
+        fail("check", "--semantic-provider requires --semantic-proof")
+    if semantic_limit is not None and not check_semantic_proof:
+        fail("check", "--semantic-limit requires --semantic-proof")
+    if semantic_offset != 0 and not check_semantic_proof:
+        fail("check", "--semantic-offset requires --semantic-proof")
     if schema_record_limit is not None and schema_record_limit <= 0:
         fail("check", "--schema-record-limit must be a positive integer")
     if schema_record_offset < 0:
@@ -145,6 +186,10 @@ def check_command(
         fail("check", "--artifact-limit must be a positive integer")
     if artifact_offset < 0:
         fail("check", "--artifact-offset must be >= 0")
+    if semantic_limit is not None and semantic_limit <= 0:
+        fail("check", "--semantic-limit must be a positive integer")
+    if semantic_offset < 0:
+        fail("check", "--semantic-offset must be >= 0")
 
     config = load_effective_config(env)
     report = get_health(config, deep=deep)
@@ -155,6 +200,7 @@ def check_command(
     proof_report = None
     artifact_rows = None
     cohort_rows = None
+    semantic_report = None
     if check_schemas:
         from polylogue.schemas.verification import verify_raw_corpus
 
@@ -196,6 +242,14 @@ def check_command(
             record_limit=artifact_limit,
             record_offset=artifact_offset,
         )
+    if check_semantic_proof:
+        from polylogue.rendering.semantic_proof import prove_markdown_render_semantics
+
+        semantic_report = prove_markdown_render_semantics(
+            providers=list(semantic_providers) if semantic_providers else None,
+            record_limit=semantic_limit,
+            record_offset=semantic_offset,
+        )
 
     # Run repairs before output so JSON mode includes repair results
     repair_results: list | None = None
@@ -235,6 +289,8 @@ def check_command(
                 "count": len(cohort_rows),
                 "items": [row.model_dump(mode="json") for row in cohort_rows],
             }
+        if semantic_report is not None:
+            out["semantic_proof"] = semantic_report.to_dict()
         if repair_results is not None:
             out["repairs"] = [r.to_dict() for r in repair_results]
         if vacuum_result is not None:
@@ -347,6 +403,29 @@ def check_command(
                 f"count={row.observation_count:,} cohort={row.cohort_id or '-'} "
                 f"version={row.resolved_package_version or '-'} "
                 f"element={row.resolved_element_kind or '-'}"
+            )
+
+    if semantic_report is not None:
+        semantic_summary = semantic_report.to_dict()["summary"]
+        lines.append("")
+        lines.append(
+            f"Semantic proof: {semantic_summary['total_conversations']:,} conversations "
+            f"(clean={semantic_summary['clean_conversations']:,}, "
+            f"critical={semantic_summary['critical_conversations']:,}, "
+            f"preserved_checks={semantic_summary['preserved_checks']:,}, "
+            f"declared_loss_checks={semantic_summary['declared_loss_checks']:,}, "
+            f"critical_loss_checks={semantic_summary['critical_loss_checks']:,})"
+        )
+        if semantic_summary["metric_summary"]:
+            lines.append(f"  Metrics: {_format_semantic_metric_summary(semantic_summary['metric_summary'])}")
+        for provider, stats in sorted(semantic_report.provider_reports.items()):
+            lines.append(
+                f"  {provider}: conversations={stats.total_conversations:,} "
+                f"clean={stats.clean_conversations:,} "
+                f"critical={stats.critical_conversations:,} "
+                f"preserved_checks={stats.preserved_checks:,} "
+                f"declared_loss_checks={stats.declared_loss_checks:,} "
+                f"critical_loss_checks={stats.critical_loss_checks:,}"
             )
 
     if runtime_report is not None:
