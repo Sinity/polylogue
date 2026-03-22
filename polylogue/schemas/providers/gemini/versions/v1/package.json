@@ -1,0 +1,28 @@
+{
+  "provider": "gemini",
+  "version": "v1",
+  "anchor_kind": "conversation_document",
+  "default_element_kind": "conversation_document",
+  "first_seen": "2026-03-16T12:26:09.197335+00:00",
+  "last_seen": "2026-03-16T12:26:09.197335+00:00",
+  "bundle_scope_count": 0,
+  "sample_count": 226,
+  "bundle_scopes": [],
+  "source_cluster_ids": [],
+  "representative_paths": [],
+  "elements": [
+    {
+      "element_kind": "conversation_document",
+      "schema_file": "conversation_document.schema.json.gz",
+      "sample_count": 226,
+      "artifact_count": 226,
+      "supported": true,
+      "exact_structure_ids": [],
+      "profile_family_ids": [],
+      "profile_tokens": [],
+      "representative_paths": [],
+      "observed_artifact_count": 226
+    }
+  ],
+  "orphan_adjunct_counts": {}
+}

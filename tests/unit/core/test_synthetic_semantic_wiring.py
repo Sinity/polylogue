@@ -10,16 +10,16 @@ Verifies that:
 from __future__ import annotations
 
 import copy
-import gzip
 import json
 from pathlib import Path
 
 import pytest
 
+from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.core import SyntheticCorpus
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 
-SCHEMAS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "polylogue" / "schemas" / "providers"
+_BUNDLED_REGISTRY = SchemaRegistry(storage_root=SCHEMA_DIR)
 
 # Expected annotations per provider — all providers now consistently detect
 # the same 5 roles after the semantic inference overhaul (2026-03-16).
@@ -40,7 +40,7 @@ def _collect_semantic_roles(schema: dict, *, roles: list[str] | None = None) -> 
         return roles
     if "x-polylogue-semantic-role" in schema:
         roles.append(schema["x-polylogue-semantic-role"])
-    for key, value in schema.items():
+    for _key, value in schema.items():
         if isinstance(value, dict):
             _collect_semantic_roles(value, roles=roles)
         elif isinstance(value, list):
@@ -48,6 +48,26 @@ def _collect_semantic_roles(schema: dict, *, roles: list[str] | None = None) -> 
                 if isinstance(item, dict):
                     _collect_semantic_roles(item, roles=roles)
     return roles
+
+
+def _bundled_schema(provider: str) -> dict:
+    package = _BUNDLED_REGISTRY.get_package(provider, version="default")
+    assert package is not None, f"No bundled package for provider {provider}"
+    schema = _BUNDLED_REGISTRY.get_element_schema(
+        provider,
+        version=package.version,
+        element_kind=package.default_element_kind,
+    )
+    assert schema is not None, f"No bundled schema for provider {provider}"
+    return schema
+
+
+def _bundled_schema_path(provider: str) -> Path:
+    package = _BUNDLED_REGISTRY.get_package(provider, version="default")
+    assert package is not None, f"No bundled package for provider {provider}"
+    element = package.element(package.default_element_kind)
+    assert element is not None and element.schema_file is not None
+    return SCHEMA_DIR / provider / "versions" / package.version / "elements" / element.schema_file
 
 
 # =============================================================================
@@ -61,11 +81,10 @@ class TestBaselineSchemaAnnotations:
     @pytest.mark.parametrize("provider", list(EXPECTED_ANNOTATIONS.keys()))
     def test_schema_has_expected_semantic_roles(self, provider: str) -> None:
         """Each provider schema contains the expected semantic role annotations."""
-        schema_path = SCHEMAS_DIR / f"{provider}.schema.json.gz"
+        schema_path = _bundled_schema_path(provider)
         assert schema_path.exists(), f"Schema not found: {schema_path}"
 
-        with gzip.open(schema_path, "rt") as f:
-            schema = json.load(f)
+        schema = _bundled_schema(provider)
 
         found_roles = sorted(set(_collect_semantic_roles(schema)))
         expected = sorted(EXPECTED_ANNOTATIONS[provider])
@@ -78,9 +97,7 @@ class TestBaselineSchemaAnnotations:
         """Re-injecting annotations doesn't change the schema."""
         from devtools.inject_semantic_annotations import inject_annotations
 
-        schema_path = SCHEMAS_DIR / f"{provider}.schema.json.gz"
-        with gzip.open(schema_path, "rt") as f:
-            schema = json.load(f)
+        schema = _bundled_schema(provider)
 
         original = json.dumps(schema, sort_keys=True)
         inject_annotations(provider, schema)
