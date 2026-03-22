@@ -8,11 +8,11 @@ Module-level fixtures for test consolidation:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
+from polylogue.schemas.registry import SchemaRegistry
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
@@ -45,6 +45,7 @@ def mock_schema_dir(tmp_path):
     """Create a mock schema directory with test schemas."""
     schema_dir = tmp_path / "schemas"
     schema_dir.mkdir()
+    registry = SchemaRegistry(storage_root=schema_dir)
 
     test_schema = {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -58,10 +59,9 @@ def mock_schema_dir(tmp_path):
         "additionalProperties": False,
     }
 
-    (schema_dir / "test-provider.schema.json").write_text(json.dumps(test_schema), encoding="utf-8")
-
     open_schema = {"type": "object", "properties": {"id": {"type": "string"}}, "additionalProperties": {}}
-    (schema_dir / "open-provider.schema.json").write_text(json.dumps(open_schema), encoding="utf-8")
+    registry.write_schema_version("chatgpt", "v1", test_schema)
+    registry.write_schema_version("codex", "v1", open_schema)
 
     return schema_dir
 

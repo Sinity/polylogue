@@ -1,7 +1,7 @@
 """Claude Code provider-specific typed models.
 
 These models match the Claude Code JSONL session format exactly.
-Derived from schema: polylogue/schemas/providers/claude-code.schema.json
+Derived from schema package: polylogue/schemas/providers/claude-code/versions/v1/elements/conversation_record_stream.schema.json.gz
 
 Claude Code sessions are JSONL files where each line is a record.
 Records have a `type` field that determines their structure.

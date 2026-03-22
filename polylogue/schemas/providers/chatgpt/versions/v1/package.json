@@ -1,0 +1,28 @@
+{
+  "provider": "chatgpt",
+  "version": "v1",
+  "anchor_kind": "conversation_document",
+  "default_element_kind": "conversation_document",
+  "first_seen": "2026-03-16T12:23:13.488818+00:00",
+  "last_seen": "2026-03-16T12:23:13.488818+00:00",
+  "bundle_scope_count": 0,
+  "sample_count": 2122,
+  "bundle_scopes": [],
+  "source_cluster_ids": [],
+  "representative_paths": [],
+  "elements": [
+    {
+      "element_kind": "conversation_document",
+      "schema_file": "conversation_document.schema.json.gz",
+      "sample_count": 2122,
+      "artifact_count": 2122,
+      "supported": true,
+      "exact_structure_ids": [],
+      "profile_family_ids": [],
+      "profile_tokens": [],
+      "representative_paths": [],
+      "observed_artifact_count": 2122
+    }
+  ],
+  "orphan_adjunct_counts": {}
+}

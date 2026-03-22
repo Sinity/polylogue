@@ -1,12 +1,13 @@
 # Polylogue Intentional Forward Program
 
 Date: 2026-03-21
-Status: current execution program
-Role: canonical live queue for the post-2026-03-19 planning wave
+Status: executed umbrella program
+Role: executed umbrella for the post-2026-03-19 planning wave; the live schema lane now continues in `schema-package-authority-program-2026-03-22.md`
 
 See also:
 
 - `planning-and-analysis-map-2026-03-21.md`
+- `schema-package-authority-program-2026-03-22.md`
 
 Collates and updates:
 

@@ -1,7 +1,7 @@
 """Claude AI (web) provider-specific typed models.
 
 These models match the Claude AI export format exactly.
-Derived from schema: polylogue/schemas/providers/claude-ai.schema.json
+Derived from schema package: polylogue/schemas/providers/claude-ai/versions/v1/elements/conversation_document.schema.json.gz
 """
 
 from __future__ import annotations
