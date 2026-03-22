@@ -134,6 +134,26 @@ Required outcomes:
 - package manifests record enough evidence to explain why a package exists
 - record-stream providers stop looking like flat record-schema buckets
 
+Status:
+
+- in progress
+- partly executed in this working pass
+
+Delivered so far:
+
+- package manifests now expose `anchor_profile_family_id` and
+  `profile_family_ids`
+- element manifests now expose `first_seen`, `last_seen`,
+  `bundle_scope_count`, and `bundle_scopes`
+- generated element schemas now carry:
+  - `x-polylogue-element-first-seen`
+  - `x-polylogue-element-last-seen`
+  - `x-polylogue-element-bundle-scope-count`
+  - `x-polylogue-anchor-profile-family-id`
+  - `x-polylogue-package-profile-family-ids`
+- schema CLI list/explain output now exposes package family/scope/window
+  evidence more directly
+
 ### Step 4: Operator Terminology Convergence
 
 Goal:
