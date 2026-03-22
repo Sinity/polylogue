@@ -1,6 +1,6 @@
 # Site tape — generates static HTML archive
 
-Output demos/output/05-site.gif
+Output artifacts/demos/05-site.gif
 
 Set Theme "Catppuccin Mocha"
 Set Width 1200

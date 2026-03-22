@@ -186,16 +186,19 @@ Scope:
 
 Status:
 
-- partially executed as the publication control-plane slice:
+- executed through two committed slices:
   - typed `SitePublicationManifest` build results
   - durable SQLite `publications` records
   - `site-manifest.json` materialization
   - `polylogue site --json` typed output
   - site manifest embedding of latest run and durable artifact-proof summary
   - shared output-manifest scanning reused by both `site` and `showcase`
-- remaining open scope is the repo-shape/document/generated-artifact slimming
-  side, plus any deeper `site/builder.py` decomposition work
-- that remaining scope is now broken out concretely in:
+  - `site/builder.py` decomposition into role-focused helper modules
+  - repo-root artifact quarantine under `artifacts/`
+  - demo/workflow path normalization away from `demos/output/`
+  - documentation and planning-surface updates reflecting the new topology
+- executed through:
+  - `programs/publication-control-plane-program-2026-03-22.md`
   - `programs/site-and-repo-shape-streamlining-program-2026-03-22.md`
 
 ## Architectural Rules

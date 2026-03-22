@@ -7,6 +7,10 @@ This directory currently contains four different kinds of material:
 3. analysis inputs and audits
 4. generated campaign artifacts
 
+Repo-local generated working-state artifacts now live under
+[`../artifacts/README.md`](../artifacts/README.md) rather than in unrelated root
+directories.
+
 The flat root makes those easy to confuse. Start from this file instead of
 reading `docs/` as one undifferentiated list.
 

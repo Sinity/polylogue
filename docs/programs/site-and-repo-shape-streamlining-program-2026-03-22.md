@@ -1,7 +1,7 @@
 # Polylogue Site And Repo-Shape Streamlining Program
 
 Date: 2026-03-22
-Status: next planned execution slice
+Status: executed on 2026-03-22
 Role: concrete next program after the publication-control-plane implementation
 
 ## Why This Is Next

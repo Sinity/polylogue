@@ -1,6 +1,6 @@
 # Search tape — shows query mode with filters
 
-Output demos/output/03-search.gif
+Output artifacts/demos/03-search.gif
 
 Set Theme "Catppuccin Mocha"
 Set Width 1200
