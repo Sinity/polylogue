@@ -15,8 +15,8 @@ from click.shell_completion import get_completion_class
 
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
-from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.commands.embed import embed_command
+from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.commands.qa import qa_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
@@ -167,7 +167,7 @@ def dashboard_command(env: AppEnv) -> None:
     """Launch the Mission Control TUI dashboard."""
     from polylogue.ui.tui.app import PolylogueApp
 
-    app = PolylogueApp(config=env.config, repository=env.repository)
+    app = PolylogueApp(repository=env.repository)
     app.run()
 
 
