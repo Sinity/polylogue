@@ -7,21 +7,18 @@ a structured result with PASS/WARN/FAIL status.
 
 from __future__ import annotations
 
-import gzip
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from polylogue.lib.outcomes import OutcomeCheck as CheckResult
-from polylogue.lib.outcomes import OutcomeReport
-from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.lib.outcomes import OutcomeReport, OutcomeStatus
 from polylogue.schemas.privacy import (
     _is_safe_enum_value,
     _looks_high_entropy_token,
 )
-
+from polylogue.schemas.registry import SchemaRegistry
 
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -98,11 +95,8 @@ class AuditReport(OutcomeReport):
 
 def _load_committed_schema(provider: str) -> dict[str, Any] | None:
     """Load a committed provider schema."""
-    schema_dir = Path(__file__).resolve().parent / "providers"
-    path = schema_dir / f"{provider}.schema.json.gz"
-    if not path.exists():
-        return None
-    return json.loads(gzip.decompress(path.read_bytes()))
+    schema_root = Path(__file__).resolve().parent / "providers"
+    return SchemaRegistry(storage_root=schema_root).get_schema(provider, version="default")
 
 
 def _walk_values(schema: dict[str, Any], path: str = "$") -> list[tuple[str, list[str]]]:
@@ -192,7 +186,7 @@ def check_semantic_roles(schema: dict[str, Any]) -> CheckResult:
     issues: list[str] = []
     roles = _walk_semantic_roles(schema)
 
-    for path, role, confidence in roles:
+    for path, role, _confidence in roles:
         # UUID-format field should never be a title
         if role == "conversation_title":
             fmt = None
@@ -314,10 +308,6 @@ def check_cross_provider_consistency(schemas: dict[str, dict[str, Any]]) -> Chec
         if not roles:
             issues.append(f"{provider}: no semantic roles")
 
-        has_format = any(
-            "x-polylogue-format" in str(v)
-            for v in _walk_values(schema)
-        )
         # Check for basic metadata
         if not schema.get("x-polylogue-sample-count"):
             issues.append(f"{provider}: missing sample count")

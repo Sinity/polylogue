@@ -9,6 +9,8 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
+from polylogue.schemas.sampling import SchemaUnit
+from polylogue.schemas.schema_generation import _build_provider_bundle, _collect_cluster_accumulators
 from polylogue.schemas.schema_inference import (
     PROVIDERS,
     GenerationResult,
@@ -21,8 +23,6 @@ from polylogue.schemas.schema_inference import (
     load_samples_from_db,
     load_samples_from_sessions,
 )
-from polylogue.schemas.sampling import SchemaUnit
-from polylogue.schemas.schema_generation import _collect_cluster_accumulators
 
 
 class TestProviderSchemaGeneration:
@@ -351,6 +351,60 @@ class TestProfileClustering:
         assert len(clusters) == 1
         acc = next(iter(clusters.values()))
         assert acc.sample_count == 2
+
+    def test_build_provider_bundle_captures_element_windows_and_bundle_scopes(self, monkeypatch, tmp_path):
+        units = [
+            SchemaUnit(
+                cluster_payload={"id": "1", "mapping": {"node-1": {"message": {"id": "m1"}}}},
+                schema_samples=[{"id": "1", "mapping": {"node-1": {"message": {"id": "m1"}}}}],
+                artifact_kind="conversation_document",
+                conversation_id="conv-1",
+                raw_id="raw-1",
+                source_path="/tmp/one.json",
+                bundle_scope="scope-a",
+                observed_at="2026-01-01T00:00:00+00:00",
+                exact_structure_id="exact-1",
+                profile_tokens=("field:id", "field:mapping", "shape:mapping:object", "anchor:mapping"),
+            ),
+            SchemaUnit(
+                cluster_payload={"id": "2", "mapping": {"node-2": {"message": {"id": "m2"}}}},
+                schema_samples=[{"id": "2", "mapping": {"node-2": {"message": {"id": "m2"}}}}],
+                artifact_kind="conversation_document",
+                conversation_id="conv-2",
+                raw_id="raw-2",
+                source_path="/tmp/two.json",
+                bundle_scope="scope-b",
+                observed_at="2026-01-03T00:00:00+00:00",
+                exact_structure_id="exact-1",
+                profile_tokens=("field:id", "field:mapping", "shape:mapping:object", "anchor:mapping"),
+            ),
+        ]
+
+        monkeypatch.setattr(
+            "polylogue.schemas.schema_generation.iter_schema_units",
+            lambda *args, **kwargs: iter(units),
+        )
+
+        bundle = _build_provider_bundle(
+            "chatgpt",
+            db_path=tmp_path / "unused.db",
+            max_samples=None,
+            privacy_config=None,
+        )
+
+        assert bundle.catalog is not None
+        package = bundle.catalog.packages[0]
+        assert package.anchor_profile_family_id
+        assert len(package.profile_family_ids) == 1
+        assert package.first_seen == "2026-01-01T00:00:00+00:00"
+        assert package.last_seen == "2026-01-03T00:00:00+00:00"
+        assert package.bundle_scope_count == 2
+
+        element = package.elements[0]
+        assert element.first_seen == "2026-01-01T00:00:00+00:00"
+        assert element.last_seen == "2026-01-03T00:00:00+00:00"
+        assert element.bundle_scope_count == 2
+        assert element.bundle_scopes == ["scope-a", "scope-b"]
 
 
 class TestCliMain:

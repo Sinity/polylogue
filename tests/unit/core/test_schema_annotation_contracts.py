@@ -22,14 +22,12 @@ from typing import Any
 import pytest
 
 from polylogue.schemas.field_stats import FieldStats, _collect_field_stats
-from polylogue.schemas.relational_inference import infer_relations
 from polylogue.schemas.schema_generation import (
     _annotate_semantic_and_relational,
     generate_schema_from_samples,
 )
 from polylogue.schemas.semantic_inference import (
     infer_semantic_roles,
-    select_best_roles,
 )
 
 
@@ -620,15 +618,17 @@ class TestFieldStatsCollection:
 def _load_schema(provider: str) -> dict | None:
     """Load a packaged provider schema, returning None if absent."""
     try:
-        import gzip
-        import json
-        from pathlib import Path
+        from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 
-        schema_dir = Path(__file__).resolve().parents[3] / "polylogue" / "schemas" / "providers"
-        path = schema_dir / f"{provider}.schema.json.gz"
-        if not path.exists():
+        registry = SchemaRegistry(storage_root=SCHEMA_DIR)
+        package = registry.get_package(provider, version="default")
+        if package is None:
             return None
-        return json.loads(gzip.decompress(path.read_bytes()))
+        return registry.get_element_schema(
+            provider,
+            version=package.version,
+            element_kind=package.default_element_kind,
+        )
     except Exception:
         return None
 

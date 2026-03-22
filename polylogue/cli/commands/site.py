@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 import click
 
+from polylogue.cli.machine_errors import emit_success, error_runtime
+
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
 
@@ -39,6 +41,7 @@ if TYPE_CHECKING:
     default=True,
     help="Generate dashboard page (default: enabled)",
 )
+@click.option("--json", "json_output", is_flag=True, help="Output build result as JSON")
 @click.pass_obj
 def site_command(
     env: AppEnv,
@@ -47,6 +50,7 @@ def site_command(
     search: bool,
     search_provider: str,
     dashboard: bool,
+    json_output: bool,
 ) -> None:
     """Generate a static HTML site from the archive.
 
@@ -85,22 +89,32 @@ def site_command(
         repository=env.repository,
     )
 
-    click.echo(f"Building site to {output_path}...")
+    if not json_output:
+        click.echo(f"Building site to {output_path}...")
 
     try:
         result = builder.build()
+        if json_output:
+            emit_success(result.model_dump(mode="json"))
+            return
+
         click.echo(
             "Site generated: "
-            f"{result['conversations']} conversations, "
-            f"{result['index_pages']} index pages"
+            f"{result.archive.total_conversations} conversations, "
+            f"{result.outputs.total_index_pages} index pages, "
+            f"{result.outputs.rendered_conversation_pages} rendered pages"
         )
         click.echo(f"Output: {output_path}")
+        click.echo(f"Manifest: {output_path / 'site-manifest.json'}")
 
-        if search and search_provider == "pagefind":
-            click.echo(
-                "\nTo enable search, run:\n"
-                f"  npx pagefind --site {output_path}"
-            )
+        if result.outputs.search_enabled and result.outputs.search_provider == "pagefind":
+            if result.outputs.search_status == "pending":
+                click.echo(
+                    "\nTo enable search, run:\n"
+                    f"  npx pagefind --site {output_path}"
+                )
+            elif result.outputs.search_status == "failed":
+                click.echo("\nPagefind indexing failed during build; rerun it manually after fixing the environment.")
 
         click.echo(
             "\nTo preview locally:\n"
@@ -108,6 +122,12 @@ def site_command(
         )
 
     except Exception as exc:
+        if json_output:
+            error_runtime(
+                f"Error building site: {exc}",
+                command=["site"],
+                exception_type=type(exc).__name__,
+            ).emit()
         click.echo(f"Error building site: {exc}", err=True)
         raise click.Abort() from exc
 

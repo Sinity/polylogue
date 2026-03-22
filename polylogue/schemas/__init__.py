@@ -7,7 +7,7 @@ Extraction path:
 Supporting modules:
 - `schema_inference.py` — Infer JSON schemas from data samples
 - `validator.py` — Validate provider exports against schemas with drift detection
-- `providers/` — Generated JSON schemas for each provider
+- `providers/` — Bundled schema package catalogs and element schemas
 """
 
 # Re-export main types for convenience
