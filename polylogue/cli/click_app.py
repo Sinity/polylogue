@@ -8,15 +8,15 @@ The CLI uses a hybrid structure:
 
 from __future__ import annotations
 
-from typing import Any
-
 import click
-from click.shell_completion import get_completion_class
 
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
+from polylogue.cli.commands.completions import completions_command
+from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.embed import embed_command
 from polylogue.cli.commands.generate import generate_command
+from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.qa import qa_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
@@ -24,134 +24,25 @@ from polylogue.cli.commands.schema import schema_command
 from polylogue.cli.commands.site import site_command
 from polylogue.cli.commands.tags import tags_command
 from polylogue.cli.formatting import announce_plain_mode, plain_forced_by_env, should_use_plain
+from polylogue.cli.machine_main import extract_option as _extract_option
+from polylogue.cli.machine_main import run_machine_entry
+from polylogue.cli.query_frontdoor import QueryFirstGroupBase, handle_query_mode
 from polylogue.cli.types import AppEnv
 from polylogue.logging import configure_logging
 from polylogue.ui import create_ui
 from polylogue.version import POLYLOGUE_VERSION
 
 
-class QueryFirstGroup(click.Group):
-    """Custom Click group that routes to query mode by default.
+class QueryFirstGroup(QueryFirstGroupBase):
+    """Project-specific query-first CLI group."""
 
-    This group treats positional args as query terms unless they match
-    a known subcommand.
-    """
-
-    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        """Parse args, converting positional args to --query-term options.
-
-        This allows subcommands to work normally while also supporting
-        query mode with positional args.
-        """
-        # Check if first non-option arg is a subcommand
-        first_arg_idx = None
-        for i, arg in enumerate(args):
-            if not arg.startswith("-"):
-                first_arg_idx = i
-                break
-
-        # If first positional is a subcommand, let Click handle normally
-        # Store flag for invoke() to check (ctx.args is empty after subcommand parsing)
-        if first_arg_idx is not None and args[first_arg_idx] in self.commands:
-            ctx.ensure_object(dict)
-            ctx.obj["_has_subcommand"] = True
-            return super().parse_args(ctx, args)
-
-        # Build value-taking options dynamically from Click params
-        # Maps option name → nargs (how many values it consumes)
-        value_options: dict[str, int] = {}
-        for param in self.params:
-            if isinstance(param, click.Option) and not param.is_flag:
-                nargs = param.nargs if param.nargs > 0 else 1
-                for opt in param.opts + param.secondary_opts:
-                    value_options[opt] = nargs
-
-        # Convert positional args to --query-term options
-        # This allows the main command to receive them as options
-        new_args = []
-        i = 0
-        while i < len(args):
-            arg = args[i]
-            if arg.startswith("-"):
-                new_args.append(arg)
-                nargs = value_options.get(arg, 0)
-                for _ in range(nargs):
-                    if i + 1 < len(args):
-                        i += 1
-                        new_args.append(args[i])
-            else:
-                # Positional arg = query term
-                new_args.extend(["--query-term", arg])
-            i += 1
-
-        return list(super().parse_args(ctx, new_args))
-
-    def invoke(self, ctx: click.Context) -> Any:
-        """Invoke the group, dispatching to query or stats mode if no subcommand."""
-        # Check if parse_args detected a subcommand (flag set during parsing)
-        # We can't use ctx.args here because Click empties it after parsing subcommands
-        ctx.ensure_object(dict)
-        has_subcommand = ctx.obj.get("_has_subcommand", False)
-
-        if has_subcommand:
-            # Let Click handle subcommand dispatch normally
-            return super().invoke(ctx)
-
-        # No subcommand: run the callback to set up ctx.obj, then handle query mode
-        # Call the callback manually
-        assert self.callback is not None, "QueryFirstGroup requires a callback"
-        with ctx:
-            ctx.invoke(self.callback, **ctx.params)
-
+    def handle_default_mode(self, ctx: click.Context) -> None:
         _handle_query_mode(ctx)
 
 
 def _handle_query_mode(ctx: click.Context) -> None:
     """Handle query mode: display stats or perform search."""
-    from polylogue.cli.query import execute_query
-    from polylogue.lib.query_spec import ConversationQuerySpec
-
-    env: AppEnv = ctx.obj
-    params = ctx.params
-
-    # Extract query-related params
-    query_terms = params.get("query_term", ())
-    params_copy = dict(params)
-    params_copy["query"] = query_terms
-    query_spec = ConversationQuerySpec.from_params(params_copy)
-    has_filters = query_spec.has_filters()
-
-    # Output mode flags that should trigger query execution
-    has_output_mode = any(
-        params.get(k)
-        for k in (
-            "list_mode",
-            "limit",
-            "stats_only",
-            "stats_by",
-            "count_only",
-            "stream",
-            "dialogue_only",
-        )
-    )
-
-    # Modifier flags that require query execution
-    has_modifiers = any(
-        params.get(k)
-        for k in (
-            "add_tag",
-            "set_meta",
-            "delete_matched",
-        )
-    )
-
-    # Stats mode: no query terms, no filters, no output mode, and no modifiers
-    if not query_terms and not has_filters and not has_output_mode and not has_modifiers:
-        _show_stats(env, verbose=params.get("verbose", False))
-        return
-
-    # Query mode: execute search
-    execute_query(env, params_copy)
+    handle_query_mode(ctx, show_stats=_show_stats)
 
 
 def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
@@ -159,50 +50,6 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     from polylogue.cli.helpers import print_summary
 
     print_summary(env, verbose=verbose)
-
-
-@click.command("dashboard")
-@click.pass_obj
-def dashboard_command(env: AppEnv) -> None:
-    """Launch the Mission Control TUI dashboard."""
-    from polylogue.ui.tui.app import PolylogueApp
-
-    app = PolylogueApp(repository=env.repository)
-    app.run()
-
-
-@click.command("completions")
-@click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
-@click.pass_context
-def completions_command(ctx: click.Context, shell: str) -> None:
-    """Generate shell completion scripts."""
-    root_cmd = ctx.find_root().command
-    comp_cls = get_completion_class(shell)
-    if comp_cls is None:
-        raise click.ClickException(f"Unsupported shell: {shell}")
-
-    comp = comp_cls(root_cmd, {}, "polylogue", "_POLYLOGUE_COMPLETE")
-    click.echo(comp.source())
-
-
-@click.command("mcp")
-@click.option("--transport", type=click.Choice(["stdio"]), default="stdio", help="Transport protocol")
-@click.pass_obj
-def mcp_command(env: AppEnv, transport: str) -> None:
-    """Start the MCP server for AI assistant integration."""
-    if transport != "stdio":
-        env.ui.console.print(f"Unsupported transport: {transport}")
-        raise SystemExit(1)
-
-    try:
-        from polylogue.mcp.server import serve_stdio
-    except ImportError as exc:
-        env.ui.console.print(f"MCP dependencies not installed: {exc}")
-        env.ui.console.print("Install the base polylogue package in an environment that includes its runtime dependencies.")
-        raise SystemExit(1) from None
-
-    serve_stdio(env.services)
-
 
 # Main CLI group with query-mode options
 @click.group(
@@ -409,61 +256,16 @@ def main() -> None:
     """
     import sys
 
-    from polylogue.cli.machine_errors import (
-        error_invalid_arguments,
-        error_runtime,
-        extract_command,
-        wants_json,
-    )
-
-    argv = sys.argv[1:]
-    if not wants_json(argv):
-        cli()
-        return
-
-    command = extract_command(argv)
-    try:
-        cli(standalone_mode=False)
-    except click.UsageError as exc:
-        option = getattr(exc, "option_name", None) or _extract_option(str(exc))
-        error_invalid_arguments(
-            str(exc),
-            command=command,
-            option=option,
-        ).emit(exit_code=exc.exit_code if hasattr(exc, "exit_code") else 2)
-    except click.BadParameter as exc:
-        error_invalid_arguments(
-            str(exc),
-            command=command,
-            option=exc.param_hint,
-        ).emit(exit_code=2)
-    except click.ClickException as exc:
-        error_runtime(
-            exc.format_message(),
-            command=command,
-        ).emit(exit_code=exc.exit_code)
-    except SystemExit as exc:
-        # Commands that call fail() raise SystemExit with a string message
-        code = exc.code
-        if isinstance(code, str):
-            error_invalid_arguments(code, command=command).emit(exit_code=1)
-        elif isinstance(code, int) and code != 0:
-            raise
-        # exit_code 0 = success, let it pass
-    except Exception as exc:
-        error_runtime(
-            str(exc),
-            command=command,
-            exception_type=type(exc).__qualname__,
-        ).emit(exit_code=1)
+    run_machine_entry(cli, sys.argv[1:])
 
 
-def _extract_option(message: str) -> str | None:
-    """Try to extract the option name from a Click error message."""
-    # "No such option: --bad-flag" → "--bad-flag"
-    if "No such option:" in message:
-        return message.split("No such option:")[-1].strip().split()[0]
-    return None
-
-
-__all__ = ["cli", "main"]
+__all__ = [
+    "QueryFirstGroup",
+    "_extract_option",
+    "_handle_query_mode",
+    "cli",
+    "completions_command",
+    "dashboard_command",
+    "main",
+    "mcp_command",
+]
