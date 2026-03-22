@@ -220,6 +220,9 @@ class TestArtifactProofReport:
                     provider="chatgpt",
                     total_records=1,
                     contract_backed_records=1,
+                    package_versions={"v1": 1},
+                    element_kinds={"conversation_document": 1},
+                    resolution_reasons={"exact_structure": 1},
                 ),
             },
             total_records=1,
@@ -230,6 +233,9 @@ class TestArtifactProofReport:
         assert data["total_records"] == 1
         assert data["record_limit"] == "all"
         assert data["summary"]["contract_backed_records"] == 1
+        assert data["summary"]["package_versions"] == {"v1": 1}
+        assert data["summary"]["element_kinds"] == {"conversation_document": 1}
+        assert data["summary"]["resolution_reasons"] == {"exact_structure": 1}
         assert data["summary"]["clean"] is True
 
 

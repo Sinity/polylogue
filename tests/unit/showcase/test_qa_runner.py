@@ -49,6 +49,9 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
                     provider="chatgpt",
                     total_records=1,
                     contract_backed_records=1,
+                    package_versions={"v1": 1},
+                    element_kinds={"conversation_document": 1},
+                    resolution_reasons={"exact_structure": 1},
                 )
             },
             total_records=1,
@@ -71,6 +74,8 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
     assert qa_session["showcase"]["summary"]["passed"] == 1
     assert qa_session["invariants"]["summary"] == {"failed": 0, "passed": 1, "skipped": 0}
     assert proof_payload["summary"]["contract_backed_records"] == 1
+    assert proof_payload["summary"]["package_versions"] == {"v1": 1}
+    assert proof_payload["summary"]["element_kinds"] == {"conversation_document": 1}
     assert invariant_checks == [
         {"exercise": "test-help", "invariant": "json_valid", "status": "ok"},
     ]
