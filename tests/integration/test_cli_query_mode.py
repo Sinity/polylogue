@@ -1,4 +1,4 @@
-"""End-to-end subprocess tests for query-first CLI behavior."""
+"""End-to-end subprocess proofs for query-first CLI route selection."""
 
 from __future__ import annotations
 
@@ -7,142 +7,94 @@ import json
 import pytest
 
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
-from tests.infra.source_builders import GenericConversationBuilder
+from tests.infra.source_builders import GenericConversationBuilder, InboxBuilder
+
+pytestmark = [pytest.mark.integration, pytest.mark.query_routing]
 
 
-@pytest.mark.integration
-def test_cli_run_and_search(tmp_path):
-    workspace = setup_isolated_workspace(tmp_path)
-    env = workspace["env"]
-    paths = workspace["paths"]
-    inbox = paths["inbox"]
-
-    GenericConversationBuilder("conv1").add_user("hello").add_assistant("world").write_to(inbox / "conversation.json")
-
-    result = run_cli(["--plain", "run", "--stage", "all"], env=env, cwd=tmp_path)
+def _run_inbox(workspace, *, cwd) -> None:
+    result = run_cli(["--plain", "run", "--source", "inbox", "--stage", "all"], env=workspace["env"], cwd=cwd)
     assert result.exit_code == 0, result.output
-    assert any(paths["render_root"].rglob("*.html")) or any(paths["render_root"].rglob("*.md"))
-
-    latest_result = run_cli(["--plain", "--latest"], env=env, cwd=tmp_path)
-    assert latest_result.exit_code in (0, 2)
-
-    search_result = run_cli(["--plain", "hello", "--limit", "1", "-f", "json", "--list"], env=env, cwd=tmp_path)
-    assert search_result.exit_code in (0, 2)
-    if search_result.exit_code == 0:
-        payload = json.loads(search_result.stdout.strip())
-        assert payload and isinstance(payload, list)
 
 
-@pytest.mark.integration
-def test_cli_search_csv_header(tmp_path):
+def test_cli_query_count_route_returns_exact_count(tmp_path):
     workspace = setup_isolated_workspace(tmp_path)
-    env = workspace["env"]
-    output = tmp_path / "out.csv"
-    result = run_cli(["--plain", "missing", "--csv", str(output)], env=env, cwd=tmp_path)
-    assert result.exit_code in (0, 2)
-    if output.exists():
-        header = output.read_text(encoding="utf-8").splitlines()[0]
-        assert header.startswith("source,provider,conversation_id,message_id")
+    inbox = workspace["paths"]["inbox"]
 
-
-@pytest.mark.integration
-def test_cli_search_latest_missing_render(tmp_path):
-    workspace = setup_isolated_workspace(tmp_path)
-    env = workspace["env"]
-    result = run_cli(["--plain", "--latest", "--open"], env=env, cwd=tmp_path)
-    assert result.exit_code != 0
-    output_lower = result.output.lower()
-    assert (
-        "no rendered" in output_lower
-        or "no conversation" in output_lower
-        or "no results" in output_lower
-        or result.exit_code == 2
+    GenericConversationBuilder("conv-count").title("Count Route").add_user("alpha route").add_assistant("beta").write_to(
+        inbox / "conversation.json"
     )
+    _run_inbox(workspace, cwd=tmp_path)
 
+    result = run_cli(["--plain", "alpha", "--count"], env=workspace["env"], cwd=tmp_path)
 
-@pytest.mark.integration
-def test_cli_search_open_prefers_html(tmp_path):
-    workspace = setup_isolated_workspace(tmp_path)
-    env = workspace["env"]
-    paths = workspace["paths"]
-    inbox = paths["inbox"]
-
-    GenericConversationBuilder("conv-html").add_user("hello html").write_to(inbox / "conversation.json")
-
-    result = run_cli(["--plain", "run", "--stage", "all"], env=env, cwd=tmp_path)
     assert result.exit_code == 0, result.output
-    assert list(paths["render_root"].rglob("*.html"))
-
-    search_result = run_cli(["--plain", "hello", "--limit", "1"], env=env, cwd=tmp_path)
-    assert search_result.exit_code in (0, 2)
+    assert result.stdout.strip() == "1"
 
 
-@pytest.mark.integration
-def test_cli_config_set_invalid(tmp_path):
+def test_cli_query_summary_list_json_route_returns_structured_rows(tmp_path):
     workspace = setup_isolated_workspace(tmp_path)
-    env = workspace["env"]
-    result = run_cli(["config", "set", "unknown.key", "value"], env=env, cwd=tmp_path)
-    assert result.exit_code != 0
-    result = run_cli(["config", "set", "source.missing.type", "auto"], env=env, cwd=tmp_path)
-    assert result.exit_code != 0
+    inbox = workspace["paths"]["inbox"]
 
-
-@pytest.mark.integration
-def test_cli_search_latest_returns_path_without_open(tmp_path):
-    workspace = setup_isolated_workspace(tmp_path)
-    env = workspace["env"]
-    paths = workspace["paths"]
-    inbox = paths["inbox"]
-
-    GenericConversationBuilder("conv1-abc123").add_user("test content").write_to(inbox / "conversation.json")
-
-    run_result = run_cli(["--plain", "run", "--stage", "all"], env=env, cwd=tmp_path)
-    assert run_result.exit_code == 0, run_result.output
-
-    result = run_cli(["--plain", "--latest"], env=env, cwd=tmp_path)
-    assert result.exit_code in (0, 2)
-
-
-@pytest.mark.integration
-def test_cli_query_latest_with_query(tmp_path):
-    workspace = setup_isolated_workspace(tmp_path)
-    env = workspace["env"]
-    result = run_cli(["--plain", "some", "query", "--latest"], env=env, cwd=tmp_path)
-    assert result.exit_code in (0, 2)
-
-
-@pytest.mark.integration
-def test_cli_query_latest_with_json(tmp_path):
-    workspace = setup_isolated_workspace(tmp_path)
-    env = workspace["env"]
-    result = run_cli(["--plain", "--latest", "-f", "json"], env=env, cwd=tmp_path)
-    assert result.exit_code in (0, 2)
-
-
-@pytest.mark.integration
-def test_cli_no_args_shows_stats(tmp_path):
-    workspace = setup_isolated_workspace(tmp_path)
-    env = workspace["env"]
-    result = run_cli(["--plain"], env=env, cwd=tmp_path)
-    assert result.exit_code == 0
-
-
-@pytest.mark.integration
-def test_cli_search_open_missing_render_shows_hint(tmp_path):
-    workspace = setup_isolated_workspace(tmp_path)
-    env = workspace["env"]
-    paths = workspace["paths"]
-    inbox = paths["inbox"]
-
-    GenericConversationBuilder("conv-no-render").add_user("no render").write_to(inbox / "conversation.json")
-
-    result = run_cli(["--plain", "run", "--stage", "parse"], env=env, cwd=tmp_path)
-    assert result.exit_code == 0
-
-    search_result = run_cli(["--plain", "render", "--open"], env=env, cwd=tmp_path)
-    assert (
-        search_result.exit_code == 0
-        or search_result.exit_code == 2
-        or "render" in search_result.output.lower()
-        or "run" in search_result.output.lower()
+    GenericConversationBuilder("conv-list").title("List Route").add_user("searchable alpha").add_assistant("response").write_to(
+        inbox / "conversation.json"
     )
+    _run_inbox(workspace, cwd=tmp_path)
+
+    result = run_cli(["--plain", "searchable", "--list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert len(rows) == 1
+    assert str(rows[0]["id"]).endswith("conv-list")
+    assert rows[0]["title"] == "List Route"
+
+
+def test_cli_query_stream_route_emits_json_lines_header_messages_footer(tmp_path):
+    workspace = setup_isolated_workspace(tmp_path)
+    inbox = workspace["paths"]["inbox"]
+
+    GenericConversationBuilder("conv-stream").title("Stream Route").add_user("stream alpha").add_assistant("stream beta").write_to(
+        inbox / "conversation.json"
+    )
+    _run_inbox(workspace, cwd=tmp_path)
+
+    result = run_cli(["--plain", "--latest", "--stream", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+
+    assert result.exit_code == 0, result.output
+    records = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert records[0]["type"] == "header"
+    assert str(records[0]["conversation_id"]).endswith("conv-stream")
+    assert [record["type"] for record in records[1:-1]] == ["message", "message"]
+    assert records[-1] == {"type": "footer", "message_count": 2}
+
+
+def test_cli_query_stats_by_provider_reports_provider_groups(tmp_path):
+    workspace = setup_isolated_workspace(tmp_path)
+    inbox = workspace["paths"]["inbox"]
+
+    (
+        InboxBuilder(inbox)
+        .add_chatgpt_export("conv-chatgpt", title="ChatGPT Route")
+        .add_codex_conversation("conv-codex", title="Codex Route")
+        .build()
+    )
+    _run_inbox(workspace, cwd=tmp_path)
+
+    result = run_cli(["--plain", "--stats-by", "provider"], env=workspace["env"], cwd=tmp_path)
+
+    assert result.exit_code == 0, result.output
+    output = result.output.lower()
+    assert "matched: 2 conversations" in output
+    assert "chatgpt" in output
+    assert "unknown" in output
+
+
+def test_cli_no_args_stats_surface_still_works(tmp_path):
+    workspace = setup_isolated_workspace(tmp_path)
+
+    result = run_cli(["--plain"], env=workspace["env"], cwd=tmp_path)
+
+    assert result.exit_code == 0, result.output
+    assert "archive:" in result.output.lower()
+    assert "sources:" in result.output.lower()

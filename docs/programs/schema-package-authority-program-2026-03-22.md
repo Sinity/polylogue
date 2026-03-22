@@ -1,8 +1,8 @@
 # Schema Package Authority Program
 
 Date: 2026-03-22
-Status: current execution program
-Role: canonical live queue for schema package/version authority correction
+Status: executed program
+Role: executed record for schema package/version authority correction
 
 See also:
 
@@ -136,8 +136,7 @@ Required outcomes:
 
 Status:
 
-- in progress
-- partly executed in this working pass
+- executed in this working pass
 
 Delivered so far:
 
@@ -234,6 +233,9 @@ Delivered so far:
   through JSON, text summary, and Markdown artifact-proof sections
 - site publication manifests now embed the same aggregate package-resolution
   truth through `artifact_proof`
+- proof/cohort hydration now re-resolves existing parseable artifact
+  observations, so long-lived archives do not keep stale package resolution
+  forever after schema authority improves
 
 ## Architectural Rules
 

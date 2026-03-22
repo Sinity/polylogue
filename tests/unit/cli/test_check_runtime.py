@@ -15,15 +15,14 @@ Validates health checks for the runtime environment, including:
 from __future__ import annotations
 
 import os
-import tempfile
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from polylogue.config import Config
 from polylogue.health import HealthReport, VerifyStatus, run_runtime_health
 from polylogue.paths import Source
+
+pytestmark = pytest.mark.machine_contract
 
 
 class TestRuntimeHealthCheckNames:

@@ -2,7 +2,7 @@
 
 Date: 2026-03-21
 Status: executed umbrella program
-Role: executed umbrella for the post-2026-03-19 planning wave; the live schema lane now continues in `schema-package-authority-program-2026-03-22.md`
+Role: executed umbrella for the post-2026-03-19 planning wave; the schema lane was later completed in `schema-package-authority-program-2026-03-22.md`
 
 See also:
 
