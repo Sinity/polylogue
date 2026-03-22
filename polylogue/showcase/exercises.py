@@ -266,7 +266,7 @@ EXERCISES: tuple[Exercise, ...] = (
        needs_data=True, writes=True, env="seeded", tier=2, depends_on="delete-one"),
 
     # =========================================================================
-    # subcommands (10) — tier 1: read-only health/proof/stats; tier 2: site generation
+    # subcommands (12) — tier 1: read-only health/proof/stats; tier 2: site generation
     # =========================================================================
     _E("check-health", "subcommands", "Health check",
        ["check"], _V(stdout_contains=("ok",)), needs_data=True, tier=1, vhs_capture=True),
@@ -287,6 +287,13 @@ EXERCISES: tuple[Exercise, ...] = (
     _E("check-semantic-proof-json", "subcommands", "Semantic preservation proof as JSON",
        ["check", "--json", "--semantic-proof"], _V(stdout_is_valid_json=True),
        needs_data=True, output_ext=".json", tier=1),
+    _E("check-semantic-proof-read-surfaces", "subcommands", "Semantic proof for query, stream, and MCP read surfaces",
+       ["check", "--semantic-proof", "--semantic-surface", "read_all"],
+       _V(stdout_contains=("query_stream_json_lines_v1", "mcp_detail_json_v1")),
+       needs_data=True, tier=1),
+    _E("check-semantic-proof-read-surfaces-json", "subcommands", "Semantic proof for query, stream, and MCP read surfaces as JSON",
+       ["check", "--json", "--semantic-proof", "--semantic-surface", "read_all"],
+       _V(stdout_is_valid_json=True), needs_data=True, output_ext=".json", tier=1),
     _E("embed-stats", "subcommands", "Embedding statistics",
        ["embed", "--stats"], needs_data=True, tier=1),
     _E("tags-json", "subcommands", "Tags as JSON",

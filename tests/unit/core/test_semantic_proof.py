@@ -189,6 +189,69 @@ def test_semantic_surface_suite_aggregates_export_and_canonical_surfaces(db_path
     assert suite.to_dict()["summary"]["surface_count"] == 5
 
 
+def test_semantic_surface_suite_proves_query_summary_and_stream_surfaces(db_path, tmp_path):
+    """Query summary/stream read surfaces become first-class proof surfaces."""
+    (
+        ConversationBuilder(db_path, "conv-semantic-7")
+        .provider("claude-ai")
+        .title("Read Surface")
+        .updated_at("2026-03-22T13:00:00+00:00")
+        .metadata({"tags": ["alpha", "beta"], "summary": "Readable summary"})
+        .add_message("conv7-m1", role="user", text="")
+        .add_message("conv7-m2", role="assistant", text="visible answer")
+        .save()
+    )
+
+    suite = prove_semantic_surface_suite(
+        db_path=db_path,
+        archive_root=tmp_path,
+        surfaces=["query_all"],
+    )
+
+    assert set(suite.surfaces) == {
+        "query_summary_json_v1",
+        "query_summary_yaml_v1",
+        "query_summary_csv_v1",
+        "query_summary_text_v1",
+        "query_stream_plaintext_v1",
+        "query_stream_markdown_v1",
+        "query_stream_json_lines_v1",
+    }
+    assert suite.surfaces["query_summary_json_v1"].is_clean is True
+    assert suite.surfaces["query_summary_csv_v1"].metric_summary["tag_values"]["preserved"] == 1
+    assert suite.surfaces["query_summary_text_v1"].metric_summary["summary_text"]["declared_loss"] == 1
+    assert suite.surfaces["query_stream_plaintext_v1"].metric_summary["provider_identity"]["declared_loss"] == 1
+    assert suite.surfaces["query_stream_markdown_v1"].metric_summary["footer_count"]["preserved"] == 1
+    assert suite.surfaces["query_stream_json_lines_v1"].metric_summary["conversation_id"]["preserved"] == 1
+
+
+def test_semantic_surface_suite_proves_mcp_read_payloads(db_path, tmp_path):
+    """MCP summary/detail payloads participate in the same proof suite."""
+    (
+        ConversationBuilder(db_path, "conv-semantic-8")
+        .provider("chatgpt")
+        .title("MCP Surface")
+        .created_at("2026-03-20T12:00:00+00:00")
+        .updated_at("2026-03-22T13:05:00+00:00")
+        .metadata({"tags": ["ops"], "summary": "MCP summary"})
+        .add_message("conv8-m1", role="user", text="hello")
+        .add_message("conv8-m2", role="assistant", text="world")
+        .add_attachment("conv8-att1", message_id="conv8-m2", path="/tmp/mcp.txt")
+        .save()
+    )
+
+    suite = prove_semantic_surface_suite(
+        db_path=db_path,
+        archive_root=tmp_path,
+        surfaces=["mcp_all"],
+    )
+
+    assert set(suite.surfaces) == {"mcp_summary_json_v1", "mcp_detail_json_v1"}
+    assert suite.surfaces["mcp_summary_json_v1"].metric_summary["tag_values"]["declared_loss"] == 1
+    assert suite.surfaces["mcp_detail_json_v1"].metric_summary["message_entries"]["preserved"] == 1
+    assert suite.surfaces["mcp_detail_json_v1"].metric_summary["attachment_semantics"]["declared_loss"] == 1
+
+
 def test_markdown_render_semantics_returns_single_surface_report(db_path, tmp_path):
     """Legacy single-surface helper remains a canonical-markdown projection of the suite."""
     (
@@ -220,3 +283,14 @@ def test_markdown_render_semantics_returns_single_surface_report(db_path, tmp_pa
 def test_resolve_semantic_surfaces_expands_aliases():
     """Surface aliases expand to canonical suite surface names."""
     assert resolve_semantic_surfaces(["canonical", "json", "all"]) == list(DEFAULT_SEMANTIC_SURFACES)
+    assert resolve_semantic_surfaces(["read_all"]) == [
+        "query_summary_json_v1",
+        "query_summary_yaml_v1",
+        "query_summary_csv_v1",
+        "query_summary_text_v1",
+        "query_stream_plaintext_v1",
+        "query_stream_markdown_v1",
+        "query_stream_json_lines_v1",
+        "mcp_summary_json_v1",
+        "mcp_detail_json_v1",
+    ]
