@@ -93,7 +93,7 @@ fi
 
 # ── Step 3: Record tapes ────────────────────────────────────────────────
 TAPE_DIR="$SCRIPT_DIR/tapes"
-OUTPUT_DIR="$SCRIPT_DIR/output"
+OUTPUT_DIR="$PROJECT_ROOT/artifacts/demos"
 mkdir -p "$OUTPUT_DIR"
 
 TAPES=()
@@ -127,11 +127,10 @@ for tape in "${TAPES[@]}"; do
     }
 done
 
-# ── Step 4: Copy key GIFs for README ────────────────────────────────────
+# ── Step 4: Copy key GIFs for durable docs assets ───────────────────────
 ASSETS_DIR="$PROJECT_ROOT/docs/assets"
 mkdir -p "$ASSETS_DIR"
 
-# Copy the overview GIF as the hero demo
 if [ -f "$OUTPUT_DIR/01-overview.gif" ]; then
     cp "$OUTPUT_DIR/01-overview.gif" "$ASSETS_DIR/demo-overview.gif"
 fi
