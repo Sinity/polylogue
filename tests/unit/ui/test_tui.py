@@ -3,6 +3,7 @@ from textual.widgets import DataTable, Input, TabbedContent, Tree
 
 try:
     from polylogue.ui.tui.app import PolylogueApp
+    from polylogue.ui.tui.screens.base import RepositoryBoundContainer
     from polylogue.ui.tui.screens.dashboard import Dashboard, ProviderBar
     from polylogue.ui.tui.widgets.stats import StatCard
 except ImportError:
@@ -168,9 +169,9 @@ async def test_browser_node_selection(storage_repository, conversation_builder):
             from textual.widgets import Markdown as MarkdownWidget
 
             viewer = pilot.app.query_one("#markdown-viewer", MarkdownWidget)
-            # The viewer should have been updated (not the default empty)
-            # We can't easily read Markdown widget content, but we can check it mounted
             assert viewer is not None
+            assert "Test Chat" in viewer.source
+            assert "Hello World" in viewer.source
 
 
 @_skip
@@ -234,6 +235,15 @@ async def test_search_flow(storage_repository, conversation_builder):
         # Verify the found row key matches our conversation
         row_key = next(iter(table.rows))
         assert row_key.value == "c1"
+
+        from textual.widgets import Markdown as MarkdownWidget
+
+        table.move_cursor(row=0)
+        table.action_select_cursor()
+        await pilot.pause()
+
+        viewer = pilot.app.query_one("#search-viewer", MarkdownWidget)
+        assert "UniqueSearchTerm123" in viewer.source
 
 
 @_skip
@@ -354,6 +364,16 @@ async def test_search_missing_index_shows_rebuild_hint(storage_repository, conve
         assert table.row_count == 1
         row = table.get_row_at(0)
         assert "Search index not built" in str(row[2])
+
+
+def test_repository_bound_container_requires_injected_repo():
+    class DummyScreen(RepositoryBoundContainer):
+        pass
+
+    screen = DummyScreen()
+
+    with pytest.raises(RuntimeError, match="DummyScreen widget requires an injected repository"):
+        screen._get_repo("DummyScreen")
 
 
 @_skip
