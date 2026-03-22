@@ -11,7 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -263,7 +262,7 @@ class TestSchemaAge:
         assert age == 0
 
     def test_age_returns_days_with_generated_at(self, registry: SchemaRegistry) -> None:
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
 
         two_days_ago = (datetime.now(tz=timezone.utc) - timedelta(days=2)).isoformat()
         schema = {

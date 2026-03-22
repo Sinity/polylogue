@@ -478,6 +478,39 @@ class TestPromotionVisibility:
         tmp_registry.promote_cluster("prov-prov", cluster_id, samples=samples)
 
 
+class TestPackageEvidenceRoundtrip:
+    def test_write_schema_version_preserves_package_and_element_evidence(
+        self,
+        tmp_registry: SchemaRegistry,
+    ) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "x-polylogue-generated-at": "2026-01-01T00:00:00+00:00",
+            "x-polylogue-element-first-seen": "2026-01-01T00:00:00+00:00",
+            "x-polylogue-element-last-seen": "2026-01-02T00:00:00+00:00",
+            "x-polylogue-element-bundle-scope-count": 3,
+            "x-polylogue-profile-family-ids": ["family-a", "family-b"],
+            "x-polylogue-exact-structure-ids": ["exact-a"],
+        }
+
+        tmp_registry.write_schema_version("pkg-prov", "v1", schema)
+        package = tmp_registry.get_package("pkg-prov", version="v1")
+
+        assert package is not None
+        assert package.anchor_profile_family_id == "family-a"
+        assert package.profile_family_ids == ["family-a", "family-b"]
+        assert package.first_seen == "2026-01-01T00:00:00+00:00"
+        assert package.last_seen == "2026-01-01T00:00:00+00:00"
+
+        element = package.element("conversation_document")
+        assert element is not None
+        assert element.first_seen == "2026-01-01T00:00:00+00:00"
+        assert element.last_seen == "2026-01-02T00:00:00+00:00"
+        assert element.bundle_scope_count == 3
+        assert element.profile_family_ids == ["family-a", "family-b"]
+
+
 class TestManifestVersionSelection:
     def test_latest_uses_manifest_default_and_payload_matching_uses_profile_tokens(
         self,
