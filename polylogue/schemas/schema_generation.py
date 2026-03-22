@@ -1091,9 +1091,9 @@ def _apply_schema_metadata(
     provider: str,
     config: ProviderConfig,
     schema_sample_count: int,
-    cluster_id: str,
+    anchor_profile_family_id: str,
     artifact_kind: str,
-    cluster_sample_count: int,
+    observed_artifact_count: int,
 ) -> None:
     schema["title"] = f"{provider} export format ({artifact_kind})"
     schema["description"] = config.description
@@ -1101,8 +1101,8 @@ def _apply_schema_metadata(
     schema["x-polylogue-sample-count"] = schema_sample_count
     schema["x-polylogue-generator"] = "polylogue.schemas.schema_inference"
     schema["x-polylogue-sample-granularity"] = config.sample_granularity
-    schema["x-polylogue-cluster-id"] = cluster_id
-    schema["x-polylogue-cluster-sample-count"] = cluster_sample_count
+    schema["x-polylogue-anchor-profile-family-id"] = anchor_profile_family_id
+    schema["x-polylogue-observed-artifact-count"] = observed_artifact_count
     schema["x-polylogue-artifact-kind"] = artifact_kind
 
 
@@ -1431,9 +1431,9 @@ def _build_provider_bundle(
                     provider=str(provider_token),
                     config=config,
                     schema_sample_count=len(schema_samples),
-                    cluster_id=package_acc.anchor_family_id,
+                    anchor_profile_family_id=package_acc.anchor_family_id,
                     artifact_kind=element_kind,
-                    cluster_sample_count=len(kind_memberships),
+                    observed_artifact_count=len(kind_memberships),
                 )
                 schema["x-polylogue-package-version"] = version
                 schema["x-polylogue-profile-family-ids"] = profile_family_ids
@@ -1509,7 +1509,7 @@ def _build_provider_bundle(
                     profile_tokens=list(_cluster_profile_tokens(acc)),
                     exact_structure_ids=sorted(acc.exact_structure_ids),
                     bundle_scope_count=len(acc.bundle_scopes),
-                    schema_version=cluster_to_package_version.get(cluster_id),
+                    promoted_package_version=cluster_to_package_version.get(cluster_id),
                 )
             )
         manifest = ClusterManifest(
