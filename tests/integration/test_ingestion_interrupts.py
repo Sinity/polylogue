@@ -17,7 +17,7 @@ import pytest
 from tests.infra.chaos_sources import ChaosInboxBuilder
 from tests.infra.cli_subprocess import setup_isolated_workspace
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.chaos]
 
 
 # =============================================================================

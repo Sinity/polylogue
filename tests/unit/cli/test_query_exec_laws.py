@@ -7,7 +7,6 @@ import csv
 import io
 import json
 import tempfile
-from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,12 +20,12 @@ from polylogue.cli.query import async_execute_query, project_query_results
 from polylogue.cli.query_actions import apply_modifiers, apply_transform, delete_conversations
 from polylogue.cli.query_helpers import no_results, summary_to_dict
 from polylogue.cli.query_output import (
-    output_results,
-    output_stats_by_summaries,
-    output_stats_sql,
     _output_summary_list,
     _render_conversation_rich,
     _send_output,
+    output_results,
+    output_stats_by_summaries,
+    output_stats_sql,
 )
 from polylogue.cli.query_plan import (
     QueryAction,
@@ -50,6 +49,8 @@ from tests.infra.strategies import (
     summary_output_case_strategy,
     summary_stats_case_strategy,
 )
+
+pytestmark = pytest.mark.query_routing
 
 
 def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None) -> AppEnv:
@@ -321,8 +322,8 @@ def test_output_summary_list_contract(case, output_format: str) -> None:
     elif output_format == "csv":
         assert list(csv.DictReader(io.StringIO(mock_echo.call_args[0][0]))) == _csv_rows(case)
     else:
-        assert mock_echo.call_count == len(case.summaries)
-        rendered = "\n".join(call.args[0] for call in mock_echo.call_args_list if call.args)
+        assert mock_echo.call_count == 1
+        rendered = mock_echo.call_args[0][0]
         for spec in case.summaries:
             assert spec.conversation_id[:24] in rendered
 
@@ -898,13 +899,14 @@ class TestSearchQueryContracts:
     )
     def test_filter_contract(self, search_workspace, case_id, args, expected_exit, error_hint):
         """Filter flags produce expected status codes and validation behavior."""
-        from datetime import datetime, timedelta
         from polylogue.cli import cli
 
         runner = CliRunner()
         resolved_args = list(args)
         if "__DYNAMIC_DATE__" in resolved_args:
             idx = resolved_args.index("__DYNAMIC_DATE__")
+            from datetime import datetime, timedelta
+
             resolved_args[idx] = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
 
         result = runner.invoke(cli, ["--plain", *resolved_args])

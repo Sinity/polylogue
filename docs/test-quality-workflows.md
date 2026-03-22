@@ -26,6 +26,30 @@ benchmarks.
 nix develop -c pytest -q -n 0 -m "not slow and not benchmark"
 ```
 
+### Validation lanes
+
+Use the validation-lane runner when you want named operator surfaces instead of
+remembering individual test files or campaign commands.
+
+```bash
+python -m devtools.run_validation_lanes --list
+python -m devtools.run_validation_lanes --lane machine-contract
+python -m devtools.run_validation_lanes --lane query-routing
+python -m devtools.run_validation_lanes --lane frontier-local
+python -m devtools.run_validation_lanes --lane frontier-extended
+python -m devtools.run_validation_lanes --lane live-exercises --dry-run
+```
+
+Lane intent:
+
+- `machine-contract`: root CLI JSON success/failure and runtime-health machine surfaces
+- `query-routing`: query-first integration plus route-planning/unit proofs
+- `tui`: Textual Mission Control interaction/state coverage
+- `chaos`: ingestion hostility, interruption, and chronology suites
+- `frontier-local`: machine + query + TUI + chaos
+- `frontier-extended`: `frontier-local` plus fast scale and the small long-haul campaign
+- `live-exercises`: explicit operator lane for read-only live archive QA exercises
+
 ### Focused mutation checkpoints
 
 ```bash

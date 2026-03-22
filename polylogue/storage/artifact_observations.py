@@ -339,12 +339,25 @@ def ensure_artifact_observations(
     conn: sqlite3.Connection,
     *,
     providers: list[str] | None = None,
+    refresh_resolutions: bool = False,
 ) -> int:
-    """Backfill missing artifact observations from existing raw records."""
+    """Backfill or refresh durable artifact observations from raw records."""
     inserted = 0
+    last_rowid = 0
     while True:
-        where_clauses = ["o.observation_id IS NULL"]
-        params: list[Any] = []
+        state_clauses = ["o.observation_id IS NULL"]
+        if refresh_resolutions:
+            state_clauses.append(
+                "("
+                "o.observation_id IS NOT NULL AND "
+                "o.parse_as_conversation = 1 AND "
+                "o.schema_eligible = 1 AND "
+                "o.malformed_jsonl_lines = 0 AND "
+                "o.decode_error IS NULL"
+                ")"
+            )
+        where_clauses = [f"({' OR '.join(state_clauses)})", "r.rowid > ?"]
+        params: list[Any] = [last_rowid]
         if providers:
             placeholders = ",".join("?" for _ in providers)
             where_clauses.append(
@@ -353,7 +366,7 @@ def ensure_artifact_observations(
             params.extend(providers)
         rows = conn.execute(
             f"""
-            SELECT r.*
+            SELECT r.rowid AS raw_rowid, r.*
             FROM raw_conversations r
             LEFT JOIN artifact_observations o
               ON COALESCE(o.source_name, '') = COALESCE(r.source_name, '')
@@ -372,6 +385,7 @@ def ensure_artifact_observations(
             observation = inspect_raw_artifact(record)
             if _upsert_artifact_observation(conn, observation):
                 inserted += 1
+            last_rowid = max(last_rowid, int(row["raw_rowid"]))
         conn.commit()
     return inserted
 
