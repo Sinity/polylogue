@@ -7,7 +7,8 @@ hand-enumerated cases.
 
 from __future__ import annotations
 
-from hypothesis import example, given, settings
+import pytest
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from polylogue.cli.machine_errors import (
@@ -27,6 +28,8 @@ from polylogue.cli.machine_errors import (
     success,
     wants_json,
 )
+
+pytestmark = pytest.mark.machine_contract
 
 
 class TestMachineErrorEnvelope:
@@ -208,4 +211,4 @@ class TestExtractCommand:
                     if candidate == item:
                         break
                 except StopIteration:
-                    raise AssertionError(f"Order violation: {item!r} not in expected position")
+                    raise AssertionError(f"Order violation: {item!r} not in expected position") from None
