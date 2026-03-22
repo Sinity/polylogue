@@ -46,6 +46,15 @@ class TestExercisesByGroup:
         total = sum(len(exs) for exs in by_group.values())
         assert total == len(EXERCISES)
 
+    def test_proof_exercises_exist_in_subcommands_group(self):
+        names = {exercise.name for exercise in EXERCISES if exercise.group == "subcommands"}
+        assert {
+            "check-proof-json",
+            "check-cohorts-json",
+            "check-semantic-proof",
+            "check-semantic-proof-json",
+        } <= names
+
 
 class TestVhsExercises:
     """vhs_exercises returns only capturable exercises."""

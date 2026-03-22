@@ -58,6 +58,8 @@ def test_site_command_json_emits_manifest(cli_workspace) -> None:
     assert payload["archive"]["total_conversations"] == 1
     assert payload["latest_run"]["run_id"] == "run-cli-001"
     assert payload["outputs"]["total_index_pages"] >= 1
+    assert payload["semantic_proof"]["surface"] == "canonical_markdown_v1"
+    assert payload["semantic_proof"]["total_conversations"] == 1
     assert payload["artifacts"]["entry_count"] >= 1
     assert "site-manifest.json" not in {
         entry["relative_path"] for entry in payload["artifacts"]["entries"]

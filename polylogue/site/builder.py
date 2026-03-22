@@ -27,6 +27,7 @@ from polylogue.site.models import (
 from polylogue.site.publication_support import (
     build_latest_run_summary,
     load_artifact_proof_summary,
+    load_semantic_proof_summary,
 )
 from polylogue.site.rendering import (
     build_template_environments,
@@ -120,6 +121,7 @@ class SiteBuilder:
                 search_status = "json_index_written"
 
             proof_summary = await self._artifact_proof_summary()
+            semantic_summary = await self._semantic_proof_summary()
             latest_run = await self._latest_run_summary()
             artifact_manifest = await asyncio.to_thread(
                 OutputManifest.scan,
@@ -169,6 +171,7 @@ class SiteBuilder:
                 ),
                 latest_run=latest_run,
                 artifact_proof=proof_summary,
+                semantic_proof=semantic_summary,
                 artifacts=artifact_manifest,
             )
             manifest_path = self.output_dir / "site-manifest.json"
@@ -317,6 +320,16 @@ class SiteBuilder:
         if not isinstance(getattr(backend, "db_path", None), Path):
             return None
         return await asyncio.to_thread(load_artifact_proof_summary, db_path=backend.db_path)
+
+    async def _semantic_proof_summary(self):
+        """Return semantic-preservation proof summary for manifest embedding."""
+        backend, _repository = self._open_storage()
+        if not isinstance(getattr(backend, "db_path", None), Path):
+            return None
+        return await asyncio.to_thread(
+            load_semantic_proof_summary,
+            db_path=backend.db_path,
+        )
 
     def _search_markup(self) -> str:
         return render_search_markup(self.config)

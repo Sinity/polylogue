@@ -16,8 +16,27 @@ Options:
                                   checks
   --schemas                       Run raw-corpus schema verification (non-
                                   mutating)
+  --proof                         Run durable artifact support proof
+  --artifacts                     List durable artifact observations
+  --cohorts                       Summarize durable artifact cohorts
+  --semantic-proof                Run semantic preservation proof over
+                                  canonical markdown rendering
   --schema-provider TEXT          Limit schema verification to DB provider name
                                   (repeatable)
+  --artifact-provider TEXT        Limit artifact proof/listing/cohorting to
+                                  effective provider (repeatable)
+  --artifact-status TEXT          Limit artifact listing/cohorting to support
+                                  status (repeatable)
+  --artifact-kind TEXT            Limit artifact listing/cohorting to artifact
+                                  kind (repeatable)
+  --artifact-limit INTEGER        Limit artifact proof/listing/cohorting to N
+                                  observation rows
+  --artifact-offset INTEGER       Start offset for artifact
+                                  proof/listing/cohorting  [default: 0]
+  --semantic-provider TEXT        Limit semantic proof to conversation
+                                  providers (repeatable)
+  --semantic-limit INTEGER        Limit semantic proof to N conversations
+  --semantic-offset INTEGER       Start offset for semantic proof  [default: 0]
   --schema-samples TEXT           Validation samples per raw payload: positive
                                   integer or 'all'  [default: all]
   --schema-record-limit INTEGER   Limit schema verification to N raw records
