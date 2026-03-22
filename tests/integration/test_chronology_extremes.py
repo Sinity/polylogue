@@ -14,7 +14,7 @@ import pytest
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 from tests.infra.large_batches import generate_timestamp_patterns, write_jsonl_file
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.chaos]
 
 
 # =============================================================================

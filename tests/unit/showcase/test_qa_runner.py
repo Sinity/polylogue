@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.rendering.semantic_proof import SemanticProofReport, SemanticProofSuiteReport
 from polylogue.schemas.audit import AuditReport
 from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercises import Exercise, Validation
@@ -56,6 +57,15 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
             },
             total_records=1,
         ),
+        semantic_proof_report=SemanticProofSuiteReport(
+            surface_reports={
+                "canonical_markdown_v1": SemanticProofReport(
+                    surface="canonical_markdown_v1",
+                    conversations=[],
+                    provider_reports={},
+                )
+            },
+        ),
         showcase_result=_make_showcase_result(report_dir),
         invariant_results=[
             InvariantResult("json_valid", "test-help", OutcomeStatus.OK),
@@ -67,19 +77,24 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
 
     qa_session = json.loads((report_dir / "qa-session.json").read_text())
     proof_payload = json.loads((report_dir / "artifact-proof.json").read_text())
+    semantic_payload = json.loads((report_dir / "semantic-proof.json").read_text())
     invariant_checks = json.loads((report_dir / "invariant-checks.json").read_text())
 
     assert qa_session["audit"]["status"] == "ok"
     assert qa_session["proof"]["status"] == "ok"
+    assert qa_session["semantic_proof"]["status"] == "ok"
     assert qa_session["showcase"]["summary"]["passed"] == 1
     assert qa_session["invariants"]["summary"] == {"failed": 0, "passed": 1, "skipped": 0}
     assert proof_payload["summary"]["contract_backed_records"] == 1
     assert proof_payload["summary"]["package_versions"] == {"v1": 1}
     assert proof_payload["summary"]["element_kinds"] == {"conversation_document": 1}
+    assert semantic_payload["summary"]["clean"] is True
+    assert semantic_payload["summary"]["surface_count"] == 1
     assert invariant_checks == [
         {"exercise": "test-help", "invariant": "json_valid", "status": "ok"},
     ]
     assert (report_dir / "artifact-proof.json").exists()
+    assert (report_dir / "semantic-proof.json").exists()
     assert (report_dir / "schema-audit.json").exists()
     assert (report_dir / "showcase-report.json").exists()
     assert (report_dir / "qa-session.md").exists()

@@ -84,6 +84,17 @@ def _format_count_mapping(counts: dict[str, int]) -> str:
     return ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
 
 
+def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -> str:
+    parts = []
+    for metric, counts in sorted(metric_summary.items()):
+        parts.append(
+            f"{metric}(preserved={counts.get('preserved', 0)}, "
+            f"declared_loss={counts.get('declared_loss', 0)}, "
+            f"critical_loss={counts.get('critical_loss', 0)})"
+        )
+    return ", ".join(parts)
+
+
 def generate_summary(result: ShowcaseResult) -> str:
     """Generate a human-readable summary table."""
     lines: list[str] = []
@@ -323,6 +334,13 @@ def generate_qa_session(result: QAResult) -> dict[str, Any]:
         proof_payload["report"] = result.proof_report.to_dict()
     if result.proof_error is not None:
         proof_payload["error"] = result.proof_error
+    semantic_proof_payload: dict[str, Any] = {
+        "status": result.semantic_proof_status.value,
+    }
+    if result.semantic_proof_report is not None:
+        semantic_proof_payload["report"] = result.semantic_proof_report.to_dict()
+    if result.semantic_proof_error is not None:
+        semantic_proof_payload["error"] = result.semantic_proof_error
 
     showcase_payload: dict[str, Any] = {
         "status": result.showcase_status.value,
@@ -337,6 +355,7 @@ def generate_qa_session(result: QAResult) -> dict[str, Any]:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "audit": audit_payload,
         "proof": proof_payload,
+        "semantic_proof": semantic_proof_payload,
         "showcase": showcase_payload,
         "invariants": {
             "status": result.invariant_status.value,
@@ -355,6 +374,7 @@ def generate_qa_summary(result: QAResult) -> str:
     session = generate_qa_session(result)
     lines: list[str] = []
     proof_summary = session["proof"].get("report", {}).get("summary")
+    semantic_summary = session["semantic_proof"].get("report", {}).get("summary")
 
     lines.append(f"Schema Audit: {_status_label(result.audit_status)}")
     if result.proof_error:
@@ -374,6 +394,32 @@ def generate_qa_summary(result: QAResult) -> str:
             lines.append(f"  Elements: {_format_count_mapping(proof_summary['element_kinds'])}")
         if proof_summary["resolution_reasons"]:
             lines.append(f"  Reasons: {_format_count_mapping(proof_summary['resolution_reasons'])}")
+    if result.semantic_proof_error:
+        lines.append(f"Semantic Proof: FAIL ({result.semantic_proof_error})")
+    elif semantic_summary is not None:
+        lines.append(
+            "Semantic Proof: "
+            f"surfaces={semantic_summary['surface_count']}, "
+            f"clean_surfaces={semantic_summary['clean_surfaces']}, "
+            f"critical_surfaces={semantic_summary['critical_surfaces']}, "
+            f"total_conversations={semantic_summary['total_conversations']}, "
+            f"preserved_checks={semantic_summary['preserved_checks']}, "
+            f"declared_loss_checks={semantic_summary['declared_loss_checks']}, "
+            f"critical_loss_checks={semantic_summary['critical_loss_checks']}"
+        )
+        if semantic_summary["metric_summary"]:
+            lines.append(f"  Metrics: {_format_semantic_metric_summary(semantic_summary['metric_summary'])}")
+        for surface, surface_report in sorted(session["semantic_proof"].get("report", {}).get("surfaces", {}).items()):
+            surface_summary = surface_report["summary"]
+            lines.append(
+                f"  {surface}: clean={surface_summary['clean_conversations']}, "
+                f"critical={surface_summary['critical_conversations']}, "
+                f"preserved_checks={surface_summary['preserved_checks']}, "
+                f"declared_loss_checks={surface_summary['declared_loss_checks']}, "
+                f"critical_loss_checks={surface_summary['critical_loss_checks']}"
+            )
+    elif result.semantic_proof_status is OutcomeStatus.SKIP:
+        lines.append("Semantic Proof: SKIPPED")
     if result.audit_status is OutcomeStatus.ERROR:
         if result.audit_error:
             lines.append(f"  Error: {result.audit_error}")
@@ -430,6 +476,7 @@ def generate_qa_markdown(result: QAResult, *, git_sha: str | None = None) -> str
     lines.append("| --- | --- |")
     lines.append(f"| Schema Audit | {_status_label(result.audit_status)} |")
     lines.append(f"| Artifact Proof | {_status_label(result.proof_status)} |")
+    lines.append(f"| Semantic Proof | {_status_label(result.semantic_proof_status)} |")
     lines.append(f"| Exercises | {_status_label(result.showcase_status)} |")
     lines.append(f"| Invariants | {_status_label(result.invariant_status)} |")
     lines.append(f"| Overall | {_status_label(result.overall_status)} |")
@@ -511,6 +558,63 @@ def generate_qa_markdown(result: QAResult, *, git_sha: str | None = None) -> str
         lines.append("## Artifact Proof")
         lines.append("")
         lines.append(f"- Error: {result.proof_error}")
+        lines.append("")
+
+    semantic_proof_report = session["semantic_proof"].get("report")
+    if semantic_proof_report is not None:
+        semantic_summary = semantic_proof_report["summary"]
+        lines.append("## Semantic Proof")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("| --- | ---: |")
+        lines.append(f"| Surface count | {semantic_summary['surface_count']} |")
+        lines.append(f"| Clean surfaces | {semantic_summary['clean_surfaces']} |")
+        lines.append(f"| Critical surfaces | {semantic_summary['critical_surfaces']} |")
+        lines.append(f"| Total conversations | {semantic_summary['total_conversations']} |")
+        lines.append(f"| Preserved checks | {semantic_summary['preserved_checks']} |")
+        lines.append(f"| Declared loss checks | {semantic_summary['declared_loss_checks']} |")
+        lines.append(f"| Critical loss checks | {semantic_summary['critical_loss_checks']} |")
+        lines.append("")
+        if semantic_summary["metric_summary"]:
+            lines.append("### Semantic Metrics")
+            lines.append("")
+            lines.append("| Metric | Preserved | Declared loss | Critical loss |")
+            lines.append("| --- | ---: | ---: | ---: |")
+            for metric, counts in semantic_summary["metric_summary"].items():
+                lines.append(
+                    f"| {metric} | {counts['preserved']} | {counts['declared_loss']} | {counts['critical_loss']} |"
+                )
+            lines.append("")
+        if semantic_proof_report["surfaces"]:
+            lines.append("### Surfaces")
+            lines.append("")
+            lines.append("| Surface | Conversations | Clean | Critical | Preserved checks | Declared loss | Critical loss |")
+            lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+            for surface, surface_report in semantic_proof_report["surfaces"].items():
+                surface_summary = surface_report["summary"]
+                lines.append(
+                    f"| {surface} | {surface_summary['total_conversations']} | "
+                    f"{surface_summary['clean_conversations']} | {surface_summary['critical_conversations']} | "
+                    f"{surface_summary['preserved_checks']} | {surface_summary['declared_loss_checks']} | "
+                    f"{surface_summary['critical_loss_checks']} |"
+                )
+            lines.append("")
+            lines.append("### Surface Providers")
+            lines.append("")
+            lines.append("| Surface | Provider | Conversations | Clean | Critical | Preserved checks | Declared loss | Critical loss |")
+            lines.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+            for surface, surface_report in semantic_proof_report["surfaces"].items():
+                for provider, stats in surface_report["providers"].items():
+                    lines.append(
+                        f"| {surface} | {provider} | {stats['total_conversations']} | {stats['clean_conversations']} | "
+                        f"{stats['critical_conversations']} | {stats['preserved_checks']} | "
+                        f"{stats['declared_loss_checks']} | {stats['critical_loss_checks']} |"
+                    )
+            lines.append("")
+    elif result.semantic_proof_error:
+        lines.append("## Semantic Proof")
+        lines.append("")
+        lines.append(f"- Error: {result.semantic_proof_error}")
         lines.append("")
 
     showcase_summary = session["showcase"]["summary"]
