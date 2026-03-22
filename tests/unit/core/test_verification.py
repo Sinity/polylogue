@@ -21,6 +21,7 @@ from polylogue.schemas.verification import (
     prove_raw_artifact_coverage,
     verify_raw_corpus,
 )
+from polylogue.storage.artifact_observations import artifact_observation_id
 from polylogue.storage.backends.connection import open_connection
 
 
@@ -482,6 +483,151 @@ class TestProveRawArtifactCoverage:
                 "SELECT COUNT(*) FROM artifact_observations"
             ).fetchone()[0]
         assert observation_count == 5
+
+    def test_refreshes_stale_existing_observation_resolution(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "stale-proof.db"
+        with open_connection(db_path):
+            pass
+
+        source_name = "chatgpt"
+        source_path = "/tmp/chatgpt-stale.json"
+        _insert_raw_record(
+            db_path=db_path,
+            raw_id="raw-chatgpt-stale-1",
+            provider_name="chatgpt",
+            source_name=source_name,
+            source_path=source_path,
+            raw_content=b'{"id":"one","mapping":{}}',
+        )
+
+        observation_id = artifact_observation_id(
+            source_name=source_name,
+            source_path=source_path,
+            source_index=0,
+        )
+        with open_connection(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO artifact_observations (
+                    observation_id,
+                    raw_id,
+                    provider_name,
+                    payload_provider,
+                    source_name,
+                    source_path,
+                    source_index,
+                    file_mtime,
+                    wire_format,
+                    artifact_kind,
+                    classification_reason,
+                    parse_as_conversation,
+                    schema_eligible,
+                    support_status,
+                    malformed_jsonl_lines,
+                    decode_error,
+                    bundle_scope,
+                    cohort_id,
+                    resolved_package_version,
+                    resolved_element_kind,
+                    resolution_reason,
+                    link_group_key,
+                    sidecar_agent_type,
+                    first_observed_at,
+                    last_observed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    observation_id,
+                    "raw-chatgpt-stale-1",
+                    "chatgpt",
+                    "chatgpt",
+                    source_name,
+                    source_path,
+                    0,
+                    None,
+                    "json",
+                    "conversation_document",
+                    "stale unsupported row",
+                    1,
+                    1,
+                    "unsupported_parseable",
+                    0,
+                    None,
+                    "chatgpt",
+                    "stale-cohort",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "2026-03-01T00:00:00+00:00",
+                    "2026-03-01T00:00:00+00:00",
+                ),
+            )
+            conn.commit()
+
+        package = SchemaVersionPackage(
+            provider="chatgpt",
+            version="v1",
+            anchor_kind="conversation_document",
+            default_element_kind="conversation_document",
+            first_seen="2026-03-01T00:00:00+00:00",
+            last_seen="2026-03-01T00:00:00+00:00",
+            bundle_scope_count=1,
+            sample_count=1,
+            elements=[
+                SchemaElementManifest(
+                    element_kind="conversation_document",
+                    schema_file="chatgpt-v1.json",
+                    sample_count=1,
+                    artifact_count=1,
+                )
+            ],
+        )
+
+        def _resolve_payload(self, provider, payload, *, source_path=None):
+            if str(provider) == "chatgpt":
+                return SchemaResolution(
+                    provider="chatgpt",
+                    package_version="v1",
+                    element_kind="conversation_document",
+                    exact_structure_id=None,
+                    bundle_scope=None,
+                    reason="exact_structure",
+                )
+            return None
+
+        def _get_package(self, provider, version="default"):
+            if str(provider) == "chatgpt" and version == "v1":
+                return package
+            return None
+
+        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.get_package", _get_package)
+
+        report = prove_raw_artifact_coverage(db_path=db_path)
+
+        assert report.total_records == 1
+        assert report.contract_backed_records == 1
+        assert report.providers["chatgpt"].package_versions == {"v1": 1}
+
+        with open_connection(db_path) as conn:
+            refreshed = conn.execute(
+                """
+                SELECT support_status, resolved_package_version, resolved_element_kind, resolution_reason
+                FROM artifact_observations
+                WHERE observation_id = ?
+                """,
+                (observation_id,),
+            ).fetchone()
+        assert refreshed["support_status"] == "supported_parseable"
+        assert refreshed["resolved_package_version"] == "v1"
+        assert refreshed["resolved_element_kind"] == "conversation_document"
+        assert refreshed["resolution_reason"] == "exact_structure"
 
     def test_lists_artifact_rows_and_cohorts_from_durable_control_plane(
         self,
