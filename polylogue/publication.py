@@ -91,6 +91,9 @@ class ArtifactProofSummary(BaseModel):
     subagent_streams: int
     streams_with_sidecars: int
     artifact_counts: dict[str, int] = Field(default_factory=dict)
+    package_versions: dict[str, int] = Field(default_factory=dict)
+    element_kinds: dict[str, int] = Field(default_factory=dict)
+    resolution_reasons: dict[str, int] = Field(default_factory=dict)
     clean: bool
 
 

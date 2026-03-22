@@ -665,6 +665,9 @@ class TestCheckCommandSupplementary:
                     linked_sidecars=1,
                     subagent_streams=1,
                     streams_with_sidecars=1,
+                    package_versions={"v7": 1},
+                    element_kinds={"subagent_conversation_stream": 1},
+                    resolution_reasons={"bundle_scope": 1},
                 )
             },
             total_records=2,
@@ -683,6 +686,7 @@ class TestCheckCommandSupplementary:
         assert data["artifact_proof"]["total_records"] == 2
         assert data["artifact_proof"]["summary"]["linked_sidecars"] == 1
         assert data["artifact_proof"]["summary"]["unsupported_parseable_records"] == 1
+        assert data["artifact_proof"]["summary"]["package_versions"] == {"v7": 1}
 
     def test_check_proof_plain_output(self, cli_workspace):
         """--proof renders the artifact proof summary in plain output."""
@@ -696,6 +700,9 @@ class TestCheckCommandSupplementary:
                     provider="chatgpt",
                     total_records=1,
                     contract_backed_records=1,
+                    package_versions={"v1": 1},
+                    element_kinds={"conversation_document": 1},
+                    resolution_reasons={"exact_structure": 1},
                 )
             },
             total_records=1,
@@ -710,7 +717,11 @@ class TestCheckCommandSupplementary:
 
         assert result.exit_code == 0
         assert "Artifact proof:" in result.output
+        assert "Resolved packages: v1=1" in result.output
+        assert "Resolved elements: conversation_document=1" in result.output
+        assert "Resolution reasons: exact_structure=1" in result.output
         assert "chatgpt: contract_backed=1" in result.output
+        assert "packages: v1=1" in result.output
 
     def test_check_proof_forwards_artifact_scope(self, cli_workspace):
         """Artifact provider/limit/offset are forwarded to the proof workflow."""

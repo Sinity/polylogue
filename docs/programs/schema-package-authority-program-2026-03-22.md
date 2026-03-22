@@ -217,6 +217,24 @@ Required outcomes:
 - Claude subagent streams and sidecars remain package elements, not fake
   top-level conversation types
 
+Status:
+
+- in progress
+- partly executed in this working pass
+
+Delivered so far:
+
+- artifact proof summaries now aggregate:
+  - resolved package versions
+  - resolved element kinds
+  - resolution reasons
+- `polylogue check --proof` now surfaces that package-resolution truth in plain
+  operator output instead of leaving it buried in provider JSON only
+- QA session/report generation now carries the same package-resolution summary
+  through JSON, text summary, and Markdown artifact-proof sections
+- site publication manifests now embed the same aggregate package-resolution
+  truth through `artifact_proof`
+
 ## Architectural Rules
 
 ### 1. Packages Are The Schema Runtime Contract

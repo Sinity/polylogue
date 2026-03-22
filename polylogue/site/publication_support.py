@@ -46,5 +46,8 @@ def load_artifact_proof_summary(*, db_path: Path) -> ArtifactProofSummary:
         subagent_streams=report.subagent_streams,
         streams_with_sidecars=report.streams_with_sidecars,
         artifact_counts=report.artifact_counts,
+        package_versions=report.package_versions,
+        element_kinds=report.element_kinds,
+        resolution_reasons=report.resolution_reasons,
         clean=report.is_clean,
     )
