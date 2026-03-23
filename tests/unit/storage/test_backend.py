@@ -14,6 +14,7 @@ import pytest
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context, open_connection
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import ConversationRecord, RawConversationRecord
 from tests.infra.storage_records import make_attachment, make_conversation, make_message
 
@@ -332,6 +333,7 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
     from polylogue.storage.index import ensure_index, update_index_for_conversations
 
     backend = SQLiteBackend(db_path=tmp_path / "delete.db")
+    repo = ConversationRepository(backend=backend)
     conv = make_conversation("conv-delete", title="Delete")
     msg1 = make_message("msg-1", "conv-delete", text="Hello")
     msg2 = make_message("msg-2", "conv-delete", role="assistant", text="Hi there")
@@ -351,11 +353,11 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
             ("conv-delete",),
         ).fetchone()[0] > 0
 
-    assert await backend.delete_conversation("conv-delete") is True
+    assert await repo.delete_conversation("conv-delete") is True
     assert await backend.get_conversation("conv-delete") is None
     assert len(await backend.get_messages("conv-delete")) == 0
     assert len(await backend.get_attachments("conv-delete")) == 0
-    assert await backend.delete_conversation("conv-delete") is False
+    assert await repo.delete_conversation("conv-delete") is False
 
     with open_connection(backend.db_path) as conn:
         assert conn.execute(

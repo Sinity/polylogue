@@ -614,8 +614,8 @@ Add a new `schema` command group for operator workflows.
 
 Target commands:
 
-- `polylogue schema infer --provider chatgpt`
-- `polylogue schema infer --provider chatgpt --cluster`
+- `polylogue schema generate --provider chatgpt`
+- `polylogue schema generate --provider chatgpt --cluster`
 - `polylogue schema list --provider chatgpt`
 - `polylogue schema compare --provider chatgpt --from v2 --to v3`
 - `polylogue schema promote --provider chatgpt --cluster <id>`

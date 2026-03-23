@@ -18,14 +18,14 @@ from .parsers.base import ParsedConversation, RawConversationData
 from .parsers.claude import enrich_conversation_from_index
 
 if TYPE_CHECKING:
-    from polylogue.schemas.registry import SchemaRegistry as SchemaRegistryType
     from polylogue.schemas.packages import SchemaResolution
+    from polylogue.schemas.runtime_registry import SchemaRegistry as SchemaRegistryType
 
 logger = get_logger(__name__)
 
 
-def _schema_registry_factory() -> "SchemaRegistry":
-    from polylogue.schemas.registry import SchemaRegistry
+def _schema_registry_factory() -> SchemaRegistryType:
+    from polylogue.schemas.runtime_registry import SchemaRegistry
 
     return SchemaRegistry()
 
@@ -174,7 +174,7 @@ class _ConversationEmitter:
         self,
         provider: Provider,
         payload: Any,
-    ) -> "SchemaResolution | None":
+    ) -> SchemaResolution | None:
         """Resolve schema metadata for the payload, if schemas are available."""
         if self._schema_registry is None:
             self._schema_registry = _schema_registry_factory()

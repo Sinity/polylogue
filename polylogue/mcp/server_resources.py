@@ -63,7 +63,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.resource("polylogue://health")
     def health_resource() -> str:
         try:
-            from polylogue.health import get_health
+            from polylogue.health_archive import get_health
 
             report = get_health(hooks.get_config())
             return hooks.json_payload(

@@ -7,7 +7,7 @@ from typing import Any, cast
 from polylogue.logging import get_logger
 
 from .config import Config
-from .health_cache import write_cache
+from .health_cache import load_cached_report, write_cache
 from .health_models import HealthCheck, HealthReport, VerifyStatus
 from .lib.provider_identity import CORE_SCHEMA_PROVIDERS
 from .sources.drive_client import default_credentials_path, default_token_path
@@ -300,4 +300,17 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
 
     report = HealthReport(checks=checks)
     write_cache(config.archive_root, report)
+    return report
+
+
+def get_health(config: Config, *, deep: bool = False) -> HealthReport:
+    """Get an archive health report, using cache when valid."""
+    if not deep:
+        cached_report = load_cached_report(config.archive_root)
+        if cached_report is not None:
+            return cached_report
+
+    report = run_archive_health(config, deep=deep)
+    report.cached = False
+    report.age_seconds = 0
     return report

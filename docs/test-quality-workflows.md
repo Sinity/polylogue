@@ -35,6 +35,7 @@ remembering individual test files or campaign commands.
 python -m devtools.run_validation_lanes --list
 python -m devtools.run_validation_lanes --lane machine-contract
 python -m devtools.run_validation_lanes --lane query-routing
+python -m devtools.run_validation_lanes --lane semantic-stack
 python -m devtools.run_validation_lanes --lane frontier-local
 python -m devtools.run_validation_lanes --lane frontier-extended
 python -m devtools.run_validation_lanes --lane live-exercises --dry-run
@@ -44,9 +45,10 @@ Lane intent:
 
 - `machine-contract`: root CLI JSON success/failure and runtime-health machine surfaces
 - `query-routing`: query-first integration plus route-planning/unit proofs
+- `semantic-stack`: harmonization, semantic facts/profile convergence, proof, and contract inventory
 - `tui`: Textual Mission Control interaction/state coverage
 - `chaos`: ingestion hostility, interruption, and chronology suites
-- `frontier-local`: machine + query + TUI + chaos
+- `frontier-local`: machine + query + semantic + TUI + chaos
 - `frontier-extended`: `frontier-local` plus fast scale and the small long-haul campaign
 - `live-exercises`: explicit operator lane for read-only live archive QA exercises
 

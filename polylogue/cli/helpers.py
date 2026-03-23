@@ -10,7 +10,8 @@ from typing import NoReturn
 from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
-from polylogue.health import cached_health_summary, get_health
+from polylogue.health_archive import get_health
+from polylogue.health_cache import cached_health_summary
 from polylogue.logging import get_logger
 from polylogue.operations import compute_provider_comparison, get_provider_counts
 from polylogue.pipeline.runner import latest_run
