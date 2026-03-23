@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from polylogue.lib.action_facts import ActionFact, build_action_facts
+from polylogue.lib.action_events import ActionEvent, build_action_events
 from polylogue.lib.roles import Role
 from polylogue.lib.viewports import (
     ReasoningTrace,
@@ -169,18 +169,18 @@ class MessageSemanticFacts:
     is_tool_use: bool
     is_substantive: bool
     tool_calls: tuple[ToolCall, ...]
-    action_facts: tuple[ActionFact, ...]
+    action_events: tuple[ActionEvent, ...]
     reasoning_traces: tuple[ReasoningTrace, ...]
 
     @property
     def tool_category_counts(self) -> dict[str, int]:
-        counts = Counter(action.kind.value for action in self.action_facts)
+        counts = Counter(action.kind.value for action in self.action_events)
         return sorted_counts(dict(counts))
 
     @property
     def affected_paths(self) -> tuple[str, ...]:
         paths: list[str] = []
-        for action in self.action_facts:
+        for action in self.action_events:
             paths.extend(action.affected_paths)
         return tuple(dict.fromkeys(paths))
 
@@ -228,7 +228,7 @@ class ConversationSemanticFacts:
     branch_messages: int
     word_count: int
     tool_category_counts: dict[str, int]
-    action_facts: tuple[ActionFact, ...]
+    action_events: tuple[ActionEvent, ...]
     first_message_at: datetime | None
     last_message_at: datetime | None
     wall_duration_ms: int
@@ -425,7 +425,7 @@ def build_message_semantic_facts(message: Message) -> MessageSemanticFacts:
         is_tool_use=message.is_tool_use,
         is_substantive=message.is_substantive,
         tool_calls=tool_calls,
-        action_facts=build_action_facts(tool_calls),
+        action_events=build_action_events(message, tool_calls),
         reasoning_traces=message_reasoning_traces(message),
     )
 
@@ -444,7 +444,7 @@ def build_conversation_semantic_facts(conversation: Conversation) -> Conversatio
     substantive_messages = 0
     word_count = 0
     timestamps: list[datetime] = []
-    action_facts: list[ActionFact] = []
+    action_events: list[ActionEvent] = []
 
     for message_fact in message_facts:
         message_ids.append(message_fact.message_id)
@@ -458,7 +458,7 @@ def build_conversation_semantic_facts(conversation: Conversation) -> Conversatio
         if message_fact.is_substantive:
             substantive_messages += 1
         word_count += message_fact.word_count
-        action_facts.extend(message_fact.action_facts)
+        action_events.extend(message_fact.action_events)
         if message_fact.timestamp is not None:
             timestamps.append(message_fact.timestamp)
         if message_fact.text.strip():
@@ -493,7 +493,7 @@ def build_conversation_semantic_facts(conversation: Conversation) -> Conversatio
         branch_messages=branch_messages,
         word_count=word_count,
         tool_category_counts=sorted_counts(dict(tool_categories)),
-        action_facts=tuple(action_facts),
+        action_events=tuple(action_events),
         first_message_at=first_message_at,
         last_message_at=last_message_at,
         wall_duration_ms=wall_duration_ms,

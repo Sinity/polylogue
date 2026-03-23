@@ -85,6 +85,8 @@ def _make_params(**overrides) -> dict:
         "path_terms": (),
         "action": (),
         "exclude_action": (),
+        "action_sequence": None,
+        "action_text": (),
         "similar_text": None,
         "has_type": (),
         "since": None,
@@ -226,6 +228,161 @@ async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
 
     assert exc_info.value.code == 1
     mock_echo.assert_called_once_with("Error: invalid action: 'bogus'", err=True)
+
+
+@pytest.mark.asyncio
+async def test_query_plan_filters_ordered_action_sequence() -> None:
+    from polylogue.lib.query_spec import ConversationQuerySpec
+
+    matching = Conversation(
+        id="conv-sequence-match",
+        provider="claude-code",
+        title="Matching sequence",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m1",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_read"},
+                    ],
+                ),
+                Message(
+                    id="m2",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Edit", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_edit"},
+                    ],
+                ),
+                Message(
+                    id="m3",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q"}, "semantic_type": "shell"},
+                    ],
+                ),
+            ]
+        ),
+    )
+    non_matching = Conversation(
+        id="conv-sequence-miss",
+        provider="claude-code",
+        title="Non matching sequence",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="x1",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q"}, "semantic_type": "shell"},
+                    ],
+                ),
+                Message(
+                    id="x2",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Edit", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_edit"},
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    repo = MagicMock()
+    repo.list_by_query = AsyncMock(return_value=[matching, non_matching])
+    plan = ConversationQuerySpec(action_sequence=("file_read", "file_edit", "shell")).to_plan()
+
+    results = await plan.list(repo)
+
+    assert [conversation.id for conversation in results] == ["conv-sequence-match"]
+
+
+@pytest.mark.asyncio
+async def test_query_plan_filters_action_text_terms() -> None:
+    from polylogue.lib.query_spec import ConversationQuerySpec
+
+    matching = Conversation(
+        id="conv-action-text-match",
+        provider="claude-code",
+        title="Action text match",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m1",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"}, "semantic_type": "shell"},
+                    ],
+                ),
+            ]
+        ),
+    )
+    non_matching = Conversation(
+        id="conv-action-text-miss",
+        provider="claude-code",
+        title="Action text miss",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="x1",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "ruff check polylogue/lib/action_events.py"}, "semantic_type": "shell"},
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    repo = MagicMock()
+    repo.list_by_query = AsyncMock(return_value=[matching, non_matching])
+    plan = ConversationQuerySpec(action_text_terms=("pytest -q", "semantic_facts.py")).to_plan()
+
+    results = await plan.list(repo)
+
+    assert [conversation.id for conversation in results] == ["conv-action-text-match"]
+
+
+@pytest.mark.asyncio
+async def test_query_plan_batches_post_filter_candidate_fetches() -> None:
+    from polylogue.lib.query_spec import ConversationQuerySpec
+
+    matching = Conversation(
+        id="conv-batched-match",
+        provider="claude-code",
+        title="Batched match",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m1",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_read"},
+                        {"type": "tool_use", "tool_name": "Edit", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_edit"},
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    repo = MagicMock()
+    repo.list_by_query = AsyncMock(return_value=[matching])
+    plan = ConversationQuerySpec(action_sequence=("file_read", "file_edit"), limit=50).to_plan()
+
+    results = await plan.list(repo)
+
+    assert [conversation.id for conversation in results] == ["conv-batched-match"]
+    request = repo.list_by_query.await_args.args[0]
+    assert request.limit == 100
+    assert request.offset == 0
 
 
 @pytest.mark.asyncio

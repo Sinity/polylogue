@@ -70,6 +70,8 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option("--path", "path_terms", multiple=True, help="Touched path contains substring (repeatable = AND)")
 @click.option("--action", multiple=True, type=click.Choice(QUERY_ACTION_TYPES), help="Require semantic action category (repeatable = AND)")
 @click.option("--exclude-action", multiple=True, type=click.Choice(QUERY_ACTION_TYPES), help="Exclude semantic action category (repeatable = AND)")
+@click.option("--action-sequence", help="Require ordered semantic action subsequence (comma-separated)")
+@click.option("--action-text", multiple=True, help="Require text within normalized action evidence (repeatable = AND)")
 @click.option("--tool", multiple=True, help="Require normalized tool name (repeatable = AND)")
 @click.option("--exclude-tool", multiple=True, help="Exclude normalized tool name (repeatable = AND)")
 @click.option("--similar", "similar_text", help="Semantic similarity query (requires embeddings)")
@@ -147,6 +149,8 @@ def cli(
     path_terms: tuple[str, ...],
     action: tuple[str, ...],
     exclude_action: tuple[str, ...],
+    action_sequence: str | None,
+    action_text: tuple[str, ...],
     tool: tuple[str, ...],
     exclude_tool: tuple[str, ...],
     similar_text: str | None,
@@ -201,6 +205,8 @@ def cli(
         polylogue -t important --stats-by provider
         polylogue --path /realm/project/polylogue/README.md --action file_read --list
         polylogue --action search --action file_edit --list
+        polylogue --action-sequence file_read,file_edit,shell --list
+        polylogue --action-text "pytest -q" --list
         polylogue --action other --stats-by tool --format json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --limit 5

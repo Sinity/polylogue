@@ -65,6 +65,24 @@ QUERY_TOOL_CASES = [
         },
     ),
     (
+        "search",
+        {"query": "hello", "action_sequence": "file_read,file_edit,shell", "limit": 5},
+        {
+            "contains": ("hello",),
+            "action_sequence": (("file_read", "file_edit", "shell"),),
+            "limit": (5,),
+        },
+    ),
+    (
+        "search",
+        {"query": "hello", "action_text": "pytest -q", "limit": 5},
+        {
+            "contains": ("hello",),
+            "action_text": ("pytest -q",),
+            "limit": (5,),
+        },
+    ),
+    (
         "list_conversations",
         {"limit": 10},
         {
@@ -98,6 +116,22 @@ QUERY_TOOL_CASES = [
             "exclude_action": ("web",),
             "tool": ("edit",),
             "exclude_tool": ("read",),
+            "limit": (2,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"action_sequence": "file_read,file_edit,shell", "limit": 2},
+        {
+            "action_sequence": (("file_read", "file_edit", "shell"),),
+            "limit": (2,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"action_text": "pytest -q", "limit": 2},
+        {
+            "action_text": ("pytest -q",),
             "limit": (2,),
         },
     ),
@@ -153,6 +187,10 @@ class TestQueryTools:
                 assert spec.tool_terms == (expected_value,)
             elif method_name == "exclude_tool":
                 assert spec.excluded_tool_terms == (expected_value,)
+            elif method_name == "action_sequence":
+                assert spec.action_sequence == expected_value
+            elif method_name == "action_text":
+                assert spec.action_text_terms == (expected_value,)
             elif method_name == "tag":
                 assert spec.tags == (expected_value,)
             elif method_name == "title":
