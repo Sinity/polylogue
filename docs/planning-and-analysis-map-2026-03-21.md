@@ -24,7 +24,7 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md) | Current planned execution program for converging schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path around the canonical package model | Planned; canonical next implementation campaign |
+| [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md) | Executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path around the canonical package model | Executed; most recent evidence-pipeline convergence campaign |
 | [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Executed convergence campaign for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Executed; canonical record of the convergence campaign |
 | [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md) | Most recent executed closure slice for the remaining machine/runtime/testing frontier | Executed; current canonical record of the runtime-contract and validation-lane closure |
 | [programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md) | Most recent executed proof program covering query summary/list surfaces, stream surfaces, MCP read payloads, and showcase hardening | Executed; current canonical record of the read-surface proof lane |
@@ -111,15 +111,15 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md)
-- that program targets the biggest remaining main-code cluster after the convergence wave:
-  - runtime-safe schema observation helpers still living too close to tooling
+- the schema-and-evidence pipeline campaign is now executed via [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md)
+- it closed the remaining evidence-pipeline drag around:
+  - runtime-safe schema observation helpers living too close to tooling
   - monolithic schema generation orchestration
   - monolithic synthetic corpus generation
   - overbroad prepare/source transformation boundaries
-  - artifact proof and verification still living in large adjacent workflow modules
-  - an async SQLite write backend that is still too broad for the evidence path
-  - missing named roundtrip proof lane for the full schema-and-evidence loop
+  - fragmented artifact proof and verification workflows
+  - an overbroad async SQLite evidence/write path
+  - a missing named roundtrip proof lane for the full schema-and-evidence loop
 - the convergence campaign in [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) is now executed
 - it closed the previously identified main-code drag around:
   - query spec vs mutable filter execution
@@ -136,7 +136,8 @@ As of this map:
 - the multi-surface proof lane is now executed via [programs/multi-surface-semantic-proof-program-2026-03-22.md](./programs/multi-surface-semantic-proof-program-2026-03-22.md), which extended semantic proof across export/query surfaces and routed that suite through QA/publication/showcase
 - the read-surface proof and showcase-hardening lane is now executed via [programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md), which covers query summary/list surfaces, stream surfaces, MCP read payloads, and matching showcase proof coverage
 - the remaining runtime/testing reservoir has now been executed via [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md), which closes the root machine contract, query/TUI hardening, and named validation lanes for chaos/scale/live operator workflows
-- later work after the schema-and-evidence pipeline campaign should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
+- there is no new canonical implementation queue selected yet after that campaign
+- later work should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
 
 ## Maintenance Rule
 

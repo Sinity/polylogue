@@ -6,7 +6,7 @@ import click
 
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.types import AppEnv
-from polylogue.health import VerifyStatus
+from polylogue.health_models import VerifyStatus
 
 from .check_support import format_count_mapping, format_semantic_metric_summary, run_vacuum
 from .check_workflow import CheckCommandOptions, CheckCommandResult
@@ -36,6 +36,8 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
         }
     if result.semantic_report is not None:
         out["semantic_proof"] = result.semantic_report.to_dict()
+    if result.roundtrip_report is not None:
+        out["roundtrip_proof"] = result.roundtrip_report.to_dict()
     if result.repair_results is not None:
         out["repairs"] = [repair.to_dict() for repair in result.repair_results]
     if result.vacuum_result is not None:
@@ -212,6 +214,28 @@ def render_plain_output(
             f"  Runtime: {rt_summary.get('ok', 0)} ok, {rt_summary.get('warning', 0)} warnings, "
             f"{rt_summary.get('error', 0)} errors"
         )
+
+    if result.roundtrip_report is not None:
+        roundtrip_summary = result.roundtrip_report.summary
+        lines.extend(
+            [
+                "",
+                f"Roundtrip proof: {roundtrip_summary['provider_count']:,} providers "
+                f"(clean={roundtrip_summary['clean_providers']:,}, "
+                f"failed={roundtrip_summary['failed_providers']:,}, "
+                f"artifacts={roundtrip_summary['artifact_count']:,}, "
+                f"parsed_conversations={roundtrip_summary['parsed_conversations']:,}, "
+                f"persisted_conversations={roundtrip_summary['persisted_conversations']:,})",
+            ]
+        )
+        for provider, provider_report in sorted(result.roundtrip_report.provider_reports.items()):
+            summary = provider_report.summary
+            status = "clean" if provider_report.is_clean else "failed"
+            lines.append(
+                f"  {provider}: {status}, package={provider_report.package_version}, "
+                f"element={provider_report.element_kind or '-'}, "
+                f"failed_stages={','.join(summary['failed_stages']) or '-'}"
+            )
 
     env.ui.summary("Health Check", lines)
 
