@@ -204,6 +204,20 @@ Completed so far in the live codebase:
   failure on `--action file_edit --stats-by tool --format json --limit 50`
 - explicit retrieval lanes now exist for dialogue FTS, action-text retrieval,
   and hybrid retrieval through the canonical query surface
+- archive stats, top-level summary output, health checks, and MCP stats now
+  expose embedding coverage and pending-embedding counts
+- grouped semantic stats now batch summary-backed hydration instead of broad
+  speculative conversation loads, which materially reduced live RSS during
+  `--stats-by action --format json` dogfooding
+- `embed --stats` now has a machine-readable JSON contract
+- named archive-intelligence validation lanes now exist for:
+  - retrieval-dogfood
+  - embeddings-coverage
+  - schema-roundtrip
+  - archive-intelligence
+  - live-archive-small
+  - live-archive-slow
+  - memory-budget
 
 Still open from this program:
 
