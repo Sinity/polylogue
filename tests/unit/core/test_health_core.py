@@ -7,6 +7,7 @@ import os
 import stat
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -111,8 +112,8 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
 @pytest.mark.parametrize(
     ("deep", "expected_checks"),
     [
-        (False, {"config", "archive_root", "render_root", "database", "index", "fts_sync", "schemas_coverage", "schemas_freshness"}),
-        (True, {"config", "archive_root", "render_root", "database", "sqlite_integrity", "index", "fts_sync", "schemas_coverage", "schemas_freshness"}),
+        (False, {"config", "archive_root", "render_root", "database", "index", "fts_sync", "embedding_coverage", "schemas_coverage", "schemas_freshness"}),
+        (True, {"config", "archive_root", "render_root", "database", "sqlite_integrity", "index", "fts_sync", "embedding_coverage", "schemas_coverage", "schemas_freshness"}),
     ],
 )
 def test_run_health_core_contract(cli_workspace, deep: bool, expected_checks: set[str]) -> None:
@@ -124,6 +125,46 @@ def test_run_health_core_contract(cli_workspace, deep: bool, expected_checks: se
     assert report.timestamp > 0
     assert expected_checks.issubset(names)
     assert sum(report.summary.values()) == len(report.checks)
+
+
+@pytest.mark.parametrize(
+    ("embedded_conversations", "embedded_messages", "pending_conversations", "expected_status", "expected_text"),
+    [
+        (0, 0, 0, "warning", "Embeddings not built"),
+        (2, 50, 1, "warning", "Embeddings partial"),
+        (3, 90, 0, "ok", "Embeddings ready"),
+    ],
+)
+def test_run_health_embedding_status_contract(
+    cli_workspace,
+    embedded_conversations: int,
+    embedded_messages: int,
+    pending_conversations: int,
+    expected_status: str,
+    expected_text: str,
+) -> None:
+    from polylogue.config import get_config
+    from polylogue.health_archive import run_archive_health
+    from polylogue.storage.embedding_stats import EmbeddingStatsSnapshot
+    from tests.infra.storage_records import ConversationBuilder
+
+    ConversationBuilder(cli_workspace["db_path"], "health-embed-1").add_message(text="hello").save()
+    ConversationBuilder(cli_workspace["db_path"], "health-embed-2").add_message(text="hello").save()
+    ConversationBuilder(cli_workspace["db_path"], "health-embed-3").add_message(text="hello").save()
+
+    with patch(
+        "polylogue.health_archive.read_embedding_stats_sync",
+        return_value=EmbeddingStatsSnapshot(
+            embedded_conversations=embedded_conversations,
+            embedded_messages=embedded_messages,
+            pending_conversations=pending_conversations,
+        ),
+    ):
+        report = run_archive_health(get_config())
+
+    check = next(c for c in report.checks if c.name == "embedding_coverage")
+    assert check.status.value == expected_status
+    assert expected_text in check.summary
 
 
 @pytest.mark.parametrize(

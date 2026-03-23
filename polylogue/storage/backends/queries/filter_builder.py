@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from polylogue.lib.viewports import ToolCategory
 from polylogue.storage.backends.connection import _build_provider_scope_filter
+
+_SEMANTIC_ACTION_TYPES = tuple(category.value for category in ToolCategory)
 
 
 def _iso_to_epoch(iso_str: str) -> float:
@@ -27,21 +30,22 @@ def _build_conversation_filters(
     since: str | None = None,
     until: str | None = None,
     title_contains: str | None = None,
+    path_terms: list[str] | tuple[str, ...] | None = None,
+    action_terms: list[str] | tuple[str, ...] | None = None,
+    excluded_action_terms: list[str] | tuple[str, ...] | None = None,
+    tool_terms: list[str] | tuple[str, ...] | None = None,
+    excluded_tool_terms: list[str] | tuple[str, ...] | None = None,
     has_tool_use: bool = False,
     has_thinking: bool = False,
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
-    has_file_ops: bool = False,
-    has_git_ops: bool = False,
-    has_subagent: bool = False,
 ) -> tuple[str, list[str | int | float]]:
     """Build WHERE clause and params for conversation queries.
 
     Stats-based filters (has_tool_use, has_thinking, min_messages, max_messages,
     min_words) emit a LEFT JOIN on conversation_stats and filter on cs columns.
-    Semantic filters (has_file_ops, has_git_ops, has_subagent) emit EXISTS
-    subqueries against content_blocks.semantic_type.
+    Path and semantic filters emit EXISTS subqueries against content_blocks.
     Callers must prefix conversation columns with 'c.' when using stats filters.
     """
     where_clauses: list[str] = []
@@ -95,22 +99,71 @@ def _build_conversation_filters(
     # table name to prevent ambiguity (unqualified 'conversation_id' inside the EXISTS
     # subquery resolves to the subquery's own cb.conversation_id, not the outer table).
     conv_id_col = "c.conversation_id" if needs_stats_join else "conversations.conversation_id"
-    if has_file_ops:
-        where_clauses.append(
-            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-            " AND cb.semantic_type IN ('file_read', 'file_write', 'file_edit'))"
-        )
-    if has_git_ops:
-        where_clauses.append(
-            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-            " AND cb.semantic_type = 'git')"
-        )
-    if has_subagent:
-        where_clauses.append(
-            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-            " AND cb.semantic_type = 'subagent')"
-        )
-
+    if path_terms:
+        for term in path_terms:
+            normalized = str(term).replace("\\", "/").lower()
+            where_clauses.append(
+                f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                " AND cb.semantic_type IN ('file_read', 'file_write', 'file_edit')"
+                " AND LOWER(COALESCE(json_extract(cb.metadata, '$.path'), json_extract(cb.tool_input, '$.path'), '')) LIKE ?)"
+            )
+            params.append(f"%{normalized}%")
+    if action_terms:
+        for term in action_terms:
+            if str(term) == "none":
+                placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    f" AND cb.semantic_type IN ({placeholders}))"
+                )
+                params.extend(_SEMANTIC_ACTION_TYPES)
+            else:
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.semantic_type = ?)"
+                )
+                params.append(str(term))
+    if excluded_action_terms:
+        for term in excluded_action_terms:
+            if str(term) == "none":
+                placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    f" AND cb.semantic_type IN ({placeholders}))"
+                )
+                params.extend(_SEMANTIC_ACTION_TYPES)
+            else:
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.semantic_type = ?)"
+                )
+                params.append(str(term))
+    if tool_terms:
+        for term in tool_terms:
+            if str(term) == "none":
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.type = 'tool_use')"
+                )
+            else:
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.type = 'tool_use' AND LOWER(COALESCE(cb.tool_name, '')) = ?)"
+                )
+                params.append(str(term).lower())
+    if excluded_tool_terms:
+        for term in excluded_tool_terms:
+            if str(term) == "none":
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.type = 'tool_use')"
+                )
+            else:
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.type = 'tool_use' AND LOWER(COALESCE(cb.tool_name, '')) = ?)"
+                )
+                params.append(str(term).lower())
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     return where_sql, params
 

@@ -5,11 +5,8 @@ branch tracking, git context, and edge cases.
 """
 from __future__ import annotations
 
-import pytest
-
 from polylogue.lib.branch_type import BranchType
 from polylogue.sources.parsers.codex import looks_like, parse
-
 
 # =============================================================================
 # Format Detection (looks_like)
@@ -315,6 +312,36 @@ class TestEdgeCases:
         result = parse(payload, "fallback")
         assert len(result.messages) == 1
         assert result.messages[0].timestamp == "2024-03-15T10:30:00Z"
+
+    def test_conversation_updated_at_uses_latest_message_timestamp(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "conv-1", "timestamp": "2024-03-15T10:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "msg-1",
+                    "role": "user",
+                    "timestamp": "2024-03-15T10:30:00Z",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "msg-2",
+                    "role": "assistant",
+                    "timestamp": "2024-03-15T10:45:00Z",
+                    "content": [{"type": "output_text", "text": "hi"}],
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert result.created_at == "2024-03-15T10:00:00Z"
+        assert result.updated_at == "2024-03-15T10:45:00Z"
 
     def test_message_id_fallback(self) -> None:
         """Message ID falls back to f'msg-{idx}' if not provided."""

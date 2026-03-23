@@ -15,7 +15,8 @@ from polylogue.storage.artifact_observations import (
     list_artifact_observations as list_durable_artifact_observations,
 )
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.store import ArtifactCohortSummary, ArtifactObservationRecord
+from polylogue.storage.state_views import ArtifactCohortSummary
+from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 
 from .verification_models import ArtifactProofReport, ProviderArtifactProof
