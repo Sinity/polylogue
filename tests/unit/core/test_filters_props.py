@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
-from hypothesis import given, settings, example, HealthCheck
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.cli.filter_picker import pick_filter
@@ -28,16 +28,13 @@ from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import ConversationSummary
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.index import rebuild_index
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 from tests.infra.storage_records import ConversationBuilder
 from tests.infra.strategies.filters import (
-    filter_arg_strategy,
     filter_chain_strategy,
-    filter_type_strategy,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -218,9 +215,7 @@ def _apply_filter_spec(f: ConversationFilter, spec: dict) -> ConversationFilter:
         return f
     elif ftype == "has_attachments":
         return f.has("attachments")
-    elif ftype == "min_words":
-        return f
-    elif ftype == "max_words":
+    elif ftype == "min_words" or ftype == "max_words":
         return f
     return f
 
@@ -248,7 +243,6 @@ async def test_filter_chain_never_crashes_on_execution(make_filter_repo):
 
     Uses explicit examples rather than @given to avoid fixture-scope issues.
     """
-    from hypothesis import find
 
     repo = make_filter_repo([
         {"id": "c1", "provider": "claude-ai", "title": "Test",
@@ -774,7 +768,12 @@ class TestConversationFilterBranching:
     def test_branch_predicates(self, filter_repo_branches, method, value):
         filter_obj = ConversationFilter(filter_repo_branches)
         getattr(filter_obj, method)(value)
-        assert len(filter_obj._predicates) == 1
+        if method == "is_continuation":
+            assert filter_obj._continuation is value
+        elif method == "is_sidechain":
+            assert filter_obj._sidechain is value
+        elif method == "has_branches":
+            assert filter_obj._has_branches is value
 
     @pytest.mark.asyncio
     async def test_parent_filters_by_parent_id(self, filter_repo_branches):

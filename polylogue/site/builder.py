@@ -35,6 +35,7 @@ from polylogue.site.rendering import (
 )
 from polylogue.site.scan import iter_conversation_indexes, scan_archive
 from polylogue.site.search import build_search_document, generate_pagefind_config, render_search_markup
+from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
     from jinja2 import Template
@@ -82,7 +83,7 @@ class SiteBuilder:
 
     def build(self, incremental: bool = True) -> SitePublicationManifest:
         """Build the complete static site and return the typed manifest."""
-        return asyncio.run(self._build_async(incremental))
+        return run_coroutine_sync(self._build_async(incremental))
 
     async def _build_async(self, incremental: bool = True) -> SitePublicationManifest:
         """Async implementation of the site build."""

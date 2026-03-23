@@ -118,11 +118,10 @@ def _do_seed(
     env_only: bool,
 ) -> None:
     """Seed a full demo database via the pipeline."""
-    import asyncio
-
     from polylogue.config import Config, Source
     from polylogue.pipeline.runner import run_sources
     from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.sync_bridge import run_coroutine_sync
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-demo-"))
 
@@ -167,7 +166,7 @@ def _do_seed(
             sources=sources,
         )
 
-        result = asyncio.run(run_sources(
+        result = run_coroutine_sync(run_sources(
             config=config,
             stage="all",
             plan=None,

@@ -316,7 +316,7 @@ class TestRunCommand:
             finally:
                 _close_coroutine(coro)
 
-        with patch("polylogue.cli.commands.run.asyncio.run", side_effect=_run_async) as mock_asyncio_run, patch(
+        with patch("polylogue.cli.commands.run.run_coroutine_sync", side_effect=_run_async) as mock_asyncio_run, patch(
             "polylogue.config.get_config", return_value=MagicMock(sources=[], render_root=Path("/render"))
         ), patch("polylogue.cli.commands.run.resolve_sources", return_value=None), patch(
             "polylogue.cli.commands.run.maybe_prompt_sources", return_value=None

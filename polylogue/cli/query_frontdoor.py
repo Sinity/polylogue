@@ -2,12 +2,67 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 import click
 
+from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.types import AppEnv
-from polylogue.lib.query_spec import ConversationQuerySpec
+
+_ROOT_GLOBAL_OPTIONS = frozenset({"--plain", "--verbose", "-v"})
+
+
+def _option_arity(group: click.Group) -> dict[str, int]:
+    value_options: dict[str, int] = {}
+    for param in group.params:
+        if isinstance(param, click.Option) and not param.is_flag:
+            nargs = param.nargs if param.nargs > 0 else 1
+            for opt in param.opts + param.secondary_opts:
+                value_options[opt] = nargs
+    return value_options
+
+
+def _matches_option(option: str, token: str) -> bool:
+    return token == option or token.startswith(f"{option}=")
+
+
+def _is_root_global_option(token: str) -> bool:
+    return any(_matches_option(option, token) for option in _ROOT_GLOBAL_OPTIONS)
+
+
+def _iter_option_values(args: list[str], start: int, nargs: int) -> Iterable[str]:
+    for offset in range(1, nargs + 1):
+        if start + offset < len(args):
+            yield args[start + offset]
+
+
+def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[str], tuple[str, ...], bool]:
+    option_arity = _option_arity(group)
+    option_args: list[str] = []
+    query_terms: list[str] = []
+    query_mode_locked = False
+    index = 0
+
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            query_terms.extend(args[index + 1 :])
+            break
+        if arg.startswith("-"):
+            option_args.append(arg)
+            nargs = option_arity.get(arg, 0)
+            if not _is_root_global_option(arg):
+                query_mode_locked = True
+            option_args.extend(_iter_option_values(args, index, nargs))
+            index += nargs + 1
+            continue
+        if not query_terms and not query_mode_locked and arg in group.commands:
+            return args, (), True
+        query_terms.append(arg)
+        index += 1
+
+    return option_args, tuple(query_terms), False
 
 
 def handle_query_mode(
@@ -19,89 +74,29 @@ def handle_query_mode(
     from polylogue.cli.query import execute_query
 
     env: AppEnv = ctx.obj
-    params = ctx.params
+    request = RootModeRequest.from_context(ctx)
 
-    query_terms = params.get("query_term", ())
-    params_copy = dict(params)
-    params_copy["query"] = query_terms
-    query_spec = ConversationQuerySpec.from_params(params_copy)
-    has_filters = query_spec.has_filters()
-
-    has_output_mode = any(
-        params.get(key)
-        for key in (
-            "list_mode",
-            "limit",
-            "stats_only",
-            "stats_by",
-            "count_only",
-            "stream",
-            "dialogue_only",
-        )
-    )
-
-    has_modifiers = any(
-        params.get(key)
-        for key in (
-            "add_tag",
-            "set_meta",
-            "delete_matched",
-        )
-    )
-
-    if not query_terms and not has_filters and not has_output_mode and not has_modifiers:
-        show_stats(env, verbose=params.get("verbose", False))
+    if request.should_show_stats():
+        show_stats(env, verbose=bool(request.params.get("verbose", False)))
         return
 
-    execute_query(env, params_copy)
+    execute_query(env, request.query_params())
 
 
 class QueryFirstGroupBase(click.Group):
     """Custom Click group that routes to query mode by default."""
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        """Parse args, converting positional args to hidden query-term options."""
-        first_arg_idx = None
-        for index, arg in enumerate(args):
-            if not arg.startswith("-"):
-                first_arg_idx = index
-                break
-
-        if first_arg_idx is not None and args[first_arg_idx] in self.commands:
-            ctx.ensure_object(dict)
-            ctx.obj["_has_subcommand"] = True
-            return super().parse_args(ctx, args)
-
-        value_options: dict[str, int] = {}
-        for param in self.params:
-            if isinstance(param, click.Option) and not param.is_flag:
-                nargs = param.nargs if param.nargs > 0 else 1
-                for opt in param.opts + param.secondary_opts:
-                    value_options[opt] = nargs
-
-        new_args: list[str] = []
-        index = 0
-        while index < len(args):
-            arg = args[index]
-            if arg.startswith("-"):
-                new_args.append(arg)
-                nargs = value_options.get(arg, 0)
-                for _ in range(nargs):
-                    if index + 1 < len(args):
-                        index += 1
-                        new_args.append(args[index])
-            else:
-                new_args.extend(["--query-term", arg])
-            index += 1
-
-        return list(super().parse_args(ctx, new_args))
+        """Parse args, preserving raw query terms instead of rewriting them as hidden options."""
+        parse_args, query_terms, has_subcommand = _split_query_mode_args(self, args)
+        ctx.meta["polylogue_has_subcommand"] = has_subcommand
+        if not has_subcommand:
+            ctx.meta["polylogue_query_terms"] = query_terms
+        return list(super().parse_args(ctx, parse_args))
 
     def invoke(self, ctx: click.Context) -> Any:
         """Invoke the group, dispatching to query or stats mode if no subcommand."""
-        ctx.ensure_object(dict)
-        has_subcommand = ctx.obj.get("_has_subcommand", False)
-
-        if has_subcommand:
+        if ctx.meta.get("polylogue_has_subcommand", False):
             return super().invoke(ctx)
 
         assert self.callback is not None, "QueryFirstGroup requires a callback"

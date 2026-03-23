@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import TYPE_CHECKING
 
+from polylogue.lib.dates import parse_date
+from polylogue.lib.query_execution import ConversationQueryPlan
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
+    from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import VectorProvider
     from polylogue.storage.repository import ConversationRepository
 
@@ -37,6 +41,15 @@ def _as_tuple(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value,)
     return tuple(str(item) for item in value)
+
+
+def _parse_query_date(field: str, value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = parse_date(value)
+    if parsed is None:
+        raise QuerySpecError(field, value)
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -175,76 +188,89 @@ class ConversationQuerySpec:
             )
         )
 
+    def to_plan(
+        self,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> ConversationQueryPlan:
+        """Compile the immutable spec to the canonical execution plan."""
+        plan = ConversationQueryPlan(
+            query_terms=self.query_terms,
+            contains_terms=self.contains_terms,
+            negative_terms=self.exclude_text_terms,
+            providers=self.providers,
+            excluded_providers=self.excluded_providers,
+            tags=self.tags,
+            excluded_tags=self.excluded_tags,
+            has_types=self.has_types,
+            title=self.title,
+            conversation_id=self.conversation_id,
+            since=_parse_query_date("since", self.since),
+            until=_parse_query_date("until", self.until),
+            sort=self.sort or "date",
+            reverse=self.reverse,
+            limit=self.limit,
+            sample=self.sample,
+            filter_has_tool_use=self.filter_has_tool_use,
+            filter_has_thinking=self.filter_has_thinking,
+            min_messages=self.min_messages,
+            max_messages=self.max_messages,
+            min_words=self.min_words,
+            filter_has_file_ops=self.filter_has_file_ops,
+            filter_has_git_ops=self.filter_has_git_ops,
+            filter_has_subagent=self.filter_has_subagent,
+            vector_provider=vector_provider,
+        )
+        if self.latest:
+            plan = replace(plan, sort="date", limit=1)
+        return plan
+
+    async def list(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> list[Conversation]:
+        return await self.build_filter(repository, vector_provider=vector_provider).list()
+
+    async def list_summaries(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> list[ConversationSummary]:
+        return await self.build_filter(repository, vector_provider=vector_provider).list_summaries()
+
+    async def count(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> int:
+        return await self.build_filter(repository, vector_provider=vector_provider).count()
+
+    async def delete(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> int:
+        return await self.build_filter(repository, vector_provider=vector_provider).delete()
+
     def build_filter(
         self,
         repository: ConversationRepository,
         *,
         vector_provider: VectorProvider | None = None,
     ) -> ConversationFilter:
-        """Compile the spec to a canonical ConversationFilter."""
+        """Build a fluent filter façade over the canonical execution plan."""
         from polylogue.lib.filters import ConversationFilter
 
-        filter_chain = ConversationFilter(repository, vector_provider=vector_provider)
-
-        if self.conversation_id:
-            filter_chain = filter_chain.id(self.conversation_id)
-
-        for term in self.query_terms:
-            filter_chain = filter_chain.contains(term)
-        for term in self.contains_terms:
-            filter_chain = filter_chain.contains(term)
-        for term in self.exclude_text_terms:
-            filter_chain = filter_chain.exclude_text(term)
-        if self.providers:
-            filter_chain = filter_chain.provider(*self.providers)
-        if self.excluded_providers:
-            filter_chain = filter_chain.exclude_provider(*self.excluded_providers)
-        if self.tags:
-            filter_chain = filter_chain.tag(*self.tags)
-        if self.excluded_tags:
-            filter_chain = filter_chain.exclude_tag(*self.excluded_tags)
-        if self.title:
-            filter_chain = filter_chain.title(self.title)
-        for content_type in self.has_types:
-            filter_chain = filter_chain.has(content_type)
-        if self.filter_has_tool_use:
-            filter_chain = filter_chain.has_tool_use()
-        if self.filter_has_thinking:
-            filter_chain = filter_chain.has_thinking()
-        if self.filter_has_file_ops:
-            filter_chain = filter_chain.has_file_operations()
-        if self.filter_has_git_ops:
-            filter_chain = filter_chain.has_git_operations()
-        if self.filter_has_subagent:
-            filter_chain = filter_chain.has_subagent_spawns()
-        if self.min_messages is not None:
-            filter_chain = filter_chain.min_messages(self.min_messages)
-        if self.max_messages is not None:
-            filter_chain = filter_chain.max_messages(self.max_messages)
-        if self.min_words is not None:
-            filter_chain = filter_chain.min_words(self.min_words)
-        if self.since:
-            try:
-                filter_chain = filter_chain.since(self.since)
-            except ValueError as exc:
-                raise QuerySpecError("since", self.since) from exc
-        if self.until:
-            try:
-                filter_chain = filter_chain.until(self.until)
-            except ValueError as exc:
-                raise QuerySpecError("until", self.until) from exc
-        if self.latest:
-            filter_chain = filter_chain.sort("date").limit(1)
-        if self.sort:
-            filter_chain = filter_chain.sort(self.sort)
-        if self.reverse:
-            filter_chain = filter_chain.reverse()
-        if self.limit is not None:
-            filter_chain = filter_chain.limit(self.limit)
-        if self.sample is not None:
-            filter_chain = filter_chain.sample(self.sample)
-
-        return filter_chain
+        return ConversationFilter(
+            repository,
+            vector_provider=vector_provider,
+            query_plan=self.to_plan(vector_provider=vector_provider),
+        )
 
 
 __all__ = ["ConversationQuerySpec", "QuerySpecError"]
