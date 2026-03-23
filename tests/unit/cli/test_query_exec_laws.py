@@ -119,6 +119,7 @@ def _sample_summary_spec() -> ConversationSummarySpec:
 
 def _build_plan(case: str) -> QueryExecutionPlan:
     selection = MagicMock()
+    selection.similar_text = None
     action = QueryAction.SHOW
     output = QueryOutputSpec("markdown", ("stdout",), None, False, None, False)
     mutation = QueryMutationSpec((), (), False, False, False)
@@ -388,6 +389,18 @@ def test_resolve_query_route_contract(case: str, can_use_summaries: bool, expect
     assert resolve_query_route(plan, can_use_summaries=can_use_summaries) == expected_route
 
 
+def test_resolve_query_route_uses_full_stats_for_action_dimension() -> None:
+    plan = QueryExecutionPlan(
+        selection=ConversationQuerySpec(),
+        action=QueryAction.STATS_BY,
+        output=QueryOutputSpec("markdown", ("stdout",), None, False, None, False),
+        mutation=QueryMutationSpec((), (), False, False, False),
+        stats_dimension="action",
+    )
+
+    assert resolve_query_route(plan, can_use_summaries=True) == QueryRoute.STATS_BY
+
+
 @settings(max_examples=40, deadline=None)
 @given(case=summary_stats_case_strategy())
 def test_output_stats_by_summaries_contract(case) -> None:
@@ -414,6 +427,52 @@ def test_output_stats_by_summaries_contract(case) -> None:
     assert "TOTAL" in rendered
     assert f"{len(case.summaries):,}" in rendered
     assert f"{sum(spec.message_count for spec in case.summaries):,}" in rendered
+
+
+def test_output_stats_by_summaries_json_contract() -> None:
+    env = _make_env()
+    summaries = [
+        build_conversation_summary(
+            ConversationSummarySpec(
+                conversation_id="conv-a",
+                provider="claude-ai",
+                title="A",
+                summary="sa",
+                tags=("x",),
+                created_at=None,
+                updated_at=None,
+                message_count=3,
+            )
+        ),
+        build_conversation_summary(
+            ConversationSummarySpec(
+                conversation_id="conv-b",
+                provider="chatgpt",
+                title="B",
+                summary="sb",
+                tags=("y",),
+                created_at=None,
+                updated_at=None,
+                message_count=4,
+            )
+        ),
+    ]
+    msg_counts = {"conv-a": 3, "conv-b": 4}
+
+    with patch("click.echo") as mock_echo:
+        output_stats_by_summaries(env, summaries, msg_counts, "provider", output_format="json")
+
+    payload = json.loads(mock_echo.call_args.args[0])
+    env.ui.console.print.assert_not_called()
+    assert payload == {
+        "dimension": "provider",
+        "multi_membership": False,
+        "rows": [
+            {"group": "chatgpt", "conversations": 1, "messages": 4},
+            {"group": "claude-ai", "conversations": 1, "messages": 3},
+        ],
+        "summary": {"group": "TOTAL", "conversations": 2, "messages": 7},
+    }
 
 
 def test_output_results_no_results_contract() -> None:
@@ -708,6 +767,7 @@ def test_async_execute_query_query_spec_error_contract() -> None:
 def test_async_execute_query_show_projects_results_before_output_contract() -> None:
     env = _make_env(repo=MagicMock(), config=MagicMock())
     selection = MagicMock()
+    selection.similar_text = None
     plan = QueryExecutionPlan(
         selection=selection,
         action=QueryAction.SHOW,
