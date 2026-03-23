@@ -26,9 +26,6 @@ class ConversationRecordQuery:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
-    has_file_ops: bool = False
-    has_git_ops: bool = False
-    has_subagent: bool = False
 
     def with_limit(self, limit: int | None) -> ConversationRecordQuery:
         return replace(self, limit=limit)
@@ -65,9 +62,6 @@ class ConversationRecordQuery:
             "min_messages": self.min_messages,
             "max_messages": self.max_messages,
             "min_words": self.min_words,
-            "has_file_ops": self.has_file_ops,
-            "has_git_ops": self.has_git_ops,
-            "has_subagent": self.has_subagent,
         }
 
     def to_count_kwargs(self) -> dict[str, object]:
