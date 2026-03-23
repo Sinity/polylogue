@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
@@ -16,6 +15,7 @@ from polylogue.cli.commands.embed import (
     _embed_single,
     _show_embedding_stats,
 )
+from polylogue.storage.embedding_stats import EmbeddingStatsSnapshot
 
 
 @pytest.fixture
@@ -96,9 +96,16 @@ class TestShowEmbeddingStats:
     )
     def test_show_stats_variants(self, mock_env, capsys, query_results, expected_coverage, expected_pending):
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = [MagicMock(fetchone=MagicMock(return_value=qr)) for qr in query_results]
+        mock_conn.execute.return_value.fetchone.return_value = query_results[0]
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open, patch(
+            "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+            return_value=EmbeddingStatsSnapshot(
+                embedded_conversations=int(query_results[1][0]),
+                embedded_messages=int(query_results[2][0]),
+                pending_conversations=int(query_results[3][0]),
+            ),
+        ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
             _show_embedding_stats(mock_env)
@@ -111,14 +118,12 @@ class TestShowEmbeddingStats:
 
     def test_show_stats_embedding_status_missing(self, mock_env, capsys):
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = [
-            MagicMock(fetchone=MagicMock(return_value=(100,))),
-            sqlite3.OperationalError("table does not exist"),
-            sqlite3.OperationalError("table does not exist"),
-            sqlite3.OperationalError("table does not exist"),
-        ]
+        mock_conn.execute.return_value.fetchone.return_value = (100,)
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open, patch(
+            "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+            return_value=EmbeddingStatsSnapshot(),
+        ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
             _show_embedding_stats(mock_env)
@@ -134,7 +139,7 @@ class TestShowEmbeddingStats:
 
         with patch("polylogue.storage.backends.connection.open_connection") as mock_open, patch(
             "polylogue.storage.embedding_stats.read_embedding_stats_sync",
-            return_value=MagicMock(
+            return_value=EmbeddingStatsSnapshot(
                 embedded_conversations=40,
                 embedded_messages=200,
                 pending_conversations=60,

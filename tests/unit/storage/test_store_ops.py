@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import (
     MAX_ATTACHMENT_SIZE,
@@ -72,9 +73,14 @@ def _attachment_row(conn, attachment_id: str):
     ).fetchone()
 
 
+def _record_query(**kwargs) -> ConversationRecordQuery:
+    return ConversationRecordQuery(**kwargs)
+
+
 @pytest.mark.asyncio
 async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
     """Low-level list/count filters must honor persisted semantic paths."""
+    from polylogue.storage.action_event_lifecycle import rebuild_action_event_read_model_sync
     from polylogue.storage.store import ContentBlockRecord
     from tests.infra.storage_records import ConversationBuilder
 
@@ -126,11 +132,17 @@ async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
      )
      .save())
 
+    with open_connection(db_path) as conn:
+        rebuild_action_event_read_model_sync(conn)
+        conn.commit()
+
     backend = SQLiteBackend(db_path=db_path)
     try:
-        matches = await backend.list_conversations(path_terms=[target_path], limit=10)
+        matches = await backend.queries.list_conversations(
+            _record_query(path_terms=(target_path,), limit=10)
+        )
         assert [record.conversation_id for record in matches] == ["conv-readme"]
-        assert await backend.count_conversations(path_terms=[target_path]) == 1
+        assert await backend.queries.count_conversations(_record_query(path_terms=(target_path,))) == 1
     finally:
         await backend.close()
 
@@ -206,6 +218,7 @@ async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
     """Low-level list/count filters must honor semantic action categories."""
+    from polylogue.storage.action_event_lifecycle import rebuild_action_event_read_model_sync
     from polylogue.storage.store import ContentBlockRecord
     from tests.infra.storage_records import ConversationBuilder
 
@@ -285,41 +298,61 @@ async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
      )
      .save())
 
+    with open_connection(db_path) as conn:
+        rebuild_action_event_read_model_sync(conn)
+        conn.commit()
+
     backend = SQLiteBackend(db_path=db_path)
     try:
-        matches = await backend.list_conversations(action_terms=["search"], limit=10)
+        matches = await backend.queries.list_conversations(
+            _record_query(action_terms=("search",), limit=10)
+        )
         assert [record.conversation_id for record in matches] == ["conv-search"]
-        assert await backend.count_conversations(action_terms=["search"]) == 1
+        assert await backend.queries.count_conversations(_record_query(action_terms=("search",))) == 1
 
-        other_matches = await backend.list_conversations(action_terms=["other"], limit=10)
+        other_matches = await backend.queries.list_conversations(
+            _record_query(action_terms=("other",), limit=10)
+        )
         assert [record.conversation_id for record in other_matches] == ["conv-other"]
 
-        none_matches = await backend.list_conversations(action_terms=["none"], limit=10)
+        none_matches = await backend.queries.list_conversations(
+            _record_query(action_terms=("none",), limit=10)
+        )
         assert [record.conversation_id for record in none_matches] == ["conv-none"]
-        assert await backend.count_conversations(action_terms=["none"]) == 1
+        assert await backend.queries.count_conversations(_record_query(action_terms=("none",))) == 1
 
-        grep_tool_matches = await backend.list_conversations(tool_terms=["grep"], limit=10)
+        grep_tool_matches = await backend.queries.list_conversations(
+            _record_query(tool_terms=("grep",), limit=10)
+        )
         assert [record.conversation_id for record in grep_tool_matches] == ["conv-search"]
 
-        none_tool_matches = await backend.list_conversations(tool_terms=["none"], limit=10)
+        none_tool_matches = await backend.queries.list_conversations(
+            _record_query(tool_terms=("none",), limit=10)
+        )
         assert [record.conversation_id for record in none_tool_matches] == ["conv-none"]
 
-        filtered = await backend.list_conversations(
-            action_terms=["search"],
-            excluded_action_terms=["git"],
-            limit=10,
+        filtered = await backend.queries.list_conversations(
+            _record_query(
+                action_terms=("search",),
+                excluded_action_terms=("git",),
+                limit=10,
+            )
         )
         assert [record.conversation_id for record in filtered] == ["conv-search"]
 
-        non_grep = await backend.list_conversations(
-            excluded_tool_terms=["grep"],
-            limit=10,
+        non_grep = await backend.queries.list_conversations(
+            _record_query(
+                excluded_tool_terms=("grep",),
+                limit=10,
+            )
         )
         assert sorted(record.conversation_id for record in non_grep) == ["conv-git", "conv-none", "conv-other"]
 
-        non_none = await backend.list_conversations(
-            excluded_action_terms=["none"],
-            limit=10,
+        non_none = await backend.queries.list_conversations(
+            _record_query(
+                excluded_action_terms=("none",),
+                limit=10,
+            )
         )
         assert sorted(record.conversation_id for record in non_none) == ["conv-git", "conv-other", "conv-search"]
     finally:
@@ -852,7 +885,7 @@ class TestCrudLaws:
             await backend.save_conversation_record(conv)
 
             # Should still be exactly one conversation
-            all_convs = await backend.list_conversations(limit=100)
+            all_convs = await backend.queries.list_conversations(_record_query(limit=100))
             matching = [c for c in all_convs if c.conversation_id == conv_id]
             assert len(matching) == 1
 

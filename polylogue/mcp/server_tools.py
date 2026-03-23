@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.logging import get_logger
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
@@ -18,6 +17,7 @@ from polylogue.mcp.payloads import (
     MCPStatsByPayload,
     MCPTagCountsPayload,
 )
+from polylogue.mcp.query_support import build_query_spec
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -58,21 +58,21 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     ) -> str:
         async def _run() -> str:
             ops = hooks.get_archive_ops()
-            spec = ConversationQuerySpec(
-                query_terms=(query,),
+            spec = build_query_spec(
+                query=query,
                 retrieval_lane=retrieval_lane or "auto",
-                providers=(provider,) if provider else (),
+                provider=provider,
                 since=since,
-                path_terms=(path,) if path else (),
-                action_terms=(action,) if action else (),
-                excluded_action_terms=(exclude_action,) if exclude_action else (),
-                action_sequence=tuple(part.strip() for part in action_sequence.split(",") if part.strip()) if action_sequence else (),
-                action_text_terms=(action_text,) if action_text else (),
-                tool_terms=(tool.lower(),) if tool else (),
-                excluded_tool_terms=(exclude_tool.lower(),) if exclude_tool else (),
+                path=path,
+                action=action,
+                exclude_action=exclude_action,
+                action_sequence=action_sequence,
+                action_text=action_text,
+                tool=tool,
+                exclude_tool=exclude_tool,
                 limit=hooks.clamp_limit(limit),
-                filter_has_tool_use=has_tool_use,
-                filter_has_thinking=has_thinking,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
                 min_messages=min_messages,
                 min_words=min_words,
             )
@@ -111,23 +111,23 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     ) -> str:
         async def _run() -> str:
             ops = hooks.get_archive_ops()
-            spec = ConversationQuerySpec(
-                providers=(provider,) if provider else (),
+            spec = build_query_spec(
+                provider=provider,
                 retrieval_lane=retrieval_lane or "auto",
-                tags=(tag,) if tag else (),
+                tag=tag,
                 title=title,
                 since=since,
-                path_terms=(path,) if path else (),
-                action_terms=(action,) if action else (),
-                excluded_action_terms=(exclude_action,) if exclude_action else (),
-                action_sequence=tuple(part.strip() for part in action_sequence.split(",") if part.strip()) if action_sequence else (),
-                action_text_terms=(action_text,) if action_text else (),
-                tool_terms=(tool.lower(),) if tool else (),
-                excluded_tool_terms=(exclude_tool.lower(),) if exclude_tool else (),
+                path=path,
+                action=action,
+                exclude_action=exclude_action,
+                action_sequence=action_sequence,
+                action_text=action_text,
+                tool=tool,
+                exclude_tool=exclude_tool,
                 sort=sort,
                 limit=hooks.clamp_limit(limit),
-                filter_has_tool_use=has_tool_use,
-                filter_has_thinking=has_thinking,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
                 min_messages=min_messages,
                 min_words=min_words,
             )
@@ -400,7 +400,7 @@ def _register_profile_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def session_profile(conversation_id: str) -> str:
         async def _run() -> str:
-            from polylogue.lib.session_profile import build_session_profile
+            from polylogue.lib.session_products import build_session_profile
 
             conv = await hooks.get_repo().view(conversation_id)
             if conv is None:
@@ -418,7 +418,7 @@ def _register_profile_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         limit: int = 50,
     ) -> str:
         async def _run() -> str:
-            from polylogue.lib.session_profile import build_session_profile
+            from polylogue.lib.session_products import build_session_profile
 
             kwargs: dict[str, Any] = {"limit": hooks.clamp_limit(limit)}
             if provider:

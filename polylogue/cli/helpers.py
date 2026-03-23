@@ -130,6 +130,8 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         )
         if archive_stats.pending_embedding_conversations:
             embedding_line += f", pending {archive_stats.pending_embedding_conversations:,}"
+        if archive_stats.stale_embedding_messages:
+            embedding_line += f", stale {archive_stats.stale_embedding_messages:,}"
         lines.append(embedding_line)
 
     if verbose:

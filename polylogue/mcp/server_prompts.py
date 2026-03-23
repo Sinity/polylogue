@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.mcp.query_support import build_query_spec
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -24,9 +24,9 @@ def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         limit: int = 50,
     ) -> str:
         repo = hooks.get_repo()
-        spec = ConversationQuerySpec(
-            query_terms=("error",),
-            providers=(provider,) if provider else (),
+        spec = build_query_spec(
+            query="error",
+            provider=provider,
             since=since,
             limit=hooks.clamp_limit(limit),
         )
@@ -67,7 +67,7 @@ Error contexts:
     async def summarize_week(limit: int = 100) -> str:
         repo = hooks.get_repo()
         week_ago = (datetime.now(tz=timezone.utc) - timedelta(days=7)).isoformat()
-        spec = ConversationQuerySpec(
+        spec = build_query_spec(
             since=week_ago,
             limit=hooks.clamp_limit(limit),
         )
@@ -98,7 +98,7 @@ Focus on actionable insights and patterns, not exhaustive summaries.
     @mcp.prompt()
     async def extract_code(language: str = "", limit: int = 50) -> str:
         repo = hooks.get_repo()
-        convs = await ConversationQuerySpec(limit=hooks.clamp_limit(limit)).list(repo)
+        convs = await build_query_spec(limit=hooks.clamp_limit(limit)).list(repo)
 
         code_snippets: list[dict[str, str]] = []
         for conv in convs:
@@ -166,8 +166,8 @@ Conversation 2:
     @mcp.prompt()
     async def extract_patterns(provider: str | None = None, limit: int = 30) -> str:
         repo = hooks.get_repo()
-        spec = ConversationQuerySpec(
-            providers=(provider,) if provider else (),
+        spec = build_query_spec(
+            provider=provider,
             limit=hooks.clamp_limit(limit),
         )
         convs = await spec.list(repo)

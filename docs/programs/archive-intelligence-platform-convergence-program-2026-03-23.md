@@ -1,8 +1,8 @@
 # Archive Intelligence Platform Convergence Program
 
 Date: 2026-03-23
-Status: active execution program
-Role: canonical integrated implementation campaign after the latest semantic-query dogfooding wave
+Status: executed implementation program
+Role: canonical execution record for the archive-intelligence convergence campaign
 
 Absorbs and supersedes as the live execution queue:
 
@@ -219,11 +219,42 @@ Completed so far in the live codebase:
   - live-archive-slow
   - memory-budget
 
-Still open from this program:
+Executed from this program in the current wave:
 
-- action-aware retrieval/FTS and embeddings convergence
-- broader runtime state-band and backend narrowing work
-- remaining schema-tooling/operator convergence
+- persisted action-aware FTS now exists alongside message FTS, with one-time
+  backfill and content-block trigger maintenance
+- hybrid retrieval now deliberately fuses dialogue FTS, action FTS, and vector
+  similarity when embeddings are available
+- runtime raw-state mutation now converges on a typed update surface instead of
+  separate parse/validate mutation helpers
+- schema operator workflow and roundtrip proof now share typed operator
+  workflow/result surfaces more directly
+- named validation lanes and RSS-budget proving are in place and exercised
+- a durable archive-wide `action_events` read model now exists, with explicit
+  materializer versioning, rebuild lifecycle helpers, and durable rows written
+  alongside conversation persistence
+- grouped action/tool stats, semantic query filtering, action-text retrieval,
+  and attribution now converge on that shared action-event surface instead of
+  mixing persisted search structures and runtime-only derivation
+- action-event readiness is now explicit; query and stats surfaces fall back to
+  runtime semantic hydration when the durable read model is absent, stale, or
+  mid-rebuild, which prevents incorrect empty results and avoids hard failures
+  during concurrent archive access
+- embedding retrieval health is now freshness/provenance-aware rather than
+  coverage-only:
+  - stale embedding counts
+  - missing provenance counts
+  - embedded-at bounds
+  - model/dimension provenance
+  - machine-readable `embed --stats --json`
+  - archive/MCP/health exposure
+- schema ensure now commits the action-event/FTS maintenance it performs, and
+  opportunistic backfill degrades safely under database-lock contention instead
+  of crashing read-only operator flows
+
+This program is now complete. The follow-on live queue is the broader
+repository-wide refactor program in
+`platform-wide-architecture-and-refactoring-program-2026-03-23.md`.
 
 ## Step 1: First-Class Action/Event Layer
 
