@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,6 +37,7 @@ from polylogue.rendering.semantic_proof_surfaces import (
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
@@ -437,7 +437,7 @@ def prove_semantic_surface_suite(
             surface_filters=list(resolved_surfaces),
         )
 
-    return asyncio.run(
+    return run_coroutine_sync(
         _prove_semantic_surface_suite_async(
             db_path=effective_db_path,
             archive_root=archive_root or default_archive_root(),

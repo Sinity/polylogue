@@ -30,7 +30,7 @@ def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             since=since,
             limit=hooks.clamp_limit(limit),
         )
-        convs = await spec.build_filter(repo).list()
+        convs = await spec.list(repo)
 
         error_contexts = []
         for conv in convs:
@@ -71,7 +71,7 @@ Error contexts:
             since=week_ago,
             limit=hooks.clamp_limit(limit),
         )
-        convs = await spec.build_filter(repo).list()
+        convs = await spec.list(repo)
 
         by_provider: dict[str, int] = {}
         total_messages = 0
@@ -98,7 +98,7 @@ Focus on actionable insights and patterns, not exhaustive summaries.
     @mcp.prompt()
     async def extract_code(language: str = "", limit: int = 50) -> str:
         repo = hooks.get_repo()
-        convs = await ConversationQuerySpec(limit=hooks.clamp_limit(limit)).build_filter(repo).list()
+        convs = await ConversationQuerySpec(limit=hooks.clamp_limit(limit)).list(repo)
 
         code_snippets: list[dict[str, str]] = []
         for conv in convs:
@@ -170,7 +170,7 @@ Conversation 2:
             providers=(provider,) if provider else (),
             limit=hooks.clamp_limit(limit),
         )
-        convs = await spec.build_filter(repo).list()
+        convs = await spec.list(repo)
 
         summaries = []
         for conv in convs:
