@@ -43,6 +43,7 @@ from polylogue.storage.backends.queries import (
 )
 from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.state_views import RawConversationState
 from polylogue.storage.store import (
     ArtifactObservationRecord,
     AttachmentRecord,
@@ -50,7 +51,6 @@ from polylogue.storage.store import (
     ConversationRecord,
     MessageRecord,
     RawConversationRecord,
-    RawConversationState,
     RunRecord,
 )
 from polylogue.types import Provider, ValidationMode, ValidationStatus

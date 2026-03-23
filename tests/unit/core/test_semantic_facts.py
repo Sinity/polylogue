@@ -15,7 +15,8 @@ from polylogue.lib.semantic_facts import (
     build_projection_semantic_facts,
 )
 from polylogue.lib.session_profile import build_session_profile
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, ConversationRenderProjection, MessageRecord
+from polylogue.storage.state_views import ConversationRenderProjection
+from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 
 def _semantic_conversation() -> Conversation:

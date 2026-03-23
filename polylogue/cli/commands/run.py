@@ -37,7 +37,7 @@ from polylogue.pipeline.observers import (
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, plan_sources, run_sources
 from polylogue.protocols import ProgressCallback
 from polylogue.sources import DriveError
-from polylogue.storage.store import PlanResult, RunResult
+from polylogue.storage.state_views import PlanResult, RunResult
 from polylogue.sync_bridge import run_coroutine_sync
 
 

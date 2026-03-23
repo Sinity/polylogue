@@ -34,7 +34,8 @@ from polylogue.schemas.verification_models import (
     SchemaVerificationReport,
 )
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.store import ArtifactCohortSummary, ArtifactObservationRecord
+from polylogue.storage.state_views import ArtifactCohortSummary
+from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 from tests.infra.storage_records import DbFactory
 

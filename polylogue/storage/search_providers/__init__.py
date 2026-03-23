@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from polylogue.protocols import SearchProvider, VectorProvider
 
 logger = get_logger(__name__)
+_sqlite_vec_missing_warned = False
 
 
 def create_search_provider(
@@ -66,6 +67,8 @@ def create_vector_provider(
     Returns:
         SqliteVecProvider if configured and available, None otherwise
     """
+    global _sqlite_vec_missing_warned
+
     # Resolve Voyage key with priority: explicit arg > config > env
     voyage_key = voyage_api_key
     if voyage_key is None and config and config.index_config:
@@ -80,7 +83,9 @@ def create_vector_provider(
     try:
         import sqlite_vec  # noqa: F401
     except ImportError:
-        logger.warning("sqlite-vec not installed, vector search unavailable")
+        if not _sqlite_vec_missing_warned:
+            logger.warning("sqlite-vec not installed, vector search unavailable")
+            _sqlite_vec_missing_warned = True
         return None
 
     # Import here to avoid circular imports and loading when not needed

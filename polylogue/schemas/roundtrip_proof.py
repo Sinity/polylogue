@@ -364,7 +364,7 @@ async def _prove_provider_roundtrip(
             persisted_attachments = 0
             touched_raw_ids: set[str] = set()
             for parsed_conversation, source_name, raw_id, payload_provider in parsed_items:
-                _cid, result_counts, _content_changed = await prepare_records(
+                persisted = await prepare_records(
                     parsed_conversation,
                     source_name,
                     archive_root=workspace.archive_root,
@@ -372,9 +372,9 @@ async def _prove_provider_roundtrip(
                     repository=repository,
                     raw_id=raw_id,
                 )
-                persisted_conversations += result_counts["conversations"]
-                persisted_messages += result_counts["messages"]
-                persisted_attachments += result_counts["attachments"]
+                persisted_conversations += persisted.counts["conversations"]
+                persisted_messages += persisted.counts["messages"]
+                persisted_attachments += persisted.counts["attachments"]
                 touched_raw_ids.add(raw_id)
                 await repository.mark_raw_parsed(raw_id, payload_provider=payload_provider)
             stages["prepare_persist"] = _stage_ok(

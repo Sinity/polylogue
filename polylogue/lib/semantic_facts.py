@@ -12,7 +12,8 @@ from polylogue.lib.roles import Role
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary, Message
     from polylogue.lib.viewports import ReasoningTrace, TokenUsage, ToolCall
-    from polylogue.storage.store import ConversationRenderProjection, MessageRecord
+    from polylogue.storage.state_views import ConversationRenderProjection
+    from polylogue.storage.store import MessageRecord
 
 
 def normalized_role_label(value: object) -> str:

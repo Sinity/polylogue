@@ -96,7 +96,7 @@ async def process_raw_batch(
                 return
             convo_item, source_name_item, raw_id = item
             try:
-                convo_id, result_counts, content_changed = await prepare_records(
+                persisted = await prepare_records(
                     convo_item,
                     source_name_item,
                     archive_root=service.archive_root,
@@ -105,7 +105,11 @@ async def process_raw_batch(
                     raw_id=raw_id,
                     cache=cache,
                 )
-                await result.merge_result(convo_id, result_counts, content_changed)
+                await result.merge_result(
+                    persisted.conversation_id,
+                    persisted.counts,
+                    persisted.content_changed,
+                )
                 async with tracking_lock:
                     succeeded_raw_ids.add(raw_id)
             except Exception as exc:
