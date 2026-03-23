@@ -35,9 +35,6 @@ def _build_conversation_filters(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
-    has_file_ops: bool = False,
-    has_git_ops: bool = False,
-    has_subagent: bool = False,
 ) -> tuple[str, list[str | int | float]]:
     """Build WHERE clause and params for conversation queries.
 
@@ -120,22 +117,6 @@ def _build_conversation_filters(
                 " AND cb.semantic_type = ?)"
             )
             params.append(str(term))
-    if has_file_ops:
-        where_clauses.append(
-            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-            " AND cb.semantic_type IN ('file_read', 'file_write', 'file_edit'))"
-        )
-    if has_git_ops:
-        where_clauses.append(
-            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-            " AND cb.semantic_type = 'git')"
-        )
-    if has_subagent:
-        where_clauses.append(
-            f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-            " AND cb.semantic_type = 'subagent')"
-        )
-
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     return where_sql, params
 

@@ -175,19 +175,16 @@ class ConversationFilterBuilderMixin:
         return self
 
     def has_file_operations(self) -> ConversationFilter:
-        """Filter to conversations containing file read/write/edit operations (SQL pushdown)."""
-        self._filter_has_file_ops = True
-        return self
+        """Filter to conversations containing file read/write/edit actions."""
+        return self.action("file_read", "file_write", "file_edit")
 
     def has_git_operations(self) -> ConversationFilter:
-        """Filter to conversations containing git operations (SQL pushdown)."""
-        self._filter_has_git_ops = True
-        return self
+        """Filter to conversations containing git actions."""
+        return self.action("git")
 
     def has_subagent_spawns(self) -> ConversationFilter:
-        """Filter to conversations that spawned subagents via Task tool (SQL pushdown)."""
-        self._filter_has_subagent = True
-        return self
+        """Filter to conversations that spawned subagents."""
+        return self.action("subagent")
 
     def parent(self, conversation_id: str) -> ConversationFilter:
         """Filter to conversations that are children of the given parent."""

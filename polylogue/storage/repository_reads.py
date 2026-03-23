@@ -120,9 +120,6 @@ class RepositoryReadMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> builtins.list[ConversationSummary]:
         return await self.list_summaries_by_query(
             ConversationRecordQuery(
@@ -142,9 +139,6 @@ class RepositoryReadMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
             )
         )
 
@@ -166,9 +160,6 @@ class RepositoryReadMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> AsyncIterator[builtins.list[ConversationSummary]]:
         offset = 0
         while True:
@@ -189,9 +180,6 @@ class RepositoryReadMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
             )
             if not page:
                 break
@@ -224,9 +212,6 @@ class RepositoryReadMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> builtins.list[Conversation]:
         return await self.list_by_query(
             ConversationRecordQuery(
@@ -245,9 +230,6 @@ class RepositoryReadMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
             )
         )
 
@@ -269,9 +251,6 @@ class RepositoryReadMixin:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> int:
         return await self.count_by_query(
             ConversationRecordQuery(
@@ -288,9 +267,6 @@ class RepositoryReadMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
             )
         )
 

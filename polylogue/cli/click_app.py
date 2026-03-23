@@ -74,9 +74,6 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option("--has", "has_type", multiple=True, help="Filter by content: thinking (reasoning), tools (calls), summary, attachments")
 @click.option("--has-tool-use", "filter_has_tool_use", is_flag=True, help="Only conversations with tool use (SQL pushdown)")
 @click.option("--has-thinking", "filter_has_thinking", is_flag=True, help="Only conversations with thinking blocks (SQL pushdown)")
-@click.option("--has-file-ops", "filter_has_file_ops", is_flag=True, help="Only conversations with file read/write/edit ops")
-@click.option("--has-git-ops", "filter_has_git_ops", is_flag=True, help="Only conversations with git operations")
-@click.option("--has-subagent", "filter_has_subagent", is_flag=True, help="Only conversations that spawned subagents")
 @click.option("--min-messages", type=int, help="Minimum message count")
 @click.option("--max-messages", type=int, help="Maximum message count")
 @click.option("--min-words", type=int, help="Minimum total word count")
@@ -152,9 +149,6 @@ def cli(
     has_type: tuple[str, ...],
     filter_has_tool_use: bool,
     filter_has_thinking: bool,
-    filter_has_file_ops: bool,
-    filter_has_git_ops: bool,
-    filter_has_subagent: bool,
     min_messages: int | None,
     max_messages: int | None,
     min_words: int | None,
@@ -201,7 +195,7 @@ def cli(
         polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
-        polylogue --path /realm/project/polylogue/README.md --has-file-ops --list
+        polylogue --path /realm/project/polylogue/README.md --action file_read --list
         polylogue --action search --action file_edit --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
 
