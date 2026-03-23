@@ -202,6 +202,8 @@ Completed so far in the live codebase:
 - post-filter conversation retrieval now batches candidate hydration for
   date-sorted limited semantic queries, which removed the live `earlyoom`
   failure on `--action file_edit --stats-by tool --format json --limit 50`
+- explicit retrieval lanes now exist for dialogue FTS, action-text retrieval,
+  and hybrid retrieval through the canonical query surface
 
 Still open from this program:
 

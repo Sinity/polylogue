@@ -6,10 +6,12 @@ import builtins
 import random
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from heapq import heappush, heappushpop
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from polylogue.logging import get_logger
 from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
@@ -40,6 +42,7 @@ class ConversationQueryPlan:
     query_terms: tuple[str, ...] = ()
     contains_terms: tuple[str, ...] = ()
     negative_terms: tuple[str, ...] = ()
+    retrieval_lane: str = "auto"
     path_terms: tuple[str, ...] = ()
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
@@ -153,6 +156,8 @@ class ConversationQueryPlan:
             parts.append(f"contains: {', '.join(self.fts_terms)}")
         if self.negative_terms:
             parts.append(f"exclude text: {', '.join(self.negative_terms)}")
+        if self.retrieval_lane != "auto":
+            parts.append(f"retrieval: {self.retrieval_lane}")
         if self.path_terms:
             parts.append(f"path: {', '.join(self.path_terms)}")
         if self.action_terms:
@@ -277,6 +282,8 @@ class ConversationQueryPlan:
         )
 
     def needs_content_loading(self) -> bool:
+        if self.fts_terms and self.retrieval_lane in {"actions", "hybrid"}:
+            return True
         if self.has_types and any(kind in ("thinking", "tools", "attachments") for kind in self.has_types):
             return True
         if self.negative_terms or self.predicates or self.similar_text:
@@ -477,6 +484,14 @@ class ConversationQueryPlan:
     ) -> tuple[bool, builtins.list[Conversation | ConversationSummary]]:
         if not self.fts_terms:
             return False, []
+        if self.retrieval_lane == "actions":
+            if summaries:
+                return False, []
+            return True, await self._search_action_results(repository, limit=self._search_limit())
+        if self.retrieval_lane == "hybrid":
+            if summaries:
+                return False, []
+            return True, await self._search_hybrid_results(repository, limit=self._search_limit())
         query = " ".join(self.fts_terms)
         provider_names = list(_provider_values(self.providers)) or None
         try:
@@ -507,6 +522,98 @@ class ConversationQueryPlan:
         if summaries:
             return await repository.list_summaries_by_query(request)
         return await repository.list_by_query(request)
+
+    def _search_query_text(self) -> str:
+        return " ".join(term.strip() for term in self.fts_terms if term.strip()).strip()
+
+    def _search_query_terms(self) -> tuple[str, ...]:
+        return tuple(term.lower() for term in self.fts_terms if term.strip())
+
+    def _score_action_search_text(self, search_text: str, *, query_text: str, terms: tuple[str, ...]) -> float:
+        haystack = search_text.lower()
+        score = 0.0
+        if query_text and query_text.lower() in haystack:
+            score += 20.0 + len(query_text.split())
+        for term in terms:
+            if term in haystack:
+                score += 4.0
+        return score
+
+    def _conversation_action_search_score(self, conversation: Conversation, *, query_text: str, terms: tuple[str, ...]) -> float:
+        from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+        facts = build_conversation_semantic_facts(conversation)
+        matches = [
+            self._score_action_search_text(action.search_text, query_text=query_text, terms=terms)
+            for action in facts.action_events
+            if action.search_text
+        ]
+        positive = [score for score in matches if score > 0]
+        if not positive:
+            return 0.0
+        return max(positive) + min(len(positive) - 1, 5)
+
+    async def _search_action_results(
+        self,
+        repository: ConversationRepository,
+        *,
+        limit: int,
+    ) -> builtins.list[Conversation]:
+        request, sql_pushed = self._candidate_record_query()
+        batch_limit = self._candidate_batch_limit()
+        offset = 0
+        query_text = self._search_query_text()
+        terms = self._search_query_terms()
+        ranked: list[tuple[float, int, Conversation]] = []
+        counter = 0
+
+        while True:
+            batch = await repository.list_by_query(request.with_limit(batch_limit).with_offset(offset))
+            if not batch:
+                break
+            for conversation in self._apply_common_filters(batch, sql_pushed=sql_pushed):
+                score = self._conversation_action_search_score(conversation, query_text=query_text, terms=terms)
+                if score <= 0:
+                    continue
+                entry = (score, counter, conversation)
+                counter += 1
+                if len(ranked) < limit:
+                    heappush(ranked, entry)
+                else:
+                    heappushpop(ranked, entry)
+            if len(batch) < batch_limit:
+                break
+            offset += batch_limit
+
+        ranked.sort(key=lambda item: (item[0], item[2].updated_at or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+        return [conversation for _score, _counter, conversation in ranked]
+
+    async def _search_hybrid_results(
+        self,
+        repository: ConversationRepository,
+        *,
+        limit: int,
+    ) -> builtins.list[Conversation]:
+        query = self._search_query_text()
+        provider_names = list(_provider_values(self.providers)) or None
+        text_results = await repository.search(query, limit=limit * 3, providers=provider_names)
+        action_results = await self._search_action_results(repository, limit=limit * 3)
+
+        text_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(text_results, start=1)]
+        action_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(action_results, start=1)]
+        fused_ids = [
+            conversation_id
+            for conversation_id, _score in reciprocal_rank_fusion(text_ranked, action_ranked)
+        ][:limit]
+
+        text_by_id = {str(conversation.id): conversation for conversation in text_results}
+        action_by_id = {str(conversation.id): conversation for conversation in action_results}
+        ordered: list[Conversation] = []
+        for conversation_id in fused_ids:
+            conversation = action_by_id.get(conversation_id) or text_by_id.get(conversation_id)
+            if conversation is not None:
+                ordered.append(conversation)
+        return ordered
 
     async def _fetch_batched_filtered_conversations(
         self,
