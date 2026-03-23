@@ -169,23 +169,77 @@ def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachme
         "msg-thought",
         "msg-code",
     ]
-    assert [block.type for block in result.messages[0].content_blocks] == ["text"]
+    assert [block.type for block in result.messages[0].content_blocks] == ["text", "document"]
     assert [block.type for block in result.messages[1].content_blocks] == ["thinking"]
     assert [block.type for block in result.messages[2].content_blocks] == ["text", "code", "tool_result"]
-    assert result.messages[0].provider_meta["content_blocks"] == [{"type": "text", "text": "question"}]
-    assert result.messages[1].provider_meta["content_blocks"] == [{"type": "thinking", "text": "reasoning"}]
+    user_blocks = result.messages[0].provider_meta["content_blocks"]
+    assert user_blocks[0]["type"] == "text"
+    assert user_blocks[0]["text"] == "question"
+    assert user_blocks[1]["type"] == "document"
+    assert user_blocks[1]["metadata"]["driveDocument"]["id"] == "doc-1"
+
+    thought_blocks = result.messages[1].provider_meta["content_blocks"]
+    assert thought_blocks[0]["type"] == "thinking"
+    assert thought_blocks[0]["text"] == "reasoning"
     assert result.messages[1].provider_meta["reasoning_traces"] == [
         {"text": "reasoning", "token_count": 32, "provider": "gemini"}
     ]
-    assert result.messages[2].provider_meta["content_blocks"] == [
-        {"type": "text", "text": "inline"},
-        {"type": "code", "text": "print('ok')"},
-        {"type": "tool_result", "text": "ok"},
-    ]
+    code_blocks = result.messages[2].provider_meta["content_blocks"]
+    assert [block["type"] for block in code_blocks] == ["text", "code", "tool_result"]
+    assert code_blocks[0]["text"] == "inline"
+    assert code_blocks[1]["text"] == "print('ok')"
+    assert code_blocks[2]["text"] == "ok"
     assert len(result.attachments) == 1
     assert result.attachments[0].provider_attachment_id == "doc-1"
     assert result.attachments[0].mime_type == "application/pdf"
     assert result.attachments[0].size_bytes == 12
+
+
+def test_parse_chunked_prompt_preserves_attachment_only_chunks_and_chunk_timestamps() -> None:
+    payload = {
+        "chunkedPrompt": {
+            "chunks": [
+                {
+                    "id": "msg-doc",
+                    "role": "user",
+                    "createTime": "2024-01-15T10:30:00Z",
+                    "driveDocument": {"id": "doc-1", "name": "notes.txt"},
+                },
+                {
+                    "id": "msg-inline",
+                    "role": "user",
+                    "createTime": "2024-01-15T10:31:00Z",
+                    "inlineFile": {"mimeType": "text/plain", "data": "aGVsbG8="},
+                },
+                {
+                    "id": "msg-video",
+                    "role": "model",
+                    "createTime": "2024-01-15T10:32:00Z",
+                    "youtubeVideo": {"id": "vid-1"},
+                },
+            ]
+        }
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    assert [message.provider_message_id for message in result.messages] == ["msg-doc", "msg-inline", "msg-video"]
+    assert [message.timestamp for message in result.messages] == [
+        "2024-01-15T10:30:00Z",
+        "2024-01-15T10:31:00Z",
+        "2024-01-15T10:32:00Z",
+    ]
+    assert [message.text for message in result.messages] == [None, None, None]
+    assert result.created_at == "2024-01-15T10:30:00Z"
+    assert result.updated_at == "2024-01-15T10:32:00Z"
+    assert [block.type for block in result.messages[0].content_blocks] == ["document"]
+    assert len(result.attachments) == 3
+    assert result.attachments[0].provider_attachment_id == "doc-1"
+    assert result.attachments[1].provider_attachment_id.startswith("inline-file-")
+    assert result.attachments[1].mime_type == "text/plain"
+    assert result.attachments[1].size_bytes == 5
+    assert result.attachments[2].provider_attachment_id == "youtube-video-vid-1"
+    assert result.attachments[2].mime_type == "video/youtube"
 
 
 def test_parse_chunked_prompt_skips_chunks_without_text_or_role() -> None:

@@ -146,6 +146,32 @@ def test_apply_drive_attachments_contract(tmp_path: Path) -> None:
     assert [call.args[0] for call in client.download_to_path.call_args_list] == ["keep-meta", "fill-meta"]
 
 
+def test_apply_drive_attachments_skips_inline_and_external_media(tmp_path: Path) -> None:
+    conversation = _conversation(
+        _attachment(
+            "inline-file-1",
+            mime_type="text/plain",
+            provider_meta={"attachment_kind": "inline_file"},
+        ),
+        _attachment(
+            "youtube-video-1",
+            mime_type="video/youtube",
+            provider_meta={"attachment_kind": "youtube_video"},
+        ),
+    )
+    client = MagicMock(spec=DriveClient)
+
+    _apply_drive_attachments(
+        convo=conversation,
+        client=client,
+        archive_root=tmp_path,
+        download_assets=True,
+    )
+
+    client.download_to_path.assert_not_called()
+    assert all(attachment.path is None for attachment in conversation.attachments)
+
+
 def test_iter_drive_conversations_returns_empty_without_folder(tmp_path: Path) -> None:
     assert list(
         iter_drive_conversations(
