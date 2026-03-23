@@ -221,9 +221,26 @@ Completed so far in the live codebase:
 
 Still open from this program:
 
-- action-aware retrieval/FTS and embeddings convergence
-- broader runtime state-band and backend narrowing work
-- remaining schema-tooling/operator convergence
+- a durable archive-wide action/event read model above raw tool blocks still
+  does not exist; action truth is canonical at query/runtime time, but not yet
+  persisted as its own first-class archive surface
+- query/grouping/stats/attribution still rely on a mix of persisted search
+  structures and runtime semantic hydration rather than one shared action/event
+  read model
+- embedding control is now more explicit, but freshness/provenance is still not
+  exposed as a first-class retrieval-health surface beyond coverage stats
+
+Executed from this program in the current wave:
+
+- persisted action-aware FTS now exists alongside message FTS, with one-time
+  backfill and content-block trigger maintenance
+- hybrid retrieval now deliberately fuses dialogue FTS, action FTS, and vector
+  similarity when embeddings are available
+- runtime raw-state mutation now converges on a typed update surface instead of
+  separate parse/validate mutation helpers
+- schema operator workflow and roundtrip proof now share typed operator
+  workflow/result surfaces more directly
+- named validation lanes and RSS-budget proving are in place and exercised
 
 ## Step 1: First-Class Action/Event Layer
 
