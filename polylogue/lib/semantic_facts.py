@@ -7,13 +7,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from polylogue.lib.action_events import ActionEvent, build_action_events
+from polylogue.lib.action_events import (
+    ActionEvent,
+    build_action_events,
+    build_tool_calls_from_content_blocks,
+)
 from polylogue.lib.roles import Role
 from polylogue.lib.viewports import (
     ReasoningTrace,
     ToolCall,
-    ToolCategory,
-    classify_tool,
 )
 
 if TYPE_CHECKING:
@@ -73,60 +75,11 @@ def message_model_name(message: Message) -> str | None:
     return str(model) if model else None
 
 
-def _tool_category_from_semantic(value: object) -> ToolCategory | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return ToolCategory(value)
-    except ValueError:
-        return None
-
-
 def _message_content_block_tool_calls(message: Message) -> tuple[ToolCall, ...]:
-    tool_result_outputs: dict[str, str] = {}
-    for block in message.content_blocks:
-        if str(block.get("type")) != "tool_result":
-            continue
-        tool_id = block.get("tool_id")
-        text = block.get("text")
-        if isinstance(tool_id, str) and tool_id and isinstance(text, str) and text:
-            tool_result_outputs.setdefault(tool_id, text)
-
-    calls: list[ToolCall] = []
-    for block in message.content_blocks:
-        if str(block.get("type")) != "tool_use":
-            continue
-        name = block.get("tool_name")
-        if not isinstance(name, str) or not name:
-            continue
-        tool_id = block.get("tool_id")
-        tool_input = block.get("tool_input")
-        normalized_input = tool_input if isinstance(tool_input, dict) else {}
-        semantic_category = _tool_category_from_semantic(block.get("semantic_type"))
-        classified_category = classify_tool(name, normalized_input)
-        category = classified_category if semantic_category in (None, ToolCategory.OTHER) else semantic_category
-        raw = {
-            "type": block.get("type"),
-            "tool_name": name,
-            "tool_id": tool_id,
-            "tool_input": normalized_input,
-            "media_type": block.get("media_type"),
-            "metadata": block.get("metadata"),
-            "semantic_type": block.get("semantic_type"),
-            "text": block.get("text"),
-        }
-        calls.append(
-            ToolCall(
-                name=name,
-                id=tool_id if isinstance(tool_id, str) and tool_id else None,
-                input=normalized_input,
-                output=tool_result_outputs.get(tool_id) if isinstance(tool_id, str) else None,
-                category=category,
-                provider=message.provider,
-                raw=raw,
-            )
-        )
-    return tuple(calls)
+    return build_tool_calls_from_content_blocks(
+        provider=message.provider,
+        content_blocks=message.content_blocks,
+    )
 
 
 def _message_content_block_reasoning_traces(message: Message) -> tuple[ReasoningTrace, ...]:
