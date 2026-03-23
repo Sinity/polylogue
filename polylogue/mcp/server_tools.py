@@ -41,6 +41,7 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def search(
         query: str,
         limit: int = 10,
+        retrieval_lane: str | None = None,
         provider: str | None = None,
         since: str | None = None,
         path: str | None = None,
@@ -59,6 +60,7 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             ops = hooks.get_archive_ops()
             spec = ConversationQuerySpec(
                 query_terms=(query,),
+                retrieval_lane=retrieval_lane or "auto",
                 providers=(provider,) if provider else (),
                 since=since,
                 path_terms=(path,) if path else (),
@@ -89,6 +91,7 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def list_conversations(
         limit: int = 10,
+        retrieval_lane: str | None = None,
         provider: str | None = None,
         since: str | None = None,
         tag: str | None = None,
@@ -110,6 +113,7 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             ops = hooks.get_archive_ops()
             spec = ConversationQuerySpec(
                 providers=(provider,) if provider else (),
+                retrieval_lane=retrieval_lane or "auto",
                 tags=(tag,) if tag else (),
                 title=title,
                 since=since,

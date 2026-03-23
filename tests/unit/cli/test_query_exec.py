@@ -77,6 +77,7 @@ def _make_params(**overrides) -> dict:
         "query": (),
         "contains": (),
         "exclude_text": (),
+        "retrieval_lane": None,
         "provider": None,
         "exclude_provider": None,
         "tag": None,
@@ -383,6 +384,93 @@ async def test_query_plan_batches_post_filter_candidate_fetches() -> None:
     request = repo.list_by_query.await_args.args[0]
     assert request.limit == 100
     assert request.offset == 0
+
+
+@pytest.mark.asyncio
+async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> None:
+    from polylogue.lib.query_spec import ConversationQuerySpec
+
+    matching = Conversation(
+        id="conv-actions-lane-match",
+        provider="claude-code",
+        title="Action lane match",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m1",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"}, "semantic_type": "shell"},
+                    ],
+                ),
+            ]
+        ),
+    )
+    non_matching = Conversation(
+        id="conv-actions-lane-miss",
+        provider="claude-code",
+        title="Action lane miss",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="x1",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_read"},
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    repo = MagicMock()
+    repo.search = AsyncMock(return_value=[])
+    repo.list_by_query = AsyncMock(side_effect=[[matching, non_matching], []])
+    plan = ConversationQuerySpec(query_terms=("pytest", "semantic_facts.py"), retrieval_lane="actions", limit=10).to_plan()
+
+    results = await plan.list(repo)
+
+    assert [conversation.id for conversation in results] == ["conv-actions-lane-match"]
+
+
+@pytest.mark.asyncio
+async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() -> None:
+    from polylogue.lib.query_spec import ConversationQuerySpec
+
+    text_hit = Conversation(
+        id="conv-text-hit",
+        provider="claude-code",
+        title="Text hit",
+        messages=MessageCollection(messages=[Message(id="t1", role="assistant", provider="claude-code", text="pytest failure in semantic facts test")]),
+    )
+    action_hit = Conversation(
+        id="conv-action-hit",
+        provider="claude-code",
+        title="Action hit",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"}, "semantic_type": "shell"},
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    repo = MagicMock()
+    repo.search = AsyncMock(return_value=[text_hit])
+    repo.list_by_query = AsyncMock(side_effect=[[action_hit], []])
+    plan = ConversationQuerySpec(query_terms=("pytest", "semantic_facts.py"), retrieval_lane="hybrid", limit=10).to_plan()
+
+    results = await plan.list(repo)
+
+    assert {conversation.id for conversation in results} == {"conv-text-hit", "conv-action-hit"}
 
 
 @pytest.mark.asyncio
