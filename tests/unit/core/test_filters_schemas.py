@@ -29,7 +29,6 @@ from polylogue.schemas.validator import (
     validate_provider_export,
 )
 
-
 # =============================================================================
 # UNIFIED.PY TESTS
 # =============================================================================
@@ -106,11 +105,10 @@ class TestUnifiedExtractReasoningTraces:
 class TestUnifiedExtractContentBlocks:
     @pytest.mark.parametrize("content,expected_len,expected_types,description", CONTENT_BLOCKS_CASES)
     def test_extract_content_blocks(self, content, expected_len, expected_types, description):
-        from polylogue.lib.viewports import ContentType
         result = extract_content_blocks(content)
         assert len(result) == expected_len
         if expected_types:
-            for block, expected_type in zip(result, expected_types):
+            for block, expected_type in zip(result, expected_types, strict=True):
                 assert block.type.value == expected_type
 
 

@@ -12,9 +12,10 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from polylogue.lib.semantic_facts import ConversationSemanticFacts, build_conversation_semantic_facts
+
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.lib.viewports import ToolCall
+    from polylogue.lib.models import Conversation
 
 _BRANCH_PATTERN = re.compile(r"git\s+(?:checkout|switch)\s+(?:-[bc]\s+)?(\S+)")
 _LANGUAGE_EXTENSIONS = {
@@ -25,15 +26,6 @@ _LANGUAGE_EXTENSIONS = {
     ".sql": "sql", ".r": "r", ".R": "r", ".toml": "toml", ".yaml": "yaml",
     ".json": "json", ".md": "markdown", ".html": "html", ".css": "css",
 }
-
-
-def _get_tool_calls(message: Message) -> list[ToolCall]:
-    """Extract tool calls from a message's harmonized viewport."""
-    harmonized = message.harmonized
-    if harmonized is None:
-        return []
-    calls = getattr(harmonized, "tool_calls", None)
-    return list(calls) if calls else []
 
 
 def _repo_root_from_path(path: str) -> str | None:
@@ -68,18 +60,23 @@ class ConversationAttribution:
     canonical_projects: tuple[str, ...]  # resolved project names (e.g. "sinex", "sinnix")
 
 
-def extract_attribution(conversation: Conversation) -> ConversationAttribution:
+def extract_attribution(
+    conversation: Conversation,
+    *,
+    facts: ConversationSemanticFacts | None = None,
+) -> ConversationAttribution:
     """Extract path/repo/branch attribution from all tool calls in a conversation."""
+    semantic_facts = facts or build_conversation_semantic_facts(conversation)
     repo_paths: set[str] = set()
     cwd_paths: set[str] = set()
     branch_names: set[str] = set()
     file_paths: set[str] = set()
     languages: set[str] = set()
 
-    for message in conversation.messages:
-        for tc in _get_tool_calls(message):
+    for message in semantic_facts.message_facts:
+        for tc in message.tool_calls:
             # Collect affected paths
-            for path in tc.affected_paths:
+            for path in message.affected_paths:
                 file_paths.add(path)
                 lang = _language_from_path(path)
                 if lang:
@@ -101,12 +98,12 @@ def extract_attribution(conversation: Conversation) -> ConversationAttribution:
                         branch_names.add(branch)
 
     # Scan assistant text for file paths and language mentions (catches pure-conversation sessions)
-    _REALM_PATH_PATTERN = re.compile(r'/realm/project/[^\s,;:)\]]+')
-    _LANGUAGE_NAMES = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
-    for message in conversation.messages:
+    realm_path_pattern = re.compile(r'/realm/project/[^\s,;:)\]]+')
+    language_names = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
+    for message in semantic_facts.message_facts:
         if not message.is_assistant or not message.text:
             continue
-        for match in _REALM_PATH_PATTERN.finditer(message.text):
+        for match in realm_path_pattern.finditer(message.text):
             path = match.group().rstrip(".,;:)'\">`")
             # Skip template/placeholder paths like /realm/project/<name>
             if "<" in path or ">" in path:
@@ -119,7 +116,7 @@ def extract_attribution(conversation: Conversation) -> ConversationAttribution:
             if repo:
                 repo_paths.add(repo)
         text_lower = message.text.lower()
-        for lang_name in _LANGUAGE_NAMES:
+        for lang_name in language_names:
             if lang_name in text_lower:
                 languages.add(lang_name)
 

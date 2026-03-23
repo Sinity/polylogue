@@ -15,6 +15,7 @@ from polylogue.rendering.semantic_proof import (
     prove_semantic_surface_suite,
     resolve_semantic_surfaces,
 )
+from polylogue.rendering.semantic_surface_registry import semantic_surface_spec
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.storage_records import ConversationBuilder
@@ -135,6 +136,31 @@ def test_export_json_surface_detects_message_loss(db_path):
         "role_entries",
         "timestamp_values",
     }
+
+
+def test_export_surface_proof_uses_declared_contract_registry(db_path):
+    """Proof check metrics come from the declared contract list for that surface."""
+    (
+        ConversationBuilder(db_path, "conv-semantic-contracts")
+        .provider("chatgpt")
+        .title("Contract Surface")
+        .updated_at("2026-03-22T12:11:00+00:00")
+        .add_message("m1", role="user", text="hello")
+        .add_message("m2", role="assistant", text="world")
+        .save()
+    )
+
+    conversation = asyncio.run(_load_conversation(db_path, "conv-semantic-contracts"))
+    assert conversation is not None
+    rendered = format_conversation(conversation, "html", None)
+
+    report = prove_export_surface_semantics(conversation, "export_html_v1", rendered)
+
+    assert [check.metric for check in report.checks] == [
+        contract.metric for contract in semantic_surface_spec("export_html_v1").contracts
+    ]
+    assert semantic_surface_spec("export_html_v1").contracts[6].metric == "branch_structure"
+    assert semantic_surface_spec("export_html_v1").contracts[6].mode == "preserve"
 
 
 def test_semantic_surface_suite_aggregates_export_and_canonical_surfaces(db_path, tmp_path):

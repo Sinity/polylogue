@@ -40,6 +40,7 @@ class CheckCommandOptions:
     check_artifacts: bool
     check_cohorts: bool
     check_semantic_proof: bool
+    check_semantic_contracts: bool
     check_roundtrip_proof: bool
     schema_providers: tuple[str, ...]
     artifact_providers: tuple[str, ...]
@@ -68,6 +69,7 @@ class CheckCommandResult:
     artifact_rows: list[Any] | None = None
     cohort_rows: list[Any] | None = None
     semantic_report: Any | None = None
+    semantic_contracts: list[Any] | None = None
     roundtrip_report: Any | None = None
     repair_results: list[Any] | None = None
     vacuum_result: dict[str, Any] | None = None
@@ -106,8 +108,8 @@ def validate_check_options(options: CheckCommandOptions) -> None:
         fail("check", "--artifact-offset requires --proof, --artifacts, or --cohorts")
     if options.semantic_providers and not options.check_semantic_proof:
         fail("check", "--semantic-provider requires --semantic-proof")
-    if options.semantic_surfaces and not options.check_semantic_proof:
-        fail("check", "--semantic-surface requires --semantic-proof")
+    if options.semantic_surfaces and not (options.check_semantic_proof or options.check_semantic_contracts):
+        fail("check", "--semantic-surface requires --semantic-proof or --semantic-contracts")
     if options.semantic_limit is not None and not options.check_semantic_proof:
         fail("check", "--semantic-limit requires --semantic-proof")
     if options.semantic_offset != 0 and not options.check_semantic_proof:
@@ -196,6 +198,22 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
                 record_limit=options.semantic_limit,
                 record_offset=options.semantic_offset,
             )
+        except ValueError as exc:
+            fail("check", str(exc))
+
+    if options.check_semantic_contracts:
+        from polylogue.rendering.semantic_surface_registry import (
+            list_semantic_surface_specs,
+            resolve_semantic_surfaces,
+            semantic_surface_spec,
+        )
+
+        try:
+            if options.semantic_surfaces:
+                resolved = resolve_semantic_surfaces(list(options.semantic_surfaces))
+                result.semantic_contracts = [semantic_surface_spec(name) for name in resolved]
+            else:
+                result.semantic_contracts = list(list_semantic_surface_specs())
         except ValueError as exc:
             fail("check", str(exc))
 
