@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.stats import ArchiveStats
 from tests.infra.mcp import (
     invoke_surface,
     invoke_surface_async,
-    make_mock_filter,
     make_repo_mock,
     make_simple_conversation,
 )
@@ -73,34 +73,41 @@ class TestQueryTools:
     @pytest.mark.parametrize(("tool_name", "args", "expected_calls"), QUERY_TOOL_CASES)
     @pytest.mark.asyncio
     async def test_query_tool_filter_contract(self, simple_conversation, tool_name, args, expected_calls, mcp_server):
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = make_repo_mock()
-            mock_repo.search.return_value = [simple_conversation]
-            mock_repo.list.return_value = [simple_conversation]
-            mock_get_repo.return_value = mock_repo
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.query_conversations = AsyncMock(return_value=[simple_conversation])
+            mock_get_archive_ops.return_value = mock_ops
 
-            with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
-                filter_instance = make_mock_filter(results=[simple_conversation])
-                mock_filter_cls.return_value = filter_instance
-
-                raw = await mcp_server._tool_manager._tools[tool_name].fn(**args)
+            raw = await mcp_server._tool_manager._tools[tool_name].fn(**args)
 
         payload = json.loads(raw)
         assert isinstance(payload, list)
         assert len(payload) == 1
         assert payload[0]["id"] == simple_conversation.id
+        mock_ops.query_conversations.assert_awaited_once()
+        spec = mock_ops.query_conversations.await_args.args[0]
+        assert isinstance(spec, ConversationQuerySpec)
         for method_name, method_args in expected_calls.items():
-            getattr(filter_instance, method_name).assert_called_once_with(*method_args)
+            expected_value = method_args[0] if len(method_args) == 1 else method_args
+            if method_name == "contains":
+                assert spec.query_terms == (expected_value,)
+            elif method_name == "provider":
+                assert tuple(str(provider) for provider in spec.providers) == (expected_value,)
+            elif method_name == "since":
+                assert spec.since == expected_value
+            elif method_name == "tag":
+                assert spec.tags == (expected_value,)
+            elif method_name == "title":
+                assert spec.title == expected_value
+            elif method_name == "limit":
+                assert spec.limit == expected_value
 
     @pytest.mark.asyncio
     async def test_search_with_empty_query(self, mcp_server):
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo, patch(
-            "polylogue.lib.filters.ConversationFilter"
-        ) as mock_filter_cls:
-            mock_repo = make_repo_mock()
-            mock_repo.search.return_value = []
-            mock_get_repo.return_value = mock_repo
-            mock_filter_cls.return_value = make_mock_filter(results=[])
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.query_conversations = AsyncMock(return_value=[])
+            mock_get_archive_ops.return_value = mock_ops
 
             result = await invoke_surface_async(mcp_server._tool_manager._tools["search"].fn, query="", limit=10)
 

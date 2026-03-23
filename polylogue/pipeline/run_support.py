@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
+from pathlib import Path
+from typing import TypeVar
+
+from polylogue.config import Config, Source
+from polylogue.lib.json import dumps
+from polylogue.sync_bridge import run_coroutine_sync
+
+T = TypeVar("T")
+
+RUN_STAGE_CHOICES: tuple[str, ...] = (
+    "acquire",
+    "validate",
+    "parse",
+    "render",
+    "index",
+    "generate-schemas",
+    "all",
+)
+INGEST_STAGES = frozenset({"validate", "parse", "all"})
+PARSE_STAGES = frozenset({"parse", "all"})
+RENDER_STAGES = frozenset({"render", "all"})
+
+
+def select_sources(config: Config, source_names: Sequence[str] | None) -> list[Source]:
+    """Select sources from config, filtering by names if provided."""
+    if not source_names:
+        return list(config.sources)
+    name_set = set(source_names)
+    return [source for source in config.sources if source.name in name_set]
+
+def write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
+    """Write run result JSON to the runs directory."""
+    runs_dir = archive_root / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    run_id = payload.get("run_id", "unknown")
+    run_path = runs_dir / f"run-{payload['timestamp']}-{run_id}.json"
+    run_path.write_text(dumps(payload, option=None), encoding="utf-8")
+    return run_path
+
+
+__all__ = [
+    "INGEST_STAGES",
+    "PARSE_STAGES",
+    "RENDER_STAGES",
+    "RUN_STAGE_CHOICES",
+    "run_coroutine_sync",
+    "select_sources",
+    "write_run_json",
+]

@@ -127,7 +127,7 @@ def test_execute_query_stream_target_resolution_contract(param_overrides, resolv
     mock_repo = MagicMock()
     mock_filter = MagicMock()
     mock_repo.resolve_id = AsyncMock(return_value="full-conv-id-12345")
-    mock_filter.sort.return_value.limit.return_value.list_summaries = AsyncMock(return_value=[_make_summary("latest-conv-id")])
+    mock_filter.list_summaries = AsyncMock(return_value=[_make_summary("latest-conv-id")])
 
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),

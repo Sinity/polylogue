@@ -1,65 +1,57 @@
-"""Async pipeline runner logic.
-
-Async/await version of the pipeline runner with support for:
-- Async acquisition, parsing, rendering, and indexing stages
-- Progress callbacks for long-running operations
-- Full pipeline orchestration with stage control
-"""
+"""Async pipeline runner logic."""
 
 from __future__ import annotations
 
-import asyncio
-import threading
 import time
-from collections.abc import Awaitable, Callable, Sequence
-from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from polylogue.config import Config, Source
-from polylogue.lib.json import dumps
+from polylogue.config import Config
 from polylogue.lib.metrics import PipelineMetrics
 from polylogue.logging import get_logger
-from polylogue.protocols import ProgressCallback
-from polylogue.storage.backends import SQLiteBackend, create_backend
+from polylogue.pipeline.run_stages import (
+    execute_acquire_stage,
+    execute_index_stage,
+    execute_ingest_stage,
+    execute_render_stage,
+    execute_schema_generation_stage,
+)
+from polylogue.pipeline.run_state import RunExecutionState
+from polylogue.pipeline.run_support import (
+    INGEST_STAGES,
+    PARSE_STAGES,
+    RENDER_STAGES,
+    RUN_STAGE_CHOICES,
+    run_coroutine_sync,
+    select_sources,
+    write_run_json,
+)
+from polylogue.storage.backends import create_backend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import PlanResult, RunRecord, RunResult
 
 if TYPE_CHECKING:
-    from polylogue.pipeline.services.indexing import IndexService
+    from collections.abc import Sequence
 
-T = TypeVar("T")
+    from polylogue.protocols import ProgressCallback
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 
-RUN_STAGE_CHOICES: tuple[str, ...] = (
-    "acquire",
-    "validate",
-    "parse",
-    "render",
-    "index",
-    "generate-schemas",
-    "all",
-)
-_INGEST_STAGES = frozenset({"validate", "parse", "all"})
-_PARSE_STAGES = frozenset({"parse", "all"})
-_RENDER_STAGES = frozenset({"render", "all"})
+_select_sources = select_sources
+_run_coroutine_sync = run_coroutine_sync
+_write_run_json = write_run_json
 
 
-def _select_sources(config: Config, source_names: Sequence[str] | None) -> list[Source]:
-    """Select sources from config, filtering by names if provided.
-
-    Args:
-        config: Application configuration
-        source_names: Optional list of source names to include
-
-    Returns:
-        List of selected sources
-    """
-    if not source_names:
-        return list(config.sources)
-    name_set = set(source_names)
-    return [source for source in config.sources if source.name in name_set]
+def _needs_parse_source_fallback(stage: str, sources, ingest_result) -> bool:
+    return bool(
+        stage == "parse"
+        and sources
+        and not ingest_result.acquire_result.raw_ids
+        and ingest_result.validation_result is None
+        and not ingest_result.parse_raw_ids
+        and not ingest_result.parse_result.processed_ids
+    )
 
 
 def plan_sources(
@@ -94,93 +86,6 @@ def plan_sources(
             _run_coroutine_sync(active_backend.close())
 
 
-def _run_coroutine_sync(coro: Awaitable[T]) -> T:
-    """Run a coroutine from sync code, even when already inside an event loop."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    result: list[T] = []
-    error: list[BaseException] = []
-
-    def _worker() -> None:
-        try:
-            result.append(asyncio.run(coro))
-        except BaseException as exc:  # pragma: no cover - re-raised on caller thread
-            error.append(exc)
-
-    thread = threading.Thread(target=_worker, daemon=True)
-    thread.start()
-    thread.join()
-    if error:
-        raise error[0]
-    if not result:
-        raise RuntimeError("Coroutine thread completed without returning a result")
-    return result[0]
-
-
-async def _run_index_stage(
-    *,
-    stage: str,
-    source_names: Sequence[str] | None,
-    processed_ids: set[str],
-    backend: SQLiteBackend,
-    index_service: IndexService,
-    progress_callback: Callable[..., None] | None = None,
-) -> tuple[bool, int]:
-    """Execute index behavior for `index`/`all` stages.
-
-    Returns:
-        `(indexed, item_count)` where item_count is used for stage metrics.
-    """
-    if stage == "index":
-        if progress_callback is not None:
-            progress_callback(0, desc="Indexing")
-        if source_names:
-            total = await backend.queries.count_conversation_ids(source_names=list(source_names))
-            return (
-                await index_service.update_index(
-                    backend.queries.iter_conversation_ids(source_names=list(source_names)),
-                ),
-                total,
-            )
-        return await index_service.rebuild_index(), 0
-
-    if stage == "all":
-        idx = await index_service.get_index_status()
-        if not idx["exists"]:
-            if progress_callback is not None:
-                progress_callback(0, desc="Indexing (rebuild)")
-            return await index_service.rebuild_index(), len(processed_ids)
-        if processed_ids:
-            if progress_callback is not None:
-                progress_callback(0, desc=f"Index verified: {len(processed_ids)} conversations")
-            # Live writes already maintain FTS rows via schema triggers; in the
-            # common `all` path we only need to ensure the index still exists.
-            return await index_service.ensure_index_exists(), len(processed_ids)
-
-    return False, 0
-
-
-def _write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
-    """Write run result JSON to the runs directory.
-
-    Args:
-        archive_root: Root directory for archived data
-        payload: Run result payload to write
-
-    Returns:
-        Path to the written JSON file
-    """
-    runs_dir = archive_root / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    run_id = payload.get("run_id", "unknown")
-    run_path = runs_dir / f"run-{payload['timestamp']}-{run_id}.json"
-    run_path.write_text(dumps(payload, option=None), encoding="utf-8")
-    return run_path
-
-
 async def run_sources(
     *,
     config: Config,
@@ -193,105 +98,58 @@ async def run_sources(
     backend: SQLiteBackend | None = None,
     repository: ConversationRepository | None = None,
 ) -> RunResult:
-    """Run the async pipeline with stage control.
-
-    Async version of run_sources supporting:
-    - Parallel acquisition, parsing, rendering, and indexing
-    - Progress callbacks for long-running operations
-    - Full stage control ("acquire", "validate", "parse", "render", "index", "generate-schemas", "all")
-
-    Args:
-        config: Application configuration
-        stage: Pipeline stage ("acquire", "validate", "parse", "render", "index", "generate-schemas", "all")
-        plan: Optional plan result for drift detection
-        ui: Optional UI object for user interaction
-        source_names: Optional list of source names to process
-        progress_callback: Optional callback(count, desc=...) for progress updates
-        render_format: Output format for rendering ("markdown" or "html", default: "html")
-
-    Returns:
-        RunResult with counts, drift, indexing status, and metadata
-    """
-
+    """Run the async pipeline with stage control."""
     start = time.perf_counter()
     metrics = PipelineMetrics()
+    state = RunExecutionState()
 
     owns_backend = backend is None
     active_backend = backend or create_backend()
     owns_repository = repository is None
     active_repository = repository or ConversationRepository(backend=active_backend)
 
-    # Track counts for reporting
-    counts = {
-        "conversations": 0,
-        "messages": 0,
-        "attachments": 0,
-        "skipped_conversations": 0,
-        "skipped_messages": 0,
-        "skipped_attachments": 0,
-        "rendered": 0,
-    }
-    changed_counts = {
-        "conversations": 0,
-        "messages": 0,
-        "attachments": 0,
-    }
-    processed_ids: set[str] = set()
-    render_failures: list[dict[str, str]] = []
-
     try:
-        # Acquire stage (raw storage only)
-        if stage == "acquire":
-            from polylogue.pipeline.services.acquisition import AcquisitionService
+        selected_sources = _select_sources(config, source_names)
 
+        if stage == "acquire":
             sm = metrics.start_stage("acquire")
-            acquire_service = AcquisitionService(backend=active_backend)
-            sources = _select_sources(config, source_names)
-            acquire_result = await acquire_service.acquire_sources(
-                sources,
+            acquire_result = await execute_acquire_stage(
+                config=config,
+                backend=active_backend,
+                sources=selected_sources,
                 ui=ui,
                 progress_callback=progress_callback,
-                drive_config=config.drive_config,
             )
             sm.stop(items=acquire_result.counts["acquired"])
-            counts["acquired"] = acquire_result.counts["acquired"]
-            counts["skipped"] = acquire_result.counts["skipped"]
+            state.record_acquire(acquire_result)
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
 
-        # Validate/Parse stages (canonical ingest orchestration)
-        elif stage in _INGEST_STAGES:
-            from polylogue.pipeline.services.parsing import ParsingService
-
-            sources = _select_sources(config, source_names)
-            parsing_service = ParsingService(
+        elif stage in INGEST_STAGES:
+            ingest_result = await execute_ingest_stage(
+                config=config,
                 repository=active_repository,
                 archive_root=config.archive_root,
-                config=config,
-            )
-
-            ingest_result = await parsing_service.ingest_sources(
-                sources=sources,
+                sources=selected_sources,
                 stage=stage,
                 ui=ui,
                 progress_callback=progress_callback,
-                parse_records=stage in _PARSE_STAGES,
-                skip_acquire=stage in {"validate", "parse"},
-                skip_validate=stage == "parse",
             )
-            acquire_result = ingest_result.acquire_result
+            if _needs_parse_source_fallback(stage, selected_sources, ingest_result):
+                ingest_result = await execute_ingest_stage(
+                    config=config,
+                    repository=active_repository,
+                    archive_root=config.archive_root,
+                    sources=selected_sources,
+                    stage="all",
+                    ui=ui,
+                    progress_callback=progress_callback,
+                )
+            state.record_acquire(ingest_result.acquire_result)
+            logger.info("Acquire stage complete", **ingest_result.acquire_result.counts)
+
             validation_result = ingest_result.validation_result
-
-            counts["acquired"] = acquire_result.counts["acquired"]
-            counts["skipped"] = acquire_result.counts["skipped"]
-            counts["acquire_errors"] = acquire_result.counts["errors"]
-            logger.info("Acquire stage complete", **acquire_result.counts)
-
             if validation_result is not None:
-                counts["validated"] = validation_result.counts["validated"]
-                counts["validation_invalid"] = validation_result.counts["invalid"]
-                counts["validation_drift"] = validation_result.counts["drift"]
-                counts["validation_skipped_no_schema"] = validation_result.counts["skipped_no_schema"]
-                counts["validation_errors"] = validation_result.counts["errors"]
+                state.record_validation(validation_result)
                 logger.info(
                     "Validate stage complete",
                     parseable=len(validation_result.parseable_raw_ids),
@@ -301,137 +159,80 @@ async def run_sources(
                     errors=validation_result.counts["errors"],
                 )
 
-            if stage in _PARSE_STAGES:
-                parse_result = ingest_result.parse_result
-                for key, value in parse_result.counts.items():
-                    counts[key] = value
-                if parse_result.parse_failures:
-                    counts["parse_failures"] = parse_result.parse_failures
-                changed_counts.update(parse_result.changed_counts)
-                processed_ids = parse_result.processed_ids
-                counts["conversations"] = len(processed_ids)
+            if stage in PARSE_STAGES:
+                state.record_parse(ingest_result.parse_result)
                 logger.info(
                     "Parse stage complete",
-                    processed_ids=len(processed_ids),
-                    parse_failures=parse_result.parse_failures,
+                    processed_ids=len(state.processed_ids),
+                    parse_failures=ingest_result.parse_result.parse_failures,
                 )
 
         if stage == "generate-schemas":
-            from polylogue.paths import data_home as _data_home
-            from polylogue.paths import db_path as _db_path
-            from polylogue.schemas.schema_inference import generate_all_schemas
-
             stage_t0 = time.perf_counter()
-            output_dir = _data_home() / "schemas"
-            results = await asyncio.to_thread(
-                generate_all_schemas,
-                output_dir=output_dir,
-                db_path=_db_path(),
+            schema_outcome = await execute_schema_generation_stage()
+            state.record_schema_generation(
+                generated=schema_outcome.generated,
+                failed=schema_outcome.failed,
             )
-            counts["schemas_generated"] = sum(1 for r in results if r.success)
-            counts["schemas_failed"] = sum(1 for r in results if not r.success)
             logger.info(
                 "Schema generation complete",
                 elapsed_s=round(time.perf_counter() - stage_t0, 1),
-                generated=counts["schemas_generated"],
-                failed=counts["schemas_failed"],
+                generated=schema_outcome.generated,
+                failed=schema_outcome.failed,
             )
 
-        if stage in _RENDER_STAGES:
-            from polylogue.pipeline.services.rendering import RenderService
-            from polylogue.rendering.renderers import create_renderer
-
+        if stage in RENDER_STAGES:
             sm = metrics.start_stage("render")
-            render_ids = None
-            render_total = 0
-            if stage == "render":
-                render_total = await active_backend.queries.count_conversation_ids(
-                    source_names=list(source_names) if source_names is not None else None
-                )
-                render_ids = active_backend.queries.iter_conversation_ids(
-                    source_names=list(source_names) if source_names is not None else None
-                )
-            else:
-                render_ids = processed_ids
-                render_total = len(processed_ids)
-
-            if render_total:
-                if progress_callback is not None:
-                    progress_callback(0, desc=f"Rendering: 0/{render_total}")
-                renderer = create_renderer(
-                    format=render_format,
-                    config=config,
-                    backend=active_backend,
-                )
-                render_service = RenderService(
-                    renderer=renderer,
-                    render_root=config.render_root,
-                    backend=active_backend,
-                )
-                render_result = await render_service.render_conversations(
-                    render_ids,
-                    total=render_total,
-                    progress_callback=progress_callback,
-                )
-                counts["rendered"] = render_result.rendered_count
-                render_failures = render_result.failures
-                if render_failures:
-                    counts["render_failures"] = len(render_failures)
-            sm.stop(items=counts.get("rendered", 0))
+            render_outcome = await execute_render_stage(
+                config=config,
+                backend=active_backend,
+                stage=stage,
+                source_names=source_names,
+                processed_ids=state.processed_ids,
+                progress_callback=progress_callback,
+                render_format=render_format,
+            )
+            state.record_render(
+                rendered=render_outcome.rendered_count,
+                failures=render_outcome.failures,
+            )
+            sm.stop(items=state.counts.get("rendered", 0))
             logger.info(
                 "Render stage complete",
                 **sm.to_dict(),
-                failures=len(render_failures),
-                total=render_total,
+                failures=len(render_outcome.failures),
+                total=render_outcome.total,
             )
-
-        indexed = False
-        index_error: str | None = None
-
-        from polylogue.pipeline.services.indexing import IndexService
-
-        index_service = IndexService(config=config, backend=active_backend)
 
         sm = metrics.start_stage("index")
-        index_items = 0
-        try:
-            indexed, index_items = await _run_index_stage(
-                stage=stage,
-                source_names=source_names,
-                processed_ids=processed_ids,
-                backend=active_backend,
-                index_service=index_service,
-                progress_callback=progress_callback,
-            )
-        except Exception as exc:
-            logger.error("Indexing failed", error=str(exc), exc_info=True)
-            index_error = f"{type(exc).__name__}: {exc}"
-            indexed = False
-        sm.stop(items=index_items)
-        logger.info("Index stage complete", **sm.to_dict(), indexed=indexed)
+        index_outcome = await execute_index_stage(
+            config=config,
+            stage=stage,
+            source_names=source_names,
+            processed_ids=state.processed_ids,
+            backend=active_backend,
+            progress_callback=progress_callback,
+        )
+        if index_outcome.error is not None:
+            logger.error("Indexing failed", error=index_outcome.error)
+        sm.stop(items=index_outcome.item_count)
+        logger.info(
+            "Index stage complete",
+            **sm.to_dict(),
+            indexed=index_outcome.indexed,
+        )
 
         duration_ms = int((time.perf_counter() - start) * 1000)
-        new_counts = {
-            "conversations": max(counts["conversations"] - changed_counts["conversations"], 0),
-            "messages": max(counts["messages"] - changed_counts["messages"], 0),
-            "attachments": max(counts["attachments"] - changed_counts["attachments"], 0),
-        }
-        counts["new_conversations"] = new_counts["conversations"]
-        counts["changed_conversations"] = changed_counts["conversations"]
-        drift = {
-            "new": new_counts,
-            "removed": {"conversations": 0, "messages": 0, "attachments": 0},
-            "changed": dict(changed_counts),
-        }
+        drift = state.finalize()
 
         run_id = uuid4().hex
         run_payload = {
             "run_id": run_id,
             "timestamp": int(time.time()),
-            "counts": counts,
+            "counts": state.counts,
             "drift": drift,
-            "indexed": indexed,
-            "index_error": index_error,
+            "indexed": index_outcome.indexed,
+            "index_error": index_outcome.error,
             "duration_ms": duration_ms,
             "metrics": metrics.to_summary(),
         }
@@ -442,21 +243,21 @@ async def run_sources(
                 run_id=run_id,
                 timestamp=str(run_payload["timestamp"]),
                 plan_snapshot=plan.model_dump() if plan else None,
-                counts=counts,
+                counts=state.counts,
                 drift=drift,
-                indexed=indexed,
+                indexed=index_outcome.indexed,
                 duration_ms=duration_ms,
             ),
         )
 
         return RunResult(
             run_id=run_id,
-            counts=counts,
+            counts=state.counts,
             drift=drift,
-            indexed=indexed,
-            index_error=index_error,
+            indexed=index_outcome.indexed,
+            index_error=index_outcome.error,
             duration_ms=duration_ms,
-            render_failures=render_failures,
+            render_failures=state.render_failures,
         )
     finally:
         if owns_repository:
@@ -466,14 +267,7 @@ async def run_sources(
 
 
 async def latest_run(backend: SQLiteBackend | None = None) -> RunRecord | None:
-    """Fetch the most recent run record from the database asynchronously.
-
-    Args:
-        backend: Optional SQLiteBackend. If None, creates a temporary backend.
-
-    Returns:
-        RunRecord if a run exists, None otherwise
-    """
+    """Fetch the most recent run record from the database asynchronously."""
     owns_backend = backend is None
     active_backend = backend or create_backend()
     try:
@@ -485,7 +279,7 @@ async def latest_run(backend: SQLiteBackend | None = None) -> RunRecord | None:
 
 __all__ = [
     "RUN_STAGE_CHOICES",
+    "latest_run",
     "plan_sources",
     "run_sources",
-    "latest_run",
 ]

@@ -5,7 +5,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from polylogue.lib.dates import parse_date
-from polylogue.lib.filter_runtime import _conversation_has_branches
 from polylogue.lib.filter_types import SortField
 from polylogue.types import Provider
 
@@ -122,26 +121,17 @@ class ConversationFilterBuilderMixin:
 
     def is_continuation(self, value: bool = True) -> ConversationFilter:
         """Filter to continuation conversations (or exclude them if value=False)."""
-        if value:
-            self._predicates.append(lambda c: c.is_continuation)
-        else:
-            self._predicates.append(lambda c: not c.is_continuation)
+        self._continuation = value
         return self
 
     def is_sidechain(self, value: bool = True) -> ConversationFilter:
         """Filter to sidechain conversations (or exclude them if value=False)."""
-        if value:
-            self._predicates.append(lambda c: c.is_sidechain)
-        else:
-            self._predicates.append(lambda c: not c.is_sidechain)
+        self._sidechain = value
         return self
 
     def is_root(self, value: bool = True) -> ConversationFilter:
         """Filter to root conversations (those with no parent)."""
-        if value:
-            self._predicates.append(lambda c: c.is_root)
-        else:
-            self._predicates.append(lambda c: not c.is_root)
+        self._root = value
         return self
 
     def has_tool_use(self) -> ConversationFilter:
@@ -186,15 +176,12 @@ class ConversationFilterBuilderMixin:
 
     def parent(self, conversation_id: str) -> ConversationFilter:
         """Filter to conversations that are children of the given parent."""
-        self._predicates.append(lambda c: c.parent_id == conversation_id)
+        self._parent_id = conversation_id
         return self
 
     def has_branches(self, value: bool = True) -> ConversationFilter:
         """Filter to conversations that have branching messages."""
-        if value:
-            self._predicates.append(_conversation_has_branches)
-        else:
-            self._predicates.append(lambda c: not _conversation_has_branches(c))
+        self._has_branches = value
         return self
 
 

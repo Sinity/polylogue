@@ -15,8 +15,9 @@ from polylogue.cli.query_plan import (
     build_query_execution_plan,
     resolve_query_route,
 )
-from polylogue.logging import get_logger
 from polylogue.lib.query_spec import QuerySpecError
+from polylogue.logging import get_logger
+from polylogue.sync_bridge import run_coroutine_sync
 
 logger = get_logger(__name__)
 
@@ -37,9 +38,7 @@ def project_query_results(results: list[Any], plan: QueryExecutionPlan) -> list[
 
 def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     """Execute a query-mode command."""
-    import asyncio
-
-    asyncio.run(async_execute_query(env, params))
+    run_coroutine_sync(async_execute_query(env, params))
 
 
 def _create_query_vector_provider(config: object) -> object | None:
