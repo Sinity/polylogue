@@ -16,6 +16,7 @@ class ConversationRecordQuery:
     since: str | None = None
     until: str | None = None
     title_contains: str | None = None
+    path_terms: tuple[str, ...] = ()
     limit: int | None = None
     offset: int = 0
     has_tool_use: bool = False
@@ -52,6 +53,7 @@ class ConversationRecordQuery:
             "since": self.since,
             "until": self.until,
             "title_contains": self.title_contains,
+            "path_terms": list(self.path_terms) or None,
             "limit": self.limit,
             "offset": self.offset,
             "has_tool_use": self.has_tool_use,
