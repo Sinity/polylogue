@@ -24,7 +24,8 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md) | Current execution program for action/event semantics, retrieval/FTS/embedding convergence, unresolved runtime-state work, schema-tooling/operator convergence, and archive-scale validation | Active; action events, ordered action-sequence querying, action-text querying, explicit dialogue/actions/hybrid retrieval lanes, batched retrieval hardening, embedding coverage/readiness surfaces, and named archive-intelligence validation lanes are now executed; broader retrieval/state/backend/schema-validation work remains |
+| [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) | Current execution program for repository-wide architecture reduction, refactoring, module-topology cleanup, and validation governance | Active; this is now the live broad queue after archive-intelligence convergence |
+| [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md) | Executed convergence program for action/event semantics, retrieval/FTS/embedding control-plane work, unresolved runtime-state/schema/operator slices, and archive-scale validation | Executed; durable action-event read model, readiness-aware query fallback, retrieval-health surfaces, and archive-intelligence validation lanes are now in place |
 | [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md) | Absorbed predecessor program for the runtime-state/schema half of the new integrated campaign | Planned reference; no longer the live queue on its own |
 | [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md) | Most recent executed convergence program for harmonization, canonical semantic facts, downstream semantic products, and semantic proof/export contract convergence | Executed; current canonical record of the semantic-stack convergence campaign |
 | [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md) | Executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path around the canonical package model | Executed; predecessor evidence-pipeline convergence campaign |
@@ -114,22 +115,21 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md)
-- it absorbs the still-open state/schema platform mass from [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md), but expands the target to the sharper dogfooded frontier:
-  - `ToolCall` is still too low-level to be the main semantic/query primitive
-  - Polylogue now has better semantic truth at query time, but still lacks a first-class action/event layer above raw tool blocks
-  - FTS and embeddings are still too message-text-centric for the archive’s modern value
-  - runtime state bands, backend narrowing, and schema-tooling/operator convergence remain unfinished from the prior planned program
-  - archive-intelligence validation lanes now exist, including live-archive and explicit RSS-budget dogfood, but broader retrieval/state/backend/schema convergence still remains
-- the integrated next move is therefore:
-  - finish the durable action/event read model so action truth stops living half
-    in persisted retrieval structures and half in runtime hydration
-  - converge grouped stats, attribution, and query semantics on that same
-    shared action/event surface
-  - deepen embedding retrieval-health reporting from coverage-only into
-    freshness/provenance-aware operator truth
-  - continue archive-scale proving through the converged validation lanes that
-    now already exist
+- the current live implementation queue is now [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md)
+- the archive-intelligence campaign in [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md) is now executed
+- it closed the dogfooded archive-intelligence frontier around:
+  - first-class durable action events
+  - action-aware retrieval and grouped stats
+  - readiness-aware fallback when persisted action semantics are absent or stale
+  - freshness/provenance-aware embedding retrieval health
+  - named archive-intelligence validation and memory-budget lanes
+- the next integrated move is broader and more structural:
+  - reduce remaining wrapper strata around query/filter execution
+  - further narrow backend/repository/state-band boundaries
+  - converge operator workflows and rendering contracts
+  - isolate schema tooling and synthetic stacks more sharply from runtime
+  - narrow package roots and module topology across the codebase
+  - use validation lanes and live-archive dogfooding as ongoing refactor governance
 - the semantic-stack convergence program is now executed via [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md)
 - it closed the strongest remaining semantic-cluster drag around:
   - harmonization boundary cleanup around `schemas/unified.py` and `lib/provider_semantics.py`
