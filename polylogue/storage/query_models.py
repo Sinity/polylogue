@@ -16,6 +16,11 @@ class ConversationRecordQuery:
     since: str | None = None
     until: str | None = None
     title_contains: str | None = None
+    path_terms: tuple[str, ...] = ()
+    action_terms: tuple[str, ...] = ()
+    excluded_action_terms: tuple[str, ...] = ()
+    tool_terms: tuple[str, ...] = ()
+    excluded_tool_terms: tuple[str, ...] = ()
     limit: int | None = None
     offset: int = 0
     has_tool_use: bool = False
@@ -23,9 +28,6 @@ class ConversationRecordQuery:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
-    has_file_ops: bool = False
-    has_git_ops: bool = False
-    has_subagent: bool = False
 
     def with_limit(self, limit: int | None) -> ConversationRecordQuery:
         return replace(self, limit=limit)
@@ -35,6 +37,14 @@ class ConversationRecordQuery:
 
     def for_count(self) -> ConversationRecordQuery:
         return replace(self, limit=None, offset=0)
+
+    def without_unstable_semantic_filters(self) -> ConversationRecordQuery:
+        return replace(
+            self,
+            path_terms=(),
+            action_terms=(),
+            excluded_action_terms=(),
+        )
 
     def for_search(self) -> tuple[str | None, list[str] | None]:
         if self.provider:
@@ -52,6 +62,11 @@ class ConversationRecordQuery:
             "since": self.since,
             "until": self.until,
             "title_contains": self.title_contains,
+            "path_terms": list(self.path_terms) or None,
+            "action_terms": list(self.action_terms) or None,
+            "excluded_action_terms": list(self.excluded_action_terms) or None,
+            "tool_terms": list(self.tool_terms) or None,
+            "excluded_tool_terms": list(self.excluded_tool_terms) or None,
             "limit": self.limit,
             "offset": self.offset,
             "has_tool_use": self.has_tool_use,
@@ -59,9 +74,6 @@ class ConversationRecordQuery:
             "min_messages": self.min_messages,
             "max_messages": self.max_messages,
             "min_words": self.min_words,
-            "has_file_ops": self.has_file_ops,
-            "has_git_ops": self.has_git_ops,
-            "has_subagent": self.has_subagent,
         }
 
     def to_count_kwargs(self) -> dict[str, object]:

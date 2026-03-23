@@ -41,30 +41,40 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def search(
         query: str,
         limit: int = 10,
+        retrieval_lane: str | None = None,
         provider: str | None = None,
         since: str | None = None,
+        path: str | None = None,
+        action: str | None = None,
+        exclude_action: str | None = None,
+        action_sequence: str | None = None,
+        action_text: str | None = None,
+        tool: str | None = None,
+        exclude_tool: str | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> str:
         async def _run() -> str:
             ops = hooks.get_archive_ops()
             spec = ConversationQuerySpec(
                 query_terms=(query,),
+                retrieval_lane=retrieval_lane or "auto",
                 providers=(provider,) if provider else (),
                 since=since,
+                path_terms=(path,) if path else (),
+                action_terms=(action,) if action else (),
+                excluded_action_terms=(exclude_action,) if exclude_action else (),
+                action_sequence=tuple(part.strip() for part in action_sequence.split(",") if part.strip()) if action_sequence else (),
+                action_text_terms=(action_text,) if action_text else (),
+                tool_terms=(tool.lower(),) if tool else (),
+                excluded_tool_terms=(exclude_tool.lower(),) if exclude_tool else (),
                 limit=hooks.clamp_limit(limit),
                 filter_has_tool_use=has_tool_use,
                 filter_has_thinking=has_thinking,
                 min_messages=min_messages,
                 min_words=min_words,
-                filter_has_file_ops=has_file_ops,
-                filter_has_git_ops=has_git_ops,
-                filter_has_subagent=has_subagent,
             )
             results = await ops.query_conversations(spec)
             return hooks.json_payload(
@@ -81,35 +91,45 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def list_conversations(
         limit: int = 10,
+        retrieval_lane: str | None = None,
         provider: str | None = None,
         since: str | None = None,
         tag: str | None = None,
         title: str | None = None,
+        path: str | None = None,
+        action: str | None = None,
+        exclude_action: str | None = None,
+        action_sequence: str | None = None,
+        action_text: str | None = None,
+        tool: str | None = None,
+        exclude_tool: str | None = None,
         sort: str = "updated",
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> str:
         async def _run() -> str:
             ops = hooks.get_archive_ops()
             spec = ConversationQuerySpec(
                 providers=(provider,) if provider else (),
+                retrieval_lane=retrieval_lane or "auto",
                 tags=(tag,) if tag else (),
                 title=title,
                 since=since,
+                path_terms=(path,) if path else (),
+                action_terms=(action,) if action else (),
+                excluded_action_terms=(exclude_action,) if exclude_action else (),
+                action_sequence=tuple(part.strip() for part in action_sequence.split(",") if part.strip()) if action_sequence else (),
+                action_text_terms=(action_text,) if action_text else (),
+                tool_terms=(tool.lower(),) if tool else (),
+                excluded_tool_terms=(exclude_tool.lower(),) if exclude_tool else (),
                 sort=sort,
                 limit=hooks.clamp_limit(limit),
                 filter_has_tool_use=has_tool_use,
                 filter_has_thinking=has_thinking,
                 min_messages=min_messages,
                 min_words=min_words,
-                filter_has_file_ops=has_file_ops,
-                filter_has_git_ops=has_git_ops,
-                filter_has_subagent=has_subagent,
             )
             conversations = await ops.query_conversations(spec)
             return hooks.json_payload(

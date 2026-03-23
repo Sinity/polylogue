@@ -194,6 +194,14 @@ class TestMessageSemanticProjection:
         assert thinking.is_thinking is True
         assert tool.is_tool_use is True
 
+    def test_context_wrappers_are_context_dumps(self):
+        msg = Message(
+            id="m1",
+            role="user",
+            text="<environment_context>\n<cwd>/realm/project/polylogue</cwd>\n</environment_context>",
+        )
+        assert msg.is_context_dump is True
+
 
 class TestConversationMetadataAndAggregation:
     def test_title_summary_tags_and_display_contract(self, conversation_with_metadata):

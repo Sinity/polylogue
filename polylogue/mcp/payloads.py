@@ -114,6 +114,8 @@ class MCPArchiveStatsPayload(MCPPayload):
     providers: dict[str, int]
     embedded_conversations: int | None = None
     embedded_messages: int | None = None
+    pending_embedding_conversations: int | None = None
+    embedding_coverage_percent: float | None = None
     db_size_mb: float | int | None = None
 
     @classmethod
@@ -130,6 +132,12 @@ class MCPArchiveStatsPayload(MCPPayload):
             providers=archive_stats.providers,
             embedded_conversations=archive_stats.embedded_conversations if include_embedded else None,
             embedded_messages=archive_stats.embedded_messages if include_embedded else None,
+            pending_embedding_conversations=(
+                archive_stats.pending_embedding_conversations if include_embedded else None
+            ),
+            embedding_coverage_percent=(
+                round(float(archive_stats.embedding_coverage), 1) if include_embedded else None
+            ),
             db_size_mb=(
                 round(archive_stats.db_size_bytes / 1_048_576, 1)
                 if include_db_size and archive_stats.db_size_bytes

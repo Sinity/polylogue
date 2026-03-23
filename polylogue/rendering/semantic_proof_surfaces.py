@@ -35,7 +35,7 @@ from polylogue.rendering.semantic_surface_registry import evaluate_semantic_cont
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.storage.store import ConversationRenderProjection
+    from polylogue.storage.state_views import ConversationRenderProjection
 
 
 def _build_surface_proof(

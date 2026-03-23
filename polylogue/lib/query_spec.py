@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.dates import parse_date
 from polylogue.lib.query_execution import ConversationQueryPlan
+from polylogue.lib.viewports import ToolCategory
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
@@ -25,6 +26,20 @@ class QuerySpecError(ValueError):
         super().__init__(f"invalid {field}: {value}")
         self.field = field
         self.value = value
+
+
+QUERY_ACTION_TYPES = tuple(category.value for category in ToolCategory) + ("none",)
+QUERY_SEQUENCE_ACTION_TYPES = tuple(category.value for category in ToolCategory)
+QUERY_RETRIEVAL_LANES = ("auto", "dialogue", "actions", "hybrid")
+
+
+def _normalize_tool_terms(value: object) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for term in _as_tuple(value):
+        candidate = str(term).strip().lower()
+        if candidate:
+            normalized.append(candidate)
+    return tuple(normalized)
 
 
 def _split_csv(value: object) -> tuple[str, ...]:
@@ -52,6 +67,27 @@ def _parse_query_date(field: str, value: str | None) -> datetime | None:
     return parsed
 
 
+def _normalize_action_terms(field: str, value: object) -> tuple[str, ...]:
+    terms = _as_tuple(value)
+    normalized: list[str] = []
+    for term in terms:
+        candidate = str(term).strip().lower()
+        if candidate not in QUERY_ACTION_TYPES:
+            raise QuerySpecError(field, term)
+        normalized.append(candidate)
+    return tuple(normalized)
+
+
+def _normalize_action_sequence(field: str, value: object) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for term in _split_csv(value):
+        candidate = str(term).strip().lower()
+        if candidate not in QUERY_SEQUENCE_ACTION_TYPES:
+            raise QuerySpecError(field, term)
+        normalized.append(candidate)
+    return tuple(normalized)
+
+
 @dataclass(frozen=True)
 class ConversationQuerySpec:
     """Canonical selection intent for conversation queries."""
@@ -59,6 +95,14 @@ class ConversationQuerySpec:
     query_terms: tuple[str, ...] = ()
     contains_terms: tuple[str, ...] = ()
     exclude_text_terms: tuple[str, ...] = ()
+    retrieval_lane: str = "auto"
+    path_terms: tuple[str, ...] = ()
+    action_terms: tuple[str, ...] = ()
+    excluded_action_terms: tuple[str, ...] = ()
+    action_sequence: tuple[str, ...] = ()
+    action_text_terms: tuple[str, ...] = ()
+    tool_terms: tuple[str, ...] = ()
+    excluded_tool_terms: tuple[str, ...] = ()
     providers: tuple[Provider, ...] = ()
     excluded_providers: tuple[Provider, ...] = ()
     tags: tuple[str, ...] = ()
@@ -79,10 +123,7 @@ class ConversationQuerySpec:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
-    # Semantic content filters (EXISTS subquery on content_blocks.semantic_type)
-    filter_has_file_ops: bool = False
-    filter_has_git_ops: bool = False
-    filter_has_subagent: bool = False
+    similar_text: str | None = None
 
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> ConversationQuerySpec:
@@ -91,6 +132,14 @@ class ConversationQuerySpec:
             query_terms=_as_tuple(params.get("query")),
             contains_terms=_as_tuple(params.get("contains")),
             exclude_text_terms=_as_tuple(params.get("exclude_text")),
+            retrieval_lane=str(params.get("retrieval_lane") or "auto"),
+            path_terms=_as_tuple(params.get("path_terms") or params.get("path")),
+            action_terms=_normalize_action_terms("action", params.get("action")),
+            excluded_action_terms=_normalize_action_terms("exclude_action", params.get("exclude_action")),
+            action_sequence=_normalize_action_sequence("action_sequence", params.get("action_sequence")),
+            action_text_terms=_as_tuple(params.get("action_text")),
+            tool_terms=_normalize_tool_terms(params.get("tool")),
+            excluded_tool_terms=_normalize_tool_terms(params.get("exclude_tool")),
             providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("provider"))),
             excluded_providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("exclude_provider"))),
             tags=_split_csv(params.get("tag")),
@@ -110,9 +159,7 @@ class ConversationQuerySpec:
             min_messages=int(params["min_messages"]) if params.get("min_messages") else None,
             max_messages=int(params["max_messages"]) if params.get("max_messages") else None,
             min_words=int(params["min_words"]) if params.get("min_words") else None,
-            filter_has_file_ops=bool(params.get("filter_has_file_ops")),
-            filter_has_git_ops=bool(params.get("filter_has_git_ops")),
-            filter_has_subagent=bool(params.get("filter_has_subagent")),
+            similar_text=str(params["similar_text"]) if params.get("similar_text") else None,
         )
 
     def describe(self) -> list[str]:
@@ -124,6 +171,22 @@ class ConversationQuerySpec:
             parts.append(f"contains: {', '.join(self.contains_terms)}")
         if self.exclude_text_terms:
             parts.append(f"exclude text: {', '.join(self.exclude_text_terms)}")
+        if self.retrieval_lane != "auto":
+            parts.append(f"retrieval: {self.retrieval_lane}")
+        if self.path_terms:
+            parts.append(f"path: {', '.join(self.path_terms)}")
+        if self.action_terms:
+            parts.append(f"action: {', '.join(self.action_terms)}")
+        if self.excluded_action_terms:
+            parts.append(f"exclude action: {', '.join(self.excluded_action_terms)}")
+        if self.action_sequence:
+            parts.append(f"action sequence: {' -> '.join(self.action_sequence)}")
+        if self.action_text_terms:
+            parts.append(f"action text: {', '.join(self.action_text_terms)}")
+        if self.tool_terms:
+            parts.append(f"tool: {', '.join(self.tool_terms)}")
+        if self.excluded_tool_terms:
+            parts.append(f"exclude tool: {', '.join(self.excluded_tool_terms)}")
         if self.providers:
             parts.append(f"provider: {', '.join(p.value for p in self.providers)}")
         if self.excluded_providers:
@@ -140,18 +203,14 @@ class ConversationQuerySpec:
             parts.append("has: tool_use (sql)")
         if self.filter_has_thinking:
             parts.append("has: thinking (sql)")
-        if self.filter_has_file_ops:
-            parts.append("has: file_ops (sql)")
-        if self.filter_has_git_ops:
-            parts.append("has: git_ops (sql)")
-        if self.filter_has_subagent:
-            parts.append("has: subagent (sql)")
         if self.min_messages is not None:
             parts.append(f"min_messages: {self.min_messages}")
         if self.max_messages is not None:
             parts.append(f"max_messages: {self.max_messages}")
         if self.min_words is not None:
             parts.append(f"min_words: {self.min_words}")
+        if self.similar_text:
+            parts.append(f"similar: {self.similar_text}")
         if self.since:
             parts.append(f"since: {self.since}")
         if self.until:
@@ -167,6 +226,13 @@ class ConversationQuerySpec:
                 self.query_terms,
                 self.contains_terms,
                 self.exclude_text_terms,
+                self.path_terms,
+                self.action_terms,
+                self.excluded_action_terms,
+                self.action_sequence,
+                self.action_text_terms,
+                self.tool_terms,
+                self.excluded_tool_terms,
                 self.providers,
                 self.excluded_providers,
                 self.tags,
@@ -179,12 +245,10 @@ class ConversationQuerySpec:
                 self.latest,
                 self.filter_has_tool_use,
                 self.filter_has_thinking,
-                self.filter_has_file_ops,
-                self.filter_has_git_ops,
-                self.filter_has_subagent,
                 self.min_messages is not None,
                 self.max_messages is not None,
                 self.min_words is not None,
+                self.similar_text is not None,
             )
         )
 
@@ -198,6 +262,14 @@ class ConversationQuerySpec:
             query_terms=self.query_terms,
             contains_terms=self.contains_terms,
             negative_terms=self.exclude_text_terms,
+            retrieval_lane=self.retrieval_lane,
+            path_terms=self.path_terms,
+            action_terms=self.action_terms,
+            excluded_action_terms=self.excluded_action_terms,
+            action_sequence=self.action_sequence,
+            action_text_terms=self.action_text_terms,
+            tool_terms=self.tool_terms,
+            excluded_tool_terms=self.excluded_tool_terms,
             providers=self.providers,
             excluded_providers=self.excluded_providers,
             tags=self.tags,
@@ -216,9 +288,7 @@ class ConversationQuerySpec:
             min_messages=self.min_messages,
             max_messages=self.max_messages,
             min_words=self.min_words,
-            filter_has_file_ops=self.filter_has_file_ops,
-            filter_has_git_ops=self.filter_has_git_ops,
-            filter_has_subagent=self.filter_has_subagent,
+            similar_text=self.similar_text,
             vector_provider=vector_provider,
         )
         if self.latest:

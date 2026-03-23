@@ -33,6 +33,10 @@ def extract_tool_metadata(tool_name: str, tool_input: dict[str, Any]) -> dict[st
         return None
     if category == ToolCategory.SUBAGENT:
         return _parse_subagent_spawn(tool_input)
+    if category == ToolCategory.AGENT:
+        return _extract_agent_metadata(tool_name, tool_input)
+    if category == ToolCategory.SEARCH:
+        return _extract_search_metadata(tool_input)
     if category in (ToolCategory.FILE_READ, ToolCategory.FILE_WRITE, ToolCategory.FILE_EDIT):
         return _extract_file_paths(tool_name, tool_input)
     return None
@@ -126,6 +130,46 @@ def _extract_file_paths(tool_name: str, tool_input: dict[str, Any]) -> dict[str,
         if isinstance(new_string, str):
             result["new_snippet"] = new_string[:200]
 
+    return result
+
+
+def _extract_search_metadata(tool_input: dict[str, Any]) -> dict[str, Any] | None:
+    result: dict[str, Any] = {}
+    path = tool_input.get("path")
+    if isinstance(path, str) and path:
+        result["path"] = path
+    pattern = tool_input.get("pattern")
+    if isinstance(pattern, str) and pattern:
+        result["pattern"] = pattern
+    query = tool_input.get("query")
+    if isinstance(query, str) and query:
+        result["query"] = query[:500]
+    return result or None
+
+
+def _extract_agent_metadata(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any] | None:
+    result: dict[str, Any] = {"tool": tool_name}
+    description = tool_input.get("description")
+    if isinstance(description, str) and description:
+        result["description"] = description[:200]
+    prompt = tool_input.get("prompt")
+    if isinstance(prompt, str) and prompt:
+        result["prompt_snippet"] = prompt[:200]
+    plan = tool_input.get("plan")
+    if isinstance(plan, str) and plan:
+        result["plan_snippet"] = plan[:200]
+    subject = tool_input.get("subject")
+    if isinstance(subject, str) and subject:
+        result["subject"] = subject[:200]
+    task_id = tool_input.get("taskId") or tool_input.get("task_id")
+    if isinstance(task_id, str) and task_id:
+        result["task_id"] = task_id
+    todos = tool_input.get("todos")
+    if isinstance(todos, list):
+        result["todo_count"] = len(todos)
+    questions = tool_input.get("questions")
+    if isinstance(questions, list):
+        result["question_count"] = len(questions)
     return result
 
 

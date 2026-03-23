@@ -6,10 +6,12 @@ import builtins
 import random
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from heapq import heappush, heappushpop
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from polylogue.logging import get_logger
 from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
@@ -40,6 +42,14 @@ class ConversationQueryPlan:
     query_terms: tuple[str, ...] = ()
     contains_terms: tuple[str, ...] = ()
     negative_terms: tuple[str, ...] = ()
+    retrieval_lane: str = "auto"
+    path_terms: tuple[str, ...] = ()
+    action_terms: tuple[str, ...] = ()
+    excluded_action_terms: tuple[str, ...] = ()
+    action_sequence: tuple[str, ...] = ()
+    action_text_terms: tuple[str, ...] = ()
+    tool_terms: tuple[str, ...] = ()
+    excluded_tool_terms: tuple[str, ...] = ()
     providers: tuple[Provider | str, ...] = ()
     excluded_providers: tuple[Provider | str, ...] = ()
     tags: tuple[str, ...] = ()
@@ -65,9 +75,6 @@ class ConversationQueryPlan:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
-    filter_has_file_ops: bool = False
-    filter_has_git_ops: bool = False
-    filter_has_subagent: bool = False
     vector_provider: VectorProvider | None = None
 
     @property
@@ -90,14 +97,16 @@ class ConversationQueryPlan:
             since=self.since.isoformat() if self.since else None,
             until=self.until.isoformat() if self.until else None,
             title_contains=self.title,
+            path_terms=self.path_terms,
+            action_terms=self.action_terms,
+            excluded_action_terms=self.excluded_action_terms,
+            tool_terms=self.tool_terms,
+            excluded_tool_terms=self.excluded_tool_terms,
             has_tool_use=self.filter_has_tool_use,
             has_thinking=self.filter_has_thinking,
             min_messages=self.min_messages,
             max_messages=self.max_messages,
             min_words=self.min_words,
-            has_file_ops=self.filter_has_file_ops,
-            has_git_ops=self.filter_has_git_ops,
-            has_subagent=self.filter_has_subagent,
         )
 
     def sql_pushdown_params(self) -> dict[str, object]:
@@ -115,6 +124,20 @@ class ConversationQueryPlan:
             params["until"] = self.until.isoformat()
         if self.title:
             params["title_contains"] = self.title
+        if self.path_terms:
+            params["path_terms"] = list(self.path_terms)
+        if self.action_terms:
+            params["action_terms"] = list(self.action_terms)
+        if self.excluded_action_terms:
+            params["excluded_action_terms"] = list(self.excluded_action_terms)
+        if self.action_sequence:
+            params["action_sequence"] = list(self.action_sequence)
+        if self.action_text_terms:
+            params["action_text_terms"] = list(self.action_text_terms)
+        if self.tool_terms:
+            params["tool_terms"] = list(self.tool_terms)
+        if self.excluded_tool_terms:
+            params["excluded_tool_terms"] = list(self.excluded_tool_terms)
         if self.filter_has_tool_use:
             params["has_tool_use"] = True
         if self.filter_has_thinking:
@@ -125,12 +148,6 @@ class ConversationQueryPlan:
             params["max_messages"] = self.max_messages
         if self.min_words is not None:
             params["min_words"] = self.min_words
-        if self.filter_has_file_ops:
-            params["has_file_ops"] = True
-        if self.filter_has_git_ops:
-            params["has_git_ops"] = True
-        if self.filter_has_subagent:
-            params["has_subagent"] = True
         return params
 
     def describe(self) -> list[str]:
@@ -139,6 +156,22 @@ class ConversationQueryPlan:
             parts.append(f"contains: {', '.join(self.fts_terms)}")
         if self.negative_terms:
             parts.append(f"exclude text: {', '.join(self.negative_terms)}")
+        if self.retrieval_lane != "auto":
+            parts.append(f"retrieval: {self.retrieval_lane}")
+        if self.path_terms:
+            parts.append(f"path: {', '.join(self.path_terms)}")
+        if self.action_terms:
+            parts.append(f"action: {', '.join(self.action_terms)}")
+        if self.excluded_action_terms:
+            parts.append(f"exclude action: {', '.join(self.excluded_action_terms)}")
+        if self.action_sequence:
+            parts.append(f"action sequence: {' -> '.join(self.action_sequence)}")
+        if self.action_text_terms:
+            parts.append(f"action text: {', '.join(self.action_text_terms)}")
+        if self.tool_terms:
+            parts.append(f"tool: {', '.join(self.tool_terms)}")
+        if self.excluded_tool_terms:
+            parts.append(f"exclude tool: {', '.join(self.excluded_tool_terms)}")
         if self.providers:
             parts.append(f"provider: {', '.join(_provider_values(self.providers))}")
         if self.excluded_providers:
@@ -155,12 +188,6 @@ class ConversationQueryPlan:
             parts.append("has_tool_use")
         if self.filter_has_thinking:
             parts.append("has_thinking")
-        if self.filter_has_file_ops:
-            parts.append("has_file_ops")
-        if self.filter_has_git_ops:
-            parts.append("has_git_ops")
-        if self.filter_has_subagent:
-            parts.append("has_subagent")
         if self.min_messages is not None:
             parts.append(f"min_messages: {self.min_messages}")
         if self.max_messages is not None:
@@ -202,6 +229,13 @@ class ConversationQueryPlan:
             (
                 self.fts_terms,
                 self.negative_terms,
+                self.path_terms,
+                self.action_terms,
+                self.excluded_action_terms,
+                self.action_sequence,
+                self.action_text_terms,
+                self.tool_terms,
+                self.excluded_tool_terms,
                 self.providers,
                 self.excluded_providers,
                 self.tags,
@@ -219,9 +253,6 @@ class ConversationQueryPlan:
                 self.has_branches is not None,
                 self.filter_has_tool_use,
                 self.filter_has_thinking,
-                self.filter_has_file_ops,
-                self.filter_has_git_ops,
-                self.filter_has_subagent,
                 self.min_messages is not None,
                 self.max_messages is not None,
                 self.min_words is not None,
@@ -237,6 +268,13 @@ class ConversationQueryPlan:
             or self.has_types
             or self.predicates
             or self.negative_terms
+            or self.path_terms
+            or self.action_terms
+            or self.excluded_action_terms
+            or self.action_sequence
+            or self.action_text_terms
+            or self.tool_terms
+            or self.excluded_tool_terms
             or self.continuation is not None
             or self.sidechain is not None
             or self.root is not None
@@ -244,9 +282,21 @@ class ConversationQueryPlan:
         )
 
     def needs_content_loading(self) -> bool:
+        if self.fts_terms and self.retrieval_lane in {"actions", "hybrid"}:
+            return True
         if self.has_types and any(kind in ("thinking", "tools", "attachments") for kind in self.has_types):
             return True
         if self.negative_terms or self.predicates or self.similar_text:
+            return True
+        if self.path_terms:
+            return True
+        if self.action_terms or self.excluded_action_terms:
+            return True
+        if self.action_sequence:
+            return True
+        if self.action_text_terms:
+            return True
+        if self.tool_terms or self.excluded_tool_terms:
             return True
         if self.has_branches is not None:
             return True
@@ -260,6 +310,13 @@ class ConversationQueryPlan:
             self.fts_terms
             or self.conversation_id
             or self.similar_text
+            or self.path_terms
+            or self.action_terms
+            or self.excluded_action_terms
+            or self.action_sequence
+            or self.action_text_terms
+            or self.tool_terms
+            or self.excluded_tool_terms
             or self.predicates
             or self.has_types
             or self.negative_terms
@@ -270,6 +327,92 @@ class ConversationQueryPlan:
             or self.sidechain is not None
             or self.root is not None
             or self.has_branches is not None
+        )
+
+    def _matches_path_terms(self, conversation: Conversation) -> bool:
+        if not self.path_terms:
+            return True
+        from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+        facts = build_conversation_semantic_facts(conversation)
+        affected_paths = tuple(path.lower() for action in facts.action_events for path in action.affected_paths)
+        if not affected_paths:
+            return False
+        return all(
+            any(term.lower().replace("\\", "/") in path for path in affected_paths)
+            for term in self.path_terms
+        )
+
+    def _matches_action_terms(self, conversation: Conversation) -> bool:
+        if not self.action_terms and not self.excluded_action_terms:
+            return True
+        from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+        facts = build_conversation_semantic_facts(conversation)
+        categories = {action.kind.value for action in facts.action_events}
+        required_terms = {term for term in self.action_terms if term != "none"}
+        if "none" in self.action_terms and categories:
+            return False
+        if required_terms and not required_terms.issubset(categories):
+            return False
+        if "none" in self.excluded_action_terms and not categories:
+            return False
+        return not (
+            {term for term in self.excluded_action_terms if term != "none"} & categories
+        )
+
+    def _matches_tool_terms(self, conversation: Conversation) -> bool:
+        if not self.tool_terms and not self.excluded_tool_terms:
+            return True
+        from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+        facts = build_conversation_semantic_facts(conversation)
+        tool_names = {
+            (action.tool_name or "unknown").strip().lower()
+            for action in facts.action_events
+        }
+        required_terms = {term for term in self.tool_terms if term != "none"}
+        if "none" in self.tool_terms and tool_names:
+            return False
+        if required_terms and not required_terms.issubset(tool_names):
+            return False
+        if "none" in self.excluded_tool_terms and not tool_names:
+            return False
+        return not (
+            {term for term in self.excluded_tool_terms if term != "none"} & tool_names
+        )
+
+    def _matches_action_sequence(self, conversation: Conversation) -> bool:
+        if not self.action_sequence:
+            return True
+        from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+        facts = build_conversation_semantic_facts(conversation)
+        if not facts.action_events:
+            return False
+
+        index = 0
+        target_count = len(self.action_sequence)
+        for action in facts.action_events:
+            if action.kind.value != self.action_sequence[index]:
+                continue
+            index += 1
+            if index >= target_count:
+                return True
+        return False
+
+    def _matches_action_text_terms(self, conversation: Conversation) -> bool:
+        if not self.action_text_terms:
+            return True
+        from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+        facts = build_conversation_semantic_facts(conversation)
+        searchable_events = [action.search_text.lower() for action in facts.action_events if action.search_text]
+        if not searchable_events:
+            return False
+        return all(
+            any(term.lower() in event_text for event_text in searchable_events)
+            for term in self.action_text_terms
         )
 
     def effective_fetch_limit(self) -> int | None:
@@ -284,8 +427,33 @@ class ConversationQueryPlan:
     def with_limit(self, limit: int | None) -> ConversationQueryPlan:
         return replace(self, limit=limit)
 
+    def _candidate_record_query(self) -> tuple[ConversationRecordQuery, bool]:
+        record_query = self.record_query
+        if self.path_terms or self.action_terms or self.excluded_action_terms:
+            record_query = record_query.without_unstable_semantic_filters()
+            return record_query, False
+        return record_query, self.sql_pushed
+
     def fetch_record_query(self) -> ConversationRecordQuery:
-        return self.record_query.with_limit(self.effective_fetch_limit())
+        record_query, _ = self._candidate_record_query()
+        return record_query.with_limit(self.effective_fetch_limit())
+
+    def _should_batch_post_filter_fetch(self) -> bool:
+        return bool(
+            self.limit is not None
+            and self.limit > 0
+            and self.has_post_filters()
+            and not self.fts_terms
+            and self.conversation_id is None
+            and self.sample is None
+            and self.sort == "date"
+            and not self.reverse
+        )
+
+    def _candidate_batch_limit(self) -> int:
+        if self.limit is None:
+            return 100
+        return min(max(self.limit * 2, 100), 200)
 
     def _search_limit(self) -> int:
         fetch_limit = self.effective_fetch_limit()
@@ -316,6 +484,14 @@ class ConversationQueryPlan:
     ) -> tuple[bool, builtins.list[Conversation | ConversationSummary]]:
         if not self.fts_terms:
             return False, []
+        if self.retrieval_lane == "actions":
+            if summaries:
+                return False, []
+            return True, await self._search_action_results(repository, limit=self._search_limit())
+        if self.retrieval_lane == "hybrid":
+            if summaries:
+                return False, []
+            return True, await self._search_hybrid_results(repository, limit=self._search_limit())
         query = " ".join(self.fts_terms)
         provider_names = list(_provider_values(self.providers)) or None
         try:
@@ -346,6 +522,159 @@ class ConversationQueryPlan:
         if summaries:
             return await repository.list_summaries_by_query(request)
         return await repository.list_by_query(request)
+
+    def _search_query_text(self) -> str:
+        return " ".join(term.strip() for term in self.fts_terms if term.strip()).strip()
+
+    def _search_query_terms(self) -> tuple[str, ...]:
+        return tuple(term.lower() for term in self.fts_terms if term.strip())
+
+    def _score_action_search_text(self, search_text: str, *, query_text: str, terms: tuple[str, ...]) -> float:
+        haystack = search_text.lower()
+        score = 0.0
+        if query_text and query_text.lower() in haystack:
+            score += 20.0 + len(query_text.split())
+        for term in terms:
+            if term in haystack:
+                score += 4.0
+        return score
+
+    def _conversation_action_search_score(self, conversation: Conversation, *, query_text: str, terms: tuple[str, ...]) -> float:
+        from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+        facts = build_conversation_semantic_facts(conversation)
+        matches = [
+            self._score_action_search_text(action.search_text, query_text=query_text, terms=terms)
+            for action in facts.action_events
+            if action.search_text
+        ]
+        positive = [score for score in matches if score > 0]
+        if not positive:
+            return 0.0
+        return max(positive) + min(len(positive) - 1, 5)
+
+    async def _search_action_results_fallback(
+        self,
+        repository: ConversationRepository,
+        *,
+        limit: int,
+    ) -> builtins.list[Conversation]:
+        request, sql_pushed = self._candidate_record_query()
+        batch_limit = self._candidate_batch_limit()
+        offset = 0
+        query_text = self._search_query_text()
+        terms = self._search_query_terms()
+        ranked: list[tuple[float, int, Conversation]] = []
+        counter = 0
+
+        while True:
+            batch = await repository.list_by_query(request.with_limit(batch_limit).with_offset(offset))
+            if not batch:
+                break
+            for conversation in self._apply_common_filters(batch, sql_pushed=sql_pushed):
+                score = self._conversation_action_search_score(conversation, query_text=query_text, terms=terms)
+                if score <= 0:
+                    continue
+                entry = (score, counter, conversation)
+                counter += 1
+                if len(ranked) < limit:
+                    heappush(ranked, entry)
+                else:
+                    heappushpop(ranked, entry)
+            if len(batch) < batch_limit:
+                break
+            offset += batch_limit
+
+        ranked.sort(key=lambda item: (item[0], item[2].updated_at or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+        return [conversation for _score, _counter, conversation in ranked]
+
+    async def _search_action_results(
+        self,
+        repository: ConversationRepository,
+        *,
+        limit: int,
+    ) -> builtins.list[Conversation]:
+        query = self._search_query_text()
+        provider_names = list(_provider_values(self.providers)) or None
+        try:
+            return await repository.search_actions(query, limit=limit, providers=provider_names)
+        except Exception as exc:
+            logger.debug("Persisted action search failed, falling back to hydrated scan: %s", exc)
+            return await self._search_action_results_fallback(repository, limit=limit)
+
+    async def _search_hybrid_results(
+        self,
+        repository: ConversationRepository,
+        *,
+        limit: int,
+    ) -> builtins.list[Conversation]:
+        query = self._search_query_text()
+        provider_names = list(_provider_values(self.providers)) or None
+        text_results = await repository.search(query, limit=limit * 3, providers=provider_names)
+        action_results = await self._search_action_results(repository, limit=limit * 3)
+        vector_results: builtins.list[Conversation] = []
+        if self.vector_provider is not None:
+            try:
+                vector_results = await repository.search_similar(
+                    query,
+                    limit=limit * 3,
+                    vector_provider=self.vector_provider,
+                )
+            except Exception as exc:
+                logger.debug("Vector contribution to hybrid retrieval unavailable: %s", exc)
+
+        text_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(text_results, start=1)]
+        action_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(action_results, start=1)]
+        vector_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(vector_results, start=1)]
+        fused_ids = [
+            conversation_id
+            for conversation_id, _score in reciprocal_rank_fusion(text_ranked, action_ranked, vector_ranked)
+        ][:limit]
+
+        text_by_id = {str(conversation.id): conversation for conversation in text_results}
+        action_by_id = {str(conversation.id): conversation for conversation in action_results}
+        vector_by_id = {str(conversation.id): conversation for conversation in vector_results}
+        ordered: list[Conversation] = []
+        for conversation_id in fused_ids:
+            conversation = (
+                action_by_id.get(conversation_id)
+                or text_by_id.get(conversation_id)
+                or vector_by_id.get(conversation_id)
+            )
+            if conversation is not None:
+                ordered.append(conversation)
+        return ordered
+
+    async def _fetch_batched_filtered_conversations(
+        self,
+        repository: ConversationRepository,
+    ) -> builtins.list[Conversation]:
+        request, sql_pushed = self._candidate_record_query()
+        batch_limit = self._candidate_batch_limit()
+        offset = 0
+        matched: builtins.list[Conversation] = []
+        seen_ids: set[str] = set()
+
+        while True:
+            batch = await repository.list_by_query(
+                request.with_limit(batch_limit).with_offset(offset)
+            )
+            if not batch:
+                break
+            filtered_batch = self._apply_full_filters(batch, sql_pushed=sql_pushed)
+            for conversation in filtered_batch:
+                conversation_id = str(conversation.id)
+                if conversation_id in seen_ids:
+                    continue
+                seen_ids.add(conversation_id)
+                matched.append(conversation)
+            if self.limit is not None and len(matched) >= self.limit:
+                break
+            if len(batch) < batch_limit:
+                break
+            offset += batch_limit
+
+        return matched
 
     def _apply_common_filters(
         self,
@@ -441,6 +770,17 @@ class ConversationQueryPlan:
         for predicate in self.predicates:
             results = [conversation for conversation in results if predicate(conversation)]
 
+        if self.path_terms:
+            results = [conversation for conversation in results if self._matches_path_terms(conversation)]
+        if self.action_terms or self.excluded_action_terms:
+            results = [conversation for conversation in results if self._matches_action_terms(conversation)]
+        if self.action_sequence:
+            results = [conversation for conversation in results if self._matches_action_sequence(conversation)]
+        if self.action_text_terms:
+            results = [conversation for conversation in results if self._matches_action_text_terms(conversation)]
+        if self.tool_terms or self.excluded_tool_terms:
+            results = [conversation for conversation in results if self._matches_tool_terms(conversation)]
+
         return results
 
     def _sort_generic(
@@ -498,6 +838,10 @@ class ConversationQueryPlan:
                 vector_provider=self.vector_provider,
             )
             return self._finalize(self._apply_full_filters(candidates, sql_pushed=False))
+
+        if self._should_batch_post_filter_fetch():
+            batched = await self._fetch_batched_filtered_conversations(repository)
+            return self._finalize(self._sort_conversations(batched))
 
         candidates = await self._fetch_candidates(repository, summaries=False)
         filtered = self._apply_full_filters(candidates, sql_pushed=self.sql_pushed)

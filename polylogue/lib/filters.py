@@ -75,6 +75,11 @@ class ConversationFilter(ConversationFilterBuilderMixin):
         self._since_date: datetime | None = None
         self._until_date: datetime | None = None
         self._title_pattern: str | None = None
+        self._path_terms: list[str] = []
+        self._action_terms: list[str] = []
+        self._excluded_action_terms: list[str] = []
+        self._tool_terms: list[str] = []
+        self._excluded_tool_terms: list[str] = []
         self._id_prefix: str | None = None
         self._parent_id: str | None = None
         self._sort_field: SortField = "date"
@@ -92,11 +97,6 @@ class ConversationFilter(ConversationFilterBuilderMixin):
         self._min_messages: int | None = None
         self._max_messages: int | None = None
         self._min_words: int | None = None
-        # SQL-pushable semantic filters (via EXISTS on content_blocks.semantic_type)
-        self._filter_has_file_ops: bool = False
-        self._filter_has_git_ops: bool = False
-        self._filter_has_subagent: bool = False
-
         if query_plan is not None:
             self._load_query_plan(query_plan)
 
@@ -124,6 +124,11 @@ class ConversationFilter(ConversationFilterBuilderMixin):
         self._since_date = query_plan.since
         self._until_date = query_plan.until
         self._title_pattern = query_plan.title
+        self._path_terms = list(query_plan.path_terms)
+        self._action_terms = list(query_plan.action_terms)
+        self._excluded_action_terms = list(query_plan.excluded_action_terms)
+        self._tool_terms = list(query_plan.tool_terms)
+        self._excluded_tool_terms = list(query_plan.excluded_tool_terms)
         self._id_prefix = query_plan.conversation_id
         self._parent_id = query_plan.parent_id
         self._sort_field = query_plan.sort
@@ -140,9 +145,6 @@ class ConversationFilter(ConversationFilterBuilderMixin):
         self._min_messages = query_plan.min_messages
         self._max_messages = query_plan.max_messages
         self._min_words = query_plan.min_words
-        self._filter_has_file_ops = query_plan.filter_has_file_ops
-        self._filter_has_git_ops = query_plan.filter_has_git_ops
-        self._filter_has_subagent = query_plan.filter_has_subagent
         self._predicates = list(query_plan.predicates)
         self._vector_provider = query_plan.vector_provider
 
@@ -157,6 +159,11 @@ class ConversationFilter(ConversationFilterBuilderMixin):
             excluded_tags=tuple(self._excluded_tags),
             has_types=tuple(self._has_types),
             title=self._title_pattern,
+            path_terms=tuple(self._path_terms),
+            action_terms=tuple(self._action_terms),
+            excluded_action_terms=tuple(self._excluded_action_terms),
+            tool_terms=tuple(self._tool_terms),
+            excluded_tool_terms=tuple(self._excluded_tool_terms),
             conversation_id=self._id_prefix,
             parent_id=self._parent_id,
             since=self._since_date,
@@ -176,9 +183,6 @@ class ConversationFilter(ConversationFilterBuilderMixin):
             min_messages=self._min_messages,
             max_messages=self._max_messages,
             min_words=self._min_words,
-            filter_has_file_ops=self._filter_has_file_ops,
-            filter_has_git_ops=self._filter_has_git_ops,
-            filter_has_subagent=self._filter_has_subagent,
             vector_provider=self._vector_provider,
         )
 

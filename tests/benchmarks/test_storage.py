@@ -53,11 +53,11 @@ def test_bench_list_conversations_has_tool_use(benchmark, bench_db_5k: Path) -> 
 
 @pytest.mark.benchmark
 def test_bench_list_conversations_semantic_filter(benchmark, bench_db_5k: Path) -> None:
-    """list with has_file_ops=True — tests EXISTS subquery path (schema v3)."""
+    """list with action_terms=file_read — tests semantic EXISTS subquery path."""
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.backend.list_conversations(has_file_ops=True, limit=50),
+        lambda store: store.backend.list_conversations(action_terms=["file_read"], limit=50),
     )
 
 

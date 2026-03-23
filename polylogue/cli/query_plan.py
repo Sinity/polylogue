@@ -86,7 +86,7 @@ class QueryExecutionPlan:
         )
 
     def prefers_summary_stats(self) -> bool:
-        return self.action == QueryAction.STATS_BY
+        return self.action == QueryAction.STATS_BY and self.stats_dimension in {"provider", "month", "year", "day"}
 
     def prefers_summary_mutation(self) -> bool:
         return self.action in {QueryAction.MODIFY, QueryAction.DELETE}

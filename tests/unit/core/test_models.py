@@ -26,14 +26,20 @@ from polylogue.storage.hydrators import (
     conversation_summary_from_record,
     message_from_record,
 )
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
-from polylogue.types import Provider
+from polylogue.storage.store import (
+    AttachmentRecord,
+    ContentBlockRecord,
+    ConversationRecord,
+    MessageRecord,
+)
+from polylogue.types import Provider, SemanticBlockType
 
 TOOL_FILE_OPS = [
     ("Read", True),
     ("Write", True),
     ("Edit", True),
     ("NotebookEdit", True),
+    ("MultiEdit", True),
     ("Bash", False),
 ]
 TOOL_GIT_OPS = [
@@ -49,9 +55,9 @@ TOOL_AFFECTED_PATHS = [
     ("Write", {"file_path": "/tmp/output.txt"}, ["/tmp/output.txt"]),
     ("Edit", {"file_path": "/tmp/code.py"}, ["/tmp/code.py"]),
     ("Read", {"path": "/tmp/fallback.txt"}, ["/tmp/fallback.txt"]),
-    ("Read", {"file_path": "/tmp/primary.txt", "path": "/tmp/fallback.txt"}, ["/tmp/primary.txt"]),
+    ("Read", {"file_path": "/tmp/primary.txt", "path": "/tmp/fallback.txt"}, ["/tmp/primary.txt", "/tmp/fallback.txt"]),
     ("Read", {"file_path": 123}, []),
-    ("Glob", {"pattern": "**/*.py"}, ["**/*.py"]),
+    ("Glob", {"pattern": "**/*.py"}, []),
     ("Glob", {"pattern": ["*.py", "*.txt"]}, []),
     ("Bash", {"command": 123}, []),
     ("Task", {"prompt": "do something"}, []),
@@ -95,6 +101,26 @@ class TestToolCallProperties:
         tool = _make_tool("Bash", {"command": "ls -la /tmp/file"})
         assert "-la" not in tool.affected_paths
         assert "/tmp/file" in tool.affected_paths
+
+    def test_affected_paths_filters_globs_and_noise(self):
+        tool = _make_tool("Bash", {"command": "ls /realm/project/* /tmp/file ... /dev/null"})
+        assert "/tmp/file" in tool.affected_paths
+        assert all(path not in tool.affected_paths for path in ("/realm/project/*", "...", "/dev/null"))
+
+    def test_affected_paths_filters_shell_suffix_fragments(self):
+        tool = _make_tool("Bash", {"command": "tar -xf archive.tar.gz .tar.gz ./fixtures/sample.txt"})
+        assert ".tar.gz" not in tool.affected_paths
+        assert "./fixtures/sample.txt" in tool.affected_paths
+
+    def test_affected_paths_uses_structured_metadata_files(self):
+        tool = ToolCall(
+            name="Bash",
+            id="t1",
+            input={"command": "git add pyproject.toml README.md"},
+            category=classify_tool("Bash", {"command": "git add pyproject.toml README.md"}),
+            raw={"metadata": {"files": ["pyproject.toml", "/realm/project/polylogue/README.md"]}},
+        )
+        assert tool.affected_paths == ["pyproject.toml", "/realm/project/polylogue/README.md"]
 
 
 class TestMessageCollectionContracts:
@@ -220,6 +246,45 @@ class TestMessageFromRecord:
         )
         message = message_from_record(record, [])
         assert message.role == expected_role
+
+    def test_from_record_preserves_structured_content_block_semantics(self):
+        record = MessageRecord(
+            message_id="m1",
+            conversation_id="c1",
+            role="assistant",
+            text="Inspecting file",
+            content_hash="hash1",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk1",
+                    message_id="m1",
+                    conversation_id="c1",
+                    block_index=0,
+                    type="tool_use",
+                    text=None,
+                    tool_name="Read",
+                    tool_id="tool-1",
+                    tool_input='{"file_path": "/realm/project/polylogue/README.md"}',
+                    metadata='{"path": "/realm/project/polylogue/README.md"}',
+                    semantic_type="file_read",
+                )
+            ],
+        )
+
+        message = message_from_record(record, [])
+
+        assert message.content_blocks == [
+            {
+                "type": "tool_use",
+                "text": None,
+                "tool_name": "Read",
+                "tool_id": "tool-1",
+                "tool_input": {"file_path": "/realm/project/polylogue/README.md"},
+                "media_type": None,
+                "metadata": {"path": "/realm/project/polylogue/README.md"},
+                "semantic_type": "file_read",
+            }
+        ]
 
 
 class TestConversationSummaryFromRecord:
@@ -384,6 +449,10 @@ def test_provider_enum_from_string_uses_shared_runtime_identity() -> None:
     assert Provider.from_string("claude") is Provider.UNKNOWN
     assert Provider.from_string("openai") is Provider.UNKNOWN
     assert Provider.from_string("nonexistent-provider") is Provider.UNKNOWN
+
+
+def test_semantic_block_type_accepts_other() -> None:
+    assert SemanticBlockType.from_string("other") is SemanticBlockType.OTHER
 
 
 def test_build_raw_payload_envelope_normalizes_fallback_identity() -> None:

@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.storage.backends.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
@@ -86,6 +87,82 @@ class TestMarkRawParsed:
         rec = await backend.get_raw_conversation("test-raw")
         assert rec is not None
         assert len(rec.parse_error) == 2000  # type: ignore[arg-type]
+
+
+class TestUpdateRawState:
+    """Tests for unified raw state update methods."""
+
+    @pytest.fixture
+    def backend(self, tmp_path: Path) -> SQLiteBackend:
+        return SQLiteBackend(db_path=tmp_path / "test.db")
+
+    async def _save_raw(self, backend: SQLiteBackend, raw_id: str = "update-raw") -> None:
+        await backend.save_raw_conversation(RawConversationRecord(
+            raw_id=raw_id,
+            provider_name="test",
+            source_path="/test.json",
+            raw_content=b'{"test": true}',
+            acquired_at="2026-01-01T00:00:00Z",
+            file_mtime="2026-01-01T00:00:00Z",
+        ))
+
+    async def test_update_raw_state_applies_only_requested_fields(self, backend: SQLiteBackend) -> None:
+        await self._save_raw(backend)
+        await backend.update_raw_state(
+            "update-raw",
+            state=RawConversationStateUpdate(
+                parsed_at="2026-01-02T00:00:00Z",
+                parse_error=None,
+                payload_provider="chatgpt",
+            ),
+        )
+
+        rec = await backend.get_raw_conversation("update-raw")
+        assert rec is not None
+        assert rec.parsed_at == "2026-01-02T00:00:00Z"
+        assert rec.parse_error is None
+        assert rec.payload_provider == "chatgpt"
+        assert rec.validation_status is None
+
+    async def test_update_raw_state_supports_validation_fields(self, backend: SQLiteBackend) -> None:
+        await self._save_raw(backend, raw_id="validate-update")
+        await backend.update_raw_state(
+            "validate-update",
+            state=RawConversationStateUpdate(
+                validation_status="passed",
+                validation_error="",
+                validation_drift_count=3,
+                validation_provider="chatgpt",
+                validation_mode="strict",
+            ),
+        )
+
+        rec = await backend.get_raw_conversation("validate-update")
+        assert rec is not None
+        assert rec.validated_at is not None
+        assert rec.validation_status == "passed"
+        assert rec.validation_error == ""
+        assert rec.validation_drift_count == 3
+        assert rec.validation_provider == "chatgpt"
+        assert rec.validation_mode == "strict"
+
+    async def test_update_raw_state_truncates_error_fields(self, backend: SQLiteBackend) -> None:
+        await self._save_raw(backend, raw_id="error-trunc")
+        long_error = "x" * 5000
+        await backend.update_raw_state(
+            "error-trunc",
+            state=RawConversationStateUpdate(
+                parse_error=long_error,
+                validation_error=long_error,
+            ),
+        )
+
+        rec = await backend.get_raw_conversation("error-trunc")
+        assert rec is not None
+        assert rec.parse_error is not None
+        assert len(rec.parse_error) == 2000
+        assert rec.validation_error is not None
+        assert len(rec.validation_error) == 2000
 
 
 class TestMarkRawValidated:

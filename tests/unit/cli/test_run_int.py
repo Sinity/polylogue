@@ -12,7 +12,7 @@ from polylogue.config import Source, get_config
 from polylogue.pipeline.observers import ExecObserver, NotificationObserver, WebhookObserver
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.store import RunResult
+from polylogue.storage.state_views import RunResult
 from tests.infra.source_builders import ChatGPTExportBuilder, GenericConversationBuilder, InboxBuilder
 
 

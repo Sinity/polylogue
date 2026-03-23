@@ -19,6 +19,7 @@ from polylogue.lib.roles import Role
 from polylogue.types import Provider
 
 _PATH_PATTERN = re.compile(r'(?:^|[\s"\'])(/[^\s"\']+|[./][^\s"\']+)')
+_NOISE_PATH_TOKENS = frozenset({"...", "//", "/dev/null", "|", "||", "&&", ";"})
 
 
 class ContentType(str, Enum):
@@ -103,17 +104,33 @@ class ToolCall(BaseModel):
 
     @property
     def affected_paths(self) -> list[str]:
-        for field in ("file_path", "path", "file", "filename", "pattern"):
-            if field in self.input:
-                val = self.input[field]
-                if isinstance(val, str):
-                    return [val]
+        paths: list[str] = []
+        for field in ("file_path", "path", "file", "filename"):
+            value = _clean_path_candidate(self.input.get(field))
+            if value:
+                paths.append(value)
+
+        metadata = self.raw.get("metadata") if isinstance(self.raw, dict) else None
+        if isinstance(metadata, dict):
+            for field in ("path", "file_path"):
+                value = _clean_path_candidate(metadata.get(field))
+                if value:
+                    paths.append(value)
+            files = metadata.get("files")
+            if isinstance(files, list):
+                for item in files:
+                    value = _clean_path_candidate(item)
+                    if value:
+                        paths.append(value)
 
         cmd = self.input.get("command")
         if isinstance(cmd, str):
-            return list(_PATH_PATTERN.findall(cmd)[:5])
+            for candidate in _PATH_PATTERN.findall(cmd)[:8]:
+                value = _clean_shell_path_candidate(candidate)
+                if value:
+                    paths.append(value)
 
-        return []
+        return list(dict.fromkeys(paths))
 
 
 class ContentBlock(BaseModel):
@@ -174,21 +191,82 @@ def classify_tool(name: str, input_data: dict[str, Any]) -> ToolCategory:
 
     if name_lower in ("read", "view", "cat"):
         return ToolCategory.FILE_READ
+    if "__get_file_contents" in name_lower:
+        return ToolCategory.FILE_READ
     if name_lower in ("write", "create"):
         return ToolCategory.FILE_WRITE
-    if name_lower in ("edit", "patch", "sed", "notebookedit"):
+    if name_lower in ("edit", "patch", "sed", "notebookedit", "multiedit") or "__edit_file" in name_lower or "__create_or_update_file" in name_lower:
         return ToolCategory.FILE_EDIT
-    if name_lower in ("glob", "grep", "search", "find", "file_search"):
+    if name_lower in ("glob", "grep", "search", "find", "file_search", "ls", "toolsearch") or any(
+        marker in name_lower
+        for marker in (
+            "__query-docs",
+            "__get-library-docs",
+            "__resolve-library-id",
+            "__search_code",
+            "__search_tool",
+            "__search_repositories",
+            "__search_users",
+            "__search_issues",
+            "__search_pull_requests",
+            "__find_definition",
+            "__find_references",
+            "__find_referencing_symbols",
+            "__get_symbols_in_file",
+            "__get_diagnostics",
+        )
+    ):
         return ToolCategory.SEARCH
     if name_lower in ("bash", "shell", "terminal", "run"):
         cmd = input_data.get("command", "")
         if isinstance(cmd, str) and cmd.strip().startswith("git "):
             return ToolCategory.GIT
         return ToolCategory.SHELL
+    if name_lower in ("killshell",):
+        return ToolCategory.SHELL
     if name_lower in ("task", "subagent"):
         return ToolCategory.SUBAGENT
-    if name_lower == "agent":
+    if name_lower == "agent" or name_lower.startswith(("todo", "task")) or name_lower in (
+        "askuserquestion",
+        "enterplanmode",
+        "exitplanmode",
+        "skill",
+        "batch",
+        "mcp__sequential-thinking__sequentialthinking",
+        "mcp__cclsp__restart_server",
+    ):
         return ToolCategory.AGENT
-    if name_lower in ("web", "fetch", "browse", "webfetch", "websearch"):
+    if "tabs_context" in name_lower:
+        return ToolCategory.WEB
+    if name_lower in ("web", "fetch", "browse", "webfetch", "websearch") or any(
+        marker in name_lower for marker in ("__web_search", "__webfetch")
+    ):
         return ToolCategory.WEB
     return ToolCategory.OTHER
+
+
+def _clean_path_candidate(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().strip('"\'`')
+    candidate = candidate.rstrip(",;:")
+    if not candidate:
+        return None
+    if candidate in _NOISE_PATH_TOKENS:
+        return None
+    if set(candidate) <= {".", "/"}:
+        return None
+    if candidate.startswith("-"):
+        return None
+    if any(ch in candidate for ch in "*?[]{}"):
+        return None
+    return candidate
+
+
+def _clean_shell_path_candidate(value: object) -> str | None:
+    candidate = _clean_path_candidate(value)
+    if candidate is None:
+        return None
+    if candidate.startswith(".") and "/" not in candidate:
+        return None
+    return candidate

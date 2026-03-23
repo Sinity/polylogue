@@ -84,6 +84,31 @@ class ConversationFilterBuilderMixin:
         self._title_pattern = pattern
         return self
 
+    def path(self, pattern: str) -> ConversationFilter:
+        """Filter to conversations that touched a path containing pattern."""
+        self._path_terms.append(pattern)
+        return self
+
+    def action(self, *types: str) -> ConversationFilter:
+        """Filter to conversations containing semantic action categories."""
+        self._action_terms.extend(types)
+        return self
+
+    def exclude_action(self, *types: str) -> ConversationFilter:
+        """Exclude conversations containing semantic action categories."""
+        self._excluded_action_terms.extend(types)
+        return self
+
+    def tool(self, *names: str) -> ConversationFilter:
+        """Filter to conversations containing normalized tool names."""
+        self._tool_terms.extend(name.strip().lower() for name in names if name.strip())
+        return self
+
+    def exclude_tool(self, *names: str) -> ConversationFilter:
+        """Exclude conversations containing normalized tool names."""
+        self._excluded_tool_terms.extend(name.strip().lower() for name in names if name.strip())
+        return self
+
     def id(self, prefix: str) -> ConversationFilter:
         """Filter to conversations with ID starting with prefix."""
         self._id_prefix = prefix
@@ -160,19 +185,16 @@ class ConversationFilterBuilderMixin:
         return self
 
     def has_file_operations(self) -> ConversationFilter:
-        """Filter to conversations containing file read/write/edit operations (SQL pushdown)."""
-        self._filter_has_file_ops = True
-        return self
+        """Filter to conversations containing file read/write/edit actions."""
+        return self.action("file_read", "file_write", "file_edit")
 
     def has_git_operations(self) -> ConversationFilter:
-        """Filter to conversations containing git operations (SQL pushdown)."""
-        self._filter_has_git_ops = True
-        return self
+        """Filter to conversations containing git actions."""
+        return self.action("git")
 
     def has_subagent_spawns(self) -> ConversationFilter:
-        """Filter to conversations that spawned subagents via Task tool (SQL pushdown)."""
-        self._filter_has_subagent = True
-        return self
+        """Filter to conversations that spawned subagents."""
+        return self.action("subagent")
 
     def parent(self, conversation_id: str) -> ConversationFilter:
         """Filter to conversations that are children of the given parent."""

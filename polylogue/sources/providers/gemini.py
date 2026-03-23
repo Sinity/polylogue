@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.lib.roles import normalize_role
+from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -64,11 +65,17 @@ class GeminiMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     # Core fields
-    text: str
+    text: str = ""
     """Message text content."""
 
     role: str
     """Role: user or model."""
+
+    createTime: str | None = None
+    """Chunk-level creation timestamp when present."""
+
+    timestamp: str | None = None
+    """Alternate raw timestamp field."""
 
     # Token and completion info
     tokenCount: int | None = None
@@ -113,6 +120,15 @@ class GeminiMessage(BaseModel):
     codeExecutionResult: dict[str, Any] | None = None
     """Code execution result with outcome and output."""
 
+    driveDocument: dict[str, Any] | str | None = None
+    """Drive document reference attached to this chunk."""
+
+    inlineFile: dict[str, Any] | None = None
+    """Inline file payload attached to this chunk."""
+
+    youtubeVideo: dict[str, Any] | None = None
+    """YouTube video reference attached to this chunk."""
+
     # Edit tracking
     errorMessage: str | None = None
     """Error message if present."""
@@ -135,8 +151,8 @@ class GeminiMessage(BaseModel):
 
     @property
     def parsed_timestamp(self):
-        """Gemini messages carry no per-message timestamp; returns None (viewport interface)."""
-        return None
+        """Chunk-level Gemini timestamp when present."""
+        return parse_timestamp(self.createTime or self.timestamp)
 
     @property
     def text_content(self) -> str:
@@ -161,6 +177,7 @@ class GeminiMessage(BaseModel):
             tokens = TokenUsage(output_tokens=self.tokenCount)
 
         return MessageMeta(
+            timestamp=self.parsed_timestamp,
             role=self.role_normalized,
             tokens=tokens,
             provider="gemini",
@@ -257,6 +274,42 @@ class GeminiMessage(BaseModel):
                     text=str(output) if output else f"[{outcome}]",
                     raw=self.codeExecutionResult,
                 ))
+
+        if self.driveDocument:
+            raw_doc = self.driveDocument if isinstance(self.driveDocument, dict) else {"id": self.driveDocument}
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.FILE,
+                    raw={"driveDocument": raw_doc},
+                )
+            )
+
+        if self.inlineFile:
+            mime_type = self.inlineFile.get("mimeType")
+            inline_raw = dict(self.inlineFile)
+            inline_raw.pop("data", None)
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.FILE,
+                    mime_type=mime_type if isinstance(mime_type, str) else None,
+                    raw={"inlineFile": inline_raw},
+                )
+            )
+
+        if self.youtubeVideo:
+            video_id = self.youtubeVideo.get("id")
+            url = (
+                f"https://www.youtube.com/watch?v={video_id}"
+                if isinstance(video_id, str) and video_id
+                else None
+            )
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.VIDEO,
+                    url=url,
+                    raw={"youtubeVideo": self.youtubeVideo},
+                )
+            )
 
         return blocks
 
