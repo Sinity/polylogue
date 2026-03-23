@@ -17,6 +17,8 @@ class ConversationRecordQuery:
     until: str | None = None
     title_contains: str | None = None
     path_terms: tuple[str, ...] = ()
+    action_terms: tuple[str, ...] = ()
+    excluded_action_terms: tuple[str, ...] = ()
     limit: int | None = None
     offset: int = 0
     has_tool_use: bool = False
@@ -54,6 +56,8 @@ class ConversationRecordQuery:
             "until": self.until,
             "title_contains": self.title_contains,
             "path_terms": list(self.path_terms) or None,
+            "action_terms": list(self.action_terms) or None,
+            "excluded_action_terms": list(self.excluded_action_terms) or None,
             "limit": self.limit,
             "offset": self.offset,
             "has_tool_use": self.has_tool_use,
