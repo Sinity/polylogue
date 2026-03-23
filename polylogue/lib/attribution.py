@@ -44,6 +44,21 @@ def _language_from_path(path: str) -> str | None:
     return _LANGUAGE_EXTENSIONS.get(suffix)
 
 
+def _clean_dialogue_path(path: str) -> str | None:
+    candidate = path.rstrip(".,;:)'\">`*_")
+    if not candidate:
+        return None
+    if candidate.rstrip("/") == "/realm/project":
+        return None
+    if "<" in candidate or ">" in candidate:
+        return None
+    if any(ch in candidate for ch in "*?[]{}"):
+        return None
+    if set(candidate) <= {".", "/"}:
+        return None
+    return candidate
+
+
 @dataclass(frozen=True)
 class ConversationAttribution:
     """Raw path/repo/branch attribution extracted from a conversation.
@@ -127,9 +142,8 @@ def extract_attribution(
         if not message.is_dialogue or not message.text:
             continue
         for match in realm_path_pattern.finditer(message.text):
-            path = match.group().rstrip(".,;:)'\">`")
-            # Skip template/placeholder paths like /realm/project/<name>
-            if "<" in path or ">" in path:
+            path = _clean_dialogue_path(match.group())
+            if path is None:
                 continue
             file_paths.add(path)
             lang = _language_from_path(path)

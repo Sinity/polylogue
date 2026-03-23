@@ -235,6 +235,51 @@ def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() ->
     assert profile.canonical_projects == ("polylogue",)
 
 
+def test_build_conversation_semantic_facts_upgrades_stale_other_semantic_type() -> None:
+    conversation = Conversation(
+        id="conv-db-upgrade-other",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="claude-code",
+                    text="Use the edit tools.",
+                    timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
+                ),
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="Applying edits.",
+                    timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
+                    content_blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "MultiEdit",
+                            "tool_input": {"file_path": "/realm/project/polylogue/README.md"},
+                            "semantic_type": "other",
+                            "metadata": {"path": "/realm/project/polylogue/README.md"},
+                        },
+                        {
+                            "type": "tool_use",
+                            "tool_name": "TodoWrite",
+                            "tool_input": {"todos": [{"id": "1"}, {"id": "2"}]},
+                            "semantic_type": "other",
+                        },
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    facts = build_conversation_semantic_facts(conversation)
+
+    assert facts.tool_category_counts == {"agent": 1, "file_edit": 1}
+    assert facts.message_facts[1].affected_paths == ("/realm/project/polylogue/README.md",)
+
+
 def test_build_session_profile_detects_project_paths_in_user_text() -> None:
     conversation = Conversation(
         id="conv-user-paths",
@@ -262,6 +307,37 @@ def test_build_session_profile_detects_project_paths_in_user_text() -> None:
     profile = build_session_profile(conversation)
 
     assert profile.canonical_projects == ("polylogue",)
+
+
+def test_build_session_profile_discards_markdown_glob_paths_in_dialogue_text() -> None:
+    conversation = Conversation(
+        id="conv-user-path-globs",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="claude-code",
+                    text="Check `/realm/project/polylogue/polylogue/showcase/report.py` and ignore `/realm/project/polylogue/polylogue/showcase/*.py`.",
+                    timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
+                ),
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="I will inspect the concrete file.",
+                    timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
+                ),
+            ]
+        ),
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert "/realm/project/polylogue/polylogue/showcase/report.py" in profile.file_paths_touched
+    assert "/realm/project/polylogue/polylogue/showcase/*.py" not in profile.file_paths_touched
+    assert "/realm/project/" not in profile.file_paths_touched
 
 
 def test_build_session_profile_uses_conversation_level_git_context() -> None:
@@ -298,6 +374,43 @@ def test_build_session_profile_uses_conversation_level_git_context() -> None:
 
     assert profile.branch_names == ("feature/runtime-cleanup",)
     assert profile.canonical_projects == ("polylogue",)
+
+
+def test_build_session_profile_ignores_context_dump_wrappers_for_work_event_intent() -> None:
+    conversation = Conversation(
+        id="conv-context-dump",
+        provider="codex",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u0",
+                    role="user",
+                    provider="codex",
+                    text="<environment_context>\nerror: cached tool output\n</environment_context>",
+                    timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
+                ),
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="codex",
+                    text="Please plan the refactor and lay out the implementation strategy.",
+                    timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
+                ),
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="codex",
+                    text="I will plan the refactor in detail.",
+                    timestamp=datetime(2026, 3, 23, 9, 2, tzinfo=timezone.utc),
+                ),
+            ]
+        ),
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert profile.work_events
+    assert profile.work_events[0].kind.value == "planning"
 
 
 def test_build_mcp_summary_semantic_facts_uses_canonical_summary_shape() -> None:
