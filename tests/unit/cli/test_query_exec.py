@@ -407,32 +407,15 @@ async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> N
             ]
         ),
     )
-    non_matching = Conversation(
-        id="conv-actions-lane-miss",
-        provider="claude-code",
-        title="Action lane miss",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="x1",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_read"},
-                    ],
-                ),
-            ]
-        ),
-    )
-
     repo = MagicMock()
     repo.search = AsyncMock(return_value=[])
-    repo.list_by_query = AsyncMock(side_effect=[[matching, non_matching], []])
+    repo.search_actions = AsyncMock(return_value=[matching])
     plan = ConversationQuerySpec(query_terms=("pytest", "semantic_facts.py"), retrieval_lane="actions", limit=10).to_plan()
 
     results = await plan.list(repo)
 
     assert [conversation.id for conversation in results] == ["conv-actions-lane-match"]
+    repo.search_actions.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -465,12 +448,14 @@ async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() 
 
     repo = MagicMock()
     repo.search = AsyncMock(return_value=[text_hit])
-    repo.list_by_query = AsyncMock(side_effect=[[action_hit], []])
+    repo.search_actions = AsyncMock(return_value=[action_hit])
+    repo.search_similar = AsyncMock(return_value=[])
     plan = ConversationQuerySpec(query_terms=("pytest", "semantic_facts.py"), retrieval_lane="hybrid", limit=10).to_plan()
 
     results = await plan.list(repo)
 
     assert {conversation.id for conversation in results} == {"conv-text-hit", "conv-action-hit"}
+    repo.search_actions.assert_awaited_once()
 
 
 @pytest.mark.asyncio
