@@ -120,12 +120,12 @@ As of this map:
   - Polylogue now has better semantic truth at query time, but still lacks a first-class action/event layer above raw tool blocks
   - FTS and embeddings are still too message-text-centric for the archive’s modern value
   - runtime state bands, backend narrowing, and schema-tooling/operator convergence remain unfinished from the prior planned program
-  - validation lanes exist, but they do not yet prove the archive-intelligence loop against the live archive and resource ceilings
+  - archive-intelligence validation lanes now exist, including live-archive and explicit RSS-budget dogfood, but broader retrieval/state/backend/schema convergence still remains
 - the integrated next move is therefore:
   - action/event layer convergence
   - query/FTS/embedding control-plane convergence
   - completion of the unresolved runtime-state and schema-tooling work
-  - archive-scale validation lanes for the converged retrieval/semantic stack
+  - continued archive-scale proving through the converged validation lanes
 - the semantic-stack convergence program is now executed via [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md)
 - it closed the strongest remaining semantic-cluster drag around:
   - harmonization boundary cleanup around `schemas/unified.py` and `lib/provider_semantics.py`

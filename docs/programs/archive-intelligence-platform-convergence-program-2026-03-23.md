@@ -224,7 +224,6 @@ Still open from this program:
 - action-aware retrieval/FTS and embeddings convergence
 - broader runtime state-band and backend narrowing work
 - remaining schema-tooling/operator convergence
-- archive-intelligence validation lanes
 
 ## Step 1: First-Class Action/Event Layer
 
