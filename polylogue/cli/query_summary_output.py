@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import click
@@ -11,9 +12,92 @@ from polylogue.cli.query_helpers import summary_to_dict
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
+    from polylogue.lib.action_facts import ActionFact
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.lib.semantic_facts import ConversationSemanticFacts
     from polylogue.storage.repository import ConversationRepository
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticStatsSlice:
+    path_terms: tuple[str, ...] = ()
+    action_terms: tuple[str, ...] = ()
+    excluded_action_terms: tuple[str, ...] = ()
+    tool_terms: tuple[str, ...] = ()
+    excluded_tool_terms: tuple[str, ...] = ()
+
+    @classmethod
+    def from_selection(cls, selection: ConversationQuerySpec | None) -> SemanticStatsSlice:
+        if selection is None:
+            return cls()
+        return cls(
+            path_terms=selection.path_terms,
+            action_terms=selection.action_terms,
+            excluded_action_terms=selection.excluded_action_terms,
+            tool_terms=selection.tool_terms,
+            excluded_tool_terms=selection.excluded_tool_terms,
+        )
+
+    def has_filters(self) -> bool:
+        return any(
+            (
+                self.path_terms,
+                self.action_terms,
+                self.excluded_action_terms,
+                self.tool_terms,
+                self.excluded_tool_terms,
+            )
+        )
+
+
+def _normalized_tool_name(action: ActionFact) -> str:
+    return (action.tool_name or "unknown").strip().lower()
+
+
+def _path_matches_slice(action: ActionFact, path_terms: tuple[str, ...]) -> bool:
+    if not path_terms:
+        return True
+    affected_paths = tuple(path.lower().replace("\\", "/") for path in action.affected_paths)
+    if not affected_paths:
+        return False
+    return any(
+        any(term.lower().replace("\\", "/") in path for path in affected_paths)
+        for term in path_terms
+    )
+
+
+def _action_matches_slice(action: ActionFact, semantic_slice: SemanticStatsSlice) -> bool:
+    if not _path_matches_slice(action, semantic_slice.path_terms):
+        return False
+
+    if "none" in semantic_slice.action_terms:
+        return False
+    required_action_terms = {term for term in semantic_slice.action_terms if term != "none"}
+    if required_action_terms and action.kind.value not in required_action_terms:
+        return False
+    blocked_action_terms = {term for term in semantic_slice.excluded_action_terms if term != "none"}
+    if action.kind.value in blocked_action_terms:
+        return False
+
+    tool_name = _normalized_tool_name(action)
+    if "none" in semantic_slice.tool_terms:
+        return False
+    required_tool_terms = {term for term in semantic_slice.tool_terms if term != "none"}
+    if required_tool_terms and tool_name not in required_tool_terms:
+        return False
+    blocked_tool_terms = {term for term in semantic_slice.excluded_tool_terms if term != "none"}
+    return tool_name not in blocked_tool_terms
+
+
+def _filtered_action_facts(
+    facts: ConversationSemanticFacts,
+    semantic_slice: SemanticStatsSlice,
+) -> tuple[ActionFact, ...]:
+    if not semantic_slice.has_filters():
+        return facts.action_facts
+    return tuple(action for action in facts.action_facts if _action_matches_slice(action, semantic_slice))
 
 
 def _emit_structured_stats(
@@ -270,6 +354,7 @@ def output_stats_by_conversations(
     results: list[Conversation],
     dimension: str,
     *,
+    selection: ConversationQuerySpec | None = None,
     output_format: str = "text",
 ) -> None:
     """Output grouped statistics from fully hydrated conversations."""
@@ -279,6 +364,8 @@ def output_stats_by_conversations(
 
     from polylogue.lib.semantic_facts import build_conversation_semantic_facts
     from polylogue.ui.theme import provider_color
+
+    semantic_slice = SemanticStatsSlice.from_selection(selection)
 
     if not results:
         env.ui.console.print("No conversations matched.")
@@ -293,17 +380,26 @@ def output_stats_by_conversations(
 
         for conv in results:
             facts = build_conversation_semantic_facts(conv)
-            action_counts = Counter(action.kind.value for action in facts.action_facts)
+            filtered_actions = _filtered_action_facts(facts, semantic_slice)
+            action_counts = Counter(action.kind.value for action in filtered_actions)
             if not action_counts:
                 action_groups["none"]["convs"] += 1
                 continue
 
             matched_action_facts += sum(action_counts.values())
-            matched_action_msgs += sum(1 for message in facts.message_facts if message.action_facts)
+            matched_action_msgs += sum(
+                1
+                for message in facts.message_facts
+                if any(_action_matches_slice(action, semantic_slice) for action in message.action_facts)
+            )
 
             message_groups: dict[str, set[str]] = defaultdict(set)
             for message in facts.message_facts:
-                for key in {action.kind.value for action in message.action_facts}:
+                for key in {
+                    action.kind.value
+                    for action in message.action_facts
+                    if _action_matches_slice(action, semantic_slice)
+                }:
                     message_groups[key].add(message.message_id)
 
             for key, fact_count in action_counts.items():
@@ -375,17 +471,26 @@ def output_stats_by_conversations(
 
         for conv in results:
             facts = build_conversation_semantic_facts(conv)
-            tool_counts = Counter((action.tool_name or "unknown").strip().lower() for action in facts.action_facts)
+            filtered_actions = _filtered_action_facts(facts, semantic_slice)
+            tool_counts = Counter(_normalized_tool_name(action) for action in filtered_actions)
             if not tool_counts:
                 tool_groups["none"]["convs"] += 1
                 continue
 
             matched_tool_facts += sum(tool_counts.values())
-            matched_tool_msgs += sum(1 for message in facts.message_facts if message.action_facts)
+            matched_tool_msgs += sum(
+                1
+                for message in facts.message_facts
+                if any(_action_matches_slice(action, semantic_slice) for action in message.action_facts)
+            )
 
             message_groups: dict[str, set[str]] = defaultdict(set)
             for message in facts.message_facts:
-                for key in {(action.tool_name or "unknown").strip().lower() for action in message.action_facts}:
+                for key in {
+                    _normalized_tool_name(action)
+                    for action in message.action_facts
+                    if _action_matches_slice(action, semantic_slice)
+                }:
                     message_groups[key].add(message.message_id)
 
             for key, fact_count in tool_counts.items():

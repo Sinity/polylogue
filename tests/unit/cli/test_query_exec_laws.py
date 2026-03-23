@@ -35,6 +35,7 @@ from polylogue.cli.query_plan import (
     QueryRoute,
     resolve_query_route,
 )
+from polylogue.cli.query_summary_output import output_stats_by_conversations
 from polylogue.cli.types import AppEnv
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
@@ -182,6 +183,56 @@ def _sample_output_conversation(conversation_id: str = "conv-output") -> Convers
         messages=[
             Message(id=f"{conversation_id}-user", role="user", text="hello"),
             Message(id=f"{conversation_id}-assistant", role="assistant", text="world"),
+        ],
+    )
+
+
+def _sample_semantic_conversation() -> Conversation:
+    return Conversation(
+        id="conv-semantic",
+        provider="claude-code",
+        title="Semantic Slice Contract",
+        messages=[
+            Message(id="m-user", role="user", text="inspect the repo"),
+            Message(
+                id="m-other",
+                role="assistant",
+                text="mystery tool",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Mystery",
+                        "tool_id": "tool-other",
+                        "tool_input": {"path": "/realm/project/polylogue/README.md"},
+                    }
+                ],
+            ),
+            Message(
+                id="m-edit",
+                role="assistant",
+                text="edit models",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-edit",
+                        "tool_input": {"file_path": "/realm/project/polylogue/polylogue/lib/models.py"},
+                    }
+                ],
+            ),
+            Message(
+                id="m-search",
+                role="assistant",
+                text="search docs",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Grep",
+                        "tool_id": "tool-search",
+                        "tool_input": {"pattern": "polylogue"},
+                    }
+                ],
+            ),
         ],
     )
 
@@ -487,6 +538,81 @@ def test_output_stats_by_summaries_json_contract() -> None:
     }
 
 
+def test_output_stats_by_conversations_action_slice_respects_selected_action() -> None:
+    env = _make_env()
+    conversation = _sample_semantic_conversation()
+    selection = ConversationQuerySpec(action_terms=("other",))
+
+    with patch("click.echo") as mock_echo:
+        output_stats_by_conversations(
+            env,
+            [conversation],
+            "tool",
+            selection=selection,
+            output_format="json",
+        )
+
+    payload = json.loads(mock_echo.call_args.args[0])
+    assert payload == {
+        "dimension": "tool",
+        "multi_membership": True,
+        "rows": [
+            {"group": "mystery", "conversations": 1, "facts": 1, "messages": 1},
+        ],
+        "summary": {"group": "MATCHED", "conversations": 1, "facts": 1, "messages": 1},
+    }
+
+
+def test_output_stats_by_conversations_action_slice_respects_selected_tool() -> None:
+    env = _make_env()
+    conversation = _sample_semantic_conversation()
+    selection = ConversationQuerySpec(tool_terms=("edit",))
+
+    with patch("click.echo") as mock_echo:
+        output_stats_by_conversations(
+            env,
+            [conversation],
+            "action",
+            selection=selection,
+            output_format="json",
+        )
+
+    payload = json.loads(mock_echo.call_args.args[0])
+    assert payload == {
+        "dimension": "action",
+        "multi_membership": True,
+        "rows": [
+            {"group": "file_edit", "conversations": 1, "facts": 1, "messages": 1},
+        ],
+        "summary": {"group": "MATCHED", "conversations": 1, "facts": 1, "messages": 1},
+    }
+
+
+def test_output_stats_by_conversations_action_slice_respects_selected_path() -> None:
+    env = _make_env()
+    conversation = _sample_semantic_conversation()
+    selection = ConversationQuerySpec(path_terms=("/realm/project/polylogue/README.md",))
+
+    with patch("click.echo") as mock_echo:
+        output_stats_by_conversations(
+            env,
+            [conversation],
+            "action",
+            selection=selection,
+            output_format="json",
+        )
+
+    payload = json.loads(mock_echo.call_args.args[0])
+    assert payload == {
+        "dimension": "action",
+        "multi_membership": True,
+        "rows": [
+            {"group": "other", "conversations": 1, "facts": 1, "messages": 1},
+        ],
+        "summary": {"group": "MATCHED", "conversations": 1, "facts": 1, "messages": 1},
+    }
+
+
 def test_output_results_no_results_contract() -> None:
     env = _make_env()
 
@@ -731,6 +857,7 @@ def test_async_execute_query_stats_by_falls_back_to_full_results_without_summari
     filter_chain.list_summaries.assert_not_called()
     mock_output_stats_by.assert_called_once()
     mock_output_stats_by_summaries.assert_not_called()
+    assert mock_output_stats_by.call_args.kwargs["selection"] is plan.selection
 
 
 def test_async_execute_query_summary_list_no_results_contract() -> None:
