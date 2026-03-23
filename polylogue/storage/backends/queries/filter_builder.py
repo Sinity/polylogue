@@ -28,6 +28,8 @@ def _build_conversation_filters(
     until: str | None = None,
     title_contains: str | None = None,
     path_terms: list[str] | tuple[str, ...] | None = None,
+    action_terms: list[str] | tuple[str, ...] | None = None,
+    excluded_action_terms: list[str] | tuple[str, ...] | None = None,
     has_tool_use: bool = False,
     has_thinking: bool = False,
     min_messages: int | None = None,
@@ -104,6 +106,20 @@ def _build_conversation_filters(
                 " AND LOWER(COALESCE(json_extract(cb.metadata, '$.path'), json_extract(cb.tool_input, '$.path'), '')) LIKE ?)"
             )
             params.append(f"%{normalized}%")
+    if action_terms:
+        for term in action_terms:
+            where_clauses.append(
+                f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                " AND cb.semantic_type = ?)"
+            )
+            params.append(str(term))
+    if excluded_action_terms:
+        for term in excluded_action_terms:
+            where_clauses.append(
+                f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                " AND cb.semantic_type = ?)"
+            )
+            params.append(str(term))
     if has_file_ops:
         where_clauses.append(
             f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"

@@ -28,6 +28,7 @@ from polylogue.cli.machine_main import extract_option as _extract_option
 from polylogue.cli.machine_main import run_machine_entry
 from polylogue.cli.query_frontdoor import QueryFirstGroupBase, handle_query_mode
 from polylogue.cli.types import AppEnv
+from polylogue.lib.query_spec import QUERY_ACTION_TYPES
 from polylogue.logging import configure_logging
 from polylogue.ui import create_ui
 from polylogue.version import POLYLOGUE_VERSION
@@ -67,6 +68,8 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option("--exclude-tag", help="Exclude tags")
 @click.option("--title", help="Title contains")
 @click.option("--path", "path_terms", multiple=True, help="Touched path contains substring (repeatable = AND)")
+@click.option("--action", multiple=True, type=click.Choice(QUERY_ACTION_TYPES), help="Require semantic action category (repeatable = AND)")
+@click.option("--exclude-action", multiple=True, type=click.Choice(QUERY_ACTION_TYPES), help="Exclude semantic action category (repeatable = AND)")
 @click.option("--similar", "similar_text", help="Semantic similarity query (requires embeddings)")
 @click.option("--has", "has_type", multiple=True, help="Filter by content: thinking (reasoning), tools (calls), summary, attachments")
 @click.option("--has-tool-use", "filter_has_tool_use", is_flag=True, help="Only conversations with tool use (SQL pushdown)")
@@ -143,6 +146,8 @@ def cli(
     exclude_tag: str | None,
     title: str | None,
     path_terms: tuple[str, ...],
+    action: tuple[str, ...],
+    exclude_action: tuple[str, ...],
     similar_text: str | None,
     has_type: tuple[str, ...],
     filter_has_tool_use: bool,
@@ -197,6 +202,7 @@ def cli(
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
         polylogue --path /realm/project/polylogue/README.md --has-file-ops --list
+        polylogue --action search --action file_edit --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
 
     \b

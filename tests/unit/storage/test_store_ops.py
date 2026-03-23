@@ -203,6 +203,140 @@ async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
         await backend.close()
 
 
+@pytest.mark.asyncio
+async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
+    """Low-level list/count filters must honor semantic action categories."""
+    from polylogue.storage.store import ContentBlockRecord
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "action-filter.db"
+
+    (ConversationBuilder(db_path, "conv-search")
+     .provider("claude-code")
+     .title("Search work")
+     .add_message(
+         "m1",
+         role="assistant",
+         text="Searching for parser code",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-search-0",
+                 message_id="m1",
+                 conversation_id="conv-search",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Grep",
+                 semantic_type="search",
+             )
+         ],
+     )
+     .save())
+
+    (ConversationBuilder(db_path, "conv-git")
+     .provider("claude-code")
+     .title("Git work")
+     .add_message(
+         "m2",
+         role="assistant",
+         text="Checking git status",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-git-0",
+                 message_id="m2",
+                 conversation_id="conv-git",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Bash",
+                 tool_input='{"command":"git status"}',
+                 semantic_type="git",
+             )
+         ],
+     )
+     .save())
+
+    backend = SQLiteBackend(db_path=db_path)
+    try:
+        matches = await backend.list_conversations(action_terms=["search"], limit=10)
+        assert [record.conversation_id for record in matches] == ["conv-search"]
+        assert await backend.count_conversations(action_terms=["search"]) == 1
+
+        filtered = await backend.list_conversations(
+            action_terms=["search"],
+            excluded_action_terms=["git"],
+            limit=10,
+        )
+        assert [record.conversation_id for record in filtered] == ["conv-search"]
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_filter_action_terms_apply_after_fts_search(tmp_path: Path) -> None:
+    """Combined FTS + action queries must preserve action constraints after search ranking."""
+    from polylogue.lib.filters import ConversationFilter
+    from polylogue.storage.store import ContentBlockRecord
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "action-fts.db"
+
+    (ConversationBuilder(db_path, "conv-search")
+     .provider("claude-code")
+     .title("Search match")
+     .add_message(
+         "m1",
+         role="assistant",
+         text="Investigating the same parser regression",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-search-0",
+                 message_id="m1",
+                 conversation_id="conv-search",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Grep",
+                 semantic_type="search",
+             )
+         ],
+     )
+     .save())
+
+    (ConversationBuilder(db_path, "conv-shell")
+     .provider("claude-code")
+     .title("Shell only")
+     .add_message(
+         "m2",
+         role="assistant",
+         text="Investigating the same parser regression",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-shell-0",
+                 message_id="m2",
+                 conversation_id="conv-shell",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Bash",
+                 tool_input='{"command":"python -m pytest"}',
+                 semantic_type="shell",
+             )
+         ],
+     )
+     .save())
+
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
+    try:
+        results = await (
+            ConversationFilter(repo)
+            .contains("parser regression")
+            .action("search")
+            .exclude_action("git")
+            .list()
+        )
+        assert [str(conversation.id) for conversation in results] == ["conv-search"]
+    finally:
+        await backend.close()
+
+
 def test_store_records_roundtrip_contract(test_conn) -> None:
     """store_records() must insert, skip, update, and handle sparse payloads coherently."""
     initial = make_conversation("conv-create", content_hash="hash-create")

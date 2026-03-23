@@ -83,6 +83,8 @@ def _make_params(**overrides) -> dict:
         "exclude_tag": None,
         "title": None,
         "path_terms": (),
+        "action": (),
+        "exclude_action": (),
         "similar_text": None,
         "has_type": (),
         "since": None,
@@ -194,6 +196,36 @@ async def test_async_execute_query_errors_for_similar_without_embeddings() -> No
     assert exc_info.value.code == 1
     mock_echo.assert_called_once()
     assert "requires existing embeddings" in mock_echo.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
+    from polylogue.cli.query import async_execute_query
+    from polylogue.cli.query_plan import QueryAction, QueryExecutionPlan, QueryMutationSpec, QueryOutputSpec
+    from polylogue.lib.query_spec import QuerySpecError
+
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    selection = MagicMock()
+    selection.similar_text = None
+    selection.build_filter.side_effect = QuerySpecError("action", "bogus")
+    plan = QueryExecutionPlan(
+        selection=selection,
+        action=QueryAction.SHOW,
+        output=QueryOutputSpec("markdown", ("stdout",), None, False, None, False),
+        mutation=QueryMutationSpec((), (), False, False, False),
+    )
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("click.echo") as mock_echo,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            await async_execute_query(env, _make_params(action=("bogus",)))
+
+    assert exc_info.value.code == 1
+    mock_echo.assert_called_once_with("Error: invalid action: 'bogus'", err=True)
 
 
 @pytest.mark.asyncio
