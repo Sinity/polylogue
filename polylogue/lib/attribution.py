@@ -73,6 +73,29 @@ def extract_attribution(
     file_paths: set[str] = set()
     languages: set[str] = set()
 
+    provider_meta = conversation.provider_meta if isinstance(conversation.provider_meta, dict) else {}
+    cwd_value = provider_meta.get("cwd")
+    if isinstance(cwd_value, str) and cwd_value:
+        cwd_paths.add(cwd_value)
+        repo = _repo_root_from_path(cwd_value)
+        if repo:
+            repo_paths.add(repo)
+
+    git_branch = provider_meta.get("gitBranch")
+    if isinstance(git_branch, str) and git_branch:
+        branch_names.add(git_branch)
+
+    git_meta = provider_meta.get("git")
+    if isinstance(git_meta, dict):
+        branch = git_meta.get("branch")
+        if isinstance(branch, str) and branch:
+            branch_names.add(branch)
+        repository_url = git_meta.get("repository_url")
+        if isinstance(repository_url, str) and repository_url.startswith("/"):
+            repo = _repo_root_from_path(repository_url)
+            if repo:
+                repo_paths.add(repo)
+
     for message in semantic_facts.message_facts:
         for tc in message.tool_calls:
             # Collect affected paths
