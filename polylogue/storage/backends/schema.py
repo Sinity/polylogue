@@ -98,6 +98,48 @@ _PUBLICATION_DDL = """
 """
 
 
+_ACTION_EVENT_DDL = """
+        CREATE TABLE IF NOT EXISTS action_events (
+            event_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_id TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+            materializer_version INTEGER NOT NULL DEFAULT 1,
+            source_block_id TEXT,
+            timestamp TEXT,
+            sort_key REAL,
+            sequence_index INTEGER NOT NULL,
+            provider_name TEXT,
+            action_kind TEXT NOT NULL,
+            tool_name TEXT,
+            normalized_tool_name TEXT NOT NULL,
+            tool_id TEXT,
+            affected_paths_json TEXT,
+            cwd_path TEXT,
+            branch_names_json TEXT,
+            command TEXT,
+            query_text TEXT,
+            url TEXT,
+            output_text TEXT,
+            search_text TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_action_events_conversation
+        ON action_events(conversation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_action_events_message
+        ON action_events(message_id);
+
+        CREATE INDEX IF NOT EXISTS idx_action_events_kind
+        ON action_events(action_kind);
+
+        CREATE INDEX IF NOT EXISTS idx_action_events_tool
+        ON action_events(normalized_tool_name);
+
+        CREATE INDEX IF NOT EXISTS idx_action_events_sort
+        ON action_events(conversation_id, sort_key, sequence_index);
+"""
+
+
 _ACTION_FTS_DDL = """
         CREATE VIRTUAL TABLE IF NOT EXISTS action_events_fts USING fts5(
             event_id UNINDEXED,
@@ -110,316 +152,35 @@ _ACTION_FTS_DDL = """
         );
 
         CREATE TRIGGER IF NOT EXISTS action_events_fts_ai
-        AFTER INSERT ON content_blocks BEGIN
-            DELETE FROM action_events_fts WHERE message_id = new.message_id;
+        AFTER INSERT ON action_events BEGIN
             INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
-            SELECT
-                cb.block_id,
-                cb.message_id,
-                cb.conversation_id,
-                COALESCE(NULLIF(cb.semantic_type, ''), 'other'),
-                LOWER(COALESCE(cb.tool_name, '')),
-                printf(
-                    '%s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s',
-                    COALESCE(NULLIF(cb.semantic_type, ''), 'other'),
-                    LOWER(COALESCE(cb.tool_name, '')),
-                    COALESCE(
-                        json_extract(cb.metadata, '$.path'),
-                        json_extract(cb.tool_input, '$.file_path'),
-                        json_extract(cb.tool_input, '$.path'),
-                        json_extract(cb.tool_input, '$.paths'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.cwd'),
-                        json_extract(cb.tool_input, '$.workdir'),
-                        json_extract(cb.tool_input, '$.directory'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.branch'),
-                        json_extract(cb.tool_input, '$.from_branch'),
-                        json_extract(cb.tool_input, '$.base'),
-                        json_extract(cb.tool_input, '$.base_ref'),
-                        json_extract(cb.tool_input, '$.head'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.command'),
-                        json_extract(cb.tool_input, '$.cmd'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.q'),
-                        json_extract(cb.tool_input, '$.query'),
-                        json_extract(cb.tool_input, '$.pattern'),
-                        json_extract(cb.tool_input, '$.search_query'),
-                        json_extract(cb.tool_input, '$.searchQuery'),
-                        json_extract(cb.tool_input, '$.needle'),
-                        json_extract(cb.tool_input, '$.term'),
-                        json_extract(cb.tool_input, '$.queries'),
-                        json_extract(cb.tool_input, '$.patterns'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.url'),
-                        json_extract(cb.tool_input, '$.uri'),
-                        json_extract(cb.tool_input, '$.href'),
-                        json_extract(cb.tool_input, '$.ref_id'),
-                        ''
-                    ),
-                    COALESCE(
-                        (
-                            SELECT tr.text
-                            FROM content_blocks tr
-                            WHERE tr.message_id = cb.message_id
-                              AND tr.type = 'tool_result'
-                              AND tr.tool_id = cb.tool_id
-                            ORDER BY tr.block_index
-                            LIMIT 1
-                        ),
-                        ''
-                    ),
-                    COALESCE(cb.text, ''),
-                    COALESCE(cb.metadata, '')
-                )
-            FROM content_blocks cb
-            WHERE cb.message_id = new.message_id
-              AND cb.type = 'tool_use';
+            VALUES (
+                new.event_id,
+                new.message_id,
+                new.conversation_id,
+                new.action_kind,
+                new.normalized_tool_name,
+                new.search_text
+            );
         END;
 
         CREATE TRIGGER IF NOT EXISTS action_events_fts_ad
-        AFTER DELETE ON content_blocks BEGIN
-            DELETE FROM action_events_fts WHERE message_id = old.message_id;
-            INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
-            SELECT
-                cb.block_id,
-                cb.message_id,
-                cb.conversation_id,
-                COALESCE(NULLIF(cb.semantic_type, ''), 'other'),
-                LOWER(COALESCE(cb.tool_name, '')),
-                printf(
-                    '%s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s',
-                    COALESCE(NULLIF(cb.semantic_type, ''), 'other'),
-                    LOWER(COALESCE(cb.tool_name, '')),
-                    COALESCE(
-                        json_extract(cb.metadata, '$.path'),
-                        json_extract(cb.tool_input, '$.file_path'),
-                        json_extract(cb.tool_input, '$.path'),
-                        json_extract(cb.tool_input, '$.paths'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.cwd'),
-                        json_extract(cb.tool_input, '$.workdir'),
-                        json_extract(cb.tool_input, '$.directory'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.branch'),
-                        json_extract(cb.tool_input, '$.from_branch'),
-                        json_extract(cb.tool_input, '$.base'),
-                        json_extract(cb.tool_input, '$.base_ref'),
-                        json_extract(cb.tool_input, '$.head'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.command'),
-                        json_extract(cb.tool_input, '$.cmd'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.q'),
-                        json_extract(cb.tool_input, '$.query'),
-                        json_extract(cb.tool_input, '$.pattern'),
-                        json_extract(cb.tool_input, '$.search_query'),
-                        json_extract(cb.tool_input, '$.searchQuery'),
-                        json_extract(cb.tool_input, '$.needle'),
-                        json_extract(cb.tool_input, '$.term'),
-                        json_extract(cb.tool_input, '$.queries'),
-                        json_extract(cb.tool_input, '$.patterns'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.url'),
-                        json_extract(cb.tool_input, '$.uri'),
-                        json_extract(cb.tool_input, '$.href'),
-                        json_extract(cb.tool_input, '$.ref_id'),
-                        ''
-                    ),
-                    COALESCE(
-                        (
-                            SELECT tr.text
-                            FROM content_blocks tr
-                            WHERE tr.message_id = cb.message_id
-                              AND tr.type = 'tool_result'
-                              AND tr.tool_id = cb.tool_id
-                            ORDER BY tr.block_index
-                            LIMIT 1
-                        ),
-                        ''
-                    ),
-                    COALESCE(cb.text, ''),
-                    COALESCE(cb.metadata, '')
-                )
-            FROM content_blocks cb
-            WHERE cb.message_id = old.message_id
-              AND cb.type = 'tool_use';
+        AFTER DELETE ON action_events BEGIN
+            DELETE FROM action_events_fts WHERE event_id = old.event_id;
         END;
 
         CREATE TRIGGER IF NOT EXISTS action_events_fts_au
-        AFTER UPDATE ON content_blocks BEGIN
-            DELETE FROM action_events_fts WHERE message_id = old.message_id;
+        AFTER UPDATE ON action_events BEGIN
+            DELETE FROM action_events_fts WHERE event_id = old.event_id;
             INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
-            SELECT
-                cb.block_id,
-                cb.message_id,
-                cb.conversation_id,
-                COALESCE(NULLIF(cb.semantic_type, ''), 'other'),
-                LOWER(COALESCE(cb.tool_name, '')),
-                printf(
-                    '%s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s',
-                    COALESCE(NULLIF(cb.semantic_type, ''), 'other'),
-                    LOWER(COALESCE(cb.tool_name, '')),
-                    COALESCE(
-                        json_extract(cb.metadata, '$.path'),
-                        json_extract(cb.tool_input, '$.file_path'),
-                        json_extract(cb.tool_input, '$.path'),
-                        json_extract(cb.tool_input, '$.paths'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.cwd'),
-                        json_extract(cb.tool_input, '$.workdir'),
-                        json_extract(cb.tool_input, '$.directory'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.branch'),
-                        json_extract(cb.tool_input, '$.from_branch'),
-                        json_extract(cb.tool_input, '$.base'),
-                        json_extract(cb.tool_input, '$.base_ref'),
-                        json_extract(cb.tool_input, '$.head'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.command'),
-                        json_extract(cb.tool_input, '$.cmd'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.q'),
-                        json_extract(cb.tool_input, '$.query'),
-                        json_extract(cb.tool_input, '$.pattern'),
-                        json_extract(cb.tool_input, '$.search_query'),
-                        json_extract(cb.tool_input, '$.searchQuery'),
-                        json_extract(cb.tool_input, '$.needle'),
-                        json_extract(cb.tool_input, '$.term'),
-                        json_extract(cb.tool_input, '$.queries'),
-                        json_extract(cb.tool_input, '$.patterns'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.url'),
-                        json_extract(cb.tool_input, '$.uri'),
-                        json_extract(cb.tool_input, '$.href'),
-                        json_extract(cb.tool_input, '$.ref_id'),
-                        ''
-                    ),
-                    COALESCE(
-                        (
-                            SELECT tr.text
-                            FROM content_blocks tr
-                            WHERE tr.message_id = cb.message_id
-                              AND tr.type = 'tool_result'
-                              AND tr.tool_id = cb.tool_id
-                            ORDER BY tr.block_index
-                            LIMIT 1
-                        ),
-                        ''
-                    ),
-                    COALESCE(cb.text, ''),
-                    COALESCE(cb.metadata, '')
-                )
-            FROM content_blocks cb
-            WHERE cb.message_id = old.message_id
-              AND cb.type = 'tool_use';
-
-            DELETE FROM action_events_fts WHERE message_id = new.message_id;
-            INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
-            SELECT
-                cb.block_id,
-                cb.message_id,
-                cb.conversation_id,
-                COALESCE(NULLIF(cb.semantic_type, ''), 'other'),
-                LOWER(COALESCE(cb.tool_name, '')),
-                printf(
-                    '%s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s',
-                    COALESCE(NULLIF(cb.semantic_type, ''), 'other'),
-                    LOWER(COALESCE(cb.tool_name, '')),
-                    COALESCE(
-                        json_extract(cb.metadata, '$.path'),
-                        json_extract(cb.tool_input, '$.file_path'),
-                        json_extract(cb.tool_input, '$.path'),
-                        json_extract(cb.tool_input, '$.paths'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.cwd'),
-                        json_extract(cb.tool_input, '$.workdir'),
-                        json_extract(cb.tool_input, '$.directory'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.branch'),
-                        json_extract(cb.tool_input, '$.from_branch'),
-                        json_extract(cb.tool_input, '$.base'),
-                        json_extract(cb.tool_input, '$.base_ref'),
-                        json_extract(cb.tool_input, '$.head'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.command'),
-                        json_extract(cb.tool_input, '$.cmd'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.q'),
-                        json_extract(cb.tool_input, '$.query'),
-                        json_extract(cb.tool_input, '$.pattern'),
-                        json_extract(cb.tool_input, '$.search_query'),
-                        json_extract(cb.tool_input, '$.searchQuery'),
-                        json_extract(cb.tool_input, '$.needle'),
-                        json_extract(cb.tool_input, '$.term'),
-                        json_extract(cb.tool_input, '$.queries'),
-                        json_extract(cb.tool_input, '$.patterns'),
-                        ''
-                    ),
-                    COALESCE(
-                        json_extract(cb.tool_input, '$.url'),
-                        json_extract(cb.tool_input, '$.uri'),
-                        json_extract(cb.tool_input, '$.href'),
-                        json_extract(cb.tool_input, '$.ref_id'),
-                        ''
-                    ),
-                    COALESCE(
-                        (
-                            SELECT tr.text
-                            FROM content_blocks tr
-                            WHERE tr.message_id = cb.message_id
-                              AND tr.type = 'tool_result'
-                              AND tr.tool_id = cb.tool_id
-                            ORDER BY tr.block_index
-                            LIMIT 1
-                        ),
-                        ''
-                    ),
-                    COALESCE(cb.text, ''),
-                    COALESCE(cb.metadata, '')
-                )
-            FROM content_blocks cb
-            WHERE cb.message_id = new.message_id
-              AND cb.type = 'tool_use';
+            VALUES (
+                new.event_id,
+                new.message_id,
+                new.conversation_id,
+                new.action_kind,
+                new.normalized_tool_name,
+                new.search_text
+            );
         END;
 """
 
@@ -664,15 +425,8 @@ SCHEMA_DDL = """
         END;
 """
 
+SCHEMA_DDL += _ACTION_EVENT_DDL
 SCHEMA_DDL += _ACTION_FTS_DDL
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (name,),
-    ).fetchone()
-    return row is not None
 
 
 def _ensure_vec0_table(conn: sqlite3.Connection) -> None:
@@ -703,13 +457,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if current_version == SCHEMA_VERSION:
         conn.executescript(_ARTIFACT_OBSERVATION_DDL)
         conn.executescript(_PUBLICATION_DDL)
-        action_fts_exists = _table_exists(conn, "action_events_fts")
+        conn.executescript(_ACTION_EVENT_DDL)
+        action_event_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(action_events)").fetchall()
+        }
+        if "materializer_version" not in action_event_columns:
+            conn.execute(
+                "ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1"
+            )
         conn.executescript(_ACTION_FTS_DDL)
-        if not action_fts_exists:
-            from polylogue.storage.fts_lifecycle import ACTION_FTS_REBUILD_SQL
-
-            conn.execute(ACTION_FTS_REBUILD_SQL)
         _ensure_vec0_table(conn)
+        conn.commit()
         return
 
     from polylogue.errors import DatabaseError

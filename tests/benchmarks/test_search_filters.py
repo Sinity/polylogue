@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.lib.filters import ConversationFilter
+from polylogue.storage.query_models import ConversationRecordQuery
 from tests.benchmarks.helpers import benchmark_store_call
 
 
@@ -103,5 +104,5 @@ def test_bench_filter_limit_scaling(benchmark, bench_db_10k: Path, limit: int) -
     benchmark_store_call(
         benchmark,
         bench_db_10k,
-        lambda store: store.backend.list_conversations(limit=limit),
+        lambda store: store.backend.queries.list_conversations(ConversationRecordQuery(limit=limit)),
     )

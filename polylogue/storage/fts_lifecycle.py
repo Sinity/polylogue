@@ -40,91 +40,16 @@ FTS_REBUILD_SQL = """
     WHERE messages.text IS NOT NULL
 """
 
-_ACTION_KIND_SQL = """
-    COALESCE(
-        NULLIF(cb.semantic_type, ''),
-        'other'
-    )
-"""
-
-_ACTION_TEXT_SQL = f"""
-    printf(
-        '%s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s',
-        {_ACTION_KIND_SQL},
-        LOWER(COALESCE(cb.tool_name, '')),
-        COALESCE(
-            json_extract(cb.metadata, '$.path'),
-            json_extract(cb.tool_input, '$.file_path'),
-            json_extract(cb.tool_input, '$.path'),
-            json_extract(cb.tool_input, '$.paths'),
-            ''
-        ),
-        COALESCE(
-            json_extract(cb.tool_input, '$.cwd'),
-            json_extract(cb.tool_input, '$.workdir'),
-            json_extract(cb.tool_input, '$.directory'),
-            ''
-        ),
-        COALESCE(
-            json_extract(cb.tool_input, '$.branch'),
-            json_extract(cb.tool_input, '$.from_branch'),
-            json_extract(cb.tool_input, '$.base'),
-            json_extract(cb.tool_input, '$.base_ref'),
-            json_extract(cb.tool_input, '$.head'),
-            ''
-        ),
-        COALESCE(
-            json_extract(cb.tool_input, '$.command'),
-            json_extract(cb.tool_input, '$.cmd'),
-            ''
-        ),
-        COALESCE(
-            json_extract(cb.tool_input, '$.q'),
-            json_extract(cb.tool_input, '$.query'),
-            json_extract(cb.tool_input, '$.pattern'),
-            json_extract(cb.tool_input, '$.search_query'),
-            json_extract(cb.tool_input, '$.searchQuery'),
-            json_extract(cb.tool_input, '$.needle'),
-            json_extract(cb.tool_input, '$.term'),
-            json_extract(cb.tool_input, '$.queries'),
-            json_extract(cb.tool_input, '$.patterns'),
-            ''
-        ),
-        COALESCE(
-            json_extract(cb.tool_input, '$.url'),
-            json_extract(cb.tool_input, '$.uri'),
-            json_extract(cb.tool_input, '$.href'),
-            json_extract(cb.tool_input, '$.ref_id'),
-            ''
-        ),
-        COALESCE(
-            (
-                SELECT tr.text
-                FROM content_blocks tr
-                WHERE tr.message_id = cb.message_id
-                  AND tr.type = 'tool_result'
-                  AND tr.tool_id = cb.tool_id
-                ORDER BY tr.block_index
-                LIMIT 1
-            ),
-            ''
-        ),
-        COALESCE(cb.text, ''),
-        COALESCE(cb.metadata, '')
-    )
-"""
-
-ACTION_FTS_REBUILD_SQL = f"""
+ACTION_FTS_REBUILD_SQL = """
     INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
     SELECT
-        cb.block_id,
-        cb.message_id,
-        cb.conversation_id,
-        {_ACTION_KIND_SQL},
-        LOWER(COALESCE(cb.tool_name, '')),
-        {_ACTION_TEXT_SQL}
-    FROM content_blocks cb
-    WHERE cb.type = 'tool_use'
+        ae.event_id,
+        ae.message_id,
+        ae.conversation_id,
+        ae.action_kind,
+        ae.normalized_tool_name,
+        ae.search_text
+    FROM action_events ae
 """
 
 
@@ -164,14 +89,14 @@ def _insert_action_rows_sql(chunk_size: int) -> str:
     return f"""
         INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
         SELECT
-            cb.block_id,
-            cb.message_id,
-            cb.conversation_id,
-            {_ACTION_KIND_SQL},
-            LOWER(COALESCE(cb.tool_name, '')),
-            {_ACTION_TEXT_SQL}
-        FROM content_blocks cb
-        WHERE cb.type = 'tool_use' AND cb.conversation_id IN ({placeholders})
+            ae.event_id,
+            ae.message_id,
+            ae.conversation_id,
+            ae.action_kind,
+            ae.normalized_tool_name,
+            ae.search_text
+        FROM action_events ae
+        WHERE ae.conversation_id IN ({placeholders})
     """
 
 
