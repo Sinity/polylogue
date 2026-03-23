@@ -87,7 +87,8 @@ def schema_infer(
 
     if cluster:
         # Load samples for clustering
-        from polylogue.schemas.sampling import PROVIDERS, load_samples_from_db
+        from polylogue.schemas.observation import PROVIDERS
+        from polylogue.schemas.sampling import load_samples_from_db
 
         config = PROVIDERS.get(provider)
         if config is None:
@@ -308,8 +309,9 @@ def schema_promote(
 
     samples: list[dict[str, Any]] | None = None
     if with_samples:
+        from polylogue.schemas.observation import PROVIDERS
         from polylogue.schemas.registry import _fingerprint_hash
-        from polylogue.schemas.sampling import PROVIDERS, load_samples_from_db
+        from polylogue.schemas.sampling import load_samples_from_db
         from polylogue.schemas.schema_generation import _structure_fingerprint
 
         config = PROVIDERS.get(provider)

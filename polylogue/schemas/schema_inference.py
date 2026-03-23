@@ -10,7 +10,8 @@ Can be used as:
 - CLI: `polylogue schema generate --provider chatgpt`
 
 Implementation is split across:
-- `schemas/sampling.py` — ProviderConfig, PROVIDERS, sample loading
+- `schemas/observation.py` — ProviderConfig, PROVIDERS, runtime-safe observation helpers
+- `schemas/sampling.py` — tooling-side sample loading
 - `schemas/schema_generation.py` — schema manipulation, annotation, generation
 - `schemas/field_stats.py` — FieldStats, _collect_field_stats
 - `schemas/privacy.py` — _is_safe_enum_value, _is_content_field
@@ -22,10 +23,15 @@ from pathlib import Path
 
 # Re-export the full public API so callers don't need to know the split.
 from polylogue.schemas.field_stats import (
-    FieldStats,
     UUID_PATTERN,
+    FieldStats,
     _collect_field_stats,
     is_dynamic_key,
+)
+from polylogue.schemas.observation import (
+    PROVIDERS,
+    ProviderConfig,
+    resolve_provider_config,
 )
 from polylogue.schemas.privacy import (
     _is_content_field,
@@ -35,17 +41,6 @@ from polylogue.schemas.privacy_config import (
     PrivacyConfig,
     load_privacy_config,
 )
-from polylogue.schemas.sampling import (
-    PROVIDERS,
-    ProviderConfig,
-    _iter_samples_from_db,
-    _iter_samples_from_sessions,
-    _resolve_provider_config,
-    _sample_provider_where_clause,
-    get_sample_count_from_db,
-    load_samples_from_db,
-    load_samples_from_sessions,
-)
 from polylogue.schemas.relational_inference import (
     ForeignKeyRelation,
     MutualExclusion,
@@ -53,6 +48,14 @@ from polylogue.schemas.relational_inference import (
     StringLengthProfile,
     TimeDeltaRelation,
     infer_relations,
+)
+from polylogue.schemas.sampling import (
+    _iter_samples_from_db,
+    _iter_samples_from_sessions,
+    _sample_provider_where_clause,
+    get_sample_count_from_db,
+    load_samples_from_db,
+    load_samples_from_sessions,
 )
 from polylogue.schemas.schema_generation import (
     GenerationResult,
@@ -67,12 +70,11 @@ from polylogue.schemas.schema_generation import (
     generate_schema_from_samples,
 )
 from polylogue.schemas.semantic_inference import (
-    SemanticCandidate,
     SEMANTIC_ROLES,
+    SemanticCandidate,
     infer_semantic_roles,
     select_best_roles,
 )
-
 
 # =============================================================================
 # CLI Entry Point
@@ -164,11 +166,11 @@ __all__ = [
     "ProviderConfig",
     "_iter_samples_from_db",
     "_iter_samples_from_sessions",
-    "_resolve_provider_config",
     "_sample_provider_where_clause",
     "get_sample_count_from_db",
     "load_samples_from_db",
     "load_samples_from_sessions",
+    "resolve_provider_config",
     # From semantic_inference
     "SemanticCandidate",
     "SEMANTIC_ROLES",

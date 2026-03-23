@@ -7,11 +7,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from polylogue.schemas.observation import schema_cluster_id
 from polylogue.schemas.packages import SchemaPackageCatalog
 from polylogue.schemas.runtime_registry import SchemaProvider, canonical_schema_provider
-from polylogue.schemas.sampling import (
-    schema_cluster_id,
-)
 from polylogue.types import Provider
 
 
