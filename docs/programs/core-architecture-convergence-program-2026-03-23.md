@@ -1,8 +1,8 @@
 # Polylogue Core Architecture Convergence Program
 
 Date: 2026-03-23
-Status: planned execution program
-Role: canonical next implementation campaign for architectural streamlining after the schema/proof/publication/runtime closure wave
+Status: executed implementation program
+Role: canonical execution record for the convergence campaign that collapsed the remaining parallel truth surfaces in main code
 
 See also:
 
@@ -110,6 +110,19 @@ kind of API.
 
 The order matters. Earlier steps are chosen to shrink the dependency fan-out
 for later ones.
+
+1. query execution convergence
+2. storage surface convergence
+3. operator front-door normalization
+4. showcase/QA data-model and runner convergence
+5. schema runtime/tooling split
+6. public API narrowing
+
+## Execution Status
+
+Executed on 2026-03-23.
+
+Completed:
 
 1. query execution convergence
 2. storage surface convergence
