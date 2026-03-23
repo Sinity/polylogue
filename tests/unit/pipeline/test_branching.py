@@ -21,6 +21,10 @@ def _make_repository(db_path: Path) -> ConversationRepository:
     return ConversationRepository(backend=SQLiteBackend(db_path=db_path))
 
 
+def _prepare_fields(result):
+    return result.conversation_id, result.counts, result.content_changed
+
+
 def _write_payload(tmp_path: Path, filename: str, payload: object) -> Path:
     path = tmp_path / filename
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -280,22 +284,22 @@ class TestBranchPipelinePersistence:
                     {"type": "response_item", "payload": {"type": "message", "id": "p-msg-1", "role": "user", "content": [{"type": "input_text", "text": "Parent question"}] }},
                 ],
             )
-            parent_cid, _, _ = await prepare_records(
+            parent_cid, _, _ = _prepare_fields(await prepare_records(
                 _parse_single("codex", parent_path),
                 source_name="codex",
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
-            )
+            ))
 
             child_path = _write_payload(tmp_path, "codex_child.json", _codex_continuation_payload(child_id="child-uuid", parent_id="parent-uuid"))
-            child_cid, _, _ = await prepare_records(
+            child_cid, _, _ = _prepare_fields(await prepare_records(
                 _parse_single("codex", child_path),
                 source_name="codex",
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
-            )
+            ))
             child = await repo.get(child_cid)
 
         assert child is not None
@@ -308,13 +312,13 @@ class TestBranchPipelinePersistence:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
             source_path = _write_payload(tmp_path, "claude_code_sidechain.json", _claude_sidechain_payload())
-            conversation_id, _, _ = await prepare_records(
+            conversation_id, _, _ = _prepare_fields(await prepare_records(
                 _parse_single("claude-code", source_path),
                 source_name="claude-code",
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
-            )
+            ))
             conversation = await repo.get(conversation_id)
 
         assert conversation is not None
@@ -326,13 +330,13 @@ class TestBranchPipelinePersistence:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
             parsed = _parse_single("chatgpt", _write_payload(tmp_path, "chatgpt_branched.json", [_chatgpt_branch_payload()]))
-            conversation_id, _, _ = await prepare_records(
+            conversation_id, _, _ = _prepare_fields(await prepare_records(
                 parsed,
                 source_name="chatgpt",
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
-            )
+            ))
             conversation = await repo.get(conversation_id)
 
         assert conversation is not None
@@ -346,7 +350,7 @@ class TestBranchPipelinePersistence:
     async def test_prepare_records_resolves_parent_conversation_and_message_ids(self, workspace_env: Path, tmp_path: Path) -> None:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
-            parent_id, _, _ = await prepare_records(
+            parent_id, _, _ = _prepare_fields(await prepare_records(
                 ParsedConversation(
                     provider_name="codex",
                     provider_conversation_id="parent-id",
@@ -357,8 +361,8 @@ class TestBranchPipelinePersistence:
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
-            )
-            child_id, _, _ = await prepare_records(
+            ))
+            child_id, _, _ = _prepare_fields(await prepare_records(
                 ParsedConversation(
                     provider_name="codex",
                     provider_conversation_id="child-id",
@@ -371,8 +375,8 @@ class TestBranchPipelinePersistence:
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
-            )
-            branch_id, _, _ = await prepare_records(
+            ))
+            branch_id, _, _ = _prepare_fields(await prepare_records(
                 ParsedConversation(
                     provider_name="chatgpt",
                     provider_conversation_id="conv-1",
@@ -387,7 +391,7 @@ class TestBranchPipelinePersistence:
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
-            )
+            ))
 
         with open_connection(db_path) as conn:
             child_row = conn.execute(

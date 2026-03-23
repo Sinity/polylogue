@@ -24,6 +24,7 @@ from tenacity import (
 from polylogue.errors import DatabaseError
 from polylogue.logging import get_logger
 from polylogue.storage.backends.connection import DB_TIMEOUT
+from polylogue.storage.embedding_stats import read_embedding_stats_sync
 from polylogue.storage.store import MessageRecord
 
 if TYPE_CHECKING:
@@ -493,26 +494,11 @@ class SqliteVecProvider:
         """
         conn = self._get_connection()
         try:
-            msg_count = 0
-            pending = 0
-
-            try:
-                msg_count = conn.execute(
-                    "SELECT COUNT(*) FROM message_embeddings"
-                ).fetchone()[0]
-            except sqlite3.OperationalError as exc:
-                logger.debug("message_embeddings count failed (table may not exist): %s", exc)
-
-            try:
-                pending = conn.execute(
-                    "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1"
-                ).fetchone()[0]
-            except sqlite3.OperationalError as exc:
-                logger.debug("embedding_status count failed (table may not exist): %s", exc)
+            embedding_stats = read_embedding_stats_sync(conn)
 
             return {
-                "embedded_messages": msg_count,
-                "pending_conversations": pending,
+                "embedded_messages": embedding_stats.embedded_messages,
+                "pending_conversations": embedding_stats.pending_conversations,
             }
         finally:
             conn.close()

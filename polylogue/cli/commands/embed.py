@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import sqlite3
+import json
 from typing import TYPE_CHECKING
 
 import click
-
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -40,6 +36,12 @@ if TYPE_CHECKING:
     help="Show embedding statistics only",
 )
 @click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit embedding statistics as JSON (requires --stats)",
+)
+@click.option(
     "--limit", "-n",
     type=int,
     default=None,
@@ -52,6 +54,7 @@ def embed_command(
     model: str,
     rebuild: bool,
     stats: bool,
+    json_output: bool,
     limit: int | None,
 ) -> None:
     """Generate semantic embeddings for conversations.
@@ -73,6 +76,10 @@ def embed_command(
 
     from polylogue.storage.search_providers import create_vector_provider
 
+    if json_output and not stats:
+        click.echo("Error: --json requires --stats", err=True)
+        raise click.Abort()
+
     # Check for API key
     voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
     if not voyage_key and not stats:
@@ -82,7 +89,7 @@ def embed_command(
 
     # Stats only mode
     if stats:
-        _show_embedding_stats(env)
+        _show_embedding_stats(env, json_output=json_output)
         return
 
     # Create vector provider
@@ -107,51 +114,84 @@ def embed_command(
     _embed_batch(env, repo, vec_provider, rebuild=rebuild, limit=limit)
 
 
-def _show_embedding_stats(env: AppEnv) -> None:
-    """Display embedding statistics."""
+def _embedding_status_payload(env: AppEnv) -> dict[str, object]:
+    """Read canonical embedding-status statistics for operator surfaces."""
     from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.embedding_stats import read_embedding_stats_sync
 
     with open_connection(env.config.db_path) as conn:
-        # Total conversations
         total_convs = conn.execute(
             "SELECT COUNT(*) FROM conversations"
         ).fetchone()[0]
+        embedding_stats = read_embedding_stats_sync(conn)
 
-        # Conversations with embeddings
-        try:
-            embedded_convs = conn.execute(
-                "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
-            ).fetchone()[0]
-        except sqlite3.OperationalError as exc:
-            logger.debug("embedding_status query failed (table may not exist): %s", exc)
-            embedded_convs = 0
-
-        # Total embedded messages
-        try:
-            embedded_msgs = conn.execute(
-                "SELECT COUNT(*) FROM message_embeddings"
-            ).fetchone()[0]
-        except sqlite3.OperationalError as exc:
-            logger.debug("message_embeddings query failed (table may not exist): %s", exc)
-            embedded_msgs = 0
-
-        # Pending conversations
-        try:
-            pending = conn.execute(
-                "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1"
-            ).fetchone()[0]
-        except sqlite3.OperationalError as exc:
-            logger.debug("pending embeddings query failed: %s", exc)
-            pending = total_convs - embedded_convs
-
+    embedded_convs = embedding_stats.embedded_conversations
+    embedded_msgs = embedding_stats.embedded_messages
+    pending = embedding_stats.pending_conversations or max(total_convs - embedded_convs, 0)
     coverage = (embedded_convs / total_convs * 100) if total_convs > 0 else 0
+    if total_convs <= 0:
+        status = "empty"
+    elif embedded_convs <= 0:
+        status = "none"
+    elif pending > 0:
+        status = "partial"
+    else:
+        status = "complete"
+    freshness_status = status
+    if embedding_stats.embedded_messages > 0 and (
+        embedding_stats.stale_messages > 0 or embedding_stats.messages_missing_provenance > 0
+    ):
+        freshness_status = "stale"
+
+    return {
+        "status": status,
+        "total_conversations": int(total_convs),
+        "embedded_conversations": int(embedded_convs),
+        "embedded_messages": int(embedded_msgs),
+        "pending_conversations": int(pending),
+        "embedding_coverage_percent": round(float(coverage), 1),
+        "retrieval_ready": bool(embedded_msgs > embedding_stats.stale_messages),
+        "freshness_status": freshness_status,
+        "stale_messages": int(embedding_stats.stale_messages),
+        "messages_missing_provenance": int(embedding_stats.messages_missing_provenance),
+        "oldest_embedded_at": embedding_stats.oldest_embedded_at,
+        "newest_embedded_at": embedding_stats.newest_embedded_at,
+        "embedding_models": embedding_stats.model_counts,
+        "embedding_dimensions": embedding_stats.dimension_counts,
+    }
+
+
+def _show_embedding_stats(env: AppEnv, *, json_output: bool = False) -> None:
+    """Display embedding statistics."""
+    payload = _embedding_status_payload(env)
+
+    if json_output:
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
 
     click.echo("\nEmbedding Statistics")
-    click.echo(f"  Total conversations:    {total_convs}")
-    click.echo(f"  Embedded conversations: {embedded_convs}")
-    click.echo(f"  Embedded messages:      {embedded_msgs}")
-    click.echo(f"  Coverage:               {coverage:.1f}%")
-    click.echo(f"  Pending:                {pending}")
+    click.echo(f"  Status:                {payload['status']}")
+    click.echo(f"  Total conversations:   {payload['total_conversations']}")
+    click.echo(f"  Embedded conversations:{payload['embedded_conversations']:>4}")
+    click.echo(f"  Embedded messages:     {payload['embedded_messages']}")
+    click.echo(f"  Coverage:              {payload['embedding_coverage_percent']:.1f}%")
+    click.echo(f"  Pending:               {payload['pending_conversations']}")
+    click.echo(f"  Retrieval ready:       {'yes' if payload['retrieval_ready'] else 'no'}")
+    click.echo(f"  Freshness:             {payload['freshness_status']}")
+    click.echo(f"  Stale messages:        {payload['stale_messages']}")
+    click.echo(f"  Missing provenance:    {payload['messages_missing_provenance']}")
+    if payload["oldest_embedded_at"] or payload["newest_embedded_at"]:
+        click.echo(
+            f"  Embedded at:           {payload['oldest_embedded_at'] or '-'} -> {payload['newest_embedded_at'] or '-'}"
+        )
+    if payload["embedding_models"]:
+        click.echo(
+            f"  Models:                {', '.join(f'{name} ({count})' for name, count in payload['embedding_models'].items())}"
+        )
+    if payload["embedding_dimensions"]:
+        click.echo(
+            f"  Dimensions:            {', '.join(f'{dimension} ({count})' for dimension, count in payload['embedding_dimensions'].items())}"
+        )
 
 
 def _embed_single(
@@ -161,7 +201,7 @@ def _embed_single(
     conversation_id: str,
 ) -> None:
     """Embed a single conversation."""
-    import asyncio
+    from polylogue.sync_bridge import run_coroutine_sync
 
     async def _fetch() -> tuple[object, list] | None:
         conv = await repo.view(conversation_id)  # view() resolves partial IDs
@@ -170,7 +210,7 @@ def _embed_single(
         messages = await repo.queries.get_messages(str(conv.id))
         return conv, messages
 
-    result = asyncio.run(_fetch())
+    result = run_coroutine_sync(_fetch())
     if result is None:
         click.echo(f"Error: Conversation {conversation_id} not found", err=True)
         raise click.Abort()
@@ -200,9 +240,8 @@ def _embed_batch(
     limit: int | None = None,
 ) -> None:
     """Embed multiple conversations."""
-    import asyncio
-
     from polylogue.storage.backends.connection import open_connection
+    from polylogue.sync_bridge import run_coroutine_sync
 
     backend = repo.backend
 
@@ -243,33 +282,27 @@ def _embed_batch(
     embedded_count = 0
     error_count = 0
 
-    # Single event loop for all async backend calls, avoids per-call overhead.
-    loop = asyncio.new_event_loop()
-
     def _embed_one(conversation_id: str) -> bool:
         """Embed a single conversation. Returns True on success."""
-        messages = loop.run_until_complete(backend.queries.get_messages(conversation_id))
+        messages = run_coroutine_sync(backend.queries.get_messages(conversation_id))
 
         if messages:
             vec_provider.upsert(conversation_id, messages)  # type: ignore
             return True
         return False
 
-    try:
-        with env.ui.progress("Embedding conversations", total=len(conv_ids)) as progress:
-            for i, (conv_id, title) in enumerate(conv_ids, 1):
-                if not env.ui.plain:
-                    progress.update(description=f"Embedding {title or conv_id[:12]}...")
-                try:
-                    if _embed_one(conv_id):
-                        embedded_count += 1
-                except Exception as exc:
-                    error_count += 1
-                    label = title or conv_id[:12]
-                    env.ui.console.print(f"Warning: [{i}/{len(conv_ids)}] {label}: {exc}")
-                progress.advance()
-    finally:
-        loop.close()
+    with env.ui.progress("Embedding conversations", total=len(conv_ids)) as progress:
+        for i, (conv_id, title) in enumerate(conv_ids, 1):
+            if not env.ui.plain:
+                progress.update(description=f"Embedding {title or conv_id[:12]}...")
+            try:
+                if _embed_one(conv_id):
+                    embedded_count += 1
+            except Exception as exc:
+                error_count += 1
+                label = title or conv_id[:12]
+                env.ui.console.print(f"Warning: [{i}/{len(conv_ids)}] {label}: {exc}")
+            progress.advance()
 
     click.echo(
         f"\n✓ Embedded {embedded_count} conversations"

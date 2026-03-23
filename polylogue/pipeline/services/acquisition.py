@@ -18,31 +18,21 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
+from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.parsers.base import RawConversationData
-from polylogue.sources.source import iter_source_raw_data
+from polylogue.sources.source_acquisition import iter_source_raw_data
 from polylogue.storage.artifact_observations import inspect_raw_artifact
 from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 
 __all__ = ["AcquisitionService", "AcquireResult"]
-
-
-class AcquireResult:
-    """Result of an acquisition operation."""
-
-    def __init__(self) -> None:
-        self.counts: dict[str, int] = {
-            "acquired": 0,
-            "skipped": 0,  # Already in database (by raw_id hash)
-            "errors": 0,
-        }
-        self.raw_ids: list[str] = []  # List of acquired raw_ids
 
 
 class ScanResult:
@@ -75,6 +65,9 @@ class AcquisitionService:
             backend: Async SQLite backend for database operations
         """
         self.backend = backend
+        from polylogue.storage.repository import ConversationRepository
+
+        self.repository: ConversationRepository = ConversationRepository(backend=backend)
 
     async def _persist_record(
         self,
@@ -85,13 +78,13 @@ class AcquisitionService:
         """Persist one raw record and update acquisition counters."""
         try:
             observation = inspect_raw_artifact(record)
-            inserted = await self.backend.save_raw_conversation(record)
-            await self.backend.save_artifact_observation(observation)
+            inserted = await self.repository.save_raw_conversation(record)
+            await self.repository.save_artifact_observation(observation)
             if inserted:
-                result.counts["acquired"] += 1
+                result.acquired += 1
                 result.raw_ids.append(record.raw_id)
             else:
-                result.counts["skipped"] += 1
+                result.skipped += 1
         except Exception as exc:
             logger.error(
                 "Failed to store raw conversation",
@@ -99,7 +92,7 @@ class AcquisitionService:
                 path=record.source_path,
                 error=str(exc),
             )
-            result.counts["errors"] += 1
+            result.errors += 1
 
     async def visit_sources(
         self,
@@ -113,7 +106,7 @@ class AcquisitionService:
     ) -> ScanResult:
         """Visit source raw payloads incrementally without forcing list materialization."""
         result = ScanResult()
-        known_mtimes = await self.backend.queries.get_known_source_mtimes()
+        known_mtimes = await self.repository.get_known_source_mtimes()
 
         async def _consume(record: RawConversationRecord) -> None:
             if on_record is not None:
@@ -190,7 +183,7 @@ class AcquisitionService:
                 progress_label="Acquiring",
                 on_record=_store,
             )
-            result.counts["errors"] += visit_result.counts["errors"]
+            result.errors += visit_result.counts["errors"]
 
         return result
 

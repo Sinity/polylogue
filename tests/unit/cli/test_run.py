@@ -13,7 +13,8 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.sources import DriveError
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.store import PlanResult, RunResult
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.state_views import PlanResult, RunResult
 from tests.infra.storage_records import DbFactory
 
 
@@ -103,6 +104,7 @@ def _seed_tag_counts(
 ) -> None:
     factory = DbFactory(db_path)
     backend = SQLiteBackend(db_path=db_path)
+    repository = ConversationRepository(backend=backend)
 
     async def _seed() -> None:
         index = 0
@@ -113,7 +115,7 @@ def _seed_tag_counts(
                         id=f"{provider}-{tag}-{index}",
                         provider=provider,
                     )
-                    await backend.add_tag(conversation_id, tag)
+                    await repository.add_tag(conversation_id, tag)
                     index += 1
         finally:
             await backend.close()
@@ -316,7 +318,7 @@ class TestRunCommand:
             finally:
                 _close_coroutine(coro)
 
-        with patch("polylogue.cli.commands.run.asyncio.run", side_effect=_run_async) as mock_asyncio_run, patch(
+        with patch("polylogue.cli.commands.run.run_coroutine_sync", side_effect=_run_async) as mock_asyncio_run, patch(
             "polylogue.config.get_config", return_value=MagicMock(sources=[], render_root=Path("/render"))
         ), patch("polylogue.cli.commands.run.resolve_sources", return_value=None), patch(
             "polylogue.cli.commands.run.maybe_prompt_sources", return_value=None
@@ -398,6 +400,27 @@ class TestEmbedCommand:
         assert str(stats_rows[1]) in result.output
         assert str(stats_rows[2]) in result.output
         assert str(stats_rows[3]) in result.output
+
+    def test_embed_stats_json_contract(self, runner, cli_workspace):
+        with patch("polylogue.cli.commands.embed._embedding_status_payload") as mock_payload, patch.dict(
+            "os.environ",
+            {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
+            clear=False,
+        ):
+            mock_payload.return_value = {
+                "status": "partial",
+                "total_conversations": 5,
+                "embedded_conversations": 3,
+                "embedded_messages": 45,
+                "pending_conversations": 2,
+                "embedding_coverage_percent": 60.0,
+                "retrieval_ready": True,
+            }
+            result = runner.invoke(cli, ["embed", "--stats", "--json"])
+
+        assert result.exit_code == 0
+        assert '"status": "partial"' in result.output
+        assert '"embedding_coverage_percent": 60.0' in result.output
 
     def test_embed_no_sqlite_vec_contract(self, runner, cli_workspace):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=None):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING, Any
 
 import click
@@ -15,8 +16,9 @@ from polylogue.cli.query_plan import (
     build_query_execution_plan,
     resolve_query_route,
 )
-from polylogue.logging import get_logger
 from polylogue.lib.query_spec import QuerySpecError
+from polylogue.logging import get_logger
+from polylogue.sync_bridge import run_coroutine_sync
 
 logger = get_logger(__name__)
 
@@ -37,9 +39,7 @@ def project_query_results(results: list[Any], plan: QueryExecutionPlan) -> list[
 
 def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     """Execute a query-mode command."""
-    import asyncio
-
-    asyncio.run(async_execute_query(env, params))
+    run_coroutine_sync(async_execute_query(env, params))
 
 
 def _create_query_vector_provider(config: object) -> object | None:
@@ -53,6 +53,12 @@ def _create_query_vector_provider(config: object) -> object | None:
     except Exception as exc:
         logger.warning("Vector search setup failed: %s", exc)
         return None
+
+
+async def _await_if_needed(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
@@ -75,17 +81,35 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
 
+    if plan.selection.similar_text and vector_provider is None:
+        click.echo(
+            "Error: --similar requires vector search support. Configure VOYAGE_API_KEY and build embeddings with `polylogue embed` first.",
+            err=True,
+        )
+        raise SystemExit(1)
+    if plan.selection.similar_text:
+        archive_stats = await repo.get_archive_stats()
+        if archive_stats.embedded_messages <= 0:
+            click.echo(
+                "Error: --similar requires existing embeddings. Run `polylogue embed` first.",
+                err=True,
+            )
+            raise SystemExit(1)
+
     try:
         filter_chain = plan.selection.build_filter(
             repo,
             vector_provider=vector_provider,
         )
     except QuerySpecError as exc:
-        click.echo(f"Error: Cannot parse date: '{exc.value}'", err=True)
-        click.echo(
-            "Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)",
-            err=True,
-        )
+        if exc.field in {"since", "until"}:
+            click.echo(f"Error: Cannot parse date: '{exc.value}'", err=True)
+            click.echo(
+                "Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)",
+                err=True,
+            )
+        else:
+            click.echo(f"Error: invalid {exc.field}: '{exc.value}'", err=True)
         raise SystemExit(1) from exc
 
     route = resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries())
@@ -131,7 +155,66 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if route == QueryRoute.SUMMARY_STATS:
         summaries = await filter_chain.list_summaries()
         msg_counts = await repo.queries.get_message_counts_batch([str(summary.id) for summary in summaries])
-        _query_output.output_stats_by_summaries(env, summaries, msg_counts, plan.stats_dimension or "all")
+        _query_output.output_stats_by_summaries(
+            env,
+            summaries,
+            msg_counts,
+            plan.stats_dimension or "all",
+            output_format=plan.output.output_format,
+        )
+        return
+
+    if route == QueryRoute.STATS_BY and plan.stats_dimension in {"action", "tool"}:
+        query_plan = filter_chain.build_query_plan()
+        if filter_chain.can_use_summaries():
+            summaries = await filter_chain.list_summaries()
+            await _query_output.output_stats_by_semantic_summaries(
+                env,
+                summaries,
+                repo,
+                plan.stats_dimension or "all",
+                selection=plan.selection,
+                output_format=plan.output.output_format,
+            )
+            return
+        if await _await_if_needed(query_plan.can_use_action_event_stats_with(repo)) is True:
+            records_result = repo.queries.list_conversations(
+                query_plan.record_query.with_limit(query_plan.limit)
+            )
+            if inspect.isawaitable(records_result):
+                records = await records_result
+                await _query_output.output_stats_by_semantic_query(
+                    env,
+                    [record.conversation_id for record in records],
+                    repo,
+                    plan.stats_dimension or "all",
+                    selection=plan.selection,
+                    output_format=plan.output.output_format,
+                )
+                return
+
+    if route == QueryRoute.STATS_BY and plan.stats_dimension in {"project", "work-kind"}:
+        if filter_chain.can_use_summaries():
+            summaries = await filter_chain.list_summaries()
+            await _query_output.output_stats_by_profile_summaries(
+                env,
+                summaries,
+                repo,
+                plan.stats_dimension or "all",
+                output_format=plan.output.output_format,
+            )
+            return
+        query_plan = filter_chain.build_query_plan()
+        records = await repo.queries.list_conversations(
+            query_plan.record_query.with_limit(query_plan.limit)
+        )
+        await _query_output.output_stats_by_profile_query(
+            env,
+            [record.conversation_id for record in records],
+            repo,
+            plan.stats_dimension or "all",
+            output_format=plan.output.output_format,
+        )
         return
 
     if route in {QueryRoute.SUMMARY_MODIFY, QueryRoute.SUMMARY_DELETE}:
@@ -150,7 +233,13 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     results = project_query_results(results, plan)
 
     if route == QueryRoute.STATS_BY:
-        _query_output._output_stats_by(env, results, plan.stats_dimension or "all")
+        _query_output._output_stats_by(
+            env,
+            results,
+            plan.stats_dimension or "all",
+            selection=plan.selection,
+            output_format=plan.output.output_format,
+        )
         return
 
     if route == QueryRoute.OPEN:

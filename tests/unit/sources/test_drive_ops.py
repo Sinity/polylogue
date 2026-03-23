@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from polylogue.config import Source
-from polylogue.sources import DriveClient, DriveFile, download_drive_files, iter_drive_conversations
+from polylogue.sources import DriveFile, download_drive_files, iter_drive_conversations
 from polylogue.sources.drive import _apply_drive_attachments
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation
 
@@ -78,7 +78,7 @@ class _DriveConversationClient:
 
 
 def test_download_drive_files_contract(tmp_path: Path) -> None:
-    client = MagicMock(spec=DriveClient)
+    client = MagicMock()
     client.iter_json_files.return_value = [
         DriveFile("good", "session", "application/json", None, None),
         DriveFile("bad", "broken.jsonl", "application/json", None, None),
@@ -107,7 +107,7 @@ def test_apply_drive_attachments_contract(tmp_path: Path) -> None:
         _attachment("fill-meta"),
         missing_attachment,
     )
-    client = MagicMock(spec=DriveClient)
+    client = MagicMock()
     client.download_to_path.side_effect = [
         DriveFile("keep-meta", "remote.bin", "application/octet-stream", None, 99),
         DriveFile("fill-meta", "filled.pdf", "application/pdf", None, 2048),
@@ -144,6 +144,32 @@ def test_apply_drive_attachments_contract(tmp_path: Path) -> None:
     assert missing.path is None
     assert missing.provider_meta is None
     assert [call.args[0] for call in client.download_to_path.call_args_list] == ["keep-meta", "fill-meta"]
+
+
+def test_apply_drive_attachments_skips_inline_and_external_media(tmp_path: Path) -> None:
+    conversation = _conversation(
+        _attachment(
+            "inline-file-1",
+            mime_type="text/plain",
+            provider_meta={"attachment_kind": "inline_file"},
+        ),
+        _attachment(
+            "youtube-video-1",
+            mime_type="video/youtube",
+            provider_meta={"attachment_kind": "youtube_video"},
+        ),
+    )
+    client = MagicMock()
+
+    _apply_drive_attachments(
+        convo=conversation,
+        client=client,
+        archive_root=tmp_path,
+        download_assets=True,
+    )
+
+    client.download_to_path.assert_not_called()
+    assert all(attachment.path is None for attachment in conversation.attachments)
 
 
 def test_iter_drive_conversations_returns_empty_without_folder(tmp_path: Path) -> None:
@@ -233,7 +259,7 @@ def test_iter_drive_conversations_tracks_payload_failures_and_continues(tmp_path
 def test_iter_drive_conversations_uses_injected_client_without_recreating(tmp_path: Path) -> None:
     client = _DriveConversationClient(files=[], payloads={})
 
-    with patch("polylogue.sources.drive.DriveClient") as drive_client_cls:
+    with patch("polylogue.sources.drive.build_drive_source_client") as drive_client_factory:
         list(
             iter_drive_conversations(
                 source=Source(name="gemini", folder="Google AI Studio"),
@@ -243,4 +269,4 @@ def test_iter_drive_conversations_uses_injected_client_without_recreating(tmp_pa
             )
         )
 
-    drive_client_cls.assert_not_called()
+    drive_client_factory.assert_not_called()

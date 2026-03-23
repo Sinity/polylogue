@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from polylogue.storage.store import MessageRecord
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, ConversationSummary, Message
+    from polylogue.lib.conversation_models import Conversation, ConversationSummary
+    from polylogue.lib.message_models import Message
     from polylogue.types import ConversationId
 
 

@@ -8,6 +8,7 @@
 polylogue [QUERY...] [FILTERS...] [OUTPUT...]    # Query mode (default)
 polylogue run [OPTIONS...]                        # Run pipeline (ingest → render → index)
 polylogue embed [OPTIONS...]                      # Generate vector embeddings
+polylogue products [COMMAND...]                   # Inspect durable archive products
 polylogue tags [OPTIONS...]                       # List tags with counts
 polylogue site [OPTIONS...]                       # Build static HTML archive
 polylogue sources [OPTIONS...]                    # List configured sources
@@ -41,11 +42,19 @@ Positional arguments are implicit `--contains` (FTS). Multiple positional args a
 |------|-------|-------------|
 | `--contains TEXT` | `-c` | FTS term (repeatable = AND) |
 | `--exclude-text TEXT` | | Exclude FTS term (repeatable) |
+| `--retrieval-lane auto|dialogue|actions|hybrid` | | Select dialogue/action/hybrid retrieval lane |
 | `--provider NAME,...` | `-p` | Include providers (comma = OR) |
 | `--exclude-provider NAME,...` | | Exclude providers |
 | `--tag TAG,...` | `-t` | Include tags (comma = OR, supports `key:value`) |
 | `--exclude-tag TAG,...` | | Exclude tags |
 | `--title TEXT` | | Title contains |
+| `--path TEXT` | | Require touched-path substrings (repeatable = AND) |
+| `--action KIND` | | Require semantic action kinds |
+| `--exclude-action KIND` | | Exclude semantic action kinds |
+| `--action-sequence A,B,C` | | Require ordered semantic action subsequence |
+| `--action-text TEXT` | | Require normalized action evidence text |
+| `--tool NAME` | | Require normalized tool names |
+| `--exclude-tool NAME` | | Exclude normalized tool names |
 | `--has TYPE,...` | | Has: `thinking`, `tools`, `summary`, `attachments` |
 | `--since DATE` | | After date (`today`, `yesterday`, `"last week"`, `2025-01-01`) |
 | `--until DATE` | | Before date |
@@ -68,7 +77,7 @@ Positional arguments are implicit `--contains` (FTS). Multiple positional args a
 | `--list` | | Force list format (even for single result) |
 | `--stats` | | Only statistics, no content |
 | `--count` | | Print matched count and exit |
-| `--stats-by DIM` | | Aggregate statistics by dimension: `provider`, `month`, `year`, `day` |
+| `--stats-by DIM` | | Aggregate statistics by dimension: `provider`, `month`, `year`, `day`, `action`, `tool`, `project`, `work-kind` |
 | `--open` | | Open result in browser/editor |
 | `--transform XFORM` | | Transform output: `strip-tools`, `strip-thinking`, `strip-all` |
 | `--stream` | | Stream output (low memory, requires `--latest` or `-i ID`) |
@@ -110,6 +119,8 @@ polylogue --stats-by month                        # Activity histogram by month
 polylogue -p claude-ai --stats-by provider           # Provider breakdown for Claude
 polylogue --stats-by year                         # Year-by-year overview
 polylogue --since 2025-01 --stats-by day          # Daily breakdown
+polylogue --stats-by project --provider claude-code --since 2026-01-01 --format json
+polylogue --action other --stats-by tool --format json
 ```
 
 **`--stream` mode**: Streams messages to stdout one at a time for constant memory usage on large conversations. Supports `--dialogue-only` to filter to user/assistant messages. Output format is controlled via `--format` (plaintext, markdown, or json for JSON Lines).
@@ -191,6 +202,35 @@ polylogue embed -n 50                     # Limit to 50 conversations
 ```
 
 Generates vector embeddings using Voyage AI, stored in sqlite-vec for semantic search. Requires `VOYAGE_API_KEY` environment variable.
+
+## Products
+
+```bash
+polylogue products status --json
+polylogue products profiles --provider claude-code --limit 25 --json
+polylogue products profiles --session-date-since 2026-03-16 --session-date-until 2026-03-16 --json
+polylogue products work-events --kind testing --limit 50 --json
+polylogue products work-events --conversation-id claude-code:abc123 --json
+polylogue products phases --provider claude-code --since 2026-03-16T00:00:00+00:00 --json
+polylogue products threads --limit 20 --json
+polylogue products tags --provider claude-code --since 2026-01-01 --json
+polylogue products day-summaries --provider claude-code --since 2026-01-01 --json
+polylogue products week-summaries --provider claude-code --since 2026-01-01 --json
+polylogue products analytics --provider claude-code --json
+polylogue products debt --actionable-only --json
+polylogue products maintenance --json
+```
+
+Durable archive products expose versioned, machine-readable session/work and maintenance surfaces backed by the archive read models rather than ad hoc recomputation from raw conversations.
+
+The session-product surfaces now include:
+
+- `products status`: durable session-product readiness plus archive-debt summary
+- `products profiles`: `first_message_at`, `canonical_session_date`, `engaged_duration_ms`, `engaged_minutes`, canonical projects, repo paths
+- `products work-events`: timestamped work-event rows with `start_time`, `end_time`, `duration_ms`, `canonical_session_date`
+- `products phases`: timestamped session-phase timeline rows with phase kind, timing, duration, and per-phase tool counts
+- `products analytics`: stable provider-level conversation/message/tool/thinking metrics
+- `products debt`: governed archive-cleanup and derived-repair debt items with maintenance targets
 
 ## Tags
 
@@ -292,9 +332,12 @@ polylogue qa --snapshot-from ./qa_outputs   # Archive existing directory
 polylogue mcp                             # Start MCP server (stdio)
 polylogue check                           # Health check (DB, index, stats)
 polylogue check --verbose                 # Show breakdown by provider
-polylogue check --repair                  # Fix issues that can be auto-fixed
-polylogue check --repair --preview        # Preview what would be repaired
-polylogue check --repair --vacuum         # Compact database after repair
+polylogue check --cached                  # Use recent cached health report when available
+polylogue check --repair                  # Safe derived-data and DB maintenance repairs
+polylogue check --repair --preview        # Preview safe maintenance work
+polylogue check --cleanup --preview       # Preview destructive archive cleanup
+polylogue check --repair --cleanup --preview
+polylogue check --repair --vacuum         # Compact database after maintenance
 polylogue check --deep                    # Run SQLite integrity check
 polylogue check --json                    # Machine-readable output
 polylogue check --schemas                 # Raw-corpus schema verification gate
@@ -423,7 +466,8 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 ### Health Checks
 
 - `polylogue check` verifies database integrity, FTS index, and render files.
-- `polylogue check --repair` fixes issues that can be auto-fixed.
+- `polylogue check --repair` runs safe derived-data and database maintenance.
+- `polylogue check --cleanup` runs destructive archive cleanup; use `--preview` first.
 - `polylogue check --vacuum` compacts the database and reclaims space.
 - `polylogue check --schemas` runs non-mutating schema verification over `raw_conversations`.
 - `polylogue check --proof` reports artifact support coverage, unknowns, decode gaps, and Claude sidecar linkage.

@@ -11,10 +11,13 @@ Keeping this logic here preserves the dependency direction:
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
+from polylogue.lib.attachment_models import Attachment
+from polylogue.lib.conversation_models import Conversation, ConversationSummary
+from polylogue.lib.message_models import Message
 from polylogue.lib.messages import MessageCollection
-from polylogue.lib.models import Attachment, Conversation, ConversationSummary, Message
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.storage.store import (
     AttachmentRecord,
@@ -22,6 +25,24 @@ from polylogue.storage.store import (
     MessageRecord,
 )
 from polylogue.types import MessageId, Provider
+
+
+def _parse_json_blob(raw: object) -> object | None:
+    """Parse persisted JSON payloads used in content block fields.
+
+    Canonical storage keeps tool_input/metadata as JSON strings. Domain-model
+    hydration should preserve that structure instead of discarding it.
+    """
+    if raw in {None, ""}:
+        return None
+    if isinstance(raw, (dict, list)):
+        return raw
+    if not isinstance(raw, str):
+        return raw
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
 
 
 def attachment_from_record(record: AttachmentRecord) -> Attachment:
@@ -54,7 +75,20 @@ def message_from_record(
 
     # Build content_blocks dict list from ContentBlockRecord objects
     blocks = [
-        {"type": b.type, "text": b.text, "tool_name": b.tool_name, "tool_id": b.tool_id}
+        {
+            "block_id": str(b.block_id),
+            "message_id": str(b.message_id),
+            "conversation_id": str(b.conversation_id),
+            "block_index": b.block_index,
+            "type": str(b.type),
+            "text": b.text,
+            "tool_name": b.tool_name,
+            "tool_id": b.tool_id,
+            "tool_input": _parse_json_blob(b.tool_input),
+            "media_type": b.media_type,
+            "metadata": _parse_json_blob(b.metadata),
+            "semantic_type": str(b.semantic_type) if b.semantic_type is not None else None,
+        }
         for b in record.content_blocks
     ]
 

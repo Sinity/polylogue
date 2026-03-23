@@ -61,7 +61,20 @@ async def aggregate_message_stats(
             "user": 0,
             "assistant": 0,
             "system": 0,
-            "words_approx": 0,
+            "words_approx": (
+                (
+                    await (
+                        await conn.execute(
+                            """
+                            SELECT SUM(word_count) as words_approx
+                            FROM conversation_stats
+                            WHERE conversation_id IN (SELECT cid FROM _stat_ids)
+                            """
+                        )
+                    ).fetchone()
+                )["words_approx"]
+                or 0
+            ),
             "attachments": att_row["cnt"] or 0,
             "min_sort_key": date_row["min_sk"],
             "max_sort_key": date_row["max_sk"],
@@ -87,7 +100,14 @@ async def aggregate_message_stats(
         "user": 0,
         "assistant": 0,
         "system": 0,
-        "words_approx": 0,
+        "words_approx": (
+            (
+                await (
+                    await conn.execute("SELECT SUM(word_count) as words_approx FROM conversation_stats")
+                ).fetchone()
+            )["words_approx"]
+            or 0
+        ),
         "attachments": att_cnt,
         "min_sort_key": date_row["min_sk"],
         "max_sort_key": date_row["max_sk"],
@@ -182,8 +202,8 @@ async def get_provider_metrics_rows(
     cursor = await conn.execute(
         """
         SELECT
-            provider_name,
-            COUNT(DISTINCT conversation_id)                                                AS conversation_count,
+            COALESCE(NULLIF(m.provider_name, ''), c.provider_name, 'unknown')              AS provider_name,
+            COUNT(DISTINCT m.conversation_id)                                              AS conversation_count,
             COUNT(*)                                                                       AS message_count,
             SUM(CASE WHEN role = 'user'      THEN 1 ELSE 0 END)                           AS user_message_count,
             SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END)                           AS assistant_message_count,
@@ -191,10 +211,11 @@ async def get_provider_metrics_rows(
             SUM(CASE WHEN role = 'assistant' THEN word_count ELSE 0 END)                  AS assistant_word_sum,
             SUM(has_tool_use)                                                              AS tool_use_count,
             SUM(has_thinking)                                                              AS thinking_count,
-            COUNT(DISTINCT CASE WHEN has_tool_use = 1 THEN conversation_id END)           AS conversations_with_tools,
-            COUNT(DISTINCT CASE WHEN has_thinking = 1 THEN conversation_id END)           AS conversations_with_thinking
-        FROM messages
-        GROUP BY provider_name
+            COUNT(DISTINCT CASE WHEN has_tool_use = 1 THEN m.conversation_id END)         AS conversations_with_tools,
+            COUNT(DISTINCT CASE WHEN has_thinking = 1 THEN m.conversation_id END)         AS conversations_with_thinking
+        FROM messages m
+        LEFT JOIN conversations c ON c.conversation_id = m.conversation_id
+        GROUP BY COALESCE(NULLIF(m.provider_name, ''), c.provider_name, 'unknown')
         ORDER BY conversation_count DESC
         """
     )

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 from tests.benchmarks.helpers import benchmark_store_call, open_bench_store
 
@@ -27,7 +28,7 @@ def test_bench_list_conversations_no_filter(benchmark, bench_db_5k: Path) -> Non
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.backend.list_conversations(limit=50),
+        lambda store: store.backend.queries.list_conversations(ConversationRecordQuery(limit=50)),
     )
 
 
@@ -37,7 +38,9 @@ def test_bench_list_conversations_provider_filter(benchmark, bench_db_5k: Path) 
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.backend.list_conversations(provider="chatgpt", limit=50),
+        lambda store: store.backend.queries.list_conversations(
+            ConversationRecordQuery(provider="chatgpt", limit=50)
+        ),
     )
 
 
@@ -47,17 +50,21 @@ def test_bench_list_conversations_has_tool_use(benchmark, bench_db_5k: Path) -> 
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.backend.list_conversations(has_tool_use=True, limit=50),
+        lambda store: store.backend.queries.list_conversations(
+            ConversationRecordQuery(has_tool_use=True, limit=50)
+        ),
     )
 
 
 @pytest.mark.benchmark
 def test_bench_list_conversations_semantic_filter(benchmark, bench_db_5k: Path) -> None:
-    """list with has_file_ops=True — tests EXISTS subquery path (schema v3)."""
+    """list with action_terms=file_read — tests semantic EXISTS subquery path."""
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.backend.list_conversations(has_file_ops=True, limit=50),
+        lambda store: store.backend.queries.list_conversations(
+            ConversationRecordQuery(action_terms=("file_read",), limit=50)
+        ),
     )
 
 
@@ -67,7 +74,14 @@ def test_bench_list_conversations_combined_filter(benchmark, bench_db_10k: Path)
     benchmark_store_call(
         benchmark,
         bench_db_10k,
-        lambda store: store.backend.list_conversations(provider="claude-ai", has_tool_use=True, min_messages=2, limit=50),
+        lambda store: store.backend.queries.list_conversations(
+            ConversationRecordQuery(
+                provider="claude-ai",
+                has_tool_use=True,
+                min_messages=2,
+                limit=50,
+            )
+        ),
     )
 
 

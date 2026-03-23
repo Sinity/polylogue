@@ -12,7 +12,8 @@ from polylogue.schemas import ValidationResult
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validator import SchemaValidator, validate_provider_export
-from polylogue.schemas.verification import verify_raw_corpus
+from polylogue.schemas.verification_corpus import verify_raw_corpus
+from polylogue.schemas.verification_requests import SchemaVerificationRequest
 from polylogue.storage.backends.connection import open_connection
 from polylogue.types import Provider
 
@@ -382,7 +383,7 @@ def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(db_path, monkeypatch)
             return ValidationResult(is_valid=True)
 
     monkeypatch.setattr(
-        "polylogue.schemas.verification.SchemaValidator.for_payload",
+        "polylogue.schemas.verification_corpus.SchemaValidator.for_payload",
         lambda *args, **kwargs: _AlwaysValidValidator(),
     )
 
@@ -397,7 +398,10 @@ def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(db_path, monkeypatch)
         raw_content=raw,
     )
 
-    report = verify_raw_corpus(db_path=db_path, providers=["chatgpt"], max_samples=16)
+    report = verify_raw_corpus(
+        db_path=db_path,
+        request=SchemaVerificationRequest(providers=["chatgpt"], max_samples=16),
+    )
     stats = report.providers["chatgpt"]
 
     assert report.total_records == 1
@@ -417,7 +421,10 @@ def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path):
         raw_content=b'{"hello":"world"}',
     )
 
-    report = verify_raw_corpus(db_path=db_path, providers=["unknown"], max_samples=16)
+    report = verify_raw_corpus(
+        db_path=db_path,
+        request=SchemaVerificationRequest(providers=["unknown"], max_samples=16),
+    )
     stats = report.providers["unknown"]
 
     assert report.total_records == 1
@@ -439,7 +446,7 @@ def test_verify_raw_corpus_uses_persisted_payload_provider_for_filters(db_path, 
             return ValidationResult(is_valid=True)
 
     monkeypatch.setattr(
-        "polylogue.schemas.verification.SchemaValidator.for_payload",
+        "polylogue.schemas.verification_corpus.SchemaValidator.for_payload",
         lambda *args, **kwargs: _AlwaysValidValidator(),
     )
 
@@ -453,7 +460,10 @@ def test_verify_raw_corpus_uses_persisted_payload_provider_for_filters(db_path, 
         raw_content=b'{"id":"one","mapping":{}}',
     )
 
-    report = verify_raw_corpus(db_path=db_path, providers=["chatgpt"], max_samples=16)
+    report = verify_raw_corpus(
+        db_path=db_path,
+        request=SchemaVerificationRequest(providers=["chatgpt"], max_samples=16),
+    )
 
     assert report.total_records == 1
     assert report.providers["chatgpt"].total_records == 1
@@ -475,7 +485,10 @@ def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path):
         ),
     )
 
-    report = verify_raw_corpus(db_path=db_path, providers=["codex"], max_samples=16)
+    report = verify_raw_corpus(
+        db_path=db_path,
+        request=SchemaVerificationRequest(providers=["codex"], max_samples=16),
+    )
     stats = report.providers["codex"]
 
     assert report.total_records == 1
@@ -515,9 +528,11 @@ def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path
 
     report = verify_raw_corpus(
         db_path=db_path,
-        providers=["codex"],
-        max_samples=16,
-        quarantine_malformed=True,
+        request=SchemaVerificationRequest(
+            providers=["codex"],
+            max_samples=16,
+            quarantine_malformed=True,
+        ),
     )
     stats = report.providers["codex"]
 
@@ -557,7 +572,7 @@ def test_verify_raw_corpus_honors_record_limit_and_offset(db_path, monkeypatch):
             return ValidationResult(is_valid=True)
 
     monkeypatch.setattr(
-        "polylogue.schemas.verification.SchemaValidator.for_payload",
+        "polylogue.schemas.verification_corpus.SchemaValidator.for_payload",
         lambda *args, **kwargs: _AlwaysValidValidator(),
     )
 
@@ -580,10 +595,12 @@ def test_verify_raw_corpus_honors_record_limit_and_offset(db_path, monkeypatch):
 
     report = verify_raw_corpus(
         db_path=db_path,
-        providers=["chatgpt"],
-        max_samples=16,
-        record_limit=1,
-        record_offset=1,
+        request=SchemaVerificationRequest(
+            providers=["chatgpt"],
+            max_samples=16,
+            record_limit=1,
+            record_offset=1,
+        ),
     )
     stats = report.providers["chatgpt"]
 

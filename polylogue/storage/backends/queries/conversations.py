@@ -37,6 +37,7 @@ __all__ = [
     "delete_conversation_sql",
     "list_tags",
     "search_conversations",
+    "search_action_conversations",
 ]
 
 
@@ -78,6 +79,11 @@ async def list_conversations(
     since: str | None = None,
     until: str | None = None,
     title_contains: str | None = None,
+    path_terms: list[str] | None = None,
+    action_terms: list[str] | None = None,
+    excluded_action_terms: list[str] | None = None,
+    tool_terms: list[str] | None = None,
+    excluded_tool_terms: list[str] | None = None,
     limit: int | None = None,
     offset: int = 0,
     has_tool_use: bool = False,
@@ -85,9 +91,6 @@ async def list_conversations(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
-    has_file_ops: bool = False,
-    has_git_ops: bool = False,
-    has_subagent: bool = False,
 ) -> list[ConversationRecord]:
     """List conversations with optional filtering and pagination."""
     use_stats_join = _needs_stats_join(
@@ -105,14 +108,16 @@ async def list_conversations(
         since=since,
         until=until,
         title_contains=title_contains,
+        path_terms=path_terms,
+        action_terms=action_terms,
+        excluded_action_terms=excluded_action_terms,
+        tool_terms=tool_terms,
+        excluded_tool_terms=excluded_tool_terms,
         has_tool_use=has_tool_use,
         has_thinking=has_thinking,
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
-        has_file_ops=has_file_ops,
-        has_git_ops=has_git_ops,
-        has_subagent=has_subagent,
     )
 
     if use_stats_join:
@@ -154,14 +159,16 @@ async def count_conversations(
     since: str | None = None,
     until: str | None = None,
     title_contains: str | None = None,
+    path_terms: list[str] | None = None,
+    action_terms: list[str] | None = None,
+    excluded_action_terms: list[str] | None = None,
+    tool_terms: list[str] | None = None,
+    excluded_tool_terms: list[str] | None = None,
     has_tool_use: bool = False,
     has_thinking: bool = False,
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
-    has_file_ops: bool = False,
-    has_git_ops: bool = False,
-    has_subagent: bool = False,
 ) -> int:
     """Count conversations matching filters."""
     use_stats_join = _needs_stats_join(
@@ -178,14 +185,16 @@ async def count_conversations(
         since=since,
         until=until,
         title_contains=title_contains,
+        path_terms=path_terms,
+        action_terms=action_terms,
+        excluded_action_terms=excluded_action_terms,
+        tool_terms=tool_terms,
+        excluded_tool_terms=excluded_tool_terms,
         has_tool_use=has_tool_use,
         has_thinking=has_thinking,
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
-        has_file_ops=has_file_ops,
-        has_git_ops=has_git_ops,
-        has_subagent=has_subagent,
     )
     if use_stats_join:
         sql = f"SELECT COUNT(*) as cnt FROM conversations c LEFT JOIN conversation_stats cs ON cs.conversation_id = c.conversation_id {where_sql}"
@@ -504,6 +513,38 @@ async def search_conversations(
         raise DatabaseError("Search index not built. Run indexing first or use a different backend.")
 
     query_spec = build_ranked_conversation_search_query(
+        query=query,
+        limit=limit,
+        scope_names=providers,
+    )
+    if query_spec is None:
+        return []
+
+    sql, params = query_spec
+    cursor = await conn.execute(sql, params)
+    rows = await cursor.fetchall()
+    return [str(row["conversation_id"]) for row in rows]
+
+
+async def search_action_conversations(
+    conn: aiosqlite.Connection,
+    query: str,
+    limit: int = 100,
+    providers: list[str] | None = None,
+) -> list[str]:
+    """Search conversations using persisted action-event FTS."""
+    from polylogue.storage.search import build_ranked_action_search_query
+
+    cursor = await conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
+    )
+    exists = await cursor.fetchone()
+    if not exists:
+        from polylogue.errors import DatabaseError
+
+        raise DatabaseError("Action search index not built. Rebuild the search index first.")
+
+    query_spec = build_ranked_action_search_query(
         query=query,
         limit=limit,
         scope_names=providers,
