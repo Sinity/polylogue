@@ -82,6 +82,8 @@ def _make_params(**overrides) -> dict:
         "tag": None,
         "exclude_tag": None,
         "title": None,
+        "path_terms": (),
+        "similar_text": None,
         "has_type": (),
         "since": None,
         "until": None,
@@ -150,6 +152,48 @@ def test_execute_query_stream_target_resolution_contract(param_overrides, resolv
             assert mock_stream.call_args.args[2] == resolved_id
             warnings = [call.args[0] for call in mock_echo.call_args_list if call.args and "Warning" in call.args[0]]
             assert bool(warnings) is expect_warning
+
+
+@pytest.mark.asyncio
+async def test_async_execute_query_errors_for_similar_without_vector_support() -> None:
+    from polylogue.cli.query import async_execute_query
+
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("click.echo") as mock_echo,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            await async_execute_query(env, _make_params(similar_text="sqlite locking regression"))
+
+    assert exc_info.value.code == 1
+    mock_echo.assert_called_once()
+    assert "requires vector search support" in mock_echo.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_async_execute_query_errors_for_similar_without_embeddings() -> None:
+    from polylogue.cli.query import async_execute_query
+
+    repo = MagicMock()
+    repo.get_archive_stats = AsyncMock(
+        return_value=SimpleNamespace(embedded_messages=0, embedded_conversations=0)
+    )
+    env = _make_env(repo=repo, config=MagicMock())
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
+        patch("click.echo") as mock_echo,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            await async_execute_query(env, _make_params(similar_text="sqlite locking regression"))
+
+    assert exc_info.value.code == 1
+    mock_echo.assert_called_once()
+    assert "requires existing embeddings" in mock_echo.call_args.args[0]
 
 
 @pytest.mark.asyncio

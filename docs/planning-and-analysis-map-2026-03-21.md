@@ -153,6 +153,11 @@ As of this map:
 - the read-surface proof and showcase-hardening lane is now executed via [programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md), which covers query summary/list surfaces, stream surfaces, MCP read payloads, and matching showcase proof coverage
 - the remaining runtime/testing reservoir has now been executed via [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md), which closes the root machine contract, query/TUI hardening, and named validation lanes for chaos/scale/live operator workflows
 - later work should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
+- one specific semantic/query follow-up is now clearly identified from live-archive dogfooding:
+  - `ToolCall` is still too low-level to be the main semantic/query primitive
+  - a later retrieval/query campaign should introduce a first-class action/event layer above `ToolCall`
+  - that layer should normalize concrete actions such as file reads/writes/edits, shell commands, git operations, searches, subagent spawns, and plan/task updates into typed action facts with linked message/raw-block evidence
+  - query, FTS indexing, embeddings, attribution, and work-event extraction should then consume those action facts rather than repeatedly re-interpreting raw tool blocks in parallel
 
 ## Maintenance Rule
 

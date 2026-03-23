@@ -40,6 +40,7 @@ class ConversationQueryPlan:
     query_terms: tuple[str, ...] = ()
     contains_terms: tuple[str, ...] = ()
     negative_terms: tuple[str, ...] = ()
+    path_terms: tuple[str, ...] = ()
     providers: tuple[Provider | str, ...] = ()
     excluded_providers: tuple[Provider | str, ...] = ()
     tags: tuple[str, ...] = ()
@@ -90,6 +91,7 @@ class ConversationQueryPlan:
             since=self.since.isoformat() if self.since else None,
             until=self.until.isoformat() if self.until else None,
             title_contains=self.title,
+            path_terms=self.path_terms,
             has_tool_use=self.filter_has_tool_use,
             has_thinking=self.filter_has_thinking,
             min_messages=self.min_messages,
@@ -115,6 +117,8 @@ class ConversationQueryPlan:
             params["until"] = self.until.isoformat()
         if self.title:
             params["title_contains"] = self.title
+        if self.path_terms:
+            params["path_terms"] = list(self.path_terms)
         if self.filter_has_tool_use:
             params["has_tool_use"] = True
         if self.filter_has_thinking:
@@ -139,6 +143,8 @@ class ConversationQueryPlan:
             parts.append(f"contains: {', '.join(self.fts_terms)}")
         if self.negative_terms:
             parts.append(f"exclude text: {', '.join(self.negative_terms)}")
+        if self.path_terms:
+            parts.append(f"path: {', '.join(self.path_terms)}")
         if self.providers:
             parts.append(f"provider: {', '.join(_provider_values(self.providers))}")
         if self.excluded_providers:
@@ -202,6 +208,7 @@ class ConversationQueryPlan:
             (
                 self.fts_terms,
                 self.negative_terms,
+                self.path_terms,
                 self.providers,
                 self.excluded_providers,
                 self.tags,
@@ -237,6 +244,7 @@ class ConversationQueryPlan:
             or self.has_types
             or self.predicates
             or self.negative_terms
+            or (self.path_terms and (self.fts_terms or self.conversation_id is not None or self.similar_text is not None))
             or self.continuation is not None
             or self.sidechain is not None
             or self.root is not None
@@ -247,6 +255,8 @@ class ConversationQueryPlan:
         if self.has_types and any(kind in ("thinking", "tools", "attachments") for kind in self.has_types):
             return True
         if self.negative_terms or self.predicates or self.similar_text:
+            return True
+        if self.path_terms and (self.fts_terms or self.conversation_id is not None or self.similar_text is not None):
             return True
         if self.has_branches is not None:
             return True
@@ -270,6 +280,24 @@ class ConversationQueryPlan:
             or self.sidechain is not None
             or self.root is not None
             or self.has_branches is not None
+        )
+
+    def _matches_path_terms(self, conversation: Conversation) -> bool:
+        if not self.path_terms:
+            return True
+        from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+        facts = build_conversation_semantic_facts(conversation)
+        affected_paths = tuple(
+            path.lower()
+            for message_facts in facts.message_facts
+            for path in message_facts.affected_paths
+        )
+        if not affected_paths:
+            return False
+        return all(
+            any(term.lower().replace("\\", "/") in path for path in affected_paths)
+            for term in self.path_terms
         )
 
     def effective_fetch_limit(self) -> int | None:
@@ -440,6 +468,9 @@ class ConversationQueryPlan:
 
         for predicate in self.predicates:
             results = [conversation for conversation in results if predicate(conversation)]
+
+        if self.path_terms and not sql_pushed:
+            results = [conversation for conversation in results if self._matches_path_terms(conversation)]
 
         return results
 
