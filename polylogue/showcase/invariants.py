@@ -8,8 +8,8 @@ must be true regardless of which exercise produced the output.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
 
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.exercises import Exercise
@@ -101,7 +101,7 @@ def _check_nonempty_output(result: ExerciseResult) -> str | None:
     if "--help" in args_str or "--version" in args_str:
         return SKIP
     if not result.output.strip():
-        return f"Empty output for read command"
+        return "Empty output for read command"
     return None
 
 
