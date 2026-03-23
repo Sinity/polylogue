@@ -34,6 +34,8 @@ from rich.theme import Theme
 from polylogue.errors import PolylogueError
 from polylogue.ui.theme import rich_theme_styles
 
+_NO_STUB_RESPONSE = object()
+
 
 class UIError(PolylogueError):
     """UI-related errors (prompt stubs, user interaction)."""
@@ -125,6 +127,65 @@ class ConsoleFacade:
             raise UIError(f"Prompt stub expected '{expected}' but got '{kind}'")
         return entry
 
+    def _require_plain_prompt_tty(self, prompt_topic: str) -> None:
+        if not sys.stdin.isatty():
+            raise UIError(
+                f"Plain mode cannot prompt for {prompt_topic}",
+                prompt_topic=prompt_topic,
+            )
+
+    def _consume_confirm_stub(self, *, default: bool) -> bool | object:
+        response = self._pop_prompt_response("confirm")
+        if response is None:
+            return _NO_STUB_RESPONSE
+        if response.get("use_default"):
+            return default
+        value = response.get("value")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.lower()
+            if lowered in {"y", "yes", "true", "1"}:
+                return True
+            if lowered in {"n", "no", "false", "0"}:
+                return False
+        return _NO_STUB_RESPONSE
+
+    def _consume_choose_stub(self, options: list[str]) -> str | None | object:
+        response = self._pop_prompt_response("choose")
+        if response is None:
+            return _NO_STUB_RESPONSE
+        if response.get("use_default"):
+            return options[0] if options else None
+        if "value" in response:
+            value = response["value"]
+            if isinstance(value, str) and value in options:
+                return value
+        if "index" in response:
+            try:
+                index_val = response["index"]
+                idx: int | None = None
+                if isinstance(index_val, int):
+                    idx = index_val
+                elif isinstance(index_val, str):
+                    idx = int(index_val)
+                if idx is not None and 0 <= idx < len(options):
+                    return options[idx]
+            except (KeyError, ValueError, TypeError):
+                pass
+        return _NO_STUB_RESPONSE
+
+    def _consume_input_stub(self, *, default: str | None) -> str | None | object:
+        response = self._pop_prompt_response("input")
+        if response is None:
+            return _NO_STUB_RESPONSE
+        if response.get("use_default"):
+            return default
+        if "value" in response:
+            value = response["value"]
+            return None if value is None else str(value)
+        return _NO_STUB_RESPONSE
+
     def banner(self, title: str, subtitle: str | None = None) -> None:
         """Display a banner message."""
         if self.plain:
@@ -175,25 +236,11 @@ class ConsoleFacade:
 
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
         """Ask for confirmation."""
-        response = self._pop_prompt_response("confirm")
-        if response is not None:
-            if response.get("use_default"):
-                return default
-            value = response.get("value")
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                lowered = value.lower()
-                if lowered in {"y", "yes", "true", "1"}:
-                    return True
-                if lowered in {"n", "no", "false", "0"}:
-                    return False
+        stub_result = self._consume_confirm_stub(default=default)
+        if stub_result is not _NO_STUB_RESPONSE:
+            return bool(stub_result)
         if self.plain:
-            if not sys.stdin.isatty():
-                raise UIError(
-                    "Plain mode cannot prompt for confirmation prompts",
-                    prompt_topic="confirmation prompts",
-                )
+            self._require_plain_prompt_tty("confirmation prompts")
             try:
                 value = input(f"{prompt} [{'Y/n' if default else 'y/N'}]: ").strip()
             except EOFError:
@@ -208,33 +255,11 @@ class ConsoleFacade:
         """Choose from a list of options."""
         if not options:
             return None
-        response = self._pop_prompt_response("choose")
-        if response is not None:
-            if response.get("use_default"):
-                return options[0] if options else None
-            if "value" in response:
-                value = response["value"]
-                if isinstance(value, str) and value in options:
-                    return value
-            if "index" in response:
-                try:
-                    index_val = response["index"]
-                    idx: int | None = None
-                    if isinstance(index_val, int):
-                        idx = index_val
-                    elif isinstance(index_val, str):
-                        idx = int(index_val)
-                    if idx is not None and 0 <= idx < len(options):
-                        return options[idx]
-                except (KeyError, ValueError, TypeError):
-                    # Response missing index, or index not numeric/valid
-                    pass
+        stub_result = self._consume_choose_stub(options)
+        if stub_result is not _NO_STUB_RESPONSE:
+            return stub_result
         if self.plain:
-            if not sys.stdin.isatty():
-                raise UIError(
-                    "Plain mode cannot prompt for menu selections",
-                    prompt_topic="menu selections",
-                )
+            self._require_plain_prompt_tty("menu selections")
             for idx, option in enumerate(options, start=1):
                 self.console.print(f"{idx}. {option}")
             while True:
@@ -259,19 +284,11 @@ class ConsoleFacade:
 
     def input(self, prompt: str, *, default: str | None = None) -> str | None:
         """Get text input from user."""
-        response = self._pop_prompt_response("input")
-        if response is not None:
-            if response.get("use_default"):
-                return default
-            if "value" in response:
-                value = response["value"]
-                return None if value is None else str(value)
+        stub_result = self._consume_input_stub(default=default)
+        if stub_result is not _NO_STUB_RESPONSE:
+            return stub_result
         if self.plain:
-            if not sys.stdin.isatty():
-                raise UIError(
-                    "Plain mode cannot prompt for text input",
-                    prompt_topic="text input",
-                )
+            self._require_plain_prompt_tty("text input")
             suffix = f" [{default}]" if default else ""
             try:
                 value = input(f"{prompt}{suffix}: ").strip()
