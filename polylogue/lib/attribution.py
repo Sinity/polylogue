@@ -97,11 +97,11 @@ def extract_attribution(
                     if not branch.startswith("-"):
                         branch_names.add(branch)
 
-    # Scan assistant text for file paths and language mentions (catches pure-conversation sessions)
+    # Scan dialogue text for file paths and language mentions (catches pure-conversation sessions)
     realm_path_pattern = re.compile(r'/realm/project/[^\s,;:)\]]+')
     language_names = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
     for message in semantic_facts.message_facts:
-        if not message.is_assistant or not message.text:
+        if not message.is_dialogue or not message.text:
             continue
         for match in realm_path_pattern.finditer(message.text):
             path = match.group().rstrip(".,;:)'\">`")
