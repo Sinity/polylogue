@@ -32,6 +32,9 @@ class TestClassifyTool:
     def test_edit_is_file_edit(self):
         assert classify_tool("Edit", {}) == ToolCategory.FILE_EDIT
 
+    def test_multiedit_is_file_edit(self):
+        assert classify_tool("MultiEdit", {}) == ToolCategory.FILE_EDIT
+
     def test_bash_without_git_is_shell(self):
         assert classify_tool("Bash", {"command": "ls -la"}) == ToolCategory.SHELL
 
@@ -46,6 +49,13 @@ class TestClassifyTool:
 
     def test_glob_is_search(self):
         assert classify_tool("Glob", {}) == ToolCategory.SEARCH
+
+    def test_agent_planning_tools_are_agent_category(self):
+        assert classify_tool("TodoWrite", {}) == ToolCategory.AGENT
+        assert classify_tool("TaskCreate", {}) == ToolCategory.AGENT
+
+    def test_ls_is_search(self):
+        assert classify_tool("LS", {"path": "/realm/project/polylogue"}) == ToolCategory.SEARCH
 
     def test_unknown_tool_is_other(self):
         assert classify_tool("FancyCustomTool", {}) == ToolCategory.OTHER
@@ -114,6 +124,18 @@ class TestExtractToolMetadata:
     def test_shell_returns_none(self):
         meta = extract_tool_metadata("Bash", {"command": "ls -la"})
         assert meta is None
+
+    def test_search_returns_path_and_pattern(self):
+        meta = extract_tool_metadata("Grep", {"path": "/realm/project/polylogue", "pattern": "build_session_profile"})
+        assert meta is not None
+        assert meta["path"] == "/realm/project/polylogue"
+        assert meta["pattern"] == "build_session_profile"
+
+    def test_agent_todo_metadata_summarizes_todos(self):
+        meta = extract_tool_metadata("TodoWrite", {"todos": [{"id": "1"}, {"id": "2"}]})
+        assert meta is not None
+        assert meta["tool"] == "TodoWrite"
+        assert meta["todo_count"] == 2
 
     def test_other_tool_returns_none(self):
         meta = extract_tool_metadata("UnknownTool", {})
@@ -189,4 +211,3 @@ class TestExtractSubagentSpawns:
 
     def test_empty_invocations(self):
         assert extract_subagent_spawns([]) == []
-

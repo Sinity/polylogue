@@ -102,7 +102,8 @@ def _message_content_block_tool_calls(message: Message) -> tuple[ToolCall, ...]:
         tool_input = block.get("tool_input")
         normalized_input = tool_input if isinstance(tool_input, dict) else {}
         semantic_category = _tool_category_from_semantic(block.get("semantic_type"))
-        category = semantic_category or classify_tool(name, normalized_input)
+        classified_category = classify_tool(name, normalized_input)
+        category = classified_category if semantic_category in (None, ToolCategory.OTHER) else semantic_category
         raw = {
             "type": block.get("type"),
             "tool_name": name,
@@ -162,6 +163,7 @@ class MessageSemanticFacts:
     is_user: bool
     is_assistant: bool
     is_dialogue: bool
+    is_context_dump: bool
     is_thinking: bool
     is_tool_use: bool
     is_substantive: bool
@@ -414,6 +416,7 @@ def build_message_semantic_facts(message: Message) -> MessageSemanticFacts:
         is_user=message.is_user,
         is_assistant=message.is_assistant,
         is_dialogue=message.is_dialogue,
+        is_context_dump=message.is_context_dump,
         is_thinking=message.is_thinking,
         is_tool_use=message.is_tool_use,
         is_substantive=message.is_substantive,

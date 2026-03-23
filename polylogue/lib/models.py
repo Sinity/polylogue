@@ -41,10 +41,9 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from polylogue.lib.branch_type import BranchType
-from polylogue.logging import get_logger
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.roles import Role
-from polylogue.lib.timestamps import parse_timestamp
+from polylogue.logging import get_logger
 from polylogue.types import ConversationId, Provider
 
 if TYPE_CHECKING:
@@ -163,7 +162,8 @@ class Message(BaseModel):
         if not self.provider or not self.provider_meta:
             return None
         try:
-            from polylogue.schemas.unified import extract_from_provider_meta  # lazy: models must not import schemas at module level
+            # Lazy import: models must not import schemas at module level.
+            from polylogue.schemas.unified import extract_from_provider_meta
             return extract_from_provider_meta(
                 self.provider,
                 self.provider_meta,
@@ -265,6 +265,9 @@ class Message(BaseModel):
         """Message is primarily context/file content, not dialogue."""
         if not self.text:
             return False
+        stripped = self.text.lstrip()
+        if stripped.startswith(("<environment_context>", "<subagent_notification>", "<permissions instructions>")):
+            return True
         if len(self.attachments) > 0 and len(self.text) < 100:
             return True
         # System prompt content

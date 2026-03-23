@@ -39,6 +39,7 @@ TOOL_FILE_OPS = [
     ("Write", True),
     ("Edit", True),
     ("NotebookEdit", True),
+    ("MultiEdit", True),
     ("Bash", False),
 ]
 TOOL_GIT_OPS = [
@@ -54,9 +55,9 @@ TOOL_AFFECTED_PATHS = [
     ("Write", {"file_path": "/tmp/output.txt"}, ["/tmp/output.txt"]),
     ("Edit", {"file_path": "/tmp/code.py"}, ["/tmp/code.py"]),
     ("Read", {"path": "/tmp/fallback.txt"}, ["/tmp/fallback.txt"]),
-    ("Read", {"file_path": "/tmp/primary.txt", "path": "/tmp/fallback.txt"}, ["/tmp/primary.txt"]),
+    ("Read", {"file_path": "/tmp/primary.txt", "path": "/tmp/fallback.txt"}, ["/tmp/primary.txt", "/tmp/fallback.txt"]),
     ("Read", {"file_path": 123}, []),
-    ("Glob", {"pattern": "**/*.py"}, ["**/*.py"]),
+    ("Glob", {"pattern": "**/*.py"}, []),
     ("Glob", {"pattern": ["*.py", "*.txt"]}, []),
     ("Bash", {"command": 123}, []),
     ("Task", {"prompt": "do something"}, []),
@@ -100,6 +101,26 @@ class TestToolCallProperties:
         tool = _make_tool("Bash", {"command": "ls -la /tmp/file"})
         assert "-la" not in tool.affected_paths
         assert "/tmp/file" in tool.affected_paths
+
+    def test_affected_paths_filters_globs_and_noise(self):
+        tool = _make_tool("Bash", {"command": "ls /realm/project/* /tmp/file ... /dev/null"})
+        assert "/tmp/file" in tool.affected_paths
+        assert all(path not in tool.affected_paths for path in ("/realm/project/*", "...", "/dev/null"))
+
+    def test_affected_paths_filters_shell_suffix_fragments(self):
+        tool = _make_tool("Bash", {"command": "tar -xf archive.tar.gz .tar.gz ./fixtures/sample.txt"})
+        assert ".tar.gz" not in tool.affected_paths
+        assert "./fixtures/sample.txt" in tool.affected_paths
+
+    def test_affected_paths_uses_structured_metadata_files(self):
+        tool = ToolCall(
+            name="Bash",
+            id="t1",
+            input={"command": "git add pyproject.toml README.md"},
+            category=classify_tool("Bash", {"command": "git add pyproject.toml README.md"}),
+            raw={"metadata": {"files": ["pyproject.toml", "/realm/project/polylogue/README.md"]}},
+        )
+        assert tool.affected_paths == ["pyproject.toml", "/realm/project/polylogue/README.md"]
 
 
 class TestMessageCollectionContracts:
