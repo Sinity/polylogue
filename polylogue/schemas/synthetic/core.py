@@ -29,16 +29,15 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from polylogue.schemas.registry import SchemaRegistry, canonical_schema_provider
+from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.schemas.synthetic.relations import RelationConstraintSolver
 from polylogue.schemas.synthetic.semantic_values import (
     SemanticValueGenerator,
     _text_for_role,
 )
-from polylogue.schemas.synthetic.showcase import ConversationTheme, _SHOWCASE_THEMES
+from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, ConversationTheme
 from polylogue.schemas.synthetic.wire_formats import (
     PROVIDER_WIRE_FORMATS,
-    TreeConfig,
     WireFormat,
 )
 
