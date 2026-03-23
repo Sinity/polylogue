@@ -17,7 +17,6 @@ from polylogue.lib.semantic_facts import ConversationSemanticFacts, build_conver
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
 
-_BRANCH_PATTERN = re.compile(r"git\s+(?:checkout|switch)\s+(?:-[bc]\s+)?(\S+)")
 _LANGUAGE_EXTENSIONS = {
     ".py": "python", ".rs": "rust", ".ts": "typescript", ".tsx": "typescript",
     ".js": "javascript", ".jsx": "javascript", ".go": "go", ".nix": "nix",
@@ -112,9 +111,15 @@ def extract_attribution(
                 repo_paths.add(repo)
 
     for message in semantic_facts.message_facts:
-        for tc in message.tool_calls:
-            # Collect affected paths
-            for path in message.affected_paths:
+        for action in message.action_facts:
+            if action.cwd_path:
+                cwd_paths.add(action.cwd_path)
+                repo = _repo_root_from_path(action.cwd_path)
+                if repo:
+                    repo_paths.add(repo)
+            for branch in action.branch_names:
+                branch_names.add(branch)
+            for path in action.affected_paths:
                 file_paths.add(path)
                 lang = _language_from_path(path)
                 if lang:
@@ -122,18 +127,6 @@ def extract_attribution(
                 repo = _repo_root_from_path(path)
                 if repo:
                     repo_paths.add(repo)
-
-            # Extract cwd from shell commands
-            cmd = tc.input.get("command", "")
-            if isinstance(cmd, str):
-                # Look for cd commands
-                for match in re.finditer(r'cd\s+"?(/[^\s"]+)', cmd):
-                    cwd_paths.add(match.group(1))
-                # Look for git branch operations
-                for match in _BRANCH_PATTERN.finditer(cmd):
-                    branch = match.group(1)
-                    if not branch.startswith("-"):
-                        branch_names.add(branch)
 
     # Scan dialogue text for file paths and language mentions (catches pure-conversation sessions)
     realm_path_pattern = re.compile(r'/realm/project/[^\s,;:)\]]+')
