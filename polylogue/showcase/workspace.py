@@ -98,14 +98,14 @@ def generate_synthetic_fixtures(
         provider_dir = fixture_dir / provider
         provider_dir.mkdir(parents=True, exist_ok=True)
         ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-        raw_items = corpus.generate(
+        batch = corpus.generate_batch(
             count=count,
             messages_per_conversation=range(6, 20),
             seed=42,
             style=style,
         )
-        for idx, raw_bytes in enumerate(raw_items):
-            (provider_dir / f"showcase-{idx:02d}{ext}").write_bytes(raw_bytes)
+        for idx, artifact in enumerate(batch.artifacts):
+            (provider_dir / f"showcase-{idx:02d}{ext}").write_bytes(artifact.raw_bytes)
 
 
 def mirror_fixtures_to_inbox(fixture_dir: Path, inbox_dir: Path) -> None:
