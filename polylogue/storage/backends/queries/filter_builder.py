@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from polylogue.lib.viewports import ToolCategory
 from polylogue.storage.backends.connection import _build_provider_scope_filter
+
+_SEMANTIC_ACTION_TYPES = tuple(category.value for category in ToolCategory)
 
 
 def _iso_to_epoch(iso_str: str) -> float:
@@ -105,18 +108,34 @@ def _build_conversation_filters(
             params.append(f"%{normalized}%")
     if action_terms:
         for term in action_terms:
-            where_clauses.append(
-                f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-                " AND cb.semantic_type = ?)"
-            )
-            params.append(str(term))
+            if str(term) == "none":
+                placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    f" AND cb.semantic_type IN ({placeholders}))"
+                )
+                params.extend(_SEMANTIC_ACTION_TYPES)
+            else:
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.semantic_type = ?)"
+                )
+                params.append(str(term))
     if excluded_action_terms:
         for term in excluded_action_terms:
-            where_clauses.append(
-                f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-                " AND cb.semantic_type = ?)"
-            )
-            params.append(str(term))
+            if str(term) == "none":
+                placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    f" AND cb.semantic_type IN ({placeholders}))"
+                )
+                params.extend(_SEMANTIC_ACTION_TYPES)
+            else:
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.semantic_type = ?)"
+                )
+                params.append(str(term))
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     return where_sql, params
 

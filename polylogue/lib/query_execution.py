@@ -301,11 +301,15 @@ class ConversationQueryPlan:
 
         facts = build_conversation_semantic_facts(conversation)
         categories = {action.kind.value for action in facts.action_facts}
-        if self.action_terms and not all(term in categories for term in self.action_terms):
+        required_terms = {term for term in self.action_terms if term != "none"}
+        if "none" in self.action_terms and categories:
+            return False
+        if required_terms and not required_terms.issubset(categories):
+            return False
+        if "none" in self.excluded_action_terms and not categories:
             return False
         return not (
-            self.excluded_action_terms
-            and any(term in categories for term in self.excluded_action_terms)
+            {term for term in self.excluded_action_terms if term != "none"} & categories
         )
 
     def effective_fetch_limit(self) -> int | None:

@@ -28,7 +28,7 @@ class QuerySpecError(ValueError):
         self.value = value
 
 
-QUERY_ACTION_TYPES = tuple(category.value for category in ToolCategory if category is not ToolCategory.OTHER)
+QUERY_ACTION_TYPES = tuple(category.value for category in ToolCategory) + ("none",)
 
 
 def _split_csv(value: object) -> tuple[str, ...]:
