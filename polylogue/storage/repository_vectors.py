@@ -151,5 +151,11 @@ class RepositoryVectorMixin:
             embedded_conversations=embedding_stats.embedded_conversations,
             embedded_messages=embedding_stats.embedded_messages,
             pending_embedding_conversations=embedding_stats.pending_conversations,
+            stale_embedding_messages=embedding_stats.stale_messages,
+            messages_missing_embedding_provenance=embedding_stats.messages_missing_provenance,
+            embedding_oldest_at=embedding_stats.oldest_embedded_at,
+            embedding_newest_at=embedding_stats.newest_embedded_at,
+            embedding_models=embedding_stats.model_counts,
+            embedding_dimensions=embedding_stats.dimension_counts,
             db_size_bytes=db_size,
         )

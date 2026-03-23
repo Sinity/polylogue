@@ -19,7 +19,6 @@ from polylogue.types import (
     ContentHash,
     ConversationId,
     MessageId,
-    PlanStage,
     Provider,
     SemanticBlockType,
     ValidationMode,
@@ -31,6 +30,7 @@ MAX_ATTACHMENT_SIZE = 1024 * 1024 * 1024 * 1024
 
 # SQLite SQLITE_MAX_LENGTH is 1 GB; keep raw blobs under 900 MB to leave headroom
 MAX_RAW_CONTENT_SIZE = 900 * 1024 * 1024
+ACTION_EVENT_MATERIALIZER_VERSION = 1
 
 
 class ConversationRecord(BaseModel):
@@ -347,10 +347,56 @@ class ArtifactObservationRecord(BaseModel):
         return ArtifactSupportStatus.from_string(str(v))
 
 
+class ActionEventRecord(BaseModel):
+    """Durable canonical semantic action-event row."""
+
+    event_id: str
+    conversation_id: ConversationId
+    message_id: MessageId
+    materializer_version: int = ACTION_EVENT_MATERIALIZER_VERSION
+    source_block_id: str | None = None
+    timestamp: str | None = None
+    sort_key: float | None = None
+    sequence_index: int
+    provider_name: str | None = None
+    action_kind: str
+    tool_name: str | None = None
+    normalized_tool_name: str
+    tool_id: str | None = None
+    affected_paths: tuple[str, ...] = ()
+    cwd_path: str | None = None
+    branch_names: tuple[str, ...] = ()
+    command: str | None = None
+    query_text: str | None = None
+    url: str | None = None
+    output_text: str | None = None
+    search_text: str
+
+    @field_validator(
+        "event_id",
+        "conversation_id",
+        "message_id",
+        "action_kind",
+        "normalized_tool_name",
+        "search_text",
+    )
+    @classmethod
+    def action_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+
 def _json_or_none(value: dict[str, object] | None) -> str | None:
     if value is None:
         return None
     return json_dumps(value)
+
+
+def _json_array_or_none(value: tuple[str, ...] | list[str] | None) -> str | None:
+    if not value:
+        return None
+    return json_dumps(list(value))
 
 
 def _make_ref_id(attachment_id: AttachmentId, conversation_id: ConversationId, message_id: MessageId | None) -> str:
@@ -362,6 +408,8 @@ def _make_ref_id(attachment_id: AttachmentId, conversation_id: ConversationId, m
 
 
 __all__ = [
+    "ACTION_EVENT_MATERIALIZER_VERSION",
+    "ActionEventRecord",
     "AttachmentRecord",
     "ArtifactObservationRecord",
     "ContentBlockRecord",
@@ -371,4 +419,5 @@ __all__ = [
     "PublicationRecord",
     "RawConversationRecord",
     "RunRecord",
+    "_json_array_or_none",
 ]

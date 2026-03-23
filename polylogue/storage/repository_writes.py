@@ -6,6 +6,7 @@ import builtins
 from collections.abc import Callable
 
 from polylogue.lib.models import Conversation
+from polylogue.storage.action_event_rows import attach_blocks_to_messages, build_action_event_records
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import publications as publications_q
 from polylogue.storage.backends.queries import runs as runs_q
@@ -131,6 +132,9 @@ class RepositoryWriteMixin:
                     all_blocks.extend(message.content_blocks)
                 if all_blocks:
                     await backend.save_content_blocks(all_blocks)
+                action_messages = attach_blocks_to_messages(messages, all_blocks)
+                action_records = build_action_event_records(conversation, action_messages)
+                await backend.replace_action_events(conversation.conversation_id, action_records)
 
                 new_attachment_ids: set[str] = {str(att.attachment_id) for att in attachments}
                 await backend.prune_attachments(conversation.conversation_id, new_attachment_ids)

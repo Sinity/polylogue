@@ -8,6 +8,9 @@ from contextlib import AbstractAsyncContextManager
 import aiosqlite
 
 from polylogue.storage.backends.queries import (
+    action_events as action_events_q,
+)
+from polylogue.storage.backends.queries import (
     attachments as attachments_q,
 )
 from polylogue.storage.backends.queries import (
@@ -30,6 +33,7 @@ from polylogue.storage.backends.queries import (
 )
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.store import (
+    ActionEventRecord,
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
@@ -98,6 +102,26 @@ class SQLiteQueryStore:
         """Return ranked conversation IDs for persisted action-aware search."""
         async with self._connection_factory() as conn:
             return await conversations_q.search_action_conversations(conn, query, limit, providers)
+
+    async def get_action_events(self, conversation_id: str) -> list[ActionEventRecord]:
+        """Get durable action-event rows for one conversation."""
+        async with self._connection_factory() as conn:
+            return await action_events_q.get_action_events(conn, conversation_id)
+
+    async def get_action_events_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[ActionEventRecord]]:
+        """Get durable action-event rows for multiple conversations."""
+        async with self._connection_factory() as conn:
+            return await action_events_q.get_action_events_batch(conn, conversation_ids)
+
+    async def get_action_event_read_model_status(self) -> dict[str, int | bool]:
+        """Return readiness metadata for the durable action-event read model."""
+        from polylogue.storage.action_event_lifecycle import action_event_read_model_status_async
+
+        async with self._connection_factory() as conn:
+            return await action_event_read_model_status_async(conn)
 
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
         """Get message records for a conversation with content blocks attached."""

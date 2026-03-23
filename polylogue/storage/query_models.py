@@ -44,6 +44,8 @@ class ConversationRecordQuery:
             path_terms=(),
             action_terms=(),
             excluded_action_terms=(),
+            tool_terms=(),
+            excluded_tool_terms=(),
         )
 
     def for_search(self) -> tuple[str | None, list[str] | None]:

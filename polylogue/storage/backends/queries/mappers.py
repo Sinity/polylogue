@@ -8,6 +8,7 @@ from typing import Any
 
 from polylogue.errors import DatabaseError
 from polylogue.storage.store import (
+    ActionEventRecord,
     ArtifactObservationRecord,
     ContentBlockRecord,
     ConversationRecord,
@@ -182,4 +183,31 @@ def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
         sidecar_agent_type=_row_get(row, "sidecar_agent_type"),
         first_observed_at=row["first_observed_at"],
         last_observed_at=row["last_observed_at"],
+    )
+
+
+def _row_to_action_event(row: sqlite3.Row) -> ActionEventRecord:
+    """Map a SQLite row to an ActionEventRecord."""
+    return ActionEventRecord(
+        event_id=row["event_id"],
+        conversation_id=ConversationId(row["conversation_id"]),
+        message_id=MessageId(row["message_id"]),
+        materializer_version=int(_row_get(row, "materializer_version", 1) or 1),
+        source_block_id=_row_get(row, "source_block_id"),
+        timestamp=_row_get(row, "timestamp"),
+        sort_key=_row_get(row, "sort_key"),
+        sequence_index=row["sequence_index"],
+        provider_name=_row_get(row, "provider_name"),
+        action_kind=row["action_kind"],
+        tool_name=_row_get(row, "tool_name"),
+        normalized_tool_name=row["normalized_tool_name"],
+        tool_id=_row_get(row, "tool_id"),
+        affected_paths=tuple(_parse_json(_row_get(row, "affected_paths_json")) or []),
+        cwd_path=_row_get(row, "cwd_path"),
+        branch_names=tuple(_parse_json(_row_get(row, "branch_names_json")) or []),
+        command=_row_get(row, "command"),
+        query_text=_row_get(row, "query_text"),
+        url=_row_get(row, "url"),
+        output_text=_row_get(row, "output_text"),
+        search_text=row["search_text"],
     )
