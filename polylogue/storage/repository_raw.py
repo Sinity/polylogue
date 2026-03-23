@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 
 from polylogue.storage.backends.queries import artifacts as artifacts_q
 from polylogue.storage.backends.queries import raw as raw_queries
-from polylogue.storage.state_views import RawConversationState
+from polylogue.storage.state_views import RawConversationState, RawConversationStateUpdate
 from polylogue.storage.store import (
     ArtifactObservationRecord,
     RawConversationRecord,
@@ -34,6 +34,21 @@ class RepositoryRawMixin:
     async def get_raw_conversation(self, raw_id: str) -> RawConversationRecord | None:
         async with self._backend.connection() as conn:
             return await raw_queries.get_raw_conversation(conn, raw_id)
+
+    async def update_raw_state(
+        self,
+        raw_id: str,
+        *,
+        state: RawConversationStateUpdate,
+    ) -> None:
+        """Apply a typed raw-state mutation."""
+        async with self._backend.connection() as conn:
+            await raw_queries.apply_raw_state_update(
+                conn,
+                raw_id,
+                state=state,
+                transaction_depth=self._backend.transaction_depth,
+            )
 
     async def mark_raw_parsed(
         self,
