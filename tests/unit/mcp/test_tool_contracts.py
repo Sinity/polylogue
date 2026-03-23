@@ -54,6 +54,15 @@ QUERY_TOOL_CASES = [
     ),
     (
         "search",
+        {"query": "hello", "retrieval_lane": "actions", "limit": 5},
+        {
+            "contains": ("hello",),
+            "retrieval_lane": ("actions",),
+            "limit": (5,),
+        },
+    ),
+    (
+        "search",
         {"query": "hello", "action": "search", "exclude_action": "git", "tool": "grep", "exclude_tool": "bash", "limit": 5},
         {
             "contains": ("hello",),
@@ -87,6 +96,14 @@ QUERY_TOOL_CASES = [
         {"limit": 10},
         {
             "limit": (10,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"retrieval_lane": "hybrid", "limit": 2},
+        {
+            "retrieval_lane": ("hybrid",),
+            "limit": (2,),
         },
     ),
     (
@@ -177,6 +194,8 @@ class TestQueryTools:
                 assert tuple(str(provider) for provider in spec.providers) == (expected_value,)
             elif method_name == "since":
                 assert spec.since == expected_value
+            elif method_name == "retrieval_lane":
+                assert spec.retrieval_lane == expected_value
             elif method_name == "path":
                 assert spec.path_terms == (expected_value,)
             elif method_name == "action":
