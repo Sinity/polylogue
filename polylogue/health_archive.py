@@ -11,6 +11,7 @@ from .health_cache import load_cached_report, write_cache
 from .health_models import HealthCheck, HealthReport, VerifyStatus
 from .lib.provider_identity import CORE_SCHEMA_PROVIDERS
 from .sources.drive_client import default_credentials_path, default_token_path
+from .storage.action_event_lifecycle import action_event_read_model_status_sync
 from .storage.backends.connection import connection_context, open_connection
 from .storage.embedding_stats import read_embedding_stats_sync
 from .storage.index import index_status
@@ -99,6 +100,27 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                 )
             )
 
+            orphan_block_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM content_blocks cb
+                WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = cb.conversation_id)
+                   OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = cb.message_id)
+                """
+            ).fetchone()[0]
+            checks.append(
+                HealthCheck(
+                    "orphaned_content_blocks",
+                    VerifyStatus.OK if orphan_block_count == 0 else VerifyStatus.ERROR,
+                    count=orphan_block_count,
+                    summary=(
+                        "No orphaned content blocks"
+                        if orphan_block_count == 0
+                        else f"{orphan_block_count:,} orphaned content blocks"
+                    ),
+                )
+            )
+
             dup_conv = conn.execute(
                 """
                 SELECT COUNT(*) FROM (
@@ -135,8 +157,54 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                         if empty_conv == 0
                         else f"{empty_conv} conversation(s) with no messages"
                     ),
+                    )
                 )
-            )
+
+            action_event_status = action_event_read_model_status_sync(conn)
+            if int(action_event_status["valid_source_conversation_count"]) == 0:
+                checks.append(
+                    HealthCheck(
+                        "action_event_read_model",
+                        VerifyStatus.OK,
+                        summary="No action-event source conversations present",
+                    )
+                )
+            elif bool(action_event_status["ready"]):
+                orphan_note = ""
+                if int(action_event_status["orphan_source_conversation_count"]) > 0:
+                    orphan_note = (
+                        f"; ignored {action_event_status['orphan_source_conversation_count']:,} orphan source "
+                        f"conversation(s) across {action_event_status['orphan_tool_block_count']:,} tool blocks"
+                    )
+                checks.append(
+                    HealthCheck(
+                        "action_event_read_model",
+                        VerifyStatus.OK,
+                        count=int(action_event_status["count"]),
+                        summary=(
+                            "Action-event read model ready "
+                            f"({action_event_status['materialized_conversation_count']:,}/"
+                            f"{action_event_status['valid_source_conversation_count']:,} conversations, "
+                            f"{action_event_status['count']:,} rows{orphan_note})"
+                        ),
+                    )
+                )
+            else:
+                checks.append(
+                    HealthCheck(
+                        "action_event_read_model",
+                        VerifyStatus.WARNING,
+                        count=int(action_event_status["count"]),
+                        summary=(
+                            "Action-event read model incomplete "
+                            f"({action_event_status['materialized_conversation_count']:,}/"
+                            f"{action_event_status['valid_source_conversation_count']:,} conversations, "
+                            f"{action_event_status['count']:,} rows, "
+                            f"action FTS {action_event_status['action_fts_count']:,}/"
+                            f"{action_event_status['count']:,})"
+                        ),
+                    )
+                )
 
             provider_rows = conn.execute(
                 """

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
     MCPConversationDetailPayload,
@@ -14,6 +13,7 @@ from polylogue.mcp.payloads import (
     MCPHealthReportPayload,
     MCPTagCountsPayload,
 )
+from polylogue.mcp.query_support import build_query_spec
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -38,7 +38,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.resource("polylogue://conversations")
     async def conversations_resource() -> str:
-        convs = await ConversationQuerySpec().list(hooks.get_repo())
+        convs = await build_query_spec().list(hooks.get_repo())
         return hooks.json_payload(
             MCPConversationSummaryListPayload(
                 root=[

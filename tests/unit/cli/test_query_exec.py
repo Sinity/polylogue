@@ -493,7 +493,7 @@ async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() 
 
 
 @pytest.mark.asyncio
-async def test_query_plan_list_summaries_falls_back_when_action_read_model_unready() -> None:
+async def test_query_plan_path_filters_fall_back_to_full_list_when_action_read_model_unready() -> None:
     from polylogue.lib.query_spec import ConversationQuerySpec
 
     matching = Conversation(
@@ -536,9 +536,40 @@ async def test_query_plan_list_summaries_falls_back_when_action_read_model_unrea
     repo.list_by_query = AsyncMock(return_value=[matching, non_matching])
     plan = ConversationQuerySpec(path_terms=("/tmp/a.py",), limit=10).to_plan()
 
-    summaries = await plan.list_summaries(repo)
+    results = await plan.list(repo)
 
-    assert [summary.id for summary in summaries] == ["conv-summary-path-match"]
+    assert [conversation.id for conversation in results] == ["conv-summary-path-match"]
+
+
+@pytest.mark.asyncio
+async def test_async_execute_query_uses_action_event_stats_lane_for_semantic_stats() -> None:
+    from polylogue.cli.query import async_execute_query
+
+    repo = MagicMock()
+    repo.get_action_event_read_model_status = AsyncMock(return_value={"ready": True})
+    repo.queries.list_conversations = AsyncMock(return_value=[SimpleNamespace(conversation_id="conv-semantic-1")])
+    env = _make_env(repo=repo, config=MagicMock())
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query_output.output_stats_by_semantic_query", new_callable=AsyncMock) as mock_output,
+        patch("polylogue.cli.query_output._output_stats_by") as mock_fallback,
+    ):
+        await async_execute_query(
+            env,
+            _make_params(
+                stats_by="tool",
+                provider="claude-code",
+                since="2026-01-01",
+                action=("search",),
+                limit=20,
+            ),
+        )
+
+    repo.queries.list_conversations.assert_awaited_once()
+    mock_output.assert_awaited_once()
+    mock_fallback.assert_not_called()
 
 
 @pytest.mark.asyncio

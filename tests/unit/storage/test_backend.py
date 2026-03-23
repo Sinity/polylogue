@@ -14,6 +14,7 @@ import pytest
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context, open_connection
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
+from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import ConversationRecord, RawConversationRecord
 from tests.infra.storage_records import make_attachment, make_conversation, make_message
@@ -197,7 +198,7 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
 
     backend._schema_ensured = False
     backend._ensure_schema = counting_ensure_schema
-    await asyncio.gather(*[backend.list_conversations() for _ in range(20)])
+    await asyncio.gather(*[backend.queries.list_conversations(ConversationRecordQuery()) for _ in range(20)])
     assert init_count == 1
 
     slow_backend = SQLiteBackend(db_path=tmp_path / "slow.db")
@@ -230,7 +231,7 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     await asyncio.gather(*[write_operation(idx) for idx in range(5)])
     assert set(execution_order) == {0, 1, 2, 3, 4}
 
-    await backend.list_conversations()
+    await backend.queries.list_conversations(ConversationRecordQuery())
     assert not backend._write_lock.locked()
 
     read_completed = False
@@ -241,7 +242,7 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
 
     async def quick_read() -> None:
         nonlocal read_completed
-        await backend.list_conversations()
+        await backend.queries.list_conversations(ConversationRecordQuery())
         read_completed = True
 
     write_task = asyncio.create_task(slow_write())

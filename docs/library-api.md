@@ -7,7 +7,7 @@ Polylogue is designed library-first. The CLI wraps the Python API.
 The public Python surface is intentionally split:
 
 - `polylogue`: archive-core access (`Polylogue`, `SyncPolylogue`, `ArchiveStats`,
-  `Conversation`, `Message`, `ConversationFilter`, `SearchResult`)
+  `Conversation`, `Message`, `SearchResult`)
 - `polylogue.lib`: domain-model and projection helpers
 - precise modules for higher-order semantic analysis, storage, and reporting
 
@@ -36,9 +36,11 @@ Semantic-analysis/reporting helpers are still public, but they are no longer
 re-exported from package roots. Import them from their actual modules:
 
 ```python
-from polylogue.lib.session_profile import build_session_profile
-from polylogue.lib.threads import build_session_threads
-from polylogue.lib.tagging import infer_tags
+from polylogue.lib.session_products import (
+    build_session_profile,
+    build_session_threads,
+    infer_auto_tags,
+)
 ```
 
 ## Filter Chain API
