@@ -177,6 +177,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             env,
             results,
             plan.stats_dimension or "all",
+            selection=plan.selection,
             output_format=plan.output.output_format,
         )
         return
