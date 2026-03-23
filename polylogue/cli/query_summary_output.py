@@ -16,6 +16,58 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 
+def _emit_structured_stats(
+    *,
+    output_format: str,
+    dimension: str,
+    rows: list[dict[str, object]],
+    summary: dict[str, object],
+    multi_membership: bool = False,
+) -> bool:
+    """Emit machine-readable grouped stats when requested."""
+    if output_format == "json":
+        click.echo(json.dumps(
+            {
+                "dimension": dimension,
+                "multi_membership": multi_membership,
+                "rows": rows,
+                "summary": summary,
+            },
+            indent=2,
+        ))
+        return True
+
+    if output_format == "yaml":
+        import yaml
+
+        click.echo(yaml.dump(
+            {
+                "dimension": dimension,
+                "multi_membership": multi_membership,
+                "rows": rows,
+                "summary": summary,
+            },
+            default_flow_style=False,
+            allow_unicode=True,
+        ))
+        return True
+
+    if output_format == "csv":
+        import csv
+        import io
+
+        buf = io.StringIO()
+        fieldnames = list(summary.keys())
+        writer = csv.DictWriter(buf, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+        writer.writerow(summary)
+        click.echo(buf.getvalue().rstrip("\r\n"))
+        return True
+
+    return False
+
+
 def format_summary_list(
     summaries: list[ConversationSummary],
     output_format: str,
@@ -139,6 +191,8 @@ def output_stats_by_summaries(
     summaries: list[ConversationSummary],
     msg_counts: dict[str, int],
     dimension: str,
+    *,
+    output_format: str = "text",
 ) -> None:
     """Fast stats-by using lightweight summaries and precomputed message counts."""
     from collections import defaultdict
@@ -169,6 +223,30 @@ def output_stats_by_summaries(
         groups[key].append(summary)
 
     sorted_keys = sorted(groups.keys(), reverse=True) if dimension in {"month", "year", "day"} else sorted(groups.keys())
+    rows: list[dict[str, object]] = []
+
+    for key in sorted_keys:
+        group_summaries = groups[key]
+        n_convs = len(group_summaries)
+        n_msgs = sum(msg_counts.get(str(summary.id), 0) for summary in group_summaries)
+        rows.append({
+            "group": key,
+            "conversations": n_convs,
+            "messages": n_msgs,
+        })
+
+    summary = {
+        "group": "TOTAL",
+        "conversations": len(summaries),
+        "messages": sum(msg_counts.get(str(summary.id), 0) for summary in summaries),
+    }
+    if _emit_structured_stats(
+        output_format=output_format,
+        dimension=dimension,
+        rows=rows,
+        summary=summary,
+    ):
+        return
 
     env.ui.console.print(f"\nMatched: {len(summaries)} conversations (by {dimension})\n")
 
@@ -177,20 +255,12 @@ def output_stats_by_summaries(
     table.add_column("Convs", justify="right")
     table.add_column("Messages", justify="right")
 
-    total_convs = 0
-    total_msgs = 0
-
-    for key in sorted_keys:
-        group_summaries = groups[key]
-        n_convs = len(group_summaries)
-        n_msgs = sum(msg_counts.get(str(summary.id), 0) for summary in group_summaries)
-        label = f"[{provider_color(key).hex}]{key}[/]" if dimension == "provider" else key
-        table.add_row(label, f"{n_convs:,}", f"{n_msgs:,}")
-        total_convs += n_convs
-        total_msgs += n_msgs
+    for row in rows:
+        label = f"[{provider_color(row['group']).hex}]{row['group']}[/]" if dimension == "provider" else str(row["group"])
+        table.add_row(label, f"{row['conversations']:,}", f"{row['messages']:,}")
 
     table.add_section()
-    table.add_row("[bold]TOTAL[/]", f"[bold]{total_convs:,}[/]", f"[bold]{total_msgs:,}[/]")
+    table.add_row("[bold]TOTAL[/]", f"[bold]{summary['conversations']:,}[/]", f"[bold]{summary['messages']:,}[/]")
 
     env.ui.console.print(table)
 
@@ -199,36 +269,155 @@ def output_stats_by_conversations(
     env: AppEnv,
     results: list[Conversation],
     dimension: str,
+    *,
+    output_format: str = "text",
 ) -> None:
     """Output grouped statistics from fully hydrated conversations."""
     from collections import defaultdict
 
     from rich.table import Table
 
+    from polylogue.lib.semantic_facts import build_conversation_semantic_facts
     from polylogue.ui.theme import provider_color
 
     if not results:
         env.ui.console.print("No conversations matched.")
         return
 
+    if dimension == "action":
+        from collections import Counter
+
+        action_groups: dict[str, dict[str, int]] = defaultdict(lambda: {"convs": 0, "facts": 0, "msgs": 0})
+        matched_action_facts = 0
+        matched_action_msgs = 0
+
+        for conv in results:
+            facts = build_conversation_semantic_facts(conv)
+            action_counts = Counter(action.kind.value for action in facts.action_facts)
+            if not action_counts:
+                action_groups["none"]["convs"] += 1
+                continue
+
+            matched_action_facts += sum(action_counts.values())
+            matched_action_msgs += sum(1 for message in facts.message_facts if message.action_facts)
+
+            message_groups: dict[str, set[str]] = defaultdict(set)
+            for message in facts.message_facts:
+                for key in {action.kind.value for action in message.action_facts}:
+                    message_groups[key].add(message.message_id)
+
+            for key, fact_count in action_counts.items():
+                action_groups[key]["convs"] += 1
+                action_groups[key]["facts"] += fact_count
+                action_groups[key]["msgs"] += len(message_groups[key])
+
+        sorted_keys = sorted(action_groups.keys())
+
+        table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+        table.add_column("Group", style="bold", min_width=12)
+        table.add_column("Convs", justify="right")
+        table.add_column("Facts", justify="right")
+        table.add_column("Msgs", justify="right")
+
+        rows: list[dict[str, object]] = []
+        for key in sorted_keys:
+            stats = action_groups[key]
+            rows.append({
+                "group": key,
+                "conversations": stats["convs"],
+                "facts": stats["facts"],
+                "messages": stats["msgs"],
+            })
+
+        summary = {
+            "group": "MATCHED",
+            "conversations": len(results),
+            "facts": matched_action_facts,
+            "messages": matched_action_msgs,
+        }
+        if _emit_structured_stats(
+            output_format=output_format,
+            dimension=dimension,
+            rows=rows,
+            summary=summary,
+            multi_membership=True,
+        ):
+            return
+
+        env.ui.console.print(f"\nMatched: {len(results)} conversations (by {dimension})\n")
+
+        for row in rows:
+            table.add_row(
+                str(row["group"]),
+                f"{row['conversations']:,}",
+                f"{row['facts']:,}",
+                f"{row['messages']:,}",
+            )
+
+        table.add_section()
+        table.add_row(
+            "[bold]MATCHED[/]",
+            f"[bold]{summary['conversations']:,}[/]",
+            f"[bold]{summary['facts']:,}[/]",
+            f"[bold]{summary['messages']:,}[/]",
+        )
+
+        env.ui.console.print(table)
+        env.ui.console.print("Note: conversations may appear in multiple action groups.")
+        return
+
     groups: dict[str, list[Conversation]] = defaultdict(list)
     for conv in results:
         if dimension == "provider":
             key = conv.provider or "unknown"
+            groups[key].append(conv)
         elif dimension == "month":
             dt = conv.display_date
             key = dt.strftime("%Y-%m") if dt else "unknown"
+            groups[key].append(conv)
         elif dimension == "year":
             dt = conv.display_date
             key = dt.strftime("%Y") if dt else "unknown"
+            groups[key].append(conv)
         elif dimension == "day":
             dt = conv.display_date
             key = dt.strftime("%Y-%m-%d") if dt else "unknown"
+            groups[key].append(conv)
         else:
-            key = "all"
-        groups[key].append(conv)
+            groups["all"].append(conv)
 
     sorted_keys = sorted(groups.keys(), reverse=True) if dimension in {"month", "year", "day"} else sorted(groups.keys())
+
+    matched_convs = len(results)
+    matched_msgs = sum(len(conv.messages) for conv in results)
+    matched_words = sum(sum(message.word_count for message in conv.messages) for conv in results)
+    rows: list[dict[str, object]] = []
+
+    for key in sorted_keys:
+        convs = groups[key]
+        n_convs = len(convs)
+        n_msgs = sum(len(conv.messages) for conv in convs)
+        n_words = sum(sum(message.word_count for message in conv.messages) for conv in convs)
+        rows.append({
+            "group": key,
+            "conversations": n_convs,
+            "messages": n_msgs,
+            "words": n_words,
+        })
+
+    summary = {
+        "group": "TOTAL",
+        "conversations": matched_convs,
+        "messages": matched_msgs,
+        "words": matched_words,
+    }
+    if _emit_structured_stats(
+        output_format=output_format,
+        dimension=dimension,
+        rows=rows,
+        summary=summary,
+    ):
+        return
 
     env.ui.console.print(f"\nMatched: {len(results)} conversations (by {dimension})\n")
 
@@ -238,23 +427,17 @@ def output_stats_by_conversations(
     table.add_column("Messages", justify="right")
     table.add_column("Words", justify="right")
 
-    total_convs = 0
-    total_msgs = 0
-    total_words = 0
-
-    for key in sorted_keys:
-        convs = groups[key]
-        n_convs = len(convs)
-        n_msgs = sum(len(conv.messages) for conv in convs)
-        n_words = sum(sum(message.word_count for message in conv.messages) for conv in convs)
-        label = f"[{provider_color(key).hex}]{key}[/]" if dimension == "provider" else key
-        table.add_row(label, f"{n_convs:,}", f"{n_msgs:,}", f"{n_words:,}")
-        total_convs += n_convs
-        total_msgs += n_msgs
-        total_words += n_words
+    for row in rows:
+        label = f"[{provider_color(row['group']).hex}]{row['group']}[/]" if dimension == "provider" else str(row["group"])
+        table.add_row(label, f"{row['conversations']:,}", f"{row['messages']:,}", f"{row['words']:,}")
 
     table.add_section()
-    table.add_row("[bold]TOTAL[/]", f"[bold]{total_convs:,}[/]", f"[bold]{total_msgs:,}[/]", f"[bold]{total_words:,}[/]")
+    table.add_row(
+        "[bold]TOTAL[/]",
+        f"[bold]{summary['conversations']:,}[/]",
+        f"[bold]{summary['messages']:,}[/]",
+        f"[bold]{summary['words']:,}[/]",
+    )
 
     env.ui.console.print(table)
 

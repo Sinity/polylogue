@@ -254,11 +254,49 @@ async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
      )
      .save())
 
+    (ConversationBuilder(db_path, "conv-other")
+     .provider("claude-code")
+     .title("Other tool work")
+     .add_message(
+         "m3",
+         role="assistant",
+         text="Using an unknown tool",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-other-0",
+                 message_id="m3",
+                 conversation_id="conv-other",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Mystery",
+                 semantic_type="other",
+             )
+         ],
+     )
+     .save())
+
+    (ConversationBuilder(db_path, "conv-none")
+     .provider("claude-code")
+     .title("Plain dialogue")
+     .add_message(
+         "m4",
+         role="assistant",
+         text="No tool use here",
+     )
+     .save())
+
     backend = SQLiteBackend(db_path=db_path)
     try:
         matches = await backend.list_conversations(action_terms=["search"], limit=10)
         assert [record.conversation_id for record in matches] == ["conv-search"]
         assert await backend.count_conversations(action_terms=["search"]) == 1
+
+        other_matches = await backend.list_conversations(action_terms=["other"], limit=10)
+        assert [record.conversation_id for record in other_matches] == ["conv-other"]
+
+        none_matches = await backend.list_conversations(action_terms=["none"], limit=10)
+        assert [record.conversation_id for record in none_matches] == ["conv-none"]
+        assert await backend.count_conversations(action_terms=["none"]) == 1
 
         filtered = await backend.list_conversations(
             action_terms=["search"],
@@ -266,6 +304,12 @@ async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
             limit=10,
         )
         assert [record.conversation_id for record in filtered] == ["conv-search"]
+
+        non_none = await backend.list_conversations(
+            excluded_action_terms=["none"],
+            limit=10,
+        )
+        assert sorted(record.conversation_id for record in non_none) == ["conv-git", "conv-other", "conv-search"]
     finally:
         await backend.close()
 
