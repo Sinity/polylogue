@@ -55,6 +55,12 @@ def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -
     is_flag=True,
     help="Run semantic preservation proof across canonical, export, query, stream, and MCP read surfaces",
 )
+@click.option(
+    "--roundtrip-proof",
+    "check_roundtrip_proof",
+    is_flag=True,
+    help="Run the synthetic schema-and-evidence roundtrip proof lane in an isolated workspace",
+)
 @click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)")
 @click.option(
     "--artifact-provider",
@@ -113,6 +119,19 @@ def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -
     help="Start offset for semantic proof",
 )
 @click.option(
+    "--roundtrip-provider",
+    "roundtrip_providers",
+    multiple=True,
+    help="Limit roundtrip proof to specific providers (repeatable)",
+)
+@click.option(
+    "--roundtrip-count",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Synthetic artifacts per provider for roundtrip proof",
+)
+@click.option(
     "--schema-samples",
     default="all",
     show_default=True,
@@ -151,6 +170,7 @@ def check_command(
     check_artifacts: bool,
     check_cohorts: bool,
     check_semantic_proof: bool,
+    check_roundtrip_proof: bool,
     schema_providers: tuple[str, ...],
     artifact_providers: tuple[str, ...],
     artifact_statuses: tuple[str, ...],
@@ -161,6 +181,8 @@ def check_command(
     semantic_surfaces: tuple[str, ...],
     semantic_limit: int | None,
     semantic_offset: int,
+    roundtrip_providers: tuple[str, ...],
+    roundtrip_count: int,
     schema_samples: str,
     schema_record_limit: int | None,
     schema_record_offset: int,
@@ -180,6 +202,7 @@ def check_command(
         check_artifacts=check_artifacts,
         check_cohorts=check_cohorts,
         check_semantic_proof=check_semantic_proof,
+        check_roundtrip_proof=check_roundtrip_proof,
         schema_providers=schema_providers,
         artifact_providers=artifact_providers,
         artifact_statuses=artifact_statuses,
@@ -190,6 +213,8 @@ def check_command(
         semantic_surfaces=semantic_surfaces,
         semantic_limit=semantic_limit,
         semantic_offset=semantic_offset,
+        roundtrip_providers=roundtrip_providers,
+        roundtrip_count=roundtrip_count,
         schema_samples=schema_samples,
         schema_record_limit=schema_record_limit,
         schema_record_offset=schema_record_offset,

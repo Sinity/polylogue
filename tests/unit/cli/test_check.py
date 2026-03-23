@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.health import HealthCheck, HealthReport, VerifyStatus
+from polylogue.health_models import HealthCheck, HealthReport, VerifyStatus
 from polylogue.rendering.semantic_proof import (
     ProviderSemanticProof,
     SemanticConversationProof,
@@ -17,7 +17,22 @@ from polylogue.rendering.semantic_proof import (
     SemanticProofReport,
     SemanticProofSuiteReport,
 )
-from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
+from polylogue.schemas.operator_models import (
+    ArtifactCohortListResult,
+    ArtifactObservationListResult,
+    ArtifactProofResult,
+)
+from polylogue.schemas.roundtrip_proof import (
+    ProviderRoundtripProofReport,
+    RoundtripProofSuiteReport,
+    RoundtripStageReport,
+)
+from polylogue.schemas.verification_models import (
+    ArtifactProofReport,
+    ProviderArtifactProof,
+    ProviderSchemaVerification,
+    SchemaVerificationReport,
+)
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import ArtifactCohortSummary, ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
@@ -155,6 +170,50 @@ def _make_semantic_report(*, critical: bool = False) -> SemanticProofSuiteReport
             "export_html_v1": html_report,
         },
     )
+
+
+def _make_roundtrip_report(*, clean: bool = True) -> RoundtripProofSuiteReport:
+    status = "ok" if clean else "error"
+    failed = [] if clean else ["artifact_proof"]
+    provider_report = ProviderRoundtripProofReport(
+        provider="chatgpt",
+        package_version="v1",
+        element_kind="conversation_document",
+        wire_encoding="json",
+        stages={
+            "selection": RoundtripStageReport("selection", "ok", "selected"),
+            "synthetic": RoundtripStageReport("synthetic", "ok", "generated", {"generated_artifacts": 1}),
+            "acquisition": RoundtripStageReport("acquisition", "ok", "acquired"),
+            "validation": RoundtripStageReport("validation", "ok", "validated"),
+            "parse_dispatch": RoundtripStageReport(
+                "parse_dispatch",
+                "ok",
+                "parsed",
+                {"parsed_conversations": 1},
+            ),
+            "prepare_persist": RoundtripStageReport(
+                "prepare_persist",
+                "ok",
+                "persisted",
+                {"persisted_conversations": 1},
+            ),
+            "corpus_verification": RoundtripStageReport("corpus_verification", "ok", "verified"),
+            "artifact_proof": RoundtripStageReport("artifact_proof", status, "proof", error=None if clean else "boom"),
+        },
+    )
+    if not clean:
+        provider_report = ProviderRoundtripProofReport(
+            provider="chatgpt",
+            package_version="v1",
+            element_kind="conversation_document",
+            wire_encoding="json",
+            stages={
+                **provider_report.stages,
+                "artifact_proof": RoundtripStageReport("artifact_proof", "error", "boom", error="boom"),
+            },
+        )
+    assert provider_report.summary["failed_stages"] == failed
+    return RoundtripProofSuiteReport(provider_reports={"chatgpt": provider_report})
 
 
 class TestHealthReportConstruction:
@@ -596,7 +655,6 @@ class TestCheckCommandSupplementary:
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
-        from polylogue.schemas.verification import ProviderSchemaVerification, SchemaVerificationReport
 
         fake_report = SchemaVerificationReport(
             providers={
@@ -611,7 +669,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.verify_raw_corpus",
+            "polylogue.cli.check_workflow.run_schema_verification",
             return_value=fake_report,
         ):
             runner = CliRunner()
@@ -630,7 +688,6 @@ class TestCheckCommandSupplementary:
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
-        from polylogue.schemas.verification import SchemaVerificationReport
 
         fake_report = SchemaVerificationReport(
             providers={},
@@ -641,7 +698,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.verify_raw_corpus",
+            "polylogue.cli.check_workflow.run_schema_verification",
             return_value=fake_report,
         ) as mock_verify:
             runner = CliRunner()
@@ -664,21 +721,20 @@ class TestCheckCommandSupplementary:
             )
 
         assert result.exit_code == 0
-        mock_verify.assert_called_once_with(
-            providers=["claude-code"],
-            max_samples=16,
-            record_limit=250,
-            record_offset=500,
-            quarantine_malformed=False,
-            progress_callback=ANY,
-        )
+        request = mock_verify.call_args.args[0]
+        assert request.providers == ["claude-code"]
+        assert request.max_samples == 16
+        assert request.record_limit == 250
+        assert request.record_offset == 500
+        assert request.quarantine_malformed is False
+        assert request.progress_callback is not None
+        assert mock_verify.call_args.kwargs["db_path"] == ANY
 
     def test_check_schemas_forwards_quarantine_flag(self, cli_workspace):
         """Quarantine option is forwarded to verify_raw_corpus."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
-        from polylogue.schemas.verification import SchemaVerificationReport
 
         fake_report = SchemaVerificationReport(
             providers={},
@@ -687,7 +743,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.verify_raw_corpus",
+            "polylogue.cli.check_workflow.run_schema_verification",
             return_value=fake_report,
         ) as mock_verify:
             runner = CliRunner()
@@ -697,14 +753,13 @@ class TestCheckCommandSupplementary:
             )
 
         assert result.exit_code == 0
-        mock_verify.assert_called_once_with(
-            providers=None,
-            max_samples=None,
-            record_limit=None,
-            record_offset=0,
-            quarantine_malformed=True,
-            progress_callback=ANY,
-        )
+        request = mock_verify.call_args.args[0]
+        assert request.providers is None
+        assert request.max_samples is None
+        assert request.record_limit is None
+        assert request.record_offset == 0
+        assert request.quarantine_malformed is True
+        assert request.progress_callback is not None
 
     def test_check_proof_json_output(self, cli_workspace):
         """--proof adds artifact_proof block to JSON output."""
@@ -731,8 +786,8 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.prove_raw_artifact_coverage",
-            return_value=fake_report,
+            "polylogue.cli.check_workflow.run_artifact_proof",
+            return_value=ArtifactProofResult(report=fake_report),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["--plain", "check", "--json", "--proof"])
@@ -766,8 +821,8 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.prove_raw_artifact_coverage",
-            return_value=fake_report,
+            "polylogue.cli.check_workflow.run_artifact_proof",
+            return_value=ArtifactProofResult(report=fake_report),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["--plain", "check", "--proof"])
@@ -789,8 +844,8 @@ class TestCheckCommandSupplementary:
         fake_report = ArtifactProofReport(providers={}, total_records=0)
 
         with patch(
-            "polylogue.schemas.verification.prove_raw_artifact_coverage",
-            return_value=fake_report,
+            "polylogue.cli.check_workflow.run_artifact_proof",
+            return_value=ArtifactProofResult(report=fake_report),
         ) as mock_prove:
             runner = CliRunner()
             result = runner.invoke(
@@ -810,11 +865,10 @@ class TestCheckCommandSupplementary:
             )
 
         assert result.exit_code == 0
-        mock_prove.assert_called_once_with(
-            providers=["claude-code"],
-            record_limit=25,
-            record_offset=50,
-        )
+        request = mock_prove.call_args.args[0]
+        assert request.providers == ["claude-code"]
+        assert request.record_limit == 25
+        assert request.record_offset == 50
 
     def test_check_semantic_proof_json_output(self, cli_workspace):
         """--semantic-proof adds semantic_proof block to JSON output."""
@@ -901,6 +955,77 @@ class TestCheckCommandSupplementary:
             record_offset=50,
         )
 
+    def test_check_roundtrip_proof_json_output(self, cli_workspace):
+        """--roundtrip-proof adds roundtrip_proof block to JSON output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = _make_roundtrip_report()
+
+        with patch(
+            "polylogue.schemas.roundtrip_proof.prove_schema_evidence_roundtrip_suite",
+            return_value=fake_report,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["--plain", "check", "--json", "--roundtrip-proof"])
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["roundtrip_proof"]["summary"]["provider_count"] == 1
+        assert data["roundtrip_proof"]["summary"]["clean"] is True
+        assert "chatgpt" in data["roundtrip_proof"]["providers"]
+
+    def test_check_roundtrip_proof_plain_output(self, cli_workspace):
+        """--roundtrip-proof renders the roundtrip proof summary in plain output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = _make_roundtrip_report(clean=False)
+
+        with patch(
+            "polylogue.schemas.roundtrip_proof.prove_schema_evidence_roundtrip_suite",
+            return_value=fake_report,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["--plain", "check", "--roundtrip-proof"])
+
+        assert result.exit_code == 0
+        assert "Roundtrip proof:" in result.output
+        assert "failed=1" in result.output
+        assert "chatgpt: failed, package=v1" in result.output
+
+    def test_check_roundtrip_proof_forwards_scope(self, cli_workspace):
+        """Roundtrip provider/count are forwarded to the proof workflow."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = _make_roundtrip_report()
+
+        with patch(
+            "polylogue.schemas.roundtrip_proof.prove_schema_evidence_roundtrip_suite",
+            return_value=fake_report,
+        ) as mock_roundtrip:
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                [
+                    "--plain",
+                    "check",
+                    "--json",
+                    "--roundtrip-proof",
+                    "--roundtrip-provider",
+                    "chatgpt",
+                    "--roundtrip-count",
+                    "2",
+                ],
+            )
+
+        assert result.exit_code == 0
+        mock_roundtrip.assert_called_once_with(providers=["chatgpt"], count=2)
+
     def test_check_artifacts_json_output(self, cli_workspace):
         """--artifacts adds artifact_observations rows to JSON output."""
         from click.testing import CliRunner
@@ -938,8 +1063,8 @@ class TestCheckCommandSupplementary:
         ]
 
         with patch(
-            "polylogue.schemas.verification.list_artifact_observation_rows",
-            return_value=fake_rows,
+            "polylogue.cli.check_workflow.list_artifact_observations",
+            return_value=ArtifactObservationListResult(rows=fake_rows),
         ):
             runner = CliRunner()
             result = runner.invoke(
@@ -991,8 +1116,8 @@ class TestCheckCommandSupplementary:
         ]
 
         with patch(
-            "polylogue.schemas.verification.list_artifact_cohort_rows",
-            return_value=fake_rows,
+            "polylogue.cli.check_workflow.list_artifact_cohorts",
+            return_value=ArtifactCohortListResult(rows=fake_rows),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["--plain", "check", "--cohorts"])
