@@ -354,7 +354,7 @@ def audit_provider(provider: str) -> AuditReport:
 
 def audit_all_providers(providers: list[str] | None = None) -> AuditReport:
     """Run audit checks across all (or specified) providers."""
-    from polylogue.schemas.sampling import PROVIDERS
+    from polylogue.schemas.observation import PROVIDERS
 
     provider_list = providers or list(PROVIDERS.keys())
     report = AuditReport()

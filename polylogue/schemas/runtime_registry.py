@@ -12,17 +12,17 @@ from typing import Any
 from polylogue.lib.provider_identity import canonical_schema_provider as _canonical_schema_provider
 from polylogue.lib.provider_identity import normalize_provider_token
 from polylogue.paths import data_home
+from polylogue.schemas.observation import (
+    derive_bundle_scope,
+    extract_schema_units_from_payload,
+    profile_similarity,
+    resolve_provider_config,
+)
 from polylogue.schemas.packages import (
     SchemaElementManifest,
     SchemaPackageCatalog,
     SchemaResolution,
     SchemaVersionPackage,
-)
-from polylogue.schemas.sampling import (
-    _resolve_provider_config,
-    derive_bundle_scope,
-    extract_schema_units_from_payload,
-    profile_similarity,
 )
 from polylogue.types import Provider
 
@@ -338,7 +338,7 @@ class SchemaRegistry:
         if catalog is None or not catalog.packages:
             return None
 
-        config = _resolve_provider_config(provider_token)
+        config = resolve_provider_config(provider_token)
         units = extract_schema_units_from_payload(
             payload,
             provider_name=provider_token,
