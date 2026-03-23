@@ -57,8 +57,6 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     context_settings={"help_option_names": ["-h", "--help"]},
     invoke_without_command=True,
 )
-# Query terms captured via --query-term (injected by parse_args override)
-@click.option("--query-term", multiple=True, hidden=True, help="Query term (internal)")
 # --- Filter options ---
 @click.option("--id", "-i", "conv_id", help="Conversation ID (exact or prefix match)")
 @click.option("--contains", "-c", multiple=True, help="FTS term (repeatable = AND)")
@@ -133,8 +131,6 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.pass_context
 def cli(
     ctx: click.Context,
-    # Query terms (hidden, injected by parse_args override)
-    query_term: tuple[str, ...],
     # Filters
     conv_id: str | None,
     contains: tuple[str, ...],

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -195,7 +194,7 @@ class ArchiveOperations:
         return await self.repository.list(provider=provider, limit=limit)
 
     async def query_conversations(self, spec: ConversationQuerySpec) -> list[Conversation]:
-        return await spec.build_filter(self.repository).list()
+        return await spec.list(self.repository)
 
     async def search(
         self,
@@ -227,26 +226,10 @@ class ArchiveOperations:
         return await self.repository.get_archive_stats()
 
     async def summary_stats(self) -> ArchiveStats:
-        conversations = await self.list_conversations(limit=None)
-
-        providers: dict[str, int] = {}
-        tags: dict[str, int] = {}
-        total_messages = 0
-        total_words = 0
-
-        for conv in conversations:
-            providers[conv.provider] = providers.get(conv.provider, 0) + 1
-            for tag in conv.tags:
-                tags[tag] = tags.get(tag, 0) + 1
-            total_messages += len(conv.messages)
-            total_words += sum(m.word_count for m in conv.messages)
-
-        epoch = datetime.min.replace(tzinfo=timezone.utc)
-        recent = sorted(
-            conversations,
-            key=lambda c: c.updated_at or c.created_at or epoch,
-            reverse=True,
-        )[:5]
+        storage_stats = await self.storage_stats()
+        aggregate_stats = await self.repository.queries.aggregate_message_stats()
+        tags = await self.repository.list_tags()
+        recent = await self.list_conversations(limit=5)
 
         last_sync = None
         try:
@@ -255,10 +238,10 @@ class ArchiveOperations:
             logger.debug("failed to query last sync timestamp", error=str(exc))
 
         return ArchiveStats(
-            conversation_count=len(conversations),
-            message_count=total_messages,
-            word_count=total_words,
-            providers=providers,
+            conversation_count=storage_stats.total_conversations,
+            message_count=storage_stats.total_messages,
+            word_count=int(aggregate_stats.get("words_approx", 0)),
+            providers=storage_stats.providers,
             tags=tags,
             last_sync=last_sync,
             recent=recent,
