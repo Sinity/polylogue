@@ -53,6 +53,20 @@ class TestClassifyTool:
     def test_agent_planning_tools_are_agent_category(self):
         assert classify_tool("TodoWrite", {}) == ToolCategory.AGENT
         assert classify_tool("TaskCreate", {}) == ToolCategory.AGENT
+        assert classify_tool("EnterPlanMode", {}) == ToolCategory.AGENT
+        assert classify_tool("Skill", {}) == ToolCategory.AGENT
+
+    def test_shell_control_tools_are_shell_category(self):
+        assert classify_tool("KillShell", {}) == ToolCategory.SHELL
+
+    def test_lsp_inspection_tools_are_search_category(self):
+        assert classify_tool("mcp__cclsp__find_definition", {}) == ToolCategory.SEARCH
+        assert classify_tool("mcp__plugin_serena_serena__find_referencing_symbols", {}) == ToolCategory.SEARCH
+        assert classify_tool("mcp__plugin_serena_serena__get_symbols_in_file", {}) == ToolCategory.SEARCH
+        assert classify_tool("mcp__cclsp__get_diagnostics", {}) == ToolCategory.SEARCH
+
+    def test_tabs_context_tools_are_web_category(self):
+        assert classify_tool("mcp__claude-in-chrome__tabs_context_mcp", {}) == ToolCategory.WEB
 
     def test_ls_is_search(self):
         assert classify_tool("LS", {"path": "/realm/project/polylogue"}) == ToolCategory.SEARCH

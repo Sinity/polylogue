@@ -251,9 +251,11 @@ class ConversationQueryPlan:
             or self.has_types
             or self.predicates
             or self.negative_terms
-            or (self.path_terms and (self.fts_terms or self.conversation_id is not None or self.similar_text is not None))
-            or ((self.action_terms or self.excluded_action_terms) and (self.fts_terms or self.conversation_id is not None or self.similar_text is not None))
-            or ((self.tool_terms or self.excluded_tool_terms) and (self.fts_terms or self.conversation_id is not None or self.similar_text is not None))
+            or self.path_terms
+            or self.action_terms
+            or self.excluded_action_terms
+            or self.tool_terms
+            or self.excluded_tool_terms
             or self.continuation is not None
             or self.sidechain is not None
             or self.root is not None
@@ -265,15 +267,11 @@ class ConversationQueryPlan:
             return True
         if self.negative_terms or self.predicates or self.similar_text:
             return True
-        if self.path_terms and (self.fts_terms or self.conversation_id is not None or self.similar_text is not None):
+        if self.path_terms:
             return True
-        if (self.action_terms or self.excluded_action_terms) and (
-            self.fts_terms or self.conversation_id is not None or self.similar_text is not None
-        ):
+        if self.action_terms or self.excluded_action_terms:
             return True
-        if (self.tool_terms or self.excluded_tool_terms) and (
-            self.fts_terms or self.conversation_id is not None or self.similar_text is not None
-        ):
+        if self.tool_terms or self.excluded_tool_terms:
             return True
         if self.has_branches is not None:
             return True
@@ -287,6 +285,11 @@ class ConversationQueryPlan:
             self.fts_terms
             or self.conversation_id
             or self.similar_text
+            or self.path_terms
+            or self.action_terms
+            or self.excluded_action_terms
+            or self.tool_terms
+            or self.excluded_tool_terms
             or self.predicates
             or self.has_types
             or self.negative_terms
@@ -365,7 +368,10 @@ class ConversationQueryPlan:
         return replace(self, limit=limit)
 
     def fetch_record_query(self) -> ConversationRecordQuery:
-        return self.record_query.with_limit(self.effective_fetch_limit())
+        record_query = self.record_query
+        if self.path_terms or self.action_terms or self.excluded_action_terms:
+            record_query = record_query.without_unstable_semantic_filters()
+        return record_query.with_limit(self.effective_fetch_limit())
 
     def _search_limit(self) -> int:
         fetch_limit = self.effective_fetch_limit()
@@ -521,11 +527,11 @@ class ConversationQueryPlan:
         for predicate in self.predicates:
             results = [conversation for conversation in results if predicate(conversation)]
 
-        if self.path_terms and not sql_pushed:
+        if self.path_terms:
             results = [conversation for conversation in results if self._matches_path_terms(conversation)]
-        if (self.action_terms or self.excluded_action_terms) and not sql_pushed:
+        if self.action_terms or self.excluded_action_terms:
             results = [conversation for conversation in results if self._matches_action_terms(conversation)]
-        if (self.tool_terms or self.excluded_tool_terms) and not sql_pushed:
+        if self.tool_terms or self.excluded_tool_terms:
             results = [conversation for conversation in results if self._matches_tool_terms(conversation)]
 
         return results

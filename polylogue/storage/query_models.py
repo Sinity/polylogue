@@ -38,6 +38,14 @@ class ConversationRecordQuery:
     def for_count(self) -> ConversationRecordQuery:
         return replace(self, limit=None, offset=0)
 
+    def without_unstable_semantic_filters(self) -> ConversationRecordQuery:
+        return replace(
+            self,
+            path_terms=(),
+            action_terms=(),
+            excluded_action_terms=(),
+        )
+
     def for_search(self) -> tuple[str | None, list[str] | None]:
         if self.provider:
             return self.provider, None

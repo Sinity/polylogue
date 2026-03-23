@@ -209,6 +209,11 @@ def classify_tool(name: str, input_data: dict[str, Any]) -> ToolCategory:
             "__search_users",
             "__search_issues",
             "__search_pull_requests",
+            "__find_definition",
+            "__find_references",
+            "__find_referencing_symbols",
+            "__get_symbols_in_file",
+            "__get_diagnostics",
         )
     ):
         return ToolCategory.SEARCH
@@ -217,15 +222,22 @@ def classify_tool(name: str, input_data: dict[str, Any]) -> ToolCategory:
         if isinstance(cmd, str) and cmd.strip().startswith("git "):
             return ToolCategory.GIT
         return ToolCategory.SHELL
+    if name_lower in ("killshell",):
+        return ToolCategory.SHELL
     if name_lower in ("task", "subagent"):
         return ToolCategory.SUBAGENT
     if name_lower == "agent" or name_lower.startswith(("todo", "task")) or name_lower in (
         "askuserquestion",
+        "enterplanmode",
         "exitplanmode",
+        "skill",
         "batch",
         "mcp__sequential-thinking__sequentialthinking",
+        "mcp__cclsp__restart_server",
     ):
         return ToolCategory.AGENT
+    if "tabs_context" in name_lower:
+        return ToolCategory.WEB
     if name_lower in ("web", "fetch", "browse", "webfetch", "websearch") or any(
         marker in name_lower for marker in ("__web_search", "__webfetch")
     ):

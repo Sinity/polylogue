@@ -393,6 +393,49 @@ async def test_filter_action_terms_apply_after_fts_search(tmp_path: Path) -> Non
         await backend.close()
 
 
+@pytest.mark.asyncio
+async def test_filter_action_terms_reconcile_runtime_semantics_after_sql_candidate_fetch(tmp_path: Path) -> None:
+    """Runtime semantic facts must outrank stale persisted semantic_type labels."""
+    from polylogue.lib.filters import ConversationFilter
+    from polylogue.storage.store import ContentBlockRecord
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "action-runtime-reconcile.db"
+
+    (ConversationBuilder(db_path, "conv-stale-other")
+     .provider("claude-code")
+     .title("Stale semantic label")
+     .add_message(
+         "m1",
+         role="assistant",
+         text="Create a task for the next review pass",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-stale-0",
+                 message_id="m1",
+                 conversation_id="conv-stale-other",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="TaskCreate",
+                 semantic_type="other",
+             )
+         ],
+     )
+     .save())
+
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
+    try:
+        stale_other = await ConversationFilter(repo).action("other").list()
+        upgraded_agent = await ConversationFilter(repo).action("agent").list()
+
+        assert [str(conversation.id) for conversation in stale_other] == []
+        assert [str(conversation.id) for conversation in upgraded_agent] == ["conv-stale-other"]
+        assert await ConversationFilter(repo).action("agent").count() == 1
+    finally:
+        await backend.close()
+
+
 def test_store_records_roundtrip_contract(test_conn) -> None:
     """store_records() must insert, skip, update, and handle sparse payloads coherently."""
     initial = make_conversation("conv-create", content_hash="hash-create")
