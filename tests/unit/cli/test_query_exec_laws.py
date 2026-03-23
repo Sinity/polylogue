@@ -401,6 +401,18 @@ def test_resolve_query_route_uses_full_stats_for_action_dimension() -> None:
     assert resolve_query_route(plan, can_use_summaries=True) == QueryRoute.STATS_BY
 
 
+def test_resolve_query_route_uses_full_stats_for_tool_dimension() -> None:
+    plan = QueryExecutionPlan(
+        selection=ConversationQuerySpec(),
+        action=QueryAction.STATS_BY,
+        output=QueryOutputSpec("markdown", ("stdout",), None, False, None, False),
+        mutation=QueryMutationSpec((), (), False, False, False),
+        stats_dimension="tool",
+    )
+
+    assert resolve_query_route(plan, can_use_summaries=True) == QueryRoute.STATS_BY
+
+
 @settings(max_examples=40, deadline=None)
 @given(case=summary_stats_case_strategy())
 def test_output_stats_by_summaries_contract(case) -> None:

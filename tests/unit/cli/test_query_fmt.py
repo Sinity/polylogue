@@ -243,6 +243,30 @@ STATS_CASES = (
         ],
         ("Matched: 3 conversations (by action)", "file_read", "search", "none", "MATCHED", "Facts", "Note: conversations may appear in multiple action groups."),
     ),
+    (
+        "tool",
+        [
+            (
+                "conv-1",
+                "claude-ai",
+                datetime(2025, 3, 5, tzinfo=timezone.utc),
+                [{"text": "read one", "semantic_type": "file_read", "tool_name": "Read"}],
+            ),
+            (
+                "conv-2",
+                "claude-ai",
+                datetime(2025, 3, 6, tzinfo=timezone.utc),
+                [{"text": "grep one", "semantic_type": "search", "tool_name": "Grep"}],
+            ),
+            (
+                "conv-3",
+                "chatgpt",
+                datetime(2025, 3, 7, tzinfo=timezone.utc),
+                [{"text": "plain"}],
+            ),
+        ],
+        ("Matched: 3 conversations (by tool)", "read", "grep", "none", "MATCHED", "Facts", "Note: conversations may appear in multiple tool groups."),
+    ),
 )
 
 
@@ -568,5 +592,53 @@ class TestGroupedStatsOutput:
         }
         assert payload["rows"] == [
             {"group": "file_read", "conversations": 1, "facts": 1, "messages": 1},
+            {"group": "none", "conversations": 1, "facts": 0, "messages": 0},
+        ]
+
+    def test_output_stats_by_tool_json_contract(self) -> None:
+        conversations = [
+            _make_conv(
+                id="conv-1",
+                provider="claude-ai",
+                updated_at=datetime(2025, 3, 5, tzinfo=timezone.utc),
+                messages=[
+                    _make_msg(
+                        "assistant",
+                        "grep one",
+                        id="conv-1-0",
+                        content_blocks=[{
+                            "type": "tool_use",
+                            "tool_name": "Grep",
+                            "tool_input": {"pattern": "needle"},
+                            "semantic_type": "search",
+                        }],
+                    ),
+                ],
+            ),
+            _make_conv(
+                id="conv-2",
+                provider="claude-ai",
+                updated_at=datetime(2025, 3, 6, tzinfo=timezone.utc),
+                messages=[_make_msg("assistant", "plain", id="conv-2-0")],
+            ),
+        ]
+        env = MagicMock()
+        env.ui.console = MagicMock()
+
+        with patch("click.echo") as mock_echo:
+            _output_stats_by(env, conversations, "tool", output_format="json")
+
+        payload = json.loads(mock_echo.call_args.args[0])
+        assert payload["dimension"] == "tool"
+        assert payload["multi_membership"] is True
+        env.ui.console.print.assert_not_called()
+        assert payload["summary"] == {
+            "group": "MATCHED",
+            "conversations": 2,
+            "facts": 1,
+            "messages": 1,
+        }
+        assert payload["rows"] == [
+            {"group": "grep", "conversations": 1, "facts": 1, "messages": 1},
             {"group": "none", "conversations": 1, "facts": 0, "messages": 0},
         ]
