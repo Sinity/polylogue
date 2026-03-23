@@ -13,7 +13,13 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
-from polylogue.types import ArtifactSupportStatus, PlanStage, Provider, ValidationStatus
+from polylogue.types import (
+    ArtifactSupportStatus,
+    PlanStage,
+    Provider,
+    ValidationMode,
+    ValidationStatus,
+)
 
 
 class ArtifactCohortSummary(BaseModel):
@@ -92,6 +98,49 @@ class RawConversationState(BaseModel):
         return ValidationStatus.from_string(str(v))
 
 
+class _RawStateUnset:
+    """Sentinel for update fields that should remain unchanged."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET = _RawStateUnset()
+
+
+@dataclass(frozen=True)
+class RawConversationStateUpdate:
+    """Typed raw-state mutation payload used by update_raw_state calls."""
+
+    parsed_at: str | None | _RawStateUnset = UNSET
+    parse_error: str | None | _RawStateUnset = UNSET
+    payload_provider: Provider | str | None | _RawStateUnset = UNSET
+    validation_status: ValidationStatus | str | None | _RawStateUnset = UNSET
+    validation_error: str | None | _RawStateUnset = UNSET
+    validation_drift_count: int | None | _RawStateUnset = UNSET
+    validation_provider: Provider | str | None | _RawStateUnset = UNSET
+    validation_mode: ValidationMode | str | None | _RawStateUnset = UNSET
+
+    @property
+    def has_values(self) -> bool:
+        """Return whether any field is explicitly provided."""
+        return any(
+            value is not UNSET
+            for value in (
+                self.parsed_at,
+                self.parse_error,
+                self.payload_provider,
+                self.validation_status,
+                self.validation_error,
+                self.validation_drift_count,
+                self.validation_provider,
+                self.validation_mode,
+            )
+        )
+
+
 class RunResult(BaseModel):
     run_id: str
     counts: dict[str, int]
@@ -122,5 +171,6 @@ __all__ = [
     "ExistingConversation",
     "PlanResult",
     "RawConversationState",
+    "RawConversationStateUpdate",
     "RunResult",
 ]
