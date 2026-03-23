@@ -508,6 +508,32 @@ class TestCreateVectorProvider:
                     provider = create_vector_provider()
                     assert provider is None
 
+    def test_logs_sqlite_vec_missing_only_once_per_process(self, monkeypatch):
+        """Missing sqlite-vec warning is emitted once even if provider creation repeats."""
+        import builtins
+
+        import polylogue.storage.search_providers as search_providers
+
+        monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
+        monkeypatch.setattr(search_providers, "_sqlite_vec_missing_warned", False)
+
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "sqlite_vec":
+                raise ImportError("No module named 'sqlite_vec'")
+            return original_import(name, *args, **kwargs)
+
+        with (
+            patch.dict("sys.modules", {"sqlite_vec": None}),
+            patch.object(builtins, "__import__", mock_import),
+            patch.object(search_providers.logger, "warning") as mock_warning,
+        ):
+            assert create_vector_provider() is None
+            assert create_vector_provider() is None
+
+        assert mock_warning.call_count == 1
+
     async def test_config_priority_and_explicit_override(self, monkeypatch, tmp_path):
         """Config voyage_api_key takes priority; explicit args override both config and env."""
         monkeypatch.setenv("VOYAGE_API_KEY", "env-voyage-key")

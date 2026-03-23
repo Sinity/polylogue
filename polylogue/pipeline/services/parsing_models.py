@@ -7,8 +7,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.pipeline.services.acquisition import AcquireResult
-    from polylogue.pipeline.services.validation import ValidateResult
+    from polylogue.pipeline.stage_models import AcquireResult, ValidateResult
 
 
 class IngestPhase(str, Enum):

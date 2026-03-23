@@ -61,6 +61,7 @@ class ContentBlockType(str, Enum):
 class SemanticBlockType(str, Enum):
     """Canonical semantic classifications for stored content blocks."""
 
+    OTHER = "other"
     FILE_READ = "file_read"
     FILE_WRITE = "file_write"
     FILE_EDIT = "file_edit"

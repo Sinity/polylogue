@@ -14,7 +14,7 @@ from polylogue.cli.click_app import cli
 from polylogue.sources import DriveError
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import PlanResult, RunResult
+from polylogue.storage.state_views import PlanResult, RunResult
 from tests.infra.storage_records import DbFactory
 
 

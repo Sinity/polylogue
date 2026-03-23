@@ -11,6 +11,10 @@ from polylogue.pipeline.services.validation import ValidationService
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
 
 
+def _prepare_fields(result):
+    return result.conversation_id, result.counts, result.content_changed
+
+
 @pytest.fixture
 async def async_backend(test_db):
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -45,13 +49,13 @@ async def test_prepare_records_new_conversation(async_backend, test_repository, 
         attachments=[],
     )
 
-    conversation_id, counts, changed = await prepare_records(
+    conversation_id, counts, changed = _prepare_fields(await prepare_records(
         conversation,
         "test-source",
         archive_root=tmp_path / "archive",
         backend=async_backend,
         repository=test_repository,
-    )
+    ))
 
     assert counts["conversations"] == 1
     assert counts["messages"] == 1
@@ -81,20 +85,20 @@ async def test_prepare_records_unchanged_conversation_skips(async_backend, test_
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    first_id, first_counts, _ = await prepare_records(
+    first_id, first_counts, _ = _prepare_fields(await prepare_records(
         conversation,
         "test-source",
         archive_root=archive_root,
         backend=async_backend,
         repository=test_repository,
-    )
-    second_id, second_counts, changed = await prepare_records(
+    ))
+    second_id, second_counts, changed = _prepare_fields(await prepare_records(
         conversation,
         "test-source",
         archive_root=archive_root,
         backend=async_backend,
         repository=test_repository,
-    )
+    ))
 
     assert first_counts["conversations"] == 1
     assert second_id == first_id
@@ -139,20 +143,20 @@ async def test_prepare_records_detects_changed_content(async_backend, test_repos
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    first_id, _, _ = await prepare_records(
+    first_id, _, _ = _prepare_fields(await prepare_records(
         original,
         "test-source",
         archive_root=archive_root,
         backend=async_backend,
         repository=test_repository,
-    )
-    second_id, _, changed = await prepare_records(
+    ))
+    second_id, _, changed = _prepare_fields(await prepare_records(
         modified,
         "test-source",
         archive_root=archive_root,
         backend=async_backend,
         repository=test_repository,
-    )
+    ))
 
     assert second_id == first_id
     assert changed is True
@@ -175,13 +179,13 @@ async def test_prepare_records_creates_message_records(async_backend, test_repos
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = await prepare_records(
+    conversation_id, counts, _ = _prepare_fields(await prepare_records(
         conversation,
         "test-source",
         archive_root=archive_root,
         backend=async_backend,
         repository=test_repository,
-    )
+    ))
 
     assert counts["conversations"] == 1
     assert counts["messages"] == 2
@@ -207,13 +211,13 @@ async def test_prepare_records_handles_empty_provider_message_ids(async_backend,
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = await prepare_records(
+    conversation_id, counts, _ = _prepare_fields(await prepare_records(
         conversation,
         "test-source",
         archive_root=archive_root,
         backend=async_backend,
         repository=test_repository,
-    )
+    ))
 
     assert counts["messages"] == 2
     async with async_backend.connection() as conn:
@@ -244,13 +248,13 @@ async def test_prepare_records_stores_source_metadata(async_backend, test_reposi
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, _, _ = await prepare_records(
+    conversation_id, _, _ = _prepare_fields(await prepare_records(
         conversation,
         "my-export",
         archive_root=archive_root,
         backend=async_backend,
         repository=test_repository,
-    )
+    ))
 
     async with async_backend.connection() as conn:
         row = await (await conn.execute(
@@ -300,13 +304,13 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(as
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = await prepare_records(
+    conversation_id, counts, _ = _prepare_fields(await prepare_records(
         conversation,
         "drive-export",
         archive_root=archive_root,
         backend=async_backend,
         repository=test_repository,
-    )
+    ))
 
     assert counts["messages"] == 2
     async with async_backend.connection() as conn:
@@ -358,13 +362,13 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(async_backend
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, _, _ = await prepare_records(
+    conversation_id, _, _ = _prepare_fields(await prepare_records(
         conversation,
         "test-source",
         archive_root=archive_root,
         backend=async_backend,
         repository=test_repository,
-    )
+    ))
 
     async with async_backend.connection() as conn:
         rows = await (await conn.execute(
@@ -399,13 +403,13 @@ async def test_prepare_records_with_attachments(async_backend, test_repository, 
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = await prepare_records(
+    conversation_id, counts, _ = _prepare_fields(await prepare_records(
         conversation,
         "test-source",
         archive_root=archive_root,
         backend=async_backend,
         repository=test_repository,
-    )
+    ))
 
     assert counts["attachments"] == 1
     async with async_backend.connection() as conn:
@@ -463,7 +467,7 @@ async def test_prepare_records_rolls_back_attachment_move_on_save_failure(async_
     assert not any(path.is_file() for path in (archive_root / "assets").rglob("*"))
 
 
-async def test_prepare_records_returns_correct_tuple_structure(async_backend, test_repository, tmp_path):
+async def test_prepare_records_returns_typed_result(async_backend, test_repository, tmp_path):
     conversation = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -484,12 +488,9 @@ async def test_prepare_records_returns_correct_tuple_structure(async_backend, te
         repository=test_repository,
     )
 
-    assert isinstance(result, tuple)
-    assert len(result) == 3
-    conversation_id, counts, changed = result
-    assert isinstance(conversation_id, str)
-    assert isinstance(counts, dict)
-    assert isinstance(changed, bool)
+    assert isinstance(result.conversation_id, str)
+    assert isinstance(result.counts, dict)
+    assert isinstance(result.content_changed, bool)
     required_keys = {
         "conversations",
         "messages",
@@ -498,7 +499,7 @@ async def test_prepare_records_returns_correct_tuple_structure(async_backend, te
         "skipped_messages",
         "skipped_attachments",
     }
-    assert set(counts.keys()) >= required_keys
+    assert set(result.counts.keys()) >= required_keys
 
 
 # =====================================================================
@@ -525,10 +526,11 @@ class TestValidationService:
             provider_name="codex",
             source_path="/tmp/session.jsonl",
         )
-        backend = MagicMock()
-        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
-        backend.mark_raw_validated = AsyncMock()
-        backend.mark_raw_parsed = AsyncMock()
+        service = ValidationService(backend=MagicMock())
+        service.repository = MagicMock()
+        service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        service.repository.mark_raw_validated = AsyncMock()
+        service.repository.mark_raw_parsed = AsyncMock()
 
         class _CapturingValidator:
             provider = "codex"
@@ -546,7 +548,7 @@ class TestValidationService:
         capturing = _CapturingValidator()
         monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: capturing)
 
-        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+        result = await service.validate_raw_ids(raw_ids=["raw-1"])
 
         assert result.parseable_raw_ids == ["raw-1"]
         assert capturing.max_samples_seen is None
@@ -560,10 +562,11 @@ class TestValidationService:
             provider_name="codex",
             source_path="/tmp/session.jsonl",
         )
-        backend = MagicMock()
-        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
-        backend.mark_raw_validated = AsyncMock()
-        backend.mark_raw_parsed = AsyncMock()
+        service = ValidationService(backend=MagicMock())
+        service.repository = MagicMock()
+        service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        service.repository.mark_raw_validated = AsyncMock()
+        service.repository.mark_raw_parsed = AsyncMock()
 
         class _AlwaysValidValidator:
             provider = "codex"
@@ -577,11 +580,11 @@ class TestValidationService:
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
         monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
 
-        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+        result = await service.validate_raw_ids(raw_ids=["raw-1"])
 
         assert result.counts["invalid"] == 1
         assert result.parseable_raw_ids == []
-        kwargs = backend.mark_raw_validated.await_args.kwargs
+        kwargs = service.repository.mark_raw_validated.await_args.kwargs
         assert kwargs["status"] == "failed"
         assert "Malformed JSONL lines" in (kwargs.get("error") or "")
 
@@ -592,9 +595,10 @@ class TestValidationService:
             MagicMock(raw_id="raw-1", raw_content=b'{"id":"1","mapping":{}}', provider_name="chatgpt", source_path="/tmp/a.json"),
             MagicMock(raw_id="raw-2", raw_content=b'{"id":"2","mapping":{}}', provider_name="chatgpt", source_path="/tmp/b.json"),
         ]
-        backend = MagicMock()
-        backend.get_raw_conversations_batch = AsyncMock(return_value=raw_records)
-        backend.mark_raw_validated = AsyncMock()
+        service = ValidationService(backend=MagicMock())
+        service.repository = MagicMock()
+        service.repository.get_raw_conversations_batch = AsyncMock(return_value=raw_records)
+        service.repository.mark_raw_validated = AsyncMock()
         callback = MagicMock()
 
         class _AlwaysValidValidator:
@@ -607,7 +611,7 @@ class TestValidationService:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
-        await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1", "raw-2"], progress_callback=callback)
+        await service.validate_raw_ids(raw_ids=["raw-1", "raw-2"], progress_callback=callback)
 
         callback.assert_any_call(0, desc="Validating: 0/2 raw")
         callback.assert_any_call(1, desc="Validating: 1/2 raw")
@@ -623,10 +627,11 @@ class TestValidationService:
             source_path="/tmp/conversations.json",
             payload_provider=None,
         )
-        backend = MagicMock()
-        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
-        backend.mark_raw_validated = AsyncMock()
-        backend.mark_raw_parsed = AsyncMock()
+        service = ValidationService(backend=MagicMock())
+        service.repository = MagicMock()
+        service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        service.repository.mark_raw_validated = AsyncMock()
+        service.repository.mark_raw_parsed = AsyncMock()
 
         class _AlwaysValidValidator:
             provider = "chatgpt"
@@ -638,9 +643,9 @@ class TestValidationService:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
-        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+        result = await service.validate_raw_ids(raw_ids=["raw-1"])
 
         assert result.parseable_raw_ids == ["raw-1"]
-        kwargs = backend.mark_raw_validated.await_args.kwargs
+        kwargs = service.repository.mark_raw_validated.await_args.kwargs
         assert kwargs["provider"] == "chatgpt"
         assert kwargs["payload_provider"] == "chatgpt"

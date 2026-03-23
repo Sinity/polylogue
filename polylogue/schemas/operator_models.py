@@ -10,7 +10,8 @@ from polylogue.schemas.generation_models import GenerationResult
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.tooling_registry import ClusterManifest, SchemaDiff
 from polylogue.schemas.verification_models import ArtifactProofReport
-from polylogue.storage.store import ArtifactCohortSummary, ArtifactObservationRecord
+from polylogue.storage.state_views import ArtifactCohortSummary
+from polylogue.storage.store import ArtifactObservationRecord
 
 
 @dataclass(frozen=True)
@@ -144,4 +145,3 @@ class ArtifactCohortListResult:
 @dataclass(frozen=True)
 class ArtifactProofResult:
     report: ArtifactProofReport
-

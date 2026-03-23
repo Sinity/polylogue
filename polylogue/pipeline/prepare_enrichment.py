@@ -4,21 +4,16 @@ from __future__ import annotations
 
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare_models import (
-    EnrichedBundle,
     PrepareCache,
+    PreparedBundle,
     RecordBundle,
 )
-from polylogue.storage.store import (
-    AttachmentRecord,
-    ContentBlockRecord,
-    ConversationRecord,
-    ExistingConversation,
-    MessageRecord,
-)
+from polylogue.storage.state_views import ExistingConversation
+from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
 from polylogue.types import MessageId
 
 
-def enrich_bundle_from_db(convo, source_name: str, transform, cache: PrepareCache, *, raw_id: str | None = None) -> EnrichedBundle:
+def enrich_bundle_from_db(convo, source_name: str, transform, cache: PrepareCache, *, raw_id: str | None = None) -> PreparedBundle:
     candidate_cid = transform.candidate_cid
     content_hash = transform.content_hash
 
@@ -128,7 +123,7 @@ def enrich_bundle_from_db(convo, source_name: str, transform, cache: PrepareCach
             )
         )
 
-    return EnrichedBundle(
+    return PreparedBundle(
         bundle=RecordBundle(
             conversation=conversation_record,
             messages=patched_messages,

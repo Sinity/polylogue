@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.logging import get_logger
+from polylogue.pipeline.stage_models import ValidateResult, ValidatedRawRecord
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
@@ -206,34 +207,6 @@ def _validate_record_sync(
     )
 
 
-class ValidateResult:
-    """Result of validating a set of raw records."""
-
-    def __init__(self) -> None:
-        self.counts: dict[str, int] = {
-            "validated": 0,
-            "invalid": 0,
-            "drift": 0,
-            "skipped_no_schema": 0,
-            "errors": 0,
-        }
-        # Raw records that can proceed to parser dispatch.
-        self.parseable_raw_ids: list[str] = []
-        # Raw records that failed validation checks.
-        self.invalid_raw_ids: list[str] = []
-        # Provider -> number of payloads with drift warnings.
-        self.drift_counts: dict[str, int] = {}
-
-    def merge(self, other: ValidateResult) -> None:
-        """Accumulate another validation result into this one."""
-        for key, value in other.counts.items():
-            self.counts[key] += value
-        self.parseable_raw_ids.extend(other.parseable_raw_ids)
-        self.invalid_raw_ids.extend(other.invalid_raw_ids)
-        for provider, count in other.drift_counts.items():
-            self.drift_counts[provider] = self.drift_counts.get(provider, 0) + count
-
-
 class ValidationService:
     """Validate raw payloads against provider schemas."""
 
@@ -294,7 +267,16 @@ class ValidationService:
                         status=ValidationStatus.SKIPPED,
                         mode=validation_mode,
                     )
-                result.parseable_raw_ids.append(raw_id)
+                result.records.append(
+                    ValidatedRawRecord(
+                        raw_id=raw_id,
+                        parseable=True,
+                        validation_status=ValidationStatus.SKIPPED,
+                        validation_error=None,
+                        canonical_provider=Provider.UNKNOWN,
+                        payload_provider=None,
+                    )
+                )
                 if progress_callback is not None:
                     progress_callback(1, desc=self._validation_progress_desc(index, total_raw_ids))
             return result
@@ -316,8 +298,17 @@ class ValidationService:
             missing = [raw_id for raw_id in batch_ids if raw_id not in {record.raw_id for record in raw_records}]
             processed = batch_start + len(raw_records)
             for missing_index, raw_id in enumerate(missing, start=1):
-                result.counts["errors"] += 1
-                result.invalid_raw_ids.append(raw_id)
+                result.errors += 1
+                result.records.append(
+                    ValidatedRawRecord(
+                        raw_id=raw_id,
+                        parseable=False,
+                        validation_status=ValidationStatus.FAILED,
+                        validation_error="Missing raw conversation record",
+                        canonical_provider=Provider.UNKNOWN,
+                        payload_provider=None,
+                    )
+                )
                 if progress_callback is not None:
                     progress_callback(
                         1,
@@ -358,12 +349,21 @@ class ValidationService:
                         status=ValidationStatus.SKIPPED,
                         mode=validation_mode,
                     )
-                result.parseable_raw_ids.append(raw_record.raw_id)
+                result.records.append(
+                    ValidatedRawRecord(
+                        raw_id=raw_record.raw_id,
+                        parseable=True,
+                        validation_status=ValidationStatus.SKIPPED,
+                        validation_error=None,
+                        canonical_provider=Provider.from_string(raw_record.provider_name),
+                        payload_provider=raw_record.payload_provider,
+                    )
+                )
                 if progress_callback is not None:
                     total = progress_total or len(raw_records)
                     progress_callback(
                         1,
-                        desc=self._validation_progress_desc(progress_offset + len(result.parseable_raw_ids), total),
+                        desc=self._validation_progress_desc(progress_offset + len(result.records), total),
                     )
             return result
 
@@ -382,15 +382,25 @@ class ValidationService:
 
         # Phase 2: sequential DB writes + result accumulation.
         for index, (raw_record, outcome) in enumerate(zip(raw_records, outcomes, strict=True), start=1):
-            for key, val in outcome.counts_delta.items():
-                result.counts[key] += val
+            result.validated += outcome.counts_delta["validated"]
+            result.invalid += outcome.counts_delta["invalid"]
+            result.drift += outcome.counts_delta["drift"]
+            result.skipped_no_schema += outcome.counts_delta["skipped_no_schema"]
+            result.errors += outcome.counts_delta["errors"]
             for prov, cnt in outcome.drift_counts_delta.items():
                 result.drift_counts[prov] = result.drift_counts.get(prov, 0) + cnt
 
-            if outcome.parseable:
-                result.parseable_raw_ids.append(raw_record.raw_id)
-            else:
-                result.invalid_raw_ids.append(raw_record.raw_id)
+            result.records.append(
+                ValidatedRawRecord(
+                    raw_id=raw_record.raw_id,
+                    parseable=outcome.parseable,
+                    validation_status=outcome.validation_status,
+                    validation_error=outcome.validation_error,
+                    canonical_provider=outcome.canonical_provider,
+                    payload_provider=outcome.payload_provider,
+                    drift_count=outcome.drift_count,
+                )
+            )
 
             if persist:
                 await self.repository.mark_raw_validated(

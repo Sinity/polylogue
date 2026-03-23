@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from polylogue.cli.formatting import format_counts
 from polylogue.cli.types import AppEnv
 from polylogue.pipeline.observers import RunObserver
-from polylogue.storage.store import RunResult
+from polylogue.storage.state_views import RunResult
 
 
 def _format_elapsed(seconds: float) -> str:

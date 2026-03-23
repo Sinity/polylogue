@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
-    from polylogue.storage.store import ConversationRenderProjection
+    from polylogue.storage.state_views import ConversationRenderProjection
 
 from polylogue.assets import asset_path
 from polylogue.lib.roles import Role

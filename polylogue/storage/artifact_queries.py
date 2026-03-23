@@ -7,7 +7,8 @@ from typing import Any
 
 from polylogue.lib.artifact_taxonomy import ArtifactKind
 from polylogue.storage.backends.queries.mappers import _row_to_artifact_observation
-from polylogue.storage.store import ArtifactCohortSummary, ArtifactObservationRecord
+from polylogue.storage.state_views import ArtifactCohortSummary
+from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 
 _EFFECTIVE_PROVIDER_SQL = "COALESCE(payload_provider, provider_name)"
