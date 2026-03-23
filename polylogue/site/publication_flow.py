@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -16,6 +17,7 @@ from polylogue.publication import (
 from polylogue.site.models import ArchiveIndexStats, ConversationPageBuildStats, SiteConfig
 from polylogue.site.publication_support import (
     build_latest_run_summary,
+    load_archive_maintenance_summary,
     load_artifact_proof_summary,
     load_semantic_proof_summary,
 )
@@ -24,7 +26,10 @@ from polylogue.storage.store import PublicationRecord
 
 async def load_latest_run_summary(backend) -> object | None:
     """Return the latest pipeline run summary for manifest embedding."""
-    return build_latest_run_summary(await backend.queries.get_latest_run())
+    record = backend.queries.get_latest_run()
+    if inspect.isawaitable(record):
+        record = await record
+    return build_latest_run_summary(record)
 
 
 async def load_artifact_proof_summary_for_backend(backend) -> object | None:
@@ -44,6 +49,13 @@ async def load_semantic_proof_summary_for_backend(backend) -> object | None:
     )
 
 
+async def load_archive_maintenance_summary_for_backend(backend) -> object | None:
+    """Return derived-model maintenance summary for manifest embedding."""
+    if not isinstance(getattr(backend, "db_path", None), Path):
+        return None
+    return await asyncio.to_thread(load_archive_maintenance_summary, db_path=backend.db_path)
+
+
 async def build_site_publication_manifest(
     *,
     output_dir: Path,
@@ -59,6 +71,7 @@ async def build_site_publication_manifest(
     latest_run: object | None,
     artifact_proof: object | None,
     semantic_proof: object | None,
+    maintenance: object | None,
 ) -> SitePublicationManifest:
     """Build the typed site publication manifest from build outputs."""
     artifact_manifest = await asyncio.to_thread(
@@ -109,6 +122,7 @@ async def build_site_publication_manifest(
         latest_run=latest_run,
         artifact_proof=artifact_proof,
         semantic_proof=semantic_proof,
+        maintenance=maintenance,
         artifacts=artifact_manifest,
     )
 
@@ -145,6 +159,7 @@ async def record_site_publication_manifest(
 
 __all__ = [
     "build_site_publication_manifest",
+    "load_archive_maintenance_summary_for_backend",
     "load_artifact_proof_summary_for_backend",
     "load_latest_run_summary",
     "load_semantic_proof_summary_for_backend",

@@ -3,16 +3,29 @@
   '''
   Usage: polylogue check [OPTIONS]
   
-    Health check with optional repair.
+    Health check with optional maintenance and cleanup previews.
   
   Options:
     --json                          Output as JSON
     -v, --verbose                   Show breakdown by provider
-    --repair                        Attempt to repair detected issues
-    --preview                       Preview repairs without executing (requires
-                                    --repair)
-    --vacuum                        Reclaim unused space after repair (requires
-                                    --repair)
+    --cached                        Use the recent cached archive-health report
+                                    when available
+    --repair                        Run safe derived-data and database
+                                    maintenance repairs
+    --cleanup                       Run destructive archive cleanup for orphaned
+                                    or empty persisted data
+    --target [session_products|action_event_read_model|dangling_fts|wal_checkpoint
+  |orphaned_messages|orphaned_content_blocks|empty_conversations|orphaned_attachme
+  nts]
+                                    Limit maintenance to named targets such as
+                                    session_products, action_event_read_model,
+                                    dangling_fts, wal_checkpoint,
+                                    orphaned_messages, orphaned_content_blocks,
+                                    empty_conversations, or orphaned_attachments
+    --preview                       Preview maintenance without executing
+                                    (requires --repair or --cleanup)
+    --vacuum                        Reclaim unused space after maintenance
+                                    (requires --repair or --cleanup)
     --deep                          Run SQLite integrity check (slow on large
                                     databases)
     --runtime                       Run environment and runtime verification
@@ -140,6 +153,8 @@
         polylogue "pytest -q tests<PATH>" --retrieval-l
   ane actions --limit 5
         polylogue --action other --stats-by tool --format json
+        polylogue --stats-by project --provider claude-code --since 2026-01-01 --f
+  ormat json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
   
@@ -153,6 +168,7 @@
         polylogue qa        Composable QA (audit, exercises, invariants)
         polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
+        polylogue products  Inspect durable session<PATH> products
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
@@ -220,7 +236,7 @@
     --list                          Force list format
     --stats                         Only statistics, no content
     --count                         Print matched count and exit
-    --stats-by [provider|month|year|day|action|tool]
+    --stats-by [provider|month|year|day|action|tool|project|work-kind]
                                     Aggregate statistics by dimension
     --open                          Open result in browser<PATH>
     --transform [strip-tools|strip-thinking|strip-all]
@@ -242,12 +258,13 @@
   
   Commands:
     auth         Authenticate with external services (Google Drive for...
-    check        Health check with optional repair.
+    check        Health check with optional maintenance and cleanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversations.
     generate     Generate synthetic conversations for demos, testing, and...
     mcp          Start the MCP server for AI assistant integration.
+    products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, assets, rendered outputs, or auth state.
     run          Run pipeline stages on configured sources.
@@ -281,6 +298,8 @@
         polylogue "pytest -q tests<PATH>
   ts.py" --retrieval-lane actions --limit 5
         polylogue --action other --stats-by tool --format json
+        polylogue --stats-by project --provider claude-code --
+  since 2026-01-01 --format json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --l
   imit 5
@@ -296,6 +315,8 @@
   nvariants)
         polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
+        polylogue products  Inspect durable session<PATH>
+  enance products
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
@@ -391,7 +412,8 @@
   t
     --count                         Print matched count and ex
   it
-    --stats-by [provider|month|year|day|action|tool]
+    --stats-by [provider|month|year|day|action|tool|project|wo
+  rk-kind]
                                     Aggregate statistics by di
   mension
     --open                          Open result in browser<PATH>
@@ -426,7 +448,8 @@
   Commands:
     auth         Authenticate with external services (Google D
   rive for...
-    check        Health check with optional repair.
+    check        Health check with optional maintenance and cl
+  eanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversation
@@ -435,6 +458,7 @@
   esting, and...
     mcp          Start the MCP server for AI assistant integra
   tion.
+    products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, a
   nd invariant...
     reset        Reset database, assets, rendered outputs, or
@@ -468,6 +492,7 @@
         polylogue --action-text "pytest -q" --list
         polylogue "pytest -q tests<PATH>" --retrieval-lane actions --limit 5
         polylogue --action other --stats-by tool --format json
+        polylogue --stats-by project --provider claude-code --since 2026-01-01 --format json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
   
@@ -481,6 +506,7 @@
         polylogue qa        Composable QA (audit, exercises, invariants)
         polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
+        polylogue products  Inspect durable session<PATH> products
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
@@ -546,7 +572,7 @@
     --list                          Force list format
     --stats                         Only statistics, no content
     --count                         Print matched count and exit
-    --stats-by [provider|month|year|day|action|tool]
+    --stats-by [provider|month|year|day|action|tool|project|work-kind]
                                     Aggregate statistics by dimension
     --open                          Open result in browser<PATH>
     --transform [strip-tools|strip-thinking|strip-all]
@@ -568,12 +594,13 @@
   
   Commands:
     auth         Authenticate with external services (Google Drive for...
-    check        Health check with optional repair.
+    check        Health check with optional maintenance and cleanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversations.
     generate     Generate synthetic conversations for demos, testing, and...
     mcp          Start the MCP server for AI assistant integration.
+    products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, assets, rendered outputs, or auth state.
     run          Run pipeline stages on configured sources.

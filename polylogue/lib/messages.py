@@ -17,7 +17,7 @@ from pydantic_core import core_schema
 if TYPE_CHECKING:
     from pydantic.json_schema import JsonSchemaValue
 
-    from polylogue.lib.models import Message
+    from polylogue.lib.message_models import Message
 
 
 class MessageCollection(Sized):
@@ -89,7 +89,7 @@ class MessageCollection(Sized):
         _handler: GetCoreSchemaHandler,
     ) -> core_schema.CoreSchema:
         """Pydantic V2 schema: serialize as list[Message], accept MessageCollection or list."""
-        from polylogue.lib.models import Message
+        from polylogue.lib.message_models import Message
 
         message_schema = _handler.generate_schema(Message)
 
@@ -119,7 +119,7 @@ class MessageCollection(Sized):
         handler: GetJsonSchemaHandler,
     ) -> JsonSchemaValue:
         """JSON schema: array of Message objects."""
-        from polylogue.lib.models import Message
+        from polylogue.lib.message_models import Message
 
         return {"type": "array", "items": handler.resolve_ref_schema(handler.generate(Message))}  # type: ignore[attr-defined]
 

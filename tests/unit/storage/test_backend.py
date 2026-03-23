@@ -332,6 +332,7 @@ async def test_backend_transaction_contracts(tmp_path: Path) -> None:
 async def test_backend_delete_contracts(tmp_path: Path) -> None:
     """Deleting a conversation must remove rows, attachments, and FTS entries exactly once."""
     from polylogue.storage.index import ensure_index, update_index_for_conversations
+    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
 
     backend = SQLiteBackend(db_path=tmp_path / "delete.db")
     repo = ConversationRepository(backend=backend)
@@ -348,11 +349,26 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
     with open_connection(backend.db_path) as conn:
         ensure_index(conn)
         update_index_for_conversations(["conv-delete"], conn)
+        rebuild_session_products_sync(conn)
         conn.commit()
         assert conn.execute(
             "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
             ("conv-delete",),
         ).fetchone()[0] > 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_profiles WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] > 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] > 0
+        assert conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0] >= 1
 
     assert await repo.delete_conversation("conv-delete") is True
     assert await backend.get_conversation("conv-delete") is None
@@ -365,6 +381,20 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
             "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
             ("conv-delete",),
         ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_profiles WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0] == 0
     await backend.close()
 
 

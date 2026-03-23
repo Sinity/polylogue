@@ -15,14 +15,11 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-import pytest
 from hypothesis import given, settings
 
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.sources.source import _decode_json_bytes, _iter_json_stream
+from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
 from polylogue.storage.store import RawConversationRecord
-from tests.infra.strategies import malformed_json_strategy
-
 from tests.infra.large_batches import (
     corrupt_line_bad_utf8,
     corrupt_line_malformed_json,
@@ -31,10 +28,9 @@ from tests.infra.large_batches import (
     generate_large_jsonl,
     generate_timestamp_patterns,
     generate_valid_jsonl_record,
-    write_jsonl_file,
     write_jsonl_with_bad_utf8,
 )
-
+from tests.infra.strategies import malformed_json_strategy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -678,7 +674,7 @@ class TestRerunIdempotency:
         result_2 = await svc._parse_raw_record(record)
 
         assert len(result_1) == len(result_2)
-        for conv1, conv2 in zip(result_1, result_2):
+        for conv1, conv2 in zip(result_1, result_2, strict=True):
             assert conv1.provider_conversation_id == conv2.provider_conversation_id
             assert conv1.provider_name == conv2.provider_name
             assert len(conv1.messages) == len(conv2.messages)
@@ -720,7 +716,7 @@ class TestRerunIdempotency:
         parsed_2 = _iter_jsonl_stream(data)
 
         assert len(parsed_1) == len(parsed_2) == 100
-        for r1, r2 in zip(parsed_1, parsed_2):
+        for r1, r2 in zip(parsed_1, parsed_2, strict=True):
             assert r1 == r2
 
     def test_idempotency_with_timestamp_patterns(self):

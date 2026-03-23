@@ -215,7 +215,9 @@ class MCPHealthCheckPayload(MCPPayload):
 class MCPHealthReportPayload(MCPPayload):
     checks: list[MCPHealthCheckPayload]
     summary: str
-    cached: bool | None = None
+    source: str | None = None
+    cache_age_seconds: int | None = None
+    cache_ttl_seconds: int | None = None
 
     @classmethod
     def from_report(
@@ -236,7 +238,21 @@ class MCPHealthReportPayload(MCPPayload):
                 for check in report.checks
             ],
             summary=report.summary,
-            cached=getattr(report, "cached", False) if include_cached else None,
+            source=(
+                getattr(getattr(report, "provenance", None), "source", None).value
+                if include_cached and getattr(report, "provenance", None) is not None
+                else None
+            ),
+            cache_age_seconds=(
+                getattr(getattr(report, "provenance", None), "cache_age_seconds", None)
+                if include_cached
+                else None
+            ),
+            cache_ttl_seconds=(
+                getattr(getattr(report, "provenance", None), "cache_ttl_seconds", None)
+                if include_cached
+                else None
+            ),
         )
 
 

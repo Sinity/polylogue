@@ -37,7 +37,7 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.state_views import ArtifactCohortSummary
 from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
-from tests.infra.storage_records import DbFactory
+from tests.infra.storage_records import ConversationBuilder, DbFactory
 
 
 @pytest.fixture
@@ -266,6 +266,108 @@ class TestHealthReportConstruction:
 
         assert len(report.checks) == 0
         assert report.summary == {"ok": 0, "warning": 0, "error": 0}
+
+
+def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products")
+        .provider("claude-code")
+        .title("Scoped Check Repair")
+        .add_message("u1", role="user", text="Plan the cleanup")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "check",
+            "--json",
+            "--repair",
+            "--preview",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["maintenance"]["targets"] == ["session_products"]
+    assert payload["maintenance"]["items"][0]["name"] == "session_products"
+    assert payload["maintenance"]["items"][0]["repaired_count"] > 0
+
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT preview, target_names_json, manifest_json
+            FROM maintenance_runs
+            ORDER BY executed_at DESC, maintenance_run_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert row["preview"] == 1
+    assert json.loads(row["target_names_json"]) == ["session_products"]
+    manifest = json.loads(row["manifest_json"])
+    assert manifest["targets"] == ["session_products"]
+
+
+def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products-apply")
+        .provider("claude-code")
+        .title("Scoped Check Repair Apply")
+        .add_message("u1", role="user", text="Repair the durable products")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "check",
+            "--json",
+            "--repair",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["maintenance"]["targets"] == ["session_products"]
+    assert payload["maintenance"]["items"][0]["name"] == "session_products"
+    assert payload["maintenance"]["items"][0]["success"] is True
+
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT preview, target_names_json, manifest_json
+            FROM maintenance_runs
+            ORDER BY executed_at DESC, maintenance_run_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert row["preview"] == 0
+    assert json.loads(row["target_names_json"]) == ["session_products"]
+    manifest = json.loads(row["manifest_json"])
+    assert manifest["targets"] == ["session_products"]
 
 
 class TestCheckCommand:
@@ -569,8 +671,8 @@ class TestCheckCommandSupplementary:
     # --- Flag validation: invalid combos rejected with correct error ---
 
     INVALID_FLAG_COMBOS = [
-        (["check", "--vacuum"], "--vacuum requires --repair"),
-        (["check", "--preview"], "--preview requires --repair"),
+        (["check", "--vacuum"], "--vacuum requires --repair or --cleanup"),
+        (["check", "--preview"], "--preview requires --repair or --cleanup"),
         (["check", "--schema-provider", "chatgpt"], "--schema-provider requires --schemas"),
         (["check", "--schema-record-limit", "100"], "--schema-record-limit requires --schemas"),
         (["check", "--schema-record-offset", "10"], "--schema-record-offset requires --schemas"),
@@ -601,7 +703,7 @@ class TestCheckCommandSupplementary:
     # --- Remaining non-repetitive tests ---
 
     def test_json_output_with_repair(self, cli_workspace):
-        """--json with --repair includes repair results."""
+        """--json with --repair includes maintenance results."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
@@ -611,10 +713,10 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         envelope = json.loads(result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output)
         data = envelope.get("result", envelope)
-        assert "repairs" in data
+        assert "maintenance" in data
 
     def test_repair_with_no_issues_shows_message(self, cli_workspace):
-        """When repair finds no issues, should show 'No issues' message."""
+        """When repair finds no issues, should show a maintenance status message."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
@@ -622,7 +724,7 @@ class TestCheckCommandSupplementary:
         runner = CliRunner()
         result = runner.invoke(cli, ["check", "--repair"])
         assert result.exit_code == 0
-        assert "No issues" in result.output or "Repaired" in result.output or "repair" in result.output.lower()
+        assert "No selected maintenance work" in result.output or "Changed" in result.output or "maintenance" in result.output.lower()
 
     def test_vacuum_with_repair(self, cli_workspace):
         """--vacuum with --repair should attempt VACUUM."""
@@ -647,7 +749,7 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         envelope = json.loads(result.output)
         data = envelope.get("result", envelope)
-        assert "repairs" in data
+        assert "maintenance" in data
         assert data["vacuum"]["ok"] is True
         assert data["vacuum"]["preview"] is True
 
