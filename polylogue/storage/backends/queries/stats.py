@@ -61,7 +61,20 @@ async def aggregate_message_stats(
             "user": 0,
             "assistant": 0,
             "system": 0,
-            "words_approx": 0,
+            "words_approx": (
+                (
+                    await (
+                        await conn.execute(
+                            """
+                            SELECT SUM(word_count) as words_approx
+                            FROM conversation_stats
+                            WHERE conversation_id IN (SELECT cid FROM _stat_ids)
+                            """
+                        )
+                    ).fetchone()
+                )["words_approx"]
+                or 0
+            ),
             "attachments": att_row["cnt"] or 0,
             "min_sort_key": date_row["min_sk"],
             "max_sort_key": date_row["max_sk"],
@@ -87,7 +100,14 @@ async def aggregate_message_stats(
         "user": 0,
         "assistant": 0,
         "system": 0,
-        "words_approx": 0,
+        "words_approx": (
+            (
+                await (
+                    await conn.execute("SELECT SUM(word_count) as words_approx FROM conversation_stats")
+                ).fetchone()
+            )["words_approx"]
+            or 0
+        ),
         "attachments": att_cnt,
         "min_sort_key": date_row["min_sk"],
         "max_sort_key": date_row["max_sk"],

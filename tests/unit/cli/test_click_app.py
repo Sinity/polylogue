@@ -19,7 +19,6 @@ from tests.infra.cli_subprocess import run_cli
 class TestHandleQueryMode:
     def _make_params(self, **overrides):
         defaults = {
-            "query_term": (),
             "conv_id": None,
             "contains": (),
             "exclude_text": (),
@@ -72,6 +71,7 @@ class TestHandleQueryMode:
         mock_ctx = MagicMock()
         mock_ctx.params = params
         mock_ctx.obj = MagicMock()
+        mock_ctx.meta = {}
 
         with patch("polylogue.cli.query.execute_query") as mock_execute, patch(
             "polylogue.cli.click_app._show_stats"
@@ -90,7 +90,18 @@ class TestHandleQueryMode:
         mock_execute.assert_not_called()
 
     def test_query_terms_trigger_query(self):
-        mock_execute, mock_stats = self._call(self._make_params(query_term=("error", "handling")))
+        mock_ctx = MagicMock()
+        mock_ctx.params = self._make_params()
+        mock_ctx.obj = MagicMock()
+        mock_ctx.meta = {"polylogue_query_terms": ("error", "handling")}
+
+        with patch("polylogue.cli.query.execute_query") as mock_execute, patch(
+            "polylogue.cli.click_app._show_stats"
+        ) as mock_stats:
+            from polylogue.cli.click_app import _handle_query_mode
+
+            _handle_query_mode(mock_ctx)
+
         mock_execute.assert_called_once()
         mock_stats.assert_not_called()
 
@@ -139,7 +150,18 @@ class TestHandleQueryMode:
             mock_stats.assert_not_called()
 
     def test_query_terms_forwarded(self):
-        mock_execute, _ = self._call(self._make_params(query_term=("python", "error")))
+        mock_ctx = MagicMock()
+        mock_ctx.params = self._make_params()
+        mock_ctx.obj = MagicMock()
+        mock_ctx.meta = {"polylogue_query_terms": ("python", "error")}
+
+        with patch("polylogue.cli.query.execute_query") as mock_execute, patch(
+            "polylogue.cli.click_app._show_stats"
+        ):
+            from polylogue.cli.click_app import _handle_query_mode
+
+            _handle_query_mode(mock_ctx)
+
         params = mock_execute.call_args[0][1]
         assert params["query"] == ("python", "error")
 
@@ -159,6 +181,15 @@ class TestQueryFirstGroupParseArgs:
             cli_runner.invoke(cli, ["hello", "world", "--plain"], catch_exceptions=False)
         _, params = mock_execute.call_args[0]
         assert set(params.get("query", ())) == {"hello", "world"}
+
+    def test_query_option_before_command_name_stays_query_mode(self, cli_runner):
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query") as mock_execute:
+            cli_runner.invoke(cli, ["-p", "claude-ai", "check", "--plain"], catch_exceptions=False)
+        _, params = mock_execute.call_args[0]
+        assert params.get("provider") == "claude-ai"
+        assert params.get("query") == ("check",)
 
     def test_option_args_preserved(self, cli_runner):
         from polylogue.cli.click_app import cli

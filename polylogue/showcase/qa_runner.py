@@ -6,7 +6,6 @@ with optional real-data ingestion into isolated workspaces.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +25,7 @@ from polylogue.showcase.workspace import (
     run_pipeline_for_configured_sources,
     run_pipeline_for_fixture_workspace,
 )
+from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
     from polylogue.rendering.semantic_proof import SemanticProofSuiteReport
@@ -251,7 +251,7 @@ def run_qa_session(
 
         config = get_config()
         names = source_names if source_names else None
-        asyncio.run(run_sources(
+        run_coroutine_sync(run_sources(
             config=config,
             stage="all",
             plan=None,

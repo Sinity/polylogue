@@ -6,6 +6,7 @@ import click
 
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.types import AppEnv
+from polylogue.sync_bridge import run_coroutine_sync
 
 
 @click.command("tags")
@@ -28,9 +29,7 @@ def tags_command(
         polylogue tags --json           # Machine-readable output
         polylogue tags -n 10            # Top 10 tags
     """
-    import asyncio
-
-    tags = asyncio.run(env.repository.list_tags(provider=provider))
+    tags = run_coroutine_sync(env.repository.list_tags(provider=provider))
 
     if count is not None:
         # Truncate to top N (already sorted by count desc from SQL)
