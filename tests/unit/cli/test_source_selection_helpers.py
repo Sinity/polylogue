@@ -339,10 +339,21 @@ def _run_summary(
     health=None,
     counts=None,
     metrics=None,
+    archive_stats=None,
     analytics_error: Exception | None = None,
 ):
     from polylogue.cli.helpers import print_summary
     env, buffer = _make_env(config, plain=plain)
+    total_conversations = sum(count for _, count in counts or [])
+    if archive_stats is None:
+        archive_stats = SimpleNamespace(
+            total_conversations=total_conversations,
+            embedded_conversations=0,
+            embedded_messages=0,
+            pending_embedding_conversations=0,
+            embedding_coverage=0.0,
+        )
+    env.repository.get_archive_stats = AsyncMock(return_value=archive_stats)
     analytics_patches = {
         "polylogue.cli.helpers.compute_provider_comparison": AsyncMock(return_value=metrics),
         "polylogue.cli.helpers.get_provider_counts": AsyncMock(return_value=counts),
@@ -387,6 +398,7 @@ def test_print_summary_basic_contract(config: Config) -> None:
         "Render: /data/archive/rendered",
         "Sources: inbox",
         "Last run: run-123 (2025-01-15T12:30:45Z)",
+        "Embeddings: 0/10 convs, 0 msgs (0.0%)",
         "Health: OK",
     ]
     assert "Archive:" in result["console"]
@@ -418,8 +430,9 @@ def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status
         "Sources: inbox",
         "Last run: none",
     ]
-    assert result["lines"][4] == "Health (cached=True, age=30s)"
-    assert result["lines"][5] == f"  {expected_indicator} database: detail"
+    assert result["lines"][4] == "Embeddings: 0/0 convs, 0 msgs (0.0%)"
+    assert result["lines"][5] == "Health (cached=True, age=30s)"
+    assert result["lines"][6] == f"  {expected_indicator} database: detail"
     result["mock_get_health"].assert_called_once()
     result["mock_cached"].assert_not_called()
 
@@ -456,7 +469,8 @@ def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> N
         metrics=metrics,
     )
 
-    assert result["lines"][4] == "Health"
+    assert result["lines"][4] == "Embeddings: 0/10 convs, 0 msgs (0.0%)"
+    assert result["lines"][5] == "Health"
     assert "Archive:" in result["console"]
     assert "10 conversations" in result["console"]
     assert "Deep Dive:" in result["console"]
@@ -477,6 +491,7 @@ def test_print_summary_analytics_errors_are_silent(config: Config) -> None:
 
     assert result["title"] == "Polylogue"
     assert result["lines"][-1] == "Health: OK"
+    assert result["lines"][-2] == "Embeddings: 0/0 convs, 0 msgs (0.0%)"
     assert "Archive:" not in result["console"]
 
 
@@ -491,3 +506,21 @@ def test_print_summary_omits_deep_dive_when_no_verbose_metrics(config: Config) -
 
     assert "Archive:" in result["console"]
     assert "Deep Dive:" not in result["console"]
+
+
+def test_print_summary_shows_pending_embeddings(config: Config) -> None:
+    result = _run_summary(
+        config,
+        verbose=False,
+        plain=True,
+        counts=[("claude-ai", 7), ("chatgpt", 3)],
+        archive_stats=SimpleNamespace(
+            total_conversations=10,
+            embedded_conversations=4,
+            embedded_messages=120,
+            pending_embedding_conversations=6,
+            embedding_coverage=40.0,
+        ),
+    )
+
+    assert "Embeddings: 4/10 convs, 120 msgs (40.0%), pending 6" in result["lines"]

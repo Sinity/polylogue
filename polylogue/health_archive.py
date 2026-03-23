@@ -12,6 +12,7 @@ from .health_models import HealthCheck, HealthReport, VerifyStatus
 from .lib.provider_identity import CORE_SCHEMA_PROVIDERS
 from .sources.drive_client import default_credentials_path, default_token_path
 from .storage.backends.connection import connection_context, open_connection
+from .storage.embedding_stats import read_embedding_stats_sync
 from .storage.index import index_status
 
 logger = get_logger(__name__)
@@ -199,14 +200,75 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                             VerifyStatus.WARNING,
                             count=msg_count,
                             summary=f"FTS index not built ({msg_count:,} messages not indexed)",
-                        )
                     )
+                )
             except Exception as exc:
                 checks.append(
                     HealthCheck(
                         "fts_sync",
                         VerifyStatus.ERROR,
                         summary=f"FTS check failed: {exc}",
+                    )
+                )
+
+            total_conversations = sum(provider_breakdown.values())
+            try:
+                embedding_stats = read_embedding_stats_sync(conn)
+                embedded_conversations = embedding_stats.embedded_conversations
+                embedded_messages = embedding_stats.embedded_messages
+                pending_conversations = embedding_stats.pending_conversations
+                embedding_coverage = (
+                    (embedded_conversations / total_conversations) * 100 if total_conversations else 0.0
+                )
+
+                if total_conversations == 0:
+                    checks.append(
+                        HealthCheck(
+                            "embedding_coverage",
+                            VerifyStatus.OK,
+                            summary="No conversations to embed",
+                        )
+                    )
+                elif embedded_conversations == 0 and embedded_messages == 0 and pending_conversations == 0:
+                    checks.append(
+                        HealthCheck(
+                            "embedding_coverage",
+                            VerifyStatus.WARNING,
+                            count=0,
+                            summary=f"Embeddings not built (0/{total_conversations:,} conversations embedded)",
+                        )
+                    )
+                elif pending_conversations > 0:
+                    checks.append(
+                        HealthCheck(
+                            "embedding_coverage",
+                            VerifyStatus.WARNING,
+                            count=pending_conversations,
+                            summary=(
+                                f"Embeddings partial ({embedded_conversations:,}/{total_conversations:,} conversations, "
+                                f"{embedded_messages:,} messages, pending {pending_conversations:,}, "
+                                f"coverage {embedding_coverage:.1f}%)"
+                            ),
+                        )
+                    )
+                else:
+                    checks.append(
+                        HealthCheck(
+                            "embedding_coverage",
+                            VerifyStatus.OK,
+                            count=embedded_conversations,
+                            summary=(
+                                f"Embeddings ready ({embedded_conversations:,}/{total_conversations:,} conversations, "
+                                f"{embedded_messages:,} messages, coverage {embedding_coverage:.1f}%)"
+                            ),
+                        )
+                    )
+            except Exception as exc:
+                checks.append(
+                    HealthCheck(
+                        "embedding_coverage",
+                        VerifyStatus.ERROR,
+                        summary=f"Embedding coverage check failed: {exc}",
                     )
                 )
 
