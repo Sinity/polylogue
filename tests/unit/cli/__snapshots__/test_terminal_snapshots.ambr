@@ -203,7 +203,7 @@
     --list                          Force list format
     --stats                         Only statistics, no content
     --count                         Print matched count and exit
-    --stats-by [provider|month|year|day|action]
+    --stats-by [provider|month|year|day|action|tool]
                                     Aggregate statistics by dimension
     --open                          Open result in browser<PATH>
     --transform [strip-tools|strip-thinking|strip-all]
@@ -350,7 +350,7 @@
   t
     --count                         Print matched count and ex
   it
-    --stats-by [provider|month|year|day|action]
+    --stats-by [provider|month|year|day|action|tool]
                                     Aggregate statistics by di
   mension
     --open                          Open result in browser<PATH>
@@ -489,7 +489,7 @@
     --list                          Force list format
     --stats                         Only statistics, no content
     --count                         Print matched count and exit
-    --stats-by [provider|month|year|day|action]
+    --stats-by [provider|month|year|day|action|tool]
                                     Aggregate statistics by dimension
     --open                          Open result in browser<PATH>
     --transform [strip-tools|strip-thinking|strip-all]

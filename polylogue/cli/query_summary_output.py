@@ -366,6 +366,88 @@ def output_stats_by_conversations(
         env.ui.console.print("Note: conversations may appear in multiple action groups.")
         return
 
+    if dimension == "tool":
+        from collections import Counter
+
+        tool_groups: dict[str, dict[str, int]] = defaultdict(lambda: {"convs": 0, "facts": 0, "msgs": 0})
+        matched_tool_facts = 0
+        matched_tool_msgs = 0
+
+        for conv in results:
+            facts = build_conversation_semantic_facts(conv)
+            tool_counts = Counter((action.tool_name or "unknown").strip().lower() for action in facts.action_facts)
+            if not tool_counts:
+                tool_groups["none"]["convs"] += 1
+                continue
+
+            matched_tool_facts += sum(tool_counts.values())
+            matched_tool_msgs += sum(1 for message in facts.message_facts if message.action_facts)
+
+            message_groups: dict[str, set[str]] = defaultdict(set)
+            for message in facts.message_facts:
+                for key in {(action.tool_name or "unknown").strip().lower() for action in message.action_facts}:
+                    message_groups[key].add(message.message_id)
+
+            for key, fact_count in tool_counts.items():
+                tool_groups[key]["convs"] += 1
+                tool_groups[key]["facts"] += fact_count
+                tool_groups[key]["msgs"] += len(message_groups[key])
+
+        sorted_keys = sorted(tool_groups.keys())
+
+        table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+        table.add_column("Group", style="bold", min_width=12)
+        table.add_column("Convs", justify="right")
+        table.add_column("Facts", justify="right")
+        table.add_column("Msgs", justify="right")
+
+        rows: list[dict[str, object]] = []
+        for key in sorted_keys:
+            stats = tool_groups[key]
+            rows.append({
+                "group": key,
+                "conversations": stats["convs"],
+                "facts": stats["facts"],
+                "messages": stats["msgs"],
+            })
+
+        summary = {
+            "group": "MATCHED",
+            "conversations": len(results),
+            "facts": matched_tool_facts,
+            "messages": matched_tool_msgs,
+        }
+        if _emit_structured_stats(
+            output_format=output_format,
+            dimension=dimension,
+            rows=rows,
+            summary=summary,
+            multi_membership=True,
+        ):
+            return
+
+        env.ui.console.print(f"\nMatched: {len(results)} conversations (by {dimension})\n")
+
+        for row in rows:
+            table.add_row(
+                str(row["group"]),
+                f"{row['conversations']:,}",
+                f"{row['facts']:,}",
+                f"{row['messages']:,}",
+            )
+
+        table.add_section()
+        table.add_row(
+            "[bold]MATCHED[/]",
+            f"[bold]{summary['conversations']:,}[/]",
+            f"[bold]{summary['facts']:,}[/]",
+            f"[bold]{summary['messages']:,}[/]",
+        )
+
+        env.ui.console.print(table)
+        env.ui.console.print("Note: conversations may appear in multiple tool groups.")
+        return
+
     groups: dict[str, list[Conversation]] = defaultdict(list)
     for conv in results:
         if dimension == "provider":
