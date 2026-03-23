@@ -50,9 +50,6 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         has_thinking: bool = False,
         min_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> str:
         async def _run() -> str:
             ops = hooks.get_archive_ops()
@@ -68,9 +65,6 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 filter_has_thinking=has_thinking,
                 min_messages=min_messages,
                 min_words=min_words,
-                filter_has_file_ops=has_file_ops,
-                filter_has_git_ops=has_git_ops,
-                filter_has_subagent=has_subagent,
             )
             results = await ops.query_conversations(spec)
             return hooks.json_payload(
@@ -99,9 +93,6 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         has_thinking: bool = False,
         min_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> str:
         async def _run() -> str:
             ops = hooks.get_archive_ops()
@@ -119,9 +110,6 @@ def _register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 filter_has_thinking=has_thinking,
                 min_messages=min_messages,
                 min_words=min_words,
-                filter_has_file_ops=has_file_ops,
-                filter_has_git_ops=has_git_ops,
-                filter_has_subagent=has_subagent,
             )
             conversations = await ops.query_conversations(spec)
             return hooks.json_payload(

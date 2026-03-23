@@ -68,9 +68,6 @@ class ConversationQueryPlan:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
-    filter_has_file_ops: bool = False
-    filter_has_git_ops: bool = False
-    filter_has_subagent: bool = False
     vector_provider: VectorProvider | None = None
 
     @property
@@ -101,9 +98,6 @@ class ConversationQueryPlan:
             min_messages=self.min_messages,
             max_messages=self.max_messages,
             min_words=self.min_words,
-            has_file_ops=self.filter_has_file_ops,
-            has_git_ops=self.filter_has_git_ops,
-            has_subagent=self.filter_has_subagent,
         )
 
     def sql_pushdown_params(self) -> dict[str, object]:
@@ -137,12 +131,6 @@ class ConversationQueryPlan:
             params["max_messages"] = self.max_messages
         if self.min_words is not None:
             params["min_words"] = self.min_words
-        if self.filter_has_file_ops:
-            params["has_file_ops"] = True
-        if self.filter_has_git_ops:
-            params["has_git_ops"] = True
-        if self.filter_has_subagent:
-            params["has_subagent"] = True
         return params
 
     def describe(self) -> list[str]:
@@ -173,12 +161,6 @@ class ConversationQueryPlan:
             parts.append("has_tool_use")
         if self.filter_has_thinking:
             parts.append("has_thinking")
-        if self.filter_has_file_ops:
-            parts.append("has_file_ops")
-        if self.filter_has_git_ops:
-            parts.append("has_git_ops")
-        if self.filter_has_subagent:
-            parts.append("has_subagent")
         if self.min_messages is not None:
             parts.append(f"min_messages: {self.min_messages}")
         if self.max_messages is not None:
@@ -240,9 +222,6 @@ class ConversationQueryPlan:
                 self.has_branches is not None,
                 self.filter_has_tool_use,
                 self.filter_has_thinking,
-                self.filter_has_file_ops,
-                self.filter_has_git_ops,
-                self.filter_has_subagent,
                 self.min_messages is not None,
                 self.max_messages is not None,
                 self.min_words is not None,
