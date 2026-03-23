@@ -51,6 +51,12 @@ class TestCommandConstruction:
         cmd = build_lane_command(LANES["query-routing"])
         assert "query_routing" in cmd
 
+    def test_semantic_stack_lane_uses_explicit_semantic_suite(self):
+        cmd = build_lane_command(LANES["semantic-stack"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/core/test_semantic_facts.py" in cmd
+        assert "tests/unit/sources/test_unified_semantic_laws.py" in cmd
+
     def test_long_haul_lane_uses_campaign_runner(self):
         cmd = build_lane_command(LANES["long-haul-small"])
         assert cmd[:3] == [sys.executable, "-m", "devtools.run_campaign"]
@@ -74,3 +80,4 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "machine-contract" in captured.out
         assert "query-routing" in captured.out
+        assert "semantic-stack" in captured.out

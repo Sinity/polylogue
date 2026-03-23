@@ -56,6 +56,12 @@ def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -
     help="Run semantic preservation proof across canonical, export, query, stream, and MCP read surfaces",
 )
 @click.option(
+    "--semantic-contracts",
+    "check_semantic_contracts",
+    is_flag=True,
+    help="List declared semantic-proof surface contracts and aliases",
+)
+@click.option(
     "--roundtrip-proof",
     "check_roundtrip_proof",
     is_flag=True,
@@ -170,6 +176,7 @@ def check_command(
     check_artifacts: bool,
     check_cohorts: bool,
     check_semantic_proof: bool,
+    check_semantic_contracts: bool,
     check_roundtrip_proof: bool,
     schema_providers: tuple[str, ...],
     artifact_providers: tuple[str, ...],
@@ -202,6 +209,7 @@ def check_command(
         check_artifacts=check_artifacts,
         check_cohorts=check_cohorts,
         check_semantic_proof=check_semantic_proof,
+        check_semantic_contracts=check_semantic_contracts,
         check_roundtrip_proof=check_roundtrip_proof,
         schema_providers=schema_providers,
         artifact_providers=artifact_providers,
