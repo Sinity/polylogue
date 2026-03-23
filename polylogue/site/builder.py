@@ -11,6 +11,12 @@ from typing import TYPE_CHECKING
 
 from polylogue.publication import SitePublicationManifest
 from polylogue.rendering.renderers.html import MarkdownRenderer, PygmentsHighlighter
+from polylogue.site.conversation_pages import generate_conversation_page, write_template_stream
+from polylogue.site.index_pages import (
+    generate_dashboard,
+    generate_provider_indexes,
+    generate_root_index,
+)
 from polylogue.site.models import (
     ArchiveIndexStats,
     ConversationIndex,
@@ -25,16 +31,9 @@ from polylogue.site.publication_flow import (
     record_site_publication_manifest,
     write_site_publication_manifest,
 )
-from polylogue.site.rendering import (
-    build_template_environments,
-    generate_conversation_page,
-    generate_dashboard,
-    generate_provider_indexes,
-    generate_root_index,
-    write_template_stream,
-)
 from polylogue.site.scan import iter_conversation_indexes, scan_archive
 from polylogue.site.search import build_search_document, generate_pagefind_config, render_search_markup
+from polylogue.site.templates import build_template_environments
 from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:

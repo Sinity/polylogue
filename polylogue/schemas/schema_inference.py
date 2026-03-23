@@ -12,7 +12,8 @@ Can be used as:
 Implementation is split across:
 - `schemas/observation.py` — ProviderConfig, PROVIDERS, runtime-safe observation helpers
 - `schemas/sampling.py` — tooling-side sample loading
-- `schemas/schema_generation.py` — schema manipulation, annotation, generation
+- `schemas/generation_workflow.py` — staged schema generation and package emission
+- `schemas/generation_support.py` — schema manipulation and annotation helpers
 - `schemas/field_stats.py` — FieldStats, _collect_field_stats
 - `schemas/privacy.py` — _is_safe_enum_value, _is_content_field
 """
@@ -27,6 +28,19 @@ from polylogue.schemas.field_stats import (
     FieldStats,
     _collect_field_stats,
     is_dynamic_key,
+)
+from polylogue.schemas.generation_models import GenerationResult
+from polylogue.schemas.generation_support import (
+    _annotate_schema,
+    _annotate_semantic_and_relational,
+    _merge_schemas,
+    _remove_nested_required,
+    collapse_dynamic_keys,
+)
+from polylogue.schemas.generation_workflow import (
+    generate_all_schemas,
+    generate_provider_schema,
+    generate_schema_from_samples,
 )
 from polylogue.schemas.observation import (
     PROVIDERS,
@@ -57,24 +71,13 @@ from polylogue.schemas.sampling import (
     load_samples_from_db,
     load_samples_from_sessions,
 )
-from polylogue.schemas.schema_generation import (
-    GenerationResult,
-    _annotate_schema,
-    _annotate_semantic_and_relational,
-    _merge_schemas,
-    _remove_nested_required,
-    _structure_fingerprint,
-    collapse_dynamic_keys,
-    generate_all_schemas,
-    generate_provider_schema,
-    generate_schema_from_samples,
-)
 from polylogue.schemas.semantic_inference import (
     SEMANTIC_ROLES,
     SemanticCandidate,
     infer_semantic_roles,
     select_best_roles,
 )
+from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
 # =============================================================================
 # CLI Entry Point

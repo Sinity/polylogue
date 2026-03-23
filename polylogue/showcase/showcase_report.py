@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from polylogue.showcase.exercises import GROUPS
@@ -63,6 +65,23 @@ def build_showcase_session_payload(
             for report in result.results
         ],
     }
+
+
+def generate_showcase_session(result: ShowcaseResult) -> dict[str, Any]:
+    """Generate a structured showcase session record."""
+    return build_showcase_session_payload(
+        result,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def write_showcase_session(result: ShowcaseResult, audit_dir: Path) -> Path:
+    """Write a showcase session record to ``audit_dir`` and return the path."""
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_path = audit_dir / f"showcase-{ts}.json"
+    out_path.write_text(json.dumps(generate_showcase_session(result), indent=2))
+    return out_path
 
 
 def generate_summary(result: ShowcaseResult) -> str:

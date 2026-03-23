@@ -1,8 +1,23 @@
 # Schema And Evidence Pipeline Convergence Program
 
 Date: 2026-03-23
-Status: planned execution program
-Role: canonical next implementation campaign after the core architecture convergence wave
+Status: executed implementation program
+Role: canonical execution record for the schema-and-evidence pipeline convergence campaign
+
+## Execution Outcome
+
+This program is executed.
+
+It landed:
+
+1. runtime-safe observation helpers extracted away from tooling-only sampling paths
+2. schema generation decomposed into explicit staged modules
+3. synthetic corpus generation decomposed around typed package inputs
+4. prepare/source transformation boundaries converged around explicit record preparation seams
+5. artifact proof and corpus verification converged onto typed operator workflows
+6. async SQLite evidence/write workflows narrowed behind repository and low-level backend boundaries
+7. schema/proof operator workflows converged around typed request/result models
+8. a named schema-and-evidence roundtrip proof lane routed through `check`, QA, and report surfaces
 
 See also:
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.outcomes import OutcomeStatus
@@ -17,6 +18,22 @@ from .report_common import (
 
 if TYPE_CHECKING:
     from polylogue.showcase.qa_runner import QAResult
+
+
+def generate_qa_session(result: QAResult) -> dict[str, Any]:
+    """Generate a structured full QA session record."""
+    from polylogue.showcase.showcase_report import generate_showcase_session
+
+    showcase_session = (
+        generate_showcase_session(result.showcase_result)
+        if result.showcase_result is not None
+        else None
+    )
+    return build_qa_session_payload(
+        result,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        showcase_session=showcase_session,
+    )
 
 
 def build_qa_session_payload(
@@ -56,6 +73,14 @@ def build_qa_session_payload(
     if result.semantic_proof_error is not None:
         semantic_proof_payload["error"] = result.semantic_proof_error
 
+    roundtrip_proof_payload: dict[str, Any] = {
+        "status": result.roundtrip_proof_status.value,
+    }
+    if result.roundtrip_proof_report is not None:
+        roundtrip_proof_payload["report"] = result.roundtrip_proof_report.to_dict()
+    if result.roundtrip_proof_error is not None:
+        roundtrip_proof_payload["error"] = result.roundtrip_proof_error
+
     showcase_payload: dict[str, Any] = {
         "status": result.showcase_status.value,
         "skipped": result.exercises_skipped,
@@ -70,6 +95,7 @@ def build_qa_session_payload(
         "audit": audit_payload,
         "proof": proof_payload,
         "semantic_proof": semantic_proof_payload,
+        "roundtrip_proof": roundtrip_proof_payload,
         "showcase": showcase_payload,
         "invariants": {
             "status": result.invariant_status.value,
@@ -83,8 +109,10 @@ def build_qa_session_payload(
     }
 
 
-def generate_qa_summary(result: QAResult, *, session: dict[str, Any]) -> str:
+def generate_qa_summary(result: QAResult, *, session: dict[str, Any] | None = None) -> str:
     """Generate a human-readable summary for a full QA run."""
+    if session is None:
+        session = generate_qa_session(result)
     lines: list[str] = []
     proof_summary = session["proof"].get("report", {}).get("summary")
     semantic_summary = session["semantic_proof"].get("report", {}).get("summary")
@@ -143,6 +171,31 @@ def generate_qa_summary(result: QAResult, *, session: dict[str, Any]) -> str:
             )
     elif result.semantic_proof_status is OutcomeStatus.SKIP:
         lines.append("Semantic Proof: SKIPPED")
+    roundtrip_summary = session["roundtrip_proof"].get("report", {}).get("summary")
+    if result.roundtrip_proof_error:
+        lines.append(f"Roundtrip Proof: FAIL ({result.roundtrip_proof_error})")
+    elif roundtrip_summary is not None:
+        lines.append(
+            "Roundtrip Proof: "
+            f"providers={roundtrip_summary['provider_count']}, "
+            f"clean={roundtrip_summary['clean_providers']}, "
+            f"failed={roundtrip_summary['failed_providers']}, "
+            f"artifacts={roundtrip_summary['artifact_count']}, "
+            f"parsed_conversations={roundtrip_summary['parsed_conversations']}, "
+            f"persisted_conversations={roundtrip_summary['persisted_conversations']}"
+        )
+        for provider, provider_report in sorted(
+            session["roundtrip_proof"].get("report", {}).get("providers", {}).items()
+        ):
+            provider_summary = provider_report["summary"]
+            failed_stages = ", ".join(provider_summary["failed_stages"]) or "-"
+            lines.append(
+                f"  {provider}: package={provider_report['package_version']}, "
+                f"element={provider_report['element_kind'] or '-'}, "
+                f"failed_stages={failed_stages}"
+            )
+    elif result.roundtrip_proof_status is OutcomeStatus.SKIP:
+        lines.append("Roundtrip Proof: SKIPPED")
     if result.audit_status is OutcomeStatus.ERROR:
         if result.audit_error:
             lines.append(f"  Error: {result.audit_error}")
@@ -188,10 +241,12 @@ def generate_qa_summary(result: QAResult, *, session: dict[str, Any]) -> str:
 def generate_qa_markdown(
     result: QAResult,
     *,
-    session: dict[str, Any],
+    session: dict[str, Any] | None = None,
     git_sha: str | None = None,
 ) -> str:
     """Generate a stable, diffable Markdown report for a full QA run."""
+    if session is None:
+        session = generate_qa_session(result)
     lines: list[str] = ["# QA Session", ""]
     if git_sha:
         lines.append(f"**Git SHA**: `{git_sha}`")
@@ -204,6 +259,7 @@ def generate_qa_markdown(
     lines.append(f"| Schema Audit | {status_label(result.audit_status)} |")
     lines.append(f"| Artifact Proof | {status_label(result.proof_status)} |")
     lines.append(f"| Semantic Proof | {status_label(result.semantic_proof_status)} |")
+    lines.append(f"| Roundtrip Proof | {status_label(result.roundtrip_proof_status)} |")
     lines.append(f"| Exercises | {status_label(result.showcase_status)} |")
     lines.append(f"| Invariants | {status_label(result.invariant_status)} |")
     lines.append(f"| Overall | {status_label(result.overall_status)} |")
@@ -352,6 +408,38 @@ def generate_qa_markdown(
         lines.append("## Semantic Proof")
         lines.append("")
         lines.append(f"- Error: {result.semantic_proof_error}")
+        lines.append("")
+
+    roundtrip_report = session["roundtrip_proof"].get("report")
+    if roundtrip_report is not None:
+        roundtrip_summary = roundtrip_report["summary"]
+        lines.append("## Roundtrip Proof")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("| --- | ---: |")
+        lines.append(f"| Providers | {roundtrip_summary['provider_count']} |")
+        lines.append(f"| Clean providers | {roundtrip_summary['clean_providers']} |")
+        lines.append(f"| Failed providers | {roundtrip_summary['failed_providers']} |")
+        lines.append(f"| Synthetic artifacts | {roundtrip_summary['artifact_count']} |")
+        lines.append(f"| Parsed conversations | {roundtrip_summary['parsed_conversations']} |")
+        lines.append(f"| Persisted conversations | {roundtrip_summary['persisted_conversations']} |")
+        lines.append("")
+        lines.append("### Providers")
+        lines.append("")
+        lines.append("| Provider | Package | Element | Failed stages |")
+        lines.append("| --- | --- | --- | --- |")
+        for provider, provider_report in sorted(roundtrip_report["providers"].items()):
+            provider_summary = provider_report["summary"]
+            failed_stages = ", ".join(provider_summary["failed_stages"]) or "-"
+            lines.append(
+                f"| {provider} | {provider_report['package_version']} | "
+                f"{provider_report['element_kind'] or '-'} | {failed_stages} |"
+            )
+        lines.append("")
+    elif result.roundtrip_proof_error:
+        lines.append("## Roundtrip Proof")
+        lines.append("")
+        lines.append(f"- Error: {result.roundtrip_proof_error}")
         lines.append("")
 
     showcase_summary = session["showcase"]["summary"]
