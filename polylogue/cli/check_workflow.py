@@ -21,7 +21,7 @@ from polylogue.schemas.verification_requests import (
     ArtifactProofRequest,
     SchemaVerificationRequest,
 )
-from polylogue.storage.repair import run_all_repairs
+from polylogue.storage.repair import run_selected_maintenance
 
 from .check_support import make_schema_progress_callback, parse_schema_samples, vacuum_database
 
@@ -30,7 +30,9 @@ from .check_support import make_schema_progress_callback, parse_schema_samples, 
 class CheckCommandOptions:
     json_output: bool
     verbose: bool
+    use_cached_health: bool
     repair: bool
+    cleanup: bool
     preview: bool
     vacuum: bool
     deep: bool
@@ -71,15 +73,44 @@ class CheckCommandResult:
     semantic_report: Any | None = None
     semantic_contracts: list[Any] | None = None
     roundtrip_report: Any | None = None
-    repair_results: list[Any] | None = None
+    maintenance_results: list[Any] | None = None
     vacuum_result: dict[str, Any] | None = None
 
 
+def _build_preview_counts(report: Any) -> dict[str, int]:
+    """Extract maintenance preview counts from the already-computed health report."""
+    counts: dict[str, int] = {}
+    check_counts = {check.name: int(check.count or 0) for check in report.checks}
+    for name in (
+        "orphaned_messages",
+        "orphaned_content_blocks",
+        "empty_conversations",
+    ):
+        if name in check_counts:
+            counts[name] = check_counts[name]
+
+    derived_models = getattr(report, "derived_models", {}) or {}
+    action_events = derived_models.get("action_events")
+    action_events_fts = derived_models.get("action_events_fts")
+    messages_fts = derived_models.get("messages_fts")
+    if action_events is not None and action_events_fts is not None:
+        counts["action_event_read_model"] = max(
+            0,
+            int(getattr(action_events, "pending_documents", 0) or 0),
+        ) + max(0, int(getattr(action_events, "stale_rows", 0) or 0)) + max(
+            0,
+            int(getattr(action_events_fts, "pending_rows", 0) or 0),
+        )
+    if messages_fts is not None:
+        counts["dangling_fts"] = max(0, int(getattr(messages_fts, "pending_rows", 0) or 0))
+    return counts
+
+
 def validate_check_options(options: CheckCommandOptions) -> None:
-    if options.vacuum and not options.repair:
-        fail("check", "--vacuum requires --repair")
-    if options.preview and not options.repair:
-        fail("check", "--preview requires --repair")
+    if options.vacuum and not (options.repair or options.cleanup):
+        fail("check", "--vacuum requires --repair or --cleanup")
+    if options.preview and not (options.repair or options.cleanup):
+        fail("check", "--preview requires --repair or --cleanup")
     if options.schema_providers and not options.check_schemas:
         fail("check", "--schema-provider requires --schemas")
     if options.schema_samples != "all" and not options.check_schemas:
@@ -134,7 +165,7 @@ def validate_check_options(options: CheckCommandOptions) -> None:
 
 def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckCommandResult:
     config = load_effective_config(env)
-    report = get_health(config, deep=options.deep)
+    report = get_health(config, deep=options.deep, use_cached=options.use_cached_health)
     result = CheckCommandResult(report=report)
 
     if options.runtime:
@@ -228,10 +259,16 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
         except ValueError as exc:
             fail("check", str(exc))
 
-    if options.repair:
-        result.repair_results = run_all_repairs(config, dry_run=options.preview)
+    if options.repair or options.cleanup:
+        result.maintenance_results = run_selected_maintenance(
+            config,
+            repair=options.repair,
+            cleanup=options.cleanup,
+            dry_run=options.preview,
+            preview_counts=_build_preview_counts(report) if options.preview else None,
+        )
 
-    if options.repair and options.vacuum:
+    if (options.repair or options.cleanup) and options.vacuum:
         if options.preview:
             result.vacuum_result = {
                 "ok": True,

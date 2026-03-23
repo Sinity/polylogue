@@ -40,9 +40,11 @@ def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -
 @click.command("check")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.option("--verbose", "-v", is_flag=True, help="Show breakdown by provider")
-@click.option("--repair", is_flag=True, help="Attempt to repair detected issues")
-@click.option("--preview", is_flag=True, help="Preview repairs without executing (requires --repair)")
-@click.option("--vacuum", is_flag=True, help="Reclaim unused space after repair (requires --repair)")
+@click.option("--cached", "use_cached_health", is_flag=True, help="Use the recent cached archive-health report when available")
+@click.option("--repair", is_flag=True, help="Run safe derived-data and database maintenance repairs")
+@click.option("--cleanup", is_flag=True, help="Run destructive archive cleanup for orphaned or empty persisted data")
+@click.option("--preview", is_flag=True, help="Preview maintenance without executing (requires --repair or --cleanup)")
+@click.option("--vacuum", is_flag=True, help="Reclaim unused space after maintenance (requires --repair or --cleanup)")
 @click.option("--deep", is_flag=True, help="Run SQLite integrity check (slow on large databases)")
 @click.option("--runtime", is_flag=True, help="Run environment and runtime verification checks")
 @click.option("--schemas", "check_schemas", is_flag=True, help="Run raw-corpus schema verification (non-mutating)")
@@ -166,7 +168,9 @@ def check_command(
     env: AppEnv,
     json_output: bool,
     verbose: bool,
+    use_cached_health: bool,
     repair: bool,
+    cleanup: bool,
     preview: bool,
     vacuum: bool,
     deep: bool,
@@ -195,11 +199,13 @@ def check_command(
     schema_record_offset: int,
     schema_quarantine_malformed: bool,
 ) -> None:
-    """Health check with optional repair."""
+    """Health check with optional maintenance and cleanup previews."""
     options = CheckCommandOptions(
         json_output=json_output,
         verbose=verbose,
+        use_cached_health=use_cached_health,
         repair=repair,
+        cleanup=cleanup,
         preview=preview,
         vacuum=vacuum,
         deep=deep,

@@ -292,9 +292,12 @@ polylogue qa --snapshot-from ./qa_outputs   # Archive existing directory
 polylogue mcp                             # Start MCP server (stdio)
 polylogue check                           # Health check (DB, index, stats)
 polylogue check --verbose                 # Show breakdown by provider
-polylogue check --repair                  # Fix issues that can be auto-fixed
-polylogue check --repair --preview        # Preview what would be repaired
-polylogue check --repair --vacuum         # Compact database after repair
+polylogue check --cached                  # Use recent cached health report when available
+polylogue check --repair                  # Safe derived-data and DB maintenance repairs
+polylogue check --repair --preview        # Preview safe maintenance work
+polylogue check --cleanup --preview       # Preview destructive archive cleanup
+polylogue check --repair --cleanup --preview
+polylogue check --repair --vacuum         # Compact database after maintenance
 polylogue check --deep                    # Run SQLite integrity check
 polylogue check --json                    # Machine-readable output
 polylogue check --schemas                 # Raw-corpus schema verification gate
@@ -423,7 +426,8 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 ### Health Checks
 
 - `polylogue check` verifies database integrity, FTS index, and render files.
-- `polylogue check --repair` fixes issues that can be auto-fixed.
+- `polylogue check --repair` runs safe derived-data and database maintenance.
+- `polylogue check --cleanup` runs destructive archive cleanup; use `--preview` first.
 - `polylogue check --vacuum` compacts the database and reclaims space.
 - `polylogue check --schemas` runs non-mutating schema verification over `raw_conversations`.
 - `polylogue check --proof` reports artifact support coverage, unknowns, decode gaps, and Claude sidecar linkage.

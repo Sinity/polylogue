@@ -36,13 +36,19 @@ python -m devtools.run_validation_lanes --list
 python -m devtools.run_validation_lanes --lane machine-contract
 python -m devtools.run_validation_lanes --lane query-routing
 python -m devtools.run_validation_lanes --lane semantic-stack
+python -m devtools.run_validation_lanes --lane source-provider-fidelity
+python -m devtools.run_validation_lanes --lane maintenance-control-plane
+python -m devtools.run_validation_lanes --lane source-runtime-governance
 python -m devtools.run_validation_lanes --lane retrieval-dogfood
 python -m devtools.run_validation_lanes --lane embeddings-coverage
 python -m devtools.run_validation_lanes --lane archive-intelligence
 python -m devtools.run_validation_lanes --lane frontier-local
 python -m devtools.run_validation_lanes --lane frontier-extended
 python -m devtools.run_validation_lanes --lane live-archive-small --dry-run
+python -m devtools.run_validation_lanes --lane live-governance-small --dry-run
 python -m devtools.run_validation_lanes --lane memory-budget --dry-run
+python -m devtools.run_validation_lanes --lane maintenance-memory-budget --dry-run
+python -m devtools.run_validation_lanes --lane live-maintenance-preview --dry-run
 python -m devtools.run_validation_lanes --lane live-exercises --dry-run
 ```
 
@@ -51,6 +57,9 @@ Lane intent:
 - `machine-contract`: root CLI JSON success/failure and runtime-health machine surfaces
 - `query-routing`: query-first integration plus route-planning/unit proofs
 - `semantic-stack`: harmonization, semantic facts/profile convergence, proof, and contract inventory
+- `source-provider-fidelity`: local source traversal, Drive/runtime boundaries, and provider-ingest fidelity
+- `maintenance-control-plane`: health, maintenance selection, cache/live provenance, and publication maintenance summaries
+- `source-runtime-governance`: local closure lane for source/provider fidelity plus runtime maintenance convergence
 - `retrieval-dogfood`: action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payloads
 - `embeddings-coverage`: embedding readiness/coverage stats and embed command contracts
 - `archive-intelligence`: local closure lane for retrieval, embedding readiness, and schema roundtrip
@@ -59,7 +68,10 @@ Lane intent:
 - `frontier-local`: machine + query + semantic + TUI + chaos
 - `frontier-extended`: `frontier-local` plus fast scale and the small long-haul campaign
 - `live-archive-small`: bounded live archive embedding/retrieval/health dogfood
+- `live-governance-small`: bounded live archive health plus maintenance-preview dogfood
 - `memory-budget`: explicit RSS budget check for a representative live retrieval query
+- `maintenance-memory-budget`: explicit RSS budget check for the live maintenance preview surface
+- `live-maintenance-preview`: explicit operator lane for machine-readable repair/cleanup preview output
 - `live-exercises`: explicit operator lane for read-only live archive QA exercises
 
 ### Focused mutation checkpoints

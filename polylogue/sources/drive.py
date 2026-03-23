@@ -12,10 +12,8 @@ from ..assets import asset_path
 from ..config import Source
 from ..paths import safe_path_component
 from .dispatch import parse_drive_payload
-from .drive_client import DriveClient
-from .drive_source import DriveSourceAPI, _parse_modified_time
-from .parsers.base import RawConversationData
-from .source import ParsedConversation
+from .drive_source import DriveSourceAPI, _parse_modified_time, build_drive_source_client
+from .parsers.base import ParsedConversation, RawConversationData
 
 logger = get_logger(__name__)
 
@@ -45,7 +43,7 @@ def download_drive_files(
     """Download files from Drive folder with failure tracking.
 
     Args:
-        client: DriveClient instance
+        client: Drive source client
         folder_id: Drive folder ID to download from
         dest_dir: Destination directory for downloaded files
 
@@ -128,7 +126,7 @@ def iter_drive_conversations(
 ) -> Iterable[ParsedConversation]:
     if not source.folder:
         return
-    drive_client = client or DriveClient(ui=ui, config=drive_config)
+    drive_client = client or build_drive_source_client(ui=ui, config=drive_config)
     folder_id = drive_client.resolve_folder_id(source.folder)
     if cursor_state is not None:
         cursor_state.setdefault("file_count", 0)
@@ -180,14 +178,13 @@ def iter_drive_raw_data(
     """Iterate Drive payloads as raw bytes without writing a local cache.
 
     Note: googleapiclient / httplib2 are not thread-safe — a single service
-    object cannot be shared across threads.  Downloads remain sequential.
-    Parallelism would require per-thread client construction from credentials,
-    which is a larger refactor deferred until the Drive client supports it.
+    object cannot be shared across threads. Downloads therefore remain
+    sequential at the Drive runtime boundary.
     """
     if not source.folder:
         return
 
-    drive_client = client or DriveClient(ui=ui, config=drive_config)
+    drive_client = client or build_drive_source_client(ui=ui, config=drive_config)
     folder_id = drive_client.resolve_folder_id(source.folder)
     if cursor_state is not None:
         cursor_state.setdefault("file_count", 0)

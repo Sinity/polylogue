@@ -580,7 +580,7 @@ class TestMutationTools:
         mock_report = MagicMock()
         mock_report.checks = [mock_check]
         mock_report.summary = "Healthy"
-        mock_report.cached = False
+        mock_report.provenance = ReportProvenance()
 
         with patch("polylogue.mcp.server._get_config") as mock_get_config, patch(
             "polylogue.health_archive.get_health"
@@ -630,3 +630,4 @@ class TestMutationTools:
         parsed = json.loads(result)
         assert parsed["status"] == "ok"
         assert parsed["conversation_count"] == 2
+from polylogue.maintenance_models import ReportProvenance

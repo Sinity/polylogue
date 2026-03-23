@@ -10,10 +10,9 @@ from .config import Config
 from .health_cache import load_cached_report, write_cache
 from .health_models import HealthCheck, HealthReport, VerifyStatus
 from .lib.provider_identity import CORE_SCHEMA_PROVIDERS
-from .sources.drive_client import default_credentials_path, default_token_path
-from .storage.action_event_lifecycle import action_event_read_model_status_sync
+from .sources.drive_auth import default_credentials_path, default_token_path
 from .storage.backends.connection import connection_context, open_connection
-from .storage.embedding_stats import read_embedding_stats_sync
+from .storage.derived_status import collect_derived_model_statuses_sync
 from .storage.index import index_status
 
 logger = get_logger(__name__)
@@ -73,6 +72,7 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
 
     if db_error is None:
         with connection_context(None) as conn:
+            derived_statuses = collect_derived_model_statuses_sync(conn)
             orphan_cids = conn.execute(
                 """
                 SELECT DISTINCT m.conversation_id FROM messages m
@@ -157,54 +157,8 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                         if empty_conv == 0
                         else f"{empty_conv} conversation(s) with no messages"
                     ),
-                    )
                 )
-
-            action_event_status = action_event_read_model_status_sync(conn)
-            if int(action_event_status["valid_source_conversation_count"]) == 0:
-                checks.append(
-                    HealthCheck(
-                        "action_event_read_model",
-                        VerifyStatus.OK,
-                        summary="No action-event source conversations present",
-                    )
-                )
-            elif bool(action_event_status["ready"]):
-                orphan_note = ""
-                if int(action_event_status["orphan_source_conversation_count"]) > 0:
-                    orphan_note = (
-                        f"; ignored {action_event_status['orphan_source_conversation_count']:,} orphan source "
-                        f"conversation(s) across {action_event_status['orphan_tool_block_count']:,} tool blocks"
-                    )
-                checks.append(
-                    HealthCheck(
-                        "action_event_read_model",
-                        VerifyStatus.OK,
-                        count=int(action_event_status["count"]),
-                        summary=(
-                            "Action-event read model ready "
-                            f"({action_event_status['materialized_conversation_count']:,}/"
-                            f"{action_event_status['valid_source_conversation_count']:,} conversations, "
-                            f"{action_event_status['count']:,} rows{orphan_note})"
-                        ),
-                    )
-                )
-            else:
-                checks.append(
-                    HealthCheck(
-                        "action_event_read_model",
-                        VerifyStatus.WARNING,
-                        count=int(action_event_status["count"]),
-                        summary=(
-                            "Action-event read model incomplete "
-                            f"({action_event_status['materialized_conversation_count']:,}/"
-                            f"{action_event_status['valid_source_conversation_count']:,} conversations, "
-                            f"{action_event_status['count']:,} rows, "
-                            f"action FTS {action_event_status['action_fts_count']:,}/"
-                            f"{action_event_status['count']:,})"
-                        ),
-                    )
-                )
+            )
 
             provider_rows = conn.execute(
                 """
@@ -227,167 +181,73 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                     breakdown=provider_breakdown,
                 )
             )
-
-            try:
-                fts_exists = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-                ).fetchone()
-
-                if fts_exists:
-                    msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-                    fts_count = conn.execute(
-                        "SELECT COUNT(*) FROM messages_fts_docsize"
-                    ).fetchone()[0]
-
-                    if msg_count == fts_count:
-                        checks.append(
-                            HealthCheck(
-                                "fts_sync",
-                                VerifyStatus.OK,
-                                count=fts_count,
-                                summary=f"FTS index in sync ({fts_count:,} messages indexed)",
+            action_rows = derived_statuses["action_events"]
+            action_fts = derived_statuses["action_events_fts"]
+            message_fts = derived_statuses["messages_fts"]
+            embeddings = derived_statuses["embeddings"]
+            checks.append(
+                HealthCheck(
+                    "action_event_read_model",
+                    VerifyStatus.OK if action_rows.ready else VerifyStatus.WARNING,
+                    count=action_rows.materialized_rows,
+                    summary=action_rows.detail,
+                )
+            )
+            checks.append(
+                HealthCheck(
+                    "action_event_fts",
+                    VerifyStatus.OK if action_fts.ready else VerifyStatus.WARNING,
+                    count=action_fts.materialized_rows,
+                    summary=action_fts.detail,
+                )
+            )
+            checks.append(
+                HealthCheck(
+                    "fts_sync",
+                    VerifyStatus.OK if message_fts.ready else VerifyStatus.WARNING,
+                    count=message_fts.materialized_rows if message_fts.ready else message_fts.pending_rows,
+                    summary=message_fts.detail,
+                )
+            )
+            embedding_status = VerifyStatus.OK if embeddings.ready else VerifyStatus.WARNING
+            checks.append(
+                HealthCheck(
+                    "embedding_coverage",
+                    embedding_status,
+                    count=embeddings.pending_documents,
+                    summary=embeddings.detail,
+                )
+            )
+            freshness_status = (
+                VerifyStatus.OK
+                if embeddings.materialized_rows == 0
+                or (
+                    embeddings.stale_rows == 0
+                    and embeddings.missing_provenance_rows == 0
+                )
+                else VerifyStatus.WARNING
+            )
+            checks.append(
+                HealthCheck(
+                    "embedding_freshness",
+                    freshness_status,
+                    count=embeddings.stale_rows,
+                    summary=(
+                        "No embedded messages to assess freshness"
+                        if embeddings.materialized_rows == 0
+                        else (
+                            f"Embeddings fresh ({embeddings.materialized_rows:,} messages)"
+                            if freshness_status is VerifyStatus.OK
+                            else (
+                                f"Embeddings stale ({embeddings.stale_rows:,} stale, "
+                                f"{embeddings.missing_provenance_rows:,} missing provenance)"
                             )
                         )
-                    else:
-                        checks.append(
-                            HealthCheck(
-                                "fts_sync",
-                                VerifyStatus.WARNING,
-                                count=abs(msg_count - fts_count),
-                                summary=(
-                                    f"FTS out of sync: {msg_count:,} messages vs "
-                                    f"{fts_count:,} indexed"
-                                ),
-                            )
-                        )
-                else:
-                    msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-                    checks.append(
-                        HealthCheck(
-                            "fts_sync",
-                            VerifyStatus.WARNING,
-                            count=msg_count,
-                            summary=f"FTS index not built ({msg_count:,} messages not indexed)",
-                    )
+                    ),
                 )
-            except Exception as exc:
-                checks.append(
-                    HealthCheck(
-                        "fts_sync",
-                        VerifyStatus.ERROR,
-                        summary=f"FTS check failed: {exc}",
-                    )
-                )
-
-            total_conversations = sum(provider_breakdown.values())
-            try:
-                embedding_stats = read_embedding_stats_sync(conn)
-                embedded_conversations = embedding_stats.embedded_conversations
-                embedded_messages = embedding_stats.embedded_messages
-                pending_conversations = embedding_stats.pending_conversations
-                embedding_coverage = (
-                    (embedded_conversations / total_conversations) * 100 if total_conversations else 0.0
-                )
-
-                if total_conversations == 0:
-                    checks.append(
-                        HealthCheck(
-                            "embedding_coverage",
-                            VerifyStatus.OK,
-                            summary="No conversations to embed",
-                        )
-                    )
-                elif embedded_conversations == 0 and embedded_messages == 0 and pending_conversations == 0:
-                    checks.append(
-                        HealthCheck(
-                            "embedding_coverage",
-                            VerifyStatus.WARNING,
-                            count=0,
-                            summary=f"Embeddings not built (0/{total_conversations:,} conversations embedded)",
-                        )
-                    )
-                elif pending_conversations > 0:
-                    checks.append(
-                        HealthCheck(
-                            "embedding_coverage",
-                            VerifyStatus.WARNING,
-                            count=pending_conversations,
-                            summary=(
-                                f"Embeddings partial ({embedded_conversations:,}/{total_conversations:,} conversations, "
-                                f"{embedded_messages:,} messages, pending {pending_conversations:,}, "
-                                f"coverage {embedding_coverage:.1f}%)"
-                            ),
-                        )
-                    )
-                else:
-                    checks.append(
-                        HealthCheck(
-                            "embedding_coverage",
-                            VerifyStatus.OK,
-                            count=embedded_conversations,
-                            summary=(
-                                f"Embeddings ready ({embedded_conversations:,}/{total_conversations:,} conversations, "
-                                f"{embedded_messages:,} messages, coverage {embedding_coverage:.1f}%)"
-                            ),
-                        )
-                    )
-
-                if embedded_messages == 0:
-                    checks.append(
-                        HealthCheck(
-                            "embedding_freshness",
-                            VerifyStatus.OK,
-                            summary="No embedded messages to assess freshness",
-                        )
-                    )
-                elif embedding_stats.stale_messages > 0 or embedding_stats.messages_missing_provenance > 0:
-                    model_summary = ", ".join(
-                        f"{name} ({count})"
-                        for name, count in embedding_stats.model_counts.items()
-                    ) or "unknown"
-                    checks.append(
-                        HealthCheck(
-                            "embedding_freshness",
-                            VerifyStatus.WARNING,
-                            count=embedding_stats.stale_messages,
-                            summary=(
-                                f"Embeddings stale ({embedding_stats.stale_messages:,} stale, "
-                                f"{embedding_stats.messages_missing_provenance:,} missing provenance, "
-                                f"models: {model_summary})"
-                            ),
-                        )
-                    )
-                else:
-                    model_summary = ", ".join(
-                        f"{name} ({count})"
-                        for name, count in embedding_stats.model_counts.items()
-                    ) or "unknown"
-                    checks.append(
-                        HealthCheck(
-                            "embedding_freshness",
-                            VerifyStatus.OK,
-                            count=embedded_messages,
-                            summary=(
-                                f"Embeddings fresh ({embedded_messages:,} messages, "
-                                f"models: {model_summary}, latest {embedding_stats.newest_embedded_at or 'unknown'})"
-                            ),
-                        )
-                    )
-            except Exception as exc:
-                checks.append(
-                    HealthCheck(
-                        "embedding_coverage",
-                        VerifyStatus.ERROR,
-                        summary=f"Embedding coverage check failed: {exc}",
-                    )
-                )
-                checks.append(
-                    HealthCheck(
-                        "embedding_freshness",
-                        VerifyStatus.ERROR,
-                        summary=f"Embedding freshness check failed: {exc}",
-                    )
-                )
+            )
+    else:
+        derived_statuses = {}
 
     for source in config.sources:
         if source.folder:
@@ -477,19 +337,17 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
             HealthCheck("schemas", VerifyStatus.WARNING, summary=f"Schema check failed: {exc}")
         )
 
-    report = HealthReport(checks=checks)
+    report = HealthReport(checks=checks, derived_models=derived_statuses)
     write_cache(config.archive_root, report)
     return report
 
 
-def get_health(config: Config, *, deep: bool = False) -> HealthReport:
-    """Get an archive health report, using cache when valid."""
-    if not deep:
+def get_health(config: Config, *, deep: bool = False, use_cached: bool = False) -> HealthReport:
+    """Get an archive health report, optionally using the cached report."""
+    if use_cached and not deep:
         cached_report = load_cached_report(config.archive_root)
         if cached_report is not None:
             return cached_report
 
     report = run_archive_health(config, deep=deep)
-    report.cached = False
-    report.age_seconds = 0
     return report

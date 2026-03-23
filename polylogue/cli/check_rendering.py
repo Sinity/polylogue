@@ -54,8 +54,8 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
         }
     if result.roundtrip_report is not None:
         out["roundtrip_proof"] = result.roundtrip_report.to_dict()
-    if result.repair_results is not None:
-        out["repairs"] = [repair.to_dict() for repair in result.repair_results]
+    if result.maintenance_results is not None:
+        out["maintenance"] = [repair.to_dict() for repair in result.maintenance_results]
     if result.vacuum_result is not None:
         out["vacuum"] = result.vacuum_result
     emit_success(out)
@@ -86,12 +86,33 @@ def render_plain_output(
                 lines.append(f"    {provider}: {count:,}")
 
     summary = result.report.summary
+    provenance = result.report.provenance
     lines.extend(
         [
             "",
-            f"Summary: {summary.get('ok', 0)} ok, {summary.get('warning', 0)} warnings, {summary.get('error', 0)} errors",
+            (
+                f"Summary: {summary.get('ok', 0)} ok, {summary.get('warning', 0)} warnings, "
+                f"{summary.get('error', 0)} errors (source={provenance.source.value}"
+                + (
+                    f", age={provenance.cache_age_seconds}s, ttl={provenance.cache_ttl_seconds}s"
+                    if provenance.cache_age_seconds is not None
+                    else ""
+                )
+                + ")"
+            ),
         ]
     )
+    if result.report.derived_models:
+        lines.extend(["", "Derived Models:"])
+        for name, status in sorted(result.report.derived_models.items()):
+            state = "ready" if status.ready else "pending"
+            lines.append(
+                f"  {name}: {state}; docs {status.materialized_documents:,}/{status.source_documents:,}; "
+                f"rows {status.materialized_rows:,}/{status.source_rows:,}; "
+                f"pending_docs={status.pending_documents:,}; pending_rows={status.pending_rows:,}; "
+                f"stale={status.stale_rows:,}; orphan={status.orphan_rows:,}; "
+                f"missing_provenance={status.missing_provenance_rows:,}"
+            )
 
     if result.schema_report is not None:
         lines.extend(
@@ -270,29 +291,30 @@ def render_plain_output(
 
     env.ui.summary("Health Check", lines)
 
-    if result.repair_results is not None:
+    if result.maintenance_results is not None:
         click.echo("")
-        mode_label = "Preview of repairs" if options.preview else "Running repairs"
+        mode_label = "Preview of maintenance" if options.preview else "Running maintenance"
         click.echo(f"{mode_label}...")
         total_repaired = 0
-        for repair in result.repair_results:
+        for repair in result.maintenance_results:
             if repair.repaired_count > 0 or not repair.success:
                 status = "[green]✓[/green]" if repair.success else "[red]✗[/red]"
                 if env.ui.plain:
                     status = "OK" if repair.success else "FAIL"
-                env.ui.console.print(f"  {status} {repair.name}: {repair.detail}")
+                mode = f"{repair.category.value}{' destructive' if repair.destructive else ''}"
+                env.ui.console.print(f"  {status} {repair.name} [{mode}]: {repair.detail}")
                 total_repaired += repair.repaired_count
 
         if total_repaired > 0:
-            action = "Would repair" if options.preview else "Repaired"
+            action = "Would change" if options.preview else "Changed"
             click.echo(f"\n{action} {total_repaired} issue(s)")
         else:
-            click.echo("  No issues found that could be automatically repaired.")
-    elif options.repair:
-        env.ui.console.print("No issues to repair.")
+            click.echo("  No selected maintenance work was needed.")
+    elif options.repair or options.cleanup:
+        env.ui.console.print("No maintenance operations were selected.")
 
-    if options.repair and options.vacuum and options.preview:
+    if (options.repair or options.cleanup) and options.vacuum and options.preview:
         env.ui.console.print("")
         env.ui.console.print("Preview mode: VACUUM skipped.")
-    elif options.repair and options.vacuum:
+    elif (options.repair or options.cleanup) and options.vacuum:
         run_vacuum(env)

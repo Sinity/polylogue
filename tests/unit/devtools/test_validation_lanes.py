@@ -57,6 +57,20 @@ class TestCommandConstruction:
         assert "tests/unit/core/test_semantic_facts.py" in cmd
         assert "tests/unit/sources/test_unified_semantic_laws.py" in cmd
 
+    def test_source_provider_fidelity_lane_uses_source_governance_suite(self):
+        cmd = build_lane_command(LANES["source-provider-fidelity"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/sources/test_source_laws.py" in cmd
+        assert "tests/unit/sources/test_drive_ops.py" in cmd
+        assert "tests/integration/test_security.py" in cmd
+
+    def test_maintenance_control_plane_lane_uses_health_and_check_suite(self):
+        cmd = build_lane_command(LANES["maintenance-control-plane"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/core/test_health_core.py" in cmd
+        assert "tests/unit/cli/test_check.py" in cmd
+        assert "tests/integration/test_health.py" in cmd
+
     def test_retrieval_dogfood_lane_uses_retrieval_suite(self):
         cmd = build_lane_command(LANES["retrieval-dogfood"])
         assert cmd[:3] == [sys.executable, "-m", "pytest"]
@@ -75,6 +89,13 @@ class TestCommandConstruction:
         assert "--max-rss-mb" in cmd
         assert "polylogue" in cmd
 
+    def test_maintenance_memory_budget_lane_uses_check_preview(self):
+        cmd = build_lane_command(LANES["maintenance-memory-budget"])
+        assert cmd[:3] == [sys.executable, "-m", "devtools.query_memory_budget"]
+        assert "--repair" in cmd
+        assert "--cleanup" in cmd
+        assert "--preview" in cmd
+
     def test_long_haul_lane_uses_campaign_runner(self):
         cmd = build_lane_command(LANES["long-haul-small"])
         assert cmd[:3] == [sys.executable, "-m", "devtools.run_campaign"]
@@ -86,6 +107,14 @@ class TestCommandConstruction:
         assert cmd[:3] == [sys.executable, "-m", "polylogue"]
         assert "qa" in cmd
         assert "--live" in cmd
+
+    def test_live_maintenance_preview_lane_uses_check_preview(self):
+        cmd = build_lane_command(LANES["live-maintenance-preview"])
+        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert "check" in cmd
+        assert "--repair" in cmd
+        assert "--cleanup" in cmd
+        assert "--preview" in cmd
 
     def test_composite_lane_has_no_direct_command(self):
         with pytest.raises(ValueError, match="composite"):
@@ -108,3 +137,19 @@ class TestCommandConstruction:
         assert "retrieval-dogfood" in captured.out
         assert "embeddings-coverage" in captured.out
         assert "schema-roundtrip" in captured.out
+
+    def test_source_runtime_governance_dry_run_includes_new_lanes(self, capsys):
+        exit_code = main(["--lane", "source-runtime-governance", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "source-provider-fidelity" in captured.out
+        assert "maintenance-control-plane" in captured.out
+
+    def test_live_governance_small_dry_run_includes_preview_and_budget(self, capsys):
+        exit_code = main(["--lane", "live-governance-small", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "live-maintenance-preview" in captured.out
+        assert "maintenance-memory-budget" in captured.out
