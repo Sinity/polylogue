@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
     from polylogue.storage.backends.query_store import SQLiteQueryStore
 
+from polylogue.storage.repository_raw import RepositoryRawMixin
 from polylogue.storage.repository_reads import RepositoryReadMixin
 from polylogue.storage.repository_vectors import RepositoryVectorMixin
 from polylogue.storage.repository_writes import RepositoryWriteMixin
@@ -27,6 +28,7 @@ from polylogue.storage.repository_writes import RepositoryWriteMixin
 
 class ConversationRepository(
     RepositoryReadMixin,
+    RepositoryRawMixin,
     RepositoryWriteMixin,
     RepositoryVectorMixin,
     ConversationReader,

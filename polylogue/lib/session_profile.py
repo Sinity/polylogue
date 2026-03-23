@@ -6,19 +6,18 @@ phase detection into a single frozen profile per conversation.
 
 from __future__ import annotations
 
-from collections import Counter
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
 
-from polylogue.lib.attribution import ConversationAttribution, extract_attribution
+from polylogue.lib.attribution import extract_attribution
 from polylogue.lib.decisions import Decision, extract_decisions
 from polylogue.lib.phases import SessionPhase, extract_phases
-from polylogue.lib.work_events import WorkEvent, WorkEventKind, extract_work_events
-
+from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+from polylogue.lib.work_events import WorkEvent, extract_work_events
 
 
 @dataclass(frozen=True)
@@ -155,35 +154,11 @@ def build_session_profile(conversation: Conversation) -> SessionProfile:
     from polylogue.lib.tagging import infer_tags
 
     # Extract components
-    attribution = extract_attribution(conversation)
-    work_events = extract_work_events(conversation)
-    phases = extract_phases(conversation)
-    decisions = extract_decisions(conversation)
-
-    # Count message types
-    messages = list(conversation.messages)
-    substantive_count = sum(1 for m in messages if m.is_substantive)
-    tool_use_count = sum(1 for m in messages if m.is_tool_use)
-    thinking_count = sum(1 for m in messages if m.is_thinking)
-
-    # Aggregate tool categories
-    tool_categories: Counter[str] = Counter()
-    for msg in messages:
-        harmonized = msg.harmonized
-        if harmonized is None:
-            continue
-        calls = getattr(harmonized, "tool_calls", None)
-        if calls:
-            for tc in calls:
-                tool_categories[tc.category.value] += 1
-
-    # Temporal bounds
-    timestamps = [m.timestamp for m in messages if m.timestamp]
-    first_message_at = min(timestamps) if timestamps else None
-    last_message_at = max(timestamps) if timestamps else None
-    wall_duration_ms = 0
-    if first_message_at and last_message_at:
-        wall_duration_ms = max(int((last_message_at - first_message_at).total_seconds() * 1000), 0)
+    facts = build_conversation_semantic_facts(conversation)
+    attribution = extract_attribution(conversation, facts=facts)
+    work_events = extract_work_events(conversation, facts=facts)
+    phases = extract_phases(conversation, facts=facts)
+    decisions = extract_decisions(conversation, facts=facts)
 
     cost_usd, cost_is_estimated = harmonize_session_cost(conversation)
 
@@ -194,14 +169,14 @@ def build_session_profile(conversation: Conversation) -> SessionProfile:
         title=conversation.title,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
-        message_count=len(messages),
-        substantive_count=substantive_count,
-        tool_use_count=tool_use_count,
-        thinking_count=thinking_count,
-        word_count=conversation.word_count,
+        message_count=facts.total_messages,
+        substantive_count=facts.substantive_messages,
+        tool_use_count=facts.tool_messages,
+        thinking_count=facts.thinking_messages,
+        word_count=facts.word_count,
         total_cost_usd=cost_usd,
         total_duration_ms=conversation.total_duration_ms,
-        tool_categories=dict(tool_categories),
+        tool_categories=facts.tool_category_counts,
         repo_paths=attribution.repo_paths,
         cwd_paths=attribution.cwd_paths,
         branch_names=attribution.branch_names,
@@ -211,9 +186,9 @@ def build_session_profile(conversation: Conversation) -> SessionProfile:
         work_events=tuple(work_events),
         phases=tuple(phases),
         decisions=tuple(decisions),
-        first_message_at=first_message_at,
-        last_message_at=last_message_at,
-        wall_duration_ms=wall_duration_ms,
+        first_message_at=facts.first_message_at,
+        last_message_at=facts.last_message_at,
+        wall_duration_ms=facts.wall_duration_ms,
         cost_is_estimated=cost_is_estimated,
         tags=tuple(conversation.tags),
         is_continuation=conversation.is_continuation,

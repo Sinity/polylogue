@@ -6,7 +6,7 @@ import click
 
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.types import AppEnv
-from polylogue.health import VerifyStatus
+from polylogue.health_models import VerifyStatus
 
 from .check_support import format_count_mapping, format_semantic_metric_summary, run_vacuum
 from .check_workflow import CheckCommandOptions, CheckCommandResult
@@ -36,6 +36,24 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
         }
     if result.semantic_report is not None:
         out["semantic_proof"] = result.semantic_report.to_dict()
+    if result.semantic_contracts is not None:
+        out["semantic_contracts"] = {
+            "count": len(result.semantic_contracts),
+            "items": [
+                {
+                    "surface": spec.name,
+                    "category": spec.category,
+                    "aliases": list(spec.aliases),
+                    "export_format": spec.export_format,
+                    "stream_format": spec.stream_format,
+                    "contract_count": len(spec.contracts),
+                    "contracts": [contract.to_dict() for contract in spec.contracts],
+                }
+                for spec in result.semantic_contracts
+            ],
+        }
+    if result.roundtrip_report is not None:
+        out["roundtrip_proof"] = result.roundtrip_report.to_dict()
     if result.repair_results is not None:
         out["repairs"] = [repair.to_dict() for repair in result.repair_results]
     if result.vacuum_result is not None:
@@ -192,6 +210,21 @@ def render_plain_output(
                     f"critical_loss_checks={stats.critical_loss_checks:,}"
                 )
 
+    if result.semantic_contracts is not None:
+        lines.extend(["", f"Semantic contracts: {len(result.semantic_contracts):,} surfaces"])
+        for spec in result.semantic_contracts:
+            details: list[str] = [f"category={spec.category}"]
+            if spec.aliases:
+                details.append(f"aliases={','.join(spec.aliases)}")
+            if spec.export_format:
+                details.append(f"export_format={spec.export_format}")
+            if spec.stream_format:
+                details.append(f"stream_format={spec.stream_format}")
+            details.append(f"contracts={len(spec.contracts)}")
+            lines.append(f"  {spec.name}: {'; '.join(details)}")
+            metric_bits = [f"{contract.metric}:{contract.mode}" for contract in spec.contracts]
+            lines.append(f"    metrics={', '.join(metric_bits)}")
+
     if result.runtime_report is not None:
         lines.extend(["", "Runtime Environment:"])
         for check in result.runtime_report.checks:
@@ -212,6 +245,28 @@ def render_plain_output(
             f"  Runtime: {rt_summary.get('ok', 0)} ok, {rt_summary.get('warning', 0)} warnings, "
             f"{rt_summary.get('error', 0)} errors"
         )
+
+    if result.roundtrip_report is not None:
+        roundtrip_summary = result.roundtrip_report.summary
+        lines.extend(
+            [
+                "",
+                f"Roundtrip proof: {roundtrip_summary['provider_count']:,} providers "
+                f"(clean={roundtrip_summary['clean_providers']:,}, "
+                f"failed={roundtrip_summary['failed_providers']:,}, "
+                f"artifacts={roundtrip_summary['artifact_count']:,}, "
+                f"parsed_conversations={roundtrip_summary['parsed_conversations']:,}, "
+                f"persisted_conversations={roundtrip_summary['persisted_conversations']:,})",
+            ]
+        )
+        for provider, provider_report in sorted(result.roundtrip_report.provider_reports.items()):
+            summary = provider_report.summary
+            status = "clean" if provider_report.is_clean else "failed"
+            lines.append(
+                f"  {provider}: {status}, package={provider_report.package_version}, "
+                f"element={provider_report.element_kind or '-'}, "
+                f"failed_stages={','.join(summary['failed_stages']) or '-'}"
+            )
 
     env.ui.summary("Health Check", lines)
 

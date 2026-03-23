@@ -455,7 +455,8 @@ class TestAcquisitionServiceIntegration:
 
     async def test_acquire_claude_code_sidecars_into_artifact_ledger(self, tmp_path: Path):
         from polylogue.pipeline.services.acquisition import AcquisitionService
-        from polylogue.schemas.verification import list_artifact_observation_rows
+        from polylogue.schemas.verification_artifacts import list_artifact_observation_rows
+        from polylogue.schemas.verification_requests import ArtifactObservationQuery
 
         session_dir = tmp_path / "claude-code" / "project-a" / "session-1"
         subagents_dir = session_dir / "subagents"
@@ -488,7 +489,10 @@ class TestAcquisitionServiceIntegration:
         )
 
         assert result.counts["acquired"] == 4
-        observations = list_artifact_observation_rows(db_path=backend.db_path)
+        observations = list_artifact_observation_rows(
+            db_path=backend.db_path,
+            request=ArtifactObservationQuery(),
+        )
         assert len(observations) == 5
         assert {row.artifact_kind for row in observations} == {
             "conversation_record_stream",

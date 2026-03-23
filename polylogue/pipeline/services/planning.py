@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from polylogue.config import Config, Source
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import PlanResult, RawConversationRecord
 
 from .acquisition import AcquisitionService
@@ -43,6 +44,7 @@ class PlanningService:
 
     def __init__(self, backend: SQLiteBackend, config: Config):
         self.backend = backend
+        self.repository = ConversationRepository(backend=backend)
         self.config = config
 
     async def collect_validation_backlog(
@@ -154,7 +156,7 @@ class PlanningService:
             nonlocal pending_records
             if not pending_records:
                 return
-            scanned_states = await self.backend.get_raw_conversation_states(
+            scanned_states = await self.repository.get_raw_conversation_states(
                 _dedupe_ids([record.raw_id for record in pending_records])
             )
             preview_records: list[RawConversationRecord] = []
