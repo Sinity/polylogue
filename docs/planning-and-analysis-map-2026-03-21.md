@@ -24,7 +24,8 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) | Current execution program for repository-wide architecture reduction, refactoring, module-topology cleanup, and validation governance | Active; this is now the live broad queue after archive-intelligence convergence |
+| [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md) | Current execution program for source/provider boundary cleanup, runtime maintenance governance, derived-model freshness/provenance convergence, and live-archive validation | Active; this is now the live broad queue after the platform-wide architecture campaign |
+| [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) | Executed implementation record for repository-wide architecture reduction, refactoring, module-topology cleanup, semantic-product consolidation, and lifecycle/health/repair hardening | Executed; query/filter shell convergence, backend narrowing, shared query construction, semantic-product consolidation, root narrowing, and live-maintenance hardening are now in place |
 | [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md) | Executed convergence program for action/event semantics, retrieval/FTS/embedding control-plane work, unresolved runtime-state/schema/operator slices, and archive-scale validation | Executed; durable action-event read model, readiness-aware query fallback, retrieval-health surfaces, and archive-intelligence validation lanes are now in place |
 | [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md) | Absorbed predecessor program for the runtime-state/schema half of the new integrated campaign | Planned reference; no longer the live queue on its own |
 | [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md) | Most recent executed convergence program for harmonization, canonical semantic facts, downstream semantic products, and semantic proof/export contract convergence | Executed; current canonical record of the semantic-stack convergence campaign |
@@ -115,7 +116,20 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md)
+- the current live implementation queue is now [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md)
+- the platform-wide refactoring campaign in [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) is now executed
+- it closed the broad architectural drag around:
+  - query/filter shell convergence onto immutable plans
+  - backend/query/lifecycle narrowing and removal of leftover backend read wrappers
+  - shared query-spec construction across CLI and MCP
+  - consolidation of semantic session/work products into explicit builders
+  - narrower package-root and synthetic-stack exports
+  - live-maintenance hardening for action-event readiness, repair, and archive health
+- the live archive dogfooding loop also surfaced a new explicit governance frontier:
+  - source-layer rough edges and historical compatibility shape
+  - runtime maintenance/control-plane semantics across health, repair, lifecycle, and cache
+  - derived-model freshness/provenance convergence beyond just action events
+  - remaining live archive corruption cleanup such as orphaned content blocks
 - the archive-intelligence campaign in [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md) is now executed
 - it closed the dogfooded archive-intelligence frontier around:
   - first-class durable action events
@@ -123,13 +137,12 @@ As of this map:
   - readiness-aware fallback when persisted action semantics are absent or stale
   - freshness/provenance-aware embedding retrieval health
   - named archive-intelligence validation and memory-budget lanes
-- the next integrated move is broader and more structural:
-  - reduce remaining wrapper strata around query/filter execution
-  - further narrow backend/repository/state-band boundaries
-  - converge operator workflows and rendering contracts
-  - isolate schema tooling and synthetic stacks more sharply from runtime
-  - narrow package roots and module topology across the codebase
-  - use validation lanes and live-archive dogfooding as ongoing refactor governance
+- the next integrated move is source/runtime-governance heavy:
+  - finish source/provider/Drive boundary cleanup
+  - converge runtime maintenance and repair into a clearer control plane
+  - unify derived-model provenance/freshness semantics
+  - make cached-vs-live operator output more explicit and uniform
+  - extend live-archive governance lanes around real corruption and maintenance scenarios
 - the semantic-stack convergence program is now executed via [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md)
 - it closed the strongest remaining semantic-cluster drag around:
   - harmonization boundary cleanup around `schemas/unified.py` and `lib/provider_semantics.py`
