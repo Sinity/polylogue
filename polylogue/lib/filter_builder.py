@@ -84,6 +84,11 @@ class ConversationFilterBuilderMixin:
         self._title_pattern = pattern
         return self
 
+    def path(self, pattern: str) -> ConversationFilter:
+        """Filter to conversations that touched a path containing pattern."""
+        self._path_terms.append(pattern)
+        return self
+
     def id(self, prefix: str) -> ConversationFilter:
         """Filter to conversations with ID starting with prefix."""
         self._id_prefix = prefix

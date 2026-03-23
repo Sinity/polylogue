@@ -44,6 +44,15 @@ QUERY_TOOL_CASES = [
         },
     ),
     (
+        "search",
+        {"query": "hello", "path": "/realm/project/polylogue/README.md", "limit": 5},
+        {
+            "contains": ("hello",),
+            "path": ("/realm/project/polylogue/README.md",),
+            "limit": (5,),
+        },
+    ),
+    (
         "list_conversations",
         {"limit": 10},
         {
@@ -58,6 +67,14 @@ QUERY_TOOL_CASES = [
             "since": ("2024-01-01",),
             "tag": ("bug",),
             "title": ("incident",),
+            "limit": (2,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"path": "/realm/project/polylogue/README.md", "limit": 2},
+        {
+            "path": ("/realm/project/polylogue/README.md",),
             "limit": (2,),
         },
     ),
@@ -95,6 +112,8 @@ class TestQueryTools:
                 assert tuple(str(provider) for provider in spec.providers) == (expected_value,)
             elif method_name == "since":
                 assert spec.since == expected_value
+            elif method_name == "path":
+                assert spec.path_terms == (expected_value,)
             elif method_name == "tag":
                 assert spec.tags == (expected_value,)
             elif method_name == "title":
