@@ -298,12 +298,24 @@ async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
         assert [record.conversation_id for record in none_matches] == ["conv-none"]
         assert await backend.count_conversations(action_terms=["none"]) == 1
 
+        grep_tool_matches = await backend.list_conversations(tool_terms=["grep"], limit=10)
+        assert [record.conversation_id for record in grep_tool_matches] == ["conv-search"]
+
+        none_tool_matches = await backend.list_conversations(tool_terms=["none"], limit=10)
+        assert [record.conversation_id for record in none_tool_matches] == ["conv-none"]
+
         filtered = await backend.list_conversations(
             action_terms=["search"],
             excluded_action_terms=["git"],
             limit=10,
         )
         assert [record.conversation_id for record in filtered] == ["conv-search"]
+
+        non_grep = await backend.list_conversations(
+            excluded_tool_terms=["grep"],
+            limit=10,
+        )
+        assert sorted(record.conversation_id for record in non_grep) == ["conv-git", "conv-none", "conv-other"]
 
         non_none = await backend.list_conversations(
             excluded_action_terms=["none"],

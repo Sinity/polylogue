@@ -135,6 +135,8 @@
         polylogue --path <PATH> --action file_read --l
   ist
         polylogue --action search --action file_edit --list
+        polylogue --action other --stats-by tool --format json
+        polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
   
     Modifiers (write operations):
@@ -175,6 +177,10 @@
   bagent|other|none]
                                     Exclude semantic action category (repeatable
                                     = AND)
+    --tool TEXT                     Require normalized tool name (repeatable =
+                                    AND)
+    --exclude-tool TEXT             Exclude normalized tool name (repeatable =
+                                    AND)
     --similar TEXT                  Semantic similarity query (requires
                                     embeddings)
     --has TEXT                      Filter by content: thinking (reasoning),
@@ -258,6 +264,8 @@
         polylogue --path <PATH> --
   action file_read --list
         polylogue --action search --action file_edit --list
+        polylogue --action other --stats-by tool --format json
+        polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --l
   imit 5
   
@@ -308,6 +316,12 @@
                                     Exclude semantic action ca
   tegory (repeatable
                                     = AND)
+    --tool TEXT                     Require normalized tool na
+  me (repeatable =
+                                    AND)
+    --exclude-tool TEXT             Exclude normalized tool na
+  me (repeatable =
+                                    AND)
     --similar TEXT                  Semantic similarity query
   (requires
                                     embeddings)
@@ -423,6 +437,8 @@
         polylogue -t important --stats-by provider
         polylogue --path <PATH> --action file_read --list
         polylogue --action search --action file_edit --list
+        polylogue --action other --stats-by tool --format json
+        polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
   
     Modifiers (write operations):
@@ -461,6 +477,10 @@
     --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
                                     Exclude semantic action category (repeatable
                                     = AND)
+    --tool TEXT                     Require normalized tool name (repeatable =
+                                    AND)
+    --exclude-tool TEXT             Exclude normalized tool name (repeatable =
+                                    AND)
     --similar TEXT                  Semantic similarity query (requires
                                     embeddings)
     --has TEXT                      Filter by content: thinking (reasoning),

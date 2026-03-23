@@ -54,11 +54,13 @@ QUERY_TOOL_CASES = [
     ),
     (
         "search",
-        {"query": "hello", "action": "search", "exclude_action": "git", "limit": 5},
+        {"query": "hello", "action": "search", "exclude_action": "git", "tool": "grep", "exclude_tool": "bash", "limit": 5},
         {
             "contains": ("hello",),
             "action": ("search",),
             "exclude_action": ("git",),
+            "tool": ("grep",),
+            "exclude_tool": ("bash",),
             "limit": (5,),
         },
     ),
@@ -90,10 +92,12 @@ QUERY_TOOL_CASES = [
     ),
     (
         "list_conversations",
-        {"action": "file_edit", "exclude_action": "web", "limit": 2},
+        {"action": "file_edit", "exclude_action": "web", "tool": "edit", "exclude_tool": "read", "limit": 2},
         {
             "action": ("file_edit",),
             "exclude_action": ("web",),
+            "tool": ("edit",),
+            "exclude_tool": ("read",),
             "limit": (2,),
         },
     ),
@@ -145,6 +149,10 @@ class TestQueryTools:
                 assert spec.action_terms == (expected_value,)
             elif method_name == "exclude_action":
                 assert spec.excluded_action_terms == (expected_value,)
+            elif method_name == "tool":
+                assert spec.tool_terms == (expected_value,)
+            elif method_name == "exclude_tool":
+                assert spec.excluded_tool_terms == (expected_value,)
             elif method_name == "tag":
                 assert spec.tags == (expected_value,)
             elif method_name == "title":
