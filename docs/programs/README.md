@@ -5,8 +5,8 @@ operator reference docs.
 
 Use them in this order:
 
-1. [schema-toolchain-convergence-program-2026-03-23.md](./schema-toolchain-convergence-program-2026-03-23.md)
-   Current planned execution program for converging schema tooling, synthetic generation, and schema operator workflows.
+1. [schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./schema-and-evidence-pipeline-convergence-program-2026-03-23.md)
+   Current planned execution program for converging schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path.
 2. [core-architecture-convergence-program-2026-03-23.md](./core-architecture-convergence-program-2026-03-23.md)
    Executed convergence program for query/storage/front-door/showcase/schema/API streamlining.
 3. [runtime-contract-and-validation-lanes-program-2026-03-22.md](./runtime-contract-and-validation-lanes-program-2026-03-22.md)
