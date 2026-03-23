@@ -24,7 +24,8 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md) | Current execution program for source/provider boundary cleanup, runtime maintenance governance, derived-model freshness/provenance convergence, and live-archive validation | Active; this is now the live broad queue after the platform-wide architecture campaign |
+| [programs/archive-data-products-and-live-governance-program-2026-03-24.md](./programs/archive-data-products-and-live-governance-program-2026-03-24.md) | Current execution program for durable semantic/session products, external consumer contracts, cleanup lineage, retrieval/product convergence, and live governance lanes | Active; this is now the live broad queue after the source-boundary/runtime-governance campaign |
+| [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md) | Executed convergence program for source/provider boundary cleanup, runtime maintenance governance, derived-model freshness/provenance convergence, publication/runtime narrowing, and live-archive validation | Executed; source traversal split, typed maintenance control plane, publication maintenance summaries, and live governance lanes are now in place |
 | [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) | Executed implementation record for repository-wide architecture reduction, refactoring, module-topology cleanup, semantic-product consolidation, and lifecycle/health/repair hardening | Executed; query/filter shell convergence, backend narrowing, shared query construction, semantic-product consolidation, root narrowing, and live-maintenance hardening are now in place |
 | [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md) | Executed convergence program for action/event semantics, retrieval/FTS/embedding control-plane work, unresolved runtime-state/schema/operator slices, and archive-scale validation | Executed; durable action-event read model, readiness-aware query fallback, retrieval-health surfaces, and archive-intelligence validation lanes are now in place |
 | [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md) | Absorbed predecessor program for the runtime-state/schema half of the new integrated campaign | Planned reference; no longer the live queue on its own |
@@ -116,7 +117,20 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md)
+- the current live implementation queue is now [programs/archive-data-products-and-live-governance-program-2026-03-24.md](./programs/archive-data-products-and-live-governance-program-2026-03-24.md)
+- the source-boundary/runtime-governance campaign in [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md) is now executed
+- it closed the source/runtime-governance drag around:
+  - historical `sources/source.py` / `sources/drive_client.py` umbrella ownership
+  - typed maintenance selection and explicit safe-vs-destructive operator semantics
+  - canonical derived-model provenance/freshness reporting across health, publication, and machine output
+  - clearer cached-vs-live operator output semantics
+  - committed local/live governance lanes for source/provider fidelity and maintenance preview
+- the next integrated move is product/governance heavy:
+  - materialize durable semantic/session products instead of recomputing them ad hoc
+  - converge external consumer contracts around explicit public payloads
+  - make live archive cleanup planning and lineage first-class
+  - let retrieval and embeddings target archive product layers, not only raw messages/actions
+  - extend live governance lanes to those consumer and product surfaces
 - the platform-wide refactoring campaign in [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) is now executed
 - it closed the broad architectural drag around:
   - query/filter shell convergence onto immutable plans
@@ -125,11 +139,6 @@ As of this map:
   - consolidation of semantic session/work products into explicit builders
   - narrower package-root and synthetic-stack exports
   - live-maintenance hardening for action-event readiness, repair, and archive health
-- the live archive dogfooding loop also surfaced a new explicit governance frontier:
-  - source-layer rough edges and historical compatibility shape
-  - runtime maintenance/control-plane semantics across health, repair, lifecycle, and cache
-  - derived-model freshness/provenance convergence beyond just action events
-  - remaining live archive corruption cleanup such as orphaned content blocks
 - the archive-intelligence campaign in [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md) is now executed
 - it closed the dogfooded archive-intelligence frontier around:
   - first-class durable action events
