@@ -12,7 +12,7 @@ from polylogue.cli.query_helpers import summary_to_dict
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
-    from polylogue.lib.action_facts import ActionFact
+    from polylogue.lib.action_events import ActionEvent
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.query_spec import ConversationQuerySpec
@@ -25,6 +25,7 @@ class SemanticStatsSlice:
     path_terms: tuple[str, ...] = ()
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
+    action_text_terms: tuple[str, ...] = ()
     tool_terms: tuple[str, ...] = ()
     excluded_tool_terms: tuple[str, ...] = ()
 
@@ -36,6 +37,7 @@ class SemanticStatsSlice:
             path_terms=selection.path_terms,
             action_terms=selection.action_terms,
             excluded_action_terms=selection.excluded_action_terms,
+            action_text_terms=selection.action_text_terms,
             tool_terms=selection.tool_terms,
             excluded_tool_terms=selection.excluded_tool_terms,
         )
@@ -46,17 +48,18 @@ class SemanticStatsSlice:
                 self.path_terms,
                 self.action_terms,
                 self.excluded_action_terms,
+                self.action_text_terms,
                 self.tool_terms,
                 self.excluded_tool_terms,
             )
         )
 
 
-def _normalized_tool_name(action: ActionFact) -> str:
-    return (action.tool_name or "unknown").strip().lower()
+def _normalized_tool_name(action: ActionEvent) -> str:
+    return action.normalized_tool_name
 
 
-def _path_matches_slice(action: ActionFact, path_terms: tuple[str, ...]) -> bool:
+def _path_matches_slice(action: ActionEvent, path_terms: tuple[str, ...]) -> bool:
     if not path_terms:
         return True
     affected_paths = tuple(path.lower().replace("\\", "/") for path in action.affected_paths)
@@ -68,7 +71,7 @@ def _path_matches_slice(action: ActionFact, path_terms: tuple[str, ...]) -> bool
     )
 
 
-def _action_matches_slice(action: ActionFact, semantic_slice: SemanticStatsSlice) -> bool:
+def _action_matches_slice(action: ActionEvent, semantic_slice: SemanticStatsSlice) -> bool:
     if not _path_matches_slice(action, semantic_slice.path_terms):
         return False
 
@@ -80,6 +83,10 @@ def _action_matches_slice(action: ActionFact, semantic_slice: SemanticStatsSlice
     blocked_action_terms = {term for term in semantic_slice.excluded_action_terms if term != "none"}
     if action.kind.value in blocked_action_terms:
         return False
+    if semantic_slice.action_text_terms:
+        search_text = action.search_text.lower()
+        if not all(term.lower() in search_text for term in semantic_slice.action_text_terms):
+            return False
 
     tool_name = _normalized_tool_name(action)
     if "none" in semantic_slice.tool_terms:
@@ -91,13 +98,13 @@ def _action_matches_slice(action: ActionFact, semantic_slice: SemanticStatsSlice
     return tool_name not in blocked_tool_terms
 
 
-def _filtered_action_facts(
+def _filtered_action_events(
     facts: ConversationSemanticFacts,
     semantic_slice: SemanticStatsSlice,
-) -> tuple[ActionFact, ...]:
+) -> tuple[ActionEvent, ...]:
     if not semantic_slice.has_filters():
-        return facts.action_facts
-    return tuple(action for action in facts.action_facts if _action_matches_slice(action, semantic_slice))
+        return facts.action_events
+    return tuple(action for action in facts.action_events if _action_matches_slice(action, semantic_slice))
 
 
 def _emit_structured_stats(
@@ -375,29 +382,29 @@ def output_stats_by_conversations(
         from collections import Counter
 
         action_groups: dict[str, dict[str, int]] = defaultdict(lambda: {"convs": 0, "facts": 0, "msgs": 0})
-        matched_action_facts = 0
+        matched_action_events = 0
         matched_action_msgs = 0
 
         for conv in results:
             facts = build_conversation_semantic_facts(conv)
-            filtered_actions = _filtered_action_facts(facts, semantic_slice)
+            filtered_actions = _filtered_action_events(facts, semantic_slice)
             action_counts = Counter(action.kind.value for action in filtered_actions)
             if not action_counts:
                 action_groups["none"]["convs"] += 1
                 continue
 
-            matched_action_facts += sum(action_counts.values())
+            matched_action_events += sum(action_counts.values())
             matched_action_msgs += sum(
                 1
                 for message in facts.message_facts
-                if any(_action_matches_slice(action, semantic_slice) for action in message.action_facts)
+                if any(_action_matches_slice(action, semantic_slice) for action in message.action_events)
             )
 
             message_groups: dict[str, set[str]] = defaultdict(set)
             for message in facts.message_facts:
                 for key in {
                     action.kind.value
-                    for action in message.action_facts
+                    for action in message.action_events
                     if _action_matches_slice(action, semantic_slice)
                 }:
                     message_groups[key].add(message.message_id)
@@ -428,7 +435,7 @@ def output_stats_by_conversations(
         summary = {
             "group": "MATCHED",
             "conversations": len(results),
-            "facts": matched_action_facts,
+            "facts": matched_action_events,
             "messages": matched_action_msgs,
         }
         if _emit_structured_stats(
@@ -471,7 +478,7 @@ def output_stats_by_conversations(
 
         for conv in results:
             facts = build_conversation_semantic_facts(conv)
-            filtered_actions = _filtered_action_facts(facts, semantic_slice)
+            filtered_actions = _filtered_action_events(facts, semantic_slice)
             tool_counts = Counter(_normalized_tool_name(action) for action in filtered_actions)
             if not tool_counts:
                 tool_groups["none"]["convs"] += 1
@@ -481,14 +488,14 @@ def output_stats_by_conversations(
             matched_tool_msgs += sum(
                 1
                 for message in facts.message_facts
-                if any(_action_matches_slice(action, semantic_slice) for action in message.action_facts)
+                if any(_action_matches_slice(action, semantic_slice) for action in message.action_events)
             )
 
             message_groups: dict[str, set[str]] = defaultdict(set)
             for message in facts.message_facts:
                 for key in {
                     _normalized_tool_name(action)
-                    for action in message.action_facts
+                    for action in message.action_events
                     if _action_matches_slice(action, semantic_slice)
                 }:
                     message_groups[key].add(message.message_id)

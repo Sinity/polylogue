@@ -163,9 +163,11 @@ def test_build_conversation_semantic_facts_collects_semantic_counts() -> None:
     assert facts.tool_category_counts == {"file_read": 1}
     assert facts.message_facts[1].tool_category_counts == {"file_read": 1}
     assert facts.message_facts[1].affected_paths == ("/realm/project/polylogue/README.md",)
-    assert len(facts.action_facts) == 1
-    assert facts.action_facts[0].kind.value == "file_read"
-    assert facts.action_facts[0].affected_paths == ("/realm/project/polylogue/README.md",)
+    assert len(facts.action_events) == 1
+    assert facts.action_events[0].kind.value == "file_read"
+    assert facts.action_events[0].affected_paths == ("/realm/project/polylogue/README.md",)
+    assert facts.action_events[0].message_id == "a1"
+    assert facts.action_events[0].sequence_index == 0
     assert facts.first_message_at == datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc)
     assert facts.last_message_at == datetime(2026, 3, 23, 9, 4, tzinfo=timezone.utc)
     assert facts.wall_duration_ms == 240000
@@ -283,7 +285,7 @@ def test_build_conversation_semantic_facts_upgrades_stale_other_semantic_type() 
     assert facts.message_facts[1].affected_paths == ("/realm/project/polylogue/README.md",)
 
 
-def test_action_facts_capture_normalized_command_query_branch_and_cwd() -> None:
+def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None:
     conversation = Conversation(
         id="conv-action-facts",
         provider="claude-code",
@@ -323,14 +325,17 @@ def test_action_facts_capture_normalized_command_query_branch_and_cwd() -> None:
     facts = build_conversation_semantic_facts(conversation)
 
     assert facts.tool_category_counts == {"git": 1, "search": 1}
-    git_action, search_action = facts.action_facts
+    git_action, search_action = facts.action_events
     assert git_action.kind.value == "git"
+    assert git_action.event_id.startswith("act-")
     assert git_action.command == "git checkout feature/action-facts"
     assert git_action.cwd_path == "/realm/project/polylogue"
     assert git_action.branch_names == ("feature/action-facts",)
+    assert "feature/action-facts" in git_action.search_text
     assert search_action.kind.value == "search"
     assert search_action.query == "build_session_profile"
     assert search_action.affected_paths == ("/realm/project/polylogue/polylogue/lib",)
+    assert "/realm/project/polylogue/polylogue/lib" in search_action.search_text
 
     profile = build_session_profile(conversation)
     assert profile.canonical_projects == ("polylogue",)

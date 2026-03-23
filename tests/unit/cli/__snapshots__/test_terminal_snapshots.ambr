@@ -135,6 +135,8 @@
         polylogue --path <PATH> --action file_read --l
   ist
         polylogue --action search --action file_edit --list
+        polylogue --action-sequence file_read,file_edit,shell --list
+        polylogue --action-text "pytest -q" --list
         polylogue --action other --stats-by tool --format json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
@@ -177,6 +179,10 @@
   bagent|other|none]
                                     Exclude semantic action category (repeatable
                                     = AND)
+    --action-sequence TEXT          Require ordered semantic action subsequence
+                                    (comma-separated)
+    --action-text TEXT              Require text within normalized action
+                                    evidence (repeatable = AND)
     --tool TEXT                     Require normalized tool name (repeatable =
                                     AND)
     --exclude-tool TEXT             Exclude normalized tool name (repeatable =
@@ -264,6 +270,9 @@
         polylogue --path <PATH> --
   action file_read --list
         polylogue --action search --action file_edit --list
+        polylogue --action-sequence file_read,file_edit,shell
+  --list
+        polylogue --action-text "pytest -q" --list
         polylogue --action other --stats-by tool --format json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --l
@@ -316,6 +325,13 @@
                                     Exclude semantic action ca
   tegory (repeatable
                                     = AND)
+    --action-sequence TEXT          Require ordered semantic a
+  ction subsequence
+                                    (comma-separated)
+    --action-text TEXT              Require text within normal
+  ized action
+                                    evidence (repeatable = AND
+  )
     --tool TEXT                     Require normalized tool na
   me (repeatable =
                                     AND)
@@ -437,6 +453,8 @@
         polylogue -t important --stats-by provider
         polylogue --path <PATH> --action file_read --list
         polylogue --action search --action file_edit --list
+        polylogue --action-sequence file_read,file_edit,shell --list
+        polylogue --action-text "pytest -q" --list
         polylogue --action other --stats-by tool --format json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
@@ -477,6 +495,10 @@
     --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
                                     Exclude semantic action category (repeatable
                                     = AND)
+    --action-sequence TEXT          Require ordered semantic action subsequence
+                                    (comma-separated)
+    --action-text TEXT              Require text within normalized action
+                                    evidence (repeatable = AND)
     --tool TEXT                     Require normalized tool name (repeatable =
                                     AND)
     --exclude-tool TEXT             Exclude normalized tool name (repeatable =

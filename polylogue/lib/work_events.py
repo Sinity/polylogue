@@ -76,7 +76,7 @@ def _classify_message_range(
         msg = messages[i]
         if msg.is_user and msg.text and not msg.is_context_dump:
             user_text += " " + msg.text.lower()
-        for action in msg.action_facts:
+        for action in msg.action_events:
             cat = action.kind.value
             category_counts[cat] = category_counts.get(cat, 0) + 1
             all_tools.append(action.tool_name)
@@ -171,7 +171,7 @@ def _compute_phase_ranges(
         sub_start = start
         prev_dominant = None
         for i in range(start, end):
-            actions = messages[i].action_facts
+            actions = messages[i].action_events
             dominant = actions[0].kind.value if actions else None
             if (
                 prev_dominant is not None
@@ -214,7 +214,7 @@ def extract_work_events(
         file_paths: list[str] = []
         tools_used: list[str] = []
         for j in range(chunk_start, chunk_end):
-            for action in messages[j].action_facts:
+            for action in messages[j].action_events:
                 tools_used.append(action.tool_name)
                 file_paths.extend(action.affected_paths)
 
