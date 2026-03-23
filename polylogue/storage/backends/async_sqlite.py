@@ -12,6 +12,7 @@ Performance characteristics:
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,6 +22,7 @@ import aiosqlite
 import polylogue.paths as _paths
 from polylogue.logging import get_logger
 from polylogue.storage.backends.connection import DB_TIMEOUT
+from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import artifacts as artifacts_q
 from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
@@ -31,6 +33,7 @@ from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.state_views import RawConversationState, RawConversationStateUpdate
 from polylogue.storage.store import (
+    ActionEventRecord,
     ArtifactObservationRecord,
     AttachmentRecord,
     ContentBlockRecord,
@@ -266,9 +269,15 @@ class SQLiteBackend:
         For the current version: nothing to do.
         For any other version: raise — wipe DB and re-run.
         """
+        from polylogue.storage.action_event_lifecycle import (
+            action_event_read_model_status_async,
+            rebuild_action_event_read_model_async,
+        )
         from polylogue.storage.backends.schema import (
+            _ACTION_EVENT_DDL,
             _ACTION_FTS_DDL,
             _ARTIFACT_OBSERVATION_DDL,
+            _PUBLICATION_DDL,
             _VEC0_DDL,
             SCHEMA_DDL,
             SCHEMA_VERSION,
@@ -291,13 +300,44 @@ class SQLiteBackend:
             await conn.commit()
         elif current_version == SCHEMA_VERSION:
             await conn.executescript(_ARTIFACT_OBSERVATION_DDL)
+            await conn.executescript(_PUBLICATION_DDL)
+            await conn.executescript(_ACTION_EVENT_DDL)
+            cursor = await conn.execute("PRAGMA table_info(action_events)")
+            action_event_columns = {row[1] for row in await cursor.fetchall()}
+            if "materializer_version" not in action_event_columns:
+                await conn.execute(
+                    "ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1"
+                )
+            action_event_status = await action_event_read_model_status_async(conn)
+            rebuilt_action_events = False
+            has_tool_blocks = bool(
+                await (
+                    await conn.execute(
+                        "SELECT 1 FROM content_blocks WHERE type = 'tool_use' LIMIT 1"
+                    )
+                ).fetchone()
+            )
+            if has_tool_blocks and (
+                int(action_event_status["count"]) == 0 or not bool(action_event_status["matches_version"])
+            ):
+                try:
+                    await rebuild_action_event_read_model_async(conn)
+                    rebuilt_action_events = True
+                except sqlite3.OperationalError as exc:
+                    if "database is locked" not in str(exc).lower():
+                        raise
+                    logger.warning(
+                        "Skipping asynchronous action-event backfill during schema ensure because the database is locked"
+                    )
             cursor = await conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
             )
             action_fts_exists = await cursor.fetchone()
             await conn.executescript(_ACTION_FTS_DDL)
-            if not action_fts_exists:
+            if rebuilt_action_events or not action_fts_exists:
+                await conn.execute("DELETE FROM action_events_fts")
                 await conn.execute(ACTION_FTS_REBUILD_SQL)
+            await conn.commit()
         else:
             from polylogue.errors import DatabaseError
 
@@ -531,6 +571,35 @@ class SQLiteBackend:
         """Persist content block records using bulk insert."""
         async with self._get_connection() as conn:
             await attachments_q.save_content_blocks(conn, records, self._transaction_depth)
+
+    async def replace_action_events(
+        self,
+        conversation_id: str,
+        records: list[ActionEventRecord],
+    ) -> None:
+        """Replace durable action-event rows for one conversation."""
+        async with self._get_connection() as conn:
+            await action_events_q.replace_action_events(
+                conn,
+                conversation_id,
+                records,
+                self._transaction_depth,
+            )
+
+    async def get_action_events(self, conversation_id: str) -> list[ActionEventRecord]:
+        """Get durable action-event rows for one conversation."""
+        return await self.queries.get_action_events(conversation_id)
+
+    async def get_action_events_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[ActionEventRecord]]:
+        """Get durable action-event rows for multiple conversations."""
+        return await self.queries.get_action_events_batch(conversation_ids)
+
+    async def get_action_event_read_model_status(self) -> dict[str, int | bool]:
+        """Return readiness metadata for the durable action-event read model."""
+        return await self.queries.get_action_event_read_model_status()
 
     async def upsert_conversation_stats(
         self,

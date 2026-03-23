@@ -74,6 +74,10 @@ def message_from_record(
     # Build content_blocks dict list from ContentBlockRecord objects
     blocks = [
         {
+            "block_id": str(b.block_id),
+            "message_id": str(b.message_id),
+            "conversation_id": str(b.conversation_id),
+            "block_index": b.block_index,
             "type": str(b.type),
             "text": b.text,
             "tool_name": b.tool_name,

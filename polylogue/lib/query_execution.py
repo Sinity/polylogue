@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import inspect
 import random
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -33,6 +34,24 @@ def _provider_values(values: tuple[Provider | str, ...]) -> tuple[str, ...]:
 
 def _conversation_has_branches(conversation: Conversation) -> bool:
     return any(message.branch_index > 0 for message in conversation.messages)
+
+
+def _conversation_to_summary(conversation: Conversation) -> ConversationSummary:
+    from polylogue.lib.models import ConversationSummary
+
+    return ConversationSummary(
+        id=conversation.id,
+        provider=conversation.provider,
+        title=conversation.title,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        provider_meta=conversation.provider_meta,
+        metadata=conversation.metadata,
+        parent_id=conversation.parent_id,
+        branch_type=conversation.branch_type,
+        message_count=len(conversation.messages),
+        dialogue_count=sum(1 for message in conversation.messages if message.is_dialogue),
+    )
 
 
 @dataclass(frozen=True)
@@ -288,15 +307,9 @@ class ConversationQueryPlan:
             return True
         if self.negative_terms or self.predicates or self.similar_text:
             return True
-        if self.path_terms:
-            return True
-        if self.action_terms or self.excluded_action_terms:
-            return True
         if self.action_sequence:
             return True
         if self.action_text_terms:
-            return True
-        if self.tool_terms or self.excluded_tool_terms:
             return True
         if self.has_branches is not None:
             return True
@@ -310,13 +323,8 @@ class ConversationQueryPlan:
             self.fts_terms
             or self.conversation_id
             or self.similar_text
-            or self.path_terms
-            or self.action_terms
-            or self.excluded_action_terms
             or self.action_sequence
             or self.action_text_terms
-            or self.tool_terms
-            or self.excluded_tool_terms
             or self.predicates
             or self.has_types
             or self.negative_terms
@@ -429,13 +437,46 @@ class ConversationQueryPlan:
 
     def _candidate_record_query(self) -> tuple[ConversationRecordQuery, bool]:
         record_query = self.record_query
-        if self.path_terms or self.action_terms or self.excluded_action_terms:
-            record_query = record_query.without_unstable_semantic_filters()
-            return record_query, False
-        return record_query, self.sql_pushed
+        return record_query.without_unstable_semantic_filters(), self.sql_pushed
 
     def fetch_record_query(self) -> ConversationRecordQuery:
         record_query, _ = self._candidate_record_query()
+        return record_query.with_limit(self.effective_fetch_limit())
+
+    def _uses_action_read_model(self) -> bool:
+        return bool(
+            self.path_terms
+            or self.action_terms
+            or self.excluded_action_terms
+            or self.tool_terms
+            or self.excluded_tool_terms
+            or self.action_text_terms
+            or self.retrieval_lane in {"actions", "hybrid"}
+        )
+
+    async def _action_read_model_ready(self, repository: ConversationRepository) -> bool:
+        if not self._uses_action_read_model():
+            return True
+        status_reader = getattr(repository, "get_action_event_read_model_status", None)
+        if status_reader is None:
+            return True
+        status = status_reader()
+        if inspect.isawaitable(status):
+            status = await status
+        if not isinstance(status, dict):
+            return True
+        return bool(status.get("ready", False))
+
+    async def _candidate_record_query_for(
+        self,
+        repository: ConversationRepository,
+    ) -> tuple[ConversationRecordQuery, bool]:
+        if await self._action_read_model_ready(repository):
+            return self.record_query, self.sql_pushed
+        return self.record_query.without_unstable_semantic_filters(), False
+
+    async def fetch_record_query_for(self, repository: ConversationRepository) -> ConversationRecordQuery:
+        record_query, _ = await self._candidate_record_query_for(repository)
         return record_query.with_limit(self.effective_fetch_limit())
 
     def _should_batch_post_filter_fetch(self) -> bool:
@@ -509,19 +550,20 @@ class ConversationQueryPlan:
         repository: ConversationRepository,
         *,
         summaries: bool,
-    ) -> builtins.list[Conversation | ConversationSummary]:
+    ) -> tuple[builtins.list[Conversation | ConversationSummary], bool]:
         direct = await self._fetch_direct_id(repository, summaries=summaries)
         if direct:
-            return direct
+            return direct, False
 
         used_search, search_results = await self._fetch_search_results(repository, summaries=summaries)
         if used_search:
-            return search_results
+            return search_results, False
 
-        request = self.fetch_record_query()
+        request, sql_pushed = await self._candidate_record_query_for(repository)
+        request = request.with_limit(self.effective_fetch_limit())
         if summaries:
-            return await repository.list_summaries_by_query(request)
-        return await repository.list_by_query(request)
+            return await repository.list_summaries_by_query(request), sql_pushed
+        return await repository.list_by_query(request), sql_pushed
 
     def _search_query_text(self) -> str:
         return " ".join(term.strip() for term in self.fts_terms if term.strip()).strip()
@@ -559,7 +601,7 @@ class ConversationQueryPlan:
         *,
         limit: int,
     ) -> builtins.list[Conversation]:
-        request, sql_pushed = self._candidate_record_query()
+        request, sql_pushed = await self._candidate_record_query_for(repository)
         batch_limit = self._candidate_batch_limit()
         offset = 0
         query_text = self._search_query_text()
@@ -596,6 +638,8 @@ class ConversationQueryPlan:
     ) -> builtins.list[Conversation]:
         query = self._search_query_text()
         provider_names = list(_provider_values(self.providers)) or None
+        if not await self._action_read_model_ready(repository):
+            return await self._search_action_results_fallback(repository, limit=limit)
         try:
             return await repository.search_actions(query, limit=limit, providers=provider_names)
         except Exception as exc:
@@ -649,7 +693,7 @@ class ConversationQueryPlan:
         self,
         repository: ConversationRepository,
     ) -> builtins.list[Conversation]:
-        request, sql_pushed = self._candidate_record_query()
+        request, sql_pushed = await self._candidate_record_query_for(repository)
         batch_limit = self._candidate_batch_limit()
         offset = 0
         matched: builtins.list[Conversation] = []
@@ -843,8 +887,8 @@ class ConversationQueryPlan:
             batched = await self._fetch_batched_filtered_conversations(repository)
             return self._finalize(self._sort_conversations(batched))
 
-        candidates = await self._fetch_candidates(repository, summaries=False)
-        filtered = self._apply_full_filters(candidates, sql_pushed=self.sql_pushed)
+        candidates, sql_pushed = await self._fetch_candidates(repository, summaries=False)
+        filtered = self._apply_full_filters(candidates, sql_pushed=sql_pushed)
         return self._finalize(self._sort_conversations(filtered))
 
     async def list_summaries(
@@ -858,8 +902,12 @@ class ConversationQueryPlan:
             )
             raise ValueError(msg)
 
-        candidates = await self._fetch_candidates(repository, summaries=True)
-        filtered = self._apply_common_filters(candidates, sql_pushed=self.sql_pushed)
+        if self._uses_action_read_model() and not await self._action_read_model_ready(repository):
+            conversations = await self.list(repository)
+            return [_conversation_to_summary(conversation) for conversation in conversations]
+
+        candidates, sql_pushed = await self._fetch_candidates(repository, summaries=True)
+        filtered = self._apply_common_filters(candidates, sql_pushed=sql_pushed)
         return self._finalize(self._sort_summaries(filtered))
 
     async def first(self, repository: ConversationRepository) -> Conversation | None:
@@ -867,7 +915,7 @@ class ConversationQueryPlan:
         return results[0] if results else None
 
     async def count(self, repository: ConversationRepository) -> int:
-        if self.can_count_in_sql():
+        if self.can_count_in_sql() and await self._action_read_model_ready(repository):
             return await repository.count_by_query(self.record_query.for_count())
 
         unbounded = self.with_limit(None)

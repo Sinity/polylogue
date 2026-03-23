@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from polylogue.lib.action_events import ActionEvent
 from polylogue.lib.semantic_facts import ConversationSemanticFacts, build_conversation_semantic_facts
 
 if TYPE_CHECKING:
@@ -74,20 +75,19 @@ class ConversationAttribution:
     canonical_projects: tuple[str, ...]  # resolved project names (e.g. "sinex", "sinnix")
 
 
-def extract_attribution(
-    conversation: Conversation,
+def extract_attribution_from_action_events(
+    actions: tuple[ActionEvent, ...] | list[ActionEvent],
     *,
-    facts: ConversationSemanticFacts | None = None,
+    provider_meta: dict[str, object] | None = None,
 ) -> ConversationAttribution:
-    """Extract path/repo/branch attribution from all tool calls in a conversation."""
-    semantic_facts = facts or build_conversation_semantic_facts(conversation)
+    """Extract attribution from canonical action events plus optional provider metadata."""
     repo_paths: set[str] = set()
     cwd_paths: set[str] = set()
     branch_names: set[str] = set()
     file_paths: set[str] = set()
     languages: set[str] = set()
 
-    provider_meta = conversation.provider_meta if isinstance(conversation.provider_meta, dict) else {}
+    provider_meta = provider_meta if isinstance(provider_meta, dict) else {}
     cwd_value = provider_meta.get("cwd")
     if isinstance(cwd_value, str) and cwd_value:
         cwd_paths.add(cwd_value)
@@ -110,23 +110,59 @@ def extract_attribution(
             if repo:
                 repo_paths.add(repo)
 
-    for message in semantic_facts.message_facts:
-        for action in message.action_events:
-            if action.cwd_path:
-                cwd_paths.add(action.cwd_path)
-                repo = _repo_root_from_path(action.cwd_path)
-                if repo:
-                    repo_paths.add(repo)
-            for branch in action.branch_names:
-                branch_names.add(branch)
-            for path in action.affected_paths:
-                file_paths.add(path)
-                lang = _language_from_path(path)
-                if lang:
-                    languages.add(lang)
-                repo = _repo_root_from_path(path)
-                if repo:
-                    repo_paths.add(repo)
+    for action in actions:
+        if action.cwd_path:
+            cwd_paths.add(action.cwd_path)
+            repo = _repo_root_from_path(action.cwd_path)
+            if repo:
+                repo_paths.add(repo)
+        for branch in action.branch_names:
+            branch_names.add(branch)
+        for path in action.affected_paths:
+            file_paths.add(path)
+            lang = _language_from_path(path)
+            if lang:
+                languages.add(lang)
+            repo = _repo_root_from_path(path)
+            if repo:
+                repo_paths.add(repo)
+
+    canonical: set[str] = set()
+    for rp in repo_paths:
+        parts = PurePosixPath(rp).parts
+        for i, part in enumerate(parts):
+            if part == "project" and i + 1 < len(parts):
+                name = parts[i + 1]
+                if name and not name.startswith("."):
+                    canonical.add(name)
+                break
+
+    return ConversationAttribution(
+        repo_paths=tuple(sorted(repo_paths)),
+        cwd_paths=tuple(sorted(cwd_paths)),
+        branch_names=tuple(sorted(branch_names)),
+        file_paths_touched=tuple(sorted(file_paths)),
+        languages_detected=tuple(sorted(languages)),
+        canonical_projects=tuple(sorted(canonical)),
+    )
+
+
+def extract_attribution(
+    conversation: Conversation,
+    *,
+    facts: ConversationSemanticFacts | None = None,
+) -> ConversationAttribution:
+    """Extract path/repo/branch attribution from all tool calls in a conversation."""
+    semantic_facts = facts or build_conversation_semantic_facts(conversation)
+    base = extract_attribution_from_action_events(
+        semantic_facts.action_events,
+        provider_meta=conversation.provider_meta if isinstance(conversation.provider_meta, dict) else None,
+    )
+    repo_paths = set(base.repo_paths)
+    cwd_paths = set(base.cwd_paths)
+    branch_names = set(base.branch_names)
+    file_paths = set(base.file_paths_touched)
+    languages = set(base.languages_detected)
 
     # Scan dialogue text for file paths and language mentions (catches pure-conversation sessions)
     realm_path_pattern = re.compile(r'/realm/project/[^\s,;:)\]]+')
@@ -150,22 +186,15 @@ def extract_attribution(
             if lang_name in text_lower:
                 languages.add(lang_name)
 
-    # Resolve repo_paths to canonical project names (basename of /realm/project/<X>)
-    canonical: set[str] = set()
-    for rp in repo_paths:
-        parts = PurePosixPath(rp).parts
-        for i, part in enumerate(parts):
-            if part == "project" and i + 1 < len(parts):
-                name = parts[i + 1]
-                if name and not name.startswith("."):
-                    canonical.add(name)
-                break
-
     return ConversationAttribution(
         repo_paths=tuple(sorted(repo_paths)),
         cwd_paths=tuple(sorted(cwd_paths)),
         branch_names=tuple(sorted(branch_names)),
         file_paths_touched=tuple(sorted(file_paths)),
         languages_detected=tuple(sorted(languages)),
-        canonical_projects=tuple(sorted(canonical)),
+        canonical_projects=tuple(sorted({
+            PurePosixPath(path).name
+            for path in repo_paths
+            if PurePosixPath(path).parent.name == "project"
+        })),
     )

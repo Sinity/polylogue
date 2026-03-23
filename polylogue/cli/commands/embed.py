@@ -114,7 +114,7 @@ def embed_command(
     _embed_batch(env, repo, vec_provider, rebuild=rebuild, limit=limit)
 
 
-def _embedding_status_payload(env: AppEnv) -> dict[str, int | float | str | bool]:
+def _embedding_status_payload(env: AppEnv) -> dict[str, object]:
     """Read canonical embedding-status statistics for operator surfaces."""
     from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.embedding_stats import read_embedding_stats_sync
@@ -137,6 +137,11 @@ def _embedding_status_payload(env: AppEnv) -> dict[str, int | float | str | bool
         status = "partial"
     else:
         status = "complete"
+    freshness_status = status
+    if embedding_stats.embedded_messages > 0 and (
+        embedding_stats.stale_messages > 0 or embedding_stats.messages_missing_provenance > 0
+    ):
+        freshness_status = "stale"
 
     return {
         "status": status,
@@ -145,7 +150,14 @@ def _embedding_status_payload(env: AppEnv) -> dict[str, int | float | str | bool
         "embedded_messages": int(embedded_msgs),
         "pending_conversations": int(pending),
         "embedding_coverage_percent": round(float(coverage), 1),
-        "retrieval_ready": bool(embedded_msgs > 0),
+        "retrieval_ready": bool(embedded_msgs > embedding_stats.stale_messages),
+        "freshness_status": freshness_status,
+        "stale_messages": int(embedding_stats.stale_messages),
+        "messages_missing_provenance": int(embedding_stats.messages_missing_provenance),
+        "oldest_embedded_at": embedding_stats.oldest_embedded_at,
+        "newest_embedded_at": embedding_stats.newest_embedded_at,
+        "embedding_models": embedding_stats.model_counts,
+        "embedding_dimensions": embedding_stats.dimension_counts,
     }
 
 
@@ -165,6 +177,21 @@ def _show_embedding_stats(env: AppEnv, *, json_output: bool = False) -> None:
     click.echo(f"  Coverage:              {payload['embedding_coverage_percent']:.1f}%")
     click.echo(f"  Pending:               {payload['pending_conversations']}")
     click.echo(f"  Retrieval ready:       {'yes' if payload['retrieval_ready'] else 'no'}")
+    click.echo(f"  Freshness:             {payload['freshness_status']}")
+    click.echo(f"  Stale messages:        {payload['stale_messages']}")
+    click.echo(f"  Missing provenance:    {payload['messages_missing_provenance']}")
+    if payload["oldest_embedded_at"] or payload["newest_embedded_at"]:
+        click.echo(
+            f"  Embedded at:           {payload['oldest_embedded_at'] or '-'} -> {payload['newest_embedded_at'] or '-'}"
+        )
+    if payload["embedding_models"]:
+        click.echo(
+            f"  Models:                {', '.join(f'{name} ({count})' for name, count in payload['embedding_models'].items())}"
+        )
+    if payload["embedding_dimensions"]:
+        click.echo(
+            f"  Dimensions:            {', '.join(f'{dimension} ({count})' for dimension, count in payload['embedding_dimensions'].items())}"
+        )
 
 
 def _embed_single(
