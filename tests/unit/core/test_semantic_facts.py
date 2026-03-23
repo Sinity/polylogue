@@ -182,6 +182,59 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.wall_duration_ms == 240000
 
 
+def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() -> None:
+    conversation = Conversation(
+        id="conv-db-semantic-facts",
+        provider="claude-code",
+        title="DB Semantic Facts",
+        created_at=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 3, 23, 9, 5, tzinfo=timezone.utc),
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="claude-code",
+                    text="Inspect README.md and summarize the result.",
+                    timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
+                ),
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="I checked the file.",
+                    timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
+                    content_blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Read",
+                            "tool_id": "tool-1",
+                            "tool_input": {"file_path": "/realm/project/polylogue/README.md"},
+                            "semantic_type": "file_read",
+                            "metadata": {"path": "/realm/project/polylogue/README.md"},
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "tool-1",
+                            "text": "README contents",
+                        },
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    facts = build_conversation_semantic_facts(conversation)
+    profile = build_session_profile(conversation)
+
+    assert facts.tool_category_counts == {"file_read": 1}
+    assert facts.message_facts[1].tool_category_counts == {"file_read": 1}
+    assert facts.message_facts[1].affected_paths == ("/realm/project/polylogue/README.md",)
+    assert facts.message_facts[1].tool_calls[0].output == "README contents"
+    assert profile.tool_categories == {"file_read": 1}
+    assert profile.canonical_projects == ("polylogue",)
+
+
 def test_build_session_profile_detects_project_paths_in_user_text() -> None:
     conversation = Conversation(
         id="conv-user-paths",
@@ -208,6 +261,42 @@ def test_build_session_profile_detects_project_paths_in_user_text() -> None:
 
     profile = build_session_profile(conversation)
 
+    assert profile.canonical_projects == ("polylogue",)
+
+
+def test_build_session_profile_uses_conversation_level_git_context() -> None:
+    conversation = Conversation(
+        id="conv-git-context",
+        provider="codex",
+        provider_meta={
+            "git": {
+                "branch": "feature/runtime-cleanup",
+                "repository_url": "/realm/project/polylogue",
+            }
+        },
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="codex",
+                    text="Please continue.",
+                    timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
+                ),
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="codex",
+                    text="Continuing.",
+                    timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
+                ),
+            ]
+        ),
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert profile.branch_names == ("feature/runtime-cleanup",)
     assert profile.canonical_projects == ("polylogue",)
 
 
