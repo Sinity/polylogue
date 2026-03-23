@@ -20,31 +20,16 @@ import aiosqlite
 
 import polylogue.paths as _paths
 from polylogue.logging import get_logger
-from polylogue.storage.backends.connection import (
-    DB_TIMEOUT,
-)
-from polylogue.storage.backends.queries import (
-    artifacts as artifacts_q,
-)
-from polylogue.storage.backends.queries import (
-    attachments as attachments_q,
-)
-from polylogue.storage.backends.queries import (
-    conversations as conversations_q,
-)
-from polylogue.storage.backends.queries import (
-    messages as messages_q,
-)
-from polylogue.storage.backends.queries import (
-    raw as raw_queries,
-)
-from polylogue.storage.backends.queries import (
-    stats as stats_q,
-)
+from polylogue.storage.backends.connection import DB_TIMEOUT
+from polylogue.storage.backends.queries import artifacts as artifacts_q
+from polylogue.storage.backends.queries import attachments as attachments_q
+from polylogue.storage.backends.queries import conversations as conversations_q
+from polylogue.storage.backends.queries import messages as messages_q
+from polylogue.storage.backends.queries import raw as raw_queries
+from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.query_models import ConversationRecordQuery
-from polylogue.storage.state_views import RawConversationState
-from polylogue.storage.state_views import RawConversationStateUpdate
+from polylogue.storage.state_views import RawConversationState, RawConversationStateUpdate
 from polylogue.storage.store import (
     ArtifactObservationRecord,
     AttachmentRecord,
@@ -282,11 +267,13 @@ class SQLiteBackend:
         For any other version: raise — wipe DB and re-run.
         """
         from polylogue.storage.backends.schema import (
+            _ACTION_FTS_DDL,
             _ARTIFACT_OBSERVATION_DDL,
             _VEC0_DDL,
             SCHEMA_DDL,
             SCHEMA_VERSION,
         )
+        from polylogue.storage.fts_lifecycle import ACTION_FTS_REBUILD_SQL
 
         cursor = await conn.execute("PRAGMA user_version")
         row = await cursor.fetchone()
@@ -304,6 +291,13 @@ class SQLiteBackend:
             await conn.commit()
         elif current_version == SCHEMA_VERSION:
             await conn.executescript(_ARTIFACT_OBSERVATION_DDL)
+            cursor = await conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
+            )
+            action_fts_exists = await cursor.fetchone()
+            await conn.executescript(_ACTION_FTS_DDL)
+            if not action_fts_exists:
+                await conn.execute(ACTION_FTS_REBUILD_SQL)
         else:
             from polylogue.errors import DatabaseError
 

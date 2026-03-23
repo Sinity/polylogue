@@ -553,7 +553,7 @@ class ConversationQueryPlan:
             return 0.0
         return max(positive) + min(len(positive) - 1, 5)
 
-    async def _search_action_results(
+    async def _search_action_results_fallback(
         self,
         repository: ConversationRepository,
         *,
@@ -588,6 +588,20 @@ class ConversationQueryPlan:
         ranked.sort(key=lambda item: (item[0], item[2].updated_at or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
         return [conversation for _score, _counter, conversation in ranked]
 
+    async def _search_action_results(
+        self,
+        repository: ConversationRepository,
+        *,
+        limit: int,
+    ) -> builtins.list[Conversation]:
+        query = self._search_query_text()
+        provider_names = list(_provider_values(self.providers)) or None
+        try:
+            return await repository.search_actions(query, limit=limit, providers=provider_names)
+        except Exception as exc:
+            logger.debug("Persisted action search failed, falling back to hydrated scan: %s", exc)
+            return await self._search_action_results_fallback(repository, limit=limit)
+
     async def _search_hybrid_results(
         self,
         repository: ConversationRepository,
@@ -598,19 +612,35 @@ class ConversationQueryPlan:
         provider_names = list(_provider_values(self.providers)) or None
         text_results = await repository.search(query, limit=limit * 3, providers=provider_names)
         action_results = await self._search_action_results(repository, limit=limit * 3)
+        vector_results: builtins.list[Conversation] = []
+        if self.vector_provider is not None:
+            try:
+                vector_results = await repository.search_similar(
+                    query,
+                    limit=limit * 3,
+                    vector_provider=self.vector_provider,
+                )
+            except Exception as exc:
+                logger.debug("Vector contribution to hybrid retrieval unavailable: %s", exc)
 
         text_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(text_results, start=1)]
         action_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(action_results, start=1)]
+        vector_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(vector_results, start=1)]
         fused_ids = [
             conversation_id
-            for conversation_id, _score in reciprocal_rank_fusion(text_ranked, action_ranked)
+            for conversation_id, _score in reciprocal_rank_fusion(text_ranked, action_ranked, vector_ranked)
         ][:limit]
 
         text_by_id = {str(conversation.id): conversation for conversation in text_results}
         action_by_id = {str(conversation.id): conversation for conversation in action_results}
+        vector_by_id = {str(conversation.id): conversation for conversation in vector_results}
         ordered: list[Conversation] = []
         for conversation_id in fused_ids:
-            conversation = action_by_id.get(conversation_id) or text_by_id.get(conversation_id)
+            conversation = (
+                action_by_id.get(conversation_id)
+                or text_by_id.get(conversation_id)
+                or vector_by_id.get(conversation_id)
+            )
             if conversation is not None:
                 ordered.append(conversation)
         return ordered

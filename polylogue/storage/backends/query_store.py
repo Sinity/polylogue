@@ -92,6 +92,13 @@ class SQLiteQueryStore:
         async with self._connection_factory() as conn:
             return await conversations_q.search_conversations(conn, query, limit, providers)
 
+    async def search_action_conversations(
+        self, query: str, limit: int = 100, providers: list[str] | None = None
+    ) -> list[str]:
+        """Return ranked conversation IDs for persisted action-aware search."""
+        async with self._connection_factory() as conn:
+            return await conversations_q.search_action_conversations(conn, query, limit, providers)
+
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
         """Get message records for a conversation with content blocks attached."""
         async with self._connection_factory() as conn:
