@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import builtins
+from collections.abc import Callable
 
 from polylogue.lib.models import Conversation
+from polylogue.storage.backends.queries import conversations as conversations_q
+from polylogue.storage.backends.queries import publications as publications_q
+from polylogue.storage.backends.queries import runs as runs_q
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import (
     AttachmentRecord,
@@ -139,40 +143,98 @@ class RepositoryWriteMixin:
         return counts
 
     async def record_run(self, record: RunRecord) -> None:
-        await self._backend.record_run(record)
+        async with self._backend.transaction(), self._backend.connection() as conn:
+            await runs_q.record_run(conn, record, self._backend.transaction_depth)
 
     async def record_publication(self, record: PublicationRecord) -> None:
-        await self._backend.record_publication(record)
+        async with self._backend.transaction(), self._backend.connection() as conn:
+            await publications_q.record_publication(conn, record, self._backend.transaction_depth)
 
     async def get_latest_publication(
         self,
         publication_kind: str,
     ) -> PublicationRecord | None:
-        return await self._backend.get_latest_publication(publication_kind)
+        async with self._backend.connection() as conn:
+            return await publications_q.get_latest_publication(conn, publication_kind)
 
     async def get_metadata(self, conversation_id: str) -> dict[str, object]:
-        return await self._backend.get_metadata(conversation_id)
+        async with self._backend.connection() as conn:
+            return await conversations_q.get_metadata(conn, conversation_id)
+
+    async def _metadata_read_modify_write(
+        self,
+        conversation_id: str,
+        mutator: Callable[[dict[str, object]], bool],
+    ) -> None:
+        async with self._backend.transaction(), self._backend.connection() as conn:
+            current = await conversations_q.get_metadata(conn, conversation_id)
+            if mutator(current):
+                await conversations_q.update_metadata_raw(
+                    conn,
+                    conversation_id,
+                    current,
+                )
 
     async def update_metadata(self, conversation_id: str, key: str, value: object) -> None:
-        await self._backend.update_metadata(conversation_id, key, value)
+        def _set(meta: dict[str, object]) -> bool:
+            meta[key] = value
+            return True
+
+        await self._metadata_read_modify_write(conversation_id, _set)
 
     async def delete_metadata(self, conversation_id: str, key: str) -> None:
-        await self._backend.delete_metadata(conversation_id, key)
+        def _delete(meta: dict[str, object]) -> bool:
+            if key in meta:
+                del meta[key]
+                return True
+            return False
+
+        await self._metadata_read_modify_write(conversation_id, _delete)
 
     async def add_tag(self, conversation_id: str, tag: str) -> None:
-        await self._backend.add_tag(conversation_id, tag)
+        def _add(meta: dict[str, object]) -> bool:
+            tags = meta.get("tags", [])
+            if not isinstance(tags, list):
+                tags = []
+            if tag not in tags:
+                tags.append(tag)
+                meta["tags"] = tags
+                return True
+            return False
+
+        await self._metadata_read_modify_write(conversation_id, _add)
 
     async def remove_tag(self, conversation_id: str, tag: str) -> None:
-        await self._backend.remove_tag(conversation_id, tag)
+        def _remove(meta: dict[str, object]) -> bool:
+            tags = meta.get("tags", [])
+            if isinstance(tags, list) and tag in tags:
+                tags.remove(tag)
+                meta["tags"] = tags
+                return True
+            return False
+
+        await self._metadata_read_modify_write(conversation_id, _remove)
 
     async def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
-        return await self._backend.list_tags(provider=provider)
+        async with self._backend.connection() as conn:
+            return await conversations_q.list_tags(conn, provider=provider)
 
     async def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
-        await self._backend.set_metadata(conversation_id, metadata)
+        async with self._backend.connection() as conn:
+            await conversations_q.set_metadata(
+                conn,
+                conversation_id,
+                metadata,
+                self._backend.transaction_depth,
+            )
 
     async def delete_conversation(self, conversation_id: str) -> bool:
-        deleted = await self._backend.delete_conversation(conversation_id)
+        async with self._backend.transaction(), self._backend.connection() as conn:
+            deleted = await conversations_q.delete_conversation_sql(
+                conn,
+                conversation_id,
+                self._backend.transaction_depth,
+            )
         if deleted:
             invalidate_search_cache()
         return deleted

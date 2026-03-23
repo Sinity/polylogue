@@ -163,7 +163,7 @@ class TestPolylogueGetConversation:
         """Test retrieving a conversation after adding data."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Create and save a conversation
         conv_record = ConversationRecord(
@@ -196,8 +196,7 @@ class TestPolylogueGetConversation:
             ),
         ]
 
-        # Use the async backend's save_conversation method
-        await backend.save_conversation(conv_record, msg_records, [])
+        await repository.save_conversation(conv_record, msg_records, [])
 
         # Retrieve by ID
         conv = await archive.get_conversation("conv-1")
@@ -222,7 +221,7 @@ class TestPolylogueGetConversations:
         """Test batch retrieval of multiple conversations."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Create multiple conversations
         for i in range(3):
@@ -235,7 +234,7 @@ class TestPolylogueGetConversations:
                 updated_at="2025-01-01T00:00:00Z",
                 content_hash=f"hash-{i}",
             )
-            await backend.save_conversation(conv_record, [], [])
+            await repository.save_conversation(conv_record, [], [])
 
         # Retrieve batch
         ids = ["conv-0", "conv-1", "conv-2"]
@@ -248,7 +247,7 @@ class TestPolylogueGetConversations:
         """Test batch retrieval with some missing IDs."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Create only conv-1
         conv_record = ConversationRecord(
@@ -260,7 +259,7 @@ class TestPolylogueGetConversations:
             updated_at="2025-01-01T00:00:00Z",
             content_hash="hash-1",
         )
-        await backend.save_conversation(conv_record, [], [])
+        await repository.save_conversation(conv_record, [], [])
 
         # Request multiple IDs but only conv-1 exists
         ids = ["conv-1", "conv-999"]
@@ -286,7 +285,7 @@ class TestPolylogueListConversations:
         """Test listing conversations with various filter combinations."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Setup conversations
         for i in range(setup_count):
@@ -301,7 +300,7 @@ class TestPolylogueListConversations:
                 content_hash=f"hash-{i}",
                 provider_meta={"source": source_filter or "inbox"} if source_filter else {},
             )
-            await backend.save_conversation(conv_record, [], [])
+            await repository.save_conversation(conv_record, [], [])
 
         # Retrieve with filters
         convs = await archive.list_conversations(
@@ -425,7 +424,7 @@ class TestPolylogueStats:
         """Test stats() with conversations in database."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Create conversations with different providers
         for i in range(2):
@@ -458,7 +457,7 @@ class TestPolylogueStats:
                     content_hash=f"mh-{i}-1",
                 ),
             ]
-            await backend.save_conversation(conv_record, msg_records, [])
+            await repository.save_conversation(conv_record, msg_records, [])
 
         # Add ChatGPT conversation
         conv_record = ConversationRecord(
@@ -480,7 +479,7 @@ class TestPolylogueStats:
                 content_hash="mh-chatgpt",
             ),
         ]
-        await backend.save_conversation(conv_record, msg_records, [])
+        await repository.save_conversation(conv_record, msg_records, [])
 
         stats = await archive.stats()
         assert stats.conversation_count == 3
@@ -495,7 +494,7 @@ class TestPolylogueStats:
         """Test that stats includes recent conversations."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Create a single conversation
         conv_record = ConversationRecord(
@@ -507,7 +506,7 @@ class TestPolylogueStats:
             updated_at="2025-01-15T12:00:00Z",
             content_hash="h-1",
         )
-        await backend.save_conversation(conv_record, [], [])
+        await repository.save_conversation(conv_record, [], [])
 
         stats = await archive.stats()
         assert len(stats.recent) == 1
