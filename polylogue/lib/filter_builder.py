@@ -99,6 +99,16 @@ class ConversationFilterBuilderMixin:
         self._excluded_action_terms.extend(types)
         return self
 
+    def tool(self, *names: str) -> ConversationFilter:
+        """Filter to conversations containing normalized tool names."""
+        self._tool_terms.extend(name.strip().lower() for name in names if name.strip())
+        return self
+
+    def exclude_tool(self, *names: str) -> ConversationFilter:
+        """Exclude conversations containing normalized tool names."""
+        self._excluded_tool_terms.extend(name.strip().lower() for name in names if name.strip())
+        return self
+
     def id(self, prefix: str) -> ConversationFilter:
         """Filter to conversations with ID starting with prefix."""
         self._id_prefix = prefix
