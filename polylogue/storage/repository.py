@@ -10,7 +10,6 @@ fetching of conversations, messages, and attachments together.
 
 from __future__ import annotations
 
-import builtins
 from typing import TYPE_CHECKING
 
 from polylogue.protocols import ConversationReader, SearchStore, TagStore
@@ -68,42 +67,6 @@ class ConversationRepository(
             self._backend = backend
         else:
             self._backend = SQLiteBackend(db_path=db_path)
-
-    @staticmethod
-    def _conversation_filter_kwargs(
-        *,
-        provider: str | None = None,
-        providers: builtins.list[str] | None = None,
-        source: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
-    ) -> dict[str, object]:
-        """Build the canonical conversation-filter kwargs for backend queries."""
-        return {
-            "provider": provider,
-            "providers": providers,
-            "source": source,
-            "since": since,
-            "until": until,
-            "title_contains": title_contains,
-            "has_tool_use": has_tool_use,
-            "has_thinking": has_thinking,
-            "min_messages": min_messages,
-            "max_messages": max_messages,
-            "min_words": min_words,
-            "has_file_ops": has_file_ops,
-            "has_git_ops": has_git_ops,
-            "has_subagent": has_subagent,
-        }
 
     async def __aenter__(self) -> ConversationRepository:
         """Enter async context manager."""

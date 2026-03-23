@@ -38,7 +38,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.resource("polylogue://conversations")
     async def conversations_resource() -> str:
-        convs = await ConversationQuerySpec().build_filter(hooks.get_repo()).list()
+        convs = await ConversationQuerySpec().list(hooks.get_repo())
         return hooks.json_payload(
             MCPConversationSummaryListPayload(
                 root=[

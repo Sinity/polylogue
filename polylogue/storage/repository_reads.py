@@ -13,6 +13,7 @@ from polylogue.storage.hydrators import (
     conversation_summary_from_record,
     message_from_record,
 )
+from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.store import ConversationRecord, ConversationRenderProjection
 from polylogue.types import ConversationId
 
@@ -32,7 +33,7 @@ class RepositoryReadMixin:
 
         msg_records, att_records = await asyncio.gather(
             self.queries.get_messages(conversation_id),
-            self._backend.get_attachments(conversation_id),
+            self.queries.get_attachments(conversation_id),
         )
 
         return conversation_from_records(conv_record, msg_records, att_records)
@@ -44,7 +45,7 @@ class RepositoryReadMixin:
 
         msg_records, att_records = await asyncio.gather(
             self.queries.get_messages(conversation_id),
-            self._backend.get_attachments(conversation_id),
+            self.queries.get_attachments(conversation_id),
         )
         return ConversationRenderProjection(
             conversation=conv_record,
@@ -76,7 +77,7 @@ class RepositoryReadMixin:
 
         msgs_by_id, atts_by_id = await asyncio.gather(
             self.queries.get_messages_batch(present_ids),
-            self._backend.get_attachments_batch(present_ids),
+            self.queries.get_attachments_batch(present_ids),
         )
         return [
             conversation_from_records(
@@ -92,6 +93,13 @@ class RepositoryReadMixin:
         if not conv_record:
             return None
         return conversation_summary_from_record(conv_record)
+
+    async def list_summaries_by_query(
+        self,
+        query: ConversationRecordQuery,
+    ) -> builtins.list[ConversationSummary]:
+        conv_records = await self.queries.list_conversations(query)
+        return [conversation_summary_from_record(rec) for rec in conv_records]
 
     async def list_summaries(
         self,
@@ -112,16 +120,16 @@ class RepositoryReadMixin:
         has_git_ops: bool = False,
         has_subagent: bool = False,
     ) -> builtins.list[ConversationSummary]:
-        conv_records = await self.queries.list_conversations(
-            limit=limit,
-            offset=offset,
-            **self._conversation_filter_kwargs(
+        return await self.list_summaries_by_query(
+            ConversationRecordQuery(
                 source=source,
                 provider=provider,
-                providers=providers,
+                providers=tuple(providers or ()),
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                limit=limit,
+                offset=offset,
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
                 min_messages=min_messages,
@@ -130,9 +138,8 @@ class RepositoryReadMixin:
                 has_file_ops=has_file_ops,
                 has_git_ops=has_git_ops,
                 has_subagent=has_subagent,
-            ),
+            )
         )
-        return [conversation_summary_from_record(rec) for rec in conv_records]
 
     async def iter_summary_pages(
         self,
@@ -180,6 +187,13 @@ class RepositoryReadMixin:
                 break
             offset += len(page)
 
+    async def list_by_query(
+        self,
+        query: ConversationRecordQuery,
+    ) -> builtins.list[Conversation]:
+        conv_records = await self.queries.list_conversations(query)
+        return await self._hydrate_conversations(conv_records)
+
     async def list(
         self,
         limit: int | None = 50,
@@ -198,15 +212,15 @@ class RepositoryReadMixin:
         has_git_ops: bool = False,
         has_subagent: bool = False,
     ) -> builtins.list[Conversation]:
-        conv_records = await self.queries.list_conversations(
-            limit=limit,
-            offset=offset,
-            **self._conversation_filter_kwargs(
+        return await self.list_by_query(
+            ConversationRecordQuery(
                 provider=provider,
-                providers=providers,
+                providers=tuple(providers or ()),
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                limit=limit,
+                offset=offset,
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
                 min_messages=min_messages,
@@ -215,10 +229,11 @@ class RepositoryReadMixin:
                 has_file_ops=has_file_ops,
                 has_git_ops=has_git_ops,
                 has_subagent=has_subagent,
-            ),
+            )
         )
 
-        return await self._hydrate_conversations(conv_records)
+    async def count_by_query(self, query: ConversationRecordQuery) -> int:
+        return await self.queries.count_conversations(query)
 
     async def count(
         self,
@@ -236,23 +251,23 @@ class RepositoryReadMixin:
         has_git_ops: bool = False,
         has_subagent: bool = False,
     ) -> int:
-        filters = self._conversation_filter_kwargs(
-            provider=provider,
-            providers=providers,
-            since=since,
-            until=until,
-            title_contains=title_contains,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            has_file_ops=has_file_ops,
-            has_git_ops=has_git_ops,
-            has_subagent=has_subagent,
+        return await self.count_by_query(
+            ConversationRecordQuery(
+                provider=provider,
+                providers=tuple(providers or ()),
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            )
         )
-        filters.pop("source")
-        return await self.queries.count_conversations(**filters)
 
     async def get_parent(self, conversation_id: str) -> Conversation | None:
         conv_record = await self.queries.get_conversation(conversation_id)
@@ -261,7 +276,9 @@ class RepositoryReadMixin:
         return None
 
     async def get_children(self, conversation_id: str) -> builtins.list[Conversation]:
-        child_records = await self.queries.list_conversations(parent_id=conversation_id)
+        child_records = await self.queries.list_conversations(
+            ConversationRecordQuery(parent_id=conversation_id)
+        )
         if not child_records:
             return []
         return await self._hydrate_conversations(child_records)
@@ -294,7 +311,9 @@ class RepositoryReadMixin:
         while queue:
             current = queue.pop(0)
             tree_records.append(current)
-            children = await self.queries.list_conversations(parent_id=current.conversation_id)
+            children = await self.queries.list_conversations(
+                ConversationRecordQuery(parent_id=current.conversation_id)
+            )
             queue.extend(children)
 
         return await self._hydrate_conversations(
@@ -352,7 +371,7 @@ class RepositoryReadMixin:
     ) -> AsyncIterator[Message]:
         conv_record = await self.queries.get_conversation(conversation_id)
         provider_name = conv_record.provider_name if conv_record else None
-        async for record in self._backend.iter_messages(
+        async for record in self.queries.iter_messages(
             conversation_id,
             dialogue_only=dialogue_only,
             limit=limit,
