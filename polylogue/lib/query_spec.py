@@ -31,6 +31,15 @@ class QuerySpecError(ValueError):
 QUERY_ACTION_TYPES = tuple(category.value for category in ToolCategory) + ("none",)
 
 
+def _normalize_tool_terms(value: object) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for term in _as_tuple(value):
+        candidate = str(term).strip().lower()
+        if candidate:
+            normalized.append(candidate)
+    return tuple(normalized)
+
+
 def _split_csv(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -77,6 +86,8 @@ class ConversationQuerySpec:
     path_terms: tuple[str, ...] = ()
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
+    tool_terms: tuple[str, ...] = ()
+    excluded_tool_terms: tuple[str, ...] = ()
     providers: tuple[Provider, ...] = ()
     excluded_providers: tuple[Provider, ...] = ()
     tags: tuple[str, ...] = ()
@@ -109,6 +120,8 @@ class ConversationQuerySpec:
             path_terms=_as_tuple(params.get("path_terms") or params.get("path")),
             action_terms=_normalize_action_terms("action", params.get("action")),
             excluded_action_terms=_normalize_action_terms("exclude_action", params.get("exclude_action")),
+            tool_terms=_normalize_tool_terms(params.get("tool")),
+            excluded_tool_terms=_normalize_tool_terms(params.get("exclude_tool")),
             providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("provider"))),
             excluded_providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("exclude_provider"))),
             tags=_split_csv(params.get("tag")),
@@ -146,6 +159,10 @@ class ConversationQuerySpec:
             parts.append(f"action: {', '.join(self.action_terms)}")
         if self.excluded_action_terms:
             parts.append(f"exclude action: {', '.join(self.excluded_action_terms)}")
+        if self.tool_terms:
+            parts.append(f"tool: {', '.join(self.tool_terms)}")
+        if self.excluded_tool_terms:
+            parts.append(f"exclude tool: {', '.join(self.excluded_tool_terms)}")
         if self.providers:
             parts.append(f"provider: {', '.join(p.value for p in self.providers)}")
         if self.excluded_providers:
@@ -188,6 +205,8 @@ class ConversationQuerySpec:
                 self.path_terms,
                 self.action_terms,
                 self.excluded_action_terms,
+                self.tool_terms,
+                self.excluded_tool_terms,
                 self.providers,
                 self.excluded_providers,
                 self.tags,
@@ -220,6 +239,8 @@ class ConversationQuerySpec:
             path_terms=self.path_terms,
             action_terms=self.action_terms,
             excluded_action_terms=self.excluded_action_terms,
+            tool_terms=self.tool_terms,
+            excluded_tool_terms=self.excluded_tool_terms,
             providers=self.providers,
             excluded_providers=self.excluded_providers,
             tags=self.tags,

@@ -43,6 +43,8 @@ class ConversationQueryPlan:
     path_terms: tuple[str, ...] = ()
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
+    tool_terms: tuple[str, ...] = ()
+    excluded_tool_terms: tuple[str, ...] = ()
     providers: tuple[Provider | str, ...] = ()
     excluded_providers: tuple[Provider | str, ...] = ()
     tags: tuple[str, ...] = ()
@@ -93,6 +95,8 @@ class ConversationQueryPlan:
             path_terms=self.path_terms,
             action_terms=self.action_terms,
             excluded_action_terms=self.excluded_action_terms,
+            tool_terms=self.tool_terms,
+            excluded_tool_terms=self.excluded_tool_terms,
             has_tool_use=self.filter_has_tool_use,
             has_thinking=self.filter_has_thinking,
             min_messages=self.min_messages,
@@ -121,6 +125,10 @@ class ConversationQueryPlan:
             params["action_terms"] = list(self.action_terms)
         if self.excluded_action_terms:
             params["excluded_action_terms"] = list(self.excluded_action_terms)
+        if self.tool_terms:
+            params["tool_terms"] = list(self.tool_terms)
+        if self.excluded_tool_terms:
+            params["excluded_tool_terms"] = list(self.excluded_tool_terms)
         if self.filter_has_tool_use:
             params["has_tool_use"] = True
         if self.filter_has_thinking:
@@ -145,6 +153,10 @@ class ConversationQueryPlan:
             parts.append(f"action: {', '.join(self.action_terms)}")
         if self.excluded_action_terms:
             parts.append(f"exclude action: {', '.join(self.excluded_action_terms)}")
+        if self.tool_terms:
+            parts.append(f"tool: {', '.join(self.tool_terms)}")
+        if self.excluded_tool_terms:
+            parts.append(f"exclude tool: {', '.join(self.excluded_tool_terms)}")
         if self.providers:
             parts.append(f"provider: {', '.join(_provider_values(self.providers))}")
         if self.excluded_providers:
@@ -205,6 +217,8 @@ class ConversationQueryPlan:
                 self.path_terms,
                 self.action_terms,
                 self.excluded_action_terms,
+                self.tool_terms,
+                self.excluded_tool_terms,
                 self.providers,
                 self.excluded_providers,
                 self.tags,
@@ -239,6 +253,7 @@ class ConversationQueryPlan:
             or self.negative_terms
             or (self.path_terms and (self.fts_terms or self.conversation_id is not None or self.similar_text is not None))
             or ((self.action_terms or self.excluded_action_terms) and (self.fts_terms or self.conversation_id is not None or self.similar_text is not None))
+            or ((self.tool_terms or self.excluded_tool_terms) and (self.fts_terms or self.conversation_id is not None or self.similar_text is not None))
             or self.continuation is not None
             or self.sidechain is not None
             or self.root is not None
@@ -253,6 +268,10 @@ class ConversationQueryPlan:
         if self.path_terms and (self.fts_terms or self.conversation_id is not None or self.similar_text is not None):
             return True
         if (self.action_terms or self.excluded_action_terms) and (
+            self.fts_terms or self.conversation_id is not None or self.similar_text is not None
+        ):
+            return True
+        if (self.tool_terms or self.excluded_tool_terms) and (
             self.fts_terms or self.conversation_id is not None or self.similar_text is not None
         ):
             return True
@@ -310,6 +329,27 @@ class ConversationQueryPlan:
             return False
         return not (
             {term for term in self.excluded_action_terms if term != "none"} & categories
+        )
+
+    def _matches_tool_terms(self, conversation: Conversation) -> bool:
+        if not self.tool_terms and not self.excluded_tool_terms:
+            return True
+        from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+        facts = build_conversation_semantic_facts(conversation)
+        tool_names = {
+            (action.tool_name or "unknown").strip().lower()
+            for action in facts.action_facts
+        }
+        required_terms = {term for term in self.tool_terms if term != "none"}
+        if "none" in self.tool_terms and tool_names:
+            return False
+        if required_terms and not required_terms.issubset(tool_names):
+            return False
+        if "none" in self.excluded_tool_terms and not tool_names:
+            return False
+        return not (
+            {term for term in self.excluded_tool_terms if term != "none"} & tool_names
         )
 
     def effective_fetch_limit(self) -> int | None:
@@ -485,6 +525,8 @@ class ConversationQueryPlan:
             results = [conversation for conversation in results if self._matches_path_terms(conversation)]
         if (self.action_terms or self.excluded_action_terms) and not sql_pushed:
             results = [conversation for conversation in results if self._matches_action_terms(conversation)]
+        if (self.tool_terms or self.excluded_tool_terms) and not sql_pushed:
+            results = [conversation for conversation in results if self._matches_tool_terms(conversation)]
 
         return results
 

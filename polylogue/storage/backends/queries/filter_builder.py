@@ -33,6 +33,8 @@ def _build_conversation_filters(
     path_terms: list[str] | tuple[str, ...] | None = None,
     action_terms: list[str] | tuple[str, ...] | None = None,
     excluded_action_terms: list[str] | tuple[str, ...] | None = None,
+    tool_terms: list[str] | tuple[str, ...] | None = None,
+    excluded_tool_terms: list[str] | tuple[str, ...] | None = None,
     has_tool_use: bool = False,
     has_thinking: bool = False,
     min_messages: int | None = None,
@@ -136,6 +138,32 @@ def _build_conversation_filters(
                     " AND cb.semantic_type = ?)"
                 )
                 params.append(str(term))
+    if tool_terms:
+        for term in tool_terms:
+            if str(term) == "none":
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.type = 'tool_use')"
+                )
+            else:
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.type = 'tool_use' AND LOWER(COALESCE(cb.tool_name, '')) = ?)"
+                )
+                params.append(str(term).lower())
+    if excluded_tool_terms:
+        for term in excluded_tool_terms:
+            if str(term) == "none":
+                where_clauses.append(
+                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.type = 'tool_use')"
+                )
+            else:
+                where_clauses.append(
+                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
+                    " AND cb.type = 'tool_use' AND LOWER(COALESCE(cb.tool_name, '')) = ?)"
+                )
+                params.append(str(term).lower())
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     return where_sql, params
 
