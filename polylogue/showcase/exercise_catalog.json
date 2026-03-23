@@ -1,0 +1,1037 @@
+{
+  "groups": [
+    "structural",
+    "sources",
+    "pipeline",
+    "query-read",
+    "query-write",
+    "subcommands",
+    "advanced"
+  ],
+  "exercises": [
+    {
+      "name": "help-main",
+      "group": "structural",
+      "description": "Main help screen",
+      "args": [
+        "--help"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "polylogue"
+        ]
+      },
+      "tier": 0,
+      "vhs_capture": true
+    },
+    {
+      "name": "help-run",
+      "group": "structural",
+      "description": "Run subcommand help",
+      "args": [
+        "run",
+        "--help"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "--stage"
+        ]
+      },
+      "tier": 0
+    },
+    {
+      "name": "help-check",
+      "group": "structural",
+      "description": "Check subcommand help",
+      "args": [
+        "check",
+        "--help"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "--repair"
+        ]
+      },
+      "tier": 0
+    },
+    {
+      "name": "help-generate",
+      "group": "structural",
+      "description": "Generate subcommand help",
+      "args": [
+        "generate",
+        "--help"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "--seed"
+        ]
+      },
+      "tier": 0
+    },
+    {
+      "name": "help-qa",
+      "group": "structural",
+      "description": "QA subcommand help",
+      "args": [
+        "qa",
+        "--help"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "--live"
+        ]
+      },
+      "tier": 0
+    },
+    {
+      "name": "help-tags",
+      "group": "structural",
+      "description": "Tags subcommand help",
+      "args": [
+        "tags",
+        "--help"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "--json"
+        ]
+      },
+      "tier": 0
+    },
+    {
+      "name": "help-embed",
+      "group": "structural",
+      "description": "Embed subcommand help",
+      "args": [
+        "embed",
+        "--help"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "--stats"
+        ]
+      },
+      "tier": 0
+    },
+    {
+      "name": "help-site",
+      "group": "structural",
+      "description": "Site subcommand help",
+      "args": [
+        "site",
+        "--help"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "--output"
+        ]
+      },
+      "tier": 0
+    },
+    {
+      "name": "version",
+      "group": "structural",
+      "description": "Version output",
+      "args": [
+        "--version"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "polylogue"
+        ]
+      },
+      "tier": 0
+    },
+    {
+      "name": "sources-list",
+      "group": "sources",
+      "description": "List configured sources",
+      "args": [
+        "sources"
+      ],
+      "tier": 0
+    },
+    {
+      "name": "sources-json",
+      "group": "sources",
+      "description": "List sources as JSON",
+      "args": [
+        "sources",
+        "--json"
+      ],
+      "validation": {
+        "stdout_is_valid_json": true
+      },
+      "tier": 0
+    },
+    {
+      "name": "completions-bash",
+      "group": "sources",
+      "description": "Bash shell completions",
+      "args": [
+        "completions",
+        "--shell",
+        "bash"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "complete"
+        ]
+      },
+      "tier": 0
+    },
+    {
+      "name": "run-preview",
+      "group": "pipeline",
+      "description": "Preview pipeline plan (seeded fixtures)",
+      "args": [
+        "run",
+        "--preview",
+        "--source",
+        "inbox"
+      ],
+      "env": "seeded",
+      "vhs_capture": true
+    },
+    {
+      "name": "run-preview-live",
+      "group": "pipeline",
+      "description": "Preview pipeline against live sources",
+      "args": [
+        "run",
+        "--preview"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "Preview"
+        ]
+      },
+      "env": "live",
+      "timeout_s": 600.0
+    },
+    {
+      "name": "run-all",
+      "group": "pipeline",
+      "description": "Run full pipeline (seeded fixtures)",
+      "args": [
+        "run",
+        "--source",
+        "inbox"
+      ],
+      "writes": true,
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "run-stage-render",
+      "group": "pipeline",
+      "description": "Run render stage only",
+      "args": [
+        "run",
+        "--stage",
+        "render",
+        "--source",
+        "inbox"
+      ],
+      "writes": true,
+      "depends_on": "run-all",
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "run-stage-index",
+      "group": "pipeline",
+      "description": "Run index stage only",
+      "args": [
+        "run",
+        "--stage",
+        "index",
+        "--source",
+        "inbox"
+      ],
+      "writes": true,
+      "depends_on": "run-all",
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "stats-default",
+      "group": "query-read",
+      "description": "Default archive statistics",
+      "validation": {
+        "stdout_contains": [
+          "Archive"
+        ]
+      },
+      "needs_data": true,
+      "vhs_capture": true
+    },
+    {
+      "name": "stats-verbose",
+      "group": "query-read",
+      "description": "Verbose statistics",
+      "args": [
+        "-v"
+      ],
+      "needs_data": true
+    },
+    {
+      "name": "query-list",
+      "group": "query-read",
+      "description": "List conversations",
+      "args": [
+        "--list"
+      ],
+      "validation": {
+        "stdout_min_lines": 1
+      },
+      "needs_data": true,
+      "vhs_capture": true
+    },
+    {
+      "name": "query-list-json",
+      "group": "query-read",
+      "description": "List conversations as JSON",
+      "args": [
+        "--list",
+        "-f",
+        "json"
+      ],
+      "validation": {
+        "custom": {
+          "kind": "is_valid_json_array"
+        }
+      },
+      "needs_data": true,
+      "output_ext": ".json"
+    },
+    {
+      "name": "query-list-csv",
+      "group": "query-read",
+      "description": "List conversations as CSV",
+      "args": [
+        "--list",
+        "-f",
+        "csv"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "id"
+        ]
+      },
+      "needs_data": true,
+      "output_ext": ".csv"
+    },
+    {
+      "name": "query-list-yaml",
+      "group": "query-read",
+      "description": "List conversations as YAML",
+      "args": [
+        "--list",
+        "-f",
+        "yaml"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "provider:"
+        ]
+      },
+      "needs_data": true
+    },
+    {
+      "name": "query-count",
+      "group": "query-read",
+      "description": "Count conversations",
+      "args": [
+        "--count"
+      ],
+      "validation": {
+        "custom": {
+          "kind": "is_integer"
+        }
+      },
+      "needs_data": true
+    },
+    {
+      "name": "query-latest",
+      "group": "query-read",
+      "description": "Show latest conversation",
+      "args": [
+        "--latest"
+      ],
+      "validation": {
+        "stdout_min_lines": 1
+      },
+      "needs_data": true
+    },
+    {
+      "name": "query-latest-json",
+      "group": "query-read",
+      "description": "Latest conversation as JSON",
+      "args": [
+        "--latest",
+        "-f",
+        "json"
+      ],
+      "validation": {
+        "stdout_is_valid_json": true
+      },
+      "needs_data": true,
+      "output_ext": ".json"
+    },
+    {
+      "name": "query-latest-md",
+      "group": "query-read",
+      "description": "Latest conversation as Markdown",
+      "args": [
+        "--latest",
+        "-f",
+        "markdown"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "#"
+        ]
+      },
+      "needs_data": true,
+      "output_ext": ".md",
+      "vhs_capture": true
+    },
+    {
+      "name": "query-latest-html",
+      "group": "query-read",
+      "description": "Latest conversation as HTML",
+      "args": [
+        "--latest",
+        "-f",
+        "html"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "<"
+        ]
+      },
+      "needs_data": true,
+      "output_ext": ".html"
+    },
+    {
+      "name": "query-latest-plaintext",
+      "group": "query-read",
+      "description": "Latest conversation as plaintext",
+      "args": [
+        "--latest",
+        "-f",
+        "plaintext"
+      ],
+      "validation": {
+        "stdout_min_lines": 1
+      },
+      "needs_data": true
+    },
+    {
+      "name": "query-latest-obsidian",
+      "group": "query-read",
+      "description": "Latest conversation as Obsidian note",
+      "args": [
+        "--latest",
+        "-f",
+        "obsidian"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "---"
+        ]
+      },
+      "needs_data": true,
+      "output_ext": ".md"
+    },
+    {
+      "name": "query-latest-org",
+      "group": "query-read",
+      "description": "Latest conversation as Org-mode",
+      "args": [
+        "--latest",
+        "-f",
+        "org"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "#+TITLE"
+        ]
+      },
+      "needs_data": true,
+      "output_ext": ".org"
+    },
+    {
+      "name": "query-latest-csv",
+      "group": "query-read",
+      "description": "Latest conversation as CSV",
+      "args": [
+        "--latest",
+        "-f",
+        "csv"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "conversation_id"
+        ]
+      },
+      "needs_data": true,
+      "output_ext": ".csv"
+    },
+    {
+      "name": "query-filter-provider",
+      "group": "query-read",
+      "description": "Filter by provider",
+      "args": [
+        "-p",
+        "chatgpt",
+        "--list"
+      ],
+      "needs_data": true
+    },
+    {
+      "name": "query-filter-since",
+      "group": "query-read",
+      "description": "Filter by date",
+      "args": [
+        "--since",
+        "2020-01-01",
+        "--count"
+      ],
+      "validation": {
+        "custom": {
+          "kind": "is_integer"
+        }
+      },
+      "needs_data": true
+    },
+    {
+      "name": "query-sort-tokens",
+      "group": "query-read",
+      "description": "Sort by token count",
+      "args": [
+        "--sort",
+        "tokens",
+        "--list",
+        "-n",
+        "3"
+      ],
+      "needs_data": true
+    },
+    {
+      "name": "query-sort-messages",
+      "group": "query-read",
+      "description": "Sort by message count",
+      "args": [
+        "--sort",
+        "messages",
+        "--list",
+        "-n",
+        "3"
+      ],
+      "needs_data": true
+    },
+    {
+      "name": "query-stats",
+      "group": "query-read",
+      "description": "Conversation statistics",
+      "args": [
+        "--stats"
+      ],
+      "needs_data": true
+    },
+    {
+      "name": "query-stats-by-provider",
+      "group": "query-read",
+      "description": "Statistics by provider",
+      "args": [
+        "--stats-by",
+        "provider"
+      ],
+      "needs_data": true
+    },
+    {
+      "name": "query-stats-by-month",
+      "group": "query-read",
+      "description": "Statistics by month",
+      "args": [
+        "--stats-by",
+        "month"
+      ],
+      "needs_data": true
+    },
+    {
+      "name": "query-stream-latest",
+      "group": "query-read",
+      "description": "Stream latest conversation",
+      "args": [
+        "--stream",
+        "--latest"
+      ],
+      "validation": {
+        "stdout_min_lines": 1
+      },
+      "needs_data": true
+    },
+    {
+      "name": "query-stream-json",
+      "group": "query-read",
+      "description": "Stream latest as JSON lines",
+      "args": [
+        "--stream",
+        "--latest",
+        "-f",
+        "json"
+      ],
+      "validation": {
+        "custom": {
+          "kind": "each_line_valid_json"
+        }
+      },
+      "needs_data": true,
+      "output_ext": ".jsonl"
+    },
+    {
+      "name": "query-dialogue-only",
+      "group": "query-read",
+      "description": "Latest with dialogue only",
+      "args": [
+        "--latest",
+        "-d"
+      ],
+      "needs_data": true
+    },
+    {
+      "name": "count-baseline",
+      "group": "query-write",
+      "description": "Baseline count before mutations",
+      "args": [
+        "--count"
+      ],
+      "validation": {
+        "custom": {
+          "kind": "is_integer"
+        }
+      },
+      "needs_data": true,
+      "writes": true,
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "tag-add",
+      "group": "query-write",
+      "description": "Add tag to latest conversation",
+      "args": [
+        "--latest",
+        "--add-tag",
+        "showcase-test"
+      ],
+      "needs_data": true,
+      "writes": true,
+      "depends_on": "count-baseline",
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "tag-verify",
+      "group": "query-write",
+      "description": "Verify tag was added",
+      "args": [
+        "-t",
+        "showcase-test",
+        "--count"
+      ],
+      "validation": {
+        "custom": {
+          "kind": "is_integer"
+        }
+      },
+      "needs_data": true,
+      "writes": true,
+      "depends_on": "tag-add",
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "tags-after-add",
+      "group": "query-write",
+      "description": "List tags after add",
+      "args": [
+        "tags"
+      ],
+      "needs_data": true,
+      "writes": true,
+      "depends_on": "tag-add",
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "set-meta",
+      "group": "query-write",
+      "description": "Set metadata on conversation",
+      "args": [
+        "--latest",
+        "--set",
+        "note",
+        "exercise"
+      ],
+      "needs_data": true,
+      "writes": true,
+      "depends_on": "count-baseline",
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "delete-dry-run",
+      "group": "query-write",
+      "description": "Dry-run delete",
+      "args": [
+        "-p",
+        "chatgpt",
+        "--latest",
+        "--delete",
+        "--dry-run"
+      ],
+      "needs_data": true,
+      "writes": true,
+      "depends_on": "count-baseline",
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "delete-one",
+      "group": "query-write",
+      "description": "Delete one conversation",
+      "args": [
+        "-p",
+        "chatgpt",
+        "-n",
+        "1",
+        "--delete",
+        "--force"
+      ],
+      "needs_data": true,
+      "writes": true,
+      "depends_on": "count-baseline",
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "count-decreased",
+      "group": "query-write",
+      "description": "Verify count decreased after delete",
+      "args": [
+        "--count"
+      ],
+      "validation": {
+        "custom": {
+          "kind": "is_integer"
+        }
+      },
+      "needs_data": true,
+      "writes": true,
+      "depends_on": "delete-one",
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "check-health",
+      "group": "subcommands",
+      "description": "Health check",
+      "args": [
+        "check"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "ok"
+        ]
+      },
+      "needs_data": true,
+      "vhs_capture": true
+    },
+    {
+      "name": "check-json",
+      "group": "subcommands",
+      "description": "Health check as JSON",
+      "args": [
+        "check",
+        "--json"
+      ],
+      "validation": {
+        "stdout_is_valid_json": true
+      },
+      "needs_data": true,
+      "output_ext": ".json"
+    },
+    {
+      "name": "check-verbose",
+      "group": "subcommands",
+      "description": "Verbose health check",
+      "args": [
+        "check",
+        "-v"
+      ],
+      "needs_data": true
+    },
+    {
+      "name": "check-proof-json",
+      "group": "subcommands",
+      "description": "Artifact proof as JSON",
+      "args": [
+        "check",
+        "--json",
+        "--proof"
+      ],
+      "validation": {
+        "stdout_is_valid_json": true
+      },
+      "needs_data": true,
+      "output_ext": ".json"
+    },
+    {
+      "name": "check-cohorts-json",
+      "group": "subcommands",
+      "description": "Artifact cohorts as JSON",
+      "args": [
+        "check",
+        "--json",
+        "--cohorts"
+      ],
+      "validation": {
+        "stdout_is_valid_json": true
+      },
+      "needs_data": true,
+      "output_ext": ".json"
+    },
+    {
+      "name": "check-semantic-proof",
+      "group": "subcommands",
+      "description": "Semantic preservation proof",
+      "args": [
+        "check",
+        "--semantic-proof"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "Semantic proof:"
+        ]
+      },
+      "needs_data": true
+    },
+    {
+      "name": "check-semantic-proof-json",
+      "group": "subcommands",
+      "description": "Semantic preservation proof as JSON",
+      "args": [
+        "check",
+        "--json",
+        "--semantic-proof"
+      ],
+      "validation": {
+        "stdout_is_valid_json": true
+      },
+      "needs_data": true,
+      "output_ext": ".json"
+    },
+    {
+      "name": "check-semantic-proof-read-surfaces",
+      "group": "subcommands",
+      "description": "Semantic proof for query, stream, and MCP read surfaces",
+      "args": [
+        "check",
+        "--semantic-proof",
+        "--semantic-surface",
+        "read_all"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "query_stream_json_lines_v1",
+          "mcp_detail_json_v1"
+        ]
+      },
+      "needs_data": true
+    },
+    {
+      "name": "check-semantic-proof-read-surfaces-json",
+      "group": "subcommands",
+      "description": "Semantic proof for query, stream, and MCP read surfaces as JSON",
+      "args": [
+        "check",
+        "--json",
+        "--semantic-proof",
+        "--semantic-surface",
+        "read_all"
+      ],
+      "validation": {
+        "stdout_is_valid_json": true
+      },
+      "needs_data": true,
+      "output_ext": ".json"
+    },
+    {
+      "name": "embed-stats",
+      "group": "subcommands",
+      "description": "Embedding statistics",
+      "args": [
+        "embed",
+        "--stats"
+      ],
+      "needs_data": true
+    },
+    {
+      "name": "tags-json",
+      "group": "subcommands",
+      "description": "Tags as JSON",
+      "args": [
+        "tags",
+        "--json"
+      ],
+      "validation": {
+        "stdout_is_valid_json": true
+      },
+      "needs_data": true,
+      "output_ext": ".json"
+    },
+    {
+      "name": "site-generate",
+      "group": "subcommands",
+      "description": "Generate static site",
+      "args": [
+        "site"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "Building site"
+        ]
+      },
+      "needs_data": true,
+      "writes": true,
+      "tier": 2,
+      "env": "seeded"
+    },
+    {
+      "name": "combined-filters",
+      "group": "advanced",
+      "description": "Combined provider + date filter",
+      "args": [
+        "-p",
+        "chatgpt",
+        "--since",
+        "2020-01-01",
+        "--list",
+        "-f",
+        "json"
+      ],
+      "validation": {
+        "custom": {
+          "kind": "is_valid_json_array"
+        }
+      },
+      "needs_data": true,
+      "output_ext": ".json",
+      "tier": 2
+    },
+    {
+      "name": "reverse-sort",
+      "group": "advanced",
+      "description": "Reverse sort by date",
+      "args": [
+        "--sort",
+        "date",
+        "--reverse",
+        "--list",
+        "-n",
+        "3"
+      ],
+      "needs_data": true,
+      "tier": 2
+    },
+    {
+      "name": "exclude-provider",
+      "group": "advanced",
+      "description": "Exclude a provider",
+      "args": [
+        "--exclude-provider",
+        "gemini",
+        "--count"
+      ],
+      "validation": {
+        "custom": {
+          "kind": "is_integer"
+        }
+      },
+      "needs_data": true,
+      "tier": 2
+    },
+    {
+      "name": "fields-selector",
+      "group": "advanced",
+      "description": "Select specific JSON fields",
+      "args": [
+        "--list",
+        "-f",
+        "json",
+        "--fields",
+        "id,title,provider"
+      ],
+      "validation": {
+        "custom": {
+          "kind": "json_only_fields",
+          "allowed": [
+            "id",
+            "title",
+            "provider"
+          ]
+        }
+      },
+      "needs_data": true,
+      "output_ext": ".json",
+      "tier": 2
+    },
+    {
+      "name": "transform-strip",
+      "group": "advanced",
+      "description": "Strip tool calls from output",
+      "args": [
+        "--latest",
+        "--transform",
+        "strip-all"
+      ],
+      "needs_data": true,
+      "tier": 2,
+      "timeout_s": 300.0
+    },
+    {
+      "name": "sample-random",
+      "group": "advanced",
+      "description": "Random sample of conversations",
+      "args": [
+        "--sample",
+        "2",
+        "--list"
+      ],
+      "needs_data": true,
+      "tier": 2
+    },
+    {
+      "name": "query-search-term",
+      "group": "advanced",
+      "description": "Full-text search",
+      "args": [
+        "implementation",
+        "--list"
+      ],
+      "validation": {
+        "exit_code": null,
+        "custom": {
+          "kind": "search_exit_ok"
+        }
+      },
+      "needs_data": true,
+      "tier": 2
+    }
+  ]
+}

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from polylogue.showcase.cli_boundary import ShowcaseCliResult
+from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.runner import ShowcaseRunner
 
 
@@ -95,3 +97,28 @@ class TestShowcaseRunnerWorkspaceEnv:
                 runner.run()
 
         mock_seed.assert_called_once()
+
+
+class TestShowcaseRunnerExecution:
+    def test_run_exercise_uses_cli_boundary(self, tmp_path):
+        runner = ShowcaseRunner(
+            output_dir=tmp_path / "output",
+            workspace_env={"POLYLOGUE_ARCHIVE_ROOT": str(tmp_path / "archive")},
+        )
+        exercise = Exercise(
+            name="help-main",
+            group="structural",
+            description="Main help",
+            args=["--help"],
+        )
+
+        with patch(
+            "polylogue.showcase.runner.invoke_showcase_cli",
+            return_value=ShowcaseCliResult(exit_code=0, stdout="polylogue\n", stderr=""),
+        ) as mock_invoke:
+            result = runner._run_exercise(exercise)
+
+        assert result.passed is True
+        assert result.exit_code == 0
+        mock_invoke.assert_called_once()
+        assert mock_invoke.call_args.args[0] == ["--plain", "--help"]
