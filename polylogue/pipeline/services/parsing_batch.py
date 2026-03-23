@@ -29,7 +29,7 @@ async def process_raw_batch(
     progress_callback: ProgressCallback | None,
 ) -> None:
     """Process a batch of raw conversation IDs."""
-    raw_records = await backend.get_raw_conversations_batch(batch_ids)
+    raw_records = await service.repository.get_raw_conversations_batch(batch_ids)
 
     work_items: list[tuple[ParsedConversation, str, str]] = []
     failed_raw_ids: dict[str, str] = {}
@@ -61,7 +61,7 @@ async def process_raw_batch(
 
     if not work_items:
         for rid, error in failed_raw_ids.items():
-            await backend.mark_raw_parsed(
+            await service.repository.mark_raw_parsed(
                 rid,
                 error=error,
                 payload_provider=payload_providers.get(rid),
@@ -131,20 +131,22 @@ async def process_raw_batch(
 
     for rid in succeeded_raw_ids:
         if rid not in failed_raw_ids:
-            await backend.mark_raw_parsed(
+            await service.repository.mark_raw_parsed(
                 rid,
                 payload_provider=payload_providers.get(rid),
             )
     for rid in skipped_raw_ids:
         if rid not in failed_raw_ids and rid not in succeeded_raw_ids:
-            await backend.mark_raw_parsed(
+            await service.repository.mark_raw_parsed(
                 rid,
                 payload_provider=payload_providers.get(rid),
             )
     for rid, error in failed_raw_ids.items():
-        await backend.mark_raw_parsed(
+        await service.repository.mark_raw_parsed(
             rid,
             error=error,
             payload_provider=payload_providers.get(rid),
         )
+
+
 __all__ = ["process_raw_batch"]

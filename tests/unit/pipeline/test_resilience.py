@@ -357,10 +357,11 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
         source_path=source_path,
         payload_provider=None,
     )
-    backend = MagicMock()
-    backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
-    backend.mark_raw_validated = AsyncMock()
-    backend.mark_raw_parsed = AsyncMock()
+    backend = MagicMock(spec=SQLiteBackend)
+    service = ValidationService(backend=backend)
+    service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])  # type: ignore[method-assign]
+    service.repository.mark_raw_validated = AsyncMock()  # type: ignore[method-assign]
+    service.repository.mark_raw_parsed = AsyncMock()  # type: ignore[method-assign]
 
     class _SyntheticValidator:
         provider = provider_name
@@ -387,7 +388,7 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
         return_value=validator,
     ):
         with patch.dict("os.environ", {"POLYLOGUE_SCHEMA_VALIDATION": case.mode}, clear=False):
-            result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+            result = await service.validate_raw_ids(raw_ids=["raw-1"])
 
     expected = expected_validation_contract(case)
     if expected["validation_samples_called"]:
@@ -398,12 +399,12 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
     assert result.parseable_raw_ids == (["raw-1"] if expected["parseable"] else [])
     assert result.invalid_raw_ids == ([] if expected["parseable"] else ["raw-1"])
 
-    mark_validated = backend.mark_raw_validated.await_args.kwargs
+    mark_validated = service.repository.mark_raw_validated.await_args.kwargs
     assert mark_validated["status"] == expected["status"]
     if expected["mark_raw_parsed"]:
-        backend.mark_raw_parsed.assert_awaited_once()
+        service.repository.mark_raw_parsed.assert_awaited_once()
     else:
-        backend.mark_raw_parsed.assert_not_awaited()
+        service.repository.mark_raw_parsed.assert_not_awaited()
 
 
 @settings(max_examples=30, deadline=None, suppress_health_check=[HealthCheck.too_slow])

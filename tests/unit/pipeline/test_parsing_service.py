@@ -333,7 +333,7 @@ class TestPlanningService:
         assert plan.summary.details["new_raw"] == 1
         assert plan.summary.details["duplicate_raw"] == 1
 
-    async def test_build_plan_execution_does_not_load_backlog_content(self, tmp_path: Path):
+    async def test_build_plan_execution_does_not_load_backlog_content(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
@@ -353,19 +353,21 @@ class TestPlanningService:
             )
 
         call_count = [0]
-        original = backend.get_raw_conversations_batch
+        from polylogue.storage.repository import ConversationRepository
 
-        async def spy_batch(ids, *args, **kwargs):
+        original = ConversationRepository.get_raw_conversations_batch
+
+        async def spy_batch(self, ids, *args, **kwargs):
             call_count[0] += 1
-            return await original(ids, *args, **kwargs)
+            return await original(self, ids, *args, **kwargs)
 
-        backend.get_raw_conversations_batch = spy_batch  # type: ignore[method-assign]
+        monkeypatch.setattr(ConversationRepository, "get_raw_conversations_batch", spy_batch)
         plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="all", preview=False)
 
         assert set(plan.validate_raw_ids) == {f"raw-backlog-{index}" for index in range(5)}
         assert call_count[0] == 0
 
-    async def test_build_plan_preview_validates_backlog_in_batches(self, tmp_path: Path):
+    async def test_build_plan_preview_validates_backlog_in_batches(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
@@ -387,14 +389,16 @@ class TestPlanningService:
 
         call_count = [0]
         batch_sizes: list[int] = []
-        original = backend.get_raw_conversations_batch
+        from polylogue.storage.repository import ConversationRepository
 
-        async def spy_batch(ids, *args, **kwargs):
+        original = ConversationRepository.get_raw_conversations_batch
+
+        async def spy_batch(self, ids, *args, **kwargs):
             call_count[0] += 1
             batch_sizes.append(len(ids))
-            return await original(ids, *args, **kwargs)
+            return await original(self, ids, *args, **kwargs)
 
-        backend.get_raw_conversations_batch = spy_batch  # type: ignore[method-assign]
+        monkeypatch.setattr(ConversationRepository, "get_raw_conversations_batch", spy_batch)
         plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="all", preview=True)
 
         assert len(plan.validate_raw_ids) == total_backlog

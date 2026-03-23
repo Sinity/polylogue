@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import PublicationRecord
 
 
@@ -26,8 +27,9 @@ def test_record_and_fetch_latest_publication_roundtrip(tmp_path) -> None:
     )
 
     try:
-        asyncio.run(backend.record_publication(record))
-        loaded = asyncio.run(backend.get_latest_publication("site"))
+        repo = ConversationRepository(backend=backend)
+        asyncio.run(repo.record_publication(record))
+        loaded = asyncio.run(repo.get_latest_publication("site"))
     finally:
         asyncio.run(backend.close())
 
