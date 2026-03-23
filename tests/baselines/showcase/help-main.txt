@@ -23,7 +23,7 @@ Usage: cli [OPTIONS] COMMAND [ARGS]...
       polylogue tags      List tags with counts
       polylogue site      Build static HTML archive
       polylogue sources   List configured sources
-      polylogue schema    Schema inference and versioning
+      polylogue schema    Schema generation, package versioning, and evidence
       polylogue mcp       Start MCP server
       polylogue qa        Snapshot/index QA artifacts
 
@@ -98,7 +98,7 @@ Commands:
   qa           Snapshot and index QA artifacts to a reproducible archive path.
   reset        Reset database, assets, rendered outputs, or auth state.
   run          Run pipeline stages on configured sources.
-  schema       Schema inference, versioning, and promotion.
+  schema       Schema generation, package versioning, and evidence inspection.
   site         Generate a static HTML site from the archive.
   sources      List configured sources.
   tags         List all tags with conversation counts.

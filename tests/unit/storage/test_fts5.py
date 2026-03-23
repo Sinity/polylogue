@@ -729,7 +729,7 @@ async def test_search_after_index(workspace_env, storage_repository):
 def test_health_cached(workspace_env):
     """Test that health status is cached."""
     from polylogue.config import get_config
-    from polylogue.health import get_health
+    from polylogue.health_archive import get_health
 
     config = get_config()
     get_health(config)

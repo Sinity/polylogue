@@ -25,6 +25,9 @@
     --semantic-proof                Run semantic preservation proof across
                                     canonical, export, query, stream, and MCP
                                     read surfaces
+    --roundtrip-proof               Run the synthetic schema-and-evidence
+                                    roundtrip proof lane in an isolated
+                                    workspace
     --schema-provider TEXT          Limit schema verification to DB provider
                                     name (repeatable)
     --artifact-provider TEXT        Limit artifact proof<PATH> to
@@ -46,6 +49,10 @@
     --semantic-limit INTEGER        Limit semantic proof to N conversations
     --semantic-offset INTEGER       Start offset for semantic proof  [default:
                                     0]
+    --roundtrip-provider TEXT       Limit roundtrip proof to specific providers
+                                    (repeatable)
+    --roundtrip-count INTEGER       Synthetic artifacts per provider for
+                                    roundtrip proof  [default: 1]
     --schema-samples TEXT           Validation samples per raw payload: positive
                                     integer or 'all'  [default: all]
     --schema-record-limit INTEGER   Limit schema verification to N raw records
@@ -137,7 +144,7 @@
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
-        polylogue schema    Schema inference and versioning
+        polylogue schema    Schema generation, package versioning, and evidence
         polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
@@ -213,7 +220,7 @@
     qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, assets, rendered outputs, or auth state.
     run          Run pipeline stages on configured sources.
-    schema       Schema inference, versioning, and promotion.
+    schema       Schema generation, package versioning, and evidence...
     site         Generate a static HTML site from the archive.
     sources      List configured sources.
     tags         List all tags with conversation counts.
@@ -249,7 +256,8 @@
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
-        polylogue schema    Schema inference and versioning
+        polylogue schema    Schema generation, package version
+  ing, and evidence
         polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
@@ -363,7 +371,8 @@
     reset        Reset database, assets, rendered outputs, or
   auth state.
     run          Run pipeline stages on configured sources.
-    schema       Schema inference, versioning, and promotion.
+    schema       Schema generation, package versioning, and ev
+  idence...
     site         Generate a static HTML site from the archive.
     sources      List configured sources.
     tags         List all tags with conversation counts.
@@ -398,7 +407,7 @@
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
-        polylogue schema    Schema inference and versioning
+        polylogue schema    Schema generation, package versioning, and evidence
         polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
@@ -474,7 +483,7 @@
     qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, assets, rendered outputs, or auth state.
     run          Run pipeline stages on configured sources.
-    schema       Schema inference, versioning, and promotion.
+    schema       Schema generation, package versioning, and evidence...
     site         Generate a static HTML site from the archive.
     sources      List configured sources.
     tags         List all tags with conversation counts.

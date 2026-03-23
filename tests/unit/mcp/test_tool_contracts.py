@@ -461,7 +461,7 @@ class TestMutationTools:
         mock_report.cached = False
 
         with patch("polylogue.mcp.server._get_config") as mock_get_config, patch(
-            "polylogue.health.get_health"
+            "polylogue.health_archive.get_health"
         ) as mock_get_health:
             mock_get_config.return_value = MagicMock()
             mock_get_health.return_value = mock_report

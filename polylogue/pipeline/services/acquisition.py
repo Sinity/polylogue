@@ -27,6 +27,7 @@ from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 
@@ -75,6 +76,9 @@ class AcquisitionService:
             backend: Async SQLite backend for database operations
         """
         self.backend = backend
+        from polylogue.storage.repository import ConversationRepository
+
+        self.repository: ConversationRepository = ConversationRepository(backend=backend)
 
     async def _persist_record(
         self,
@@ -85,8 +89,8 @@ class AcquisitionService:
         """Persist one raw record and update acquisition counters."""
         try:
             observation = inspect_raw_artifact(record)
-            inserted = await self.backend.save_raw_conversation(record)
-            await self.backend.save_artifact_observation(observation)
+            inserted = await self.repository.save_raw_conversation(record)
+            await self.repository.save_artifact_observation(observation)
             if inserted:
                 result.counts["acquired"] += 1
                 result.raw_ids.append(record.raw_id)
@@ -113,7 +117,7 @@ class AcquisitionService:
     ) -> ScanResult:
         """Visit source raw payloads incrementally without forcing list materialization."""
         result = ScanResult()
-        known_mtimes = await self.backend.queries.get_known_source_mtimes()
+        known_mtimes = await self.repository.get_known_source_mtimes()
 
         async def _consume(record: RawConversationRecord) -> None:
             if on_record is not None:

@@ -6,17 +6,11 @@ and load_samples_from_sessions with JSONL fixtures.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
 
-import pytest
-
-from polylogue.schemas.sampling import (
-    PROVIDERS,
-    ProviderConfig,
-    load_samples_from_db,
-    load_samples_from_sessions,
-)
+from polylogue.schemas.observation import PROVIDERS, ProviderConfig
+from polylogue.schemas.sampling import load_samples_from_db, load_samples_from_sessions
 
 
 class TestProviderConfig:
@@ -113,7 +107,6 @@ class TestLoadSamplesFromDb:
 
     def test_nonexistent_db_with_default_path(self) -> None:
         # When db_path=None and default doesn't exist, should return []
-        from polylogue.paths import db_path as default_db_path
         from unittest.mock import patch
 
         fake_path = Path("/nonexistent/fake/db.db")

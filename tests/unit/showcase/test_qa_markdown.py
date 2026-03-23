@@ -6,8 +6,9 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from polylogue.showcase.report import generate_manifest, generate_showcase_markdown
+from polylogue.showcase.report_files import generate_manifest
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
+from polylogue.showcase.showcase_report import generate_showcase_markdown
 
 # ---------------------------------------------------------------------------
 # Helpers
