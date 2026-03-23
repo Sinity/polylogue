@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.storage.action_event_rows import hydrate_action_events
 from polylogue.storage.hydrators import (
     conversation_from_records,
     conversation_summary_from_record,
@@ -15,7 +16,7 @@ from polylogue.storage.hydrators import (
 )
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.state_views import ConversationRenderProjection
-from polylogue.storage.store import ConversationRecord
+from polylogue.storage.store import ActionEventRecord, ConversationRecord
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
@@ -401,6 +402,31 @@ class RepositoryReadMixin:
 
         records = await self.queries.get_conversations_batch(conversation_ids)
         return await self._hydrate_conversations(records, ordered_ids=conversation_ids)
+
+    async def get_action_event_records(self, conversation_id: str) -> list[ActionEventRecord]:
+        return await self.queries.get_action_events(conversation_id)
+
+    async def get_action_event_records_batch(
+        self,
+        conversation_ids: builtins.list[str],
+    ) -> dict[str, list[ActionEventRecord]]:
+        return await self.queries.get_action_events_batch(conversation_ids)
+
+    async def get_action_events(self, conversation_id: str):
+        return hydrate_action_events(await self.get_action_event_records(conversation_id))
+
+    async def get_action_events_batch(
+        self,
+        conversation_ids: builtins.list[str],
+    ) -> dict[str, tuple]:
+        records_by_conversation = await self.get_action_event_records_batch(conversation_ids)
+        return {
+            conversation_id: hydrate_action_events(records)
+            for conversation_id, records in records_by_conversation.items()
+        }
+
+    async def get_action_event_read_model_status(self) -> dict[str, int | bool]:
+        return await self.queries.get_action_event_read_model_status()
 
     async def iter_messages(
         self,

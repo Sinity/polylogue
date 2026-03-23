@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.lib.branch_type import BranchType
-    from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.messages import MessageCollection
     from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
     from polylogue.lib.projections import ConversationProjection
@@ -21,7 +20,6 @@ def __getattr__(name: str) -> object:
         "Attachment": ("polylogue.lib.models", "Attachment"),
         "BranchType": ("polylogue.lib.branch_type", "BranchType"),
         "Conversation": ("polylogue.lib.models", "Conversation"),
-        "ConversationFilter": ("polylogue.lib.filters", "ConversationFilter"),
         "ConversationProjection": ("polylogue.lib.projections", "ConversationProjection"),
         "DialoguePair": ("polylogue.lib.models", "DialoguePair"),
         "Message": ("polylogue.lib.models", "Message"),
@@ -40,7 +38,6 @@ __all__ = [
     "Attachment",
     "BranchType",
     "Conversation",
-    "ConversationFilter",
     "ConversationProjection",
     "DialoguePair",
     "Message",

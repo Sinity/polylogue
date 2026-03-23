@@ -281,6 +281,8 @@ async def output_stats_sql(
         )
         if archive_stats.pending_embedding_conversations:
             embedding_line += f", pending {archive_stats.pending_embedding_conversations:,}"
+        if archive_stats.stale_embedding_messages:
+            embedding_line += f", stale {archive_stats.stale_embedding_messages:,}"
         out(embedding_line)
     if date_range:
         out(f"Date range: {date_range}")
@@ -296,18 +298,58 @@ async def output_stats_by_semantic_summaries(
     output_format: str = "text",
     batch_size: int = 50,
 ) -> None:
-    """Output action/tool stats by batching hydration over lightweight summaries."""
-    import asyncio
+    """Output action/tool stats by batching over selected conversation IDs."""
+    await _output_stats_by_semantic_ids(
+        env,
+        [str(summary.id) for summary in summaries],
+        repo,
+        dimension,
+        selection=selection,
+        output_format=output_format,
+        batch_size=batch_size,
+    )
+
+
+async def output_stats_by_semantic_query(
+    env: AppEnv,
+    conversation_ids: list[str],
+    repo: ConversationRepository,
+    dimension: str,
+    *,
+    selection: ConversationQuerySpec | None = None,
+    output_format: str = "text",
+    batch_size: int = 50,
+) -> None:
+    """Output action/tool stats directly from selected conversation IDs."""
+    await _output_stats_by_semantic_ids(
+        env,
+        conversation_ids,
+        repo,
+        dimension,
+        selection=selection,
+        output_format=output_format,
+        batch_size=batch_size,
+    )
+
+
+async def _output_stats_by_semantic_ids(
+    env: AppEnv,
+    conversation_ids: list[str],
+    repo: ConversationRepository,
+    dimension: str,
+    *,
+    selection: ConversationQuerySpec | None = None,
+    output_format: str = "text",
+    batch_size: int = 50,
+) -> None:
+    """Output action/tool stats by batching over selected conversation IDs."""
     from collections import Counter, defaultdict
 
     from rich.table import Table
 
-    from polylogue.lib.semantic_facts import build_conversation_semantic_facts
-    from polylogue.storage.hydrators import conversation_from_records
-
     if dimension not in {"action", "tool"}:
         raise ValueError(f"Unsupported semantic stats dimension: {dimension}")
-    if not summaries:
+    if not conversation_ids:
         env.ui.console.print("No conversations matched.")
         return
 
@@ -316,48 +358,47 @@ async def output_stats_by_semantic_summaries(
     matched_facts = 0
     matched_messages = 0
     key_func = (lambda action: action.kind.value) if dimension == "action" else _normalized_tool_name
+    action_event_status = await repo.get_action_event_read_model_status()
+    action_read_model_ready = bool(action_event_status.get("ready", False))
 
-    for offset in range(0, len(summaries), batch_size):
-        batch = summaries[offset : offset + batch_size]
-        batch_ids = [str(summary.id) for summary in batch]
-        conversation_records, messages_by_conversation = await asyncio.gather(
-            repo.queries.get_conversations_batch(batch_ids),
-            repo.queries.get_messages_batch(batch_ids),
-        )
-        records_by_id = {record.conversation_id: record for record in conversation_records}
-        conversations = [
-            conversation_from_records(
-                records_by_id[conversation_id],
-                messages_by_conversation.get(conversation_id, []),
-                [],
-            )
-            for conversation_id in batch_ids
-            if conversation_id in records_by_id
-        ]
-        for conv in conversations:
-            facts = build_conversation_semantic_facts(conv)
-            filtered_actions = _filtered_action_events(facts, semantic_slice)
+    for offset in range(0, len(conversation_ids), batch_size):
+        batch_ids = conversation_ids[offset : offset + batch_size]
+        if action_read_model_ready:
+            action_events_by_conversation = await repo.get_action_events_batch(batch_ids)
+            conversation_actions = {
+                conversation_id: tuple(
+                    action
+                    for action in action_events_by_conversation.get(conversation_id, ())
+                    if _action_matches_slice(action, semantic_slice)
+                )
+                for conversation_id in batch_ids
+            }
+        else:
+            from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+            conversations = await repo.get_many(batch_ids)
+            conversation_actions = {
+                str(conversation.id): tuple(
+                    action
+                    for action in build_conversation_semantic_facts(conversation).action_events
+                    if _action_matches_slice(action, semantic_slice)
+                )
+                for conversation in conversations
+            }
+
+        for conversation_id in batch_ids:
+            filtered_actions = conversation_actions.get(conversation_id, ())
             group_counts = Counter(key_func(action) for action in filtered_actions)
             if not group_counts:
                 groups["none"]["convs"] += 1
                 continue
 
             matched_facts += sum(group_counts.values())
-            matched_messages += sum(
-                1
-                for message in facts.message_facts
-                if any(_action_matches_slice(action, semantic_slice) for action in message.action_events)
-            )
-
             message_groups: dict[str, set[str]] = defaultdict(set)
-            for message in facts.message_facts:
-                for key in {
-                    key_func(action)
-                    for action in message.action_events
-                    if _action_matches_slice(action, semantic_slice)
-                }:
-                    message_groups[key].add(message.message_id)
+            for action in filtered_actions:
+                message_groups[key_func(action)].add(action.message_id)
 
+            matched_messages += len({action.message_id for action in filtered_actions})
             for key, fact_count in group_counts.items():
                 groups[key]["convs"] += 1
                 groups[key]["facts"] += fact_count
@@ -374,7 +415,7 @@ async def output_stats_by_semantic_summaries(
     ]
     summary = {
         "group": "MATCHED",
-        "conversations": len(summaries),
+        "conversations": len(conversation_ids),
         "facts": matched_facts,
         "messages": matched_messages,
     }
@@ -387,7 +428,7 @@ async def output_stats_by_semantic_summaries(
     ):
         return
 
-    env.ui.console.print(f"\nMatched: {len(summaries)} conversations (by {dimension})\n")
+    env.ui.console.print(f"\nMatched: {len(conversation_ids)} conversations (by {dimension})\n")
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
     table.add_column("Group", style="bold", min_width=12)
     table.add_column("Convs", justify="right")
@@ -849,6 +890,7 @@ __all__ = [
     "conversations_to_csv",
     "format_summary_list",
     "output_stats_by_conversations",
+    "output_stats_by_semantic_query",
     "output_stats_by_semantic_summaries",
     "output_stats_by_summaries",
     "output_stats_sql",
