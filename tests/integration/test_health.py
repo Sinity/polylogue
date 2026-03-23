@@ -695,45 +695,44 @@ class TestRepairWalCheckpoint:
         assert "Would:" in result.detail or "nothing to checkpoint" in result.detail
 
 
-class TestRunAllRepairs:
-    """Tests for run_all_repairs orchestration."""
+class TestMaintenanceSelection:
+    """Tests for safe repair and archive cleanup orchestration."""
 
-    def test_run_all_repairs_returns_all_results(self, cli_workspace):
-        """run_all_repairs should return results for all repair functions."""
+    def test_run_safe_repairs_returns_safe_results(self, cli_workspace):
+        """run_safe_repairs should return only non-destructive maintenance functions."""
         from polylogue.config import get_config
-        from polylogue.storage.repair import run_all_repairs
+        from polylogue.storage.repair import run_safe_repairs
 
         config = get_config()
 
-        # Act
-        results = run_all_repairs(config, dry_run=False)
+        results = run_safe_repairs(config, dry_run=False)
 
-        # Assert
         assert isinstance(results, list)
-        assert len(results) == 7  # All current repair functions
+        assert {r.name for r in results} == {"action_event_read_model", "dangling_fts", "wal_checkpoint"}
+        assert all(r.destructive is False for r in results)
+        assert all(r.category.value in {"derived_repair", "database_maintenance"} for r in results)
 
-        # Verify we got each repair type
-        repair_names = {r.name for r in results}
-        assert repair_names == RUN_ALL_REPAIRS_EXPECTED
-
-    def test_run_all_repairs_all_success(self, cli_workspace):
-        """run_all_repairs should have all successful on clean database."""
+    def test_run_archive_cleanup_returns_destructive_results(self, cli_workspace):
+        """run_archive_cleanup should return only destructive cleanup functions."""
         from polylogue.config import get_config
-        from polylogue.storage.repair import run_all_repairs
+        from polylogue.storage.repair import run_archive_cleanup
 
         config = get_config()
+        results = run_archive_cleanup(config, dry_run=False)
+        assert {r.name for r in results} == {
+            "orphaned_messages",
+            "orphaned_content_blocks",
+            "empty_conversations",
+            "orphaned_attachments",
+        }
+        assert all(r.destructive is True for r in results)
+        assert all(r.category.value == "archive_cleanup" for r in results)
 
-        # Act
-        results = run_all_repairs(config, dry_run=False)
-
-        # Assert
-        assert all(r.success for r in results), f"Some repairs failed: {results}"
-
-    def test_run_all_repairs_dry_run_all_have_would(self, cli_workspace):
-        """run_all_repairs with dry_run=True should have 'Would:' in details."""
+    def test_run_selected_maintenance_dry_run_all_have_would(self, cli_workspace):
+        """Selected maintenance dry run should describe pending work explicitly."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
-        from polylogue.storage.repair import run_all_repairs
+        from polylogue.storage.repair import run_selected_maintenance
 
         config = get_config()
 
@@ -742,18 +741,42 @@ class TestRunAllRepairs:
             _insert_message(conn, "orphan-1", "nonexistent-conv", "user", "Orphaned", allow_orphaned=True)
             conn.commit()
 
-        # Act
-        results = run_all_repairs(config, dry_run=True)
+        results = run_selected_maintenance(config, repair=True, cleanup=True, dry_run=True)
 
-        # Assert
-        # Some should have "Would:" when issues are found
         assert any("Would:" in r.detail for r in results), "Expected at least one 'Would:' in dry-run results"
 
-    def test_run_all_repairs_idempotency_after_full_run(self, cli_workspace):
-        """run_all_repairs twice should find 0 issues on second run."""
+    def test_run_selected_maintenance_uses_preview_counts(self, cli_workspace):
+        """Dry-run maintenance can reuse known counts instead of rescanning the archive."""
+        from polylogue.config import get_config
+        from polylogue.storage.repair import run_selected_maintenance
+
+        config = get_config()
+        results = run_selected_maintenance(
+            config,
+            repair=True,
+            cleanup=True,
+            dry_run=True,
+            preview_counts={
+                "action_event_read_model": 7,
+                "dangling_fts": 3,
+                "orphaned_messages": 2,
+                "orphaned_content_blocks": 11,
+                "empty_conversations": 5,
+            },
+        )
+
+        by_name = {result.name: result for result in results}
+        assert by_name["action_event_read_model"].repaired_count == 7
+        assert by_name["dangling_fts"].repaired_count == 3
+        assert by_name["orphaned_messages"].repaired_count == 2
+        assert by_name["orphaned_content_blocks"].repaired_count == 11
+        assert by_name["empty_conversations"].repaired_count == 5
+
+    def test_run_selected_maintenance_idempotency_after_full_run(self, cli_workspace):
+        """Selected maintenance twice should find 0 issues on second run."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
-        from polylogue.storage.repair import run_all_repairs
+        from polylogue.storage.repair import run_selected_maintenance
 
         config = get_config()
 
@@ -762,12 +785,10 @@ class TestRunAllRepairs:
             _insert_conversation(conn, "empty-1")
             conn.commit()
 
-        # First repair run
-        results1 = run_all_repairs(config, dry_run=False)
+        results1 = run_selected_maintenance(config, repair=True, cleanup=True, dry_run=False)
         total_repaired_1 = sum(r.repaired_count for r in results1)
         assert total_repaired_1 > 0
 
-        # Second repair run should find nothing
-        results2 = run_all_repairs(config, dry_run=False)
+        results2 = run_selected_maintenance(config, repair=True, cleanup=True, dry_run=False)
         total_repaired_2 = sum(r.repaired_count for r in results2)
         assert total_repaired_2 == 0

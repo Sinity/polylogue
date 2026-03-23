@@ -23,7 +23,8 @@ uv run polylogue "search terms"               # Query
 uv run polylogue -p claude-ai --since "last week"
 uv run polylogue --similar "error handling"   # Semantic search
 uv run polylogue run --preview                # Dry-run sync
-uv run polylogue check --repair               # Integrity check
+uv run polylogue check --repair --preview     # Safe maintenance preview
+uv run polylogue check --cleanup --preview    # Destructive cleanup preview
 uv run polylogue mcp                          # MCP server (stdio)
 ```
 
@@ -82,11 +83,16 @@ async with Polylogue() as archive:
 ### Sources (ingestion + parsing)
 | File | Purpose |
 |------|---------|
-| `sources/source.py` | `detect_provider()`, encoding fallback, ZIP bomb protection |
+| `sources/dispatch.py` | `detect_provider()`, parser dispatch, Drive payload routing |
+| `sources/source_parsing.py` | Parsed source traversal iterators |
+| `sources/source_acquisition.py` | Raw source traversal iterators |
 | `sources/parsers/chatgpt.py` | UUID graph traversal, content_blocks from `content.parts` |
 | `sources/parsers/claude.py` | JSONL (Claude AI) + structured blocks (Claude Code) |
 | `sources/parsers/codex.py` | Session exports |
 | `sources/drive.py` | Gemini via Google Drive API |
+| `sources/drive_source.py` | Drive source semantics and payload download helpers |
+| `sources/drive_auth.py` | OAuth/token lifecycle |
+| `sources/drive_gateway.py` | Google API transport and retry control |
 
 ### Pipeline
 | File | Purpose |
@@ -104,7 +110,7 @@ async with Polylogue() as archive:
 | `cli/click_app.py` | QueryFirstGroup (positional args → query mode) |
 | `cli/query.py` | Filter chain, output formatting, modifiers |
 | `cli/commands/run.py` | Ingest → render → index |
-| `cli/commands/check.py` | Integrity checks, `--repair`, `--vacuum` |
+| `cli/commands/check.py` | Health, maintenance, cleanup preview, and `--vacuum` |
 
 ---
 
@@ -231,7 +237,7 @@ Powers `is_thinking`, `is_tool_use`, `is_substantive` properties. Extracted at i
 | **Gemini** | Drive API | `chunkedPrompt.chunks` | From chunks | `sources/drive.py` |
 | **Codex** | Session export | Session-based | N/A | `sources/parsers/codex.py` |
 
-**Detection**: `sources/source.py:detect_provider()` via `looks_like()` functions
+**Detection**: `sources/dispatch.py:detect_provider()` via `looks_like()` functions
 
 ---
 
@@ -300,8 +306,8 @@ For deterministic command-surface checks, use `polylogue qa --only exercises` (a
 | Protection | Location | Behavior |
 |------------|----------|----------|
 | **FTS5 injection** | `escape_fts5_query()` in `storage/search.py` | Quotes special chars, handles operators |
-| **Encoding fallback** | `sources/source.py` | UTF-8 → UTF-8-sig → UTF-16 → UTF-32 → ignore |
-| **ZIP bomb** | `sources/source.py` | Max 100:1 ratio, 500MB limit |
+| **Encoding fallback** | `sources/decoders.py` | UTF-8 → UTF-8-sig → UTF-16 → UTF-32 → ignore |
+| **ZIP bomb** | `sources/decoders.py` | Max 100:1 ratio, 500MB limit |
 
 ---
 

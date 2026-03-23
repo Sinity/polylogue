@@ -3,16 +3,21 @@
   '''
   Usage: polylogue check [OPTIONS]
   
-    Health check with optional repair.
+    Health check with optional maintenance and cleanup previews.
   
   Options:
     --json                          Output as JSON
     -v, --verbose                   Show breakdown by provider
-    --repair                        Attempt to repair detected issues
-    --preview                       Preview repairs without executing (requires
-                                    --repair)
-    --vacuum                        Reclaim unused space after repair (requires
-                                    --repair)
+    --cached                        Use the recent cached archive-health report
+                                    when available
+    --repair                        Run safe derived-data and database
+                                    maintenance repairs
+    --cleanup                       Run destructive archive cleanup for orphaned
+                                    or empty persisted data
+    --preview                       Preview maintenance without executing
+                                    (requires --repair or --cleanup)
+    --vacuum                        Reclaim unused space after maintenance
+                                    (requires --repair or --cleanup)
     --deep                          Run SQLite integrity check (slow on large
                                     databases)
     --runtime                       Run environment and runtime verification
@@ -242,7 +247,7 @@
   
   Commands:
     auth         Authenticate with external services (Google Drive for...
-    check        Health check with optional repair.
+    check        Health check with optional maintenance and cleanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversations.
@@ -426,7 +431,8 @@
   Commands:
     auth         Authenticate with external services (Google D
   rive for...
-    check        Health check with optional repair.
+    check        Health check with optional maintenance and cl
+  eanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversation
@@ -568,7 +574,7 @@
   
   Commands:
     auth         Authenticate with external services (Google Drive for...
-    check        Health check with optional repair.
+    check        Health check with optional maintenance and cleanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversations.

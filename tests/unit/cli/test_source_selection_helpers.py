@@ -13,6 +13,7 @@ import pytest
 from polylogue.cli import helpers
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config, Source
+from polylogue.maintenance_models import ReportProvenance, TruthSource
 from polylogue.services import build_runtime_services
 
 
@@ -295,8 +296,15 @@ def _make_env(config: Config, *, plain: bool) -> tuple[AppEnv, StringIO]:
     return env, buffer
 
 
-def _health_report(*, cached=None, age_seconds=None, checks=None):
-    return SimpleNamespace(cached=cached, age_seconds=age_seconds, checks=checks or [])
+def _health_report(*, source="live", cache_age_seconds=None, cache_ttl_seconds=None, checks=None):
+    return SimpleNamespace(
+        provenance=ReportProvenance(
+            source=TruthSource(source),
+            cache_age_seconds=cache_age_seconds,
+            cache_ttl_seconds=cache_ttl_seconds,
+        ),
+        checks=checks or [],
+    )
 
 
 def _check(name: str, status: str, detail: str):
@@ -351,6 +359,8 @@ def _run_summary(
             embedded_conversations=0,
             embedded_messages=0,
             pending_embedding_conversations=0,
+            stale_embedding_messages=0,
+            messages_missing_embedding_provenance=0,
             embedding_coverage=0.0,
         )
     env.repository.get_archive_stats = AsyncMock(return_value=archive_stats)
@@ -421,7 +431,7 @@ def test_print_summary_basic_contract(config: Config) -> None:
     ids=["rich-ok", "rich-warning", "rich-error", "plain-ok", "plain-warning", "plain-error"],
 )
 def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status: str, expected_indicator: str) -> None:
-    report = _health_report(cached=True, age_seconds=30, checks=[_check("database", status, "detail")])
+    report = _health_report(source="cache", cache_age_seconds=30, cache_ttl_seconds=600, checks=[_check("database", status, "detail")])
     result = _run_summary(config, verbose=True, plain=plain, health=report, counts=[])
 
     assert result["lines"][:4] == [
@@ -431,7 +441,7 @@ def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status
         "Last run: none",
     ]
     assert result["lines"][4] == "Embeddings: 0/0 convs, 0 msgs (0.0%)"
-    assert result["lines"][5] == "Health (cached=True, age=30s)"
+    assert result["lines"][5] == "Health (source=cache, age=30s, ttl=600s)"
     assert result["lines"][6] == f"  {expected_indicator} database: detail"
     result["mock_get_health"].assert_called_once()
     result["mock_cached"].assert_not_called()
@@ -464,13 +474,13 @@ def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> N
         config,
         verbose=True,
         plain=False,
-        health=_health_report(cached=None, age_seconds=None, checks=[]),
+        health=_health_report(source="live", checks=[]),
         counts=[("claude-ai", 7), ("chatgpt", 3)],
         metrics=metrics,
     )
 
     assert result["lines"][4] == "Embeddings: 0/10 convs, 0 msgs (0.0%)"
-    assert result["lines"][5] == "Health"
+    assert result["lines"][5] == "Health (source=live)"
     assert "Archive:" in result["console"]
     assert "10 conversations" in result["console"]
     assert "Deep Dive:" in result["console"]
@@ -519,6 +529,8 @@ def test_print_summary_shows_pending_embeddings(config: Config) -> None:
             embedded_conversations=4,
             embedded_messages=120,
             pending_embedding_conversations=6,
+            stale_embedding_messages=0,
+            messages_missing_embedding_provenance=0,
             embedding_coverage=40.0,
         ),
     )

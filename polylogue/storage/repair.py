@@ -9,6 +9,7 @@ from typing import Any
 
 from polylogue.config import Config
 from polylogue.logging import get_logger
+from polylogue.maintenance_models import MaintenanceCategory
 
 from .action_event_lifecycle import (
     action_event_read_model_status_sync,
@@ -27,6 +28,8 @@ class RepairResult:
     """Result of a repair operation."""
 
     name: str
+    category: MaintenanceCategory
+    destructive: bool
     repaired_count: int
     success: bool
     detail: str = ""
@@ -34,6 +37,8 @@ class RepairResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "category": self.category.value,
+            "destructive": self.destructive,
             "repaired_count": self.repaired_count,
             "success": self.success,
             "detail": self.detail,
@@ -42,6 +47,9 @@ class RepairResult:
 
 def _run_repair(
     name: str,
+    *,
+    category: MaintenanceCategory,
+    destructive: bool,
     count_sql: str,
     action_sql: str | None,
     dry_run: bool,
@@ -67,6 +75,8 @@ def _run_repair(
             # Dry-run: just report count
             return RepairResult(
                 name=name,
+                category=category,
+                destructive=destructive,
                 repaired_count=count,
                 success=True,
                 detail=f"Would: {count} rows affected" if count else "Would: No issues found",
@@ -78,6 +88,8 @@ def _run_repair(
             conn.commit()
             return RepairResult(
                 name=name,
+                category=category,
+                destructive=destructive,
                 repaired_count=result.rowcount,
                 success=True,
                 detail=f"Repaired {result.rowcount} rows" if result.rowcount else "No repairs needed",
@@ -85,6 +97,8 @@ def _run_repair(
 
         return RepairResult(
             name=name,
+            category=category,
+            destructive=destructive,
             repaired_count=0,
             success=True,
             detail="No action SQL provided",
@@ -92,6 +106,8 @@ def _run_repair(
     except Exception as exc:
         return RepairResult(
             name=name,
+            category=category,
+            destructive=destructive,
             repaired_count=0,
             success=False,
             detail=f"Repair failed: {exc}",
@@ -112,6 +128,8 @@ def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairRes
         if not orphan_cids:
             return RepairResult(
                 name="orphaned_messages",
+                category=MaintenanceCategory.ARCHIVE_CLEANUP,
+                destructive=True,
                 repaired_count=0,
                 success=True,
                 detail="No orphaned messages found",
@@ -126,6 +144,8 @@ def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairRes
             if dry_run:
                 return RepairResult(
                     name="orphaned_messages",
+                    category=MaintenanceCategory.ARCHIVE_CLEANUP,
+                    destructive=True,
                     repaired_count=count,
                     success=True,
                     detail=f"Would: Delete {count} orphaned messages" if count else "Would: No orphaned messages found",
@@ -138,6 +158,8 @@ def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairRes
             conn.commit()
             return RepairResult(
                 name="orphaned_messages",
+                category=MaintenanceCategory.ARCHIVE_CLEANUP,
+                destructive=True,
                 repaired_count=result.rowcount,
                 success=True,
                 detail=f"Deleted {result.rowcount} orphaned messages" if result.rowcount else "No orphaned messages found",
@@ -145,10 +167,28 @@ def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairRes
         except Exception as exc:
             return RepairResult(
                 name="orphaned_messages",
+                category=MaintenanceCategory.ARCHIVE_CLEANUP,
+                destructive=True,
                 repaired_count=0,
                 success=False,
                 detail=f"Failed to delete orphaned messages: {exc}",
             )
+
+
+def preview_orphaned_messages(*, count: int) -> RepairResult:
+    """Build a dry-run orphaned-messages result from a known count."""
+    return RepairResult(
+        name="orphaned_messages",
+        category=MaintenanceCategory.ARCHIVE_CLEANUP,
+        destructive=True,
+        repaired_count=count,
+        success=True,
+        detail=(
+            f"Would: Delete {count} orphaned messages"
+            if count
+            else "Would: No orphaned messages found"
+        ),
+    )
 
 
 def repair_empty_conversations(config: Config, dry_run: bool = False) -> RepairResult:
@@ -156,6 +196,8 @@ def repair_empty_conversations(config: Config, dry_run: bool = False) -> RepairR
     with connection_context(None) as conn:
         return _run_repair(
             name="empty_conversations",
+            category=MaintenanceCategory.ARCHIVE_CLEANUP,
+            destructive=True,
             count_sql="SELECT COUNT(*) FROM conversations c WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)",
             action_sql="DELETE FROM conversations WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = conversations.conversation_id)",
             dry_run=dry_run,
@@ -163,11 +205,29 @@ def repair_empty_conversations(config: Config, dry_run: bool = False) -> RepairR
         )
 
 
+def preview_empty_conversations(*, count: int) -> RepairResult:
+    """Build a dry-run empty-conversation result from a known count."""
+    return RepairResult(
+        name="empty_conversations",
+        category=MaintenanceCategory.ARCHIVE_CLEANUP,
+        destructive=True,
+        repaired_count=count,
+        success=True,
+        detail=(
+            f"Would: {count} rows affected"
+            if count
+            else "Would: No issues found"
+        ),
+    )
+
+
 def repair_orphaned_content_blocks(config: Config, dry_run: bool = False) -> RepairResult:
     """Delete content blocks whose parent conversation or message no longer exists."""
     with connection_context(None) as conn:
         return _run_repair(
             name="orphaned_content_blocks",
+            category=MaintenanceCategory.ARCHIVE_CLEANUP,
+            destructive=True,
             count_sql="""
                 SELECT COUNT(*)
                 FROM content_blocks cb
@@ -184,6 +244,22 @@ def repair_orphaned_content_blocks(config: Config, dry_run: bool = False) -> Rep
         )
 
 
+def preview_orphaned_content_blocks(*, count: int) -> RepairResult:
+    """Build a dry-run orphaned-content-block result from a known count."""
+    return RepairResult(
+        name="orphaned_content_blocks",
+        category=MaintenanceCategory.ARCHIVE_CLEANUP,
+        destructive=True,
+        repaired_count=count,
+        success=True,
+        detail=(
+            f"Would: {count} rows affected"
+            if count
+            else "Would: No issues found"
+        ),
+    )
+
+
 def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
     """Rebuild FTS index entries that are out of sync with messages table."""
     try:
@@ -196,6 +272,8 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
             if not fts_exists:
                 return RepairResult(
                     name="dangling_fts",
+                    category=MaintenanceCategory.DERIVED_REPAIR,
+                    destructive=False,
                     repaired_count=0,
                     success=True,
                     detail="FTS table does not exist, skipping",
@@ -211,6 +289,8 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                 if diff == 0:
                     return RepairResult(
                         name="dangling_fts",
+                        category=MaintenanceCategory.DERIVED_REPAIR,
+                        destructive=False,
                         repaired_count=0,
                         success=True,
                         detail="FTS index in sync",
@@ -218,6 +298,8 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
 
                 return RepairResult(
                     name="dangling_fts",
+                    category=MaintenanceCategory.DERIVED_REPAIR,
+                    destructive=False,
                     repaired_count=diff,
                     success=True,
                     detail=f"Would: FTS sync: {msg_count:,} messages vs {fts_count:,} indexed ({diff:,} difference)",
@@ -249,6 +331,8 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
             total = deleted + inserted
             return RepairResult(
                 name="dangling_fts",
+                category=MaintenanceCategory.DERIVED_REPAIR,
+                destructive=False,
                 repaired_count=total,
                 success=True,
                 detail=f"FTS sync: deleted {deleted} orphaned, added {inserted} missing entries",
@@ -256,10 +340,28 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
     except Exception as exc:
         return RepairResult(
             name="dangling_fts",
+            category=MaintenanceCategory.DERIVED_REPAIR,
+            destructive=False,
             repaired_count=0,
             success=False,
             detail=f"Failed to repair FTS index: {exc}",
         )
+
+
+def preview_dangling_fts(*, count: int) -> RepairResult:
+    """Build a dry-run FTS repair result from a known pending-row count."""
+    return RepairResult(
+        name="dangling_fts",
+        category=MaintenanceCategory.DERIVED_REPAIR,
+        destructive=False,
+        repaired_count=count,
+        success=True,
+        detail=(
+            f"Would: FTS sync pending {count:,} rows"
+            if count
+            else "FTS index in sync"
+        ),
+    )
 
 
 def repair_action_event_read_model(config: Config, dry_run: bool = False) -> RepairResult:
@@ -280,6 +382,8 @@ def repair_action_event_read_model(config: Config, dry_run: bool = False) -> Rep
             if dry_run:
                 return RepairResult(
                     name="action_event_read_model",
+                    category=MaintenanceCategory.DERIVED_REPAIR,
+                    destructive=False,
                     repaired_count=pending,
                     success=True,
                     detail=(
@@ -306,6 +410,8 @@ def repair_action_event_read_model(config: Config, dry_run: bool = False) -> Rep
             refreshed = action_event_read_model_status_sync(conn)
             return RepairResult(
                 name="action_event_read_model",
+                category=MaintenanceCategory.DERIVED_REPAIR,
+                destructive=False,
                 repaired_count=repaired + action_fts_pending,
                 success=bool(refreshed["ready"]),
                 detail=(
@@ -323,10 +429,28 @@ def repair_action_event_read_model(config: Config, dry_run: bool = False) -> Rep
     except Exception as exc:
         return RepairResult(
             name="action_event_read_model",
+            category=MaintenanceCategory.DERIVED_REPAIR,
+            destructive=False,
             repaired_count=0,
             success=False,
             detail=f"Failed to repair action-event read model: {exc}",
         )
+
+
+def preview_action_event_read_model(*, count: int) -> RepairResult:
+    """Build a dry-run action-event repair result from a known pending-row count."""
+    return RepairResult(
+        name="action_event_read_model",
+        category=MaintenanceCategory.DERIVED_REPAIR,
+        destructive=False,
+        repaired_count=count,
+        success=True,
+        detail=(
+            "Would: action-event read model already ready"
+            if count == 0
+            else f"Would: repair action-event rows/fts for {count:,} pending items"
+        ),
+    )
 
 
 def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> RepairResult:
@@ -353,6 +477,8 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
                 total = orphaned_refs + atts_deleted
                 return RepairResult(
                     name="orphaned_attachments",
+                    category=MaintenanceCategory.ARCHIVE_CLEANUP,
+                    destructive=True,
                     repaired_count=total,
                     success=True,
                     detail=f"Would: Clean {orphaned_refs} orphaned refs, {atts_deleted} unreferenced attachments",
@@ -390,6 +516,8 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
             total = refs_deleted + conv_refs_deleted + atts_deleted
             return RepairResult(
                 name="orphaned_attachments",
+                category=MaintenanceCategory.ARCHIVE_CLEANUP,
+                destructive=True,
                 repaired_count=total,
                 success=True,
                 detail=f"Cleaned {refs_deleted} orphaned refs, {conv_refs_deleted} conv refs, {atts_deleted} attachments",
@@ -397,6 +525,8 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
     except Exception as exc:
         return RepairResult(
             name="orphaned_attachments",
+            category=MaintenanceCategory.ARCHIVE_CLEANUP,
+            destructive=True,
             repaired_count=0,
             success=False,
             detail=f"Failed to clean orphaned attachments: {exc}",
@@ -416,12 +546,16 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
                 pages_estimate = wal_size // 4096
                 return RepairResult(
                     name="wal_checkpoint",
+                    category=MaintenanceCategory.DATABASE_MAINTENANCE,
+                    destructive=False,
                     repaired_count=pages_estimate,
                     success=True,
                     detail=f"Would: WAL checkpoint (~{pages_estimate} pages, {wal_size:,} bytes)",
                 )
             return RepairResult(
                 name="wal_checkpoint",
+                category=MaintenanceCategory.DATABASE_MAINTENANCE,
+                destructive=False,
                 repaired_count=0,
                 success=True,
                 detail="Would: No WAL file present, nothing to checkpoint",
@@ -435,12 +569,16 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
             if busy:
                 return RepairResult(
                     name="wal_checkpoint",
+                    category=MaintenanceCategory.DATABASE_MAINTENANCE,
+                    destructive=False,
                     repaired_count=0,
                     success=False,
                     detail=f"WAL checkpoint had busy pages: {busy} busy, {log} log, {checkpointed} checkpointed",
                 )
             return RepairResult(
                 name="wal_checkpoint",
+                category=MaintenanceCategory.DATABASE_MAINTENANCE,
+                destructive=False,
                 repaired_count=checkpointed if checkpointed > 0 else 0,
                 success=True,
                 detail=f"WAL checkpoint complete: {checkpointed} pages checkpointed",
@@ -448,28 +586,92 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
     except Exception as exc:
         return RepairResult(
             name="wal_checkpoint",
+            category=MaintenanceCategory.DATABASE_MAINTENANCE,
+            destructive=False,
             repaired_count=0,
             success=False,
             detail=f"WAL checkpoint failed: {exc}",
         )
 
 
-def run_all_repairs(config: Config, dry_run: bool = False) -> list[RepairResult]:
-    """Run all repair operations and return results.
-
-    Args:
-        config: Configuration object
-        dry_run: If True, show what would be repaired without making changes
-    """
+def run_safe_repairs(
+    config: Config,
+    dry_run: bool = False,
+    *,
+    preview_counts: dict[str, int] | None = None,
+) -> list[RepairResult]:
+    """Run non-destructive derived-data and database maintenance repairs."""
+    preview_counts = preview_counts or {}
     return [
-        repair_orphaned_messages(config, dry_run=dry_run),
-        repair_orphaned_content_blocks(config, dry_run=dry_run),
-        repair_empty_conversations(config, dry_run=dry_run),
-        repair_action_event_read_model(config, dry_run=dry_run),
-        repair_dangling_fts(config, dry_run=dry_run),
-        repair_orphaned_attachments(config, dry_run=dry_run),
+        (
+            preview_action_event_read_model(count=preview_counts["action_event_read_model"])
+            if dry_run and "action_event_read_model" in preview_counts
+            else repair_action_event_read_model(config, dry_run=dry_run)
+        ),
+        (
+            preview_dangling_fts(count=preview_counts["dangling_fts"])
+            if dry_run and "dangling_fts" in preview_counts
+            else repair_dangling_fts(config, dry_run=dry_run)
+        ),
         repair_wal_checkpoint(config, dry_run=dry_run),
     ]
+
+
+def run_archive_cleanup(
+    config: Config,
+    dry_run: bool = False,
+    *,
+    preview_counts: dict[str, int] | None = None,
+) -> list[RepairResult]:
+    """Run destructive archive cleanup operations."""
+    preview_counts = preview_counts or {}
+    return [
+        (
+            preview_orphaned_messages(count=preview_counts["orphaned_messages"])
+            if dry_run and "orphaned_messages" in preview_counts
+            else repair_orphaned_messages(config, dry_run=dry_run)
+        ),
+        (
+            preview_orphaned_content_blocks(count=preview_counts["orphaned_content_blocks"])
+            if dry_run and "orphaned_content_blocks" in preview_counts
+            else repair_orphaned_content_blocks(config, dry_run=dry_run)
+        ),
+        (
+            preview_empty_conversations(count=preview_counts["empty_conversations"])
+            if dry_run and "empty_conversations" in preview_counts
+            else repair_empty_conversations(config, dry_run=dry_run)
+        ),
+        repair_orphaned_attachments(config, dry_run=dry_run),
+    ]
+
+
+def run_selected_maintenance(
+    config: Config,
+    *,
+    repair: bool,
+    cleanup: bool,
+    dry_run: bool = False,
+    preview_counts: dict[str, int] | None = None,
+) -> list[RepairResult]:
+    """Run the selected maintenance operations and return their results."""
+    results: list[RepairResult] = []
+    if repair:
+        results.extend(
+            run_safe_repairs(
+                config,
+                dry_run=dry_run,
+                preview_counts=preview_counts,
+            )
+        )
+    if cleanup:
+        results.extend(
+            run_archive_cleanup(
+                config,
+                dry_run=dry_run,
+                preview_counts=preview_counts,
+            )
+        )
+    return results
 
 
 __all__ = [
@@ -481,5 +683,7 @@ __all__ = [
     "repair_dangling_fts",
     "repair_orphaned_attachments",
     "repair_wal_checkpoint",
-    "run_all_repairs",
+    "run_archive_cleanup",
+    "run_safe_repairs",
+    "run_selected_maintenance",
 ]
