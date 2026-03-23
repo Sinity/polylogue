@@ -1,8 +1,8 @@
 # State And Schema Platform Convergence Program
 
 Date: 2026-03-23
-Status: planned execution program
-Role: canonical next implementation campaign after semantic-stack convergence
+Status: absorbed predecessor plan
+Role: retained reference for the runtime-state/schema half of the archive-intelligence platform campaign
 
 See also:
 
