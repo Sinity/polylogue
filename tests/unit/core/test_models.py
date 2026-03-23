@@ -26,7 +26,12 @@ from polylogue.storage.hydrators import (
     conversation_summary_from_record,
     message_from_record,
 )
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.storage.store import (
+    AttachmentRecord,
+    ContentBlockRecord,
+    ConversationRecord,
+    MessageRecord,
+)
 from polylogue.types import Provider, SemanticBlockType
 
 TOOL_FILE_OPS = [
@@ -220,6 +225,45 @@ class TestMessageFromRecord:
         )
         message = message_from_record(record, [])
         assert message.role == expected_role
+
+    def test_from_record_preserves_structured_content_block_semantics(self):
+        record = MessageRecord(
+            message_id="m1",
+            conversation_id="c1",
+            role="assistant",
+            text="Inspecting file",
+            content_hash="hash1",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk1",
+                    message_id="m1",
+                    conversation_id="c1",
+                    block_index=0,
+                    type="tool_use",
+                    text=None,
+                    tool_name="Read",
+                    tool_id="tool-1",
+                    tool_input='{"file_path": "/realm/project/polylogue/README.md"}',
+                    metadata='{"path": "/realm/project/polylogue/README.md"}',
+                    semantic_type="file_read",
+                )
+            ],
+        )
+
+        message = message_from_record(record, [])
+
+        assert message.content_blocks == [
+            {
+                "type": "tool_use",
+                "text": None,
+                "tool_name": "Read",
+                "tool_id": "tool-1",
+                "tool_input": {"file_path": "/realm/project/polylogue/README.md"},
+                "media_type": None,
+                "metadata": {"path": "/realm/project/polylogue/README.md"},
+                "semantic_type": "file_read",
+            }
+        ]
 
 
 class TestConversationSummaryFromRecord:
