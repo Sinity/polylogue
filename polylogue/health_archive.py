@@ -263,12 +263,61 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                             ),
                         )
                     )
+
+                if embedded_messages == 0:
+                    checks.append(
+                        HealthCheck(
+                            "embedding_freshness",
+                            VerifyStatus.OK,
+                            summary="No embedded messages to assess freshness",
+                        )
+                    )
+                elif embedding_stats.stale_messages > 0 or embedding_stats.messages_missing_provenance > 0:
+                    model_summary = ", ".join(
+                        f"{name} ({count})"
+                        for name, count in embedding_stats.model_counts.items()
+                    ) or "unknown"
+                    checks.append(
+                        HealthCheck(
+                            "embedding_freshness",
+                            VerifyStatus.WARNING,
+                            count=embedding_stats.stale_messages,
+                            summary=(
+                                f"Embeddings stale ({embedding_stats.stale_messages:,} stale, "
+                                f"{embedding_stats.messages_missing_provenance:,} missing provenance, "
+                                f"models: {model_summary})"
+                            ),
+                        )
+                    )
+                else:
+                    model_summary = ", ".join(
+                        f"{name} ({count})"
+                        for name, count in embedding_stats.model_counts.items()
+                    ) or "unknown"
+                    checks.append(
+                        HealthCheck(
+                            "embedding_freshness",
+                            VerifyStatus.OK,
+                            count=embedded_messages,
+                            summary=(
+                                f"Embeddings fresh ({embedded_messages:,} messages, "
+                                f"models: {model_summary}, latest {embedding_stats.newest_embedded_at or 'unknown'})"
+                            ),
+                        )
+                    )
             except Exception as exc:
                 checks.append(
                     HealthCheck(
                         "embedding_coverage",
                         VerifyStatus.ERROR,
                         summary=f"Embedding coverage check failed: {exc}",
+                    )
+                )
+                checks.append(
+                    HealthCheck(
+                        "embedding_freshness",
+                        VerifyStatus.ERROR,
+                        summary=f"Embedding freshness check failed: {exc}",
                     )
                 )
 

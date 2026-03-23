@@ -23,7 +23,7 @@ from polylogue.storage.index import rebuild_index, update_index_for_conversation
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
-from polylogue.storage.store import ContentBlockRecord
+from polylogue.storage.store import ACTION_EVENT_MATERIALIZER_VERSION, ContentBlockRecord
 from tests.infra.mutmut import preserved_mutmut_env
 from tests.infra.storage_records import (
     ConversationBuilder,
@@ -270,10 +270,23 @@ async def test_rebuild_index_populates_action_search_rows(workspace_env, storage
     rebuild_index()
 
     with open_connection(storage_repository.backend.db_path) as conn:
+        action_row = conn.execute(
+            """
+            SELECT normalized_tool_name, action_kind, materializer_version, command
+            FROM action_events
+            WHERE conversation_id = ?
+            """,
+            ("conv-actions",),
+        ).fetchone()
         count = conn.execute(
             "SELECT COUNT(*) FROM action_events_fts WHERE action_events_fts MATCH ?",
             ("semantic_facts",),
         ).fetchone()[0]
+    assert action_row is not None
+    assert action_row["normalized_tool_name"] == "bash"
+    assert action_row["action_kind"] == "shell"
+    assert action_row["materializer_version"] == ACTION_EVENT_MATERIALIZER_VERSION
+    assert action_row["command"] == "pytest -q tests/unit/core/test_semantic_facts.py"
     assert count == 1
 
 

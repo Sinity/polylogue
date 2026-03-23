@@ -94,18 +94,17 @@ def _build_conversation_filters(
         where_clauses.append("cs.word_count >= ?")
         params.append(min_words)
 
-    # Semantic filters via EXISTS subquery on content_blocks.semantic_type
+    # Semantic filters via EXISTS subquery on durable action_events.
     # When using stats join, outer table is aliased as 'c'; otherwise use fully qualified
-    # table name to prevent ambiguity (unqualified 'conversation_id' inside the EXISTS
-    # subquery resolves to the subquery's own cb.conversation_id, not the outer table).
+    # table name to prevent ambiguity.
     conv_id_col = "c.conversation_id" if needs_stats_join else "conversations.conversation_id"
     if path_terms:
         for term in path_terms:
             normalized = str(term).replace("\\", "/").lower()
             where_clauses.append(
-                f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-                " AND cb.semantic_type IN ('file_read', 'file_write', 'file_edit')"
-                " AND LOWER(COALESCE(json_extract(cb.metadata, '$.path'), json_extract(cb.tool_input, '$.path'), '')) LIKE ?)"
+                f"EXISTS (SELECT 1 FROM action_events ae "
+                f"JOIN json_each(COALESCE(ae.affected_paths_json, '[]')) path "
+                f"WHERE ae.conversation_id = {conv_id_col} AND LOWER(path.value) LIKE ?)"
             )
             params.append(f"%{normalized}%")
     if action_terms:
@@ -113,14 +112,14 @@ def _build_conversation_filters(
             if str(term) == "none":
                 placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
                 where_clauses.append(
-                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-                    f" AND cb.semantic_type IN ({placeholders}))"
+                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    f" AND ae.action_kind IN ({placeholders}))"
                 )
                 params.extend(_SEMANTIC_ACTION_TYPES)
             else:
                 where_clauses.append(
-                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-                    " AND cb.semantic_type = ?)"
+                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    " AND ae.action_kind = ?)"
                 )
                 params.append(str(term))
     if excluded_action_terms:
@@ -128,40 +127,38 @@ def _build_conversation_filters(
             if str(term) == "none":
                 placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
                 where_clauses.append(
-                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-                    f" AND cb.semantic_type IN ({placeholders}))"
+                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    f" AND ae.action_kind IN ({placeholders}))"
                 )
                 params.extend(_SEMANTIC_ACTION_TYPES)
             else:
                 where_clauses.append(
-                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-                    " AND cb.semantic_type = ?)"
+                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    " AND ae.action_kind = ?)"
                 )
                 params.append(str(term))
     if tool_terms:
         for term in tool_terms:
             if str(term) == "none":
                 where_clauses.append(
-                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-                    " AND cb.type = 'tool_use')"
+                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col})"
                 )
             else:
                 where_clauses.append(
-                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-                    " AND cb.type = 'tool_use' AND LOWER(COALESCE(cb.tool_name, '')) = ?)"
+                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    " AND ae.normalized_tool_name = ?)"
                 )
                 params.append(str(term).lower())
     if excluded_tool_terms:
         for term in excluded_tool_terms:
             if str(term) == "none":
                 where_clauses.append(
-                    f"EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-                    " AND cb.type = 'tool_use')"
+                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col})"
                 )
             else:
                 where_clauses.append(
-                    f"NOT EXISTS (SELECT 1 FROM content_blocks cb WHERE cb.conversation_id = {conv_id_col}"
-                    " AND cb.type = 'tool_use' AND LOWER(COALESCE(cb.tool_name, '')) = ?)"
+                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    " AND ae.normalized_tool_name = ?)"
                 )
                 params.append(str(term).lower())
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""

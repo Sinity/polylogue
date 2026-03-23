@@ -419,6 +419,40 @@ async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> N
 
 
 @pytest.mark.asyncio
+async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_model_unready() -> None:
+    from polylogue.lib.query_spec import ConversationQuerySpec
+
+    matching = Conversation(
+        id="conv-actions-lane-fallback",
+        provider="claude-code",
+        title="Action lane fallback",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m1",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"}, "semantic_type": "shell"},
+                    ],
+                ),
+            ]
+        ),
+    )
+    repo = MagicMock()
+    repo.get_action_event_read_model_status = AsyncMock(return_value={"ready": False})
+    repo.search = AsyncMock(return_value=[])
+    repo.search_actions = AsyncMock(return_value=[])
+    repo.list_by_query = AsyncMock(return_value=[matching])
+    plan = ConversationQuerySpec(query_terms=("pytest", "semantic_facts.py"), retrieval_lane="actions", limit=10).to_plan()
+
+    results = await plan.list(repo)
+
+    assert [conversation.id for conversation in results] == ["conv-actions-lane-fallback"]
+    repo.search_actions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() -> None:
     from polylogue.lib.query_spec import ConversationQuerySpec
 
@@ -456,6 +490,55 @@ async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() 
 
     assert {conversation.id for conversation in results} == {"conv-text-hit", "conv-action-hit"}
     repo.search_actions.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_query_plan_list_summaries_falls_back_when_action_read_model_unready() -> None:
+    from polylogue.lib.query_spec import ConversationQuerySpec
+
+    matching = Conversation(
+        id="conv-summary-path-match",
+        provider="claude-code",
+        title="Summary path match",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m1",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_read"},
+                    ],
+                ),
+            ]
+        ),
+    )
+    non_matching = Conversation(
+        id="conv-summary-path-miss",
+        provider="claude-code",
+        title="Summary path miss",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m2",
+                    role="assistant",
+                    provider="claude-code",
+                    content_blocks=[
+                        {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": "/tmp/b.py"}, "semantic_type": "file_read"},
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    repo = MagicMock()
+    repo.get_action_event_read_model_status = AsyncMock(return_value={"ready": False})
+    repo.list_by_query = AsyncMock(return_value=[matching, non_matching])
+    plan = ConversationQuerySpec(path_terms=("/tmp/a.py",), limit=10).to_plan()
+
+    summaries = await plan.list_summaries(repo)
+
+    assert [summary.id for summary in summaries] == ["conv-summary-path-match"]
 
 
 @pytest.mark.asyncio
