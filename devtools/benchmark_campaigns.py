@@ -106,10 +106,11 @@ async def run_incremental_index_campaign(
     Indexes conversations in batches, measuring per-batch and total time.
     """
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.query_models import ConversationRecordQuery
 
     backend = SQLiteBackend(db_path=db_path)
     try:
-        total_convs = await backend.count_conversations()
+        total_convs = await backend.queries.count_conversations(ConversationRecordQuery())
         batch_times: list[float] = []
         indexed_total = 0
 
@@ -120,7 +121,9 @@ async def run_incremental_index_campaign(
         # Process in batches
         offset = 0
         while offset < total_convs:
-            convs = await backend.list_conversations(limit=batch_size, offset=offset)
+            convs = await backend.queries.list_conversations(
+                ConversationRecordQuery(limit=batch_size, offset=offset)
+            )
             if not convs:
                 break
 
@@ -161,6 +164,7 @@ async def run_filter_scan_campaign(db_path: Path) -> CampaignResult:
     Runs a series of representative filter queries and measures latency.
     """
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.query_models import ConversationRecordQuery
 
     backend = SQLiteBackend(db_path=db_path)
     metrics: dict[str, float] = {}
@@ -168,40 +172,42 @@ async def run_filter_scan_campaign(db_path: Path) -> CampaignResult:
     try:
         # 1. List all (no filter)
         elapsed, results = await _ameasure(
-            backend.list_conversations(limit=50)
+            backend.queries.list_conversations(ConversationRecordQuery(limit=50))
         )
         metrics["list_50_wall_s"] = round(elapsed, 4)
         metrics["list_50_count"] = len(results)
 
         # 2. Filter by provider
         elapsed, results = await _ameasure(
-            backend.list_conversations(provider="chatgpt", limit=50)
+            backend.queries.list_conversations(ConversationRecordQuery(provider="chatgpt", limit=50))
         )
         metrics["filter_provider_wall_s"] = round(elapsed, 4)
         metrics["filter_provider_count"] = len(results)
 
         # 3. Filter by has_tool_use
         elapsed, results = await _ameasure(
-            backend.list_conversations(has_tool_use=True, limit=50)
+            backend.queries.list_conversations(ConversationRecordQuery(has_tool_use=True, limit=50))
         )
         metrics["filter_tool_use_wall_s"] = round(elapsed, 4)
         metrics["filter_tool_use_count"] = len(results)
 
         # 4. Filter by has_thinking
         elapsed, results = await _ameasure(
-            backend.list_conversations(has_thinking=True, limit=50)
+            backend.queries.list_conversations(ConversationRecordQuery(has_thinking=True, limit=50))
         )
         metrics["filter_thinking_wall_s"] = round(elapsed, 4)
         metrics["filter_thinking_count"] = len(results)
 
         # 5. Count conversations
-        elapsed, count = await _ameasure(backend.count_conversations())
+        elapsed, count = await _ameasure(backend.queries.count_conversations(ConversationRecordQuery()))
         metrics["count_all_wall_s"] = round(elapsed, 4)
         metrics["count_all"] = count
 
         # 6. Title search
         elapsed, results = await _ameasure(
-            backend.list_conversations(title_contains="synthetic", limit=50)
+            backend.queries.list_conversations(
+                ConversationRecordQuery(title_contains="synthetic", limit=50)
+            )
         )
         metrics["filter_title_wall_s"] = round(elapsed, 4)
 
@@ -223,6 +229,7 @@ async def run_startup_health_campaign(db_path: Path) -> CampaignResult:
     performs on startup.
     """
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.query_models import ConversationRecordQuery
 
     metrics: dict[str, float] = {}
 
@@ -233,7 +240,7 @@ async def run_startup_health_campaign(db_path: Path) -> CampaignResult:
 
     try:
         # Count conversations
-        elapsed, count = await _ameasure(backend.count_conversations())
+        elapsed, count = await _ameasure(backend.queries.count_conversations(ConversationRecordQuery()))
         metrics["count_convs_s"] = round(elapsed, 4)
         metrics["conversation_count"] = count
 
@@ -246,7 +253,7 @@ async def run_startup_health_campaign(db_path: Path) -> CampaignResult:
         metrics["provider_metrics_s"] = round(elapsed, 4)
 
         # Get latest run
-        elapsed, run = await _ameasure(backend.get_latest_run())
+        elapsed, run = await _ameasure(backend.queries.get_latest_run())
         metrics["latest_run_s"] = round(elapsed, 4)
 
         # Total health check time

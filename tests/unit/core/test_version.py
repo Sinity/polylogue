@@ -17,7 +17,6 @@ from polylogue.version import VersionInfo, _get_git_info, _resolve_version
     [
         "ArchiveStats",
         "Conversation",
-        "ConversationFilter",
         "Message",
         "Polylogue",
         "PolylogueError",
@@ -52,10 +51,11 @@ def test_lazy_import_unknown_raises_root() -> None:
         "WorkEvent",
         "WorkEventKind",
         "WorkThread",
+        "build_session_profile",
         "build_session_threads",
         "estimate_cost",
         "harmonize_session_cost",
-        "infer_tags",
+        "infer_auto_tags",
     ],
 )
 def test_root_does_not_export_semantic_or_storage_helpers(name: str) -> None:
@@ -71,7 +71,6 @@ def test_root_does_not_export_semantic_or_storage_helpers(name: str) -> None:
         "Attachment",
         "BranchType",
         "Conversation",
-        "ConversationFilter",
         "ConversationProjection",
         "DialoguePair",
         "Message",
@@ -98,6 +97,24 @@ def test_lazy_import_unknown_raises_lib() -> None:
 
     with pytest.raises(AttributeError, match="has no attribute"):
         _ = polylogue.lib.NonExistentThing
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["HarmonizedMessage", "SchemaValidator", "ValidationResult", "validate_provider_export"],
+)
+def test_runtime_schema_exports_are_narrow(name: str) -> None:
+    import polylogue.schemas
+
+    assert getattr(polylogue.schemas, name).__name__ == name
+
+
+@pytest.mark.parametrize("name", ["SchemaDiff", "SchemaRegistry"])
+def test_schema_root_does_not_export_tooling_registry_surfaces(name: str) -> None:
+    import polylogue.schemas
+
+    with pytest.raises(AttributeError, match="has no attribute"):
+        _ = getattr(polylogue.schemas, name)
 
 
 class TestVersionInfo:

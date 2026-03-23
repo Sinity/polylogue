@@ -24,7 +24,7 @@ from polylogue.storage.store import PublicationRecord
 
 async def load_latest_run_summary(backend) -> object | None:
     """Return the latest pipeline run summary for manifest embedding."""
-    return build_latest_run_summary(await backend.get_latest_run())
+    return build_latest_run_summary(await backend.queries.get_latest_run())
 
 
 async def load_artifact_proof_summary_for_backend(backend) -> object | None:

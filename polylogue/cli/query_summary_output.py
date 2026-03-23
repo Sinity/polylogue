@@ -298,14 +298,58 @@ async def output_stats_by_semantic_summaries(
     output_format: str = "text",
     batch_size: int = 50,
 ) -> None:
-    """Output action/tool stats by batching hydration over lightweight summaries."""
+    """Output action/tool stats by batching over selected conversation IDs."""
+    await _output_stats_by_semantic_ids(
+        env,
+        [str(summary.id) for summary in summaries],
+        repo,
+        dimension,
+        selection=selection,
+        output_format=output_format,
+        batch_size=batch_size,
+    )
+
+
+async def output_stats_by_semantic_query(
+    env: AppEnv,
+    conversation_ids: list[str],
+    repo: ConversationRepository,
+    dimension: str,
+    *,
+    selection: ConversationQuerySpec | None = None,
+    output_format: str = "text",
+    batch_size: int = 50,
+) -> None:
+    """Output action/tool stats directly from selected conversation IDs."""
+    await _output_stats_by_semantic_ids(
+        env,
+        conversation_ids,
+        repo,
+        dimension,
+        selection=selection,
+        output_format=output_format,
+        batch_size=batch_size,
+    )
+
+
+async def _output_stats_by_semantic_ids(
+    env: AppEnv,
+    conversation_ids: list[str],
+    repo: ConversationRepository,
+    dimension: str,
+    *,
+    selection: ConversationQuerySpec | None = None,
+    output_format: str = "text",
+    batch_size: int = 50,
+) -> None:
+    """Output action/tool stats by batching over selected conversation IDs."""
     from collections import Counter, defaultdict
 
     from rich.table import Table
 
     if dimension not in {"action", "tool"}:
         raise ValueError(f"Unsupported semantic stats dimension: {dimension}")
-    if not summaries:
+    if not conversation_ids:
         env.ui.console.print("No conversations matched.")
         return
 
@@ -317,9 +361,8 @@ async def output_stats_by_semantic_summaries(
     action_event_status = await repo.get_action_event_read_model_status()
     action_read_model_ready = bool(action_event_status.get("ready", False))
 
-    for offset in range(0, len(summaries), batch_size):
-        batch = summaries[offset : offset + batch_size]
-        batch_ids = [str(summary.id) for summary in batch]
+    for offset in range(0, len(conversation_ids), batch_size):
+        batch_ids = conversation_ids[offset : offset + batch_size]
         if action_read_model_ready:
             action_events_by_conversation = await repo.get_action_events_batch(batch_ids)
             conversation_actions = {
@@ -372,7 +415,7 @@ async def output_stats_by_semantic_summaries(
     ]
     summary = {
         "group": "MATCHED",
-        "conversations": len(summaries),
+        "conversations": len(conversation_ids),
         "facts": matched_facts,
         "messages": matched_messages,
     }
@@ -385,7 +428,7 @@ async def output_stats_by_semantic_summaries(
     ):
         return
 
-    env.ui.console.print(f"\nMatched: {len(summaries)} conversations (by {dimension})\n")
+    env.ui.console.print(f"\nMatched: {len(conversation_ids)} conversations (by {dimension})\n")
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
     table.add_column("Group", style="bold", min_width=12)
     table.add_column("Convs", justify="right")
@@ -847,6 +890,7 @@ __all__ = [
     "conversations_to_csv",
     "format_summary_list",
     "output_stats_by_conversations",
+    "output_stats_by_semantic_query",
     "output_stats_by_semantic_summaries",
     "output_stats_by_summaries",
     "output_stats_sql",

@@ -307,6 +307,10 @@ class ConversationQueryPlan:
             return True
         if self.negative_terms or self.predicates or self.similar_text:
             return True
+        if self.path_terms or self.action_terms or self.excluded_action_terms:
+            return True
+        if self.tool_terms or self.excluded_tool_terms:
+            return True
         if self.action_sequence:
             return True
         if self.action_text_terms:
@@ -323,6 +327,11 @@ class ConversationQueryPlan:
             self.fts_terms
             or self.conversation_id
             or self.similar_text
+            or self.path_terms
+            or self.action_terms
+            or self.excluded_action_terms
+            or self.tool_terms
+            or self.excluded_tool_terms
             or self.action_sequence
             or self.action_text_terms
             or self.predicates
@@ -335,6 +344,24 @@ class ConversationQueryPlan:
             or self.sidechain is not None
             or self.root is not None
             or self.has_branches is not None
+        )
+
+    def can_use_action_event_stats(self) -> bool:
+        return not (
+            self.fts_terms
+            or self.negative_terms
+            or self.action_sequence
+            or self.action_text_terms
+            or self.predicates
+            or self.has_types
+            or self.tags
+            or self.excluded_tags
+            or self.excluded_providers
+            or self.continuation is not None
+            or self.sidechain is not None
+            or self.root is not None
+            or self.has_branches is not None
+            or self.similar_text
         )
 
     def _matches_path_terms(self, conversation: Conversation) -> bool:
@@ -454,7 +481,20 @@ class ConversationQueryPlan:
             or self.retrieval_lane in {"actions", "hybrid"}
         )
 
-    async def _action_read_model_ready(self, repository: ConversationRepository) -> bool:
+    async def _action_event_rows_ready(self, repository: ConversationRepository) -> bool:
+        if not self._uses_action_read_model():
+            return True
+        status_reader = getattr(repository, "get_action_event_read_model_status", None)
+        if status_reader is None:
+            return True
+        status = status_reader()
+        if inspect.isawaitable(status):
+            status = await status
+        if not isinstance(status, dict):
+            return True
+        return bool(status.get("rows_ready", status.get("ready", False)))
+
+    async def _action_search_ready(self, repository: ConversationRepository) -> bool:
         if not self._uses_action_read_model():
             return True
         status_reader = getattr(repository, "get_action_event_read_model_status", None)
@@ -467,11 +507,14 @@ class ConversationQueryPlan:
             return True
         return bool(status.get("ready", False))
 
+    async def can_use_action_event_stats_with(self, repository: ConversationRepository) -> bool:
+        return self.can_use_action_event_stats() and await self._action_event_rows_ready(repository)
+
     async def _candidate_record_query_for(
         self,
         repository: ConversationRepository,
     ) -> tuple[ConversationRecordQuery, bool]:
-        if await self._action_read_model_ready(repository):
+        if await self._action_event_rows_ready(repository):
             return self.record_query, self.sql_pushed
         return self.record_query.without_unstable_semantic_filters(), False
 
@@ -638,7 +681,7 @@ class ConversationQueryPlan:
     ) -> builtins.list[Conversation]:
         query = self._search_query_text()
         provider_names = list(_provider_values(self.providers)) or None
-        if not await self._action_read_model_ready(repository):
+        if not await self._action_search_ready(repository):
             return await self._search_action_results_fallback(repository, limit=limit)
         try:
             return await repository.search_actions(query, limit=limit, providers=provider_names)
@@ -902,7 +945,7 @@ class ConversationQueryPlan:
             )
             raise ValueError(msg)
 
-        if self._uses_action_read_model() and not await self._action_read_model_ready(repository):
+        if self._uses_action_read_model() and not await self._action_event_rows_ready(repository):
             conversations = await self.list(repository)
             return [_conversation_to_summary(conversation) for conversation in conversations]
 
@@ -915,7 +958,7 @@ class ConversationQueryPlan:
         return results[0] if results else None
 
     async def count(self, repository: ConversationRepository) -> int:
-        if self.can_count_in_sql() and await self._action_read_model_ready(repository):
+        if self.can_count_in_sql() and await self._action_event_rows_ready(repository):
             return await repository.count_by_query(self.record_query.for_count())
 
         unbounded = self.with_limit(None)
