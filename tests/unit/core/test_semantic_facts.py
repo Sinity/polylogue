@@ -14,7 +14,7 @@ from polylogue.lib.semantic_facts import (
     build_mcp_summary_semantic_facts,
     build_projection_semantic_facts,
 )
-from polylogue.lib.session_products import build_session_profile
+from polylogue.lib.session_profile import build_session_profile
 from polylogue.storage.state_views import ConversationRenderProjection
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
@@ -184,6 +184,8 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.canonical_projects == ("polylogue",)
     assert profile.first_message_at == datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc)
     assert profile.last_message_at == datetime(2026, 3, 23, 9, 4, tzinfo=timezone.utc)
+    assert profile.canonical_session_date.isoformat() == "2026-03-23"
+    assert profile.engaged_duration_ms > 0
     assert profile.wall_duration_ms == 240000
 
 

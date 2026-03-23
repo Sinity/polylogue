@@ -24,7 +24,16 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) | Current execution program for repository-wide architecture reduction, refactoring, module-topology cleanup, and validation governance | Active; this is now the live broad queue after archive-intelligence convergence |
+| [programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md](./programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md) | Current execution program for probabilistic enrichment products, retrieval-band rollout, consumer convergence, and governed live cleanup | Active; this is now the live broad queue after the executed evidence/stewardship wave |
+| [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md) | Executed convergence program for evidence-tier contracts, inference-tier governance, retrieval/embedding alignment, consumer contract convergence, and live semantic stewardship | Executed; durable evidence/inference product contracts, tiered profile retrieval, retrieval-band health, live migration compatibility, and named validation lanes are now in place |
+| [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) | Executed cleanup-only architectural debt-retirement record for mixed-role file breakup, ownership narrowing, public-root reduction, and deletion of structural overlap | Executed; high-leverage public roots, semantic runtime bands, search/runtime roots, schema/operator surfaces, and QA/reporting roots were narrowed or deleted |
+| [programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md](./programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md) | Broader consumer/governance predecessor covering durable product contracts, governed destructive cleanup, stewardship history, and live archive governance | Absorbed predecessor; replaced as the live queue by the evidence/stewardship platform campaign |
+| [programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md](./programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md) | Executed convergence program for semantic/session product normalization, operator/toolchain narrowing, schema convergence, and live cleanup governance | Executed; canonical normalization, session-product/toolchain decomposition, archive-debt governance stages, and semantic-product validation lanes are now in place |
+| [programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md](./programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md) | Executed convergence program for domain-model decomposition, repository-read/product-query convergence, external consumer contracts, and live archive stewardship | Executed; domain models, repository reads, session-product query bands, archive-debt governance, provider analytics/debt products, and live stewardship lanes are now in place |
+| [programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md](./programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md) | Executed runtime-substrate campaign for query/runtime decomposition, storage/module narrowing, contract hardening, and validation governance | Executed; query/runtime substrate decomposition, lifecycle/repair/store narrowing, semantic registry narrowing, backend/schema banding, MCP tool split, and named runtime-substrate lanes are now in place |
+| [programs/archive-data-products-and-live-governance-program-2026-03-24.md](./programs/archive-data-products-and-live-governance-program-2026-03-24.md) | Executed convergence program for durable semantic/session products, external consumer contracts, cleanup lineage, retrieval/product convergence, and live governance lanes | Executed; durable session/work/tag/day/week products, public product contracts, live status lanes, and cleanup preview lineage are now in place |
+| [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md) | Executed convergence program for source/provider boundary cleanup, runtime maintenance governance, derived-model freshness/provenance convergence, publication/runtime narrowing, and live-archive validation | Executed; source traversal split, typed maintenance control plane, publication maintenance summaries, and live governance lanes are now in place |
+| [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) | Executed implementation record for repository-wide architecture reduction, refactoring, module-topology cleanup, semantic-product consolidation, and lifecycle/health/repair hardening | Executed; query/filter shell convergence, backend narrowing, shared query construction, semantic-product consolidation, root narrowing, and live-maintenance hardening are now in place |
 | [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md) | Executed convergence program for action/event semantics, retrieval/FTS/embedding control-plane work, unresolved runtime-state/schema/operator slices, and archive-scale validation | Executed; durable action-event read model, readiness-aware query fallback, retrieval-health surfaces, and archive-intelligence validation lanes are now in place |
 | [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md) | Absorbed predecessor program for the runtime-state/schema half of the new integrated campaign | Planned reference; no longer the live queue on its own |
 | [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md) | Most recent executed convergence program for harmonization, canonical semantic facts, downstream semantic products, and semantic proof/export contract convergence | Executed; current canonical record of the semantic-stack convergence campaign |
@@ -48,6 +57,7 @@ These are still important, but they are not the live queue.
 | --- | --- | --- |
 | [programs/canonical-archive-platform-program-2026-03-19.md](./programs/canonical-archive-platform-program-2026-03-19.md) | Broad north-star architecture program | Strategic reference |
 | [programs/refactoring-first-streamlining-program-2026-03-19.md](./programs/refactoring-first-streamlining-program-2026-03-19.md) | Maximal simplification/refactoring reservoir | Strategic reference, much absorbed into the intentional-forward program |
+| [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) | Cleanup-only debt-retirement record for broad mixed-role modules, ownership overlap, public-root narrowing, and deletion-oriented refactors | Executed cleanup reference; now an input to the evidence/stewardship platform campaign |
 | [programs/testing-reliability-expansion-program-2026-03-14.md](./programs/testing-reliability-expansion-program-2026-03-14.md) | Broad testing/showcase/runtime reliability program | Active backlog reservoir, not the live queue |
 | [programs/artifact-and-semantic-proof-program-2026-03-19.md](./programs/artifact-and-semantic-proof-program-2026-03-19.md) | Narrower proof-oriented architecture program | Reference; artifact half executed, semantic-preservation half partly executed |
 | [programs/artifact-and-semantic-proof-commit-plan-2026-03-19.md](./programs/artifact-and-semantic-proof-commit-plan-2026-03-19.md) | Concrete commit decomposition of the proof program | Historical execution slice/reference |
@@ -115,7 +125,83 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md)
+- the current live implementation queue is now [programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md](./programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md)
+- the evidence/stewardship program in [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md) is now executed
+- it closed the semantic-contract honesty gap around:
+  - explicit evidence-tier vs inference-tier contracts in durable session products
+  - tiered profile retrieval across CLI, repository, library, sync, and MCP
+  - inference provenance/version tracking for profiles, work events, and phases
+  - retrieval-band status for transcript, evidence, and inference retrieval
+  - live migration compatibility for upgraded archives with legacy payload columns and blank tier payload/search fields
+  - named contract, live, and memory-budget validation lanes for the new tier model
+- the next broad drag is now inference quality and archive governance:
+  - heuristic inference still drives important downstream timelines and summaries but remains only moderately strong
+  - transcript embeddings are still unmaterialized, so retrieval bands are honest but not yet fully populated
+  - downstream consumers still need a cleaner migration story for evidence vs heuristic inference vs richer probabilistic enrichment
+  - destructive live cleanup debt remains explicit for orphaned content blocks and attachments, but not yet fully governed through apply-and-validate lineage
+- the cleanup-only program in [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) is now executed
+- it closed the main structural debt around:
+  - broad query-execution and query-store ownership
+  - broad semantic runtime roots for facts, profiles, phases, work events, and decisions
+  - broad schema/operator roots for code detection, semantic inference, runtime schema authority, and schema command rendering
+  - broad QA/reporting and search/runtime public roots
+  - broad async-backend, lifecycle, facade, and semantic-surface declaration roots
+- the absorbed consumer/governance predecessor remains [programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md](./programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md)
+- the just-executed semantic-product campaign in [programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md](./programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md) is now executed
+- it closed the main semantic/toolchain drag around:
+  - noisy project/repo canonicalization leaking into durable tag/day/week outputs
+  - overbroad session-product support/status ownership
+  - broad archive-product operator reshaping and missing debt governance stages
+  - mixed semantic proof catalog declarations and schema-tooling role bands
+  - broad Claude/Drive parser seams that fed late-stage cleanup
+  - missing campaign-specific validation lanes for semantic products and live governance
+- the domain read-model campaign in [programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md](./programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md) is now executed
+- it closed the broad read-model and stewardship gap around:
+  - `lib/models.py` decomposition into conversation/message/attachment/model-support bands
+  - repository read banding across archive/action/maintenance/product surfaces
+  - session-product SQL/query decomposition into profile/timeline/thread/summary bands
+  - archive-debt governance shared by health, maintenance preview, and product status
+  - stable provider analytics and archive-debt products across CLI/library/sync/MCP
+  - named live stewardship validation lanes exercised against the real archive
+- the runtime-substrate campaign in [programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md](./programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md) is now executed
+- it closed the main runtime-substrate drag around:
+  - query planning/retrieval/grouping/output monoliths
+  - session-product lifecycle and maintenance control-plane monoliths
+  - broad store and backend/schema ownership
+  - semantic surface registry execution vs declaration ownership
+  - broad MCP tool registration wiring
+  - missing campaign-specific validation lanes and live memory-governance proofs
+- the next broad frontier is now higher-level and consumer-facing:
+  - domain model decomposition around the remaining broad `lib/models.py` root
+  - repository-read and session-product query banding
+  - external consumer and analytics contract convergence
+  - governed live archive stewardship for explicit cleanup debt such as orphaned content blocks
+  - tighter product/retrieval/analytics convergence on durable read models
+- the just-executed archive-data-products campaign in [programs/archive-data-products-and-live-governance-program-2026-03-24.md](./programs/archive-data-products-and-live-governance-program-2026-03-24.md) closed the broad product/governance gap around:
+  - durable session/work/tag/day/week archive products
+  - public consumer contracts across library, CLI, MCP, and sync surfaces
+  - typed maintenance lineage and machine-readable product status
+  - live archive session-product rebuilds and validation lanes
+  - governed cleanup preview for live orphaned content-block debt
+- the next integrated move is substrate/refactoring heavy:
+  - decompose the remaining broad query, lifecycle, maintenance, backend, schema, and operator modules
+  - harden public contracts so they compose smaller subsystems instead of broad omnibus files
+  - keep memory/live-governance validation attached to those smaller runtime surfaces
+- the source-boundary/runtime-governance campaign in [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md) is now executed
+- it closed the source/runtime-governance drag around:
+  - historical `sources/source.py` / `sources/drive_client.py` umbrella ownership
+  - typed maintenance selection and explicit safe-vs-destructive operator semantics
+  - canonical derived-model provenance/freshness reporting across health, publication, and machine output
+  - clearer cached-vs-live operator output semantics
+  - committed local/live governance lanes for source/provider fidelity and maintenance preview
+- the platform-wide refactoring campaign in [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) is now executed
+- it closed the broad architectural drag around:
+  - query/filter shell convergence onto immutable plans
+  - backend/query/lifecycle narrowing and removal of leftover backend read wrappers
+  - shared query-spec construction across CLI and MCP
+  - consolidation of semantic session/work products into explicit builders
+  - narrower package-root and synthetic-stack exports
+  - live-maintenance hardening for action-event readiness, repair, and archive health
 - the archive-intelligence campaign in [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md) is now executed
 - it closed the dogfooded archive-intelligence frontier around:
   - first-class durable action events
@@ -123,13 +209,6 @@ As of this map:
   - readiness-aware fallback when persisted action semantics are absent or stale
   - freshness/provenance-aware embedding retrieval health
   - named archive-intelligence validation and memory-budget lanes
-- the next integrated move is broader and more structural:
-  - reduce remaining wrapper strata around query/filter execution
-  - further narrow backend/repository/state-band boundaries
-  - converge operator workflows and rendering contracts
-  - isolate schema tooling and synthetic stacks more sharply from runtime
-  - narrow package roots and module topology across the codebase
-  - use validation lanes and live-archive dogfooding as ongoing refactor governance
 - the semantic-stack convergence program is now executed via [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md)
 - it closed the strongest remaining semantic-cluster drag around:
   - harmonization boundary cleanup around `schemas/unified.py` and `lib/provider_semantics.py`

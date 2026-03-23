@@ -158,6 +158,7 @@ def _embedding_status_payload(env: AppEnv) -> dict[str, object]:
         "newest_embedded_at": embedding_stats.newest_embedded_at,
         "embedding_models": embedding_stats.model_counts,
         "embedding_dimensions": embedding_stats.dimension_counts,
+        "retrieval_bands": embedding_stats.retrieval_bands,
     }
 
 
@@ -192,6 +193,15 @@ def _show_embedding_stats(env: AppEnv, *, json_output: bool = False) -> None:
         click.echo(
             f"  Dimensions:            {', '.join(f'{dimension} ({count})' for dimension, count in payload['embedding_dimensions'].items())}"
         )
+    if payload["retrieval_bands"]:
+        click.echo("  Retrieval bands:")
+        for band_name, band in payload["retrieval_bands"].items():
+            status_text = "ready" if band.get("ready") else str(band.get("status", "pending"))
+            click.echo(
+                f"    {band_name}: {status_text}; "
+                f"rows={int(band.get('materialized_rows', 0)):,}/{int(band.get('source_rows', 0) or 0):,}; "
+                f"docs={int(band.get('materialized_documents', 0)):,}/{int(band.get('source_documents', 0) or 0):,}"
+            )
 
 
 def _embed_single(

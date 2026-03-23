@@ -935,9 +935,9 @@ def test_health_cached(workspace_env):
 
     config = get_config()
     get_health(config)
-    second = get_health(config)
-    assert second.cached is True
-    assert second.age_seconds is not None
+    second = get_health(config, use_cached=True)
+    assert second.provenance.source.value == "cache"
+    assert second.provenance.cache_age_seconds is not None
 
 
 def test_search_invalid_query_reports_error(monkeypatch, workspace_env):

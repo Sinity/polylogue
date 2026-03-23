@@ -123,8 +123,14 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "orphaned_messages",
                 "orphaned_content_blocks",
                 "action_event_read_model",
+                "action_event_fts",
                 "fts_sync",
-                "embedding_coverage",
+                "transcript_embeddings",
+                "transcript_embedding_freshness",
+                "retrieval_evidence",
+                "retrieval_inference",
+                "retrieval_enrichment",
+                "session_profile_enrichment_fts",
                 "schemas_coverage",
                 "schemas_freshness",
             },
@@ -141,8 +147,14 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "orphaned_messages",
                 "orphaned_content_blocks",
                 "action_event_read_model",
+                "action_event_fts",
                 "fts_sync",
-                "embedding_coverage",
+                "transcript_embeddings",
+                "transcript_embedding_freshness",
+                "retrieval_evidence",
+                "retrieval_inference",
+                "retrieval_enrichment",
+                "session_profile_enrichment_fts",
                 "schemas_coverage",
                 "schemas_freshness",
             },
@@ -163,9 +175,9 @@ def test_run_health_core_contract(cli_workspace, deep: bool, expected_checks: se
 @pytest.mark.parametrize(
     ("embedded_conversations", "embedded_messages", "pending_conversations", "expected_status", "expected_text"),
     [
-        (0, 0, 0, "warning", "Embeddings not built"),
-        (2, 50, 1, "warning", "Embeddings partial"),
-        (3, 90, 0, "ok", "Embeddings ready"),
+        (0, 0, 0, "warning", "Transcript embeddings pending"),
+        (2, 50, 1, "warning", "Transcript embeddings pending"),
+        (3, 90, 0, "ok", "Transcript embeddings ready"),
     ],
 )
 def test_run_health_embedding_status_contract(
@@ -178,24 +190,91 @@ def test_run_health_embedding_status_contract(
 ) -> None:
     from polylogue.config import get_config
     from polylogue.health_archive import run_archive_health
-    from polylogue.storage.embedding_stats import EmbeddingStatsSnapshot
+    from polylogue.maintenance_models import DerivedModelStatus
     from tests.infra.storage_records import ConversationBuilder
 
     ConversationBuilder(cli_workspace["db_path"], "health-embed-1").add_message(text="hello").save()
     ConversationBuilder(cli_workspace["db_path"], "health-embed-2").add_message(text="hello").save()
     ConversationBuilder(cli_workspace["db_path"], "health-embed-3").add_message(text="hello").save()
 
+    embeddings_ready = (
+        embedded_conversations == 3 and pending_conversations == 0
+    )
+    expected_detail = (
+        f"Transcript embeddings ready ({embedded_conversations:,}/3 conversations, {embedded_messages:,} messages)"
+        if embeddings_ready
+        else (
+            f"Transcript embeddings pending ({embedded_conversations:,}/3 conversations, "
+            f"pending {pending_conversations:,}, stale 0, missing provenance 0)"
+        )
+    )
     with patch(
-        "polylogue.health_archive.read_embedding_stats_sync",
-        return_value=EmbeddingStatsSnapshot(
-            embedded_conversations=embedded_conversations,
-            embedded_messages=embedded_messages,
-            pending_conversations=pending_conversations,
-        ),
+        "polylogue.health_archive.collect_derived_model_statuses_sync",
+        return_value={
+            "messages_fts": DerivedModelStatus(
+                name="messages_fts",
+                ready=True,
+                detail="Messages FTS ready",
+                source_rows=3,
+                materialized_rows=3,
+            ),
+            "action_events": DerivedModelStatus(
+                name="action_events",
+                ready=True,
+                detail="Action events ready",
+                source_documents=3,
+                materialized_documents=3,
+                materialized_rows=0,
+            ),
+            "action_events_fts": DerivedModelStatus(
+                name="action_events_fts",
+                ready=True,
+                detail="Action-event FTS ready",
+                source_rows=0,
+                materialized_rows=0,
+            ),
+            "transcript_embeddings": DerivedModelStatus(
+                name="transcript_embeddings",
+                ready=embeddings_ready,
+                detail=expected_detail,
+                source_documents=3,
+                materialized_documents=embedded_conversations,
+                materialized_rows=embedded_messages,
+                pending_documents=pending_conversations,
+            ),
+            "retrieval_evidence": DerivedModelStatus(
+                name="retrieval_evidence",
+                ready=True,
+                detail="Evidence retrieval ready",
+                source_rows=3,
+                materialized_rows=3,
+            ),
+            "retrieval_inference": DerivedModelStatus(
+                name="retrieval_inference",
+                ready=True,
+                detail="Inference retrieval ready",
+                source_rows=3,
+                materialized_rows=3,
+            ),
+            "retrieval_enrichment": DerivedModelStatus(
+                name="retrieval_enrichment",
+                ready=True,
+                detail="Enrichment retrieval ready",
+                source_rows=3,
+                materialized_rows=3,
+            ),
+            "session_profile_enrichment_fts": DerivedModelStatus(
+                name="session_profile_enrichment_fts",
+                ready=True,
+                detail="Session-profile enrichment FTS ready",
+                source_rows=3,
+                materialized_rows=3,
+            ),
+        },
     ):
         report = run_archive_health(get_config())
 
-    check = next(c for c in report.checks if c.name == "embedding_coverage")
+    check = next(c for c in report.checks if c.name == "transcript_embeddings")
     assert check.status.value == expected_status
     assert expected_text in check.summary
 
@@ -256,18 +335,20 @@ def test_get_health_contract(cli_workspace, deep: bool, monkeypatch: pytest.Monk
     first = get_health(config, deep=deep)
     assert first.timestamp > 0
     if deep:
-        assert first.cached is False
+        assert first.provenance.source.value == "live"
         return
 
     second = get_health(config)
-    assert second.cached is True
+    assert second.provenance.source.value == "live"
+    cached_second = get_health(config, use_cached=True)
+    assert cached_second.provenance.source.value == "cache"
     cached = load_cached(config.archive_root)
     assert cached is not None
     cached["timestamp"] = int(time.time()) - HEALTH_TTL_SECONDS - 100
     cache_path(config.archive_root).write_text(json.dumps(cached), encoding="utf-8")
-    refreshed = get_health(config)
-    assert refreshed.cached is False
-    assert refreshed.age_seconds == 0
+    refreshed = get_health(config, use_cached=True)
+    assert refreshed.provenance.source.value == "live"
+    assert refreshed.provenance.cache_age_seconds is None
 
 
 @pytest.mark.parametrize(

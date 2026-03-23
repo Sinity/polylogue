@@ -10,10 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from polylogue.config import Source
-
 from tests.infra.encoding_fixtures import EncodingFixtureBuilder
 
 
@@ -24,7 +21,7 @@ def _make_source(path: Path, name: str = "codex") -> Source:
 
 def _collect_conversations(source_path: Path, provider: str = "codex"):
     """Run iter_source_conversations and collect results."""
-    from polylogue.sources.source import iter_source_conversations
+    from polylogue.sources.source_parsing import iter_source_conversations
 
     source = _make_source(source_path, name=provider)
     return list(iter_source_conversations(source))
@@ -32,7 +29,7 @@ def _collect_conversations(source_path: Path, provider: str = "codex"):
 
 def _collect_conversations_with_raw(source_path: Path, provider: str = "codex", *, cursor_state=None):
     """Run iter_source_conversations_with_raw and collect results."""
-    from polylogue.sources.source import iter_source_conversations_with_raw
+    from polylogue.sources.source_parsing import iter_source_conversations_with_raw
 
     source = _make_source(source_path, name=provider)
     return list(iter_source_conversations_with_raw(source, cursor_state=cursor_state, capture_raw=True))
@@ -40,7 +37,7 @@ def _collect_conversations_with_raw(source_path: Path, provider: str = "codex", 
 
 def _collect_raw_data(source_path: Path, provider: str = "codex", *, cursor_state=None):
     """Run iter_source_raw_data and collect results."""
-    from polylogue.sources.source import iter_source_raw_data
+    from polylogue.sources.source_acquisition import iter_source_raw_data
 
     source = _make_source(source_path, name=provider)
     return list(iter_source_raw_data(source, cursor_state=cursor_state))
@@ -76,7 +73,7 @@ class TestZipBomHandling:
         """
         EncodingFixtureBuilder.utf16_bom_json_zip(tmp_path)
         # Must not raise — either parses or silently fails
-        results = _collect_conversations(tmp_path, provider="chatgpt")
+        _collect_conversations(tmp_path, provider="chatgpt")
         # If it parsed, great; if not, the error was handled gracefully
         # (json.load on a BinaryIO with UTF-16 bytes may raise JSONDecodeError
         # which is caught by the outer handler)

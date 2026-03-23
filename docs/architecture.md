@@ -175,9 +175,13 @@ polylogue/
 │   │   ├── claude_code.py   # Claude Code data models
 │   │   ├── codex.py         # Codex data models
 │   │   └── gemini.py        # Gemini data models
-│   ├── source.py            # detect_provider(), local file ingestion
+│   ├── dispatch.py          # detect_provider(), parser dispatch, Drive payload routing
+│   ├── source_parsing.py    # Local source parsing iterators
+│   ├── source_acquisition.py # Raw source acquisition iterators
 │   ├── drive.py             # Google Drive ingestion
-│   └── drive_client.py      # Drive OAuth + API client
+│   ├── drive_source.py      # Drive source client + payload helpers
+│   ├── drive_auth.py        # Drive OAuth/token management
+│   └── drive_gateway.py     # Google Drive transport/retry layer
 │
 ├── pipeline/                 # Pipeline Layer
 │   ├── services/            # Service implementations
@@ -282,9 +286,10 @@ Orchestrates the full ingestion lifecycle. The `runner.py` module coordinates th
 
 Source discovery and provider-specific parsing. Each provider parser converts raw wire format into `ParsedConversation`/`ParsedMessage` intermediates.
 
-- **source.py**: `detect_provider()` probes file content via `looks_like()` functions — no filename heuristics
+- **dispatch.py**: `detect_provider()` probes file content via `looks_like()` functions — no filename heuristics
+- **source_parsing.py** / **source_acquisition.py**: Local traversal iterators for parsed and raw source flows
 - **parsers/**: One module per provider, all producing the same `ParsedConversation` type
-- **drive.py** / **drive_client.py**: Google Drive OAuth + API for Gemini conversations
+- **drive.py** / **drive_source.py** / **drive_gateway.py**: Google Drive ingestion, source semantics, and transport for Gemini conversations
 
 ### Storage Layer (`storage/`)
 
@@ -384,7 +389,7 @@ Source discovery scans configured paths for files matching supported formats. Lo
 
 #### 2. Parsing
 
-`sources/source.py:detect_provider()` probes file content to determine the provider. Provider-specific parsers in `sources/parsers/` convert raw JSON/JSONL into `ParsedConversation` intermediates:
+`sources/dispatch.py:detect_provider()` probes file content to determine the provider. Provider-specific parsers in `sources/parsers/` convert raw JSON/JSONL into `ParsedConversation` intermediates:
 
 - **ChatGPT**: UUID graph traversal of the `mapping` field
 - **Claude AI**: JSONL with `chat_messages` arrays

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.lib.models import Conversation
+from polylogue.lib.conversation_models import Conversation
 from polylogue.protocols import VectorProvider
 from polylogue.storage.hydrators import conversation_from_records
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
