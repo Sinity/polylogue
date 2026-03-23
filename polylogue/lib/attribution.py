@@ -111,7 +111,7 @@ def extract_attribution(
                 repo_paths.add(repo)
 
     for message in semantic_facts.message_facts:
-        for action in message.action_facts:
+        for action in message.action_events:
             if action.cwd_path:
                 cwd_paths.add(action.cwd_path)
                 repo = _repo_root_from_path(action.cwd_path)

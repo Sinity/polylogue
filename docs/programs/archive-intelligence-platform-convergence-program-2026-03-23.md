@@ -1,8 +1,8 @@
 # Archive Intelligence Platform Convergence Program
 
 Date: 2026-03-23
-Status: planned execution program
-Role: canonical integrated next implementation campaign after the latest semantic-query dogfooding wave
+Status: active execution program
+Role: canonical integrated implementation campaign after the latest semantic-query dogfooding wave
 
 Absorbs and supersedes as the live execution queue:
 
@@ -183,6 +183,32 @@ fixtures.
 5. async backend narrowing and retrieval performance hardening
 6. schema-tooling and operator-workflow convergence
 7. named archive-intelligence validation lanes
+
+## Executed Progress
+
+Completed so far in the live codebase:
+
+- first-class action events now replace the older action-fact seam as the
+  canonical message-scoped semantic action layer
+- semantic consumers now read that event layer directly:
+  - conversation semantic facts
+  - attribution
+  - work-event extraction
+  - query semantic matching
+  - grouped action/tool stats
+- ordered action-sequence querying is now available across CLI and MCP
+- action-text querying now consumes normalized event retrieval text across CLI
+  and MCP
+- post-filter conversation retrieval now batches candidate hydration for
+  date-sorted limited semantic queries, which removed the live `earlyoom`
+  failure on `--action file_edit --stats-by tool --format json --limit 50`
+
+Still open from this program:
+
+- action-aware retrieval/FTS and embeddings convergence
+- broader runtime state-band and backend narrowing work
+- remaining schema-tooling/operator convergence
+- archive-intelligence validation lanes
 
 ## Step 1: First-Class Action/Event Layer
 
