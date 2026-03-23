@@ -163,6 +163,9 @@ def test_build_conversation_semantic_facts_collects_semantic_counts() -> None:
     assert facts.tool_category_counts == {"file_read": 1}
     assert facts.message_facts[1].tool_category_counts == {"file_read": 1}
     assert facts.message_facts[1].affected_paths == ("/realm/project/polylogue/README.md",)
+    assert len(facts.action_facts) == 1
+    assert facts.action_facts[0].kind.value == "file_read"
+    assert facts.action_facts[0].affected_paths == ("/realm/project/polylogue/README.md",)
     assert facts.first_message_at == datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc)
     assert facts.last_message_at == datetime(2026, 3, 23, 9, 4, tzinfo=timezone.utc)
     assert facts.wall_duration_ms == 240000
@@ -278,6 +281,59 @@ def test_build_conversation_semantic_facts_upgrades_stale_other_semantic_type() 
 
     assert facts.tool_category_counts == {"agent": 1, "file_edit": 1}
     assert facts.message_facts[1].affected_paths == ("/realm/project/polylogue/README.md",)
+
+
+def test_action_facts_capture_normalized_command_query_branch_and_cwd() -> None:
+    conversation = Conversation(
+        id="conv-action-facts",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="Running git and search actions.",
+                    timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
+                    content_blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {
+                                "command": "git checkout feature/action-facts",
+                                "cwd": "/realm/project/polylogue",
+                            },
+                            "semantic_type": "git",
+                        },
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Grep",
+                            "tool_input": {
+                                "pattern": "build_session_profile",
+                                "path": "/realm/project/polylogue/polylogue/lib",
+                            },
+                            "semantic_type": "search",
+                        },
+                    ],
+                )
+            ]
+        ),
+    )
+
+    facts = build_conversation_semantic_facts(conversation)
+
+    assert facts.tool_category_counts == {"git": 1, "search": 1}
+    git_action, search_action = facts.action_facts
+    assert git_action.kind.value == "git"
+    assert git_action.command == "git checkout feature/action-facts"
+    assert git_action.cwd_path == "/realm/project/polylogue"
+    assert git_action.branch_names == ("feature/action-facts",)
+    assert search_action.kind.value == "search"
+    assert search_action.query == "build_session_profile"
+    assert search_action.affected_paths == ("/realm/project/polylogue/polylogue/lib",)
+
+    profile = build_session_profile(conversation)
+    assert profile.canonical_projects == ("polylogue",)
 
 
 def test_build_session_profile_detects_project_paths_in_user_text() -> None:
