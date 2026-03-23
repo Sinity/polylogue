@@ -36,6 +36,22 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
         }
     if result.semantic_report is not None:
         out["semantic_proof"] = result.semantic_report.to_dict()
+    if result.semantic_contracts is not None:
+        out["semantic_contracts"] = {
+            "count": len(result.semantic_contracts),
+            "items": [
+                {
+                    "surface": spec.name,
+                    "category": spec.category,
+                    "aliases": list(spec.aliases),
+                    "export_format": spec.export_format,
+                    "stream_format": spec.stream_format,
+                    "contract_count": len(spec.contracts),
+                    "contracts": [contract.to_dict() for contract in spec.contracts],
+                }
+                for spec in result.semantic_contracts
+            ],
+        }
     if result.roundtrip_report is not None:
         out["roundtrip_proof"] = result.roundtrip_report.to_dict()
     if result.repair_results is not None:
@@ -193,6 +209,21 @@ def render_plain_output(
                     f"declared_loss_checks={stats.declared_loss_checks:,} "
                     f"critical_loss_checks={stats.critical_loss_checks:,}"
                 )
+
+    if result.semantic_contracts is not None:
+        lines.extend(["", f"Semantic contracts: {len(result.semantic_contracts):,} surfaces"])
+        for spec in result.semantic_contracts:
+            details: list[str] = [f"category={spec.category}"]
+            if spec.aliases:
+                details.append(f"aliases={','.join(spec.aliases)}")
+            if spec.export_format:
+                details.append(f"export_format={spec.export_format}")
+            if spec.stream_format:
+                details.append(f"stream_format={spec.stream_format}")
+            details.append(f"contracts={len(spec.contracts)}")
+            lines.append(f"  {spec.name}: {'; '.join(details)}")
+            metric_bits = [f"{contract.metric}:{contract.mode}" for contract in spec.contracts]
+            lines.append(f"    metrics={', '.join(metric_bits)}")
 
     if result.runtime_report is not None:
         lines.extend(["", "Runtime Environment:"])
