@@ -108,7 +108,7 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option(
     "--stats-by",
     "stats_by",
-    type=click.Choice(["provider", "month", "year", "day", "action"]),
+    type=click.Choice(["provider", "month", "year", "day", "action", "tool"]),
     help="Aggregate statistics by dimension",
 )
 @click.option("--open", "open_result", is_flag=True, help="Open result in browser/editor")
