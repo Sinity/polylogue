@@ -14,7 +14,7 @@ from polylogue.pipeline.services.parsing_models import (
     ParseResult,
 )
 from polylogue.pipeline.services.parsing_workflow import ingest_sources, parse_from_raw
-from polylogue.schemas.registry import SchemaRegistry
+from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.sources.dispatch import parse_payload
 
 if TYPE_CHECKING:
