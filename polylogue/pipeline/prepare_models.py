@@ -6,13 +6,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from polylogue.storage.state_views import ExistingConversation
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
-    ExistingConversation,
     MessageRecord,
 )
 from polylogue.types import ConversationId, MessageId
@@ -25,7 +25,7 @@ class RecordBundle(BaseModel):
     conversation: ConversationRecord
     messages: list[MessageRecord]
     attachments: list[AttachmentRecord]
-    content_blocks: list[ContentBlockRecord] = []
+    content_blocks: list[ContentBlockRecord] = Field(default_factory=list)
 
 
 class SaveResult(BaseModel):
@@ -131,17 +131,29 @@ class TransformResult:
     message_id_map: dict[str, MessageId]
 
 
-@dataclass
-class EnrichedBundle:
+@dataclass(frozen=True)
+class PreparedBundle:
     bundle: RecordBundle
     materialization_plan: AttachmentMaterializationPlan
     cid: ConversationId
     changed: bool
 
 
+@dataclass(frozen=True)
+class PersistedConversationResult:
+    conversation_id: ConversationId
+    save_result: SaveResult
+    content_changed: bool
+
+    @property
+    def counts(self) -> dict[str, int]:
+        return self.save_result.model_dump()
+
+
 __all__ = [
     "AttachmentMaterializationPlan",
-    "EnrichedBundle",
+    "PersistedConversationResult",
+    "PreparedBundle",
     "PrepareCache",
     "RecordBundle",
     "SaveResult",

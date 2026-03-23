@@ -6,10 +6,10 @@ from collections.abc import AsyncIterator
 
 from polylogue.storage.backends.queries import artifacts as artifacts_q
 from polylogue.storage.backends.queries import raw as raw_queries
+from polylogue.storage.state_views import RawConversationState
 from polylogue.storage.store import (
     ArtifactObservationRecord,
     RawConversationRecord,
-    RawConversationState,
 )
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 

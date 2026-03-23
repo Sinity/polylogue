@@ -14,7 +14,8 @@ from polylogue.storage.hydrators import (
     message_from_record,
 )
 from polylogue.storage.query_models import ConversationRecordQuery
-from polylogue.storage.store import ConversationRecord, ConversationRenderProjection
+from polylogue.storage.state_views import ConversationRenderProjection
+from polylogue.storage.store import ConversationRecord
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
