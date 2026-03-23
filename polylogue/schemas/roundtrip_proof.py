@@ -15,8 +15,9 @@ from polylogue.schemas.operator_workflow import (
     list_artifact_observations,
     run_artifact_proof,
     run_schema_verification,
+    resolve_schema_payload,
 )
-from polylogue.schemas.runtime_registry import SchemaRegistry
+from polylogue.schemas.operator_models import SchemaPayloadResolveRequest
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.selection import select_synthetic_schema
 from polylogue.schemas.verification_requests import (
@@ -267,20 +268,23 @@ async def _prove_provider_roundtrip(
                 source_path=str(provider_dir / f"roundtrip-00{extension}"),
                 fallback_provider=provider,
             )
-            resolution = SchemaRegistry().resolve_payload(
-                envelope.provider,
-                envelope.payload,
-                source_path=str(provider_dir / f"roundtrip-00{extension}"),
-            )
-            if resolution is None:
-                raise ValueError("Runtime registry could not resolve the synthetic payload")
-            if resolution.package_version != selection.package_version:
-                raise ValueError(
-                    f"Resolved package {resolution.package_version} does not match selected {selection.package_version}"
+            resolution = resolve_schema_payload(
+                SchemaPayloadResolveRequest(
+                    provider=envelope.provider,
+                    payload=envelope.payload,
+                    source_path=str(provider_dir / f"roundtrip-00{extension}"),
                 )
-            if (resolution.element_kind or selection.element_kind) != selection.element_kind:
+            )
+            if resolution.resolution is None:
+                raise ValueError("Runtime registry could not resolve the synthetic payload")
+            resolved = resolution.resolution
+            if resolved.package_version != selection.package_version:
                 raise ValueError(
-                    f"Resolved element {resolution.element_kind} does not match selected {selection.element_kind}"
+                    f"Resolved package {resolved.package_version} does not match selected {selection.package_version}"
+                )
+            if (resolved.element_kind or selection.element_kind) != selection.element_kind:
+                raise ValueError(
+                    f"Resolved element {resolved.element_kind} does not match selected {selection.element_kind}"
                 )
             stages["selection"] = _stage_ok(
                 "selection",
@@ -288,7 +292,7 @@ async def _prove_provider_roundtrip(
                 package_version=selection.package_version,
                 element_kind=selection.element_kind,
                 wire_encoding=selection.wire_format.encoding,
-                resolution_reason=resolution.reason,
+                resolution_reason=resolved.reason,
             )
 
             current_stage = "acquisition"
