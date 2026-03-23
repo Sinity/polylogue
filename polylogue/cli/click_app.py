@@ -28,6 +28,7 @@ from polylogue.cli.machine_main import extract_option as _extract_option
 from polylogue.cli.machine_main import run_machine_entry
 from polylogue.cli.query_frontdoor import QueryFirstGroupBase, handle_query_mode
 from polylogue.cli.types import AppEnv
+from polylogue.lib.query_spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
 from polylogue.logging import configure_logging
 from polylogue.ui import create_ui
 from polylogue.version import POLYLOGUE_VERSION
@@ -61,17 +62,23 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option("--id", "-i", "conv_id", help="Conversation ID (exact or prefix match)")
 @click.option("--contains", "-c", multiple=True, help="FTS term (repeatable = AND)")
 @click.option("--exclude-text", multiple=True, help="Exclude FTS term")
+@click.option("--retrieval-lane", type=click.Choice(QUERY_RETRIEVAL_LANES), help="Query lane: dialogue FTS, action text, or hybrid")
 @click.option("--provider", "-p", help="Include providers (comma = OR)")
 @click.option("--exclude-provider", help="Exclude providers")
 @click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)")
 @click.option("--exclude-tag", help="Exclude tags")
 @click.option("--title", help="Title contains")
+@click.option("--path", "path_terms", multiple=True, help="Touched path contains substring (repeatable = AND)")
+@click.option("--action", multiple=True, type=click.Choice(QUERY_ACTION_TYPES), help="Require semantic action category (repeatable = AND)")
+@click.option("--exclude-action", multiple=True, type=click.Choice(QUERY_ACTION_TYPES), help="Exclude semantic action category (repeatable = AND)")
+@click.option("--action-sequence", help="Require ordered semantic action subsequence (comma-separated)")
+@click.option("--action-text", multiple=True, help="Require text within normalized action evidence (repeatable = AND)")
+@click.option("--tool", multiple=True, help="Require normalized tool name (repeatable = AND)")
+@click.option("--exclude-tool", multiple=True, help="Exclude normalized tool name (repeatable = AND)")
+@click.option("--similar", "similar_text", help="Semantic similarity query (requires embeddings)")
 @click.option("--has", "has_type", multiple=True, help="Filter by content: thinking (reasoning), tools (calls), summary, attachments")
 @click.option("--has-tool-use", "filter_has_tool_use", is_flag=True, help="Only conversations with tool use (SQL pushdown)")
 @click.option("--has-thinking", "filter_has_thinking", is_flag=True, help="Only conversations with thinking blocks (SQL pushdown)")
-@click.option("--has-file-ops", "filter_has_file_ops", is_flag=True, help="Only conversations with file read/write/edit ops")
-@click.option("--has-git-ops", "filter_has_git_ops", is_flag=True, help="Only conversations with git operations")
-@click.option("--has-subagent", "filter_has_subagent", is_flag=True, help="Only conversations that spawned subagents")
 @click.option("--min-messages", type=int, help="Minimum message count")
 @click.option("--max-messages", type=int, help="Maximum message count")
 @click.option("--min-words", type=int, help="Minimum total word count")
@@ -106,7 +113,7 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option(
     "--stats-by",
     "stats_by",
-    type=click.Choice(["provider", "month", "year", "day"]),
+    type=click.Choice(["provider", "month", "year", "day", "action", "tool"]),
     help="Aggregate statistics by dimension",
 )
 @click.option("--open", "open_result", is_flag=True, help="Open result in browser/editor")
@@ -135,17 +142,23 @@ def cli(
     conv_id: str | None,
     contains: tuple[str, ...],
     exclude_text: tuple[str, ...],
+    retrieval_lane: str | None,
     provider: str | None,
     exclude_provider: str | None,
     tag: str | None,
     exclude_tag: str | None,
     title: str | None,
+    path_terms: tuple[str, ...],
+    action: tuple[str, ...],
+    exclude_action: tuple[str, ...],
+    action_sequence: str | None,
+    action_text: tuple[str, ...],
+    tool: tuple[str, ...],
+    exclude_tool: tuple[str, ...],
+    similar_text: str | None,
     has_type: tuple[str, ...],
     filter_has_tool_use: bool,
     filter_has_thinking: bool,
-    filter_has_file_ops: bool,
-    filter_has_git_ops: bool,
-    filter_has_subagent: bool,
     min_messages: int | None,
     max_messages: int | None,
     min_words: int | None,
@@ -192,6 +205,14 @@ def cli(
         polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
+        polylogue --path /realm/project/polylogue/README.md --action file_read --list
+        polylogue --action search --action file_edit --list
+        polylogue --action-sequence file_read,file_edit,shell --list
+        polylogue --action-text "pytest -q" --list
+        polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
+        polylogue --action other --stats-by tool --format json
+        polylogue --tool bash --exclude-tool read --list
+        polylogue --similar "sqlite locking bug in parser" --limit 5
 
     \b
     Modifiers (write operations):

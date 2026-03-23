@@ -19,6 +19,7 @@ class ArchiveStats:
     providers: dict[str, int] = field(default_factory=dict)
     embedded_conversations: int = 0
     embedded_messages: int = 0
+    pending_embedding_conversations: int = 0
     db_size_bytes: int = 0
 
     @property
@@ -50,6 +51,7 @@ class ArchiveStats:
             "providers": self.providers,
             "embedded_conversations": self.embedded_conversations,
             "embedded_messages": self.embedded_messages,
+            "pending_embedding_conversations": self.pending_embedding_conversations,
             "embedding_coverage_percent": round(self.embedding_coverage, 1),
             "avg_messages_per_conversation": round(self.avg_messages_per_conversation, 1),
             "db_size_bytes": self.db_size_bytes,

@@ -20,29 +20,16 @@ import aiosqlite
 
 import polylogue.paths as _paths
 from polylogue.logging import get_logger
-from polylogue.storage.backends.connection import (
-    DB_TIMEOUT,
-)
-from polylogue.storage.backends.queries import (
-    artifacts as artifacts_q,
-)
-from polylogue.storage.backends.queries import (
-    attachments as attachments_q,
-)
-from polylogue.storage.backends.queries import (
-    conversations as conversations_q,
-)
-from polylogue.storage.backends.queries import (
-    messages as messages_q,
-)
-from polylogue.storage.backends.queries import (
-    raw as raw_queries,
-)
-from polylogue.storage.backends.queries import (
-    stats as stats_q,
-)
+from polylogue.storage.backends.connection import DB_TIMEOUT
+from polylogue.storage.backends.queries import artifacts as artifacts_q
+from polylogue.storage.backends.queries import attachments as attachments_q
+from polylogue.storage.backends.queries import conversations as conversations_q
+from polylogue.storage.backends.queries import messages as messages_q
+from polylogue.storage.backends.queries import raw as raw_queries
+from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.state_views import RawConversationState, RawConversationStateUpdate
 from polylogue.storage.store import (
     ArtifactObservationRecord,
     AttachmentRecord,
@@ -50,7 +37,6 @@ from polylogue.storage.store import (
     ConversationRecord,
     MessageRecord,
     RawConversationRecord,
-    RawConversationState,
     RunRecord,
 )
 from polylogue.types import Provider, ValidationMode, ValidationStatus
@@ -281,11 +267,13 @@ class SQLiteBackend:
         For any other version: raise — wipe DB and re-run.
         """
         from polylogue.storage.backends.schema import (
+            _ACTION_FTS_DDL,
             _ARTIFACT_OBSERVATION_DDL,
             _VEC0_DDL,
             SCHEMA_DDL,
             SCHEMA_VERSION,
         )
+        from polylogue.storage.fts_lifecycle import ACTION_FTS_REBUILD_SQL
 
         cursor = await conn.execute("PRAGMA user_version")
         row = await cursor.fetchone()
@@ -303,6 +291,13 @@ class SQLiteBackend:
             await conn.commit()
         elif current_version == SCHEMA_VERSION:
             await conn.executescript(_ARTIFACT_OBSERVATION_DDL)
+            cursor = await conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
+            )
+            action_fts_exists = await cursor.fetchone()
+            await conn.executescript(_ACTION_FTS_DDL)
+            if not action_fts_exists:
+                await conn.execute(ACTION_FTS_REBUILD_SQL)
         else:
             from polylogue.errors import DatabaseError
 
@@ -415,6 +410,11 @@ class SQLiteBackend:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        path_terms: list[str] | None = None,
+        action_terms: list[str] | None = None,
+        excluded_action_terms: list[str] | None = None,
+        tool_terms: list[str] | None = None,
+        excluded_tool_terms: list[str] | None = None,
         limit: int | None = None,
         offset: int = 0,
         has_tool_use: bool = False,
@@ -422,9 +422,6 @@ class SQLiteBackend:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> list[ConversationRecord]:
         """List conversations with optional filtering and pagination."""
         return await self.queries.list_conversations(
@@ -436,6 +433,11 @@ class SQLiteBackend:
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                path_terms=tuple(path_terms or ()),
+                action_terms=tuple(action_terms or ()),
+                excluded_action_terms=tuple(excluded_action_terms or ()),
+                tool_terms=tuple(tool_terms or ()),
+                excluded_tool_terms=tuple(excluded_tool_terms or ()),
                 limit=limit,
                 offset=offset,
                 has_tool_use=has_tool_use,
@@ -443,9 +445,6 @@ class SQLiteBackend:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
             )
         )
 
@@ -457,14 +456,16 @@ class SQLiteBackend:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        path_terms: list[str] | None = None,
+        action_terms: list[str] | None = None,
+        excluded_action_terms: list[str] | None = None,
+        tool_terms: list[str] | None = None,
+        excluded_tool_terms: list[str] | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> int:
         """Count conversations matching filters without loading records."""
         return await self.queries.count_conversations(
@@ -475,14 +476,16 @@ class SQLiteBackend:
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                path_terms=tuple(path_terms or ()),
+                action_terms=tuple(action_terms or ()),
+                excluded_action_terms=tuple(excluded_action_terms or ()),
+                tool_terms=tuple(tool_terms or ()),
+                excluded_tool_terms=tuple(excluded_tool_terms or ()),
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
             )
         )
 
@@ -733,6 +736,21 @@ class SQLiteBackend:
         """Retrieve a raw conversation by ID."""
         async with self._get_connection() as conn:
             return await raw_queries.get_raw_conversation(conn, raw_id)
+
+    async def update_raw_state(
+        self,
+        raw_id: str,
+        *,
+        state: RawConversationStateUpdate,
+    ) -> None:
+        """Apply a typed raw-state mutation."""
+        async with self._get_connection() as conn:
+            await raw_queries.apply_raw_state_update(
+                conn,
+                raw_id,
+                state=state,
+                transaction_depth=self._transaction_depth,
+            )
 
     async def mark_raw_parsed(
         self,

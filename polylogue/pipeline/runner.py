@@ -28,7 +28,8 @@ from polylogue.pipeline.run_support import (
 )
 from polylogue.storage.backends import create_backend
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import PlanResult, RunRecord, RunResult
+from polylogue.storage.state_views import PlanResult, RunResult
+from polylogue.storage.store import RunRecord
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

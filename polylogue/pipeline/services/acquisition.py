@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
+from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.sources.source import iter_source_raw_data
@@ -32,18 +33,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 __all__ = ["AcquisitionService", "AcquireResult"]
-
-
-class AcquireResult:
-    """Result of an acquisition operation."""
-
-    def __init__(self) -> None:
-        self.counts: dict[str, int] = {
-            "acquired": 0,
-            "skipped": 0,  # Already in database (by raw_id hash)
-            "errors": 0,
-        }
-        self.raw_ids: list[str] = []  # List of acquired raw_ids
 
 
 class ScanResult:
@@ -92,10 +81,10 @@ class AcquisitionService:
             inserted = await self.repository.save_raw_conversation(record)
             await self.repository.save_artifact_observation(observation)
             if inserted:
-                result.counts["acquired"] += 1
+                result.acquired += 1
                 result.raw_ids.append(record.raw_id)
             else:
-                result.counts["skipped"] += 1
+                result.skipped += 1
         except Exception as exc:
             logger.error(
                 "Failed to store raw conversation",
@@ -103,7 +92,7 @@ class AcquisitionService:
                 path=record.source_path,
                 error=str(exc),
             )
-            result.counts["errors"] += 1
+            result.errors += 1
 
     async def visit_sources(
         self,
@@ -194,7 +183,7 @@ class AcquisitionService:
                 progress_label="Acquiring",
                 on_record=_store,
             )
-            result.counts["errors"] += visit_result.counts["errors"]
+            result.errors += visit_result.counts["errors"]
 
         return result
 

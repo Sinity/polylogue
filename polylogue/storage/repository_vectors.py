@@ -150,5 +150,6 @@ class RepositoryVectorMixin:
             providers=providers,
             embedded_conversations=embedding_stats.embedded_conversations,
             embedded_messages=embedding_stats.embedded_messages,
+            pending_embedding_conversations=embedding_stats.pending_conversations,
             db_size_bytes=db_size,
         )

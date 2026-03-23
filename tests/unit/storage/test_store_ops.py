@@ -41,8 +41,12 @@ from tests.infra.strategies.storage import (
     TagAssignmentSpec,
     TitleSearchSpec,
     expected_tag_counts,
-    literal_title_search_strategy as infra_title_search_strategy,
     seed_conversation_graph,
+)
+from tests.infra.strategies.storage import (
+    literal_title_search_strategy as infra_title_search_strategy,
+)
+from tests.infra.strategies.storage import (
     tag_assignment_strategy as infra_tag_assignment_strategy,
 )
 
@@ -66,6 +70,370 @@ def _attachment_row(conn, attachment_id: str):
         "SELECT * FROM attachments WHERE attachment_id = ?",
         (attachment_id,),
     ).fetchone()
+
+
+@pytest.mark.asyncio
+async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
+    """Low-level list/count filters must honor persisted semantic paths."""
+    from polylogue.storage.store import ContentBlockRecord
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "path-filter.db"
+    target_path = "/realm/project/polylogue/README.md"
+    other_path = "/realm/project/polylogue/docs/cli-reference.md"
+
+    (ConversationBuilder(db_path, "conv-readme")
+     .provider("claude-code")
+     .title("README work")
+     .add_message(
+         "m1",
+         role="assistant",
+         text="Inspecting the repository README",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-readme-0",
+                 message_id="m1",
+                 conversation_id="conv-readme",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Read",
+                 metadata=f'{{"path":"{target_path}"}}',
+                 semantic_type="file_read",
+             )
+         ],
+     )
+     .save())
+
+    (ConversationBuilder(db_path, "conv-other")
+     .provider("claude-code")
+     .title("CLI docs work")
+     .add_message(
+         "m2",
+         role="assistant",
+         text="Inspecting docs",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-other-0",
+                 message_id="m2",
+                 conversation_id="conv-other",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Read",
+                 metadata=f'{{"path":"{other_path}"}}',
+                 semantic_type="file_read",
+             )
+         ],
+     )
+     .save())
+
+    backend = SQLiteBackend(db_path=db_path)
+    try:
+        matches = await backend.list_conversations(path_terms=[target_path], limit=10)
+        assert [record.conversation_id for record in matches] == ["conv-readme"]
+        assert await backend.count_conversations(path_terms=[target_path]) == 1
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
+    """Combined FTS + path queries must keep the path constraint after search ranking."""
+    from polylogue.lib.filters import ConversationFilter
+    from polylogue.storage.store import ContentBlockRecord
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "path-fts.db"
+    target_path = "/realm/project/polylogue/README.md"
+
+    (ConversationBuilder(db_path, "conv-match")
+     .provider("claude-code")
+     .title("Path match")
+     .add_message(
+         "m1",
+         role="assistant",
+         text="Investigating the same parser regression",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-match-0",
+                 message_id="m1",
+                 conversation_id="conv-match",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Read",
+                 metadata=f'{{"path":"{target_path}"}}',
+                 semantic_type="file_read",
+             )
+         ],
+     )
+     .save())
+
+    (ConversationBuilder(db_path, "conv-no-path")
+     .provider("claude-code")
+     .title("No path match")
+     .add_message(
+         "m2",
+         role="assistant",
+         text="Investigating the same parser regression",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-nopath-0",
+                 message_id="m2",
+                 conversation_id="conv-no-path",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Read",
+                 metadata='{"path":"/realm/project/polylogue/docs/cli-reference.md"}',
+                 semantic_type="file_read",
+             )
+         ],
+     )
+     .save())
+
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
+    try:
+        results = await (
+            ConversationFilter(repo)
+            .contains("parser regression")
+            .path(target_path)
+            .list()
+        )
+        assert [str(conversation.id) for conversation in results] == ["conv-match"]
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
+    """Low-level list/count filters must honor semantic action categories."""
+    from polylogue.storage.store import ContentBlockRecord
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "action-filter.db"
+
+    (ConversationBuilder(db_path, "conv-search")
+     .provider("claude-code")
+     .title("Search work")
+     .add_message(
+         "m1",
+         role="assistant",
+         text="Searching for parser code",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-search-0",
+                 message_id="m1",
+                 conversation_id="conv-search",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Grep",
+                 semantic_type="search",
+             )
+         ],
+     )
+     .save())
+
+    (ConversationBuilder(db_path, "conv-git")
+     .provider("claude-code")
+     .title("Git work")
+     .add_message(
+         "m2",
+         role="assistant",
+         text="Checking git status",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-git-0",
+                 message_id="m2",
+                 conversation_id="conv-git",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Bash",
+                 tool_input='{"command":"git status"}',
+                 semantic_type="git",
+             )
+         ],
+     )
+     .save())
+
+    (ConversationBuilder(db_path, "conv-other")
+     .provider("claude-code")
+     .title("Other tool work")
+     .add_message(
+         "m3",
+         role="assistant",
+         text="Using an unknown tool",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-other-0",
+                 message_id="m3",
+                 conversation_id="conv-other",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Mystery",
+                 semantic_type="other",
+             )
+         ],
+     )
+     .save())
+
+    (ConversationBuilder(db_path, "conv-none")
+     .provider("claude-code")
+     .title("Plain dialogue")
+     .add_message(
+         "m4",
+         role="assistant",
+         text="No tool use here",
+     )
+     .save())
+
+    backend = SQLiteBackend(db_path=db_path)
+    try:
+        matches = await backend.list_conversations(action_terms=["search"], limit=10)
+        assert [record.conversation_id for record in matches] == ["conv-search"]
+        assert await backend.count_conversations(action_terms=["search"]) == 1
+
+        other_matches = await backend.list_conversations(action_terms=["other"], limit=10)
+        assert [record.conversation_id for record in other_matches] == ["conv-other"]
+
+        none_matches = await backend.list_conversations(action_terms=["none"], limit=10)
+        assert [record.conversation_id for record in none_matches] == ["conv-none"]
+        assert await backend.count_conversations(action_terms=["none"]) == 1
+
+        grep_tool_matches = await backend.list_conversations(tool_terms=["grep"], limit=10)
+        assert [record.conversation_id for record in grep_tool_matches] == ["conv-search"]
+
+        none_tool_matches = await backend.list_conversations(tool_terms=["none"], limit=10)
+        assert [record.conversation_id for record in none_tool_matches] == ["conv-none"]
+
+        filtered = await backend.list_conversations(
+            action_terms=["search"],
+            excluded_action_terms=["git"],
+            limit=10,
+        )
+        assert [record.conversation_id for record in filtered] == ["conv-search"]
+
+        non_grep = await backend.list_conversations(
+            excluded_tool_terms=["grep"],
+            limit=10,
+        )
+        assert sorted(record.conversation_id for record in non_grep) == ["conv-git", "conv-none", "conv-other"]
+
+        non_none = await backend.list_conversations(
+            excluded_action_terms=["none"],
+            limit=10,
+        )
+        assert sorted(record.conversation_id for record in non_none) == ["conv-git", "conv-other", "conv-search"]
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_filter_action_terms_apply_after_fts_search(tmp_path: Path) -> None:
+    """Combined FTS + action queries must preserve action constraints after search ranking."""
+    from polylogue.lib.filters import ConversationFilter
+    from polylogue.storage.store import ContentBlockRecord
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "action-fts.db"
+
+    (ConversationBuilder(db_path, "conv-search")
+     .provider("claude-code")
+     .title("Search match")
+     .add_message(
+         "m1",
+         role="assistant",
+         text="Investigating the same parser regression",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-search-0",
+                 message_id="m1",
+                 conversation_id="conv-search",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Grep",
+                 semantic_type="search",
+             )
+         ],
+     )
+     .save())
+
+    (ConversationBuilder(db_path, "conv-shell")
+     .provider("claude-code")
+     .title("Shell only")
+     .add_message(
+         "m2",
+         role="assistant",
+         text="Investigating the same parser regression",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-shell-0",
+                 message_id="m2",
+                 conversation_id="conv-shell",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Bash",
+                 tool_input='{"command":"python -m pytest"}',
+                 semantic_type="shell",
+             )
+         ],
+     )
+     .save())
+
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
+    try:
+        results = await (
+            ConversationFilter(repo)
+            .contains("parser regression")
+            .action("search")
+            .exclude_action("git")
+            .list()
+        )
+        assert [str(conversation.id) for conversation in results] == ["conv-search"]
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_filter_action_terms_reconcile_runtime_semantics_after_sql_candidate_fetch(tmp_path: Path) -> None:
+    """Runtime semantic facts must outrank stale persisted semantic_type labels."""
+    from polylogue.lib.filters import ConversationFilter
+    from polylogue.storage.store import ContentBlockRecord
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "action-runtime-reconcile.db"
+
+    (ConversationBuilder(db_path, "conv-stale-other")
+     .provider("claude-code")
+     .title("Stale semantic label")
+     .add_message(
+         "m1",
+         role="assistant",
+         text="Create a task for the next review pass",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-stale-0",
+                 message_id="m1",
+                 conversation_id="conv-stale-other",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="TaskCreate",
+                 semantic_type="other",
+             )
+         ],
+     )
+     .save())
+
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
+    try:
+        stale_other = await ConversationFilter(repo).action("other").list()
+        upgraded_agent = await ConversationFilter(repo).action("agent").list()
+
+        assert [str(conversation.id) for conversation in stale_other] == []
+        assert [str(conversation.id) for conversation in upgraded_agent] == ["conv-stale-other"]
+        assert await ConversationFilter(repo).action("agent").count() == 1
+    finally:
+        await backend.close()
 
 
 def test_store_records_roundtrip_contract(test_conn) -> None:
@@ -597,8 +965,8 @@ class TestTitleSearchLaws:
     async def test_title_search_finds_matching(self, spec: dict):
         """Searching by title substring finds the matching conversation."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            from polylogue.storage.repository import ConversationRepository
             from polylogue.storage.index import rebuild_index
+            from polylogue.storage.repository import ConversationRepository
             from tests.infra.storage_records import ConversationBuilder
 
             db_path = Path(tmp_dir) / "search.db"
@@ -953,7 +1321,8 @@ class TestCacheThreadSafety:
     def test_concurrent_invalidation(self):
         """Concurrent invalidation doesn't corrupt state."""
         import threading
-        from polylogue.storage.search_cache import invalidate_search_cache, get_cache_stats
+
+        from polylogue.storage.search_cache import get_cache_stats, invalidate_search_cache
 
         initial_stats = get_cache_stats()
         initial_version = initial_stats["cache_version"]
@@ -1126,7 +1495,7 @@ class TestInfraTagAssignment:
 
             expected = expected_tag_counts(spec)
             actual: dict[str, int] = {}
-            for conv, tags in zip(spec.conversations, spec.tag_sequences, strict=True):
+            for conv, _tags in zip(spec.conversations, spec.tag_sequences, strict=True):
                 stored = await repo.get(conv.conversation_id)
                 if stored:
                     for tag in stored.tags:

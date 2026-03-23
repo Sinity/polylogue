@@ -17,7 +17,6 @@ from polylogue.lib.semantic_facts import ConversationSemanticFacts, build_conver
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
 
-_BRANCH_PATTERN = re.compile(r"git\s+(?:checkout|switch)\s+(?:-[bc]\s+)?(\S+)")
 _LANGUAGE_EXTENSIONS = {
     ".py": "python", ".rs": "rust", ".ts": "typescript", ".tsx": "typescript",
     ".js": "javascript", ".jsx": "javascript", ".go": "go", ".nix": "nix",
@@ -42,6 +41,21 @@ def _language_from_path(path: str) -> str | None:
     """Detect programming language from file extension."""
     suffix = PurePosixPath(path).suffix.lower()
     return _LANGUAGE_EXTENSIONS.get(suffix)
+
+
+def _clean_dialogue_path(path: str) -> str | None:
+    candidate = path.rstrip(".,;:)'\">`*_")
+    if not candidate:
+        return None
+    if candidate.rstrip("/") == "/realm/project":
+        return None
+    if "<" in candidate or ">" in candidate:
+        return None
+    if any(ch in candidate for ch in "*?[]{}"):
+        return None
+    if set(candidate) <= {".", "/"}:
+        return None
+    return candidate
 
 
 @dataclass(frozen=True)
@@ -73,10 +87,39 @@ def extract_attribution(
     file_paths: set[str] = set()
     languages: set[str] = set()
 
+    provider_meta = conversation.provider_meta if isinstance(conversation.provider_meta, dict) else {}
+    cwd_value = provider_meta.get("cwd")
+    if isinstance(cwd_value, str) and cwd_value:
+        cwd_paths.add(cwd_value)
+        repo = _repo_root_from_path(cwd_value)
+        if repo:
+            repo_paths.add(repo)
+
+    git_branch = provider_meta.get("gitBranch")
+    if isinstance(git_branch, str) and git_branch:
+        branch_names.add(git_branch)
+
+    git_meta = provider_meta.get("git")
+    if isinstance(git_meta, dict):
+        branch = git_meta.get("branch")
+        if isinstance(branch, str) and branch:
+            branch_names.add(branch)
+        repository_url = git_meta.get("repository_url")
+        if isinstance(repository_url, str) and repository_url.startswith("/"):
+            repo = _repo_root_from_path(repository_url)
+            if repo:
+                repo_paths.add(repo)
+
     for message in semantic_facts.message_facts:
-        for tc in message.tool_calls:
-            # Collect affected paths
-            for path in message.affected_paths:
+        for action in message.action_events:
+            if action.cwd_path:
+                cwd_paths.add(action.cwd_path)
+                repo = _repo_root_from_path(action.cwd_path)
+                if repo:
+                    repo_paths.add(repo)
+            for branch in action.branch_names:
+                branch_names.add(branch)
+            for path in action.affected_paths:
                 file_paths.add(path)
                 lang = _language_from_path(path)
                 if lang:
@@ -85,28 +128,15 @@ def extract_attribution(
                 if repo:
                     repo_paths.add(repo)
 
-            # Extract cwd from shell commands
-            cmd = tc.input.get("command", "")
-            if isinstance(cmd, str):
-                # Look for cd commands
-                for match in re.finditer(r'cd\s+"?(/[^\s"]+)', cmd):
-                    cwd_paths.add(match.group(1))
-                # Look for git branch operations
-                for match in _BRANCH_PATTERN.finditer(cmd):
-                    branch = match.group(1)
-                    if not branch.startswith("-"):
-                        branch_names.add(branch)
-
-    # Scan assistant text for file paths and language mentions (catches pure-conversation sessions)
+    # Scan dialogue text for file paths and language mentions (catches pure-conversation sessions)
     realm_path_pattern = re.compile(r'/realm/project/[^\s,;:)\]]+')
     language_names = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
     for message in semantic_facts.message_facts:
-        if not message.is_assistant or not message.text:
+        if not message.is_dialogue or not message.text:
             continue
         for match in realm_path_pattern.finditer(message.text):
-            path = match.group().rstrip(".,;:)'\">`")
-            # Skip template/placeholder paths like /realm/project/<name>
-            if "<" in path or ">" in path:
+            path = _clean_dialogue_path(match.group())
+            if path is None:
                 continue
             file_paths.add(path)
             lang = _language_from_path(path)

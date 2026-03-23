@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,38 @@ if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.store import RawConversationRecord
+
+
+_SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
+
+
+def _fallback_id_from_source_path(source_path: str | None, raw_id: str) -> str:
+    if not source_path:
+        return raw_id
+    normalized = source_path.replace("\\", "/")
+    entry_path = normalized.rsplit(":", 1)[-1]
+    stem = Path(entry_path).stem
+    if not stem:
+        return raw_id
+    cleaned = _SOURCE_HASH_SUFFIX.sub("", stem).strip("._- ")
+    return cleaned or stem
+
+
+def _apply_raw_record_defaults(
+    conversations: list[ParsedConversation],
+    raw_record: RawConversationRecord,
+) -> list[ParsedConversation]:
+    fallback_timestamp = raw_record.file_mtime
+    enriched: list[ParsedConversation] = []
+    for convo in conversations:
+        updates: dict[str, object] = {}
+        if convo.created_at is None and fallback_timestamp:
+            updates["created_at"] = fallback_timestamp
+        effective_created = updates.get("created_at", convo.created_at)
+        if convo.updated_at is None and isinstance(effective_created, str) and effective_created:
+            updates["updated_at"] = effective_created
+        enriched.append(convo.model_copy(update=updates) if updates else convo)
+    return enriched
 
 
 class ParsingService:
@@ -130,12 +163,13 @@ class ParsingService:
             envelope.payload,
             source_path=raw_record.source_path,
         )
-        return parse_payload(
+        conversations = parse_payload(
             envelope.provider,
             envelope.payload,
-            raw_record.raw_id,
+            _fallback_id_from_source_path(raw_record.source_path, raw_record.raw_id),
             schema_resolution=schema_resolution,
         )
+        return _apply_raw_record_defaults(conversations, raw_record)
 
 
 __all__ = [

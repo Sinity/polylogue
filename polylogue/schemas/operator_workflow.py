@@ -24,6 +24,8 @@ from polylogue.schemas.operator_models import (
     SchemaPromoteResult,
     SchemaProviderSnapshot,
     SchemaRoleAssignment,
+    SchemaPayloadResolveRequest,
+    SchemaPayloadResolveResult,
 )
 from polylogue.schemas.verification_artifacts import (
     list_artifact_cohort_rows,
@@ -39,10 +41,15 @@ from polylogue.schemas.verification_requests import (
 )
 
 
+def _schema_registry() -> Any:
+    from polylogue.schemas.registry import SchemaRegistry
+
+    return SchemaRegistry()
+
+
 def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
     from polylogue.schemas.generation_workflow import generate_provider_schema
     from polylogue.schemas.observation import PROVIDERS
-    from polylogue.schemas.registry import SchemaRegistry
     from polylogue.schemas.sampling import load_samples_from_db
 
     result = generate_provider_schema(
@@ -66,7 +73,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
     if not samples:
         return SchemaInferResult(generation=result)
 
-    registry = SchemaRegistry()
+    registry = _schema_registry()
     manifest = registry.cluster_samples(request.provider, samples)
     manifest_path = registry.save_cluster_manifest(manifest)
     return SchemaInferResult(
@@ -77,9 +84,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
 
 
 def list_schemas(request: SchemaListRequest) -> SchemaListResult:
-    from polylogue.schemas.registry import SchemaRegistry
-
-    registry = SchemaRegistry()
+    registry = _schema_registry()
     if request.provider is not None:
         provider = request.provider
         return SchemaListResult(
@@ -107,9 +112,7 @@ def list_schemas(request: SchemaListRequest) -> SchemaListResult:
 
 
 def compare_schema_versions(request: SchemaCompareRequest) -> SchemaCompareResult:
-    from polylogue.schemas.registry import SchemaRegistry
-
-    registry = SchemaRegistry()
+    registry = _schema_registry()
     return SchemaCompareResult(
         diff=registry.compare_versions(
             request.provider,
@@ -122,11 +125,10 @@ def compare_schema_versions(request: SchemaCompareRequest) -> SchemaCompareResul
 
 def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult:
     from polylogue.schemas.observation import PROVIDERS, fingerprint_hash
-    from polylogue.schemas.registry import SchemaRegistry
     from polylogue.schemas.sampling import load_samples_from_db
     from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
-    registry = SchemaRegistry()
+    registry = _schema_registry()
     samples: list[dict[str, Any]] | None = None
     if request.with_samples:
         config = PROVIDERS.get(request.provider)
@@ -232,9 +234,7 @@ def _collect_annotation_summary(schema: dict[str, Any]) -> SchemaAnnotationSumma
 
 
 def explain_schema(request: SchemaExplainRequest) -> SchemaExplainResult:
-    from polylogue.schemas.registry import SchemaRegistry
-
-    registry = SchemaRegistry()
+    registry = _schema_registry()
     package = registry.get_package(request.provider, version=request.version)
     schema = registry.get_element_schema(
         request.provider,
@@ -253,6 +253,21 @@ def explain_schema(request: SchemaExplainRequest) -> SchemaExplainResult:
         package=package,
         schema=schema,
         annotations=_collect_annotation_summary(schema),
+    )
+
+
+def resolve_schema_payload(request: SchemaPayloadResolveRequest) -> SchemaPayloadResolveResult:
+    from polylogue.schemas.runtime_registry import SchemaRegistry
+
+    registry = SchemaRegistry()
+    return SchemaPayloadResolveResult(
+        provider=request.provider,
+        source_path=request.source_path,
+        resolution=registry.resolve_payload(
+            request.provider,
+            request.payload,
+            source_path=request.source_path,
+        ),
     )
 
 
@@ -288,4 +303,3 @@ def list_artifact_cohorts(
     return ArtifactCohortListResult(
         rows=list_artifact_cohort_rows(db_path=db_path, request=request),
     )
-
