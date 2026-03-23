@@ -112,8 +112,41 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
 @pytest.mark.parametrize(
     ("deep", "expected_checks"),
     [
-        (False, {"config", "archive_root", "render_root", "database", "index", "fts_sync", "embedding_coverage", "schemas_coverage", "schemas_freshness"}),
-        (True, {"config", "archive_root", "render_root", "database", "sqlite_integrity", "index", "fts_sync", "embedding_coverage", "schemas_coverage", "schemas_freshness"}),
+        (
+            False,
+            {
+                "config",
+                "archive_root",
+                "render_root",
+                "database",
+                "index",
+                "orphaned_messages",
+                "orphaned_content_blocks",
+                "action_event_read_model",
+                "fts_sync",
+                "embedding_coverage",
+                "schemas_coverage",
+                "schemas_freshness",
+            },
+        ),
+        (
+            True,
+            {
+                "config",
+                "archive_root",
+                "render_root",
+                "database",
+                "sqlite_integrity",
+                "index",
+                "orphaned_messages",
+                "orphaned_content_blocks",
+                "action_event_read_model",
+                "fts_sync",
+                "embedding_coverage",
+                "schemas_coverage",
+                "schemas_freshness",
+            },
+        ),
     ],
 )
 def test_run_health_core_contract(cli_workspace, deep: bool, expected_checks: set[str]) -> None:

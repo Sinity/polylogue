@@ -9,7 +9,15 @@ from typing import Any
 
 from polylogue.config import Config
 from polylogue.logging import get_logger
+
+from .action_event_lifecycle import (
+    action_event_read_model_status_sync,
+    action_event_repair_candidates_sync,
+    rebuild_action_event_read_model_sync,
+    valid_action_event_source_ids_sync,
+)
 from .backends.connection import connection_context, default_db_path
+from .fts_lifecycle import repair_fts_index_sync
 
 logger = get_logger(__name__)
 
@@ -155,6 +163,27 @@ def repair_empty_conversations(config: Config, dry_run: bool = False) -> RepairR
         )
 
 
+def repair_orphaned_content_blocks(config: Config, dry_run: bool = False) -> RepairResult:
+    """Delete content blocks whose parent conversation or message no longer exists."""
+    with connection_context(None) as conn:
+        return _run_repair(
+            name="orphaned_content_blocks",
+            count_sql="""
+                SELECT COUNT(*)
+                FROM content_blocks cb
+                WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = cb.conversation_id)
+                   OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = cb.message_id)
+            """,
+            action_sql="""
+                DELETE FROM content_blocks
+                WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = content_blocks.conversation_id)
+                   OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = content_blocks.message_id)
+            """,
+            dry_run=dry_run,
+            conn=conn,
+        )
+
+
 def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
     """Rebuild FTS index entries that are out of sync with messages table."""
     try:
@@ -230,6 +259,73 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
             repaired_count=0,
             success=False,
             detail=f"Failed to repair FTS index: {exc}",
+        )
+
+
+def repair_action_event_read_model(config: Config, dry_run: bool = False) -> RepairResult:
+    """Repair the durable action-event read model and its action FTS rows."""
+    try:
+        with connection_context(None) as conn:
+            status = action_event_read_model_status_sync(conn)
+            candidate_ids = action_event_repair_candidates_sync(conn)
+
+            missing_conversations = max(
+                0,
+                int(status["valid_source_conversation_count"]) - int(status["materialized_conversation_count"]),
+            )
+            stale_conversations = int(status["stale_count"])
+            action_fts_pending = max(0, int(status["count"]) - int(status["action_fts_count"]))
+            pending = max(len(candidate_ids), missing_conversations + stale_conversations) + action_fts_pending
+
+            if dry_run:
+                return RepairResult(
+                    name="action_event_read_model",
+                    repaired_count=pending,
+                    success=True,
+                    detail=(
+                        "Would: action-event read model already ready"
+                        if pending == 0 and bool(status["rows_ready"]) and bool(status["action_fts_ready"])
+                        else (
+                            "Would: repair action-event rows for "
+                            f"{len(candidate_ids):,} conversations; "
+                            f"action FTS pending {action_fts_pending:,}"
+                        )
+                    ),
+                )
+
+            repaired = 0
+            if candidate_ids:
+                repaired = rebuild_action_event_read_model_sync(conn, conversation_ids=candidate_ids)
+
+            if not bool(status["action_fts_ready"]):
+                repair_targets = candidate_ids or valid_action_event_source_ids_sync(conn)
+                if repair_targets:
+                    repair_fts_index_sync(conn, repair_targets)
+
+            conn.commit()
+            refreshed = action_event_read_model_status_sync(conn)
+            return RepairResult(
+                name="action_event_read_model",
+                repaired_count=repaired + action_fts_pending,
+                success=bool(refreshed["ready"]),
+                detail=(
+                    "Action-event read model ready"
+                    if refreshed["ready"]
+                    else (
+                        "Action-event read model still incomplete: "
+                        f"{refreshed['materialized_conversation_count']:,}/"
+                        f"{refreshed['valid_source_conversation_count']:,} conversations, "
+                        f"action FTS {refreshed['action_fts_count']:,}/"
+                        f"{refreshed['count']:,}"
+                    )
+                ),
+            )
+    except Exception as exc:
+        return RepairResult(
+            name="action_event_read_model",
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to repair action-event read model: {exc}",
         )
 
 
@@ -367,7 +463,9 @@ def run_all_repairs(config: Config, dry_run: bool = False) -> list[RepairResult]
     """
     return [
         repair_orphaned_messages(config, dry_run=dry_run),
+        repair_orphaned_content_blocks(config, dry_run=dry_run),
         repair_empty_conversations(config, dry_run=dry_run),
+        repair_action_event_read_model(config, dry_run=dry_run),
         repair_dangling_fts(config, dry_run=dry_run),
         repair_orphaned_attachments(config, dry_run=dry_run),
         repair_wal_checkpoint(config, dry_run=dry_run),
@@ -377,7 +475,9 @@ def run_all_repairs(config: Config, dry_run: bool = False) -> list[RepairResult]
 __all__ = [
     "RepairResult",
     "repair_orphaned_messages",
+    "repair_orphaned_content_blocks",
     "repair_empty_conversations",
+    "repair_action_event_read_model",
     "repair_dangling_fts",
     "repair_orphaned_attachments",
     "repair_wal_checkpoint",

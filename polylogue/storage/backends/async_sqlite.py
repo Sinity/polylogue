@@ -12,7 +12,6 @@ Performance characteristics:
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,7 +19,6 @@ from pathlib import Path
 import aiosqlite
 
 import polylogue.paths as _paths
-from polylogue.logging import get_logger
 from polylogue.storage.backends.connection import DB_TIMEOUT
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import artifacts as artifacts_q
@@ -30,7 +28,6 @@ from polylogue.storage.backends.queries import messages as messages_q
 from polylogue.storage.backends.queries import raw as raw_queries
 from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.backends.query_store import SQLiteQueryStore
-from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.state_views import RawConversationState, RawConversationStateUpdate
 from polylogue.storage.store import (
     ActionEventRecord,
@@ -40,11 +37,8 @@ from polylogue.storage.store import (
     ConversationRecord,
     MessageRecord,
     RawConversationRecord,
-    RunRecord,
 )
 from polylogue.types import Provider, ValidationMode, ValidationStatus
-
-logger = get_logger(__name__)
 
 
 def default_db_path() -> Path:
@@ -269,10 +263,6 @@ class SQLiteBackend:
         For the current version: nothing to do.
         For any other version: raise — wipe DB and re-run.
         """
-        from polylogue.storage.action_event_lifecycle import (
-            action_event_read_model_status_async,
-            rebuild_action_event_read_model_async,
-        )
         from polylogue.storage.backends.schema import (
             _ACTION_EVENT_DDL,
             _ACTION_FTS_DDL,
@@ -282,7 +272,6 @@ class SQLiteBackend:
             SCHEMA_DDL,
             SCHEMA_VERSION,
         )
-        from polylogue.storage.fts_lifecycle import ACTION_FTS_REBUILD_SQL
 
         cursor = await conn.execute("PRAGMA user_version")
         row = await cursor.fetchone()
@@ -308,35 +297,7 @@ class SQLiteBackend:
                 await conn.execute(
                     "ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1"
                 )
-            action_event_status = await action_event_read_model_status_async(conn)
-            rebuilt_action_events = False
-            has_tool_blocks = bool(
-                await (
-                    await conn.execute(
-                        "SELECT 1 FROM content_blocks WHERE type = 'tool_use' LIMIT 1"
-                    )
-                ).fetchone()
-            )
-            if has_tool_blocks and (
-                int(action_event_status["count"]) == 0 or not bool(action_event_status["matches_version"])
-            ):
-                try:
-                    await rebuild_action_event_read_model_async(conn)
-                    rebuilt_action_events = True
-                except sqlite3.OperationalError as exc:
-                    if "database is locked" not in str(exc).lower():
-                        raise
-                    logger.warning(
-                        "Skipping asynchronous action-event backfill during schema ensure because the database is locked"
-                    )
-            cursor = await conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
-            )
-            action_fts_exists = await cursor.fetchone()
             await conn.executescript(_ACTION_FTS_DDL)
-            if rebuilt_action_events or not action_fts_exists:
-                await conn.execute("DELETE FROM action_events_fts")
-                await conn.execute(ACTION_FTS_REBUILD_SQL)
             await conn.commit()
         else:
             from polylogue.errors import DatabaseError
@@ -441,94 +402,6 @@ class SQLiteBackend:
         """
         return await self.queries.get_conversations_batch(ids)
 
-    async def list_conversations(
-        self,
-        source: str | None = None,
-        provider: str | None = None,
-        providers: list[str] | None = None,
-        parent_id: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        path_terms: list[str] | None = None,
-        action_terms: list[str] | None = None,
-        excluded_action_terms: list[str] | None = None,
-        tool_terms: list[str] | None = None,
-        excluded_tool_terms: list[str] | None = None,
-        limit: int | None = None,
-        offset: int = 0,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-    ) -> list[ConversationRecord]:
-        """List conversations with optional filtering and pagination."""
-        return await self.queries.list_conversations(
-            ConversationRecordQuery(
-                source=source,
-                provider=provider,
-                providers=tuple(providers or ()),
-                parent_id=parent_id,
-                since=since,
-                until=until,
-                title_contains=title_contains,
-                path_terms=tuple(path_terms or ()),
-                action_terms=tuple(action_terms or ()),
-                excluded_action_terms=tuple(excluded_action_terms or ()),
-                tool_terms=tuple(tool_terms or ()),
-                excluded_tool_terms=tuple(excluded_tool_terms or ()),
-                limit=limit,
-                offset=offset,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-            )
-        )
-
-    async def count_conversations(
-        self,
-        source: str | None = None,
-        provider: str | None = None,
-        providers: list[str] | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        path_terms: list[str] | None = None,
-        action_terms: list[str] | None = None,
-        excluded_action_terms: list[str] | None = None,
-        tool_terms: list[str] | None = None,
-        excluded_tool_terms: list[str] | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-    ) -> int:
-        """Count conversations matching filters without loading records."""
-        return await self.queries.count_conversations(
-            ConversationRecordQuery(
-                source=source,
-                provider=provider,
-                providers=tuple(providers or ()),
-                since=since,
-                until=until,
-                title_contains=title_contains,
-                path_terms=tuple(path_terms or ()),
-                action_terms=tuple(action_terms or ()),
-                excluded_action_terms=tuple(excluded_action_terms or ()),
-                tool_terms=tuple(tool_terms or ()),
-                excluded_tool_terms=tuple(excluded_tool_terms or ()),
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-            )
-        )
-
     async def aggregate_message_stats(
         self,
         conversation_ids: list[str] | None = None,
@@ -596,10 +469,6 @@ class SQLiteBackend:
     ) -> dict[str, list[ActionEventRecord]]:
         """Get durable action-event rows for multiple conversations."""
         return await self.queries.get_action_events_batch(conversation_ids)
-
-    async def get_action_event_read_model_status(self) -> dict[str, int | bool]:
-        """Return readiness metadata for the durable action-event read model."""
-        return await self.queries.get_action_event_read_model_status()
 
     async def upsert_conversation_stats(
         self,
@@ -773,10 +642,6 @@ class SQLiteBackend:
     async def get_provider_metrics_rows(self) -> list[dict[str, object]]:
         """Return raw provider aggregation rows for analytics reporting."""
         return await self.queries.get_provider_metrics_rows()
-
-    async def get_latest_run(self) -> RunRecord | None:
-        """Fetch the most recent pipeline run record."""
-        return await self.queries.get_latest_run()
 
     async def close(self) -> None:
         """Close database connections."""

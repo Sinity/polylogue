@@ -429,14 +429,6 @@ SCHEMA_DDL += _ACTION_EVENT_DDL
 SCHEMA_DDL += _ACTION_FTS_DDL
 
 
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
 def _ensure_vec0_table(conn: sqlite3.Connection) -> None:
     with suppress(Exception):
         conn.execute("SELECT vec_version()")
@@ -463,11 +455,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         return
 
     if current_version == SCHEMA_VERSION:
-        from polylogue.storage.action_event_lifecycle import (
-            action_event_read_model_status_sync,
-            rebuild_action_event_read_model_sync,
-        )
-
         conn.executescript(_ARTIFACT_OBSERVATION_DDL)
         conn.executescript(_PUBLICATION_DDL)
         conn.executescript(_ACTION_EVENT_DDL)
@@ -479,32 +466,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1"
             )
-        action_event_status = action_event_read_model_status_sync(conn)
-        rebuilt_action_events = False
-        has_tool_blocks = bool(
-            conn.execute(
-                "SELECT 1 FROM content_blocks WHERE type = 'tool_use' LIMIT 1"
-            ).fetchone()
-        )
-        if has_tool_blocks and (
-            int(action_event_status["count"]) == 0 or not bool(action_event_status["matches_version"])
-        ):
-            try:
-                rebuild_action_event_read_model_sync(conn)
-                rebuilt_action_events = True
-            except sqlite3.OperationalError as exc:
-                if "database is locked" not in str(exc).lower():
-                    raise
-                logger.warning(
-                    "Skipping synchronous action-event backfill during schema ensure because the database is locked"
-                )
-        action_fts_exists = _table_exists(conn, "action_events_fts")
         conn.executescript(_ACTION_FTS_DDL)
-        if rebuilt_action_events or not action_fts_exists:
-            from polylogue.storage.fts_lifecycle import ACTION_FTS_REBUILD_SQL
-
-            conn.execute("DELETE FROM action_events_fts")
-            conn.execute(ACTION_FTS_REBUILD_SQL)
         _ensure_vec0_table(conn)
         conn.commit()
         return

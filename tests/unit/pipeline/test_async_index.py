@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import ConversationRecord, MessageRecord
 
@@ -23,7 +24,7 @@ class TestAsyncEnsureIndex:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
-            await backend.list_conversations()
+            await backend.queries.list_conversations(ConversationRecordQuery())
             await ensure_index(backend)
             status = await index_status(backend)
             assert status["exists"] is True
@@ -35,7 +36,7 @@ class TestAsyncEnsureIndex:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
-            await backend.list_conversations()
+            await backend.queries.list_conversations(ConversationRecordQuery())
             await ensure_index(backend)
             await ensure_index(backend)
             await backend.close()
@@ -164,7 +165,7 @@ class TestAsyncUpdateIndex:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
-            await backend.list_conversations()
+            await backend.queries.list_conversations(ConversationRecordQuery())
             await update_index_for_conversations([], backend)
             await backend.close()
 
@@ -178,7 +179,7 @@ class TestAsyncIndexStatus:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
-            await backend.list_conversations()
+            await backend.queries.list_conversations(ConversationRecordQuery())
             status = await index_status(backend)
             assert status["exists"] is True
             assert status["count"] == 0

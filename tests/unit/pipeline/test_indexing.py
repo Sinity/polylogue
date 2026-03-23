@@ -162,7 +162,9 @@ class TestIndexService:
         )
         service = IndexService(config, backend=sqlite_backend)
 
-        await sqlite_backend.list_conversations()
+        from polylogue.storage.query_models import ConversationRecordQuery
+
+        await sqlite_backend.queries.list_conversations(ConversationRecordQuery())
 
         status = await service.get_index_status()
         assert status["exists"] is True

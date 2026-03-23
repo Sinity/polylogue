@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -11,200 +12,186 @@ from polylogue.types import Provider
 if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation
+    from polylogue.lib.query_execution import ConversationQueryPlan
+
+
+def _extend_tuple(values: tuple[object, ...], additions: tuple[object, ...]) -> tuple[object, ...]:
+    return values + additions
+
+
+def _replace_plan(
+    filter_obj: ConversationFilter,
+    **changes: object,
+) -> ConversationFilter:
+    plan: ConversationQueryPlan = filter_obj._plan
+    filter_obj._plan = replace(plan, **changes)
+    return filter_obj
 
 
 class ConversationFilterBuilderMixin:
-    """Fluent mutators for ConversationFilter."""
+    """Fluent mutators for ConversationFilter backed by the canonical plan."""
 
     def contains(self, text: str) -> ConversationFilter:
-        """Filter to conversations containing text (FTS search)."""
-        self._fts_terms.append(text)
-        return self
+        return _replace_plan(
+            self,
+            contains_terms=_extend_tuple(self._plan.contains_terms, (text,)),
+        )
 
     def exclude_text(self, text: str) -> ConversationFilter:
-        """Exclude conversations containing text."""
-        self._negative_fts_terms.append(text)
-        return self
+        return _replace_plan(
+            self,
+            negative_terms=_extend_tuple(self._plan.negative_terms, (text,)),
+        )
 
     def provider(self, *names: Provider | str) -> ConversationFilter:
-        """Filter to conversations from specific providers."""
-        self._providers.extend(
-            n if isinstance(n, Provider) else Provider.from_string(n) for n in names
+        providers = tuple(
+            name if isinstance(name, Provider) else Provider.from_string(name)
+            for name in names
         )
-        return self
+        return _replace_plan(
+            self,
+            providers=_extend_tuple(self._plan.providers, providers),
+        )
 
     def exclude_provider(self, *names: Provider | str) -> ConversationFilter:
-        """Exclude conversations from specific providers."""
-        self._excluded_providers.extend(
-            n if isinstance(n, Provider) else Provider.from_string(n) for n in names
+        providers = tuple(
+            name if isinstance(name, Provider) else Provider.from_string(name)
+            for name in names
         )
-        return self
+        return _replace_plan(
+            self,
+            excluded_providers=_extend_tuple(self._plan.excluded_providers, providers),
+        )
 
     def tag(self, *tags: str) -> ConversationFilter:
-        """Filter to conversations with specific tags."""
-        self._tags.extend(tags)
-        return self
+        return _replace_plan(
+            self,
+            tags=_extend_tuple(self._plan.tags, tuple(tags)),
+        )
 
     def exclude_tag(self, *tags: str) -> ConversationFilter:
-        """Exclude conversations with specific tags."""
-        self._excluded_tags.extend(tags)
-        return self
+        return _replace_plan(
+            self,
+            excluded_tags=_extend_tuple(self._plan.excluded_tags, tuple(tags)),
+        )
 
     def has(self, *types: str) -> ConversationFilter:
-        """Filter to conversations containing specific content types."""
-        self._has_types.extend(types)
-        return self
+        return _replace_plan(
+            self,
+            has_types=_extend_tuple(self._plan.has_types, tuple(types)),
+        )
 
     def since(self, date: str | datetime) -> ConversationFilter:
-        """Filter to conversations after date."""
-        if isinstance(date, str):
-            parsed = parse_date(date)
-            if parsed is None:
-                msg = f"Cannot parse date: {date!r}"
-                raise ValueError(msg)
-            self._since_date = parsed
-        else:
-            self._since_date = date
-        return self
+        parsed = parse_date(date) if isinstance(date, str) else date
+        if parsed is None:
+            msg = f"Cannot parse date: {date!r}"
+            raise ValueError(msg)
+        return _replace_plan(self, since=parsed)
 
     def until(self, date: str | datetime) -> ConversationFilter:
-        """Filter to conversations before date."""
-        if isinstance(date, str):
-            parsed = parse_date(date)
-            if parsed is None:
-                msg = f"Cannot parse date: {date!r}"
-                raise ValueError(msg)
-            self._until_date = parsed
-        else:
-            self._until_date = date
-        return self
+        parsed = parse_date(date) if isinstance(date, str) else date
+        if parsed is None:
+            msg = f"Cannot parse date: {date!r}"
+            raise ValueError(msg)
+        return _replace_plan(self, until=parsed)
 
     def title(self, pattern: str) -> ConversationFilter:
-        """Filter to conversations with titles containing pattern."""
-        self._title_pattern = pattern
-        return self
+        return _replace_plan(self, title=pattern)
 
     def path(self, pattern: str) -> ConversationFilter:
-        """Filter to conversations that touched a path containing pattern."""
-        self._path_terms.append(pattern)
-        return self
+        return _replace_plan(
+            self,
+            path_terms=_extend_tuple(self._plan.path_terms, (pattern,)),
+        )
 
     def action(self, *types: str) -> ConversationFilter:
-        """Filter to conversations containing semantic action categories."""
-        self._action_terms.extend(types)
-        return self
+        return _replace_plan(
+            self,
+            action_terms=_extend_tuple(self._plan.action_terms, tuple(types)),
+        )
 
     def exclude_action(self, *types: str) -> ConversationFilter:
-        """Exclude conversations containing semantic action categories."""
-        self._excluded_action_terms.extend(types)
-        return self
+        return _replace_plan(
+            self,
+            excluded_action_terms=_extend_tuple(self._plan.excluded_action_terms, tuple(types)),
+        )
 
     def tool(self, *names: str) -> ConversationFilter:
-        """Filter to conversations containing normalized tool names."""
-        self._tool_terms.extend(name.strip().lower() for name in names if name.strip())
-        return self
+        normalized = tuple(name.strip().lower() for name in names if name.strip())
+        return _replace_plan(
+            self,
+            tool_terms=_extend_tuple(self._plan.tool_terms, normalized),
+        )
 
     def exclude_tool(self, *names: str) -> ConversationFilter:
-        """Exclude conversations containing normalized tool names."""
-        self._excluded_tool_terms.extend(name.strip().lower() for name in names if name.strip())
-        return self
+        normalized = tuple(name.strip().lower() for name in names if name.strip())
+        return _replace_plan(
+            self,
+            excluded_tool_terms=_extend_tuple(self._plan.excluded_tool_terms, normalized),
+        )
 
     def id(self, prefix: str) -> ConversationFilter:
-        """Filter to conversations with ID starting with prefix."""
-        self._id_prefix = prefix
-        return self
+        return _replace_plan(self, conversation_id=prefix)
 
     def sort(self, field: SortField) -> ConversationFilter:
-        """Set sort field."""
-        self._sort_field = field
-        return self
+        return _replace_plan(self, sort=field)
 
     def reverse(self) -> ConversationFilter:
-        """Reverse sort order (ascending instead of descending)."""
-        self._sort_reverse = True
-        return self
+        return _replace_plan(self, reverse=True)
 
     def limit(self, n: int) -> ConversationFilter:
-        """Limit number of results."""
-        self._limit_count = n
-        return self
+        return _replace_plan(self, limit=n)
 
     def sample(self, n: int) -> ConversationFilter:
-        """Randomly sample n conversations from results."""
-        self._sample_count = n
-        return self
+        return _replace_plan(self, sample=n)
 
     def similar(self, text: str) -> ConversationFilter:
-        """Rank by semantic similarity to text (requires vector index)."""
-        self._similar_text = text
-        return self
+        return _replace_plan(self, similar_text=text)
 
     def where(self, predicate: Callable[[Conversation], bool]) -> ConversationFilter:
-        """Add custom filter predicate."""
-        self._predicates.append(predicate)
-        return self
+        return _replace_plan(
+            self,
+            predicates=_extend_tuple(self._plan.predicates, (predicate,)),
+        )
 
     def is_continuation(self, value: bool = True) -> ConversationFilter:
-        """Filter to continuation conversations (or exclude them if value=False)."""
-        self._continuation = value
-        return self
+        return _replace_plan(self, continuation=value)
 
     def is_sidechain(self, value: bool = True) -> ConversationFilter:
-        """Filter to sidechain conversations (or exclude them if value=False)."""
-        self._sidechain = value
-        return self
+        return _replace_plan(self, sidechain=value)
 
     def is_root(self, value: bool = True) -> ConversationFilter:
-        """Filter to root conversations (those with no parent)."""
-        self._root = value
-        return self
+        return _replace_plan(self, root=value)
 
     def has_tool_use(self) -> ConversationFilter:
-        """Filter to conversations that contain tool_use or tool_result blocks (SQL pushdown)."""
-        self._filter_has_tool_use = True
-        return self
+        return _replace_plan(self, filter_has_tool_use=True)
 
     def has_thinking(self) -> ConversationFilter:
-        """Filter to conversations that contain thinking blocks (SQL pushdown)."""
-        self._filter_has_thinking = True
-        return self
+        return _replace_plan(self, filter_has_thinking=True)
 
     def min_messages(self, n: int) -> ConversationFilter:
-        """Filter to conversations with at least n messages (SQL pushdown)."""
-        self._min_messages = n
-        return self
+        return _replace_plan(self, min_messages=n)
 
     def max_messages(self, n: int) -> ConversationFilter:
-        """Filter to conversations with at most n messages (SQL pushdown)."""
-        self._max_messages = n
-        return self
+        return _replace_plan(self, max_messages=n)
 
     def min_words(self, n: int) -> ConversationFilter:
-        """Filter to conversations with at least n total words (SQL pushdown)."""
-        self._min_words = n
-        return self
+        return _replace_plan(self, min_words=n)
 
     def has_file_operations(self) -> ConversationFilter:
-        """Filter to conversations containing file read/write/edit actions."""
         return self.action("file_read", "file_write", "file_edit")
 
     def has_git_operations(self) -> ConversationFilter:
-        """Filter to conversations containing git actions."""
         return self.action("git")
 
     def has_subagent_spawns(self) -> ConversationFilter:
-        """Filter to conversations that spawned subagents."""
         return self.action("subagent")
 
     def parent(self, conversation_id: str) -> ConversationFilter:
-        """Filter to conversations that are children of the given parent."""
-        self._parent_id = conversation_id
-        return self
+        return _replace_plan(self, parent_id=conversation_id)
 
     def has_branches(self, value: bool = True) -> ConversationFilter:
-        """Filter to conversations that have branching messages."""
-        self._has_branches = value
-        return self
+        return _replace_plan(self, has_branches=value)
 
 
 __all__ = ["ConversationFilterBuilderMixin"]

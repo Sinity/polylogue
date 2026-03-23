@@ -1,8 +1,8 @@
 # Platform-Wide Architecture And Refactoring Program
 
 Date: 2026-03-23
-Status: active execution program
-Role: canonical repository-wide architecture and refactoring queue after archive-intelligence convergence
+Status: executed implementation record
+Role: canonical record of the repository-wide architecture and refactoring campaign after archive-intelligence convergence
 
 Absorbs and supersedes as the live queue:
 
@@ -33,6 +33,28 @@ Reduce Polylogue’s remaining architectural drag by collapsing wrapper strata,
 quarantining tooling from runtime, narrowing public surfaces, and turning the
 remaining over-wide subsystems into smaller one-way modules with stronger
 verification.
+
+## Execution Record
+
+This campaign is now executed.
+
+It delivered:
+
+- query/filter shell convergence around immutable execution plans rather than
+  a behavior-rich `ConversationFilter`
+- storage/backend narrowing that removed leftover backend read wrappers and
+  moved more business semantics onto repository/query/lifecycle seams
+- shared query construction across CLI and MCP rather than repeated local
+  parameter normalization
+- semantic product consolidation into explicit session-product builders instead
+  of several parallel semantic product modules
+- narrower package-root and synthetic-stack exports that better reflect the
+  actual supported API surface
+- lifecycle/health/repair hardening around the durable action-event read model,
+  including orphan-aware readiness, live repair workflows, and health checks
+- archive-scale dogfooding on the live DB, which also exposed and formalized
+  the remaining orphaned-content-block maintenance debt rather than letting it
+  silently distort readiness status
 
 ## Why This Is The Right Next Campaign
 
