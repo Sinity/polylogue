@@ -95,11 +95,14 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             vector_provider=vector_provider,
         )
     except QuerySpecError as exc:
-        click.echo(f"Error: Cannot parse date: '{exc.value}'", err=True)
-        click.echo(
-            "Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)",
-            err=True,
-        )
+        if exc.field in {"since", "until"}:
+            click.echo(f"Error: Cannot parse date: '{exc.value}'", err=True)
+            click.echo(
+                "Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)",
+                err=True,
+            )
+        else:
+            click.echo(f"Error: invalid {exc.field}: '{exc.value}'", err=True)
         raise SystemExit(1) from exc
 
     route = resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries())
