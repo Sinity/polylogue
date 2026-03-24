@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.lib.query_execution import ConversationQueryPlan
+    from polylogue.lib.query_plan import ConversationQueryPlan
 
 _T = TypeVar("_T")
 
