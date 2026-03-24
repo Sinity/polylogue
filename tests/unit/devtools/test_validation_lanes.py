@@ -176,3 +176,30 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "archive-data-products" in captured.out
         assert "live-products-small" in captured.out
+
+    def test_runtime_substrate_contracts_dry_run_includes_contract_lanes(self, capsys):
+        exit_code = main(["--lane", "runtime-substrate-contracts", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "query-routing" in captured.out
+        assert "semantic-stack" in captured.out
+        assert "maintenance-control-plane" in captured.out
+        assert "archive-data-products" in captured.out
+
+    def test_runtime_substrate_live_dry_run_includes_live_and_budget_lanes(self, capsys):
+        exit_code = main(["--lane", "runtime-substrate-live", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "live-archive-small" in captured.out
+        assert "live-governance-small" in captured.out
+        assert "memory-budget" in captured.out
+
+    def test_runtime_substrate_hardening_dry_run_expands_both_subtrees(self, capsys):
+        exit_code = main(["--lane", "runtime-substrate-hardening", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "runtime-substrate-contracts" in captured.out
+        assert "runtime-substrate-live" in captured.out

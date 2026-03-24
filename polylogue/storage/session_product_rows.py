@@ -24,7 +24,10 @@ def _now_iso() -> str:
 
 
 def _event_id(conversation_id: str, event_index: int, event: WorkEvent) -> str:
-    seed = f"{conversation_id}:{event_index}:{event.kind.value}:{event.start_index}:{event.end_index}:{event.summary}"
+    seed = (
+        f"{conversation_id}:{event_index}:{event.kind.value}:{event.start_index}:"
+        f"{event.end_index}:{_event_summary(event)}"
+    )
     return f"wev-{hash_text(seed)[:16]}"
 
 
@@ -65,13 +68,18 @@ def _event_search_text(profile: SessionProfile, event: WorkEvent) -> str:
         profile.provider,
         profile.title or "",
         event.kind.value,
-        event.summary,
+        _event_summary(event),
         *profile.canonical_projects,
         *event.file_paths,
         *event.tools_used,
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
     return search_text or f"{profile.conversation_id}:{event.kind.value}"
+
+
+def _event_summary(event: WorkEvent) -> str:
+    summary = str(event.summary or "").strip()
+    return summary or event.kind.value
 
 
 def _phase_search_text(profile: SessionProfile, phase: SessionPhase) -> str:
@@ -162,7 +170,7 @@ def build_session_work_event_records(
                 confidence=event.confidence,
                 start_index=event.start_index,
                 end_index=event.end_index,
-                summary=event.summary,
+                summary=_event_summary(event),
                 file_paths=event.file_paths,
                 tools_used=event.tools_used,
                 payload=event.to_dict(),
