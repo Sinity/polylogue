@@ -3,15 +3,83 @@
 # Cleanup And Architectural Debt Retirement Program
 
 Date: 2026-03-24
-Status: planned focused cleanup program
-Role: cleanup-only architectural debt retirement plan adjacent to the live execution queue
+Status: executed focused cleanup program
+Role: cleanup-only architectural debt retirement record
 
-Relationship to the live queue:
+Relationship to the broad queue:
 
-- complements rather than replaces `consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md`
-- narrows scope to internal cleanup, ownership reduction, and debt deletion
-- intentionally excludes new semantic enrichment, new consumer feature families,
-  and product-surface widening except where required to remove debt
+- was executed as the cleanup-only adjacent program while
+  `consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md` remained
+  the broader platform queue
+- is now a completed cleanup record and an input to the replacement broad queue
+- intentionally stayed deletion- and ownership-oriented rather than widening
+  user-facing feature families
+
+## Execution Record
+
+This cleanup wave is executed.
+
+The main codebase changes were:
+
+- query planning/execution split out of the old mixed root into
+  `lib/query_plan.py` and `lib/query_plan_execution.py`, with the old
+  `lib/query_execution.py` deleted
+- semantic runtime breakup into explicit fact, phase, work-event, decision, and
+  session-profile bands, leaving `semantic_facts.py`, `session_profile.py`,
+  `work_events.py`, `phases.py`, and `decisions.py` as small public roots
+- storage/query/lifecycle narrowing for `query_store`, `schema_ddl`,
+  `action_event_lifecycle`, and `async_sqlite`, with domain-specific support
+  modules extracted and broad mixed-role roots reduced materially
+- schema/operator cleanup via shared schema command rendering/support helpers,
+  plus decomposition of `semantic_surface_declarations.py`,
+  `code_detection.py`, `semantic_inference.py`, and `runtime_registry.py`
+- public-root/operator/reporting cleanup via smaller `facade.py`,
+  `qa_report.py`, `qa_runner.py`, and site template-environment split
+- search/runtime cleanup via a narrow public `storage/search.py` over explicit
+  search models, query-support, query-builder, and runtime modules
+
+Representative post-cleanup root sizes after execution:
+
+- `lib/semantic_facts.py` → `53`
+- `lib/session_profile.py` → `16`
+- `lib/work_events.py` → `6`
+- `lib/phases.py` → `6`
+- `lib/decisions.py` → `6`
+- `storage/backends/query_store.py` → `30`
+- `storage/action_event_lifecycle.py` → `25`
+- `rendering/semantic_surface_declarations.py` → `41`
+- `showcase/qa_report.py` → `30`
+- `showcase/qa_runner.py` → `12`
+- `storage/search.py` → `27`
+- `schemas/code_detection.py` → `17`
+- `schemas/semantic_inference.py` → `6`
+- `schemas/runtime_registry.py` → `18`
+
+The remaining large files after this cleanup pass are mostly domain-local dense
+internals or declarative/template-heavy assets, not the earlier cross-layer
+public or mixed-role catch-all roots. Examples:
+
+- `storage/backends/queries/conversations.py`
+- `storage/backends/queries/raw.py`
+- `storage/search_providers/sqlite_vec.py`
+- `showcase/qa_runner.py` no longer carries workflow/report persistence logic
+- `site/templates.py` remains large primarily because of template declarations
+
+Validation and live checks that closed this program:
+
+- `ruff check $(git diff --name-only --diff-filter=d -- '*.py')`
+- focused cleanup regression slices including query/filter/facade, semantic
+  runtime, storage/DDL/backend, schema/operator, search, code detection,
+  semantic inference, QA/reporting, and site/schema integration coverage
+- broad combined regression slice: `896 passed`
+- live memory-budget probe for
+  `python -m polylogue --plain --provider claude-code --since 2026-01-01 --stats-by action --format json --limit 50`
+  stayed at `164.0 MB` peak RSS under the `1536 MB` budget
+- live `check --json --repair --cleanup --preview` succeeded and kept the known
+  archive debt explicit (`15,781` orphaned content blocks, `2,378` orphaned
+  attachments)
+- `journalctl -u earlyoom --since '30 minutes ago'` showed no new kills
+- `git diff --check` passed
 
 Absorbs cleanup residue and extrapolates from:
 

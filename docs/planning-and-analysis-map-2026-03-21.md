@@ -24,8 +24,9 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md](./programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md) | Current execution program for external consumer contract convergence, governed destructive cleanup, stewardship-history products, and live archive governance | Active; this is now the live broad queue after semantic product normalization |
-| [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) | Focused cleanup-only architectural debt retirement plan covering mixed-role file breakup, ownership narrowing, public-root reduction, and deletion of structural overlap | Planned adjacent reference; intentionally not the live queue unless explicitly promoted |
+| [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md) | Current execution program for evidence-tier contracts, inference-tier governance, retrieval/embedding alignment, consumer contract convergence, and live semantic stewardship | Active; this is now the live broad queue after the cleanup-only debt-retirement wave |
+| [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) | Executed cleanup-only architectural debt-retirement record for mixed-role file breakup, ownership narrowing, public-root reduction, and deletion of structural overlap | Executed; high-leverage public roots, semantic runtime bands, search/runtime roots, schema/operator surfaces, and QA/reporting roots were narrowed or deleted |
+| [programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md](./programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md) | Broader consumer/governance predecessor covering durable product contracts, governed destructive cleanup, stewardship history, and live archive governance | Absorbed predecessor; replaced as the live queue by the evidence/stewardship platform campaign |
 | [programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md](./programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md) | Executed convergence program for semantic/session product normalization, operator/toolchain narrowing, schema convergence, and live cleanup governance | Executed; canonical normalization, session-product/toolchain decomposition, archive-debt governance stages, and semantic-product validation lanes are now in place |
 | [programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md](./programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md) | Executed convergence program for domain-model decomposition, repository-read/product-query convergence, external consumer contracts, and live archive stewardship | Executed; domain models, repository reads, session-product query bands, archive-debt governance, provider analytics/debt products, and live stewardship lanes are now in place |
 | [programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md](./programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md) | Executed runtime-substrate campaign for query/runtime decomposition, storage/module narrowing, contract hardening, and validation governance | Executed; query/runtime substrate decomposition, lifecycle/repair/store narrowing, semantic registry narrowing, backend/schema banding, MCP tool split, and named runtime-substrate lanes are now in place |
@@ -55,7 +56,7 @@ These are still important, but they are not the live queue.
 | --- | --- | --- |
 | [programs/canonical-archive-platform-program-2026-03-19.md](./programs/canonical-archive-platform-program-2026-03-19.md) | Broad north-star architecture program | Strategic reference |
 | [programs/refactoring-first-streamlining-program-2026-03-19.md](./programs/refactoring-first-streamlining-program-2026-03-19.md) | Maximal simplification/refactoring reservoir | Strategic reference, much absorbed into the intentional-forward program |
-| [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) | Cleanup-only debt-retirement plan for broad mixed-role modules, ownership overlap, public-root narrowing, and deletion-oriented refactors | Strategic cleanup reference; adjacent to the live queue |
+| [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) | Cleanup-only debt-retirement record for broad mixed-role modules, ownership overlap, public-root narrowing, and deletion-oriented refactors | Executed cleanup reference; now an input to the evidence/stewardship platform campaign |
 | [programs/testing-reliability-expansion-program-2026-03-14.md](./programs/testing-reliability-expansion-program-2026-03-14.md) | Broad testing/showcase/runtime reliability program | Active backlog reservoir, not the live queue |
 | [programs/artifact-and-semantic-proof-program-2026-03-19.md](./programs/artifact-and-semantic-proof-program-2026-03-19.md) | Narrower proof-oriented architecture program | Reference; artifact half executed, semantic-preservation half partly executed |
 | [programs/artifact-and-semantic-proof-commit-plan-2026-03-19.md](./programs/artifact-and-semantic-proof-commit-plan-2026-03-19.md) | Concrete commit decomposition of the proof program | Historical execution slice/reference |
@@ -123,19 +124,20 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md](./programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md)
-- the cleanup-only adjacent plan is [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md)
-- it is intentionally narrower and more deletion-oriented than the live queue:
-  - remove remaining broad mixed-role ownership nodes
-  - separate evidence-tier and inference-tier semantic ownership
-  - narrow storage, lifecycle, schema, operator, and site/rendering roots
-  - retire overlap instead of widening consumer-facing behavior
-- it targets the next broad drag around:
-  - downstream consumers still rebuilding or reshaping archive truth instead of paging durable products directly
-  - destructive cleanup that is previewable and lineage-backed, but not yet fully productized as apply-and-validate stewardship history
-  - stewardship, retrieval, publication, and analytics surfaces that still summarize overlapping archive state in slightly different ways
-  - provider/source refresh actions that are not yet tied tightly enough to the durable stewardship plane
-  - the need for named live lanes around consumer-facing durable-product use and cleanup governance
+- the current live implementation queue is now [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md)
+- the cleanup-only program in [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) is now executed
+- it closed the main structural debt around:
+  - broad query-execution and query-store ownership
+  - broad semantic runtime roots for facts, profiles, phases, work events, and decisions
+  - broad schema/operator roots for code detection, semantic inference, runtime schema authority, and schema command rendering
+  - broad QA/reporting and search/runtime public roots
+  - broad async-backend, lifecycle, facade, and semantic-surface declaration roots
+- the absorbed consumer/governance predecessor remains [programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md](./programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md)
+- the next broad drag is now semantic-contract honesty rather than structural breakup:
+  - explicit evidence vs inferred semantics are still too mixed in durable session products
+  - downstream consumers can still consume heuristic semantics as if they were canonical facts
+  - retrieval and embeddings need a clearer evidence-rich / inference-rich band model
+  - live stewardship should cover semantic-tier migration and readiness, not only archive cleanup debt
 - the just-executed semantic-product campaign in [programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md](./programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md) is now executed
 - it closed the main semantic/toolchain drag around:
   - noisy project/repo canonicalization leaking into durable tag/day/week outputs

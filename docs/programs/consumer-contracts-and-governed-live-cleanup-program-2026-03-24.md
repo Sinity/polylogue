@@ -3,8 +3,8 @@
 # Consumer Contracts And Governed Live Cleanup Program
 
 Date: 2026-03-24
-Status: active execution program
-Role: canonical broad queue after semantic product normalization and toolchain convergence
+Status: absorbed predecessor program
+Role: broader contract/governance predecessor absorbed by the replacement queue
 
 Absorbs and extends as the live queue:
 
