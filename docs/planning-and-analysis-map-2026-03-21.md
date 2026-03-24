@@ -24,7 +24,8 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/archive-data-products-and-live-governance-program-2026-03-24.md](./programs/archive-data-products-and-live-governance-program-2026-03-24.md) | Current execution program for durable semantic/session products, external consumer contracts, cleanup lineage, retrieval/product convergence, and live governance lanes | Active; this is now the live broad queue after the source-boundary/runtime-governance campaign |
+| [programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md](./programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md) | Current execution program for query/runtime substrate decomposition, storage/module narrowing, contract hardening, and validation governance | Active; this is now the live broad queue after the archive-data-products campaign |
+| [programs/archive-data-products-and-live-governance-program-2026-03-24.md](./programs/archive-data-products-and-live-governance-program-2026-03-24.md) | Executed convergence program for durable semantic/session products, external consumer contracts, cleanup lineage, retrieval/product convergence, and live governance lanes | Executed; durable session/work/tag/day/week products, public product contracts, live status lanes, and cleanup preview lineage are now in place |
 | [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md) | Executed convergence program for source/provider boundary cleanup, runtime maintenance governance, derived-model freshness/provenance convergence, publication/runtime narrowing, and live-archive validation | Executed; source traversal split, typed maintenance control plane, publication maintenance summaries, and live governance lanes are now in place |
 | [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) | Executed implementation record for repository-wide architecture reduction, refactoring, module-topology cleanup, semantic-product consolidation, and lifecycle/health/repair hardening | Executed; query/filter shell convergence, backend narrowing, shared query construction, semantic-product consolidation, root narrowing, and live-maintenance hardening are now in place |
 | [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md) | Executed convergence program for action/event semantics, retrieval/FTS/embedding control-plane work, unresolved runtime-state/schema/operator slices, and archive-scale validation | Executed; durable action-event read model, readiness-aware query fallback, retrieval-health surfaces, and archive-intelligence validation lanes are now in place |
@@ -117,7 +118,17 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/archive-data-products-and-live-governance-program-2026-03-24.md](./programs/archive-data-products-and-live-governance-program-2026-03-24.md)
+- the current live implementation queue is now [programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md](./programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md)
+- the just-executed archive-data-products campaign in [programs/archive-data-products-and-live-governance-program-2026-03-24.md](./programs/archive-data-products-and-live-governance-program-2026-03-24.md) closed the broad product/governance gap around:
+  - durable session/work/tag/day/week archive products
+  - public consumer contracts across library, CLI, MCP, and sync surfaces
+  - typed maintenance lineage and machine-readable product status
+  - live archive session-product rebuilds and validation lanes
+  - governed cleanup preview for live orphaned content-block debt
+- the next integrated move is substrate/refactoring heavy:
+  - decompose the remaining broad query, lifecycle, maintenance, backend, schema, and operator modules
+  - harden public contracts so they compose smaller subsystems instead of broad omnibus files
+  - keep memory/live-governance validation attached to those smaller runtime surfaces
 - the source-boundary/runtime-governance campaign in [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md) is now executed
 - it closed the source/runtime-governance drag around:
   - historical `sources/source.py` / `sources/drive_client.py` umbrella ownership
@@ -125,12 +136,6 @@ As of this map:
   - canonical derived-model provenance/freshness reporting across health, publication, and machine output
   - clearer cached-vs-live operator output semantics
   - committed local/live governance lanes for source/provider fidelity and maintenance preview
-- the next integrated move is product/governance heavy:
-  - materialize durable semantic/session products instead of recomputing them ad hoc
-  - converge external consumer contracts around explicit public payloads
-  - make live archive cleanup planning and lineage first-class
-  - let retrieval and embeddings target archive product layers, not only raw messages/actions
-  - extend live governance lanes to those consumer and product surfaces
 - the platform-wide refactoring campaign in [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) is now executed
 - it closed the broad architectural drag around:
   - query/filter shell convergence onto immutable plans
@@ -146,12 +151,6 @@ As of this map:
   - readiness-aware fallback when persisted action semantics are absent or stale
   - freshness/provenance-aware embedding retrieval health
   - named archive-intelligence validation and memory-budget lanes
-- the next integrated move is source/runtime-governance heavy:
-  - finish source/provider/Drive boundary cleanup
-  - converge runtime maintenance and repair into a clearer control plane
-  - unify derived-model provenance/freshness semantics
-  - make cached-vs-live operator output more explicit and uniform
-  - extend live-archive governance lanes around real corruption and maintenance scenarios
 - the semantic-stack convergence program is now executed via [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md)
 - it closed the strongest remaining semantic-cluster drag around:
   - harmonization boundary cleanup around `schemas/unified.py` and `lib/provider_semantics.py`
