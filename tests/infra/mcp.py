@@ -30,6 +30,7 @@ EXPECTED_TOOL_NAMES = {
     "session_profile",
     "session_profiles",
     "session_work_events",
+    "session_phases",
     "session_tag_rollups",
     "work_threads",
     "day_session_summaries",

@@ -38,6 +38,8 @@ def collect_derived_model_statuses_sync(
     session_work_event_count = int(session_product_status["work_event_count"])
     session_work_event_fts_count = int(session_product_status["work_event_fts_count"])
     session_work_event_fts_duplicate_count = int(session_product_status.get("work_event_fts_duplicate_count", 0))
+    expected_phase_count = int(session_product_status["expected_phase_count"])
+    phase_count = int(session_product_status["phase_count"])
     work_thread_count = int(session_product_status["thread_count"])
     work_thread_fts_count = int(session_product_status["thread_fts_count"])
     work_thread_fts_duplicate_count = int(session_product_status.get("thread_fts_duplicate_count", 0))
@@ -177,6 +179,27 @@ def collect_derived_model_statuses_sync(
             materialized_rows=session_work_event_fts_count,
             pending_rows=max(0, session_work_event_count - session_work_event_fts_count),
             stale_rows=session_work_event_fts_duplicate_count,
+        ),
+        "session_phases": DerivedModelStatus(
+            name="session_phases",
+            ready=bool(session_product_status["phases_ready"]),
+            detail=(
+                f"Session phases ready ({phase_count:,}/{expected_phase_count:,} rows)"
+                if bool(session_product_status["phases_ready"])
+                else f"Session phases pending ({phase_count:,}/{expected_phase_count:,} rows)"
+            ),
+            source_documents=session_profile_count,
+            materialized_documents=session_profile_count if session_profile_count else 0,
+            source_rows=expected_phase_count,
+            materialized_rows=phase_count,
+            pending_rows=max(0, expected_phase_count - phase_count),
+            stale_rows=int(session_product_status["stale_phase_count"]),
+            orphan_rows=int(session_product_status["orphan_phase_count"]),
+            materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
+            matches_version=(
+                int(session_product_status["stale_phase_count"]) == 0
+                and int(session_product_status["orphan_phase_count"]) == 0
+            ),
         ),
         "work_threads": DerivedModelStatus(
             name="work_threads",

@@ -412,6 +412,10 @@ def _register_profile_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def session_profiles(
         since: str | None = None,
         until: str | None = None,
+        first_message_since: str | None = None,
+        first_message_until: str | None = None,
+        session_date_since: str | None = None,
+        session_date_until: str | None = None,
         provider: str | None = None,
         query: str | None = None,
         limit: int = 50,
@@ -425,6 +429,10 @@ def _register_profile_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     provider=provider,
                     since=since,
                     until=until,
+                    first_message_since=first_message_since,
+                    first_message_until=first_message_until,
+                    session_date_since=session_date_since,
+                    session_date_until=session_date_until,
                     query=query,
                     limit=hooks.clamp_limit(limit),
                     offset=max(0, int(offset)),
@@ -480,6 +488,44 @@ def _register_profile_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return await hooks.async_safe_call("session_work_events", _run)
+
+    @mcp.tool()
+    async def session_phases(
+        conversation_id: str | None = None,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        kind: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> str:
+        async def _run() -> str:
+            from polylogue.archive_products import SessionPhaseProductQuery
+
+            ops = hooks.get_archive_ops()
+            if conversation_id:
+                products = await ops.get_session_phase_products(conversation_id)
+            else:
+                products = await ops.list_session_phase_products(
+                    SessionPhaseProductQuery(
+                        provider=provider,
+                        since=since,
+                        until=until,
+                        kind=kind,
+                        limit=hooks.clamp_limit(limit),
+                        offset=max(0, int(offset)),
+                    )
+                )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [product.model_dump(mode="json") for product in products],
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("session_phases", _run)
 
     @mcp.tool()
     async def session_tag_rollups(

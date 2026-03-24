@@ -24,6 +24,7 @@ from polylogue.storage.backends.queries.mappers import (
 )
 from polylogue.storage.backends.queries.session_products import (
     replace_day_session_summaries,
+    replace_session_phases,
     replace_session_profile,
     replace_session_tag_rollup_rows,
     replace_session_work_events,
@@ -52,6 +53,7 @@ _SESSION_PROFILES_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table
 _SESSION_PROFILES_FTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles_fts'"
 _SESSION_WORK_EVENTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events'"
 _SESSION_WORK_EVENTS_FTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events_fts'"
+_SESSION_PHASES_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_phases'"
 _WORK_THREADS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='work_threads'"
 _WORK_THREADS_FTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='work_threads_fts'"
 _SESSION_TAG_ROLLUPS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_tag_rollups'"
@@ -62,6 +64,7 @@ _SESSION_PROFILE_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT con
 _SESSION_WORK_EVENT_COUNT_SQL = "SELECT COUNT(*) FROM session_work_events"
 _SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT event_id) FROM session_work_events_fts"
 _SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts"
+_SESSION_PHASE_COUNT_SQL = "SELECT COUNT(*) FROM session_phases"
 _WORK_THREAD_COUNT_SQL = "SELECT COUNT(*) FROM work_threads"
 _WORK_THREAD_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT thread_id) FROM work_threads_fts"
 _WORK_THREAD_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT thread_id) FROM work_threads_fts"
@@ -80,7 +83,10 @@ _MISSING_SESSION_PROFILE_COUNT_SQL = """
     LEFT JOIN session_profiles sp ON sp.conversation_id = c.conversation_id
     WHERE sp.conversation_id IS NULL
 """
-_PROFILE_BUCKET_DAY_SQL = "date(COALESCE(sp.first_message_at, json_extract(sp.payload_json, '$.created_at'), sp.source_updated_at, sp.last_message_at))"
+_PROFILE_BUCKET_DAY_SQL = (
+    "COALESCE(sp.canonical_session_date, "
+    "date(COALESCE(sp.first_message_at, json_extract(sp.payload_json, '$.created_at'), sp.source_updated_at, sp.last_message_at)))"
+)
 _STALE_SESSION_PROFILE_COUNT_SQL = """
     SELECT COUNT(*)
     FROM conversations c
@@ -95,6 +101,7 @@ _ORPHAN_SESSION_PROFILE_COUNT_SQL = """
     WHERE c.conversation_id IS NULL
 """
 _EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
+_EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
 _STALE_WORK_EVENT_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_work_events swe
@@ -106,6 +113,19 @@ _ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_work_events swe
     LEFT JOIN conversations c ON c.conversation_id = swe.conversation_id
+    WHERE c.conversation_id IS NULL
+"""
+_STALE_SESSION_PHASE_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM session_phases sph
+    JOIN conversations c ON c.conversation_id = sph.conversation_id
+    WHERE sph.materializer_version != ?
+       OR ABS(COALESCE(sph.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+"""
+_ORPHAN_SESSION_PHASE_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM session_phases sph
+    LEFT JOIN conversations c ON c.conversation_id = sph.conversation_id
     WHERE c.conversation_id IS NULL
 """
 _STALE_WORK_THREAD_COUNT_SQL = """
@@ -430,6 +450,7 @@ def _replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfi
             title,
             first_message_at,
             last_message_at,
+            canonical_session_date,
             primary_work_kind,
             repo_paths_json,
             canonical_projects_json,
@@ -437,15 +458,17 @@ def _replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfi
             auto_tags_json,
             message_count,
             work_event_count,
+            phase_count,
             word_count,
             tool_use_count,
             thinking_count,
             total_cost_usd,
             total_duration_ms,
+            engaged_duration_ms,
             wall_duration_ms,
             payload_json,
             search_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.conversation_id,
@@ -457,6 +480,7 @@ def _replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfi
             record.title,
             record.first_message_at,
             record.last_message_at,
+            record.canonical_session_date,
             record.primary_work_kind,
             _json_array_or_none(record.repo_paths),
             _json_array_or_none(record.canonical_projects),
@@ -464,11 +488,13 @@ def _replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfi
             _json_array_or_none(record.auto_tags),
             record.message_count,
             record.work_event_count,
+            record.phase_count,
             record.word_count,
             record.tool_use_count,
             record.thinking_count,
             record.total_cost_usd,
             record.total_duration_ms,
+            record.engaged_duration_ms,
             record.wall_duration_ms,
             _json_or_none(record.payload),
             record.search_text,
@@ -498,12 +524,16 @@ def _replace_session_work_events_sync(
                 confidence,
                 start_index,
                 end_index,
+                start_time,
+                end_time,
+                duration_ms,
+                canonical_session_date,
                 summary,
                 file_paths_json,
                 tools_used_json,
                 payload_json,
                 search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -519,9 +549,71 @@ def _replace_session_work_events_sync(
                     record.confidence,
                     record.start_index,
                     record.end_index,
+                    record.start_time,
+                    record.end_time,
+                    record.duration_ms,
+                    record.canonical_session_date,
                     record.summary,
                     _json_array_or_none(record.file_paths),
                     _json_array_or_none(record.tools_used),
+                    _json_or_none(record.payload),
+                    record.search_text,
+                )
+                for record in records
+            ],
+        )
+
+
+def _replace_session_phases_sync(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    records: Sequence[object],
+) -> None:
+    conn.execute("DELETE FROM session_phases WHERE conversation_id = ?", (conversation_id,))
+    if records:
+        conn.executemany(
+            """
+            INSERT INTO session_phases (
+                phase_id,
+                conversation_id,
+                materializer_version,
+                materialized_at,
+                source_updated_at,
+                source_sort_key,
+                provider_name,
+                phase_index,
+                kind,
+                start_index,
+                end_index,
+                start_time,
+                end_time,
+                duration_ms,
+                canonical_session_date,
+                tool_counts_json,
+                word_count,
+                payload_json,
+                search_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    record.phase_id,
+                    record.conversation_id,
+                    record.materializer_version,
+                    record.materialized_at,
+                    record.source_updated_at,
+                    record.source_sort_key,
+                    record.provider_name,
+                    record.phase_index,
+                    record.kind,
+                    record.start_index,
+                    record.end_index,
+                    record.start_time,
+                    record.end_time,
+                    record.duration_ms,
+                    record.canonical_session_date,
+                    _json_or_none(record.tool_counts),
+                    record.word_count,
                     _json_or_none(record.payload),
                     record.search_text,
                 )
@@ -792,6 +884,8 @@ async def _refresh_async_provider_day_aggregates(
 def _profile_provider_day(record: SessionProfileRecord | None) -> tuple[str, str] | None:
     if record is None:
         return None
+    if record.canonical_session_date:
+        return (record.provider_name, record.canonical_session_date)
     day_candidates = [
         record.first_message_at,
         str(record.payload.get("created_at")) if isinstance(record.payload, dict) and record.payload.get("created_at") else None,
@@ -855,6 +949,7 @@ def session_product_status_sync(conn: sqlite3.Connection) -> dict[str, int | boo
     session_profiles_fts_exists = bool(conn.execute(_SESSION_PROFILES_FTS_EXISTS_SQL).fetchone())
     session_work_events_exists = bool(conn.execute(_SESSION_WORK_EVENTS_EXISTS_SQL).fetchone())
     session_work_events_fts_exists = bool(conn.execute(_SESSION_WORK_EVENTS_FTS_EXISTS_SQL).fetchone())
+    session_phases_exists = bool(conn.execute(_SESSION_PHASES_EXISTS_SQL).fetchone())
     work_threads_exists = bool(conn.execute(_WORK_THREADS_EXISTS_SQL).fetchone())
     work_threads_fts_exists = bool(conn.execute(_WORK_THREADS_FTS_EXISTS_SQL).fetchone())
     session_tag_rollups_exists = bool(conn.execute(_SESSION_TAG_ROLLUPS_EXISTS_SQL).fetchone())
@@ -874,6 +969,7 @@ def session_product_status_sync(conn: sqlite3.Connection) -> dict[str, int | boo
     work_event_fts_duplicate_count = int(
         conn.execute(_SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL).fetchone()[0] or 0
     ) if session_work_events_fts_exists else 0
+    phase_count = int(conn.execute(_SESSION_PHASE_COUNT_SQL).fetchone()[0] or 0) if session_phases_exists else 0
     thread_count = int(conn.execute(_WORK_THREAD_COUNT_SQL).fetchone()[0] or 0) if work_threads_exists else 0
     thread_fts_count = int(conn.execute(_WORK_THREAD_FTS_DOC_COUNT_SQL).fetchone()[0] or 0) if work_threads_fts_exists else 0
     thread_fts_duplicate_count = int(
@@ -887,10 +983,15 @@ def session_product_status_sync(conn: sqlite3.Connection) -> dict[str, int | boo
     ) if session_profiles_exists else total_conversations
     orphan_profile_count = int(conn.execute(_ORPHAN_SESSION_PROFILE_COUNT_SQL).fetchone()[0] or 0) if session_profiles_exists else 0
     expected_work_event_count = int(conn.execute(_EXPECTED_WORK_EVENT_COUNT_SQL).fetchone()[0] or 0) if session_profiles_exists else 0
+    expected_phase_count = int(conn.execute(_EXPECTED_PHASE_COUNT_SQL).fetchone()[0] or 0) if session_profiles_exists else 0
     stale_work_event_count = int(
         conn.execute(_STALE_WORK_EVENT_COUNT_SQL, (SESSION_PRODUCT_MATERIALIZER_VERSION,)).fetchone()[0] or 0
     ) if session_work_events_exists else expected_work_event_count
     orphan_work_event_count = int(conn.execute(_ORPHAN_SESSION_WORK_EVENT_COUNT_SQL).fetchone()[0] or 0) if session_work_events_exists else 0
+    stale_phase_count = int(
+        conn.execute(_STALE_SESSION_PHASE_COUNT_SQL, (SESSION_PRODUCT_MATERIALIZER_VERSION,)).fetchone()[0] or 0
+    ) if session_phases_exists else expected_phase_count
+    orphan_phase_count = int(conn.execute(_ORPHAN_SESSION_PHASE_COUNT_SQL).fetchone()[0] or 0) if session_phases_exists else 0
     stale_thread_count = int(
         conn.execute(_STALE_WORK_THREAD_COUNT_SQL, (SESSION_PRODUCT_MATERIALIZER_VERSION,)).fetchone()[0] or 0
     ) if work_threads_exists else root_threads
@@ -916,6 +1017,7 @@ def session_product_status_sync(conn: sqlite3.Connection) -> dict[str, int | boo
         "work_event_count": work_event_count,
         "work_event_fts_count": work_event_fts_count,
         "work_event_fts_duplicate_count": work_event_fts_duplicate_count,
+        "phase_count": phase_count,
         "thread_count": thread_count,
         "thread_fts_count": thread_fts_count,
         "thread_fts_duplicate_count": thread_fts_duplicate_count,
@@ -927,6 +1029,9 @@ def session_product_status_sync(conn: sqlite3.Connection) -> dict[str, int | boo
         "expected_work_event_count": expected_work_event_count,
         "stale_work_event_count": stale_work_event_count,
         "orphan_work_event_count": orphan_work_event_count,
+        "expected_phase_count": expected_phase_count,
+        "stale_phase_count": stale_phase_count,
+        "orphan_phase_count": orphan_phase_count,
         "stale_thread_count": stale_thread_count,
         "orphan_thread_count": orphan_thread_count,
         "expected_tag_rollup_count": expected_tag_rollup_count,
@@ -937,6 +1042,7 @@ def session_product_status_sync(conn: sqlite3.Connection) -> dict[str, int | boo
         "profiles_fts_ready": session_profiles_fts_exists and profile_fts_count == profile_count and profile_fts_duplicate_count == 0,
         "work_events_ready": session_work_events_exists and work_event_count == expected_work_event_count and stale_work_event_count == 0 and orphan_work_event_count == 0,
         "work_events_fts_ready": session_work_events_fts_exists and work_event_fts_count == work_event_count and work_event_fts_duplicate_count == 0,
+        "phases_ready": session_phases_exists and phase_count == expected_phase_count and stale_phase_count == 0 and orphan_phase_count == 0,
         "threads_ready": work_threads_exists and thread_count == root_threads and stale_thread_count == 0 and orphan_thread_count == 0,
         "threads_fts_ready": work_threads_fts_exists and thread_fts_count == thread_count and thread_fts_duplicate_count == 0,
         "tag_rollups_ready": session_tag_rollups_exists and tag_rollup_count == expected_tag_rollup_count and stale_tag_rollup_count == 0,
@@ -953,6 +1059,7 @@ async def session_product_status_async(conn: aiosqlite.Connection) -> dict[str, 
     session_profiles_fts_exists = bool(await (await conn.execute(_SESSION_PROFILES_FTS_EXISTS_SQL)).fetchone())
     session_work_events_exists = bool(await (await conn.execute(_SESSION_WORK_EVENTS_EXISTS_SQL)).fetchone())
     session_work_events_fts_exists = bool(await (await conn.execute(_SESSION_WORK_EVENTS_FTS_EXISTS_SQL)).fetchone())
+    session_phases_exists = bool(await (await conn.execute(_SESSION_PHASES_EXISTS_SQL)).fetchone())
     work_threads_exists = bool(await (await conn.execute(_WORK_THREADS_EXISTS_SQL)).fetchone())
     work_threads_fts_exists = bool(await (await conn.execute(_WORK_THREADS_FTS_EXISTS_SQL)).fetchone())
     session_tag_rollups_exists = bool(await (await conn.execute(_SESSION_TAG_ROLLUPS_EXISTS_SQL)).fetchone())
@@ -971,6 +1078,7 @@ async def session_product_status_async(conn: aiosqlite.Connection) -> dict[str, 
     work_event_fts_duplicate_count = _to_int(
         await (await conn.execute(_SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL)).fetchone()
     ) if session_work_events_fts_exists else 0
+    phase_count = _to_int(await (await conn.execute(_SESSION_PHASE_COUNT_SQL)).fetchone()) if session_phases_exists else 0
     thread_count = _to_int(await (await conn.execute(_WORK_THREAD_COUNT_SQL)).fetchone()) if work_threads_exists else 0
     thread_fts_count = _to_int(await (await conn.execute(_WORK_THREAD_FTS_DOC_COUNT_SQL)).fetchone()) if work_threads_fts_exists else 0
     thread_fts_duplicate_count = _to_int(
@@ -984,10 +1092,15 @@ async def session_product_status_async(conn: aiosqlite.Connection) -> dict[str, 
     ) if session_profiles_exists else total_conversations
     orphan_profile_count = _to_int(await (await conn.execute(_ORPHAN_SESSION_PROFILE_COUNT_SQL)).fetchone()) if session_profiles_exists else 0
     expected_work_event_count = _to_int(await (await conn.execute(_EXPECTED_WORK_EVENT_COUNT_SQL)).fetchone()) if session_profiles_exists else 0
+    expected_phase_count = _to_int(await (await conn.execute(_EXPECTED_PHASE_COUNT_SQL)).fetchone()) if session_profiles_exists else 0
     stale_work_event_count = _to_int(
         await (await conn.execute(_STALE_WORK_EVENT_COUNT_SQL, (SESSION_PRODUCT_MATERIALIZER_VERSION,))).fetchone()
     ) if session_work_events_exists else expected_work_event_count
     orphan_work_event_count = _to_int(await (await conn.execute(_ORPHAN_SESSION_WORK_EVENT_COUNT_SQL)).fetchone()) if session_work_events_exists else 0
+    stale_phase_count = _to_int(
+        await (await conn.execute(_STALE_SESSION_PHASE_COUNT_SQL, (SESSION_PRODUCT_MATERIALIZER_VERSION,))).fetchone()
+    ) if session_phases_exists else expected_phase_count
+    orphan_phase_count = _to_int(await (await conn.execute(_ORPHAN_SESSION_PHASE_COUNT_SQL)).fetchone()) if session_phases_exists else 0
     stale_thread_count = _to_int(
         await (await conn.execute(_STALE_WORK_THREAD_COUNT_SQL, (SESSION_PRODUCT_MATERIALIZER_VERSION,))).fetchone()
     ) if work_threads_exists else root_threads
@@ -1009,6 +1122,7 @@ async def session_product_status_async(conn: aiosqlite.Connection) -> dict[str, 
         "work_event_count": work_event_count,
         "work_event_fts_count": work_event_fts_count,
         "work_event_fts_duplicate_count": work_event_fts_duplicate_count,
+        "phase_count": phase_count,
         "thread_count": thread_count,
         "thread_fts_count": thread_fts_count,
         "thread_fts_duplicate_count": thread_fts_duplicate_count,
@@ -1020,6 +1134,9 @@ async def session_product_status_async(conn: aiosqlite.Connection) -> dict[str, 
         "expected_work_event_count": expected_work_event_count,
         "stale_work_event_count": stale_work_event_count,
         "orphan_work_event_count": orphan_work_event_count,
+        "expected_phase_count": expected_phase_count,
+        "stale_phase_count": stale_phase_count,
+        "orphan_phase_count": orphan_phase_count,
         "stale_thread_count": stale_thread_count,
         "orphan_thread_count": orphan_thread_count,
         "expected_tag_rollup_count": expected_tag_rollup_count,
@@ -1030,6 +1147,7 @@ async def session_product_status_async(conn: aiosqlite.Connection) -> dict[str, 
         "profiles_fts_ready": session_profiles_fts_exists and profile_fts_count == profile_count and profile_fts_duplicate_count == 0,
         "work_events_ready": session_work_events_exists and work_event_count == expected_work_event_count and stale_work_event_count == 0 and orphan_work_event_count == 0,
         "work_events_fts_ready": session_work_events_fts_exists and work_event_fts_count == work_event_count and work_event_fts_duplicate_count == 0,
+        "phases_ready": session_phases_exists and phase_count == expected_phase_count and stale_phase_count == 0 and orphan_phase_count == 0,
         "threads_ready": work_threads_exists and thread_count == root_threads and stale_thread_count == 0 and orphan_thread_count == 0,
         "threads_fts_ready": work_threads_fts_exists and thread_fts_count == thread_count and thread_fts_duplicate_count == 0,
         "tag_rollups_ready": session_tag_rollups_exists and tag_rollup_count == expected_tag_rollup_count and stale_tag_rollup_count == 0,
@@ -1046,27 +1164,32 @@ def rebuild_session_products_sync(
 ) -> dict[str, int]:
     if conversation_ids is None:
         conn.execute("DELETE FROM session_work_events")
+        conn.execute("DELETE FROM session_phases")
         conn.execute("DELETE FROM session_profiles")
         conn.execute("DELETE FROM session_tag_rollups")
         conn.execute("DELETE FROM day_session_summaries")
         conversation_ids = [str(row["conversation_id"]) for row in conn.execute(_ALL_CONVERSATION_IDS_SQL).fetchall()]
     if not conversation_ids:
         conn.execute("DELETE FROM work_threads")
+        conn.execute("DELETE FROM session_phases")
         conn.execute("DELETE FROM session_tag_rollups")
         conn.execute("DELETE FROM day_session_summaries")
         conn.commit()
-        return {"profiles": 0, "work_events": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
+        return {"profiles": 0, "work_events": 0, "phases": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
 
     profile_count = 0
     work_event_count = 0
+    phase_count = 0
     for chunk in _chunked(list(conversation_ids), size=page_size):
         conversations, messages, attachments, blocks = _load_sync_batch(conn, chunk)
         for conversation in _hydrate_conversations(conversations, messages, attachments, blocks):
-            profile_record, event_records = build_session_product_records(conversation)
+            profile_record, event_records, phase_records = build_session_product_records(conversation)
             _replace_session_profile_sync(conn, profile_record)
             _replace_session_work_events_sync(conn, profile_record.conversation_id, event_records)
+            _replace_session_phases_sync(conn, profile_record.conversation_id, phase_records)
             profile_count += 1
             work_event_count += len(event_records)
+            phase_count += len(phase_records)
 
     conn.execute("DELETE FROM work_threads")
     thread_records = _build_all_thread_records_sync(conn)
@@ -1105,6 +1228,7 @@ def rebuild_session_products_sync(
     return {
         "profiles": profile_count,
         "work_events": work_event_count,
+        "phases": phase_count,
         "threads": len(thread_records),
         "tag_rollups": len(tag_rows),
         "day_summaries": len(day_rows),
@@ -1120,6 +1244,7 @@ async def rebuild_session_products_async(
 ) -> dict[str, int]:
     if conversation_ids is None:
         await conn.execute("DELETE FROM session_work_events")
+        await conn.execute("DELETE FROM session_phases")
         await conn.execute("DELETE FROM session_profiles")
         await conn.execute("DELETE FROM session_tag_rollups")
         await conn.execute("DELETE FROM day_session_summaries")
@@ -1127,20 +1252,24 @@ async def rebuild_session_products_async(
         conversation_ids = [str(row["conversation_id"]) for row in rows]
     if not conversation_ids:
         await conn.execute("DELETE FROM work_threads")
+        await conn.execute("DELETE FROM session_phases")
         await conn.execute("DELETE FROM session_tag_rollups")
         await conn.execute("DELETE FROM day_session_summaries")
-        return {"profiles": 0, "work_events": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
+        return {"profiles": 0, "work_events": 0, "phases": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
 
     profile_count = 0
     work_event_count = 0
+    phase_count = 0
     for chunk in _chunked(list(conversation_ids), size=page_size):
         conversations, messages, attachments, blocks = await _load_async_batch(conn, chunk)
         for conversation in _hydrate_conversations(conversations, messages, attachments, blocks):
-            profile_record, event_records = build_session_product_records(conversation)
+            profile_record, event_records, phase_records = build_session_product_records(conversation)
             await replace_session_profile(conn, profile_record, transaction_depth)
             await replace_session_work_events(conn, profile_record.conversation_id, event_records, transaction_depth)
+            await replace_session_phases(conn, profile_record.conversation_id, phase_records, transaction_depth)
             profile_count += 1
             work_event_count += len(event_records)
+            phase_count += len(phase_records)
 
     await conn.execute("DELETE FROM work_threads")
     thread_records = await _build_all_thread_records_async(conn)
@@ -1179,6 +1308,7 @@ async def rebuild_session_products_async(
     return {
         "profiles": profile_count,
         "work_events": work_event_count,
+        "phases": phase_count,
         "threads": len(thread_records),
         "tag_rollups": len(tag_rows),
         "day_summaries": len(day_rows),
@@ -1261,14 +1391,16 @@ async def refresh_session_products_for_conversation_async(
     if not hydrated:
         await conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", (conversation_id,))
         await replace_session_work_events(conn, conversation_id, [], transaction_depth)
+        await replace_session_phases(conn, conversation_id, [], transaction_depth)
         old_group = _profile_provider_day(_row_to_session_profile_record(old_profile_record)) if old_profile_record else None
         if old_group is not None:
             await _refresh_async_provider_day_aggregates(conn, {old_group}, transaction_depth=transaction_depth)
-        return {"profiles": 0, "work_events": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
+        return {"profiles": 0, "work_events": 0, "phases": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
 
-    profile_record, event_records = build_session_product_records(hydrated[0])
+    profile_record, event_records, phase_records = build_session_product_records(hydrated[0])
     await replace_session_profile(conn, profile_record, transaction_depth)
     await replace_session_work_events(conn, conversation_id, event_records, transaction_depth)
+    await replace_session_phases(conn, conversation_id, phase_records, transaction_depth)
 
     root_id = await thread_root_id_async(conn, conversation_id)
     thread_count = 0
@@ -1293,6 +1425,7 @@ async def refresh_session_products_for_conversation_async(
     return {
         "profiles": 1,
         "work_events": len(event_records),
+        "phases": len(phase_records),
         "threads": thread_count,
         "tag_rollups": len(affected_groups),
         "day_summaries": len(affected_groups),
@@ -1329,6 +1462,7 @@ async def delete_session_products_for_conversation_async(
     old_group = _profile_provider_day(_row_to_session_profile_record(row)) if row else None
     await conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", (conversation_id,))
     await replace_session_work_events(conn, conversation_id, [], transaction_depth)
+    await replace_session_phases(conn, conversation_id, [], transaction_depth)
     if old_group is not None:
         provider_name, bucket_day = old_group
         await conn.execute(
@@ -1343,6 +1477,7 @@ async def delete_session_products_for_conversation_async(
     return {
         "profiles": 1 if row is not None else 0,
         "work_events": 0,
+        "phases": 0,
         "threads": 0,
         "tag_rollups": 1 if old_group is not None else 0,
         "day_summaries": 1 if old_group is not None else 0,

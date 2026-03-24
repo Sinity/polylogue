@@ -34,11 +34,17 @@ def _seed_products(cli_workspace) -> None:
         .title("Root Thread")
         .created_at("2026-03-01T10:00:00+00:00")
         .updated_at("2026-03-01T10:10:00+00:00")
-        .add_message("u1", role="user", text="Plan the refactor and inspect README")
+        .add_message(
+            "u1",
+            role="user",
+            text="Plan the refactor and inspect README",
+            timestamp="2026-03-01T10:00:00+00:00",
+        )
         .add_message(
             "a1",
             role="assistant",
             text="Inspecting and editing files",
+            timestamp="2026-03-01T10:05:00+00:00",
             provider_meta={
                 "content_blocks": [
                     {
@@ -66,11 +72,17 @@ def _seed_products(cli_workspace) -> None:
         .branch_type("continuation")
         .created_at("2026-03-01T11:00:00+00:00")
         .updated_at("2026-03-01T11:05:00+00:00")
-        .add_message("u2", role="user", text="Run tests for the refactor")
+        .add_message(
+            "u2",
+            role="user",
+            text="Run tests for the refactor",
+            timestamp="2026-03-01T11:00:00+00:00",
+        )
         .add_message(
             "a2",
             role="assistant",
             text="Running pytest",
+            timestamp="2026-03-01T11:04:00+00:00",
             provider_meta={
                 "content_blocks": [
                     {
@@ -123,8 +135,39 @@ def test_products_profiles_json(cli_workspace):
     first = payload["session_profiles"][0]
     assert first["contract_version"] == 1
     assert first["product_kind"] == "session_profile"
+    assert first["canonical_session_date"] == "2026-03-01"
+    assert first["engaged_duration_ms"] >= 0
     assert "profile" in first
     assert "provenance" in first
+
+
+def test_products_profile_date_filters_and_phases_json(cli_workspace):
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    profiles = runner.invoke(
+        cli,
+        [
+            "products",
+            "profiles",
+            "--session-date-since",
+            "2026-03-01",
+            "--session-date-until",
+            "2026-03-01",
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    phases = runner.invoke(cli, ["products", "phases", "--json"], catch_exceptions=False)
+
+    assert profiles.exit_code == 0
+    assert phases.exit_code == 0
+
+    profile_payload = _extract_json(profiles.output)
+    phase_payload = _extract_json(phases.output)
+    assert profile_payload["count"] == 2
+    assert phase_payload["count"] >= 1
+    assert phase_payload["session_phases"][0]["product_kind"] == "session_phase"
 
 
 def test_products_threads_and_status_json(cli_workspace):
@@ -143,8 +186,10 @@ def test_products_threads_and_status_json(cli_workspace):
     assert threads_payload["work_threads"][0]["product_kind"] == "work_thread"
     assert status_payload["session_products"]["stale_profile_count"] == 0
     assert status_payload["session_products"]["stale_work_event_count"] == 0
+    assert status_payload["session_products"]["stale_phase_count"] == 0
     assert status_payload["session_products"]["profile_fts_duplicate_count"] == 0
     assert status_payload["session_products"]["profiles_ready"] is True
+    assert status_payload["session_products"]["phases_ready"] is True
     assert status_payload["session_products"]["threads_ready"] is True
     assert status_payload["session_products"]["tag_rollups_ready"] is True
     assert status_payload["session_products"]["day_summaries_ready"] is True
@@ -220,8 +265,10 @@ def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli
     assert status["profile_count"] == 1
     assert status["stale_profile_count"] == 0
     assert status["stale_work_event_count"] == 0
+    assert status["stale_phase_count"] == 0
     assert status["profiles_ready"] is True
     assert status["work_events_ready"] is True
+    assert status["phases_ready"] is True
     assert status["profile_fts_duplicate_count"] == 0
 
 

@@ -363,6 +363,10 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
             "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
             ("conv-delete",),
         ).fetchone()[0] > 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] > 0
         assert conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0] >= 1
 
@@ -383,6 +387,10 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
         ).fetchone()[0] == 0
         assert conn.execute(
             "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
             ("conv-delete",),
         ).fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0] == 0

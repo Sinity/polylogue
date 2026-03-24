@@ -401,6 +401,7 @@ class SessionProfileRecord(BaseModel):
     title: str | None = None
     first_message_at: str | None = None
     last_message_at: str | None = None
+    canonical_session_date: str | None = None
     primary_work_kind: str | None = None
     repo_paths: tuple[str, ...] = ()
     canonical_projects: tuple[str, ...] = ()
@@ -408,11 +409,13 @@ class SessionProfileRecord(BaseModel):
     auto_tags: tuple[str, ...] = ()
     message_count: int = 0
     work_event_count: int = 0
+    phase_count: int = 0
     word_count: int = 0
     tool_use_count: int = 0
     thinking_count: int = 0
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
+    engaged_duration_ms: int = 0
     wall_duration_ms: int = 0
     payload: dict[str, Any]
     search_text: str
@@ -440,6 +443,10 @@ class SessionWorkEventRecord(BaseModel):
     confidence: float
     start_index: int
     end_index: int
+    start_time: str | None = None
+    end_time: str | None = None
+    duration_ms: int = 0
+    canonical_session_date: str | None = None
     summary: str
     file_paths: tuple[str, ...] = ()
     tools_used: tuple[str, ...] = ()
@@ -457,6 +464,44 @@ class SessionWorkEventRecord(BaseModel):
     )
     @classmethod
     def work_event_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+
+class SessionPhaseRecord(BaseModel):
+    """Durable canonical session-phase row."""
+
+    phase_id: str
+    conversation_id: ConversationId
+    materializer_version: int = SESSION_PRODUCT_MATERIALIZER_VERSION
+    materialized_at: str
+    source_updated_at: str | None = None
+    source_sort_key: float | None = None
+    provider_name: str
+    phase_index: int
+    kind: str
+    start_index: int
+    end_index: int
+    start_time: str | None = None
+    end_time: str | None = None
+    duration_ms: int = 0
+    canonical_session_date: str | None = None
+    tool_counts: dict[str, int]
+    word_count: int = 0
+    payload: dict[str, Any]
+    search_text: str
+
+    @field_validator(
+        "phase_id",
+        "conversation_id",
+        "materialized_at",
+        "provider_name",
+        "kind",
+        "search_text",
+    )
+    @classmethod
+    def session_phase_non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("Field cannot be empty")
         return v

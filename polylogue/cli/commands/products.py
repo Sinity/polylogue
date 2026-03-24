@@ -7,8 +7,9 @@ import click
 from polylogue.archive_products import (
     DaySessionSummaryProductQuery,
     MaintenanceRunProductQuery,
-    SessionTagRollupQuery,
+    SessionPhaseProductQuery,
     SessionProfileProductQuery,
+    SessionTagRollupQuery,
     SessionWorkEventProductQuery,
     WeekSessionSummaryProductQuery,
     WorkThreadProductQuery,
@@ -56,6 +57,10 @@ def products_status_command(env: AppEnv, json_mode: bool) -> None:
 @click.option("--provider", default=None, help="Limit to provider")
 @click.option("--since", default=None, help="Only rows on/after this timestamp")
 @click.option("--until", default=None, help="Only rows on/before this timestamp")
+@click.option("--first-message-since", default=None, help="Only sessions whose first message is on/after this timestamp")
+@click.option("--first-message-until", default=None, help="Only sessions whose first message is on/before this timestamp")
+@click.option("--session-date-since", default=None, help="Only sessions whose canonical session date is on/after this date")
+@click.option("--session-date-until", default=None, help="Only sessions whose canonical session date is on/before this date")
 @click.option("--query", default=None, help="FTS query against product search text")
 @click.option("--limit", type=int, default=50, show_default=True, help="Maximum rows")
 @click.option("--offset", type=int, default=0, show_default=True, help="Start offset")
@@ -66,6 +71,10 @@ def products_profiles_command(
     provider: str | None,
     since: str | None,
     until: str | None,
+    first_message_since: str | None,
+    first_message_until: str | None,
+    session_date_since: str | None,
+    session_date_until: str | None,
     query: str | None,
     limit: int,
     offset: int,
@@ -78,6 +87,10 @@ def products_profiles_command(
                 provider=provider,
                 since=since,
                 until=until,
+                first_message_since=first_message_since,
+                first_message_until=first_message_until,
+                session_date_since=session_date_since,
+                session_date_until=session_date_until,
                 query=query,
                 limit=limit,
                 offset=offset,
@@ -100,6 +113,11 @@ def products_profiles_command(
             f"{item.title or '(untitled)'}"
         )
         click.echo(
+            f"    first_message_at={item.first_message_at or '-'} "
+            f"session_date={item.canonical_session_date or '-'} "
+            f"engaged_minutes={item.engaged_minutes:g}"
+        )
+        click.echo(
             f"    messages={profile.get('message_count', 0)} "
             f"work_events={len(profile.get('work_events', []))} "
             f"projects={projects}"
@@ -107,6 +125,7 @@ def products_profiles_command(
 
 
 @products_command.command("work-events")
+@click.option("--conversation-id", default=None, help="Only events from one conversation")
 @click.option("--provider", default=None, help="Limit to provider")
 @click.option("--since", default=None, help="Only rows on/after this timestamp")
 @click.option("--until", default=None, help="Only rows on/before this timestamp")
@@ -118,6 +137,7 @@ def products_profiles_command(
 @click.pass_obj
 def products_work_events_command(
     env: AppEnv,
+    conversation_id: str | None,
     provider: str | None,
     since: str | None,
     until: str | None,
@@ -131,6 +151,7 @@ def products_work_events_command(
     items = run_coroutine_sync(
         env.operations.list_session_work_event_products(
             SessionWorkEventProductQuery(
+                conversation_id=conversation_id,
                 provider=provider,
                 since=since,
                 until=until,
@@ -155,9 +176,72 @@ def products_work_events_command(
             f"conversation={item.conversation_id}"
         )
         click.echo(
+            f"    start={item.start_time or '-'} end={item.end_time or '-'} "
+            f"session_date={item.canonical_session_date or '-'} duration_ms={item.duration_ms}"
+        )
+        click.echo(
             f"    summary={event.get('summary', '-') or '-'} "
             f"files={len(event.get('file_paths', []))} "
             f"tools={len(event.get('tools_used', []))}"
+        )
+
+
+@products_command.command("phases")
+@click.option("--conversation-id", default=None, help="Only phases from one conversation")
+@click.option("--provider", default=None, help="Limit to provider")
+@click.option("--since", default=None, help="Only rows on/after this timestamp")
+@click.option("--until", default=None, help="Only rows on/before this timestamp")
+@click.option("--kind", default=None, help="Only this session phase kind")
+@click.option("--limit", type=int, default=50, show_default=True, help="Maximum rows")
+@click.option("--offset", type=int, default=0, show_default=True, help="Start offset")
+@click.option("--json", "json_mode", is_flag=True, help="Output as JSON")
+@click.pass_obj
+def products_phases_command(
+    env: AppEnv,
+    conversation_id: str | None,
+    provider: str | None,
+    since: str | None,
+    until: str | None,
+    kind: str | None,
+    limit: int,
+    offset: int,
+    json_mode: bool,
+) -> None:
+    """List durable session-phase products."""
+    items = run_coroutine_sync(
+        env.operations.list_session_phase_products(
+            SessionPhaseProductQuery(
+                conversation_id=conversation_id,
+                provider=provider,
+                since=since,
+                until=until,
+                kind=kind,
+                limit=limit,
+                offset=offset,
+            )
+        )
+    )
+    if json_mode:
+        _emit_product_list(json_mode=True, key="session_phases", items=items)
+        return
+    if not items:
+        click.echo("No session phases matched.")
+        return
+    click.echo(f"Session phases: {len(items)}\n")
+    for item in items:
+        phase = item.phase
+        click.echo(
+            f"  {item.phase_id} [{item.provider_name}] {item.kind} "
+            f"conversation={item.conversation_id}"
+        )
+        click.echo(
+            f"    start={item.start_time or '-'} end={item.end_time or '-'} "
+            f"session_date={item.canonical_session_date or '-'} duration_ms={item.duration_ms}"
+        )
+        click.echo(
+            f"    message_range={phase.get('message_range', [])} "
+            f"tools={phase.get('tool_counts', {})} "
+            f"words={phase.get('word_count', 0)}"
         )
 
 

@@ -11,6 +11,7 @@ import pytest
 from polylogue.archive_products import (
     DaySessionSummaryProduct,
     MaintenanceRunProduct,
+    SessionPhaseProduct,
     SessionProfileProduct,
     SessionTagRollupProduct,
     SessionWorkEventProduct,
@@ -347,6 +348,18 @@ class TestProductTools:
             },
             event={"summary": "editing files"},
         )
+        phase = SessionPhaseProduct(
+            phase_id="phase-1",
+            conversation_id="conv-1",
+            provider_name="claude-code",
+            phase_index=0,
+            kind="implementation",
+            provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+            },
+            phase={"message_range": [0, 2], "tool_counts": {"edit": 1}},
+        )
         thread = WorkThreadProduct(
             thread_id="conv-1",
             root_id="conv-1",
@@ -402,6 +415,7 @@ class TestProductTools:
             mock_ops = MagicMock()
             mock_ops.list_session_profile_products = AsyncMock(return_value=[profile])
             mock_ops.list_session_work_event_products = AsyncMock(return_value=[work_event])
+            mock_ops.list_session_phase_products = AsyncMock(return_value=[phase])
             mock_ops.list_session_tag_rollup_products = AsyncMock(return_value=[tag_rollup])
             mock_ops.list_work_thread_products = AsyncMock(return_value=[thread])
             mock_ops.list_day_session_summary_products = AsyncMock(return_value=[day_summary])
@@ -413,11 +427,18 @@ class TestProductTools:
                 mcp_server._tool_manager._tools["session_profiles"].fn,
                 provider="claude-code",
                 query="profiled",
+                first_message_since="2026-03-24T00:00:00+00:00",
+                session_date_since="2026-03-24",
                 limit=5,
                 offset=2,
             )
             events_raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["session_work_events"].fn,
+                kind="implementation",
+                limit=5,
+            )
+            phases_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["session_phases"].fn,
                 kind="implementation",
                 limit=5,
             )
@@ -448,6 +469,7 @@ class TestProductTools:
 
         profiles_payload = json.loads(profiles_raw)
         events_payload = json.loads(events_raw)
+        phases_payload = json.loads(phases_raw)
         threads_payload = json.loads(threads_raw)
         tags_payload = json.loads(tags_raw)
         day_payload = json.loads(day_raw)
@@ -457,6 +479,7 @@ class TestProductTools:
         assert profiles_payload["count"] == 1
         assert profiles_payload["items"][0]["product_kind"] == "session_profile"
         assert events_payload["items"][0]["product_kind"] == "session_work_event"
+        assert phases_payload["items"][0]["product_kind"] == "session_phase"
         assert tags_payload["items"][0]["product_kind"] == "session_tag_rollup"
         assert threads_payload["items"][0]["product_kind"] == "work_thread"
         assert day_payload["items"][0]["product_kind"] == "day_session_summary"

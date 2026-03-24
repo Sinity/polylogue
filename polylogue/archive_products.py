@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.storage.store import (
     MaintenanceRunRecord,
+    SessionPhaseRecord,
     SessionProfileRecord,
     SessionWorkEventRecord,
     WorkThreadRecord,
@@ -38,7 +39,13 @@ class SessionProfileProduct(ArchiveProductModel):
     conversation_id: str
     provider_name: str
     title: str | None = None
+    first_message_at: str | None = None
+    canonical_session_date: str | None = None
     primary_work_kind: str | None = None
+    engaged_duration_ms: int = 0
+    engaged_minutes: float = 0.0
+    canonical_projects: tuple[str, ...] = ()
+    repo_paths: tuple[str, ...] = ()
     provenance: ArchiveProductProvenance
     profile: dict[str, Any]
 
@@ -48,7 +55,13 @@ class SessionProfileProduct(ArchiveProductModel):
             conversation_id=record.conversation_id,
             provider_name=record.provider_name,
             title=record.title,
+            first_message_at=record.first_message_at,
+            canonical_session_date=record.canonical_session_date,
             primary_work_kind=record.primary_work_kind,
+            engaged_duration_ms=record.engaged_duration_ms,
+            engaged_minutes=round(record.engaged_duration_ms / 60_000.0, 4),
+            canonical_projects=record.canonical_projects,
+            repo_paths=record.repo_paths,
             provenance=ArchiveProductProvenance(
                 materializer_version=record.materializer_version,
                 materialized_at=record.materialized_at,
@@ -67,6 +80,10 @@ class SessionWorkEventProduct(ArchiveProductModel):
     provider_name: str
     event_index: int
     kind: str
+    start_time: str | None = None
+    end_time: str | None = None
+    duration_ms: int = 0
+    canonical_session_date: str | None = None
     provenance: ArchiveProductProvenance
     event: dict[str, Any]
 
@@ -78,6 +95,10 @@ class SessionWorkEventProduct(ArchiveProductModel):
             provider_name=record.provider_name,
             event_index=record.event_index,
             kind=record.kind,
+            start_time=record.start_time,
+            end_time=record.end_time,
+            duration_ms=record.duration_ms,
+            canonical_session_date=record.canonical_session_date,
             provenance=ArchiveProductProvenance(
                 materializer_version=record.materializer_version,
                 materialized_at=record.materialized_at,
@@ -110,6 +131,43 @@ class WorkThreadProduct(ArchiveProductModel):
                 source_sort_key=None,
             ),
             thread=dict(record.payload),
+        )
+
+
+class SessionPhaseProduct(ArchiveProductModel):
+    contract_version: int = ARCHIVE_PRODUCT_CONTRACT_VERSION
+    product_kind: str = "session_phase"
+    phase_id: str
+    conversation_id: str
+    provider_name: str
+    phase_index: int
+    kind: str
+    start_time: str | None = None
+    end_time: str | None = None
+    duration_ms: int = 0
+    canonical_session_date: str | None = None
+    provenance: ArchiveProductProvenance
+    phase: dict[str, Any]
+
+    @classmethod
+    def from_record(cls, record: SessionPhaseRecord) -> SessionPhaseProduct:
+        return cls(
+            phase_id=record.phase_id,
+            conversation_id=record.conversation_id,
+            provider_name=record.provider_name,
+            phase_index=record.phase_index,
+            kind=record.kind,
+            start_time=record.start_time,
+            end_time=record.end_time,
+            duration_ms=record.duration_ms,
+            canonical_session_date=record.canonical_session_date,
+            provenance=ArchiveProductProvenance(
+                materializer_version=record.materializer_version,
+                materialized_at=record.materialized_at,
+                source_updated_at=record.source_updated_at,
+                source_sort_key=record.source_sort_key,
+            ),
+            phase=dict(record.payload),
         )
 
 
@@ -177,12 +235,17 @@ class SessionProfileProductQuery(ArchiveProductModel):
     provider: str | None = None
     since: str | None = None
     until: str | None = None
+    first_message_since: str | None = None
+    first_message_until: str | None = None
+    session_date_since: str | None = None
+    session_date_until: str | None = None
     limit: int | None = 50
     offset: int = 0
     query: str | None = None
 
 
 class SessionWorkEventProductQuery(ArchiveProductModel):
+    conversation_id: str | None = None
     provider: str | None = None
     since: str | None = None
     until: str | None = None
@@ -190,6 +253,16 @@ class SessionWorkEventProductQuery(ArchiveProductModel):
     limit: int | None = 50
     offset: int = 0
     query: str | None = None
+
+
+class SessionPhaseProductQuery(ArchiveProductModel):
+    conversation_id: str | None = None
+    provider: str | None = None
+    since: str | None = None
+    until: str | None = None
+    kind: str | None = None
+    limit: int | None = 50
+    offset: int = 0
 
 
 class WorkThreadProductQuery(ArchiveProductModel):
@@ -237,6 +310,8 @@ __all__ = [
     "DaySessionSummaryProductQuery",
     "MaintenanceRunProduct",
     "MaintenanceRunProductQuery",
+    "SessionPhaseProduct",
+    "SessionPhaseProductQuery",
     "SessionTagRollupProduct",
     "SessionTagRollupQuery",
     "SessionProfileProduct",

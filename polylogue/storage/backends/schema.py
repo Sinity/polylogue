@@ -216,6 +216,7 @@ _SESSION_PRODUCT_DDL = """
             title TEXT,
             first_message_at TEXT,
             last_message_at TEXT,
+            canonical_session_date TEXT,
             primary_work_kind TEXT,
             repo_paths_json TEXT,
             canonical_projects_json TEXT,
@@ -223,11 +224,13 @@ _SESSION_PRODUCT_DDL = """
             auto_tags_json TEXT,
             message_count INTEGER NOT NULL DEFAULT 0,
             work_event_count INTEGER NOT NULL DEFAULT 0,
+            phase_count INTEGER NOT NULL DEFAULT 0,
             word_count INTEGER NOT NULL DEFAULT 0,
             tool_use_count INTEGER NOT NULL DEFAULT 0,
             thinking_count INTEGER NOT NULL DEFAULT 0,
             total_cost_usd REAL NOT NULL DEFAULT 0,
             total_duration_ms INTEGER NOT NULL DEFAULT 0,
+            engaged_duration_ms INTEGER NOT NULL DEFAULT 0,
             wall_duration_ms INTEGER NOT NULL DEFAULT 0,
             payload_json TEXT NOT NULL,
             search_text TEXT NOT NULL
@@ -238,6 +241,12 @@ _SESSION_PRODUCT_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_session_profiles_sort
         ON session_profiles(source_sort_key DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_session_profiles_first_message
+        ON session_profiles(first_message_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_session_profiles_canonical_date
+        ON session_profiles(canonical_session_date DESC);
 
         CREATE INDEX IF NOT EXISTS idx_session_profiles_work_kind
         ON session_profiles(primary_work_kind)
@@ -281,6 +290,10 @@ _SESSION_PRODUCT_DDL = """
             confidence REAL NOT NULL DEFAULT 0,
             start_index INTEGER NOT NULL DEFAULT 0,
             end_index INTEGER NOT NULL DEFAULT 0,
+            start_time TEXT,
+            end_time TEXT,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            canonical_session_date TEXT,
             summary TEXT NOT NULL,
             file_paths_json TEXT,
             tools_used_json TEXT,
@@ -297,6 +310,9 @@ _SESSION_PRODUCT_DDL = """
         CREATE INDEX IF NOT EXISTS idx_session_work_events_provider
         ON session_work_events(provider_name);
 
+        CREATE INDEX IF NOT EXISTS idx_session_work_events_time
+        ON session_work_events(start_time DESC, end_time DESC);
+
         CREATE VIRTUAL TABLE IF NOT EXISTS session_work_events_fts USING fts5(
             event_id UNINDEXED,
             conversation_id UNINDEXED,
@@ -311,6 +327,40 @@ _SESSION_PRODUCT_DDL = """
             INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
             VALUES (new.event_id, new.conversation_id, new.provider_name, new.kind, new.search_text);
         END;
+
+        CREATE TABLE IF NOT EXISTS session_phases (
+            phase_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            materializer_version INTEGER NOT NULL DEFAULT 1,
+            materialized_at TEXT NOT NULL,
+            source_updated_at TEXT,
+            source_sort_key REAL,
+            provider_name TEXT NOT NULL,
+            phase_index INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            start_index INTEGER NOT NULL DEFAULT 0,
+            end_index INTEGER NOT NULL DEFAULT 0,
+            start_time TEXT,
+            end_time TEXT,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            canonical_session_date TEXT,
+            tool_counts_json TEXT NOT NULL DEFAULT '{}',
+            word_count INTEGER NOT NULL DEFAULT 0,
+            payload_json TEXT NOT NULL,
+            search_text TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_session_phases_conversation
+        ON session_phases(conversation_id, phase_index);
+
+        CREATE INDEX IF NOT EXISTS idx_session_phases_kind
+        ON session_phases(kind);
+
+        CREATE INDEX IF NOT EXISTS idx_session_phases_provider
+        ON session_phases(provider_name);
+
+        CREATE INDEX IF NOT EXISTS idx_session_phases_time
+        ON session_phases(start_time DESC, end_time DESC);
 
         CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ad
         AFTER DELETE ON session_work_events BEGIN
@@ -708,6 +758,44 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 "ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1"
             )
         conn.executescript(_ACTION_FTS_DDL)
+        session_profiles_exists = bool(
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
+            ).fetchone()
+        )
+        if session_profiles_exists:
+            session_profile_columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(session_profiles)").fetchall()
+            }
+            if "canonical_session_date" not in session_profile_columns:
+                conn.execute("ALTER TABLE session_profiles ADD COLUMN canonical_session_date TEXT")
+            if "phase_count" not in session_profile_columns:
+                conn.execute("ALTER TABLE session_profiles ADD COLUMN phase_count INTEGER NOT NULL DEFAULT 0")
+            if "engaged_duration_ms" not in session_profile_columns:
+                conn.execute(
+                    "ALTER TABLE session_profiles ADD COLUMN engaged_duration_ms INTEGER NOT NULL DEFAULT 0"
+                )
+        session_work_events_exists = bool(
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events'"
+            ).fetchone()
+        )
+        if session_work_events_exists:
+            session_work_event_columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(session_work_events)").fetchall()
+            }
+            if "start_time" not in session_work_event_columns:
+                conn.execute("ALTER TABLE session_work_events ADD COLUMN start_time TEXT")
+            if "end_time" not in session_work_event_columns:
+                conn.execute("ALTER TABLE session_work_events ADD COLUMN end_time TEXT")
+            if "duration_ms" not in session_work_event_columns:
+                conn.execute(
+                    "ALTER TABLE session_work_events ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0"
+                )
+            if "canonical_session_date" not in session_work_event_columns:
+                conn.execute("ALTER TABLE session_work_events ADD COLUMN canonical_session_date TEXT")
         conn.executescript(_SESSION_PRODUCT_DDL)
         _ensure_vec0_table(conn)
         conn.commit()

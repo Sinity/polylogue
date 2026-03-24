@@ -380,7 +380,7 @@ def preview_dangling_fts(*, count: int) -> RepairResult:
 
 
 def repair_session_products(config: Config, dry_run: bool = False) -> RepairResult:
-    """Repair durable session-profile, work-event, and work-thread products."""
+    """Repair durable session-profile, phase, work-event, and work-thread products."""
     try:
         with connection_context(None) as conn:
             status = session_product_status_sync(conn)
@@ -405,6 +405,8 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                 + int(status["orphan_profile_count"])
                 + int(status["stale_work_event_count"])
                 + int(status["orphan_work_event_count"])
+                + int(status["stale_phase_count"])
+                + int(status["orphan_phase_count"])
                 + int(status["stale_thread_count"])
                 + int(status["orphan_thread_count"])
                 + int(status["stale_tag_rollup_count"])
@@ -431,6 +433,7 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                         and bool(status["profiles_fts_ready"])
                         and bool(status["work_events_ready"])
                         and bool(status["work_events_fts_ready"])
+                        and bool(status["phases_ready"])
                         and bool(status["threads_ready"])
                         and bool(status["threads_fts_ready"])
                         and bool(status["tag_rollups_ready"])
@@ -443,6 +446,8 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                             f"orphan_profiles={int(status['orphan_profile_count']):,}, "
                             f"stale_work_events={int(status['stale_work_event_count']):,}, "
                             f"orphan_work_events={int(status['orphan_work_event_count']):,}, "
+                            f"stale_phases={int(status['stale_phase_count']):,}, "
+                            f"orphan_phases={int(status['orphan_phase_count']):,}, "
                             f"stale_threads={int(status['stale_thread_count']):,}, "
                             f"orphan_threads={int(status['orphan_thread_count']):,}, "
                             f"stale_tag_rollups={int(status['stale_tag_rollup_count']):,}, "
@@ -465,6 +470,7 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                 and bool(refreshed["profiles_fts_ready"])
                 and bool(refreshed["work_events_ready"])
                 and bool(refreshed["work_events_fts_ready"])
+                and bool(refreshed["phases_ready"])
                 and bool(refreshed["threads_ready"])
                 and bool(refreshed["threads_fts_ready"])
                 and bool(refreshed["tag_rollups_ready"])
@@ -478,6 +484,7 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                 repaired_count=(
                     int(rebuilt["profiles"])
                     + int(rebuilt["work_events"])
+                    + int(rebuilt["phases"])
                     + int(rebuilt["threads"])
                     + int(rebuilt["tag_rollups"])
                     + int(rebuilt["day_summaries"])
@@ -496,6 +503,8 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                         f"{int(refreshed['expected_work_event_count']):,}, "
                         f"work_event_fts={int(refreshed['work_event_fts_count']):,}/"
                         f"{int(refreshed['work_event_count']):,}, "
+                        f"phases={int(refreshed['phase_count']):,}/"
+                        f"{int(refreshed['expected_phase_count']):,}, "
                         f"threads={int(refreshed['thread_count']):,}/"
                         f"{int(refreshed['root_threads']):,}, "
                         f"thread_fts={int(refreshed['thread_fts_count']):,}/"

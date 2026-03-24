@@ -106,6 +106,7 @@ def _build_preview_counts(report: Any) -> dict[str, int]:
     session_profiles_fts = derived_models.get("session_profiles_fts")
     session_work_events = derived_models.get("session_work_events")
     session_work_events_fts = derived_models.get("session_work_events_fts")
+    session_phases = derived_models.get("session_phases")
     work_threads = derived_models.get("work_threads")
     work_threads_fts = derived_models.get("work_threads_fts")
     session_tag_rollups = derived_models.get("session_tag_rollups")
@@ -116,6 +117,7 @@ def _build_preview_counts(report: Any) -> dict[str, int]:
         and session_profiles_fts is not None
         and session_work_events is not None
         and session_work_events_fts is not None
+        and session_phases is not None
         and work_threads is not None
         and work_threads_fts is not None
         and session_tag_rollups is not None
@@ -132,6 +134,9 @@ def _build_preview_counts(report: Any) -> dict[str, int]:
             + max(0, int(getattr(session_work_events, "stale_rows", 0) or 0))
             + max(0, int(getattr(session_work_events, "orphan_rows", 0) or 0))
             + max(0, int(getattr(session_work_events_fts, "pending_rows", 0) or 0))
+            + max(0, int(getattr(session_phases, "pending_rows", 0) or 0))
+            + max(0, int(getattr(session_phases, "stale_rows", 0) or 0))
+            + max(0, int(getattr(session_phases, "orphan_rows", 0) or 0))
             + max(0, int(getattr(work_threads, "pending_documents", 0) or 0))
             + max(0, int(getattr(work_threads, "stale_rows", 0) or 0))
             + max(0, int(getattr(work_threads, "orphan_rows", 0) or 0))

@@ -6,6 +6,7 @@ import aiosqlite
 
 from polylogue.storage.backends.queries.mappers import (
     _row_to_day_session_summary_record,
+    _row_to_session_phase_record,
     _row_to_session_profile_record,
     _row_to_session_tag_rollup_record,
     _row_to_session_work_event_record,
@@ -13,6 +14,7 @@ from polylogue.storage.backends.queries.mappers import (
 )
 from polylogue.storage.store import (
     DaySessionSummaryRecord,
+    SessionPhaseRecord,
     SessionProfileRecord,
     SessionTagRollupRecord,
     SessionWorkEventRecord,
@@ -24,14 +26,17 @@ from polylogue.storage.store import (
 __all__ = [
     "get_session_profile",
     "get_session_profiles_batch",
+    "get_session_phases",
     "get_work_events",
     "get_work_thread",
     "list_day_session_summaries",
+    "list_session_phases",
     "list_session_profiles",
     "list_session_tag_rollup_rows",
     "list_work_events",
     "list_work_threads",
     "replace_day_session_summaries",
+    "replace_session_phases",
     "replace_session_profile",
     "replace_session_tag_rollup_rows",
     "replace_session_work_events",
@@ -72,6 +77,10 @@ async def list_session_profiles(
     provider: str | None = None,
     since: str | None = None,
     until: str | None = None,
+    first_message_since: str | None = None,
+    first_message_until: str | None = None,
+    session_date_since: str | None = None,
+    session_date_until: str | None = None,
     limit: int | None = 50,
     offset: int = 0,
     query: str | None = None,
@@ -95,11 +104,27 @@ async def list_session_profiles(
         where.append("sp.provider_name = ?")
         params.append(provider)
     if since:
-        where.append("COALESCE(sp.last_message_at, sp.source_updated_at, sp.first_message_at) >= ?")
+        where.append(
+            "COALESCE(sp.last_message_at, sp.source_updated_at, sp.first_message_at) >= ?"
+        )
         params.append(since)
     if until:
-        where.append("COALESCE(sp.first_message_at, sp.source_updated_at, sp.last_message_at) <= ?")
+        where.append(
+            "COALESCE(sp.first_message_at, sp.source_updated_at, sp.last_message_at) <= ?"
+        )
         params.append(until)
+    if first_message_since:
+        where.append("sp.first_message_at >= ?")
+        params.append(first_message_since)
+    if first_message_until:
+        where.append("sp.first_message_at <= ?")
+        params.append(first_message_until)
+    if session_date_since:
+        where.append("sp.canonical_session_date >= date(?)")
+        params.append(session_date_since)
+    if session_date_until:
+        where.append("sp.canonical_session_date <= date(?)")
+        params.append(session_date_until)
 
     sql = "SELECT sp.* " + from_clause
     if where:
@@ -130,9 +155,27 @@ async def get_work_events(
     return [_row_to_session_work_event_record(row) for row in rows]
 
 
+async def get_session_phases(
+    conn: aiosqlite.Connection,
+    conversation_id: str,
+) -> list[SessionPhaseRecord]:
+    cursor = await conn.execute(
+        """
+        SELECT *
+        FROM session_phases
+        WHERE conversation_id = ?
+        ORDER BY phase_index
+        """,
+        (conversation_id,),
+    )
+    rows = await cursor.fetchall()
+    return [_row_to_session_phase_record(row) for row in rows]
+
+
 async def list_work_events(
     conn: aiosqlite.Connection,
     *,
+    conversation_id: str | None = None,
     provider: str | None = None,
     since: str | None = None,
     until: str | None = None,
@@ -156,6 +199,9 @@ async def list_work_events(
         where = []
         order_by = "ORDER BY COALESCE(swe.source_sort_key, 0) DESC, swe.event_index"
 
+    if conversation_id:
+        where.append("swe.conversation_id = ?")
+        params.append(conversation_id)
     if provider:
         where.append("swe.provider_name = ?")
         params.append(provider)
@@ -163,10 +209,10 @@ async def list_work_events(
         where.append("swe.kind = ?")
         params.append(kind)
     if since:
-        where.append("COALESCE(swe.source_updated_at, swe.materialized_at) >= ?")
+        where.append("COALESCE(swe.end_time, swe.start_time, swe.source_updated_at, swe.materialized_at) >= ?")
         params.append(since)
     if until:
-        where.append("COALESCE(swe.source_updated_at, swe.materialized_at) <= ?")
+        where.append("COALESCE(swe.start_time, swe.end_time, swe.source_updated_at, swe.materialized_at) <= ?")
         params.append(until)
 
     sql = "SELECT swe.* " + from_clause
@@ -179,6 +225,50 @@ async def list_work_events(
     cursor = await conn.execute(sql, tuple(params))
     rows = await cursor.fetchall()
     return [_row_to_session_work_event_record(row) for row in rows]
+
+
+async def list_session_phases(
+    conn: aiosqlite.Connection,
+    *,
+    conversation_id: str | None = None,
+    provider: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    kind: str | None = None,
+    limit: int | None = 50,
+    offset: int = 0,
+) -> list[SessionPhaseRecord]:
+    params: list[object] = []
+    where: list[str] = []
+    if conversation_id:
+        where.append("conversation_id = ?")
+        params.append(conversation_id)
+    if provider:
+        where.append("provider_name = ?")
+        params.append(provider)
+    if kind:
+        where.append("kind = ?")
+        params.append(kind)
+    if since:
+        where.append("COALESCE(end_time, start_time, source_updated_at, materialized_at) >= ?")
+        params.append(since)
+    if until:
+        where.append("COALESCE(start_time, end_time, source_updated_at, materialized_at) <= ?")
+        params.append(until)
+
+    sql = """
+        SELECT *
+        FROM session_phases
+    """
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY COALESCE(start_time, end_time, materialized_at) DESC, phase_index"
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+    cursor = await conn.execute(sql, tuple(params))
+    rows = await cursor.fetchall()
+    return [_row_to_session_phase_record(row) for row in rows]
 
 
 async def get_work_thread(
@@ -323,6 +413,7 @@ async def replace_session_profile(
             title,
             first_message_at,
             last_message_at,
+            canonical_session_date,
             primary_work_kind,
             repo_paths_json,
             canonical_projects_json,
@@ -330,15 +421,17 @@ async def replace_session_profile(
             auto_tags_json,
             message_count,
             work_event_count,
+            phase_count,
             word_count,
             tool_use_count,
             thinking_count,
             total_cost_usd,
             total_duration_ms,
+            engaged_duration_ms,
             wall_duration_ms,
             payload_json,
             search_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.conversation_id,
@@ -350,6 +443,7 @@ async def replace_session_profile(
             record.title,
             record.first_message_at,
             record.last_message_at,
+            record.canonical_session_date,
             record.primary_work_kind,
             _json_array_or_none(record.repo_paths),
             _json_array_or_none(record.canonical_projects),
@@ -357,11 +451,13 @@ async def replace_session_profile(
             _json_array_or_none(record.auto_tags),
             record.message_count,
             record.work_event_count,
+            record.phase_count,
             record.word_count,
             record.tool_use_count,
             record.thinking_count,
             record.total_cost_usd,
             record.total_duration_ms,
+            record.engaged_duration_ms,
             record.wall_duration_ms,
             _json_or_none(record.payload),
             record.search_text,
@@ -397,12 +493,16 @@ async def replace_session_work_events(
                 confidence,
                 start_index,
                 end_index,
+                start_time,
+                end_time,
+                duration_ms,
+                canonical_session_date,
                 summary,
                 file_paths_json,
                 tools_used_json,
                 payload_json,
                 search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -418,9 +518,77 @@ async def replace_session_work_events(
                     record.confidence,
                     record.start_index,
                     record.end_index,
+                    record.start_time,
+                    record.end_time,
+                    record.duration_ms,
+                    record.canonical_session_date,
                     record.summary,
                     _json_array_or_none(record.file_paths),
                     _json_array_or_none(record.tools_used),
+                    _json_or_none(record.payload),
+                    record.search_text,
+                )
+                for record in records
+            ],
+        )
+    if transaction_depth == 0:
+        await conn.commit()
+
+
+async def replace_session_phases(
+    conn: aiosqlite.Connection,
+    conversation_id: str,
+    records: list[SessionPhaseRecord],
+    transaction_depth: int,
+) -> None:
+    await conn.execute(
+        "DELETE FROM session_phases WHERE conversation_id = ?",
+        (conversation_id,),
+    )
+    if records:
+        await conn.executemany(
+            """
+            INSERT INTO session_phases (
+                phase_id,
+                conversation_id,
+                materializer_version,
+                materialized_at,
+                source_updated_at,
+                source_sort_key,
+                provider_name,
+                phase_index,
+                kind,
+                start_index,
+                end_index,
+                start_time,
+                end_time,
+                duration_ms,
+                canonical_session_date,
+                tool_counts_json,
+                word_count,
+                payload_json,
+                search_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    record.phase_id,
+                    record.conversation_id,
+                    record.materializer_version,
+                    record.materialized_at,
+                    record.source_updated_at,
+                    record.source_sort_key,
+                    record.provider_name,
+                    record.phase_index,
+                    record.kind,
+                    record.start_index,
+                    record.end_index,
+                    record.start_time,
+                    record.end_time,
+                    record.duration_ms,
+                    record.canonical_session_date,
+                    _json_or_none(record.tool_counts),
+                    record.word_count,
                     _json_or_none(record.payload),
                     record.search_text,
                 )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 from polylogue.lib.attribution import ConversationAttribution, extract_attribution
@@ -45,6 +45,8 @@ class SessionProfile:
     decisions: tuple[Decision, ...] = ()
     first_message_at: datetime | None = None
     last_message_at: datetime | None = None
+    canonical_session_date: date | None = None
+    engaged_duration_ms: int = 0
     wall_duration_ms: int = 0
     cost_is_estimated: bool = False
     thread_id: str | None = None
@@ -75,24 +77,17 @@ class SessionProfile:
             "file_paths_touched": list(self.file_paths_touched),
             "languages_detected": list(self.languages_detected),
             "canonical_projects": list(self.canonical_projects),
-            "work_events": [
-                {
-                    "kind": event.kind.value,
-                    "start_index": event.start_index,
-                    "end_index": event.end_index,
-                    "confidence": event.confidence,
-                    "evidence": list(event.evidence),
-                    "file_paths": list(event.file_paths),
-                    "tools_used": list(event.tools_used),
-                    "summary": event.summary,
-                }
-                for event in self.work_events
-            ],
+            "work_events": [event.to_dict() for event in self.work_events],
             "phases": [
                 {
                     "kind": phase.kind,
                     "start_time": phase.start_time.isoformat() if phase.start_time else None,
                     "end_time": phase.end_time.isoformat() if phase.end_time else None,
+                    "canonical_session_date": (
+                        phase.canonical_session_date.isoformat()
+                        if phase.canonical_session_date
+                        else None
+                    ),
                     "message_range": list(phase.message_range),
                     "duration_ms": phase.duration_ms,
                     "tool_counts": phase.tool_counts,
@@ -111,6 +106,13 @@ class SessionProfile:
             ],
             "first_message_at": self.first_message_at.isoformat() if self.first_message_at else None,
             "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
+            "canonical_session_date": (
+                self.canonical_session_date.isoformat()
+                if self.canonical_session_date
+                else None
+            ),
+            "engaged_duration_ms": self.engaged_duration_ms,
+            "engaged_minutes": round(self.engaged_duration_ms / 60_000.0, 4),
             "wall_duration_ms": self.wall_duration_ms,
             "cost_is_estimated": self.cost_is_estimated,
             "thread_id": self.thread_id,
@@ -156,6 +158,11 @@ class SessionProfile:
                     kind=str(item["kind"]),
                     start_time=datetime.fromisoformat(str(item["start_time"])) if item.get("start_time") else None,
                     end_time=datetime.fromisoformat(str(item["end_time"])) if item.get("end_time") else None,
+                    canonical_session_date=(
+                        date.fromisoformat(str(item["canonical_session_date"]))
+                        if item.get("canonical_session_date")
+                        else None
+                    ),
                     message_range=tuple(int(v) for v in item.get("message_range", [0, 0])),
                     duration_ms=int(item.get("duration_ms", 0) or 0),
                     tool_counts={str(k): int(v or 0) for k, v in (item.get("tool_counts", {}) or {}).items()},
@@ -184,6 +191,12 @@ class SessionProfile:
                 if payload.get("last_message_at")
                 else None
             ),
+            canonical_session_date=(
+                date.fromisoformat(str(payload["canonical_session_date"]))
+                if payload.get("canonical_session_date")
+                else None
+            ),
+            engaged_duration_ms=int(payload.get("engaged_duration_ms", 0) or 0),
             wall_duration_ms=int(payload.get("wall_duration_ms", 0) or 0),
             cost_is_estimated=bool(payload.get("cost_is_estimated", False)),
             thread_id=str(payload["thread_id"]) if payload.get("thread_id") is not None else None,
@@ -250,6 +263,15 @@ def build_session_profile(
     facts = session_analysis.facts
     attribution = session_analysis.attribution
     cost_usd, cost_is_estimated = harmonize_session_cost(conversation)
+    engaged_duration_ms = sum(int(phase.duration_ms or 0) for phase in session_analysis.phases)
+    if engaged_duration_ms <= 0:
+        engaged_duration_ms = max(int(conversation.total_duration_ms or 0), 0)
+    canonical_session_at = (
+        facts.first_message_at
+        or conversation.created_at
+        or conversation.updated_at
+        or facts.last_message_at
+    )
     partial = SessionProfile(
         conversation_id=str(conversation.id),
         provider=str(conversation.provider),
@@ -275,6 +297,8 @@ def build_session_profile(
         decisions=session_analysis.decisions,
         first_message_at=facts.first_message_at,
         last_message_at=facts.last_message_at,
+        canonical_session_date=canonical_session_at.date() if canonical_session_at else None,
+        engaged_duration_ms=engaged_duration_ms,
         wall_duration_ms=facts.wall_duration_ms,
         cost_is_estimated=cost_is_estimated,
         tags=tuple(conversation.tags),

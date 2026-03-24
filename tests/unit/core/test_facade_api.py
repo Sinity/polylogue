@@ -9,6 +9,7 @@ import pytest
 from polylogue import Polylogue
 from polylogue.archive_products import (
     DaySessionSummaryProductQuery,
+    SessionPhaseProductQuery,
     SessionProfileProductQuery,
     SessionTagRollupQuery,
     WeekSessionSummaryProductQuery,
@@ -288,11 +289,17 @@ class TestPolylogueArchiveProducts:
             .provider("claude-code")
             .title("Root Thread")
             .updated_at("2026-03-01T10:10:00+00:00")
-            .add_message("u1", role="user", text="Plan the refactor")
+            .add_message(
+                "u1",
+                role="user",
+                text="Plan the refactor",
+                timestamp="2026-03-01T10:00:00+00:00",
+            )
             .add_message(
                 "a1",
                 role="assistant",
                 text="Editing files",
+                timestamp="2026-03-01T10:05:00+00:00",
                 provider_meta={
                     "content_blocks": [
                         {
@@ -313,7 +320,12 @@ class TestPolylogueArchiveProducts:
             .parent_conversation("conv-root")
             .branch_type("continuation")
             .updated_at("2026-03-01T11:05:00+00:00")
-            .add_message("u2", role="user", text="Run tests")
+            .add_message(
+                "u2",
+                role="user",
+                text="Run tests",
+                timestamp="2026-03-01T11:00:00+00:00",
+            )
             .save()
         )
         with open_connection(db_path) as conn:
@@ -322,14 +334,25 @@ class TestPolylogueArchiveProducts:
         archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
         profile = await archive.get_session_profile_product("conv-root")
         profiles = await archive.list_session_profile_products(
-            SessionProfileProductQuery(provider="claude-code", limit=10)
+            SessionProfileProductQuery(
+                provider="claude-code",
+                first_message_since="2026-03-01T00:00:00+00:00",
+                session_date_since="2026-03-01",
+                limit=10,
+            )
+        )
+        phases = await archive.list_session_phase_products(
+            SessionPhaseProductQuery(provider="claude-code", limit=10)
         )
         threads = await archive.list_work_thread_products(WorkThreadProductQuery(limit=10))
 
         assert profile is not None
         assert profile.product_kind == "session_profile"
         assert profile.profile["title"] == "Root Thread"
+        assert profile.canonical_session_date == "2026-03-01"
+        assert profile.engaged_duration_ms >= 0
         assert any(item.conversation_id == "conv-root" for item in profiles)
+        assert any(item.conversation_id == "conv-root" for item in phases)
         assert len(threads) == 1
         assert threads[0].thread["session_count"] == 2
 
