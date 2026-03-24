@@ -46,6 +46,7 @@ Durable archive products are public too:
 from polylogue import Polylogue
 from polylogue.archive_products import (
     DaySessionSummaryProductQuery,
+    SessionPhaseProductQuery,
     SessionProfileProductQuery,
     SessionTagRollupQuery,
 )
@@ -53,7 +54,15 @@ from polylogue.archive_products import (
 async with Polylogue() as archive:
     status = await archive.get_session_product_status()
     profiles = await archive.list_session_profile_products(
-        SessionProfileProductQuery(provider="claude-code", limit=25)
+        SessionProfileProductQuery(
+            provider="claude-code",
+            session_date_since="2026-03-16",
+            session_date_until="2026-03-16",
+            limit=25,
+        )
+    )
+    phases = await archive.list_session_phase_products(
+        SessionPhaseProductQuery(provider="claude-code", kind="execution", limit=25)
     )
     tags = await archive.list_session_tag_rollup_products(
         SessionTagRollupQuery(provider="claude-code", since="2026-01-01")
@@ -62,6 +71,19 @@ async with Polylogue() as archive:
         DaySessionSummaryProductQuery(provider="claude-code", since="2026-01-01")
     )
 ```
+
+`SessionProfileProduct` exposes stable session semantics directly:
+
+- `first_message_at`
+- `canonical_session_date`
+- `engaged_duration_ms`
+- `engaged_minutes`
+- `canonical_projects`
+- `repo_paths`
+
+`SessionWorkEventProduct` and `SessionPhaseProduct` expose timestamped timeline rows
+that can be queried directly instead of rebuilding semantic spans from full
+conversations.
 
 ## Filter Chain API
 

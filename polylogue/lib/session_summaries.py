@@ -59,6 +59,8 @@ class WeekSessionSummary:
 
 
 def _profile_date(profile: SessionProfile) -> date | None:
+    if profile.canonical_session_date is not None:
+        return profile.canonical_session_date
     timestamp = profile.first_message_at or profile.created_at
     if timestamp is None:
         return None
@@ -88,7 +90,7 @@ def summarize_day(
             event.kind.value if hasattr(event.kind, "value") else str(event.kind)
             for event in profile.work_events
         )
-        projects.update(profile.repo_paths)
+        projects.update(profile.canonical_projects or profile.repo_paths)
     return DaySessionSummary(
         date=target_date,
         session_count=len(profiles),

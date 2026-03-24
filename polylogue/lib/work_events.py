@@ -7,6 +7,7 @@ debugging, research, etc.) based on tool call categories and message content.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -48,12 +49,24 @@ class WorkEvent:
     file_paths: tuple[str, ...]
     tools_used: tuple[str, ...]
     summary: str
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    canonical_session_date: date | None = None
+    duration_ms: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
             "kind": self.kind.value,
             "start_index": self.start_index,
             "end_index": self.end_index,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "canonical_session_date": (
+                self.canonical_session_date.isoformat()
+                if self.canonical_session_date
+                else None
+            ),
+            "duration_ms": self.duration_ms,
             "confidence": self.confidence,
             "evidence": list(self.evidence),
             "file_paths": list(self.file_paths),
@@ -67,6 +80,22 @@ class WorkEvent:
             kind=WorkEventKind(str(payload["kind"])),
             start_index=int(payload.get("start_index", 0) or 0),
             end_index=int(payload.get("end_index", 0) or 0),
+            start_time=(
+                datetime.fromisoformat(str(payload["start_time"]))
+                if payload.get("start_time")
+                else None
+            ),
+            end_time=(
+                datetime.fromisoformat(str(payload["end_time"]))
+                if payload.get("end_time")
+                else None
+            ),
+            canonical_session_date=(
+                date.fromisoformat(str(payload["canonical_session_date"]))
+                if payload.get("canonical_session_date")
+                else None
+            ),
+            duration_ms=int(payload.get("duration_ms", 0) or 0),
             confidence=float(payload.get("confidence", 0.0) or 0.0),
             evidence=tuple(str(item) for item in payload.get("evidence", []) or []),
             file_paths=tuple(str(item) for item in payload.get("file_paths", []) or []),
@@ -249,11 +278,25 @@ def extract_work_events(
             if m.is_user and m.text
         ]
         summary = "; ".join(user_texts)[:200] if user_texts else kind.value
+        timestamps = [
+            m.timestamp
+            for m in messages[chunk_start:chunk_end]
+            if m.timestamp is not None
+        ]
+        start_time = timestamps[0] if timestamps else None
+        end_time = timestamps[-1] if timestamps else None
+        duration_ms = 0
+        if start_time and end_time:
+            duration_ms = max(int((end_time - start_time).total_seconds() * 1000), 0)
 
         events.append(WorkEvent(
             kind=kind,
             start_index=chunk_start,
             end_index=chunk_end,
+            start_time=start_time,
+            end_time=end_time,
+            canonical_session_date=(start_time or end_time).date() if (start_time or end_time) else None,
+            duration_ms=duration_ms,
             confidence=confidence,
             evidence=tuple(dict.fromkeys(evidence)),
             file_paths=tuple(dict.fromkeys(file_paths)),
@@ -273,6 +316,23 @@ def extract_work_events(
                 kind=prev.kind,
                 start_index=prev.start_index,
                 end_index=event.end_index,
+                start_time=prev.start_time or event.start_time,
+                end_time=event.end_time or prev.end_time,
+                canonical_session_date=prev.canonical_session_date or event.canonical_session_date,
+                duration_ms=(
+                    max(
+                        int(
+                            (
+                                (event.end_time or prev.end_time)
+                                - (prev.start_time or event.start_time)
+                            ).total_seconds()
+                            * 1000
+                        ),
+                        0,
+                    )
+                    if (prev.start_time or event.start_time) and (event.end_time or prev.end_time)
+                    else prev.duration_ms + event.duration_ms
+                ),
                 confidence=max(prev.confidence, event.confidence),
                 evidence=tuple(dict.fromkeys(prev.evidence + event.evidence)),
                 file_paths=tuple(dict.fromkeys(prev.file_paths + event.file_paths)),

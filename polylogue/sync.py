@@ -26,6 +26,8 @@ from polylogue.archive_products import (
     DaySessionSummaryProductQuery,
     MaintenanceRunProduct,
     MaintenanceRunProductQuery,
+    SessionPhaseProduct,
+    SessionPhaseProductQuery,
     SessionProfileProduct,
     SessionProfileProductQuery,
     SessionTagRollupProduct,
@@ -171,6 +173,20 @@ class SyncPolylogue:
     ) -> list[SessionWorkEventProduct]:
         """List versioned durable work-event products."""
         return _run(self._facade.list_session_work_event_products(query))
+
+    def get_session_phase_products(
+        self,
+        conversation_id: str,
+    ) -> list[SessionPhaseProduct]:
+        """Get versioned durable session-phase products for one conversation."""
+        return _run(self._facade.get_session_phase_products(conversation_id))
+
+    def list_session_phase_products(
+        self,
+        query: SessionPhaseProductQuery | None = None,
+    ) -> list[SessionPhaseProduct]:
+        """List versioned durable session-phase products."""
+        return _run(self._facade.list_session_phase_products(query))
 
     def get_work_thread_product(self, thread_id: str) -> WorkThreadProduct | None:
         """Get the versioned durable work-thread product for one thread."""

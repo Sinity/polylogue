@@ -22,6 +22,8 @@ from polylogue.storage.store import (
 
 
 def _profile_bucket_day(profile: SessionProfile) -> date | None:
+    if profile.canonical_session_date is not None:
+        return profile.canonical_session_date
     timestamp = profile.first_message_at or profile.created_at or profile.updated_at or profile.last_message_at
     if timestamp is None:
         return None
@@ -360,7 +362,6 @@ def aggregate_week_session_summary_products(
     ]
     by_week: dict[str, list[DaySessionSummary]] = defaultdict(list)
     provenance_rows: dict[str, list[DaySessionSummaryRecord]] = defaultdict(list)
-    rows_by_day = {row.day: row for row in rows}
     for day_summary in day_summaries:
         iso = day_summary.date.isocalendar()
         week_key = f"{iso[0]}-W{iso[1]:02d}"

@@ -16,6 +16,7 @@ from polylogue.storage.hydrators import (
 )
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.session_product_rows import (
+    hydrate_session_phase,
     hydrate_session_profile,
     hydrate_work_event,
     hydrate_work_thread,
@@ -465,6 +466,10 @@ class RepositoryReadMixin:
         provider: str | None = None,
         since: str | None = None,
         until: str | None = None,
+        first_message_since: str | None = None,
+        first_message_until: str | None = None,
+        session_date_since: str | None = None,
+        session_date_until: str | None = None,
         limit: int | None = 50,
         offset: int = 0,
         query: str | None = None,
@@ -473,6 +478,10 @@ class RepositoryReadMixin:
             provider=provider,
             since=since,
             until=until,
+            first_message_since=first_message_since,
+            first_message_until=first_message_until,
+            session_date_since=session_date_since,
+            session_date_until=session_date_until,
             limit=limit,
             offset=offset,
             query=query,
@@ -485,6 +494,10 @@ class RepositoryReadMixin:
         provider: str | None = None,
         since: str | None = None,
         until: str | None = None,
+        first_message_since: str | None = None,
+        first_message_until: str | None = None,
+        session_date_since: str | None = None,
+        session_date_until: str | None = None,
         limit: int | None = 50,
         offset: int = 0,
         query: str | None = None,
@@ -493,6 +506,10 @@ class RepositoryReadMixin:
             provider=provider,
             since=since,
             until=until,
+            first_message_since=first_message_since,
+            first_message_until=first_message_until,
+            session_date_since=session_date_since,
+            session_date_until=session_date_until,
             limit=limit,
             offset=offset,
             query=query,
@@ -501,12 +518,19 @@ class RepositoryReadMixin:
     async def get_session_work_event_records(self, conversation_id: str):
         return await self.queries.get_session_work_events(conversation_id)
 
+    async def get_session_phase_records(self, conversation_id: str):
+        return await self.queries.get_session_phases(conversation_id)
+
     async def get_session_work_events(self, conversation_id: str):
         return [hydrate_work_event(record) for record in await self.get_session_work_event_records(conversation_id)]
+
+    async def get_session_phases(self, conversation_id: str):
+        return [hydrate_session_phase(record) for record in await self.get_session_phase_records(conversation_id)]
 
     async def list_session_work_events(
         self,
         *,
+        conversation_id: str | None = None,
         provider: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -516,6 +540,7 @@ class RepositoryReadMixin:
         query: str | None = None,
     ):
         records = await self.queries.list_session_work_events(
+            conversation_id=conversation_id,
             provider=provider,
             since=since,
             until=until,
@@ -529,6 +554,7 @@ class RepositoryReadMixin:
     async def list_session_work_event_records(
         self,
         *,
+        conversation_id: str | None = None,
         provider: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -538,6 +564,7 @@ class RepositoryReadMixin:
         query: str | None = None,
     ):
         return await self.queries.list_session_work_events(
+            conversation_id=conversation_id,
             provider=provider,
             since=since,
             until=until,
@@ -545,6 +572,49 @@ class RepositoryReadMixin:
             limit=limit,
             offset=offset,
             query=query,
+        )
+
+    async def list_session_phases(
+        self,
+        *,
+        conversation_id: str | None = None,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        kind: str | None = None,
+        limit: int | None = 50,
+        offset: int = 0,
+    ):
+        records = await self.queries.list_session_phases(
+            conversation_id=conversation_id,
+            provider=provider,
+            since=since,
+            until=until,
+            kind=kind,
+            limit=limit,
+            offset=offset,
+        )
+        return [hydrate_session_phase(record) for record in records]
+
+    async def list_session_phase_records(
+        self,
+        *,
+        conversation_id: str | None = None,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        kind: str | None = None,
+        limit: int | None = 50,
+        offset: int = 0,
+    ):
+        return await self.queries.list_session_phases(
+            conversation_id=conversation_id,
+            provider=provider,
+            since=since,
+            until=until,
+            kind=kind,
+            limit=limit,
+            offset=offset,
         )
 
     async def get_work_thread_record(self, thread_id: str):

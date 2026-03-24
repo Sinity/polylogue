@@ -185,6 +185,7 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
             action_fts = derived_statuses["action_events_fts"]
             message_fts = derived_statuses["messages_fts"]
             embeddings = derived_statuses["embeddings"]
+            session_phases = derived_statuses.get("session_phases")
             session_tag_rollups = derived_statuses.get("session_tag_rollups")
             day_session_summaries = derived_statuses.get("day_session_summaries")
             week_session_summaries = derived_statuses.get("week_session_summaries")
@@ -256,6 +257,15 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                         VerifyStatus.OK if session_tag_rollups.ready else VerifyStatus.WARNING,
                         count=session_tag_rollups.materialized_rows,
                         summary=session_tag_rollups.detail,
+                    )
+                )
+            if session_phases is not None:
+                checks.append(
+                    HealthCheck(
+                        "session_phases",
+                        VerifyStatus.OK if session_phases.ready else VerifyStatus.WARNING,
+                        count=session_phases.materialized_rows,
+                        summary=session_phases.detail,
                     )
                 )
             if day_session_summaries is not None:

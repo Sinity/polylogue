@@ -208,7 +208,10 @@ Generates vector embeddings using Voyage AI, stored in sqlite-vec for semantic s
 ```bash
 polylogue products status --json
 polylogue products profiles --provider claude-code --limit 25 --json
+polylogue products profiles --session-date-since 2026-03-16 --session-date-until 2026-03-16 --json
 polylogue products work-events --kind testing --limit 50 --json
+polylogue products work-events --conversation-id claude-code:abc123 --json
+polylogue products phases --provider claude-code --since 2026-03-16T00:00:00+00:00 --json
 polylogue products threads --limit 20 --json
 polylogue products tags --provider claude-code --since 2026-01-01 --json
 polylogue products day-summaries --provider claude-code --since 2026-01-01 --json
@@ -217,6 +220,12 @@ polylogue products maintenance --json
 ```
 
 Durable archive products expose versioned, machine-readable session/work and maintenance surfaces backed by the archive read models rather than ad hoc recomputation from raw conversations.
+
+The session-product surfaces now include:
+
+- `products profiles`: `first_message_at`, `canonical_session_date`, `engaged_duration_ms`, `engaged_minutes`, canonical projects, repo paths
+- `products work-events`: timestamped work-event rows with `start_time`, `end_time`, `duration_ms`, `canonical_session_date`
+- `products phases`: timestamped session-phase timeline rows with phase kind, timing, duration, and per-phase tool counts
 
 ## Tags
 

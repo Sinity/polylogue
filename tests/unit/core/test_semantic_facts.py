@@ -184,6 +184,8 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.canonical_projects == ("polylogue",)
     assert profile.first_message_at == datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc)
     assert profile.last_message_at == datetime(2026, 3, 23, 9, 4, tzinfo=timezone.utc)
+    assert profile.canonical_session_date.isoformat() == "2026-03-23"
+    assert profile.engaged_duration_ms > 0
     assert profile.wall_duration_ms == 240000
 
 

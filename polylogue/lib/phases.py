@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from polylogue.lib.semantic_facts import (
@@ -31,6 +31,7 @@ class SessionPhase:
     kind: str
     start_time: datetime | None
     end_time: datetime | None
+    canonical_session_date: date | None
     message_range: tuple[int, int]
     duration_ms: int
     tool_counts: dict[str, int]
@@ -125,6 +126,7 @@ def _build_phase(
         kind=_classify_phase(dict(tool_counts), word_count),
         start_time=start_time,
         end_time=end_time,
+        canonical_session_date=(start_time or end_time).date() if (start_time or end_time) else None,
         message_range=(start_idx, end_idx),
         duration_ms=duration_ms,
         tool_counts=dict(tool_counts),
