@@ -1,8 +1,8 @@
 # Archive Data Products And Live Governance Program
 
 Date: 2026-03-24
-Status: active execution program
-Role: canonical next broad queue after the source-boundary and runtime-governance campaign
+Status: executed implementation program
+Role: canonical execution record for the archive-data-products and live-governance campaign
 
 Absorbs and extends as the live queue:
 
@@ -36,6 +36,33 @@ Turn Polylogue’s runtime truth into durable, externally consumable archive dat
 products while making live-archive cleanup, retrieval, and maintenance
 governance explicit enough to support real downstream consumers without local
 archaeology.
+
+## Execution Outcome
+
+This campaign is now executed.
+
+Implemented outcomes:
+
+- durable session/work archive products are now materialized and versioned:
+  - `session_profiles`
+  - `session_work_events`
+  - `work_threads`
+  - `session_tag_rollups`
+  - `day_session_summaries`
+  - derived `week_session_summaries`
+- one public consumer contract now exists across library, CLI, MCP, and sync
+  surfaces via `archive_products`, `products` CLI commands, and matching facade
+  operations
+- maintenance lineage is durable and machine-readable through
+  `maintenance_runs`, with preview/apply semantics exposed by `check --json`
+- live governance lanes now validate the real archive and consumer-product
+  surfaces; the named `archive-data-products-live` lane passes on the live DB
+- the live archive’s durable session products were rebuilt and are now ready:
+  `profiles`, `work events`, `threads`, `tag rollups`, `day summaries`, and
+  their FTS/readiness state all converge cleanly
+- destructive cleanup debt is now governed explicitly rather than hidden:
+  live preview surfaces report `15,781` orphaned content blocks as a deliberate
+  cleanup target instead of leaving them as unexplained archive corruption
 
 ## Why This Is The Right Next Campaign
 

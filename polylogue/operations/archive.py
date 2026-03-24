@@ -8,6 +8,27 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from polylogue.archive_product_builders import (
+    aggregate_day_session_summary_products,
+    aggregate_session_tag_rollup_products,
+    aggregate_week_session_summary_products,
+)
+from polylogue.archive_products import (
+    DaySessionSummaryProduct,
+    DaySessionSummaryProductQuery,
+    MaintenanceRunProduct,
+    MaintenanceRunProductQuery,
+    SessionProfileProduct,
+    SessionProfileProductQuery,
+    SessionTagRollupProduct,
+    SessionTagRollupQuery,
+    SessionWorkEventProduct,
+    SessionWorkEventProductQuery,
+    WeekSessionSummaryProduct,
+    WeekSessionSummaryProductQuery,
+    WorkThreadProduct,
+    WorkThreadProductQuery,
+)
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.paths import conversation_render_root
 from polylogue.services import RuntimeServices, build_runtime_services
@@ -250,6 +271,129 @@ class ArchiveOperations:
     async def provider_counts(self) -> list[tuple[str, int]]:
         rows = await self.backend.queries.get_provider_conversation_counts()
         return [(row["provider_name"] or "unknown", row["conversation_count"]) for row in rows]
+
+    async def get_session_product_status(self) -> dict[str, int | bool]:
+        return await self.repository.get_session_product_status()
+
+    async def get_session_profile_product(self, conversation_id: str) -> SessionProfileProduct | None:
+        record = await self.repository.get_session_profile_record(conversation_id)
+        return SessionProfileProduct.from_record(record) if record is not None else None
+
+    async def list_session_profile_products(
+        self,
+        query: SessionProfileProductQuery | None = None,
+    ) -> list[SessionProfileProduct]:
+        request = query or SessionProfileProductQuery()
+        records = await self.repository.list_session_profile_records(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+            limit=request.limit,
+            offset=request.offset,
+            query=request.query,
+        )
+        return [SessionProfileProduct.from_record(record) for record in records]
+
+    async def list_session_tag_rollup_products(
+        self,
+        query: SessionTagRollupQuery | None = None,
+    ) -> list[SessionTagRollupProduct]:
+        request = query or SessionTagRollupQuery()
+        rows = await self.repository.list_session_tag_rollup_records(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+            query=request.query,
+        )
+        products = aggregate_session_tag_rollup_products(rows)
+        if request.offset:
+            products = products[request.offset :]
+        if request.limit is not None:
+            products = products[: request.limit]
+        return products
+
+    async def get_session_work_event_products(
+        self,
+        conversation_id: str,
+    ) -> list[SessionWorkEventProduct]:
+        records = await self.repository.get_session_work_event_records(conversation_id)
+        return [SessionWorkEventProduct.from_record(record) for record in records]
+
+    async def list_session_work_event_products(
+        self,
+        query: SessionWorkEventProductQuery | None = None,
+    ) -> list[SessionWorkEventProduct]:
+        request = query or SessionWorkEventProductQuery()
+        records = await self.repository.list_session_work_event_records(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+            kind=request.kind,
+            limit=request.limit,
+            offset=request.offset,
+            query=request.query,
+        )
+        return [SessionWorkEventProduct.from_record(record) for record in records]
+
+    async def get_work_thread_product(self, thread_id: str) -> WorkThreadProduct | None:
+        record = await self.repository.get_work_thread_record(thread_id)
+        return WorkThreadProduct.from_record(record) if record is not None else None
+
+    async def list_work_thread_products(
+        self,
+        query: WorkThreadProductQuery | None = None,
+    ) -> list[WorkThreadProduct]:
+        request = query or WorkThreadProductQuery()
+        records = await self.repository.list_work_thread_records(
+            since=request.since,
+            until=request.until,
+            limit=request.limit,
+            offset=request.offset,
+            query=request.query,
+        )
+        return [WorkThreadProduct.from_record(record) for record in records]
+
+    async def list_day_session_summary_products(
+        self,
+        query: DaySessionSummaryProductQuery | None = None,
+    ) -> list[DaySessionSummaryProduct]:
+        request = query or DaySessionSummaryProductQuery()
+        rows = await self.repository.list_day_session_summary_records(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+        )
+        products = aggregate_day_session_summary_products(rows)
+        if request.offset:
+            products = products[request.offset :]
+        if request.limit is not None:
+            products = products[: request.limit]
+        return products
+
+    async def list_week_session_summary_products(
+        self,
+        query: WeekSessionSummaryProductQuery | None = None,
+    ) -> list[WeekSessionSummaryProduct]:
+        request = query or WeekSessionSummaryProductQuery()
+        rows = await self.repository.list_day_session_summary_records(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+        )
+        products = aggregate_week_session_summary_products(rows)
+        if request.offset:
+            products = products[request.offset :]
+        if request.limit is not None:
+            products = products[: request.limit]
+        return products
+
+    async def list_maintenance_run_products(
+        self,
+        query: MaintenanceRunProductQuery | None = None,
+    ) -> list[MaintenanceRunProduct]:
+        request = query or MaintenanceRunProductQuery()
+        records = await self.repository.list_maintenance_runs(limit=request.limit)
+        return [MaintenanceRunProduct.from_record(record) for record in records]
 
     async def provider_metrics(self) -> list[ProviderMetrics]:
         rows = await self.backend.queries.get_provider_metrics_rows()

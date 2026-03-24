@@ -71,6 +71,14 @@ class TestCommandConstruction:
         assert "tests/unit/cli/test_check.py" in cmd
         assert "tests/integration/test_health.py" in cmd
 
+    def test_archive_data_products_lane_uses_product_and_consumer_suite(self):
+        cmd = build_lane_command(LANES["archive-data-products"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/cli/test_products.py" in cmd
+        assert "tests/unit/core/test_facade_api.py" in cmd
+        assert "tests/unit/mcp/test_tool_contracts.py" in cmd
+        assert "tests/integration/test_health.py" in cmd
+
     def test_retrieval_dogfood_lane_uses_retrieval_suite(self):
         cmd = build_lane_command(LANES["retrieval-dogfood"])
         assert cmd[:3] == [sys.executable, "-m", "pytest"]
@@ -116,6 +124,13 @@ class TestCommandConstruction:
         assert "--cleanup" in cmd
         assert "--preview" in cmd
 
+    def test_live_products_tags_lane_uses_products_entrypoint(self):
+        cmd = build_lane_command(LANES["live-products-tags"])
+        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert "products" in cmd
+        assert "tags" in cmd
+        assert "--json" in cmd
+
     def test_composite_lane_has_no_direct_command(self):
         with pytest.raises(ValueError, match="composite"):
             build_lane_command(LANES["frontier-local"])
@@ -153,3 +168,11 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "live-maintenance-preview" in captured.out
         assert "maintenance-memory-budget" in captured.out
+
+    def test_archive_data_products_live_dry_run_includes_local_and_live_product_lanes(self, capsys):
+        exit_code = main(["--lane", "archive-data-products-live", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "archive-data-products" in captured.out
+        assert "live-products-small" in captured.out

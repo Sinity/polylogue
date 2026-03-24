@@ -21,6 +21,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
+from polylogue.archive_products import (
+    DaySessionSummaryProduct,
+    DaySessionSummaryProductQuery,
+    MaintenanceRunProduct,
+    MaintenanceRunProductQuery,
+    SessionProfileProduct,
+    SessionProfileProductQuery,
+    SessionTagRollupProduct,
+    SessionTagRollupQuery,
+    SessionWorkEventProduct,
+    SessionWorkEventProductQuery,
+    WeekSessionSummaryProduct,
+    WeekSessionSummaryProductQuery,
+    WorkThreadProduct,
+    WorkThreadProductQuery,
+)
 from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
@@ -119,6 +135,74 @@ class SyncPolylogue:
     def stats(self) -> ArchiveStats:
         """Get archive statistics."""
         return _run(self._facade.stats())
+
+    def get_session_product_status(self) -> dict[str, int | bool]:
+        """Get durable session-product readiness counters."""
+        return _run(self._facade.get_session_product_status())
+
+    def get_session_profile_product(self, conversation_id: str) -> SessionProfileProduct | None:
+        """Get the versioned durable session-profile product for one conversation."""
+        return _run(self._facade.get_session_profile_product(conversation_id))
+
+    def list_session_profile_products(
+        self,
+        query: SessionProfileProductQuery | None = None,
+    ) -> list[SessionProfileProduct]:
+        """List versioned durable session-profile products."""
+        return _run(self._facade.list_session_profile_products(query))
+
+    def list_session_tag_rollup_products(
+        self,
+        query: SessionTagRollupQuery | None = None,
+    ) -> list[SessionTagRollupProduct]:
+        """List versioned durable session-tag rollup products."""
+        return _run(self._facade.list_session_tag_rollup_products(query))
+
+    def get_session_work_event_products(
+        self,
+        conversation_id: str,
+    ) -> list[SessionWorkEventProduct]:
+        """Get versioned durable work-event products for one conversation."""
+        return _run(self._facade.get_session_work_event_products(conversation_id))
+
+    def list_session_work_event_products(
+        self,
+        query: SessionWorkEventProductQuery | None = None,
+    ) -> list[SessionWorkEventProduct]:
+        """List versioned durable work-event products."""
+        return _run(self._facade.list_session_work_event_products(query))
+
+    def get_work_thread_product(self, thread_id: str) -> WorkThreadProduct | None:
+        """Get the versioned durable work-thread product for one thread."""
+        return _run(self._facade.get_work_thread_product(thread_id))
+
+    def list_work_thread_products(
+        self,
+        query: WorkThreadProductQuery | None = None,
+    ) -> list[WorkThreadProduct]:
+        """List versioned durable work-thread products."""
+        return _run(self._facade.list_work_thread_products(query))
+
+    def list_day_session_summary_products(
+        self,
+        query: DaySessionSummaryProductQuery | None = None,
+    ) -> list[DaySessionSummaryProduct]:
+        """List durable day-level session summary products."""
+        return _run(self._facade.list_day_session_summary_products(query))
+
+    def list_week_session_summary_products(
+        self,
+        query: WeekSessionSummaryProductQuery | None = None,
+    ) -> list[WeekSessionSummaryProduct]:
+        """List durable week-level session summary products."""
+        return _run(self._facade.list_week_session_summary_products(query))
+
+    def list_maintenance_run_products(
+        self,
+        query: MaintenanceRunProductQuery | None = None,
+    ) -> list[MaintenanceRunProduct]:
+        """List versioned maintenance-lineage products."""
+        return _run(self._facade.list_maintenance_run_products(query))
 
     def filter(self):
         """Create a fluent filter builder (terminal methods are still async)."""

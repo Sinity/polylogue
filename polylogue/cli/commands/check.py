@@ -27,6 +27,7 @@ from polylogue.cli.check_workflow import (
     validate_check_options,
 )
 from polylogue.cli.types import AppEnv
+from polylogue.storage.repair import MAINTENANCE_TARGET_NAMES
 
 
 def _format_count_mapping(counts: dict[str, int]) -> str:
@@ -43,6 +44,13 @@ def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -
 @click.option("--cached", "use_cached_health", is_flag=True, help="Use the recent cached archive-health report when available")
 @click.option("--repair", is_flag=True, help="Run safe derived-data and database maintenance repairs")
 @click.option("--cleanup", is_flag=True, help="Run destructive archive cleanup for orphaned or empty persisted data")
+@click.option(
+    "--target",
+    "maintenance_targets",
+    multiple=True,
+    type=click.Choice(MAINTENANCE_TARGET_NAMES),
+    help="Limit maintenance to named targets such as session_products, action_event_read_model, dangling_fts, wal_checkpoint, orphaned_messages, orphaned_content_blocks, empty_conversations, or orphaned_attachments",
+)
 @click.option("--preview", is_flag=True, help="Preview maintenance without executing (requires --repair or --cleanup)")
 @click.option("--vacuum", is_flag=True, help="Reclaim unused space after maintenance (requires --repair or --cleanup)")
 @click.option("--deep", is_flag=True, help="Run SQLite integrity check (slow on large databases)")
@@ -171,6 +179,7 @@ def check_command(
     use_cached_health: bool,
     repair: bool,
     cleanup: bool,
+    maintenance_targets: tuple[str, ...],
     preview: bool,
     vacuum: bool,
     deep: bool,
@@ -206,6 +215,7 @@ def check_command(
         use_cached_health=use_cached_health,
         repair=repair,
         cleanup=cleanup,
+        maintenance_targets=maintenance_targets,
         preview=preview,
         vacuum=vacuum,
         deep=deep,

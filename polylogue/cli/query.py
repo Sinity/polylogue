@@ -184,6 +184,30 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             )
             return
 
+    if route == QueryRoute.STATS_BY and plan.stats_dimension in {"project", "work-kind"}:
+        if filter_chain.can_use_summaries():
+            summaries = await filter_chain.list_summaries()
+            await _query_output.output_stats_by_profile_summaries(
+                env,
+                summaries,
+                repo,
+                plan.stats_dimension or "all",
+                output_format=plan.output.output_format,
+            )
+            return
+        query_plan = filter_chain.build_query_plan()
+        records = await repo.queries.list_conversations(
+            query_plan.record_query.with_limit(query_plan.limit)
+        )
+        await _query_output.output_stats_by_profile_query(
+            env,
+            [record.conversation_id for record in records],
+            repo,
+            plan.stats_dimension or "all",
+            output_format=plan.output.output_format,
+        )
+        return
+
     if route in {QueryRoute.SUMMARY_MODIFY, QueryRoute.SUMMARY_DELETE}:
         results = await filter_chain.list_summaries()
     else:

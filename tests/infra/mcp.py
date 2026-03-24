@@ -27,6 +27,14 @@ EXPECTED_TOOL_NAMES = {
     "rebuild_index",
     "update_index",
     "export_conversation",
+    "session_profile",
+    "session_profiles",
+    "session_work_events",
+    "session_tag_rollups",
+    "work_threads",
+    "day_session_summaries",
+    "week_session_summaries",
+    "maintenance_runs",
 }
 
 EXPECTED_RESOURCE_URIS = {

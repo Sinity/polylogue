@@ -55,7 +55,10 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
     if result.roundtrip_report is not None:
         out["roundtrip_proof"] = result.roundtrip_report.to_dict()
     if result.maintenance_results is not None:
-        out["maintenance"] = [repair.to_dict() for repair in result.maintenance_results]
+        out["maintenance"] = {
+            "targets": list(options.maintenance_targets),
+            "items": [repair.to_dict() for repair in result.maintenance_results],
+        }
     if result.vacuum_result is not None:
         out["vacuum"] = result.vacuum_result
     emit_success(out)
@@ -295,6 +298,8 @@ def render_plain_output(
         click.echo("")
         mode_label = "Preview of maintenance" if options.preview else "Running maintenance"
         click.echo(f"{mode_label}...")
+        if options.maintenance_targets:
+            click.echo(f"  Targets: {', '.join(options.maintenance_targets)}")
         total_repaired = 0
         for repair in result.maintenance_results:
             if repair.repaired_count > 0 or not repair.success:

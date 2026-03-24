@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 
 RUN_ALL_REPAIRS_EXPECTED = {
+    "session_products",
     "orphaned_messages",
     "orphaned_content_blocks",
     "empty_conversations",
@@ -708,7 +709,12 @@ class TestMaintenanceSelection:
         results = run_safe_repairs(config, dry_run=False)
 
         assert isinstance(results, list)
-        assert {r.name for r in results} == {"action_event_read_model", "dangling_fts", "wal_checkpoint"}
+        assert {r.name for r in results} == {
+            "session_products",
+            "action_event_read_model",
+            "dangling_fts",
+            "wal_checkpoint",
+        }
         assert all(r.destructive is False for r in results)
         assert all(r.category.value in {"derived_repair", "database_maintenance"} for r in results)
 
@@ -757,6 +763,7 @@ class TestMaintenanceSelection:
             cleanup=True,
             dry_run=True,
             preview_counts={
+                "session_products": 13,
                 "action_event_read_model": 7,
                 "dangling_fts": 3,
                 "orphaned_messages": 2,
@@ -766,11 +773,44 @@ class TestMaintenanceSelection:
         )
 
         by_name = {result.name: result for result in results}
+        assert by_name["session_products"].repaired_count == 13
         assert by_name["action_event_read_model"].repaired_count == 7
         assert by_name["dangling_fts"].repaired_count == 3
         assert by_name["orphaned_messages"].repaired_count == 2
         assert by_name["orphaned_content_blocks"].repaired_count == 11
         assert by_name["empty_conversations"].repaired_count == 5
+
+    def test_run_selected_maintenance_can_scope_to_session_products(self, cli_workspace):
+        """Scoped maintenance should repair only the durable session-product layer."""
+        from polylogue.config import get_config
+        from polylogue.storage.backends.connection import connection_context
+        from polylogue.storage.repair import run_selected_maintenance
+        from tests.infra.storage_records import ConversationBuilder
+
+        config = get_config()
+        db_path = cli_workspace["db_path"]
+        (
+            ConversationBuilder(db_path, "conv-products")
+            .provider("claude-code")
+            .title("Scoped Product Repair")
+            .add_message("u1", role="user", text="Plan the change")
+            .save()
+        )
+
+        results = run_selected_maintenance(
+            config,
+            repair=True,
+            cleanup=False,
+            dry_run=False,
+            targets=("session_products",),
+        )
+
+        assert [result.name for result in results] == ["session_products"]
+        with connection_context(None) as conn:
+            profile_count = conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0]
+            thread_count = conn.execute("SELECT COUNT(*) FROM work_threads").fetchone()[0]
+        assert profile_count == 1
+        assert thread_count == 1
 
     def test_run_selected_maintenance_idempotency_after_full_run(self, cli_workspace):
         """Selected maintenance twice should find 0 issues on second run."""

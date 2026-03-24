@@ -24,8 +24,10 @@ from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import artifacts as artifacts_q
 from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
+from polylogue.storage.backends.queries import maintenance_runs as maintenance_runs_q
 from polylogue.storage.backends.queries import messages as messages_q
 from polylogue.storage.backends.queries import raw as raw_queries
+from polylogue.storage.backends.queries import session_products as session_products_q
 from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.state_views import RawConversationState, RawConversationStateUpdate
@@ -35,8 +37,12 @@ from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
+    MaintenanceRunRecord,
     MessageRecord,
     RawConversationRecord,
+    SessionProfileRecord,
+    SessionWorkEventRecord,
+    WorkThreadRecord,
 )
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
@@ -267,7 +273,9 @@ class SQLiteBackend:
             _ACTION_EVENT_DDL,
             _ACTION_FTS_DDL,
             _ARTIFACT_OBSERVATION_DDL,
+            _MAINTENANCE_RUN_DDL,
             _PUBLICATION_DDL,
+            _SESSION_PRODUCT_DDL,
             _VEC0_DDL,
             SCHEMA_DDL,
             SCHEMA_VERSION,
@@ -290,6 +298,7 @@ class SQLiteBackend:
         elif current_version == SCHEMA_VERSION:
             await conn.executescript(_ARTIFACT_OBSERVATION_DDL)
             await conn.executescript(_PUBLICATION_DDL)
+            await conn.executescript(_MAINTENANCE_RUN_DDL)
             await conn.executescript(_ACTION_EVENT_DDL)
             cursor = await conn.execute("PRAGMA table_info(action_events)")
             action_event_columns = {row[1] for row in await cursor.fetchall()}
@@ -298,6 +307,7 @@ class SQLiteBackend:
                     "ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1"
                 )
             await conn.executescript(_ACTION_FTS_DDL)
+            await conn.executescript(_SESSION_PRODUCT_DDL)
             await conn.commit()
         else:
             from polylogue.errors import DatabaseError
@@ -469,6 +479,58 @@ class SQLiteBackend:
     ) -> dict[str, list[ActionEventRecord]]:
         """Get durable action-event rows for multiple conversations."""
         return await self.queries.get_action_events_batch(conversation_ids)
+
+    async def replace_session_profile(
+        self,
+        record: SessionProfileRecord,
+    ) -> None:
+        """Replace one durable session-profile row."""
+        async with self._get_connection() as conn:
+            await session_products_q.replace_session_profile(
+                conn,
+                record,
+                self._transaction_depth,
+            )
+
+    async def replace_session_work_events(
+        self,
+        conversation_id: str,
+        records: list[SessionWorkEventRecord],
+    ) -> None:
+        """Replace durable work-event rows for one conversation."""
+        async with self._get_connection() as conn:
+            await session_products_q.replace_session_work_events(
+                conn,
+                conversation_id,
+                records,
+                self._transaction_depth,
+            )
+
+    async def replace_work_thread(
+        self,
+        thread_id: str,
+        record: WorkThreadRecord | None,
+    ) -> None:
+        """Replace one durable work-thread row."""
+        async with self._get_connection() as conn:
+            await session_products_q.replace_work_thread(
+                conn,
+                thread_id,
+                record,
+                self._transaction_depth,
+            )
+
+    async def record_maintenance_run(
+        self,
+        record: MaintenanceRunRecord,
+    ) -> None:
+        """Persist one maintenance lineage record."""
+        async with self._get_connection() as conn:
+            await maintenance_runs_q.record_maintenance_run(
+                conn,
+                record,
+                self._transaction_depth,
+            )
 
     async def upsert_conversation_stats(
         self,

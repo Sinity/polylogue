@@ -8,6 +8,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.archive_products import (
+    DaySessionSummaryProduct,
+    MaintenanceRunProduct,
+    SessionProfileProduct,
+    SessionTagRollupProduct,
+    SessionWorkEventProduct,
+    WeekSessionSummaryProduct,
+    WorkThreadProduct,
+)
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.stats import ArchiveStats
@@ -283,6 +292,176 @@ class TestGetConversationTool:
             result = await invoke_surface_async(mcp_server._tool_manager._tools["get_conversation"].fn, id="nonexistent-id-xyz")
 
         assert isinstance(json.loads(result), dict)
+
+
+class TestProductTools:
+    @pytest.mark.asyncio
+    async def test_session_profile_tool_uses_archive_product_contract(self, mcp_server):
+        product = SessionProfileProduct(
+            conversation_id="conv-1",
+            provider_name="claude-code",
+            title="Profiled Session",
+            primary_work_kind="implementation",
+            provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+            },
+            profile={"conversation_id": "conv-1", "title": "Profiled Session"},
+        )
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.get_session_profile_product = AsyncMock(return_value=product)
+            mock_get_archive_ops.return_value = mock_ops
+
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["session_profile"].fn,
+                conversation_id="conv-1",
+            )
+
+        payload = json.loads(raw)
+        assert payload["product_kind"] == "session_profile"
+        assert payload["conversation_id"] == "conv-1"
+
+    @pytest.mark.asyncio
+    async def test_product_list_tools_use_archive_queries(self, mcp_server):
+        profile = SessionProfileProduct(
+            conversation_id="conv-1",
+            provider_name="claude-code",
+            title="Profiled Session",
+            primary_work_kind="implementation",
+            provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+            },
+            profile={"conversation_id": "conv-1"},
+        )
+        work_event = SessionWorkEventProduct(
+            event_id="evt-1",
+            conversation_id="conv-1",
+            provider_name="claude-code",
+            event_index=0,
+            kind="implementation",
+            provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+            },
+            event={"summary": "editing files"},
+        )
+        thread = WorkThreadProduct(
+            thread_id="conv-1",
+            root_id="conv-1",
+            dominant_project="polylogue",
+            provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+            },
+            thread={"session_count": 2},
+        )
+        maintenance = MaintenanceRunProduct(
+            maintenance_run_id="maint-1",
+            executed_at="2026-03-24T11:00:00+00:00",
+            mode="preview",
+            preview=True,
+            repair_selected=True,
+            cleanup_selected=False,
+            vacuum_requested=False,
+            target_names=("session_products",),
+            success=True,
+            schema_version=1,
+            manifest={"results": []},
+        )
+        tag_rollup = SessionTagRollupProduct(
+            tag="provider:claude-code",
+            conversation_count=1,
+            explicit_count=0,
+            auto_count=1,
+            provider_breakdown={"claude-code": 1},
+            project_breakdown={"polylogue": 1},
+            provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+            },
+        )
+        day_summary = DaySessionSummaryProduct(
+            date="2026-03-24",
+            provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+            },
+            summary={"session_count": 1, "total_messages": 2},
+        )
+        week_summary = WeekSessionSummaryProduct(
+            iso_week="2026-W13",
+            provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+            },
+            summary={"session_count": 1, "total_messages": 2, "day_summaries": []},
+        )
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.list_session_profile_products = AsyncMock(return_value=[profile])
+            mock_ops.list_session_work_event_products = AsyncMock(return_value=[work_event])
+            mock_ops.list_session_tag_rollup_products = AsyncMock(return_value=[tag_rollup])
+            mock_ops.list_work_thread_products = AsyncMock(return_value=[thread])
+            mock_ops.list_day_session_summary_products = AsyncMock(return_value=[day_summary])
+            mock_ops.list_week_session_summary_products = AsyncMock(return_value=[week_summary])
+            mock_ops.list_maintenance_run_products = AsyncMock(return_value=[maintenance])
+            mock_get_archive_ops.return_value = mock_ops
+
+            profiles_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["session_profiles"].fn,
+                provider="claude-code",
+                query="profiled",
+                limit=5,
+                offset=2,
+            )
+            events_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["session_work_events"].fn,
+                kind="implementation",
+                limit=5,
+            )
+            threads_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["work_threads"].fn,
+                query="polylogue",
+                limit=5,
+            )
+            tags_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["session_tag_rollups"].fn,
+                provider="claude-code",
+                limit=5,
+            )
+            day_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["day_session_summaries"].fn,
+                provider="claude-code",
+                limit=5,
+            )
+            week_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["week_session_summaries"].fn,
+                provider="claude-code",
+                limit=5,
+            )
+            maintenance_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["maintenance_runs"].fn,
+                limit=5,
+            )
+
+        profiles_payload = json.loads(profiles_raw)
+        events_payload = json.loads(events_raw)
+        threads_payload = json.loads(threads_raw)
+        tags_payload = json.loads(tags_raw)
+        day_payload = json.loads(day_raw)
+        week_payload = json.loads(week_raw)
+        maintenance_payload = json.loads(maintenance_raw)
+
+        assert profiles_payload["count"] == 1
+        assert profiles_payload["items"][0]["product_kind"] == "session_profile"
+        assert events_payload["items"][0]["product_kind"] == "session_work_event"
+        assert tags_payload["items"][0]["product_kind"] == "session_tag_rollup"
+        assert threads_payload["items"][0]["product_kind"] == "work_thread"
+        assert day_payload["items"][0]["product_kind"] == "day_session_summary"
+        assert week_payload["items"][0]["product_kind"] == "week_session_summary"
+        assert maintenance_payload["items"][0]["product_kind"] == "maintenance_run"
 
 
 class TestStatsTool:

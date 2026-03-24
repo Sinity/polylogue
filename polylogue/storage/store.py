@@ -31,6 +31,8 @@ MAX_ATTACHMENT_SIZE = 1024 * 1024 * 1024 * 1024
 # SQLite SQLITE_MAX_LENGTH is 1 GB; keep raw blobs under 900 MB to leave headroom
 MAX_RAW_CONTENT_SIZE = 900 * 1024 * 1024
 ACTION_EVENT_MATERIALIZER_VERSION = 1
+SESSION_PRODUCT_MATERIALIZER_VERSION = 1
+MAINTENANCE_RUN_SCHEMA_VERSION = 1
 
 
 class ConversationRecord(BaseModel):
@@ -387,6 +389,189 @@ class ActionEventRecord(BaseModel):
         return v
 
 
+class SessionProfileRecord(BaseModel):
+    """Durable canonical session-profile row."""
+
+    conversation_id: ConversationId
+    materializer_version: int = SESSION_PRODUCT_MATERIALIZER_VERSION
+    materialized_at: str
+    source_updated_at: str | None = None
+    source_sort_key: float | None = None
+    provider_name: str
+    title: str | None = None
+    first_message_at: str | None = None
+    last_message_at: str | None = None
+    primary_work_kind: str | None = None
+    repo_paths: tuple[str, ...] = ()
+    canonical_projects: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+    auto_tags: tuple[str, ...] = ()
+    message_count: int = 0
+    work_event_count: int = 0
+    word_count: int = 0
+    tool_use_count: int = 0
+    thinking_count: int = 0
+    total_cost_usd: float = 0.0
+    total_duration_ms: int = 0
+    wall_duration_ms: int = 0
+    payload: dict[str, Any]
+    search_text: str
+
+    @field_validator("conversation_id", "provider_name", "materialized_at", "search_text")
+    @classmethod
+    def profile_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+
+class SessionWorkEventRecord(BaseModel):
+    """Durable canonical work-event row."""
+
+    event_id: str
+    conversation_id: ConversationId
+    materializer_version: int = SESSION_PRODUCT_MATERIALIZER_VERSION
+    materialized_at: str
+    source_updated_at: str | None = None
+    source_sort_key: float | None = None
+    provider_name: str
+    event_index: int
+    kind: str
+    confidence: float
+    start_index: int
+    end_index: int
+    summary: str
+    file_paths: tuple[str, ...] = ()
+    tools_used: tuple[str, ...] = ()
+    payload: dict[str, Any]
+    search_text: str
+
+    @field_validator(
+        "event_id",
+        "conversation_id",
+        "materialized_at",
+        "provider_name",
+        "kind",
+        "summary",
+        "search_text",
+    )
+    @classmethod
+    def work_event_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+
+class WorkThreadRecord(BaseModel):
+    """Durable canonical work-thread row."""
+
+    thread_id: str
+    root_id: ConversationId
+    materializer_version: int = SESSION_PRODUCT_MATERIALIZER_VERSION
+    materialized_at: str
+    start_time: str | None = None
+    end_time: str | None = None
+    dominant_project: str | None = None
+    session_ids: tuple[str, ...] = ()
+    session_count: int = 0
+    depth: int = 0
+    branch_count: int = 0
+    total_messages: int = 0
+    total_cost_usd: float = 0.0
+    wall_duration_ms: int = 0
+    work_event_breakdown: dict[str, int] | None = None
+    payload: dict[str, Any]
+    search_text: str
+
+    @field_validator("thread_id", "root_id", "materialized_at", "search_text")
+    @classmethod
+    def work_thread_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+
+class SessionTagRollupRecord(BaseModel):
+    """Durable provider/day tag rollup row used to build public tag products."""
+
+    tag: str
+    bucket_day: str
+    provider_name: str
+    materializer_version: int = SESSION_PRODUCT_MATERIALIZER_VERSION
+    materialized_at: str
+    source_updated_at: str | None = None
+    source_sort_key: float | None = None
+    conversation_count: int = 0
+    explicit_count: int = 0
+    auto_count: int = 0
+    project_breakdown: dict[str, int]
+    search_text: str
+
+    @field_validator(
+        "tag",
+        "bucket_day",
+        "provider_name",
+        "materialized_at",
+        "search_text",
+    )
+    @classmethod
+    def tag_rollup_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+
+class DaySessionSummaryRecord(BaseModel):
+    """Durable provider/day summary row used to build day/week products."""
+
+    day: str
+    provider_name: str
+    materializer_version: int = SESSION_PRODUCT_MATERIALIZER_VERSION
+    materialized_at: str
+    source_updated_at: str | None = None
+    source_sort_key: float | None = None
+    conversation_count: int = 0
+    total_cost_usd: float = 0.0
+    total_duration_ms: int = 0
+    total_wall_duration_ms: int = 0
+    total_messages: int = 0
+    total_words: int = 0
+    work_event_breakdown: dict[str, int]
+    projects_active: tuple[str, ...] = ()
+    payload: dict[str, Any]
+    search_text: str
+
+    @field_validator("day", "provider_name", "materialized_at", "search_text")
+    @classmethod
+    def day_summary_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+
+class MaintenanceRunRecord(BaseModel):
+    """Durable lineage record for maintenance previews and applies."""
+
+    maintenance_run_id: str
+    schema_version: int = MAINTENANCE_RUN_SCHEMA_VERSION
+    executed_at: str
+    mode: str
+    preview: bool = False
+    repair_selected: bool = False
+    cleanup_selected: bool = False
+    vacuum_requested: bool = False
+    target_names: tuple[str, ...] = ()
+    success: bool = True
+    manifest: dict[str, Any]
+
+    @field_validator("maintenance_run_id", "executed_at", "mode")
+    @classmethod
+    def maintenance_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+
 def _json_or_none(value: dict[str, object] | None) -> str | None:
     if value is None:
         return None
@@ -414,10 +599,18 @@ __all__ = [
     "ArtifactObservationRecord",
     "ContentBlockRecord",
     "ConversationRecord",
+    "MAINTENANCE_RUN_SCHEMA_VERSION",
+    "MaintenanceRunRecord",
     "MAX_ATTACHMENT_SIZE",
     "MessageRecord",
     "PublicationRecord",
     "RawConversationRecord",
     "RunRecord",
+    "SESSION_PRODUCT_MATERIALIZER_VERSION",
+    "SessionTagRollupRecord",
+    "SessionProfileRecord",
+    "SessionWorkEventRecord",
+    "DaySessionSummaryRecord",
+    "WorkThreadRecord",
     "_json_array_or_none",
 ]

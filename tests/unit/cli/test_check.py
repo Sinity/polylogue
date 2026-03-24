@@ -37,7 +37,7 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.state_views import ArtifactCohortSummary
 from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
-from tests.infra.storage_records import DbFactory
+from tests.infra.storage_records import ConversationBuilder, DbFactory
 
 
 @pytest.fixture
@@ -266,6 +266,57 @@ class TestHealthReportConstruction:
 
         assert len(report.checks) == 0
         assert report.summary == {"ok": 0, "warning": 0, "error": 0}
+
+
+def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products")
+        .provider("claude-code")
+        .title("Scoped Check Repair")
+        .add_message("u1", role="user", text="Plan the cleanup")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "check",
+            "--json",
+            "--repair",
+            "--preview",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["maintenance"]["targets"] == ["session_products"]
+    assert payload["maintenance"]["items"][0]["name"] == "session_products"
+    assert payload["maintenance"]["items"][0]["repaired_count"] > 0
+
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT preview, target_names_json, manifest_json
+            FROM maintenance_runs
+            ORDER BY executed_at DESC, maintenance_run_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert row["preview"] == 1
+    assert json.loads(row["target_names_json"]) == ["session_products"]
+    manifest = json.loads(row["manifest_json"])
+    assert manifest["targets"] == ["session_products"]
 
 
 class TestCheckCommand:

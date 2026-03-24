@@ -36,11 +36,31 @@ Semantic-analysis/reporting helpers are still public, but they are no longer
 re-exported from package roots. Import them from their actual modules:
 
 ```python
-from polylogue.lib.session_products import (
-    build_session_profile,
-    build_session_threads,
-    infer_auto_tags,
+from polylogue.lib.session_profile import build_session_profile, infer_auto_tags
+from polylogue.lib.threads import build_session_threads
+```
+
+Durable archive products are public too:
+
+```python
+from polylogue import Polylogue
+from polylogue.archive_products import (
+    DaySessionSummaryProductQuery,
+    SessionProfileProductQuery,
+    SessionTagRollupQuery,
 )
+
+async with Polylogue() as archive:
+    status = await archive.get_session_product_status()
+    profiles = await archive.list_session_profile_products(
+        SessionProfileProductQuery(provider="claude-code", limit=25)
+    )
+    tags = await archive.list_session_tag_rollup_products(
+        SessionTagRollupQuery(provider="claude-code", since="2026-01-01")
+    )
+    days = await archive.list_day_session_summary_products(
+        DaySessionSummaryProductQuery(provider="claude-code", since="2026-01-01")
+    )
 ```
 
 ## Filter Chain API
@@ -104,6 +124,14 @@ continuations = await ConversationFilter(repo).is_continuation().list()
 | `.exclude_provider(*names)` | Exclude providers |
 | `.tag(*tags)` | Include tags |
 | `.exclude_tag(*tags)` | Exclude tags |
+| `.path(*terms)` | Require touched-path substrings |
+| `.action(*kinds)` | Require semantic action kinds |
+| `.exclude_action(*kinds)` | Exclude semantic action kinds |
+| `.tool(*names)` | Require normalized tool names |
+| `.exclude_tool(*names)` | Exclude normalized tool names |
+| `.action_sequence(*kinds)` | Require ordered semantic action subsequence |
+| `.action_text(*terms)` | Require text inside normalized action evidence |
+| `.retrieval_lane(name)` | Choose retrieval lane: `auto`, `dialogue`, `actions`, `hybrid` |
 | `.has(*types)` | Content types: `thinking`, `tools`, `summary`, `attachments` |
 | `.title(pattern)` | Title contains pattern |
 | `.id(prefix)` | ID prefix match |
@@ -197,6 +225,15 @@ asyncio.run(main())
 | `rebuild_index()` | Rebuild FTS5 search index |
 | `stats()` | Archive statistics (returns `ArchiveStats`) |
 | `filter()` | Fluent filter builder (sync, reuses `ConversationFilter`) |
+| `get_session_product_status()` | Durable product readiness/freshness summary |
+| `get_session_profile_product(id)` | Get one durable session-profile product |
+| `list_session_profile_products(query)` | List durable session-profile products |
+| `list_session_work_event_products(query)` | List durable work-event products |
+| `list_work_thread_products(query)` | List durable work-thread products |
+| `list_session_tag_rollup_products(query)` | List durable tag-rollup products |
+| `list_day_session_summary_products(query)` | List durable day-summary products |
+| `list_week_session_summary_products(query)` | List durable week-summary products |
+| `list_maintenance_run_products(query)` | List durable maintenance lineage products |
 
 ---
 
