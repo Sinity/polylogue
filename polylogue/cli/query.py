@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING, Any
 
 import click
@@ -52,6 +53,12 @@ def _create_query_vector_provider(config: object) -> object | None:
     except Exception as exc:
         logger.warning("Vector search setup failed: %s", exc)
         return None
+
+
+async def _await_if_needed(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
@@ -170,19 +177,21 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
                 output_format=plan.output.output_format,
             )
             return
-        if await query_plan.can_use_action_event_stats_with(repo):
-            records = await repo.queries.list_conversations(
+        if await _await_if_needed(query_plan.can_use_action_event_stats_with(repo)) is True:
+            records_result = repo.queries.list_conversations(
                 query_plan.record_query.with_limit(query_plan.limit)
             )
-            await _query_output.output_stats_by_semantic_query(
-                env,
-                [record.conversation_id for record in records],
-                repo,
-                plan.stats_dimension or "all",
-                selection=plan.selection,
-                output_format=plan.output.output_format,
-            )
-            return
+            if inspect.isawaitable(records_result):
+                records = await records_result
+                await _query_output.output_stats_by_semantic_query(
+                    env,
+                    [record.conversation_id for record in records],
+                    repo,
+                    plan.stats_dimension or "all",
+                    selection=plan.selection,
+                    output_format=plan.output.output_format,
+                )
+                return
 
     if route == QueryRoute.STATS_BY and plan.stats_dimension in {"project", "work-kind"}:
         if filter_chain.can_use_summaries():

@@ -13,12 +13,25 @@ from polylogue.config import Config
 from polylogue.health_archive import get_health
 from polylogue.health_cache import cached_health_summary
 from polylogue.logging import get_logger
-from polylogue.operations import compute_provider_comparison, get_provider_counts
+from polylogue.operations import ProviderMetrics, compute_provider_comparison, get_provider_counts
 from polylogue.pipeline.runner import latest_run
 from polylogue.sync_bridge import run_coroutine_sync
 from polylogue.ui.theme import provider_color
 
 logger = get_logger(__name__)
+
+__all__ = [
+    "ProviderMetrics",
+    "compute_provider_comparison",
+    "fail",
+    "load_effective_config",
+    "load_last_source",
+    "maybe_prompt_sources",
+    "print_summary",
+    "resolve_sources",
+    "save_last_source",
+    "source_state_path",
+]
 
 
 def fail(command: str, message: str) -> NoReturn:

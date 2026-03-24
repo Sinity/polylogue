@@ -39,6 +39,9 @@ python -m devtools.run_validation_lanes --lane semantic-stack
 python -m devtools.run_validation_lanes --lane source-provider-fidelity
 python -m devtools.run_validation_lanes --lane maintenance-control-plane
 python -m devtools.run_validation_lanes --lane archive-data-products
+python -m devtools.run_validation_lanes --lane runtime-substrate-contracts
+python -m devtools.run_validation_lanes --lane runtime-substrate-live --dry-run
+python -m devtools.run_validation_lanes --lane runtime-substrate-hardening --dry-run
 python -m devtools.run_validation_lanes --lane source-runtime-governance
 python -m devtools.run_validation_lanes --lane retrieval-dogfood
 python -m devtools.run_validation_lanes --lane embeddings-coverage
@@ -63,6 +66,9 @@ Lane intent:
 - `source-provider-fidelity`: local source traversal, Drive/runtime boundaries, and provider-ingest fidelity
 - `maintenance-control-plane`: health, maintenance selection, cache/live provenance, and publication maintenance summaries
 - `archive-data-products`: durable archive products, consumer contracts, product-aware grouped stats, and health/governance surfaces
+- `runtime-substrate-contracts`: local closure lane for the decomposed query/runtime/product/maintenance contract surfaces
+- `runtime-substrate-live`: bounded live archive dogfooding for runtime-substrate retrieval, governance, and memory budgets
+- `runtime-substrate-hardening`: `runtime-substrate-contracts` plus `runtime-substrate-live`
 - `source-runtime-governance`: local closure lane for source/provider fidelity plus runtime maintenance convergence
 - `retrieval-dogfood`: action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payloads
 - `embeddings-coverage`: embedding readiness/coverage stats and embed command contracts

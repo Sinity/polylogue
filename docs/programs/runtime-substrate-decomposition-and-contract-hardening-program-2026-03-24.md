@@ -1,8 +1,8 @@
 # Runtime Substrate Decomposition And Contract Hardening Program
 
 Date: 2026-03-24
-Status: active execution program
-Role: canonical next broad queue after the archive-data-products and live-governance campaign
+Status: executed implementation program
+Role: canonical execution record for the runtime-substrate decomposition and contract-hardening campaign
 
 Absorbs and extends as the live queue:
 
@@ -38,6 +38,68 @@ Turn Polylogue’s remaining broad runtime clusters into smaller, explicit
 subsystems with harder public contracts, narrower module ownership, and
 validation that measures the real operational surfaces rather than only their
 internals.
+
+## Execution Outcome
+
+This campaign is now executed.
+
+Implemented outcomes:
+
+- query planning, retrieval, semantic reconciliation, grouping, and output
+  policy are now split across explicit runtime modules:
+  - `lib/query_support.py`
+  - `lib/query_runtime.py`
+  - `lib/query_retrieval.py`
+  - `lib/query_sorting.py`
+  - `cli/query_grouped_stats.py`
+  - `cli/query_list_output.py`
+  - `cli/query_profile_stats.py`
+  - `cli/query_semantic_slice.py`
+  - `cli/query_semantic_stats.py`
+  - `cli/query_sql_stats.py`
+  - `cli/query_stats_structured.py`
+- session-product lifecycle is no longer one mixed engine; status, rebuild,
+  refresh/delete upkeep, and support helpers are isolated in:
+  - `storage/session_product_status.py`
+  - `storage/session_product_rebuild.py`
+  - `storage/session_product_refresh.py`
+  - `storage/session_product_support.py`
+- maintenance is now a smaller governed control plane instead of one omnibus
+  module:
+  - `storage/repair_support.py`
+  - `storage/repair_cleanup.py`
+  - `storage/repair_derived.py`
+  - `storage/repair_control.py`
+- row-model ownership is narrower through `storage/store_core.py` and
+  `storage/store_products.py`, while the public store root stays canonical
+- semantic-proof registry topology is now split into explicit declaration,
+  model, and evaluation layers:
+  - `rendering/semantic_surface_declarations.py`
+  - `rendering/semantic_surface_models.py`
+  - `rendering/semantic_surface_evaluation.py`
+- backend/schema ownership is materially narrower:
+  - `backends/async_sqlite_archive.py`
+  - `backends/async_sqlite_derived.py`
+  - `backends/async_sqlite_raw.py`
+  - `backends/schema_ddl.py`
+  - `backends/schema_upgrade.py`
+- MCP tool wiring no longer lives in one broad registration module:
+  - `mcp/server_query_tools.py`
+  - `mcp/server_mutation_tools.py`
+  - `mcp/server_read_tools.py`
+  - `mcp/server_maintenance_tools.py`
+  - `mcp/server_product_tools.py`
+- named validation lanes now cover the campaign directly:
+  - `runtime-substrate-contracts`
+  - `runtime-substrate-live`
+  - `runtime-substrate-hardening`
+- the live archive was exercised through those new runtime-substrate lanes:
+  - bounded retrieval RSS stayed within budget
+  - bounded maintenance preview RSS stayed within budget
+  - no new `earlyoom` kills occurred during the closure pass
+  - the real archive still reports the intentional live debt of `15,781`
+    orphaned content blocks, now as explicit governed cleanup debt rather than
+    silent drift
 
 ## Why This Is The Right Next Campaign
 

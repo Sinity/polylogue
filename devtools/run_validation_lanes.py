@@ -435,6 +435,29 @@ LANES: dict[str, LaneConfig] = {
         timeout_s=1800,
         sub_lanes=("archive-data-products", "live-products-small"),
     ),
+    "runtime-substrate-contracts": LaneConfig(
+        name="runtime-substrate-contracts",
+        description="Local runtime-substrate closure lane across query, semantic proof, durable products, and maintenance control-plane contracts",
+        timeout_s=2400,
+        sub_lanes=(
+            "query-routing",
+            "semantic-stack",
+            "maintenance-control-plane",
+            "archive-data-products",
+        ),
+    ),
+    "runtime-substrate-live": LaneConfig(
+        name="runtime-substrate-live",
+        description="Bounded live archive lane for runtime-substrate dogfooding, governance, and memory budgets",
+        timeout_s=1800,
+        sub_lanes=("live-archive-small", "live-governance-small", "memory-budget"),
+    ),
+    "runtime-substrate-hardening": LaneConfig(
+        name="runtime-substrate-hardening",
+        description="Full runtime-substrate validation lane covering local contracts plus bounded live archive checks",
+        timeout_s=3600,
+        sub_lanes=("runtime-substrate-contracts", "runtime-substrate-live"),
+    ),
     "frontier-local": LaneConfig(
         name="frontier-local",
         description="Non-live local closure lane for machine/query/semantic/TUI/chaos validation",
