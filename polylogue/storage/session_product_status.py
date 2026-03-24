@@ -8,7 +8,7 @@ import aiosqlite
 
 from polylogue.storage.store import SESSION_PRODUCT_MATERIALIZER_VERSION
 
-from .session_product_support import _PROFILE_BUCKET_DAY_SQL
+from .session_product_aggregates import _PROFILE_BUCKET_DAY_SQL
 
 _SESSION_PROFILES_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
 _SESSION_PROFILES_FTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles_fts'"

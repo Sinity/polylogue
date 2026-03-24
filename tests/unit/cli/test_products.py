@@ -8,15 +8,14 @@ from datetime import datetime, timezone
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.services import build_runtime_services
 from polylogue.storage.action_event_lifecycle import rebuild_action_event_read_model_sync
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.backends.queries.maintenance_runs import record_maintenance_run_sync
 from polylogue.storage.session_product_lifecycle import (
     rebuild_session_products_sync,
     session_product_status_sync,
 )
 from polylogue.storage.store import MaintenanceRunRecord
-from polylogue.sync_bridge import run_coroutine_sync
 from tests.infra.storage_records import ConversationBuilder
 
 
@@ -103,26 +102,37 @@ def _seed_products(cli_workspace) -> None:
 
 
 def _record_maintenance_lineage(cli_workspace) -> None:
-    services = build_runtime_services(db_path=cli_workspace["db_path"])
-    try:
-        run_coroutine_sync(
-            services.get_backend().record_maintenance_run(
-                MaintenanceRunRecord(
-                    maintenance_run_id="maint-test-001",
-                    executed_at=datetime.now(timezone.utc).isoformat(),
-                    mode="preview",
-                    preview=True,
-                    repair_selected=True,
-                    cleanup_selected=False,
-                    vacuum_requested=False,
-                    target_names=("session_products",),
-                    success=True,
-                    manifest={"results": [{"name": "session_products", "repaired_count": 2}]},
-                )
-            )
+    with open_connection(cli_workspace["db_path"]) as conn:
+        record_maintenance_run_sync(
+            conn,
+            MaintenanceRunRecord(
+                maintenance_run_id="maint-test-001",
+                executed_at=datetime.now(timezone.utc).isoformat(),
+                mode="preview",
+                preview=True,
+                repair_selected=True,
+                cleanup_selected=False,
+                vacuum_requested=False,
+                target_names=("session_products",),
+                success=True,
+                manifest={"results": [{"name": "session_products", "repaired_count": 2}]},
+            ),
         )
-    finally:
-        run_coroutine_sync(services.close())
+        record_maintenance_run_sync(
+            conn,
+            MaintenanceRunRecord(
+                maintenance_run_id="maint-test-002",
+                executed_at=datetime.now(timezone.utc).isoformat(),
+                mode="apply",
+                preview=False,
+                repair_selected=True,
+                cleanup_selected=False,
+                vacuum_requested=False,
+                target_names=("session_products",),
+                success=True,
+                manifest={"results": [{"name": "session_products", "repaired_count": 2}]},
+            ),
+        )
 
 
 def test_products_profiles_json(cli_workspace):
@@ -135,7 +145,7 @@ def test_products_profiles_json(cli_workspace):
     payload = _extract_json(result.output)
     assert payload["count"] == 2
     first = payload["session_profiles"][0]
-    assert first["contract_version"] == 1
+    assert first["contract_version"] == 2
     assert first["product_kind"] == "session_profile"
     assert first["canonical_session_date"] == "2026-03-01"
     assert first["engaged_duration_ms"] >= 0
@@ -258,6 +268,7 @@ def test_products_analytics_json(cli_workspace):
 
 def test_products_debt_json(cli_workspace):
     _seed_products(cli_workspace)
+    _record_maintenance_lineage(cli_workspace)
 
     runner = CliRunner()
     result = runner.invoke(cli, ["products", "debt", "--json"], catch_exceptions=False)
@@ -266,7 +277,10 @@ def test_products_debt_json(cli_workspace):
     payload = _extract_json(result.output)
     assert payload["count"] >= 1
     assert {item["product_kind"] for item in payload["archive_debt"]} == {"archive_debt"}
-    assert any(item["debt_name"] == "session_products" for item in payload["archive_debt"])
+    session_product_item = next(item for item in payload["archive_debt"] if item["debt_name"] == "session_products")
+    assert session_product_item["governance_stage"] == "validated"
+    assert session_product_item["lineage"]["latest_preview_at"] is not None
+    assert session_product_item["lineage"]["latest_successful_apply_at"] is not None
 
 
 def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli_workspace):

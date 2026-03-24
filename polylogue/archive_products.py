@@ -15,7 +15,7 @@ from polylogue.storage.store import (
     WorkThreadRecord,
 )
 
-ARCHIVE_PRODUCT_CONTRACT_VERSION = 1
+ARCHIVE_PRODUCT_CONTRACT_VERSION = 2
 
 
 class ArchiveProductModel(BaseModel):
@@ -251,6 +251,14 @@ class ProviderAnalyticsProduct(ArchiveProductModel):
     thinking_percentage: float
 
 
+class ArchiveDebtTargetLineage(ArchiveProductModel):
+    latest_run_at: str | None = None
+    latest_mode: str | None = None
+    latest_preview_at: str | None = None
+    latest_apply_at: str | None = None
+    latest_successful_apply_at: str | None = None
+
+
 class ArchiveDebtProduct(ArchiveProductModel):
     contract_version: int = ARCHIVE_PRODUCT_CONTRACT_VERSION
     product_kind: str = "archive_debt"
@@ -261,9 +269,17 @@ class ArchiveDebtProduct(ArchiveProductModel):
     issue_count: int
     healthy: bool
     detail: str
+    governance_stage: str
+    lineage: ArchiveDebtTargetLineage | None = None
 
     @classmethod
-    def from_status(cls, status: ArchiveDebtStatus) -> ArchiveDebtProduct:
+    def from_status(
+        cls,
+        status: ArchiveDebtStatus,
+        *,
+        governance_stage: str,
+        lineage: ArchiveDebtTargetLineage | None = None,
+    ) -> ArchiveDebtProduct:
         return cls(
             debt_name=status.name,
             category=status.category.value,
@@ -272,6 +288,8 @@ class ArchiveDebtProduct(ArchiveProductModel):
             issue_count=status.issue_count,
             healthy=status.healthy,
             detail=status.detail,
+            governance_stage=governance_stage,
+            lineage=lineage,
         )
 
 
@@ -362,6 +380,7 @@ class ArchiveDebtProductQuery(ArchiveProductModel):
 __all__ = [
     "ARCHIVE_PRODUCT_CONTRACT_VERSION",
     "ArchiveDebtProduct",
+    "ArchiveDebtTargetLineage",
     "ArchiveDebtProductQuery",
     "ArchiveProductModel",
     "ArchiveProductProvenance",

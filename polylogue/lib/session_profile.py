@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from polylogue.lib.attribution import ConversationAttribution, extract_attribution
 from polylogue.lib.decisions import Decision, extract_decisions
 from polylogue.lib.phases import SessionPhase, extract_phases
+from polylogue.lib.project_normalization import normalize_project_names, normalize_repo_paths
 from polylogue.lib.semantic_facts import ConversationSemanticFacts, build_conversation_semantic_facts
 from polylogue.lib.work_events import WorkEvent, extract_work_events
 
@@ -125,6 +126,11 @@ class SessionProfile:
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> SessionProfile:
+        repo_paths = normalize_repo_paths(payload.get("repo_paths", []) or [])
+        canonical_projects = normalize_project_names(
+            payload.get("canonical_projects", []) or [],
+            repo_paths=repo_paths,
+        )
         return cls(
             conversation_id=str(payload["conversation_id"]),
             provider=str(payload["provider"]),
@@ -142,12 +148,12 @@ class SessionProfile:
                 str(key): int(value or 0)
                 for key, value in (payload.get("tool_categories", {}) or {}).items()
             },
-            repo_paths=tuple(str(item) for item in payload.get("repo_paths", []) or []),
+            repo_paths=repo_paths,
             cwd_paths=tuple(str(item) for item in payload.get("cwd_paths", []) or []),
             branch_names=tuple(str(item) for item in payload.get("branch_names", []) or []),
             file_paths_touched=tuple(str(item) for item in payload.get("file_paths_touched", []) or []),
             languages_detected=tuple(str(item) for item in payload.get("languages_detected", []) or []),
-            canonical_projects=tuple(str(item) for item in payload.get("canonical_projects", []) or []),
+            canonical_projects=canonical_projects,
             work_events=tuple(
                 WorkEvent.from_dict(item)
                 for item in payload.get("work_events", []) or []

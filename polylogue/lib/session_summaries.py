@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
+from polylogue.lib.project_normalization import normalize_project_names
 from polylogue.lib.session_profile import SessionProfile
 
 
@@ -90,7 +91,12 @@ def summarize_day(
             event.kind.value if hasattr(event.kind, "value") else str(event.kind)
             for event in profile.work_events
         )
-        projects.update(profile.canonical_projects or profile.repo_paths)
+        projects.update(
+            normalize_project_names(
+                profile.canonical_projects,
+                repo_paths=profile.repo_paths,
+            )
+        )
     return DaySessionSummary(
         date=target_date,
         session_count=len(profiles),

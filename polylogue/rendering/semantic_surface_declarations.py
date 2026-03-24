@@ -1,73 +1,18 @@
-"""Declared semantic-proof surface catalog and alias maps."""
+"""Declared semantic-proof surface catalog."""
 
 from __future__ import annotations
 
-from typing import Any
-
+from polylogue.rendering.semantic_surface_aliases import build_surface_aliases
+from polylogue.rendering.semantic_surface_contract_helpers import (
+    declared_loss_contract as _declared_loss,
+)
+from polylogue.rendering.semantic_surface_contract_helpers import (
+    presence_contract as _presence,
+)
+from polylogue.rendering.semantic_surface_contract_helpers import (
+    preserve_contract as _preserve,
+)
 from polylogue.rendering.semantic_surface_models import SemanticMetricContract, SemanticSurfaceSpec
-
-
-def _preserve(
-    metric: str,
-    policy: str,
-    input_key: str,
-    output_key: str | None = None,
-    *,
-    input_transform: str = "identity",
-    output_transform: str = "identity",
-) -> SemanticMetricContract:
-    return SemanticMetricContract(
-        metric=metric,
-        mode="preserve",
-        policy=policy,
-        input_key=input_key,
-        output_key=output_key or input_key,
-        input_transform=input_transform,
-        output_transform=output_transform,
-    )
-
-
-def _declared_loss(
-    metric: str,
-    policy: str,
-    input_key: str,
-    output_key: str | None = None,
-    *,
-    input_transform: str = "identity",
-    output_transform: str = "identity",
-    default_output: Any = 0,
-) -> SemanticMetricContract:
-    return SemanticMetricContract(
-        metric=metric,
-        mode="declared_loss",
-        policy=policy,
-        input_key=input_key,
-        output_key=output_key,
-        input_transform=input_transform,
-        output_transform=output_transform,
-        default_output=default_output,
-    )
-
-
-def _presence(
-    metric: str,
-    policy: str,
-    input_key: str,
-    output_key: str,
-    *,
-    input_transform: str = "presence_bool",
-    output_transform: str = "identity",
-) -> SemanticMetricContract:
-    return SemanticMetricContract(
-        metric=metric,
-        mode="presence",
-        policy=policy,
-        input_key=input_key,
-        output_key=output_key,
-        input_transform=input_transform,
-        output_transform=output_transform,
-    )
-
 
 _CANONICAL_MARKDOWN_CONTRACTS = (
     _preserve(
@@ -693,49 +638,12 @@ SEMANTIC_SURFACE_SPECS: tuple[SemanticSurfaceSpec, ...] = (
     SemanticSurfaceSpec("mcp_detail_json_v1", "mcp", aliases=("mcp_detail",), contracts=_MCP_DETAIL_CONTRACTS),
 )
 
-DEFAULT_SEMANTIC_SURFACES: tuple[str, ...] = tuple(spec.name for spec in SEMANTIC_SURFACE_SPECS)
-
-_SPECS_BY_NAME = {spec.name: spec for spec in SEMANTIC_SURFACE_SPECS}
-
-SURFACE_ALIASES: dict[str, tuple[str, ...]] = {
-    "all": DEFAULT_SEMANTIC_SURFACES,
-    "canonical": ("canonical_markdown_v1",),
-    "canonical_markdown": ("canonical_markdown_v1",),
-    "canonical_markdown_v1": ("canonical_markdown_v1",),
-    "query_summary_all": tuple(
-        spec.name for spec in SEMANTIC_SURFACE_SPECS if spec.category == "query_summary"
-    ),
-    "stream_all": tuple(
-        spec.name for spec in SEMANTIC_SURFACE_SPECS if spec.category == "query_stream"
-    ),
-    "query_all": tuple(
-        spec.name for spec in SEMANTIC_SURFACE_SPECS
-        if spec.category in {"query_summary", "query_stream"}
-    ),
-    "mcp_all": tuple(spec.name for spec in SEMANTIC_SURFACE_SPECS if spec.category == "mcp"),
-    "read_all": tuple(
-        spec.name for spec in SEMANTIC_SURFACE_SPECS
-        if spec.category in {"query_summary", "query_stream", "mcp"}
-    ),
-    "export_all": tuple(spec.name for spec in SEMANTIC_SURFACE_SPECS if spec.category == "export"),
-}
-
-for spec in SEMANTIC_SURFACE_SPECS:
-    SURFACE_ALIASES[spec.name] = (spec.name,)
-    for alias in spec.aliases:
-        SURFACE_ALIASES[alias] = (spec.name,)
-
-EXPORT_SURFACE_FORMATS: dict[str, str] = {
-    spec.name: spec.export_format
-    for spec in SEMANTIC_SURFACE_SPECS
-    if spec.export_format is not None
-}
-
-STREAM_SURFACE_FORMATS: dict[str, str] = {
-    spec.name: spec.stream_format
-    for spec in SEMANTIC_SURFACE_SPECS
-    if spec.stream_format is not None
-}
+(
+    DEFAULT_SEMANTIC_SURFACES,
+    SURFACE_ALIASES,
+    EXPORT_SURFACE_FORMATS,
+    STREAM_SURFACE_FORMATS,
+) = build_surface_aliases(SEMANTIC_SURFACE_SPECS)
 
 
 __all__ = [

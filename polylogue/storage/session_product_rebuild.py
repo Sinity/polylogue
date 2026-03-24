@@ -12,23 +12,25 @@ from polylogue.archive_product_builders import (
     build_session_tag_rollup_records,
 )
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
-
-from .session_product_support import (
+from polylogue.storage.session_product_batches import (
     _ALL_CONVERSATION_IDS_SQL,
-    build_all_thread_records_async,
-    build_all_thread_records_sync,
-    build_session_product_records,
     chunked,
     hydrate_conversations,
-    hydrate_session_profile,
     load_async_batch,
     load_sync_batch,
+)
+from polylogue.storage.session_product_rows import build_session_product_records, hydrate_session_profile
+from polylogue.storage.session_product_storage import (
     replace_day_session_summaries_sync,
     replace_session_phases_sync,
     replace_session_profile_sync,
     replace_session_tag_rollup_rows_sync,
     replace_session_work_events_sync,
     replace_work_thread_sync,
+)
+from polylogue.storage.session_product_threads import (
+    build_all_thread_records_async,
+    build_all_thread_records_sync,
 )
 
 

@@ -437,6 +437,7 @@ class TestProductTools:
             issue_count=0,
             healthy=True,
             detail="Session-product read models ready",
+            governance_stage="validated",
         )
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()

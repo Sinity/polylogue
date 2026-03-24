@@ -4,45 +4,34 @@ from __future__ import annotations
 
 import click
 
-from polylogue.archive_products import (
-    ArchiveDebtProductQuery,
-    DaySessionSummaryProductQuery,
-    MaintenanceRunProductQuery,
-    ProviderAnalyticsProductQuery,
-    SessionPhaseProductQuery,
-    SessionProfileProductQuery,
-    SessionTagRollupQuery,
-    SessionWorkEventProductQuery,
-    WeekSessionSummaryProductQuery,
-    WorkThreadProductQuery,
+from polylogue.cli.products_rendering import (
+    render_archive_debt,
+    render_day_session_summaries,
+    render_maintenance_runs,
+    render_products_status,
+    render_provider_analytics,
+    render_session_phases,
+    render_session_profiles,
+    render_session_tag_rollups,
+    render_session_work_events,
+    render_week_session_summaries,
+    render_work_threads,
+    summarize_archive_debt,
 )
-from polylogue.cli.machine_errors import emit_success
+from polylogue.cli.products_workflow import (
+    get_products_status,
+    list_archive_debt_products,
+    list_day_session_summary_products,
+    list_maintenance_run_products,
+    list_provider_analytics_products,
+    list_session_phase_products,
+    list_session_profile_products,
+    list_session_tag_rollup_products,
+    list_session_work_event_products,
+    list_week_session_summary_products,
+    list_work_thread_products,
+)
 from polylogue.cli.types import AppEnv
-from polylogue.sync_bridge import run_coroutine_sync
-
-
-def _emit_product_list(*, json_mode: bool, key: str, items: list[object]) -> None:
-    if json_mode:
-        emit_success(
-            {
-                "count": len(items),
-                key: [
-                    item.model_dump(mode="json")
-                    if hasattr(item, "model_dump")
-                    else item
-                    for item in items
-                ],
-            }
-        )
-
-
-def _summarize_archive_debt(items: list[object]) -> dict[str, int]:
-    actionable = [item for item in items if getattr(item, "healthy", True) is False]
-    return {
-        "tracked_items": len(items),
-        "actionable_items": len(actionable),
-        "issue_rows": sum(int(getattr(item, "issue_count", 0) or 0) for item in items),
-    }
 
 
 @click.group("products")
@@ -55,21 +44,12 @@ def products_command() -> None:
 @click.pass_obj
 def products_status_command(env: AppEnv, json_mode: bool) -> None:
     """Show durable product readiness status."""
-    status = run_coroutine_sync(env.operations.get_session_product_status())
-    debt_items = run_coroutine_sync(
-        env.operations.list_archive_debt_products(ArchiveDebtProductQuery())
+    status, debt_items = get_products_status(env)
+    render_products_status(
+        status=status,
+        debt_summary=summarize_archive_debt(debt_items),
+        json_mode=json_mode,
     )
-    debt_summary = _summarize_archive_debt(debt_items)
-    if json_mode:
-        emit_success({"session_products": status, "archive_debt": debt_summary})
-        return
-    click.echo("Session Product Status:\n")
-    for key, value in sorted(status.items()):
-        click.echo(f"  {key}: {value}")
-    click.echo("\nArchive Debt:\n")
-    click.echo(f"  tracked_items: {debt_summary['tracked_items']}")
-    click.echo(f"  actionable_items: {debt_summary['actionable_items']}")
-    click.echo(f"  issue_rows: {debt_summary['issue_rows']}")
 
 
 @products_command.command("profiles")
@@ -100,47 +80,20 @@ def products_profiles_command(
     json_mode: bool,
 ) -> None:
     """List durable session-profile products."""
-    items = run_coroutine_sync(
-        env.operations.list_session_profile_products(
-            SessionProfileProductQuery(
-                provider=provider,
-                since=since,
-                until=until,
-                first_message_since=first_message_since,
-                first_message_until=first_message_until,
-                session_date_since=session_date_since,
-                session_date_until=session_date_until,
-                query=query,
-                limit=limit,
-                offset=offset,
-            )
-        )
+    items = list_session_profile_products(
+        env,
+        provider=provider,
+        since=since,
+        until=until,
+        first_message_since=first_message_since,
+        first_message_until=first_message_until,
+        session_date_since=session_date_since,
+        session_date_until=session_date_until,
+        query=query,
+        limit=limit,
+        offset=offset,
     )
-    if json_mode:
-        _emit_product_list(json_mode=True, key="session_profiles", items=items)
-        return
-    if not items:
-        click.echo("No session profiles matched.")
-        return
-    click.echo(f"Session profiles: {len(items)}\n")
-    for item in items:
-        profile = item.profile
-        projects = ", ".join(profile.get("canonical_projects", [])[:3]) or "-"
-        click.echo(
-            f"  {item.conversation_id} [{item.provider_name}] "
-            f"{item.primary_work_kind or '-'} "
-            f"{item.title or '(untitled)'}"
-        )
-        click.echo(
-            f"    first_message_at={item.first_message_at or '-'} "
-            f"session_date={item.canonical_session_date or '-'} "
-            f"engaged_minutes={item.engaged_minutes:g}"
-        )
-        click.echo(
-            f"    messages={profile.get('message_count', 0)} "
-            f"work_events={len(profile.get('work_events', []))} "
-            f"projects={projects}"
-        )
+    render_session_profiles(items, json_mode=json_mode)
 
 
 @products_command.command("work-events")
@@ -167,42 +120,18 @@ def products_work_events_command(
     json_mode: bool,
 ) -> None:
     """List durable work-event products."""
-    items = run_coroutine_sync(
-        env.operations.list_session_work_event_products(
-            SessionWorkEventProductQuery(
-                conversation_id=conversation_id,
-                provider=provider,
-                since=since,
-                until=until,
-                kind=kind,
-                query=query,
-                limit=limit,
-                offset=offset,
-            )
-        )
+    items = list_session_work_event_products(
+        env,
+        conversation_id=conversation_id,
+        provider=provider,
+        since=since,
+        until=until,
+        kind=kind,
+        query=query,
+        limit=limit,
+        offset=offset,
     )
-    if json_mode:
-        _emit_product_list(json_mode=True, key="session_work_events", items=items)
-        return
-    if not items:
-        click.echo("No work events matched.")
-        return
-    click.echo(f"Work events: {len(items)}\n")
-    for item in items:
-        event = item.event
-        click.echo(
-            f"  {item.event_id} [{item.provider_name}] {item.kind} "
-            f"conversation={item.conversation_id}"
-        )
-        click.echo(
-            f"    start={item.start_time or '-'} end={item.end_time or '-'} "
-            f"session_date={item.canonical_session_date or '-'} duration_ms={item.duration_ms}"
-        )
-        click.echo(
-            f"    summary={event.get('summary', '-') or '-'} "
-            f"files={len(event.get('file_paths', []))} "
-            f"tools={len(event.get('tools_used', []))}"
-        )
+    render_session_work_events(items, json_mode=json_mode)
 
 
 @products_command.command("phases")
@@ -227,41 +156,17 @@ def products_phases_command(
     json_mode: bool,
 ) -> None:
     """List durable session-phase products."""
-    items = run_coroutine_sync(
-        env.operations.list_session_phase_products(
-            SessionPhaseProductQuery(
-                conversation_id=conversation_id,
-                provider=provider,
-                since=since,
-                until=until,
-                kind=kind,
-                limit=limit,
-                offset=offset,
-            )
-        )
+    items = list_session_phase_products(
+        env,
+        conversation_id=conversation_id,
+        provider=provider,
+        since=since,
+        until=until,
+        kind=kind,
+        limit=limit,
+        offset=offset,
     )
-    if json_mode:
-        _emit_product_list(json_mode=True, key="session_phases", items=items)
-        return
-    if not items:
-        click.echo("No session phases matched.")
-        return
-    click.echo(f"Session phases: {len(items)}\n")
-    for item in items:
-        phase = item.phase
-        click.echo(
-            f"  {item.phase_id} [{item.provider_name}] {item.kind} "
-            f"conversation={item.conversation_id}"
-        )
-        click.echo(
-            f"    start={item.start_time or '-'} end={item.end_time or '-'} "
-            f"session_date={item.canonical_session_date or '-'} duration_ms={item.duration_ms}"
-        )
-        click.echo(
-            f"    message_range={phase.get('message_range', [])} "
-            f"tools={phase.get('tool_counts', {})} "
-            f"words={phase.get('word_count', 0)}"
-        )
+    render_session_phases(items, json_mode=json_mode)
 
 
 @products_command.command("threads")
@@ -282,36 +187,15 @@ def products_threads_command(
     json_mode: bool,
 ) -> None:
     """List durable work-thread products."""
-    items = run_coroutine_sync(
-        env.operations.list_work_thread_products(
-            WorkThreadProductQuery(
-                since=since,
-                until=until,
-                query=query,
-                limit=limit,
-                offset=offset,
-            )
-        )
+    items = list_work_thread_products(
+        env,
+        since=since,
+        until=until,
+        query=query,
+        limit=limit,
+        offset=offset,
     )
-    if json_mode:
-        _emit_product_list(json_mode=True, key="work_threads", items=items)
-        return
-    if not items:
-        click.echo("No work threads matched.")
-        return
-    click.echo(f"Work threads: {len(items)}\n")
-    for item in items:
-        thread = item.thread
-        click.echo(
-            f"  {item.thread_id} project={item.dominant_project or '-'} "
-            f"sessions={thread.get('session_count', 0)} "
-            f"messages={thread.get('total_messages', 0)}"
-        )
-        click.echo(
-            f"    depth={thread.get('depth', 0)} "
-            f"branches={thread.get('branch_count', 0)} "
-            f"providers={thread.get('provider_breakdown', {})}"
-        )
+    render_work_threads(items, json_mode=json_mode)
 
 
 @products_command.command("tags")
@@ -334,34 +218,16 @@ def products_tags_command(
     json_mode: bool,
 ) -> None:
     """List durable session-tag rollup products."""
-    items = run_coroutine_sync(
-        env.operations.list_session_tag_rollup_products(
-            SessionTagRollupQuery(
-                provider=provider,
-                since=since,
-                until=until,
-                query=query,
-                limit=limit,
-                offset=offset,
-            )
-        )
+    items = list_session_tag_rollup_products(
+        env,
+        provider=provider,
+        since=since,
+        until=until,
+        query=query,
+        limit=limit,
+        offset=offset,
     )
-    if json_mode:
-        _emit_product_list(json_mode=True, key="session_tag_rollups", items=items)
-        return
-    if not items:
-        click.echo("No session tag rollups matched.")
-        return
-    click.echo(f"Session tag rollups: {len(items)}\n")
-    for item in items:
-        click.echo(
-            f"  {item.tag} conversations={item.conversation_count} "
-            f"explicit={item.explicit_count} auto={item.auto_count}"
-        )
-        click.echo(
-            f"    providers={item.provider_breakdown} "
-            f"projects={item.project_breakdown}"
-        )
+    render_session_tag_rollups(items, json_mode=json_mode)
 
 
 @products_command.command("day-summaries")
@@ -382,31 +248,15 @@ def products_day_summaries_command(
     json_mode: bool,
 ) -> None:
     """List durable day-level session summary products."""
-    items = run_coroutine_sync(
-        env.operations.list_day_session_summary_products(
-            DaySessionSummaryProductQuery(
-                provider=provider,
-                since=since,
-                until=until,
-                limit=limit,
-                offset=offset,
-            )
-        )
+    items = list_day_session_summary_products(
+        env,
+        provider=provider,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
     )
-    if json_mode:
-        _emit_product_list(json_mode=True, key="day_session_summaries", items=items)
-        return
-    if not items:
-        click.echo("No day summaries matched.")
-        return
-    click.echo(f"Day session summaries: {len(items)}\n")
-    for item in items:
-        summary = item.summary
-        click.echo(
-            f"  {item.date} sessions={summary.get('session_count', 0)} "
-            f"messages={summary.get('total_messages', 0)} "
-            f"projects={', '.join(summary.get('projects_active', [])[:3]) or '-'}"
-        )
+    render_day_session_summaries(items, json_mode=json_mode)
 
 
 @products_command.command("week-summaries")
@@ -427,31 +277,15 @@ def products_week_summaries_command(
     json_mode: bool,
 ) -> None:
     """List durable week-level session summary products."""
-    items = run_coroutine_sync(
-        env.operations.list_week_session_summary_products(
-            WeekSessionSummaryProductQuery(
-                provider=provider,
-                since=since,
-                until=until,
-                limit=limit,
-                offset=offset,
-            )
-        )
+    items = list_week_session_summary_products(
+        env,
+        provider=provider,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
     )
-    if json_mode:
-        _emit_product_list(json_mode=True, key="week_session_summaries", items=items)
-        return
-    if not items:
-        click.echo("No week summaries matched.")
-        return
-    click.echo(f"Week session summaries: {len(items)}\n")
-    for item in items:
-        summary = item.summary
-        click.echo(
-            f"  {item.iso_week} sessions={summary.get('session_count', 0)} "
-            f"messages={summary.get('total_messages', 0)} "
-            f"days={len(summary.get('day_summaries', []))}"
-        )
+    render_week_session_summaries(items, json_mode=json_mode)
 
 
 @products_command.command("maintenance")
@@ -464,24 +298,8 @@ def products_maintenance_command(
     json_mode: bool,
 ) -> None:
     """List durable maintenance preview/apply lineage."""
-    items = run_coroutine_sync(
-        env.operations.list_maintenance_run_products(
-            MaintenanceRunProductQuery(limit=limit)
-        )
-    )
-    if json_mode:
-        _emit_product_list(json_mode=True, key="maintenance_runs", items=items)
-        return
-    if not items:
-        click.echo("No maintenance runs recorded.")
-        return
-    click.echo(f"Maintenance runs: {len(items)}\n")
-    for item in items:
-        targets = ", ".join(item.target_names) if item.target_names else "all selected"
-        click.echo(
-            f"  {item.executed_at} {item.mode} success={item.success} "
-            f"preview={item.preview} targets={targets}"
-        )
+    items = list_maintenance_run_products(env, limit=limit)
+    render_maintenance_runs(items, json_mode=json_mode)
 
 
 @products_command.command("analytics")
@@ -498,31 +316,13 @@ def products_analytics_command(
     json_mode: bool,
 ) -> None:
     """List canonical provider-level analytics products."""
-    items = run_coroutine_sync(
-        env.operations.list_provider_analytics_products(
-            ProviderAnalyticsProductQuery(
-                provider=provider,
-                limit=limit,
-                offset=offset,
-            )
-        )
+    items = list_provider_analytics_products(
+        env,
+        provider=provider,
+        limit=limit,
+        offset=offset,
     )
-    if json_mode:
-        _emit_product_list(json_mode=True, key="provider_analytics", items=items)
-        return
-    if not items:
-        click.echo("No provider analytics matched.")
-        return
-    click.echo(f"Provider analytics: {len(items)}\n")
-    for item in items:
-        click.echo(
-            f"  {item.provider_name} conversations={item.conversation_count} "
-            f"messages={item.message_count} avg_messages={item.avg_messages_per_conversation:.1f}"
-        )
-        click.echo(
-            f"    tools={item.tool_use_count} ({item.tool_use_percentage:.1f}% convs) "
-            f"thinking={item.thinking_count} ({item.thinking_percentage:.1f}% convs)"
-        )
+    render_provider_analytics(items, json_mode=json_mode)
 
 
 @products_command.command("debt")
@@ -541,29 +341,14 @@ def products_debt_command(
     json_mode: bool,
 ) -> None:
     """List governed live archive debt items."""
-    items = run_coroutine_sync(
-        env.operations.list_archive_debt_products(
-            ArchiveDebtProductQuery(
-                category=category,
-                only_actionable=actionable_only,
-                limit=limit,
-                offset=offset,
-            )
-        )
+    items = list_archive_debt_products(
+        env,
+        category=category,
+        actionable_only=actionable_only,
+        limit=limit,
+        offset=offset,
     )
-    if json_mode:
-        _emit_product_list(json_mode=True, key="archive_debt", items=items)
-        return
-    if not items:
-        click.echo("No archive debt matched.")
-        return
-    click.echo(f"Archive debt: {len(items)}\n")
-    for item in items:
-        click.echo(
-            f"  {item.debt_name} category={item.category} healthy={item.healthy} "
-            f"issue_count={item.issue_count} destructive={item.destructive}"
-        )
-        click.echo(f"    target={item.maintenance_target} detail={item.detail}")
+    render_archive_debt(items, json_mode=json_mode)
 
 
 __all__ = ["products_command"]

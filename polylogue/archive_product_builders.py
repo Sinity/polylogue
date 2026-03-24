@@ -12,6 +12,7 @@ from polylogue.archive_products import (
     SessionTagRollupProduct,
     WeekSessionSummaryProduct,
 )
+from polylogue.lib.project_normalization import normalize_project_breakdown, normalize_project_names
 from polylogue.lib.session_profile import SessionProfile
 from polylogue.lib.session_summaries import DaySessionSummary, summarize_day, summarize_week
 from polylogue.storage.store import (
@@ -124,7 +125,12 @@ def build_session_tag_rollup_records(
                 bucket["auto_count"] = int(bucket["auto_count"]) + 1
             cast_projects = bucket["projects"]
             assert isinstance(cast_projects, Counter)
-            cast_projects.update(profile.canonical_projects)
+            cast_projects.update(
+                normalize_project_names(
+                    profile.canonical_projects,
+                    repo_paths=profile.repo_paths,
+                )
+            )
             cast_updates = bucket["source_updated_at"]
             cast_sorts = bucket["source_sort_key"]
             assert isinstance(cast_updates, list)
@@ -245,7 +251,7 @@ def aggregate_session_tag_rollup_products(
         assert isinstance(project_breakdown, Counter)
         assert isinstance(record_rows, list)
         provider_breakdown[row.provider_name] += row.conversation_count
-        project_breakdown.update(row.project_breakdown)
+        project_breakdown.update(normalize_project_breakdown(row.project_breakdown))
         record_rows.append(row)
 
     products: list[SessionTagRollupProduct] = []
@@ -305,7 +311,7 @@ def aggregate_day_session_summary_products(
         assert isinstance(providers, Counter)
         assert isinstance(record_rows, list)
         work_event_breakdown.update(row.work_event_breakdown)
-        projects_active.update(row.projects_active)
+        projects_active.update(normalize_project_names(row.projects_active))
         providers[row.provider_name] += row.conversation_count
         record_rows.append(row)
 
