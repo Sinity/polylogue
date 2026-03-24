@@ -1,17 +1,18 @@
-"""Tests for analytics metrics computation."""
+"""Tests for provider analytics product computation."""
 
 from __future__ import annotations
 
-from polylogue.cli.helpers import ProviderMetrics, compute_provider_comparison
+from polylogue.archive_products import ProviderAnalyticsProduct
+from polylogue.operations.archive import list_provider_analytics_products
 from tests.infra.storage_records import make_conversation, make_message
 
 
-class TestProviderMetrics:
-    """Test ProviderMetrics dataclass."""
+class TestProviderAnalyticsProduct:
+    """Test ProviderAnalyticsProduct contract."""
 
     def test_tool_use_percentage_with_data(self):
         """Tool use percentage is calculated correctly."""
-        metrics = ProviderMetrics(
+        metrics = ProviderAnalyticsProduct(
             provider_name="test",
             conversation_count=100,
             message_count=500,
@@ -24,12 +25,14 @@ class TestProviderMetrics:
             thinking_count=10,
             total_conversations_with_tools=20,
             total_conversations_with_thinking=8,
+            tool_use_percentage=20.0,
+            thinking_percentage=8.0,
         )
         assert metrics.tool_use_percentage == 20.0
 
     def test_tool_use_percentage_zero_conversations(self):
         """Tool use percentage returns 0 when no conversations."""
-        metrics = ProviderMetrics(
+        metrics = ProviderAnalyticsProduct(
             provider_name="empty",
             conversation_count=0,
             message_count=0,
@@ -42,12 +45,14 @@ class TestProviderMetrics:
             thinking_count=0,
             total_conversations_with_tools=0,
             total_conversations_with_thinking=0,
+            tool_use_percentage=0.0,
+            thinking_percentage=0.0,
         )
         assert metrics.tool_use_percentage == 0.0
 
     def test_thinking_percentage_with_data(self):
         """Thinking percentage is calculated correctly."""
-        metrics = ProviderMetrics(
+        metrics = ProviderAnalyticsProduct(
             provider_name="test",
             conversation_count=50,
             message_count=200,
@@ -60,12 +65,14 @@ class TestProviderMetrics:
             thinking_count=15,
             total_conversations_with_tools=3,
             total_conversations_with_thinking=10,
+            tool_use_percentage=6.0,
+            thinking_percentage=20.0,
         )
         assert metrics.thinking_percentage == 20.0
 
     def test_thinking_percentage_zero_conversations(self):
         """Thinking percentage returns 0 when no conversations."""
-        metrics = ProviderMetrics(
+        metrics = ProviderAnalyticsProduct(
             provider_name="empty",
             conversation_count=0,
             message_count=0,
@@ -78,17 +85,19 @@ class TestProviderMetrics:
             thinking_count=0,
             total_conversations_with_tools=0,
             total_conversations_with_thinking=0,
+            tool_use_percentage=0.0,
+            thinking_percentage=0.0,
         )
         assert metrics.thinking_percentage == 0.0
 
 
-class TestComputeProviderComparison:
-    """Test compute_provider_comparison function."""
+class TestListProviderAnalyticsProducts:
+    """Test list_provider_analytics_products function."""
 
     async def test_empty_database(self, workspace_env):
         """Empty database returns empty list."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-        result = await compute_provider_comparison(db_path=db_path)
+        result = await list_provider_analytics_products(db_path=db_path)
         assert result == []
 
     async def test_single_provider(self, workspace_env, storage_repository):
@@ -102,7 +111,7 @@ class TestComputeProviderComparison:
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await compute_provider_comparison(db_path=db_path)
+        result = await list_provider_analytics_products(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].provider_name == "claude-ai"
@@ -127,7 +136,7 @@ class TestComputeProviderComparison:
             msgs = [make_message(f"gmsg-{i}", f"chatgpt-{i}", text="Hi")]
             await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await compute_provider_comparison(db_path=db_path)
+        result = await list_provider_analytics_products(db_path=db_path)
 
         assert len(result) == 2
         # ChatGPT has more conversations, should be first
@@ -149,7 +158,7 @@ class TestComputeProviderComparison:
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await compute_provider_comparison(db_path=db_path)
+        result = await list_provider_analytics_products(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].user_message_count == 2
@@ -178,7 +187,7 @@ class TestComputeProviderComparison:
         ]
         await storage_repository.save_conversation(conversation=conv2, messages=msgs2, attachments=[])
 
-        result = await compute_provider_comparison(db_path=db_path)
+        result = await list_provider_analytics_products(db_path=db_path)
 
         assert len(result) == 1
         # Total 6 messages across 2 conversations = 3.0 average
@@ -195,7 +204,7 @@ class TestComputeProviderComparison:
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await compute_provider_comparison(db_path=db_path)
+        result = await list_provider_analytics_products(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].tool_use_count == 1
@@ -213,7 +222,7 @@ class TestComputeProviderComparison:
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await compute_provider_comparison(db_path=db_path)
+        result = await list_provider_analytics_products(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].thinking_count == 1
@@ -233,7 +242,7 @@ class TestComputeProviderComparison:
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await compute_provider_comparison(db_path=db_path)
+        result = await list_provider_analytics_products(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].tool_use_count == 2  # Two tool use messages
@@ -249,7 +258,7 @@ class TestComputeProviderComparison:
         msgs = [make_message("zero-msg-1", "zero-div", role="system", text="System message")]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await compute_provider_comparison(db_path=db_path)
+        result = await list_provider_analytics_products(db_path=db_path)
 
         assert len(result) == 1
         # Should not raise division by zero
@@ -330,7 +339,7 @@ class TestWordCountEdgeCases:
             ("test", "user", "   ", None),
             ("test", "user", "     ", None),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         assert len(results) == 1
         assert results[0].avg_user_words == 0.0
 
@@ -344,7 +353,7 @@ class TestWordCountEdgeCases:
         db = await _seed_db(tmp_path, [
             ("test", "user", "\t\t", None),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 0.0
 
     async def test_single_word_counts_one(self, tmp_path):
@@ -352,7 +361,7 @@ class TestWordCountEdgeCases:
         db = await _seed_db(tmp_path, [
             ("test", "user", "Hello", None),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 1.0
 
     async def test_multiple_spaces_between_words(self, tmp_path):
@@ -364,7 +373,7 @@ class TestWordCountEdgeCases:
         db = await _seed_db(tmp_path, [
             ("test", "user", "hello  world", None),  # 2 spaces
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 2.0
 
     async def test_empty_text_counts_zero(self, tmp_path):
@@ -372,7 +381,7 @@ class TestWordCountEdgeCases:
         db = await _seed_db(tmp_path, [
             ("test", "user", "", None),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 0.0
 
     async def test_none_text_counts_zero(self, tmp_path):
@@ -380,7 +389,7 @@ class TestWordCountEdgeCases:
         db = await _seed_db(tmp_path, [
             ("test", "user", None, None),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 0.0
 
 
@@ -398,7 +407,7 @@ class TestLikePatternResistance:
             ("test", "assistant", 'The tool_use feature is great', None),
             ("test", "assistant", 'I used "type":"tool_use" in my message', None),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         # tool_use_count should be 0 — the LIKE is on provider_meta, not text
         assert results[0].tool_use_count == 0
 
@@ -407,7 +416,7 @@ class TestLikePatternResistance:
         db = await _seed_db(tmp_path, [
             ("test", "assistant", 'I was thinking about "type":"thinking" blocks', None),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         assert results[0].thinking_count == 0
 
     async def test_tool_role_fallback_detected(self, tmp_path):
@@ -415,7 +424,7 @@ class TestLikePatternResistance:
         db = await _seed_db(tmp_path, [
             ("test", "tool", "Tool result here", None),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         assert results[0].tool_use_count == 1
 
     async def test_tool_use_in_provider_meta_detected(self, tmp_path):
@@ -424,7 +433,7 @@ class TestLikePatternResistance:
         db = await _seed_db(tmp_path, [
             ("test", "assistant", "Using a tool", meta),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         assert results[0].tool_use_count == 1
         assert results[0].total_conversations_with_tools == 1
 
@@ -434,7 +443,7 @@ class TestLikePatternResistance:
         db = await _seed_db(tmp_path, [
             ("test", "assistant", "Here's my answer", meta),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         assert results[0].thinking_count == 1
         assert results[0].total_conversations_with_thinking == 1
 
@@ -448,7 +457,7 @@ class TestLikePatternResistance:
         db = await _seed_db(tmp_path, [
             ("test", "assistant", "Result from tool", meta),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
         assert results[0].tool_use_count == 1
         assert results[0].thinking_count == 1
 
@@ -472,7 +481,7 @@ class TestCrossProviderConsistency:
             ("claude-ai", "assistant", "Claude used a tool", claude_meta),
             ("claude-ai", "user", "Thanks", None),
         ])
-        results = await compute_provider_comparison(db_path=db)
+        results = await list_provider_analytics_products(db_path=db)
 
         by_provider = {r.provider_name: r for r in results}
         assert by_provider["chatgpt"].tool_use_count == 1

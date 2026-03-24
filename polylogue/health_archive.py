@@ -11,6 +11,7 @@ from .health_cache import load_cached_report, write_cache
 from .health_models import HealthCheck, HealthReport, VerifyStatus
 from .lib.provider_identity import CORE_SCHEMA_PROVIDERS
 from .sources.drive_auth import default_credentials_path, default_token_path
+from .storage.archive_debt import collect_archive_debt_statuses_sync
 from .storage.backends.connection import connection_context, open_connection
 from .storage.derived_status import collect_derived_model_statuses_sync
 from .storage.index import index_status
@@ -73,53 +74,21 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
     if db_error is None:
         with connection_context(None) as conn:
             derived_statuses = collect_derived_model_statuses_sync(conn)
-            orphan_cids = conn.execute(
-                """
-                SELECT DISTINCT m.conversation_id FROM messages m
-                WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = m.conversation_id)
-                """
-            ).fetchall()
-            if orphan_cids:
-                placeholders = ",".join("?" for _ in orphan_cids)
-                orphan_count = conn.execute(
-                    f"SELECT COUNT(*) FROM messages WHERE conversation_id IN ({placeholders})",
-                    [row[0] for row in orphan_cids],
-                ).fetchone()[0]
-            else:
-                orphan_count = 0
-            checks.append(
-                HealthCheck(
-                    "orphaned_messages",
-                    VerifyStatus.OK if orphan_count == 0 else VerifyStatus.ERROR,
-                    count=orphan_count,
-                    summary=(
-                        "No orphaned messages"
-                        if orphan_count == 0
-                        else f"{orphan_count:,} orphaned messages"
-                    ),
+            archive_debt = collect_archive_debt_statuses_sync(conn, derived_statuses=derived_statuses)
+            for debt_name in (
+                "orphaned_messages",
+                "orphaned_content_blocks",
+                "orphaned_attachments",
+            ):
+                debt = archive_debt[debt_name]
+                checks.append(
+                    HealthCheck(
+                        debt.name,
+                        VerifyStatus.OK if debt.healthy else VerifyStatus.ERROR,
+                        count=debt.issue_count,
+                        summary=debt.detail,
+                    )
                 )
-            )
-
-            orphan_block_count = conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM content_blocks cb
-                WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = cb.conversation_id)
-                   OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = cb.message_id)
-                """
-            ).fetchone()[0]
-            checks.append(
-                HealthCheck(
-                    "orphaned_content_blocks",
-                    VerifyStatus.OK if orphan_block_count == 0 else VerifyStatus.ERROR,
-                    count=orphan_block_count,
-                    summary=(
-                        "No orphaned content blocks"
-                        if orphan_block_count == 0
-                        else f"{orphan_block_count:,} orphaned content blocks"
-                    ),
-                )
-            )
 
             dup_conv = conn.execute(
                 """
@@ -141,22 +110,13 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                 )
             )
 
-            empty_conv = conn.execute(
-                """
-                SELECT COUNT(*) FROM conversations c
-                WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)
-                """
-            ).fetchone()[0]
+            empty_debt = archive_debt["empty_conversations"]
             checks.append(
                 HealthCheck(
                     "empty_conversations",
-                    VerifyStatus.OK if empty_conv == 0 else VerifyStatus.WARNING,
-                    count=empty_conv,
-                    summary=(
-                        "No empty conversations"
-                        if empty_conv == 0
-                        else f"{empty_conv} conversation(s) with no messages"
-                    ),
+                    VerifyStatus.OK if empty_debt.healthy else VerifyStatus.WARNING,
+                    count=empty_debt.issue_count,
+                    summary=empty_debt.detail,
                 )
             )
 
@@ -288,6 +248,7 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                 )
     else:
         derived_statuses = {}
+        archive_debt = {}
 
     for source in config.sources:
         if source.folder:
@@ -377,7 +338,7 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
             HealthCheck("schemas", VerifyStatus.WARNING, summary=f"Schema check failed: {exc}")
         )
 
-    report = HealthReport(checks=checks, derived_models=derived_statuses)
+    report = HealthReport(checks=checks, derived_models=derived_statuses, archive_debt=archive_debt)
     write_cache(config.archive_root, report)
     return report
 

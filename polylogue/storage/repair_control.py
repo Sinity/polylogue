@@ -6,6 +6,7 @@ from polylogue.config import Config
 
 from .repair_cleanup import (
     preview_empty_conversations,
+    preview_orphaned_attachments,
     preview_orphaned_content_blocks,
     preview_orphaned_messages,
     repair_empty_conversations,
@@ -87,7 +88,11 @@ def run_archive_cleanup(
             else repair_empty_conversations(config, dry_run=dry_run)
         )
     if "orphaned_attachments" in selected:
-        results.append(repair_orphaned_attachments(config, dry_run=dry_run))
+        results.append(
+            preview_orphaned_attachments(count=preview_counts["orphaned_attachments"])
+            if dry_run and "orphaned_attachments" in preview_counts
+            else repair_orphaned_attachments(config, dry_run=dry_run)
+        )
     return results
 
 

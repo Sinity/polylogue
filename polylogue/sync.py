@@ -22,10 +22,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.archive_products import (
+    ArchiveDebtProduct,
+    ArchiveDebtProductQuery,
     DaySessionSummaryProduct,
     DaySessionSummaryProductQuery,
     MaintenanceRunProduct,
     MaintenanceRunProductQuery,
+    ProviderAnalyticsProduct,
+    ProviderAnalyticsProductQuery,
     SessionPhaseProduct,
     SessionPhaseProductQuery,
     SessionProfileProduct,
@@ -43,7 +47,7 @@ from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
     from polylogue.facade import ArchiveStats
-    from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.lib.conversation_models import Conversation, ConversationSummary
     from polylogue.storage.search import SearchResult
 
 T = TypeVar("T")
@@ -219,6 +223,20 @@ class SyncPolylogue:
     ) -> list[MaintenanceRunProduct]:
         """List versioned maintenance-lineage products."""
         return _run(self._facade.list_maintenance_run_products(query))
+
+    def list_provider_analytics_products(
+        self,
+        query: ProviderAnalyticsProductQuery | None = None,
+    ) -> list[ProviderAnalyticsProduct]:
+        """List provider-level analytics products."""
+        return _run(self._facade.list_provider_analytics_products(query))
+
+    def list_archive_debt_products(
+        self,
+        query: ArchiveDebtProductQuery | None = None,
+    ) -> list[ArchiveDebtProduct]:
+        """List live archive-debt products."""
+        return _run(self._facade.list_archive_debt_products(query))
 
     def filter(self):
         """Create a fluent filter builder (terminal methods are still async)."""

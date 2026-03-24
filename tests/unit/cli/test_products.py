@@ -9,6 +9,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.services import build_runtime_services
+from polylogue.storage.action_event_lifecycle import rebuild_action_event_read_model_sync
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.session_product_lifecycle import (
     rebuild_session_products_sync,
@@ -98,10 +99,11 @@ def _seed_products(cli_workspace) -> None:
     )
     with open_connection(db_path) as conn:
         rebuild_session_products_sync(conn)
+        rebuild_action_event_read_model_sync(conn)
 
 
-def _record_maintenance_lineage() -> None:
-    services = build_runtime_services()
+def _record_maintenance_lineage(cli_workspace) -> None:
+    services = build_runtime_services(db_path=cli_workspace["db_path"])
     try:
         run_coroutine_sync(
             services.get_backend().record_maintenance_run(
@@ -194,6 +196,9 @@ def test_products_threads_and_status_json(cli_workspace):
     assert status_payload["session_products"]["tag_rollups_ready"] is True
     assert status_payload["session_products"]["day_summaries_ready"] is True
     assert status_payload["session_products"]["week_summaries_ready"] is True
+    assert status_payload["archive_debt"]["tracked_items"] >= 1
+    assert status_payload["archive_debt"]["actionable_items"] == 0
+    assert status_payload["archive_debt"]["issue_rows"] == 0
 
 
 def test_products_tag_and_summary_rollups_json(cli_workspace):
@@ -219,7 +224,7 @@ def test_products_tag_and_summary_rollups_json(cli_workspace):
 
 
 def test_products_maintenance_json(cli_workspace):
-    _record_maintenance_lineage()
+    _record_maintenance_lineage(cli_workspace)
 
     runner = CliRunner()
     result = runner.invoke(cli, ["products", "maintenance", "--json"], catch_exceptions=False)
@@ -229,6 +234,39 @@ def test_products_maintenance_json(cli_workspace):
     assert payload["count"] >= 1
     assert payload["maintenance_runs"][0]["product_kind"] == "maintenance_run"
     assert payload["maintenance_runs"][0]["target_names"] == ["session_products"]
+
+
+def test_products_analytics_json(cli_workspace):
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["products", "analytics", "--provider", "claude-code", "--json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["count"] == 1
+    item = payload["provider_analytics"][0]
+    assert item["product_kind"] == "provider_analytics"
+    assert item["provider_name"] == "claude-code"
+    assert item["conversation_count"] == 2
+    assert item["tool_use_count"] == 2
+
+
+def test_products_debt_json(cli_workspace):
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["products", "debt", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["count"] >= 1
+    assert {item["product_kind"] for item in payload["archive_debt"]} == {"archive_debt"}
+    assert any(item["debt_name"] == "session_products" for item in payload["archive_debt"])
 
 
 def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli_workspace):

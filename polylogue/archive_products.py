@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.maintenance_models import ArchiveDebtStatus
 from polylogue.storage.store import (
     MaintenanceRunRecord,
     SessionPhaseRecord,
@@ -231,6 +232,49 @@ class MaintenanceRunProduct(ArchiveProductModel):
         )
 
 
+class ProviderAnalyticsProduct(ArchiveProductModel):
+    contract_version: int = ARCHIVE_PRODUCT_CONTRACT_VERSION
+    product_kind: str = "provider_analytics"
+    provider_name: str
+    conversation_count: int
+    message_count: int
+    user_message_count: int
+    assistant_message_count: int
+    avg_messages_per_conversation: float
+    avg_user_words: float
+    avg_assistant_words: float
+    tool_use_count: int
+    thinking_count: int
+    total_conversations_with_tools: int
+    total_conversations_with_thinking: int
+    tool_use_percentage: float
+    thinking_percentage: float
+
+
+class ArchiveDebtProduct(ArchiveProductModel):
+    contract_version: int = ARCHIVE_PRODUCT_CONTRACT_VERSION
+    product_kind: str = "archive_debt"
+    debt_name: str
+    category: str
+    maintenance_target: str
+    destructive: bool
+    issue_count: int
+    healthy: bool
+    detail: str
+
+    @classmethod
+    def from_status(cls, status: ArchiveDebtStatus) -> ArchiveDebtProduct:
+        return cls(
+            debt_name=status.name,
+            category=status.category.value,
+            maintenance_target=status.maintenance_target,
+            destructive=status.destructive,
+            issue_count=status.issue_count,
+            healthy=status.healthy,
+            detail=status.detail,
+        )
+
+
 class SessionProfileProductQuery(ArchiveProductModel):
     provider: str | None = None
     since: str | None = None
@@ -302,14 +346,31 @@ class WeekSessionSummaryProductQuery(ArchiveProductModel):
     offset: int = 0
 
 
+class ProviderAnalyticsProductQuery(ArchiveProductModel):
+    provider: str | None = None
+    limit: int | None = None
+    offset: int = 0
+
+
+class ArchiveDebtProductQuery(ArchiveProductModel):
+    category: str | None = None
+    only_actionable: bool = False
+    limit: int | None = None
+    offset: int = 0
+
+
 __all__ = [
     "ARCHIVE_PRODUCT_CONTRACT_VERSION",
+    "ArchiveDebtProduct",
+    "ArchiveDebtProductQuery",
     "ArchiveProductModel",
     "ArchiveProductProvenance",
     "DaySessionSummaryProduct",
     "DaySessionSummaryProductQuery",
     "MaintenanceRunProduct",
     "MaintenanceRunProductQuery",
+    "ProviderAnalyticsProduct",
+    "ProviderAnalyticsProductQuery",
     "SessionPhaseProduct",
     "SessionPhaseProductQuery",
     "SessionTagRollupProduct",

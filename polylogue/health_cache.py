@@ -10,7 +10,13 @@ from typing import Any
 from polylogue.logging import get_logger
 
 from .health_models import HEALTH_TTL_SECONDS, HealthCheck, HealthReport, VerifyStatus
-from .maintenance_models import DerivedModelStatus, ReportProvenance, TruthSource
+from .maintenance_models import (
+    ArchiveDebtStatus,
+    DerivedModelStatus,
+    MaintenanceCategory,
+    ReportProvenance,
+    TruthSource,
+)
 
 logger = get_logger(__name__)
 
@@ -119,6 +125,21 @@ def load_cached_report(archive_root: Path) -> HealthReport | None:
         }
     except (KeyError, TypeError, ValueError):
         return None
+    try:
+        archive_debt = {
+            str(name): ArchiveDebtStatus(
+                name=str(payload["name"]),
+                category=MaintenanceCategory(payload["category"]),
+                destructive=bool(payload["destructive"]),
+                issue_count=int(payload.get("issue_count", 0) or 0),
+                detail=str(payload["detail"]),
+                maintenance_target=str(payload.get("maintenance_target") or payload["name"]),
+            )
+            for name, payload in (cached_data.get("archive_debt") or {}).items()
+            if isinstance(payload, dict)
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
     return HealthReport(
         checks=checks,
         timestamp=ts,
@@ -129,4 +150,5 @@ def load_cached_report(archive_root: Path) -> HealthReport | None:
             cache_path=str(path),
         ),
         derived_models=derived_models,
+        archive_debt=archive_debt,
     )

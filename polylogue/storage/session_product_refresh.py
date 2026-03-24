@@ -25,11 +25,11 @@ async def refresh_session_products_for_conversation_async(
     transaction_depth: int = 0,
 ) -> dict[str, int]:
     from polylogue.lib.threads import build_session_threads
-    from polylogue.storage.backends.queries.session_products import (
+    from polylogue.storage.backends.queries.session_product_profile_queries import replace_session_profile
+    from polylogue.storage.backends.queries.session_product_thread_queries import replace_work_thread
+    from polylogue.storage.backends.queries.session_product_timeline_queries import (
         replace_session_phases,
-        replace_session_profile,
         replace_session_work_events,
-        replace_work_thread,
     )
     from polylogue.storage.session_product_rows import build_work_thread_record
 
@@ -92,7 +92,7 @@ async def refresh_thread_after_conversation_delete_async(
     transaction_depth: int = 0,
 ) -> int:
     from polylogue.lib.threads import build_session_threads
-    from polylogue.storage.backends.queries.session_products import replace_work_thread
+    from polylogue.storage.backends.queries.session_product_thread_queries import replace_work_thread
     from polylogue.storage.session_product_rows import build_work_thread_record
 
     if root_id is None:
@@ -111,7 +111,7 @@ async def delete_session_products_for_conversation_async(
     *,
     transaction_depth: int = 0,
 ) -> dict[str, int]:
-    from polylogue.storage.backends.queries.session_products import (
+    from polylogue.storage.backends.queries.session_product_timeline_queries import (
         replace_session_phases,
         replace_session_work_events,
     )

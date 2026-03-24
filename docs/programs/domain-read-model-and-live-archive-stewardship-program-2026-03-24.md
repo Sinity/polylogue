@@ -1,8 +1,8 @@
 # Domain Read-Model And Live Archive Stewardship Program
 
 Date: 2026-03-24
-Status: active execution program
-Role: canonical next broad queue after the runtime-substrate decomposition and contract-hardening campaign
+Status: executed implementation record
+Role: executed broad convergence record for domain-banded read models, archive-product consumer contracts, and live archive stewardship
 
 Absorbs and extends as the live queue:
 
@@ -39,6 +39,62 @@ Turn Polylogue’s remaining broad high-level data/consumer surfaces into explic
 domain-banded read-model and stewardship subsystems, while making live archive
 cleanup and external-consumer behavior governed enough to support real daily
 use without code archaeology.
+
+## Execution Record
+
+This campaign is now executed.
+
+The main implementation outcomes are:
+
+- domain-model decomposition out of `lib/models.py` into focused conversation,
+  message, attachment, and model-support modules
+- repository read decomposition into archive, action, maintenance, and product
+  read bands
+- session-product SQL/query decomposition into profile, timeline, thread, and
+  summary query bands
+- archive-debt governance as a first-class shared surface across health,
+  maintenance preview, and product status
+- public provider-analytics and archive-debt product contracts consumed through
+  library, CLI, sync, MCP, and live validation lanes
+
+Concrete implementation seams include:
+
+- `polylogue/lib/conversation_models.py`
+- `polylogue/lib/message_models.py`
+- `polylogue/lib/attachment_models.py`
+- `polylogue/storage/repository_archive_reads.py`
+- `polylogue/storage/repository_action_reads.py`
+- `polylogue/storage/repository_maintenance_reads.py`
+- `polylogue/storage/repository_product_reads.py`
+- `polylogue/storage/backends/queries/session_product_profile_queries.py`
+- `polylogue/storage/backends/queries/session_product_timeline_queries.py`
+- `polylogue/storage/backends/queries/session_product_thread_queries.py`
+- `polylogue/storage/backends/queries/session_product_summary_queries.py`
+- `polylogue/storage/archive_debt.py`
+- `polylogue/archive_products.py`
+- `polylogue/cli/commands/products.py`
+- `polylogue/mcp/server_product_tools.py`
+- `devtools/run_validation_lanes.py`
+
+## Live Archive Outcome
+
+The campaign was exercised against the real archive, not only fixture databases.
+
+Current live outcome:
+
+- durable session products are ready
+- provider analytics are exposed as stable archive products
+- archive debt is exposed as stable archive products and health/maintenance
+  status
+- the `domain-read-model-stewardship` validation lane passes on the live archive
+- the remaining real live debt is explicit rather than hidden:
+  - `15781` orphaned content blocks
+  - `2378` orphaned attachments
+
+This means the campaign closed the main structural gap around domain-banded
+read models and consumer contracts, while leaving the remaining live cleanup
+debt as an intentional governed next-step target rather than silently fixing or
+deleting archive data.
 
 ## Why This Is The Right Next Campaign
 

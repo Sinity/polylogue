@@ -9,8 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.archive_products import (
+    ArchiveDebtProduct,
     DaySessionSummaryProduct,
     MaintenanceRunProduct,
+    ProviderAnalyticsProduct,
     SessionPhaseProduct,
     SessionProfileProduct,
     SessionTagRollupProduct,
@@ -411,6 +413,31 @@ class TestProductTools:
             },
             summary={"session_count": 1, "total_messages": 2, "day_summaries": []},
         )
+        analytics = ProviderAnalyticsProduct(
+            provider_name="claude-code",
+            conversation_count=1,
+            message_count=2,
+            user_message_count=1,
+            assistant_message_count=1,
+            avg_messages_per_conversation=2.0,
+            avg_user_words=3.0,
+            avg_assistant_words=4.0,
+            tool_use_count=1,
+            thinking_count=0,
+            total_conversations_with_tools=1,
+            total_conversations_with_thinking=0,
+            tool_use_percentage=100.0,
+            thinking_percentage=0.0,
+        )
+        debt = ArchiveDebtProduct(
+            debt_name="session_products",
+            category="derived_repair",
+            maintenance_target="session_products",
+            destructive=False,
+            issue_count=0,
+            healthy=True,
+            detail="Session-product read models ready",
+        )
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.list_session_profile_products = AsyncMock(return_value=[profile])
@@ -421,6 +448,8 @@ class TestProductTools:
             mock_ops.list_day_session_summary_products = AsyncMock(return_value=[day_summary])
             mock_ops.list_week_session_summary_products = AsyncMock(return_value=[week_summary])
             mock_ops.list_maintenance_run_products = AsyncMock(return_value=[maintenance])
+            mock_ops.list_provider_analytics_products = AsyncMock(return_value=[analytics])
+            mock_ops.list_archive_debt_products = AsyncMock(return_value=[debt])
             mock_get_archive_ops.return_value = mock_ops
 
             profiles_raw = await invoke_surface_async(
@@ -466,6 +495,16 @@ class TestProductTools:
                 mcp_server._tool_manager._tools["maintenance_runs"].fn,
                 limit=5,
             )
+            analytics_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["provider_analytics"].fn,
+                provider="claude-code",
+                limit=5,
+            )
+            debt_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["archive_debt"].fn,
+                actionable_only=True,
+                limit=5,
+            )
 
         profiles_payload = json.loads(profiles_raw)
         events_payload = json.loads(events_raw)
@@ -475,6 +514,8 @@ class TestProductTools:
         day_payload = json.loads(day_raw)
         week_payload = json.loads(week_raw)
         maintenance_payload = json.loads(maintenance_raw)
+        analytics_payload = json.loads(analytics_raw)
+        debt_payload = json.loads(debt_raw)
 
         assert profiles_payload["count"] == 1
         assert profiles_payload["items"][0]["product_kind"] == "session_profile"
@@ -485,6 +526,8 @@ class TestProductTools:
         assert day_payload["items"][0]["product_kind"] == "day_session_summary"
         assert week_payload["items"][0]["product_kind"] == "week_session_summary"
         assert maintenance_payload["items"][0]["product_kind"] == "maintenance_run"
+        assert analytics_payload["items"][0]["product_kind"] == "provider_analytics"
+        assert debt_payload["items"][0]["product_kind"] == "archive_debt"
 
 
 class TestStatsTool:

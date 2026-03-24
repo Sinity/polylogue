@@ -25,6 +25,62 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("session_profile", run)
 
     @mcp.tool()
+    async def provider_analytics(
+        provider: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> str:
+        async def run() -> str:
+            from polylogue.archive_products import ProviderAnalyticsProductQuery
+
+            products = await hooks.get_archive_ops().list_provider_analytics_products(
+                ProviderAnalyticsProductQuery(
+                    provider=provider,
+                    limit=hooks.clamp_limit(limit),
+                    offset=max(0, int(offset)),
+                )
+            )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [product.model_dump(mode="json") for product in products],
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("provider_analytics", run)
+
+    @mcp.tool()
+    async def archive_debt(
+        category: str | None = None,
+        actionable_only: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> str:
+        async def run() -> str:
+            from polylogue.archive_products import ArchiveDebtProductQuery
+
+            products = await hooks.get_archive_ops().list_archive_debt_products(
+                ArchiveDebtProductQuery(
+                    category=category,
+                    only_actionable=bool(actionable_only),
+                    limit=hooks.clamp_limit(limit),
+                    offset=max(0, int(offset)),
+                )
+            )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [product.model_dump(mode="json") for product in products],
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("archive_debt", run)
+
+    @mcp.tool()
     async def session_profiles(
         since: str | None = None,
         until: str | None = None,

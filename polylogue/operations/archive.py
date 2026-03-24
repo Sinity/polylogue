@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,10 +13,14 @@ from polylogue.archive_product_builders import (
     aggregate_week_session_summary_products,
 )
 from polylogue.archive_products import (
+    ArchiveDebtProduct,
+    ArchiveDebtProductQuery,
     DaySessionSummaryProduct,
     DaySessionSummaryProductQuery,
     MaintenanceRunProduct,
     MaintenanceRunProductQuery,
+    ProviderAnalyticsProduct,
+    ProviderAnalyticsProductQuery,
     SessionPhaseProduct,
     SessionPhaseProductQuery,
     SessionProfileProduct,
@@ -34,11 +37,13 @@ from polylogue.archive_products import (
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.paths import conversation_render_root
 from polylogue.services import RuntimeServices, build_runtime_services
+from polylogue.storage.archive_debt import collect_archive_debt_statuses_sync
+from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.search import SearchHit, SearchResult
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.lib.models import Conversation
+    from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
@@ -127,34 +132,42 @@ class ArchiveStats:
         )
 
 
-@dataclass
-class ProviderMetrics:
-    """Aggregated message and provider metrics for archive summaries."""
-
-    provider_name: str
-    conversation_count: int
-    message_count: int
-    user_message_count: int
-    assistant_message_count: int
-    avg_messages_per_conversation: float
-    avg_user_words: float
-    avg_assistant_words: float
-    tool_use_count: int
-    thinking_count: int
-    total_conversations_with_tools: int
-    total_conversations_with_thinking: int
-
-    @property
-    def tool_use_percentage(self) -> float:
-        if self.conversation_count == 0:
-            return 0.0
-        return (self.total_conversations_with_tools / self.conversation_count) * 100
-
-    @property
-    def thinking_percentage(self) -> float:
-        if self.conversation_count == 0:
-            return 0.0
-        return (self.total_conversations_with_thinking / self.conversation_count) * 100
+def _provider_analytics_product(row) -> ProviderAnalyticsProduct:
+    conversation_count = row["conversation_count"]
+    user_message_count = row["user_message_count"]
+    assistant_message_count = row["assistant_message_count"]
+    user_word_sum = row["user_word_sum"] or 0
+    assistant_word_sum = row["assistant_word_sum"] or 0
+    tool_use_percentage = (
+        (row["conversations_with_tools"] / conversation_count) * 100
+        if conversation_count > 0
+        else 0.0
+    )
+    thinking_percentage = (
+        (row["conversations_with_thinking"] / conversation_count) * 100
+        if conversation_count > 0
+        else 0.0
+    )
+    return ProviderAnalyticsProduct(
+        provider_name=row["provider_name"] or "unknown",
+        conversation_count=conversation_count,
+        message_count=row["message_count"],
+        user_message_count=user_message_count,
+        assistant_message_count=assistant_message_count,
+        avg_messages_per_conversation=(
+            row["message_count"] / conversation_count if conversation_count > 0 else 0.0
+        ),
+        avg_user_words=(user_word_sum / user_message_count if user_message_count > 0 else 0.0),
+        avg_assistant_words=(
+            assistant_word_sum / assistant_message_count if assistant_message_count > 0 else 0.0
+        ),
+        tool_use_count=row["tool_use_count"],
+        thinking_count=row["thinking_count"],
+        total_conversations_with_tools=row["conversations_with_tools"],
+        total_conversations_with_thinking=row["conversations_with_thinking"],
+        tool_use_percentage=tool_use_percentage,
+        thinking_percentage=thinking_percentage,
+    )
 
 
 class ArchiveOperations:
@@ -425,37 +438,39 @@ class ArchiveOperations:
         records = await self.repository.list_maintenance_runs(limit=request.limit)
         return [MaintenanceRunProduct.from_record(record) for record in records]
 
-    async def provider_metrics(self) -> list[ProviderMetrics]:
+    async def list_provider_analytics_products(
+        self,
+        query: ProviderAnalyticsProductQuery | None = None,
+    ) -> list[ProviderAnalyticsProduct]:
         rows = await self.backend.queries.get_provider_metrics_rows()
-        results: list[ProviderMetrics] = []
-        for row in rows:
-            conversation_count = row["conversation_count"]
-            user_message_count = row["user_message_count"]
-            assistant_message_count = row["assistant_message_count"]
-            user_word_sum = row["user_word_sum"] or 0
-            assistant_word_sum = row["assistant_word_sum"] or 0
+        products = [_provider_analytics_product(row) for row in rows]
+        request = query or ProviderAnalyticsProductQuery()
+        if request.provider:
+            products = [product for product in products if product.provider_name == request.provider]
+        if request.offset:
+            products = products[request.offset :]
+        if request.limit is not None:
+            products = products[: request.limit]
+        return products
 
-            results.append(
-                ProviderMetrics(
-                    provider_name=row["provider_name"] or "unknown",
-                    conversation_count=conversation_count,
-                    message_count=row["message_count"],
-                    user_message_count=user_message_count,
-                    assistant_message_count=assistant_message_count,
-                    avg_messages_per_conversation=(
-                        row["message_count"] / conversation_count if conversation_count > 0 else 0.0
-                    ),
-                    avg_user_words=(user_word_sum / user_message_count if user_message_count > 0 else 0.0),
-                    avg_assistant_words=(
-                        assistant_word_sum / assistant_message_count if assistant_message_count > 0 else 0.0
-                    ),
-                    tool_use_count=row["tool_use_count"],
-                    thinking_count=row["thinking_count"],
-                    total_conversations_with_tools=row["conversations_with_tools"],
-                    total_conversations_with_thinking=row["conversations_with_thinking"],
-                )
-            )
-        return results
+    async def list_archive_debt_products(
+        self,
+        query: ArchiveDebtProductQuery | None = None,
+    ) -> list[ArchiveDebtProduct]:
+        request = query or ArchiveDebtProductQuery()
+        with connection_context(self.config.db_path) as conn:
+            statuses = collect_archive_debt_statuses_sync(conn)
+        products = [ArchiveDebtProduct.from_status(status) for status in statuses.values()]
+        products.sort(key=lambda product: (product.category, product.debt_name))
+        if request.category:
+            products = [product for product in products if product.category == request.category]
+        if request.only_actionable:
+            products = [product for product in products if not product.healthy]
+        if request.offset:
+            products = products[request.offset :]
+        if request.limit is not None:
+            products = products[: request.limit]
+        return products
 
 
 async def _with_operations(
@@ -487,23 +502,23 @@ async def get_provider_counts(
     return await _with_operations(_action, services=services, db_path=db_path)
 
 
-async def compute_provider_comparison(
+async def list_provider_analytics_products(
     *,
     services: RuntimeServices | None = None,
     db_path: Path | None = None,
-) -> list[ProviderMetrics]:
-    """Return provider-level metrics for the verbose archive summary."""
+) -> list[ProviderAnalyticsProduct]:
+    """Return provider-level analytics products for archive summaries."""
 
-    async def _action(operations: ArchiveOperations) -> list[ProviderMetrics]:
-        return await operations.provider_metrics()
+    async def _action(operations: ArchiveOperations) -> list[ProviderAnalyticsProduct]:
+        return await operations.list_provider_analytics_products()
 
     return await _with_operations(_action, services=services, db_path=db_path)
 
 
 __all__ = [
+    "ArchiveDebtProduct",
     "ArchiveOperations",
     "ArchiveStats",
-    "ProviderMetrics",
-    "compute_provider_comparison",
     "get_provider_counts",
+    "list_provider_analytics_products",
 ]

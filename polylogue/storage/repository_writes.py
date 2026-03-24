@@ -5,7 +5,7 @@ from __future__ import annotations
 import builtins
 from collections.abc import Callable
 
-from polylogue.lib.models import Conversation
+from polylogue.lib.conversation_models import Conversation
 from polylogue.storage.action_event_rows import attach_blocks_to_messages, build_action_event_records
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import publications as publications_q

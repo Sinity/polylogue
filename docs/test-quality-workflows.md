@@ -47,6 +47,9 @@ python -m devtools.run_validation_lanes --lane retrieval-dogfood
 python -m devtools.run_validation_lanes --lane embeddings-coverage
 python -m devtools.run_validation_lanes --lane archive-intelligence
 python -m devtools.run_validation_lanes --lane archive-data-products-live --dry-run
+python -m devtools.run_validation_lanes --lane domain-read-model-contracts
+python -m devtools.run_validation_lanes --lane domain-read-model-live --dry-run
+python -m devtools.run_validation_lanes --lane domain-read-model-stewardship --dry-run
 python -m devtools.run_validation_lanes --lane frontier-local
 python -m devtools.run_validation_lanes --lane frontier-extended
 python -m devtools.run_validation_lanes --lane live-archive-small --dry-run
@@ -74,6 +77,9 @@ Lane intent:
 - `embeddings-coverage`: embedding readiness/coverage stats and embed command contracts
 - `archive-intelligence`: local closure lane for retrieval, embedding readiness, and schema roundtrip
 - `archive-data-products-live`: local durable-product contract lane plus bounded live durable-product dogfood
+- `domain-read-model-contracts`: local closure lane for domain-banded products, analytics, consumer contracts, and archive-debt governance
+- `domain-read-model-live`: bounded live archive lane for durable products, analytics/debt products, and maintenance governance
+- `domain-read-model-stewardship`: `domain-read-model-contracts` plus `domain-read-model-live`
 - `tui`: Textual Mission Control interaction/state coverage
 - `chaos`: ingestion hostility, interruption, and chronology suites
 - `frontier-local`: machine + query + semantic + TUI + chaos
