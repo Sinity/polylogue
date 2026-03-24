@@ -1,8 +1,8 @@
-"""Canonical immutable execution plans for conversation queries."""
+"""Canonical immutable conversation-query plan model."""
 
 from __future__ import annotations
 
-import builtins
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -12,8 +12,6 @@ from polylogue.lib.query_retrieval import (
     can_use_action_event_stats_with,
     candidate_record_query,
     candidate_record_query_for,
-    fetch_batched_filtered_conversations,
-    fetch_candidates,
     fetch_record_query_for,
     search_limit,
     should_batch_post_filter_fetch,
@@ -38,17 +36,11 @@ from polylogue.lib.query_sorting import (
     sort_generic,
     sort_summaries,
 )
-from polylogue.lib.query_support import (
-    conversation_has_branches,
-    conversation_to_summary,
-    provider_values,
-)
+from polylogue.lib.query_support import conversation_has_branches, provider_values
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from polylogue.lib.filter_types import SortField
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import VectorProvider
@@ -337,11 +329,6 @@ class ConversationQueryPlan:
     async def _action_event_rows_ready(self, repository: ConversationRepository) -> bool:
         return await action_event_rows_ready(self, repository)
 
-    async def _action_search_ready(self, repository: ConversationRepository) -> bool:
-        from polylogue.lib.query_retrieval import action_search_ready
-
-        return await action_search_ready(self, repository)
-
     async def can_use_action_event_stats_with(self, repository: ConversationRepository) -> bool:
         return await can_use_action_event_stats_with(self, repository)
 
@@ -357,196 +344,86 @@ class ConversationQueryPlan:
     def _should_batch_post_filter_fetch(self) -> bool:
         return should_batch_post_filter_fetch(self)
 
-    def _candidate_batch_limit(self) -> int:
-        from polylogue.lib.query_retrieval import candidate_batch_limit
-
-        return candidate_batch_limit(self)
-
     def _search_limit(self) -> int:
         return search_limit(self)
 
-    async def _fetch_direct_id(
-        self,
-        repository: ConversationRepository,
-        *,
-        summaries: bool,
-    ) -> builtins.list[Conversation | ConversationSummary]:
-        from polylogue.lib.query_retrieval import fetch_direct_id
-
-        return await fetch_direct_id(self, repository, summaries=summaries)
-
-    async def _fetch_search_results(
-        self,
-        repository: ConversationRepository,
-        *,
-        summaries: bool,
-    ) -> tuple[bool, builtins.list[Conversation | ConversationSummary]]:
-        from polylogue.lib.query_retrieval import fetch_search_results
-
-        return await fetch_search_results(self, repository, summaries=summaries)
-
-    async def _fetch_candidates(
-        self,
-        repository: ConversationRepository,
-        *,
-        summaries: bool,
-    ) -> tuple[builtins.list[Conversation | ConversationSummary], bool]:
-        return await fetch_candidates(self, repository, summaries=summaries)
-
-    def _search_query_text(self) -> str:
-        from polylogue.lib.query_retrieval import search_query_text
-
-        return search_query_text(self)
-
-    def _search_query_terms(self) -> tuple[str, ...]:
-        from polylogue.lib.query_retrieval import search_query_terms
-
-        return search_query_terms(self)
-
-    def _score_action_search_text(self, search_text: str, *, query_text: str, terms: tuple[str, ...]) -> float:
-        from polylogue.lib.query_retrieval import score_action_search_text
-
-        return score_action_search_text(search_text, query_text=query_text, terms=terms)
-
-    def _conversation_action_search_score(self, conversation: Conversation, *, query_text: str, terms: tuple[str, ...]) -> float:
-        from polylogue.lib.query_retrieval import conversation_action_search_score
-
-        return conversation_action_search_score(conversation, query_text=query_text, terms=terms)
-
-    async def _search_action_results_fallback(
-        self,
-        repository: ConversationRepository,
-        *,
-        limit: int,
-    ) -> builtins.list[Conversation]:
-        from polylogue.lib.query_retrieval import search_action_results_fallback
-
-        return await search_action_results_fallback(self, repository, limit=limit)
-
-    async def _search_action_results(
-        self,
-        repository: ConversationRepository,
-        *,
-        limit: int,
-    ) -> builtins.list[Conversation]:
-        from polylogue.lib.query_retrieval import search_action_results
-
-        return await search_action_results(self, repository, limit=limit)
-
-    async def _search_hybrid_results(
-        self,
-        repository: ConversationRepository,
-        *,
-        limit: int,
-    ) -> builtins.list[Conversation]:
-        from polylogue.lib.query_retrieval import search_hybrid_results
-
-        return await search_hybrid_results(self, repository, limit=limit)
-
-    async def _fetch_batched_filtered_conversations(
-        self,
-        repository: ConversationRepository,
-    ) -> builtins.list[Conversation]:
-        return await fetch_batched_filtered_conversations(self, repository)
-
     def _apply_common_filters(
         self,
-        items: builtins.list[_T],
+        items: list[_T],
         *,
         sql_pushed: bool,
-    ) -> builtins.list[_T]:
+    ) -> list[_T]:
         return apply_common_filters(self, items, sql_pushed=sql_pushed)
 
     def _apply_full_filters(
         self,
-        conversations: builtins.list[Conversation],
+        conversations: list[Conversation],
         *,
         sql_pushed: bool,
-    ) -> builtins.list[Conversation]:
+    ) -> list[Conversation]:
         return apply_full_filters(self, conversations, sql_pushed=sql_pushed)
 
     def _sort_generic(
         self,
-        items: builtins.list[_T],
+        items: list[_T],
         key_fn: Callable[[_T], Any],
-    ) -> builtins.list[_T]:
+    ) -> list[_T]:
         return sort_generic(self, items, key_fn)
 
     def _sort_conversations(
         self,
-        conversations: builtins.list[Conversation],
-    ) -> builtins.list[Conversation]:
+        conversations: list[Conversation],
+    ) -> list[Conversation]:
         return sort_conversations(self, conversations)
 
     def _sort_summaries(
         self,
-        summaries: builtins.list[ConversationSummary],
-    ) -> builtins.list[ConversationSummary]:
+        summaries: list[ConversationSummary],
+    ) -> list[ConversationSummary]:
         return sort_summaries(self, summaries)
 
-    def _finalize(self, items: builtins.list[_T]) -> builtins.list[_T]:
+    def _finalize(self, items: list[_T]) -> list[_T]:
         return finalize_results(self, items)
 
-    async def list(self, repository: ConversationRepository) -> builtins.list[Conversation]:
-        if self.similar_text:
-            candidates = await repository.search_similar(
-                self.similar_text,
-                limit=self.limit or 10,
-                vector_provider=self.vector_provider,
-            )
-            return self._finalize(self._apply_full_filters(candidates, sql_pushed=False))
+    async def list(
+        self,
+        repository: ConversationRepository,
+    ) -> list[Conversation]:
+        from polylogue.lib.query_plan_execution import list_for_plan
 
-        if self._should_batch_post_filter_fetch():
-            batched = await self._fetch_batched_filtered_conversations(repository)
-            return self._finalize(self._sort_conversations(batched))
-
-        candidates, sql_pushed = await self._fetch_candidates(repository, summaries=False)
-        filtered = self._apply_full_filters(candidates, sql_pushed=sql_pushed)
-        return self._finalize(self._sort_conversations(filtered))
+        return await list_for_plan(self, repository)
 
     async def list_summaries(
         self,
         repository: ConversationRepository,
-    ) -> builtins.list[ConversationSummary]:
-        if not self.can_use_summaries():
-            msg = (
-                "Cannot use list_summaries() with content-dependent filters "
-                "(regex, has:thinking, has:tools, etc.). Use list() instead."
-            )
-            raise ValueError(msg)
+    ) -> list[ConversationSummary]:
+        from polylogue.lib.query_plan_execution import list_summaries_for_plan
 
-        if self._uses_action_read_model() and not await self._action_event_rows_ready(repository):
-            conversations = await self.list(repository)
-            return [conversation_to_summary(conversation) for conversation in conversations]
+        return await list_summaries_for_plan(self, repository)
 
-        candidates, sql_pushed = await self._fetch_candidates(repository, summaries=True)
-        filtered = self._apply_common_filters(candidates, sql_pushed=sql_pushed)
-        return self._finalize(self._sort_summaries(filtered))
+    async def first(
+        self,
+        repository: ConversationRepository,
+    ) -> Conversation | None:
+        from polylogue.lib.query_plan_execution import first_for_plan
 
-    async def first(self, repository: ConversationRepository) -> Conversation | None:
-        results = await self.with_limit(1).list(repository)
-        return results[0] if results else None
+        return await first_for_plan(self, repository)
 
-    async def count(self, repository: ConversationRepository) -> int:
-        if self.can_count_in_sql() and await self._action_event_rows_ready(repository):
-            return await repository.count_by_query(self.record_query.for_count())
+    async def count(
+        self,
+        repository: ConversationRepository,
+    ) -> int:
+        from polylogue.lib.query_plan_execution import count_for_plan
 
-        unbounded = self.with_limit(None)
-        if unbounded.can_use_summaries():
-            return len(await unbounded.list_summaries(repository))
-        return len(await unbounded.list(repository))
+        return await count_for_plan(self, repository)
 
-    async def delete(self, repository: ConversationRepository) -> int:
-        if self.can_use_summaries():
-            results: list[Conversation | ConversationSummary] = await self.list_summaries(repository)
-        else:
-            results = await self.list(repository)
+    async def delete(
+        self,
+        repository: ConversationRepository,
+    ) -> int:
+        from polylogue.lib.query_plan_execution import delete_for_plan
 
-        deleted = 0
-        for conversation in results:
-            if await repository.delete_conversation(str(conversation.id)):
-                deleted += 1
-        return deleted
+        return await delete_for_plan(self, repository)
 
 
 __all__ = ["ConversationQueryPlan", "conversation_has_branches"]

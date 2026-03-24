@@ -18,20 +18,16 @@ from pathlib import Path
 
 import aiosqlite
 
-import polylogue.paths as _paths
 from polylogue.storage.backends.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.backends.async_sqlite_derived import SQLiteDerivedMixin
 from polylogue.storage.backends.async_sqlite_raw import SQLiteRawMixin
+from polylogue.storage.backends.async_sqlite_schema import ensure_schema
+from polylogue.storage.backends.async_sqlite_support import (
+    configure_connection,
+    default_db_path,
+)
 from polylogue.storage.backends.connection import DB_TIMEOUT
 from polylogue.storage.backends.query_store import SQLiteQueryStore
-
-
-def default_db_path() -> Path:
-    """Return the default database path (same as sync backend).
-
-    Reads from polylogue.paths at call time for test isolation.
-    """
-    return _paths.data_home() / "polylogue.db"
 
 
 class SQLiteBackend(SQLiteArchiveMixin, SQLiteDerivedMixin, SQLiteRawMixin):
@@ -119,9 +115,7 @@ class SQLiteBackend(SQLiteArchiveMixin, SQLiteDerivedMixin, SQLiteRawMixin):
             if self._schema_ensured:
                 return
             async with aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT) as init_conn:
-                init_conn.row_factory = aiosqlite.Row
-                await init_conn.execute("PRAGMA journal_mode=WAL")
-                await init_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+                await configure_connection(init_conn)
                 await self._ensure_schema(init_conn)
             self._schema_ensured = True
 
@@ -139,10 +133,7 @@ class SQLiteBackend(SQLiteArchiveMixin, SQLiteDerivedMixin, SQLiteRawMixin):
         """
         await self._ensure_schema_once()
         conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
-        conn.row_factory = aiosqlite.Row
-        await conn.execute("PRAGMA foreign_keys = ON")
-        await conn.execute("PRAGMA journal_mode=WAL")
-        await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+        await configure_connection(conn)
         await conn.execute("BEGIN IMMEDIATE")
         self._bulk_conn = conn
         # Suppress per-item commits in methods that check _transaction_depth
@@ -188,10 +179,7 @@ class SQLiteBackend(SQLiteArchiveMixin, SQLiteDerivedMixin, SQLiteRawMixin):
 
         for _ in range(size):
             conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
-            conn.row_factory = aiosqlite.Row
-            await conn.execute("PRAGMA foreign_keys = ON")
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+            await configure_connection(conn)
             connections.append(conn)
             pool.put_nowait(conn)
 
@@ -235,106 +223,12 @@ class SQLiteBackend(SQLiteArchiveMixin, SQLiteDerivedMixin, SQLiteRawMixin):
             return
 
         async with aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT) as conn:
-            conn.row_factory = aiosqlite.Row
-            await conn.execute("PRAGMA foreign_keys = ON")
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+            await configure_connection(conn)
             yield conn
 
     async def _ensure_schema(self, conn: aiosqlite.Connection) -> None:
-        """Ensure database schema exists and is at the current schema version.
-
-        For fresh databases (version 0): apply DDL and set the current version.
-        For the current version: nothing to do.
-        For any other version: raise — wipe DB and re-run.
-        """
-        from polylogue.storage.backends.schema_ddl import (
-            _ACTION_EVENT_DDL,
-            _ACTION_FTS_DDL,
-            _ARTIFACT_OBSERVATION_DDL,
-            _MAINTENANCE_RUN_DDL,
-            _PUBLICATION_DDL,
-            _SESSION_PRODUCT_DDL,
-            _VEC0_DDL,
-            SCHEMA_DDL,
-            SCHEMA_VERSION,
-        )
-
-        cursor = await conn.execute("PRAGMA user_version")
-        row = await cursor.fetchone()
-        current_version = row[0] if row else 0
-
-        if current_version == 0:
-            await conn.execute("PRAGMA foreign_keys = ON")
-            await conn.executescript(SCHEMA_DDL)
-            try:
-                await conn.execute("SELECT vec_version()")
-                await conn.execute(_VEC0_DDL)
-            except Exception:
-                pass  # sqlite-vec not available
-            await conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            await conn.commit()
-        elif current_version == SCHEMA_VERSION:
-            await conn.executescript(_ARTIFACT_OBSERVATION_DDL)
-            await conn.executescript(_PUBLICATION_DDL)
-            await conn.executescript(_MAINTENANCE_RUN_DDL)
-            await conn.executescript(_ACTION_EVENT_DDL)
-            cursor = await conn.execute("PRAGMA table_info(action_events)")
-            action_event_columns = {row[1] for row in await cursor.fetchall()}
-            if "materializer_version" not in action_event_columns:
-                await conn.execute(
-                    "ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1"
-                )
-            await conn.executescript(_ACTION_FTS_DDL)
-            session_profiles_exists = bool(
-                await (
-                    await conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
-                    )
-                ).fetchone()
-            )
-            if session_profiles_exists:
-                cursor = await conn.execute("PRAGMA table_info(session_profiles)")
-                session_profile_columns = {row[1] for row in await cursor.fetchall()}
-                if "canonical_session_date" not in session_profile_columns:
-                    await conn.execute("ALTER TABLE session_profiles ADD COLUMN canonical_session_date TEXT")
-                if "phase_count" not in session_profile_columns:
-                    await conn.execute(
-                        "ALTER TABLE session_profiles ADD COLUMN phase_count INTEGER NOT NULL DEFAULT 0"
-                    )
-                if "engaged_duration_ms" not in session_profile_columns:
-                    await conn.execute(
-                        "ALTER TABLE session_profiles ADD COLUMN engaged_duration_ms INTEGER NOT NULL DEFAULT 0"
-                    )
-            session_work_events_exists = bool(
-                await (
-                    await conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events'"
-                    )
-                ).fetchone()
-            )
-            if session_work_events_exists:
-                cursor = await conn.execute("PRAGMA table_info(session_work_events)")
-                session_work_event_columns = {row[1] for row in await cursor.fetchall()}
-                if "start_time" not in session_work_event_columns:
-                    await conn.execute("ALTER TABLE session_work_events ADD COLUMN start_time TEXT")
-                if "end_time" not in session_work_event_columns:
-                    await conn.execute("ALTER TABLE session_work_events ADD COLUMN end_time TEXT")
-                if "duration_ms" not in session_work_event_columns:
-                    await conn.execute(
-                        "ALTER TABLE session_work_events ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0"
-                    )
-                if "canonical_session_date" not in session_work_event_columns:
-                    await conn.execute("ALTER TABLE session_work_events ADD COLUMN canonical_session_date TEXT")
-            await conn.executescript(_SESSION_PRODUCT_DDL)
-            await conn.commit()
-        else:
-            from polylogue.errors import DatabaseError
-
-            raise DatabaseError(
-                f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
-                f"Delete the database file and re-run polylogue to create a fresh v{SCHEMA_VERSION} schema."
-            )
+        """Ensure database schema exists and is at the current schema version."""
+        await ensure_schema(conn)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
@@ -347,10 +241,7 @@ class SQLiteBackend(SQLiteArchiveMixin, SQLiteDerivedMixin, SQLiteRawMixin):
             # Create persistent connection for explicit transaction if needed
             if self._txn_conn is None:
                 self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
-                self._txn_conn.row_factory = aiosqlite.Row
-                await self._txn_conn.execute("PRAGMA foreign_keys = ON")
-                await self._txn_conn.execute("PRAGMA journal_mode=WAL")
-                await self._txn_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+                await configure_connection(self._txn_conn)
 
             await self.begin()
             try:
@@ -365,10 +256,7 @@ class SQLiteBackend(SQLiteArchiveMixin, SQLiteDerivedMixin, SQLiteRawMixin):
         await self._ensure_schema_once()
         if self._txn_conn is None:
             self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
-            self._txn_conn.row_factory = aiosqlite.Row
-            await self._txn_conn.execute("PRAGMA foreign_keys = ON")
-            await self._txn_conn.execute("PRAGMA journal_mode=WAL")
-            await self._txn_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+            await configure_connection(self._txn_conn)
 
         if self._transaction_depth == 0:
             await self._txn_conn.execute("BEGIN IMMEDIATE")
