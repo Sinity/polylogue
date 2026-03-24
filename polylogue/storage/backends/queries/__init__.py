@@ -10,7 +10,10 @@ from polylogue.storage.backends.queries import (
     publications,
     raw,
     runs,
-    session_products,
+    session_product_profile_queries,
+    session_product_summary_queries,
+    session_product_thread_queries,
+    session_product_timeline_queries,
     stats,
 )
 
@@ -24,6 +27,9 @@ __all__ = [
     "publications",
     "raw",
     "runs",
-    "session_products",
+    "session_product_profile_queries",
+    "session_product_summary_queries",
+    "session_product_thread_queries",
+    "session_product_timeline_queries",
     "stats",
 ]

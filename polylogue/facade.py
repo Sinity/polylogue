@@ -28,10 +28,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.archive_products import (
+    ArchiveDebtProduct,
+    ArchiveDebtProductQuery,
     DaySessionSummaryProduct,
     DaySessionSummaryProductQuery,
     MaintenanceRunProduct,
     MaintenanceRunProductQuery,
+    ProviderAnalyticsProduct,
+    ProviderAnalyticsProductQuery,
     SessionPhaseProduct,
     SessionPhaseProductQuery,
     SessionProfileProduct,
@@ -52,8 +56,8 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 
 if TYPE_CHECKING:
+    from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.filters import ConversationFilter
-    from polylogue.lib.models import Conversation
     from polylogue.pipeline.services.parsing import ParseResult
     from polylogue.storage.search import SearchResult
 
@@ -318,6 +322,20 @@ class Polylogue:
     ) -> list[MaintenanceRunProduct]:
         """List versioned maintenance-lineage products."""
         return await self.operations.list_maintenance_run_products(query)
+
+    async def list_provider_analytics_products(
+        self,
+        query: ProviderAnalyticsProductQuery | None = None,
+    ) -> list[ProviderAnalyticsProduct]:
+        """List provider-level analytics products."""
+        return await self.operations.list_provider_analytics_products(query)
+
+    async def list_archive_debt_products(
+        self,
+        query: ArchiveDebtProductQuery | None = None,
+    ) -> list[ArchiveDebtProduct]:
+        """List live archive-debt products."""
+        return await self.operations.list_archive_debt_products(query)
 
     async def parse_file(
         self,

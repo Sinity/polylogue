@@ -13,7 +13,7 @@ from polylogue.config import Config
 from polylogue.health_archive import get_health
 from polylogue.health_cache import cached_health_summary
 from polylogue.logging import get_logger
-from polylogue.operations import ProviderMetrics, compute_provider_comparison, get_provider_counts
+from polylogue.operations import get_provider_counts, list_provider_analytics_products
 from polylogue.pipeline.runner import latest_run
 from polylogue.sync_bridge import run_coroutine_sync
 from polylogue.ui.theme import provider_color
@@ -21,8 +21,6 @@ from polylogue.ui.theme import provider_color
 logger = get_logger(__name__)
 
 __all__ = [
-    "ProviderMetrics",
-    "compute_provider_comparison",
     "fail",
     "load_effective_config",
     "load_last_source",
@@ -198,7 +196,7 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         try:
             if verbose:
                 # Full metrics (slow: ~29s) needed for Deep Dive section
-                metrics = run_coroutine_sync(compute_provider_comparison(services=env.services))
+                metrics = run_coroutine_sync(list_provider_analytics_products(services=env.services))
                 counts: list[tuple[str, int]] = [(m.provider_name, m.conversation_count) for m in metrics]
             else:
                 # Fast path: conversations-table-only query (~1ms)

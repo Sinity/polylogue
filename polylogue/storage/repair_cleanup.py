@@ -5,6 +5,11 @@ from __future__ import annotations
 from polylogue.config import Config
 from polylogue.maintenance_models import MaintenanceCategory
 
+from .archive_debt import (
+    count_orphaned_attachments_sync,
+    count_orphaned_content_blocks_sync,
+    count_orphaned_messages_sync,
+)
 from .backends.connection import connection_context
 from .repair_support import RepairResult, run_sql_repair
 
@@ -12,14 +17,8 @@ from .repair_support import RepairResult, run_sql_repair
 def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairResult:
     """Delete messages that reference non-existent conversations."""
     with connection_context(None) as conn:
-        orphan_cids = conn.execute(
-            """
-            SELECT DISTINCT conversation_id FROM messages
-            WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = messages.conversation_id)
-            """
-        ).fetchall()
-
-        if not orphan_cids:
+        count = count_orphaned_messages_sync(conn)
+        if count == 0:
             return RepairResult(
                 name="orphaned_messages",
                 category=MaintenanceCategory.ARCHIVE_CLEANUP,
@@ -29,11 +28,7 @@ def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairRes
                 detail="No orphaned messages found",
             )
 
-        placeholders = ",".join("?" for _ in orphan_cids)
-        count_sql = f"SELECT COUNT(*) FROM messages WHERE conversation_id IN ({placeholders})"
-
         try:
-            count = conn.execute(count_sql, [row[0] for row in orphan_cids]).fetchone()[0]
             if dry_run:
                 return RepairResult(
                     name="orphaned_messages",
@@ -44,6 +39,13 @@ def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairRes
                     detail=f"Would: Delete {count} orphaned messages" if count else "Would: No orphaned messages found",
                 )
 
+            orphan_cids = conn.execute(
+                """
+                SELECT DISTINCT conversation_id FROM messages
+                WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = messages.conversation_id)
+                """
+            ).fetchall()
+            placeholders = ",".join("?" for _ in orphan_cids)
             result = conn.execute(
                 f"DELETE FROM messages WHERE conversation_id IN ({placeholders})",
                 [row[0] for row in orphan_cids],
@@ -105,6 +107,9 @@ def preview_empty_conversations(*, count: int) -> RepairResult:
 
 def repair_orphaned_content_blocks(config: Config, dry_run: bool = False) -> RepairResult:
     with connection_context(None) as conn:
+        if dry_run:
+            count = count_orphaned_content_blocks_sync(conn)
+            return preview_orphaned_content_blocks(count=count)
         return run_sql_repair(
             name="orphaned_content_blocks",
             category=MaintenanceCategory.ARCHIVE_CLEANUP,
@@ -140,30 +145,7 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
     try:
         with connection_context(None) as conn:
             if dry_run:
-                orphaned_refs = conn.execute(
-                    """
-                    SELECT COUNT(*) FROM attachment_refs ar
-                    WHERE (ar.message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = ar.message_id))
-                       OR NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = ar.conversation_id)
-                    """
-                ).fetchone()[0]
-
-                atts_deleted = conn.execute(
-                    """
-                    SELECT COUNT(*) FROM attachments a
-                    WHERE NOT EXISTS (SELECT 1 FROM attachment_refs ar WHERE ar.attachment_id = a.attachment_id)
-                    """
-                ).fetchone()[0]
-
-                total = orphaned_refs + atts_deleted
-                return RepairResult(
-                    name="orphaned_attachments",
-                    category=MaintenanceCategory.ARCHIVE_CLEANUP,
-                    destructive=True,
-                    repaired_count=total,
-                    success=True,
-                    detail=f"Would: Clean {orphaned_refs} orphaned refs, {atts_deleted} unreferenced attachments",
-                )
+                return preview_orphaned_attachments(count=count_orphaned_attachments_sync(conn))
 
             ref_result = conn.execute(
                 """
@@ -211,10 +193,22 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
         )
 
 
+def preview_orphaned_attachments(*, count: int) -> RepairResult:
+    return RepairResult(
+        name="orphaned_attachments",
+        category=MaintenanceCategory.ARCHIVE_CLEANUP,
+        destructive=True,
+        repaired_count=count,
+        success=True,
+        detail=f"Would: Clean {count} orphaned attachment rows" if count else "Would: No orphaned attachments found",
+    )
+
+
 __all__ = [
     "preview_empty_conversations",
     "preview_orphaned_content_blocks",
     "preview_orphaned_messages",
+    "preview_orphaned_attachments",
     "repair_empty_conversations",
     "repair_orphaned_attachments",
     "repair_orphaned_content_blocks",

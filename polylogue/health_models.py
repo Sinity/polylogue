@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
-from .maintenance_models import DerivedModelStatus, ReportProvenance
+from .maintenance_models import ArchiveDebtStatus, DerivedModelStatus, ReportProvenance
 
 HealthCheck = OutcomeCheck
 VerifyStatus = OutcomeStatus
@@ -22,6 +22,7 @@ class HealthReport(OutcomeReport):
     timestamp: int = field(default_factory=lambda: int(time.time()))
     provenance: ReportProvenance = field(default_factory=ReportProvenance)
     derived_models: dict[str, DerivedModelStatus] = field(default_factory=dict)
+    archive_debt: dict[str, ArchiveDebtStatus] = field(default_factory=dict)
 
     @property
     def summary(self) -> dict[str, int]:
@@ -44,6 +45,10 @@ class HealthReport(OutcomeReport):
             "derived_models": {
                 name: status.to_dict()
                 for name, status in sorted(self.derived_models.items())
+            },
+            "archive_debt": {
+                name: status.to_dict()
+                for name, status in sorted(self.archive_debt.items())
             },
             "summary": self.summary,
         }

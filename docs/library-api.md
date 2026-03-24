@@ -45,7 +45,9 @@ Durable archive products are public too:
 ```python
 from polylogue import Polylogue
 from polylogue.archive_products import (
+    ArchiveDebtProductQuery,
     DaySessionSummaryProductQuery,
+    ProviderAnalyticsProductQuery,
     SessionPhaseProductQuery,
     SessionProfileProductQuery,
     SessionTagRollupQuery,
@@ -70,6 +72,12 @@ async with Polylogue() as archive:
     days = await archive.list_day_session_summary_products(
         DaySessionSummaryProductQuery(provider="claude-code", since="2026-01-01")
     )
+    analytics = await archive.list_provider_analytics_products(
+        ProviderAnalyticsProductQuery(provider="claude-code")
+    )
+    debt = await archive.list_archive_debt_products(
+        ArchiveDebtProductQuery(only_actionable=True)
+    )
 ```
 
 `SessionProfileProduct` exposes stable session semantics directly:
@@ -84,6 +92,11 @@ async with Polylogue() as archive:
 `SessionWorkEventProduct` and `SessionPhaseProduct` expose timestamped timeline rows
 that can be queried directly instead of rebuilding semantic spans from full
 conversations.
+
+Provider analytics and archive debt are public products too:
+
+- `ProviderAnalyticsProduct`: provider-level conversation/message/tool/thinking metrics
+- `ArchiveDebtProduct`: governed cleanup/repair debt with maintenance targets
 
 ## Filter Chain API
 
@@ -256,6 +269,8 @@ asyncio.run(main())
 | `list_day_session_summary_products(query)` | List durable day-summary products |
 | `list_week_session_summary_products(query)` | List durable week-summary products |
 | `list_maintenance_run_products(query)` | List durable maintenance lineage products |
+| `list_provider_analytics_products(query)` | List provider-level analytics products |
+| `list_archive_debt_products(query)` | List governed archive-debt products |
 
 ---
 

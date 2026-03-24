@@ -5,8 +5,10 @@ from __future__ import annotations
 import click
 
 from polylogue.archive_products import (
+    ArchiveDebtProductQuery,
     DaySessionSummaryProductQuery,
     MaintenanceRunProductQuery,
+    ProviderAnalyticsProductQuery,
     SessionPhaseProductQuery,
     SessionProfileProductQuery,
     SessionTagRollupQuery,
@@ -34,6 +36,15 @@ def _emit_product_list(*, json_mode: bool, key: str, items: list[object]) -> Non
         )
 
 
+def _summarize_archive_debt(items: list[object]) -> dict[str, int]:
+    actionable = [item for item in items if getattr(item, "healthy", True) is False]
+    return {
+        "tracked_items": len(items),
+        "actionable_items": len(actionable),
+        "issue_rows": sum(int(getattr(item, "issue_count", 0) or 0) for item in items),
+    }
+
+
 @click.group("products")
 def products_command() -> None:
     """Inspect durable archive data products."""
@@ -45,12 +56,20 @@ def products_command() -> None:
 def products_status_command(env: AppEnv, json_mode: bool) -> None:
     """Show durable product readiness status."""
     status = run_coroutine_sync(env.operations.get_session_product_status())
+    debt_items = run_coroutine_sync(
+        env.operations.list_archive_debt_products(ArchiveDebtProductQuery())
+    )
+    debt_summary = _summarize_archive_debt(debt_items)
     if json_mode:
-        emit_success({"session_products": status})
+        emit_success({"session_products": status, "archive_debt": debt_summary})
         return
     click.echo("Session Product Status:\n")
     for key, value in sorted(status.items()):
         click.echo(f"  {key}: {value}")
+    click.echo("\nArchive Debt:\n")
+    click.echo(f"  tracked_items: {debt_summary['tracked_items']}")
+    click.echo(f"  actionable_items: {debt_summary['actionable_items']}")
+    click.echo(f"  issue_rows: {debt_summary['issue_rows']}")
 
 
 @products_command.command("profiles")
@@ -463,6 +482,88 @@ def products_maintenance_command(
             f"  {item.executed_at} {item.mode} success={item.success} "
             f"preview={item.preview} targets={targets}"
         )
+
+
+@products_command.command("analytics")
+@click.option("--provider", default=None, help="Limit to one provider")
+@click.option("--limit", type=int, default=50, show_default=True, help="Maximum rows")
+@click.option("--offset", type=int, default=0, show_default=True, help="Start offset")
+@click.option("--json", "json_mode", is_flag=True, help="Output as JSON")
+@click.pass_obj
+def products_analytics_command(
+    env: AppEnv,
+    provider: str | None,
+    limit: int,
+    offset: int,
+    json_mode: bool,
+) -> None:
+    """List canonical provider-level analytics products."""
+    items = run_coroutine_sync(
+        env.operations.list_provider_analytics_products(
+            ProviderAnalyticsProductQuery(
+                provider=provider,
+                limit=limit,
+                offset=offset,
+            )
+        )
+    )
+    if json_mode:
+        _emit_product_list(json_mode=True, key="provider_analytics", items=items)
+        return
+    if not items:
+        click.echo("No provider analytics matched.")
+        return
+    click.echo(f"Provider analytics: {len(items)}\n")
+    for item in items:
+        click.echo(
+            f"  {item.provider_name} conversations={item.conversation_count} "
+            f"messages={item.message_count} avg_messages={item.avg_messages_per_conversation:.1f}"
+        )
+        click.echo(
+            f"    tools={item.tool_use_count} ({item.tool_use_percentage:.1f}% convs) "
+            f"thinking={item.thinking_count} ({item.thinking_percentage:.1f}% convs)"
+        )
+
+
+@products_command.command("debt")
+@click.option("--category", default=None, help="Limit to debt category")
+@click.option("--actionable-only", is_flag=True, help="Show only debt items with outstanding issues")
+@click.option("--limit", type=int, default=50, show_default=True, help="Maximum rows")
+@click.option("--offset", type=int, default=0, show_default=True, help="Start offset")
+@click.option("--json", "json_mode", is_flag=True, help="Output as JSON")
+@click.pass_obj
+def products_debt_command(
+    env: AppEnv,
+    category: str | None,
+    actionable_only: bool,
+    limit: int,
+    offset: int,
+    json_mode: bool,
+) -> None:
+    """List governed live archive debt items."""
+    items = run_coroutine_sync(
+        env.operations.list_archive_debt_products(
+            ArchiveDebtProductQuery(
+                category=category,
+                only_actionable=actionable_only,
+                limit=limit,
+                offset=offset,
+            )
+        )
+    )
+    if json_mode:
+        _emit_product_list(json_mode=True, key="archive_debt", items=items)
+        return
+    if not items:
+        click.echo("No archive debt matched.")
+        return
+    click.echo(f"Archive debt: {len(items)}\n")
+    for item in items:
+        click.echo(
+            f"  {item.debt_name} category={item.category} healthy={item.healthy} "
+            f"issue_count={item.issue_count} destructive={item.destructive}"
+        )
+        click.echo(f"    target={item.maintenance_target} detail={item.detail}")
 
 
 __all__ = ["products_command"]

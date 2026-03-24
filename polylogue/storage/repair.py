@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .repair_cleanup import (
     preview_empty_conversations,
+    preview_orphaned_attachments,
     preview_orphaned_content_blocks,
     preview_orphaned_messages,
     repair_empty_conversations,
@@ -40,6 +41,7 @@ __all__ = [
     "preview_action_event_read_model",
     "preview_dangling_fts",
     "preview_empty_conversations",
+    "preview_orphaned_attachments",
     "preview_orphaned_content_blocks",
     "preview_orphaned_messages",
     "preview_session_products",

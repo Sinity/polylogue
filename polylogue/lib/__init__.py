@@ -8,21 +8,23 @@ bridge, repository, and archive statistics live on more precise modules.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from polylogue.lib.attachment_models import Attachment
     from polylogue.lib.branch_type import BranchType
+    from polylogue.lib.conversation_models import Conversation
+    from polylogue.lib.message_models import DialoguePair, Message
     from polylogue.lib.messages import MessageCollection
-    from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
     from polylogue.lib.projections import ConversationProjection
     from polylogue.lib.roles import Role
 
 
 def __getattr__(name: str) -> object:
     lazy_exports = {
-        "Attachment": ("polylogue.lib.models", "Attachment"),
+        "Attachment": ("polylogue.lib.attachment_models", "Attachment"),
         "BranchType": ("polylogue.lib.branch_type", "BranchType"),
-        "Conversation": ("polylogue.lib.models", "Conversation"),
+        "Conversation": ("polylogue.lib.conversation_models", "Conversation"),
         "ConversationProjection": ("polylogue.lib.projections", "ConversationProjection"),
-        "DialoguePair": ("polylogue.lib.models", "DialoguePair"),
-        "Message": ("polylogue.lib.models", "Message"),
+        "DialoguePair": ("polylogue.lib.message_models", "DialoguePair"),
+        "Message": ("polylogue.lib.message_models", "Message"),
         "MessageCollection": ("polylogue.lib.messages", "MessageCollection"),
         "Role": ("polylogue.lib.roles", "Role"),
     }

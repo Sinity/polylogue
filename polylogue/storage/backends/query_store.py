@@ -32,7 +32,16 @@ from polylogue.storage.backends.queries import (
     runs as runs_q,
 )
 from polylogue.storage.backends.queries import (
-    session_products as session_products_q,
+    session_product_profile_queries as session_product_profiles_q,
+)
+from polylogue.storage.backends.queries import (
+    session_product_summary_queries as session_product_summaries_q,
+)
+from polylogue.storage.backends.queries import (
+    session_product_thread_queries as session_product_threads_q,
+)
+from polylogue.storage.backends.queries import (
+    session_product_timeline_queries as session_product_timelines_q,
 )
 from polylogue.storage.backends.queries import (
     stats as stats_q,
@@ -145,14 +154,14 @@ class SQLiteQueryStore:
 
     async def get_session_profile(self, conversation_id: str) -> SessionProfileRecord | None:
         async with self._connection_factory() as conn:
-            return await session_products_q.get_session_profile(conn, conversation_id)
+            return await session_product_profiles_q.get_session_profile(conn, conversation_id)
 
     async def get_session_profiles_batch(
         self,
         conversation_ids: list[str],
     ) -> dict[str, SessionProfileRecord]:
         async with self._connection_factory() as conn:
-            return await session_products_q.get_session_profiles_batch(conn, conversation_ids)
+            return await session_product_profiles_q.get_session_profiles_batch(conn, conversation_ids)
 
     async def list_session_profiles(
         self,
@@ -169,7 +178,7 @@ class SQLiteQueryStore:
         query: str | None = None,
     ) -> list[SessionProfileRecord]:
         async with self._connection_factory() as conn:
-            return await session_products_q.list_session_profiles(
+            return await session_product_profiles_q.list_session_profiles(
                 conn,
                 provider=provider,
                 since=since,
@@ -188,14 +197,14 @@ class SQLiteQueryStore:
         conversation_id: str,
     ) -> list[SessionWorkEventRecord]:
         async with self._connection_factory() as conn:
-            return await session_products_q.get_work_events(conn, conversation_id)
+            return await session_product_timelines_q.get_work_events(conn, conversation_id)
 
     async def get_session_phases(
         self,
         conversation_id: str,
     ) -> list[SessionPhaseRecord]:
         async with self._connection_factory() as conn:
-            return await session_products_q.get_session_phases(conn, conversation_id)
+            return await session_product_timelines_q.get_session_phases(conn, conversation_id)
 
     async def list_session_work_events(
         self,
@@ -210,7 +219,7 @@ class SQLiteQueryStore:
         query: str | None = None,
     ) -> list[SessionWorkEventRecord]:
         async with self._connection_factory() as conn:
-            return await session_products_q.list_work_events(
+            return await session_product_timelines_q.list_work_events(
                 conn,
                 conversation_id=conversation_id,
                 provider=provider,
@@ -234,7 +243,7 @@ class SQLiteQueryStore:
         offset: int = 0,
     ) -> list[SessionPhaseRecord]:
         async with self._connection_factory() as conn:
-            return await session_products_q.list_session_phases(
+            return await session_product_timelines_q.list_session_phases(
                 conn,
                 conversation_id=conversation_id,
                 provider=provider,
@@ -247,7 +256,7 @@ class SQLiteQueryStore:
 
     async def get_work_thread(self, thread_id: str) -> WorkThreadRecord | None:
         async with self._connection_factory() as conn:
-            return await session_products_q.get_work_thread(conn, thread_id)
+            return await session_product_threads_q.get_work_thread(conn, thread_id)
 
     async def list_work_threads(
         self,
@@ -259,7 +268,7 @@ class SQLiteQueryStore:
         query: str | None = None,
     ) -> list[WorkThreadRecord]:
         async with self._connection_factory() as conn:
-            return await session_products_q.list_work_threads(
+            return await session_product_threads_q.list_work_threads(
                 conn,
                 since=since,
                 until=until,
@@ -277,7 +286,7 @@ class SQLiteQueryStore:
         query: str | None = None,
     ) -> list[SessionTagRollupRecord]:
         async with self._connection_factory() as conn:
-            return await session_products_q.list_session_tag_rollup_rows(
+            return await session_product_summaries_q.list_session_tag_rollup_rows(
                 conn,
                 provider=provider,
                 since=since,
@@ -293,7 +302,7 @@ class SQLiteQueryStore:
         until: str | None = None,
     ) -> list[DaySessionSummaryRecord]:
         async with self._connection_factory() as conn:
-            return await session_products_q.list_day_session_summaries(
+            return await session_product_summaries_q.list_day_session_summaries(
                 conn,
                 provider=provider,
                 since=since,

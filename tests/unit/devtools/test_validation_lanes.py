@@ -131,6 +131,20 @@ class TestCommandConstruction:
         assert "tags" in cmd
         assert "--json" in cmd
 
+    def test_live_products_analytics_lane_uses_products_entrypoint(self):
+        cmd = build_lane_command(LANES["live-products-analytics"])
+        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert "products" in cmd
+        assert "analytics" in cmd
+        assert "--json" in cmd
+
+    def test_live_products_debt_lane_uses_products_entrypoint(self):
+        cmd = build_lane_command(LANES["live-products-debt"])
+        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert "products" in cmd
+        assert "debt" in cmd
+        assert "--json" in cmd
+
     def test_composite_lane_has_no_direct_command(self):
         with pytest.raises(ValueError, match="composite"):
             build_lane_command(LANES["frontier-local"])
@@ -176,6 +190,24 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "archive-data-products" in captured.out
         assert "live-products-small" in captured.out
+
+    def test_domain_read_model_live_dry_run_includes_new_product_and_governance_lanes(self, capsys):
+        exit_code = main(["--lane", "domain-read-model-live", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "live-products-small" in captured.out
+        assert "live-products-analytics" in captured.out
+        assert "live-products-debt" in captured.out
+        assert "live-governance-small" in captured.out
+
+    def test_domain_read_model_stewardship_dry_run_expands_both_subtrees(self, capsys):
+        exit_code = main(["--lane", "domain-read-model-stewardship", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "domain-read-model-contracts" in captured.out
+        assert "domain-read-model-live" in captured.out
 
     def test_runtime_substrate_contracts_dry_run_includes_contract_lanes(self, capsys):
         exit_code = main(["--lane", "runtime-substrate-contracts", "--dry-run"])

@@ -22,7 +22,7 @@ from polylogue.storage.backends.queries.mappers import (
     _row_to_message,
     _row_to_session_profile_record,
 )
-from polylogue.storage.backends.queries.session_products import (
+from polylogue.storage.backends.queries.session_product_summary_queries import (
     replace_day_session_summaries,
     replace_session_tag_rollup_rows,
 )

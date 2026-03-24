@@ -23,6 +23,7 @@ from polylogue.schemas.verification_requests import (
     ArtifactProofRequest,
     SchemaVerificationRequest,
 )
+from polylogue.storage.archive_debt import preview_counts_from_archive_debt
 from polylogue.storage.repair import (
     CLEANUP_TARGETS,
     SAFE_REPAIR_TARGETS,
@@ -88,77 +89,7 @@ class CheckCommandResult:
 
 def _build_preview_counts(report: Any) -> dict[str, int]:
     """Extract maintenance preview counts from the already-computed health report."""
-    counts: dict[str, int] = {}
-    check_counts = {check.name: int(check.count or 0) for check in report.checks}
-    for name in (
-        "orphaned_messages",
-        "orphaned_content_blocks",
-        "empty_conversations",
-    ):
-        if name in check_counts:
-            counts[name] = check_counts[name]
-
-    derived_models = getattr(report, "derived_models", {}) or {}
-    action_events = derived_models.get("action_events")
-    action_events_fts = derived_models.get("action_events_fts")
-    messages_fts = derived_models.get("messages_fts")
-    session_profiles = derived_models.get("session_profiles")
-    session_profiles_fts = derived_models.get("session_profiles_fts")
-    session_work_events = derived_models.get("session_work_events")
-    session_work_events_fts = derived_models.get("session_work_events_fts")
-    session_phases = derived_models.get("session_phases")
-    work_threads = derived_models.get("work_threads")
-    work_threads_fts = derived_models.get("work_threads_fts")
-    session_tag_rollups = derived_models.get("session_tag_rollups")
-    day_session_summaries = derived_models.get("day_session_summaries")
-    week_session_summaries = derived_models.get("week_session_summaries")
-    if (
-        session_profiles is not None
-        and session_profiles_fts is not None
-        and session_work_events is not None
-        and session_work_events_fts is not None
-        and session_phases is not None
-        and work_threads is not None
-        and work_threads_fts is not None
-        and session_tag_rollups is not None
-        and day_session_summaries is not None
-        and week_session_summaries is not None
-    ):
-        counts["session_products"] = (
-            max(0, int(getattr(session_profiles, "pending_documents", 0) or 0))
-            + max(0, int(getattr(session_profiles, "pending_rows", 0) or 0))
-            + max(0, int(getattr(session_profiles, "stale_rows", 0) or 0))
-            + max(0, int(getattr(session_profiles, "orphan_rows", 0) or 0))
-            + max(0, int(getattr(session_profiles_fts, "pending_rows", 0) or 0))
-            + max(0, int(getattr(session_work_events, "pending_rows", 0) or 0))
-            + max(0, int(getattr(session_work_events, "stale_rows", 0) or 0))
-            + max(0, int(getattr(session_work_events, "orphan_rows", 0) or 0))
-            + max(0, int(getattr(session_work_events_fts, "pending_rows", 0) or 0))
-            + max(0, int(getattr(session_phases, "pending_rows", 0) or 0))
-            + max(0, int(getattr(session_phases, "stale_rows", 0) or 0))
-            + max(0, int(getattr(session_phases, "orphan_rows", 0) or 0))
-            + max(0, int(getattr(work_threads, "pending_documents", 0) or 0))
-            + max(0, int(getattr(work_threads, "stale_rows", 0) or 0))
-            + max(0, int(getattr(work_threads, "orphan_rows", 0) or 0))
-            + max(0, int(getattr(work_threads_fts, "pending_rows", 0) or 0))
-            + max(0, int(getattr(session_tag_rollups, "pending_rows", 0) or 0))
-            + max(0, int(getattr(session_tag_rollups, "stale_rows", 0) or 0))
-            + max(0, int(getattr(day_session_summaries, "pending_rows", 0) or 0))
-            + max(0, int(getattr(day_session_summaries, "stale_rows", 0) or 0))
-            + max(0, int(getattr(week_session_summaries, "pending_rows", 0) or 0))
-            + max(0, int(getattr(week_session_summaries, "stale_rows", 0) or 0))
-        )
-    if action_events is not None and action_events_fts is not None:
-        counts["action_event_read_model"] = max(
-            0,
-            int(getattr(action_events, "pending_documents", 0) or 0),
-        ) + max(0, int(getattr(action_events, "stale_rows", 0) or 0)) + max(
-            0,
-            int(getattr(action_events_fts, "pending_rows", 0) or 0),
-        )
-    if messages_fts is not None:
-        counts["dangling_fts"] = max(0, int(getattr(messages_fts, "pending_rows", 0) or 0))
-    return counts
+    return preview_counts_from_archive_debt(getattr(report, "archive_debt", {}) or {})
 
 
 def _resolve_selected_maintenance_targets(options: CheckCommandOptions) -> tuple[str, ...]:

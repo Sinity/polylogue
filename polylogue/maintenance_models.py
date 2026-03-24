@@ -70,7 +70,33 @@ class DerivedModelStatus:
         }
 
 
+@dataclass(frozen=True)
+class ArchiveDebtStatus:
+    name: str
+    category: MaintenanceCategory
+    destructive: bool
+    issue_count: int
+    detail: str
+    maintenance_target: str
+
+    @property
+    def healthy(self) -> bool:
+        return self.issue_count == 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "category": self.category.value,
+            "destructive": self.destructive,
+            "issue_count": self.issue_count,
+            "detail": self.detail,
+            "maintenance_target": self.maintenance_target,
+            "healthy": self.healthy,
+        }
+
+
 __all__ = [
+    "ArchiveDebtStatus",
     "DerivedModelStatus",
     "MaintenanceCategory",
     "ReportProvenance",

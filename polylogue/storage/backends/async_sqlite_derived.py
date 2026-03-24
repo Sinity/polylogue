@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import maintenance_runs as maintenance_runs_q
-from polylogue.storage.backends.queries import session_products as session_products_q
+from polylogue.storage.backends.queries import (
+    session_product_profile_queries as session_product_profiles_q,
+)
+from polylogue.storage.backends.queries import (
+    session_product_thread_queries as session_product_threads_q,
+)
+from polylogue.storage.backends.queries import (
+    session_product_timeline_queries as session_product_timelines_q,
+)
 from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.store import (
     ActionEventRecord,
@@ -50,7 +58,7 @@ class SQLiteDerivedMixin:
     ) -> None:
         """Replace one durable session-profile row."""
         async with self._get_connection() as conn:
-            await session_products_q.replace_session_profile(
+            await session_product_profiles_q.replace_session_profile(
                 conn,
                 record,
                 self._transaction_depth,
@@ -63,7 +71,7 @@ class SQLiteDerivedMixin:
     ) -> None:
         """Replace durable work-event rows for one conversation."""
         async with self._get_connection() as conn:
-            await session_products_q.replace_session_work_events(
+            await session_product_timelines_q.replace_session_work_events(
                 conn,
                 conversation_id,
                 records,
@@ -77,7 +85,7 @@ class SQLiteDerivedMixin:
     ) -> None:
         """Replace one durable work-thread row."""
         async with self._get_connection() as conn:
-            await session_products_q.replace_work_thread(
+            await session_product_threads_q.replace_work_thread(
                 conn,
                 thread_id,
                 record,
