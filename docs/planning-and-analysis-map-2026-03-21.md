@@ -24,7 +24,8 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md](./programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md) | Current execution program for domain-model decomposition, repository-read/product-query convergence, external consumer contracts, and live archive stewardship | Active; this is now the live broad queue after the runtime-substrate campaign |
+| [programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md](./programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md) | Current execution program for semantic/session product normalization, operator/toolchain narrowing, schema convergence, and live cleanup governance | Active; this is now the live broad queue after the domain read-model campaign |
+| [programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md](./programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md) | Executed convergence program for domain-model decomposition, repository-read/product-query convergence, external consumer contracts, and live archive stewardship | Executed; domain models, repository reads, session-product query bands, archive-debt governance, provider analytics/debt products, and live stewardship lanes are now in place |
 | [programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md](./programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md) | Executed runtime-substrate campaign for query/runtime decomposition, storage/module narrowing, contract hardening, and validation governance | Executed; query/runtime substrate decomposition, lifecycle/repair/store narrowing, semantic registry narrowing, backend/schema banding, MCP tool split, and named runtime-substrate lanes are now in place |
 | [programs/archive-data-products-and-live-governance-program-2026-03-24.md](./programs/archive-data-products-and-live-governance-program-2026-03-24.md) | Executed convergence program for durable semantic/session products, external consumer contracts, cleanup lineage, retrieval/product convergence, and live governance lanes | Executed; durable session/work/tag/day/week products, public product contracts, live status lanes, and cleanup preview lineage are now in place |
 | [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md) | Executed convergence program for source/provider boundary cleanup, runtime maintenance governance, derived-model freshness/provenance convergence, publication/runtime narrowing, and live-archive validation | Executed; source traversal split, typed maintenance control plane, publication maintenance summaries, and live governance lanes are now in place |
@@ -119,7 +120,22 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md](./programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md)
+- the current live implementation queue is now [programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md](./programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md)
+- it targets the next broad drag around:
+  - semantic/session product normalization drift, especially noisy project and repo canonicalization in live outputs
+  - overbroad session-product lifecycle/status/support modules
+  - archive-product operator surfaces that still reshape durable products too late
+  - broad semantic proof/surface declaration catalogs
+  - remaining schema-toolchain monoliths and provider-parser cleanup seams
+  - explicit live cleanup lineage for orphaned content blocks and attachments
+- the domain read-model campaign in [programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md](./programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md) is now executed
+- it closed the broad read-model and stewardship gap around:
+  - `lib/models.py` decomposition into conversation/message/attachment/model-support bands
+  - repository read banding across archive/action/maintenance/product surfaces
+  - session-product SQL/query decomposition into profile/timeline/thread/summary bands
+  - archive-debt governance shared by health, maintenance preview, and product status
+  - stable provider analytics and archive-debt products across CLI/library/sync/MCP
+  - named live stewardship validation lanes exercised against the real archive
 - the runtime-substrate campaign in [programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md](./programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md) is now executed
 - it closed the main runtime-substrate drag around:
   - query planning/retrieval/grouping/output monoliths
