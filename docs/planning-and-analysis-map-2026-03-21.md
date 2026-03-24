@@ -24,7 +24,8 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md](./programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md) | Current execution program for query/runtime substrate decomposition, storage/module narrowing, contract hardening, and validation governance | Active; this is now the live broad queue after the archive-data-products campaign |
+| [programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md](./programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md) | Current execution program for domain-model decomposition, repository-read/product-query convergence, external consumer contracts, and live archive stewardship | Active; this is now the live broad queue after the runtime-substrate campaign |
+| [programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md](./programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md) | Executed runtime-substrate campaign for query/runtime decomposition, storage/module narrowing, contract hardening, and validation governance | Executed; query/runtime substrate decomposition, lifecycle/repair/store narrowing, semantic registry narrowing, backend/schema banding, MCP tool split, and named runtime-substrate lanes are now in place |
 | [programs/archive-data-products-and-live-governance-program-2026-03-24.md](./programs/archive-data-products-and-live-governance-program-2026-03-24.md) | Executed convergence program for durable semantic/session products, external consumer contracts, cleanup lineage, retrieval/product convergence, and live governance lanes | Executed; durable session/work/tag/day/week products, public product contracts, live status lanes, and cleanup preview lineage are now in place |
 | [programs/source-boundary-and-runtime-governance-program-2026-03-23.md](./programs/source-boundary-and-runtime-governance-program-2026-03-23.md) | Executed convergence program for source/provider boundary cleanup, runtime maintenance governance, derived-model freshness/provenance convergence, publication/runtime narrowing, and live-archive validation | Executed; source traversal split, typed maintenance control plane, publication maintenance summaries, and live governance lanes are now in place |
 | [programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md](./programs/platform-wide-architecture-and-refactoring-program-2026-03-23.md) | Executed implementation record for repository-wide architecture reduction, refactoring, module-topology cleanup, semantic-product consolidation, and lifecycle/health/repair hardening | Executed; query/filter shell convergence, backend narrowing, shared query construction, semantic-product consolidation, root narrowing, and live-maintenance hardening are now in place |
@@ -118,7 +119,21 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md](./programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md)
+- the current live implementation queue is now [programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md](./programs/domain-read-model-and-live-archive-stewardship-program-2026-03-24.md)
+- the runtime-substrate campaign in [programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md](./programs/runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md) is now executed
+- it closed the main runtime-substrate drag around:
+  - query planning/retrieval/grouping/output monoliths
+  - session-product lifecycle and maintenance control-plane monoliths
+  - broad store and backend/schema ownership
+  - semantic surface registry execution vs declaration ownership
+  - broad MCP tool registration wiring
+  - missing campaign-specific validation lanes and live memory-governance proofs
+- the next broad frontier is now higher-level and consumer-facing:
+  - domain model decomposition around the remaining broad `lib/models.py` root
+  - repository-read and session-product query banding
+  - external consumer and analytics contract convergence
+  - governed live archive stewardship for explicit cleanup debt such as orphaned content blocks
+  - tighter product/retrieval/analytics convergence on durable read models
 - the just-executed archive-data-products campaign in [programs/archive-data-products-and-live-governance-program-2026-03-24.md](./programs/archive-data-products-and-live-governance-program-2026-03-24.md) closed the broad product/governance gap around:
   - durable session/work/tag/day/week archive products
   - public consumer contracts across library, CLI, MCP, and sync surfaces
