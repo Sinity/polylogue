@@ -79,6 +79,14 @@ class TestCommandConstruction:
         assert "tests/unit/mcp/test_tool_contracts.py" in cmd
         assert "tests/integration/test_health.py" in cmd
 
+    def test_semantic_product_normalization_lane_uses_normalization_toolchain_suite(self):
+        cmd = build_lane_command(LANES["semantic-product-normalization"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/core/test_project_normalization.py" in cmd
+        assert "tests/unit/cli/test_products.py" in cmd
+        assert "tests/integration/test_schema_operator_workflow.py" in cmd
+        assert "tests/unit/sources/test_parsers_drive.py" in cmd
+
     def test_retrieval_dogfood_lane_uses_retrieval_suite(self):
         cmd = build_lane_command(LANES["retrieval-dogfood"])
         assert cmd[:3] == [sys.executable, "-m", "pytest"]
@@ -129,6 +137,13 @@ class TestCommandConstruction:
         assert cmd[:3] == [sys.executable, "-m", "polylogue"]
         assert "products" in cmd
         assert "tags" in cmd
+        assert "--json" in cmd
+
+    def test_live_products_day_summaries_lane_uses_products_entrypoint(self):
+        cmd = build_lane_command(LANES["live-products-day-summaries"])
+        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert "products" in cmd
+        assert "day-summaries" in cmd
         assert "--json" in cmd
 
     def test_live_products_analytics_lane_uses_products_entrypoint(self):
@@ -235,3 +250,21 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "runtime-substrate-contracts" in captured.out
         assert "runtime-substrate-live" in captured.out
+
+    def test_semantic_product_live_dry_run_includes_normalized_product_and_governance_lanes(self, capsys):
+        exit_code = main(["--lane", "semantic-product-live", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "live-products-tags" in captured.out
+        assert "live-products-day-summaries" in captured.out
+        assert "live-products-debt" in captured.out
+        assert "live-governance-small" in captured.out
+
+    def test_semantic_product_hardening_dry_run_expands_both_subtrees(self, capsys):
+        exit_code = main(["--lane", "semantic-product-hardening", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "semantic-product-normalization" in captured.out
+        assert "semantic-product-live" in captured.out

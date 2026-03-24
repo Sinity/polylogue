@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
+from polylogue.lib.project_normalization import normalize_project_names
 from polylogue.lib.session_profile import SessionProfile
 
 
@@ -121,7 +122,12 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
         provider_counter: Counter[str] = Counter()
         work_event_counter: Counter[str] = Counter()
         for profile in thread_profiles:
-            project_counter.update(profile.canonical_projects)
+            project_counter.update(
+                normalize_project_names(
+                    profile.canonical_projects,
+                    repo_paths=profile.repo_paths,
+                )
+            )
             provider_counter.update((profile.provider,))
             work_event_counter.update(
                 event.kind.value if hasattr(event.kind, "value") else str(event.kind)

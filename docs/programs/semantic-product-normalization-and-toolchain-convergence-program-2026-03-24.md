@@ -3,8 +3,8 @@
 # Semantic Product Normalization And Toolchain Convergence Program
 
 Date: 2026-03-24
-Status: active execution program
-Role: canonical broad queue after the domain read-model and live archive stewardship campaign
+Status: executed
+Role: executed convergence program for semantic/session product normalization, operator/toolchain narrowing, schema convergence, and live cleanup governance
 
 Absorbs and extends as the live queue:
 
@@ -38,6 +38,44 @@ Primary design inputs:
 - live `products tags`, `products day-summaries`, and project/work-product dogfooding
 - live archive debt output showing explicit orphaned content-block and
   attachment debt
+
+## Execution Record
+
+This program is now executed.
+
+Implemented outcomes:
+
+- canonical project/repo normalization now routes through one shared layer in
+  `polylogue/lib/project_normalization.py`, and the durable profile/tag/day/week
+  products consume it instead of late-stage ad hoc cleanup
+- session-product lifecycle ownership is split across rebuild, refresh, status,
+  batch, aggregate, storage, and thread modules instead of the old
+  `session_product_support.py` umbrella
+- archive-product operator surfaces now route through narrower workflow and
+  rendering modules, and archive-debt products now expose explicit governance
+  stage plus preview/apply lineage
+- semantic surface declarations, schema generation/tooling/proof, and the
+  remaining Claude/Drive parser seams are decomposed by role rather than
+  historical accretion
+- validation now has named lanes:
+  - `semantic-product-normalization`
+  - `semantic-product-live`
+  - `semantic-product-hardening`
+
+Live proof on `/home/sinity/.local/share/polylogue/polylogue.db`:
+
+- `check --json --repair --target session_products` rebuilt `47,593` durable
+  session-product rows and left `session_profiles`, `session_work_events`,
+  `session_phases`, `day_session_summaries`, and `week_session_summaries` ready
+- `products tags --json` no longer leaks regex fragments, markdown leftovers,
+  or malformed repo identifiers into project breakdowns; the remaining
+  underscore-prefixed names are real workspace projects
+- `products debt --json` now exposes governance stages directly:
+  `session_products=validated`,
+  `orphaned_content_blocks=previewed`,
+  `orphaned_attachments=previewed`
+- the named lane `python -m devtools.run_validation_lanes --lane semantic-product-hardening`
+  passed end to end
 
 ## One-Line Goal
 

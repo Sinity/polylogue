@@ -39,6 +39,9 @@ python -m devtools.run_validation_lanes --lane semantic-stack
 python -m devtools.run_validation_lanes --lane source-provider-fidelity
 python -m devtools.run_validation_lanes --lane maintenance-control-plane
 python -m devtools.run_validation_lanes --lane archive-data-products
+python -m devtools.run_validation_lanes --lane semantic-product-normalization
+python -m devtools.run_validation_lanes --lane semantic-product-live --dry-run
+python -m devtools.run_validation_lanes --lane semantic-product-hardening --dry-run
 python -m devtools.run_validation_lanes --lane runtime-substrate-contracts
 python -m devtools.run_validation_lanes --lane runtime-substrate-live --dry-run
 python -m devtools.run_validation_lanes --lane runtime-substrate-hardening --dry-run
@@ -69,6 +72,9 @@ Lane intent:
 - `source-provider-fidelity`: local source traversal, Drive/runtime boundaries, and provider-ingest fidelity
 - `maintenance-control-plane`: health, maintenance selection, cache/live provenance, and publication maintenance summaries
 - `archive-data-products`: durable archive products, consumer contracts, product-aware grouped stats, and health/governance surfaces
+- `semantic-product-normalization`: semantic/session product normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup
+- `semantic-product-live`: bounded live archive lane for normalized product surfaces, debt governance, and maintenance preview/budgets
+- `semantic-product-hardening`: `semantic-product-normalization` plus `semantic-product-live`
 - `runtime-substrate-contracts`: local closure lane for the decomposed query/runtime/product/maintenance contract surfaces
 - `runtime-substrate-live`: bounded live archive dogfooding for runtime-substrate retrieval, governance, and memory budgets
 - `runtime-substrate-hardening`: `runtime-substrate-contracts` plus `runtime-substrate-live`

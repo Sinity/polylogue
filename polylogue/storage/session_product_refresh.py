@@ -5,15 +5,14 @@ from __future__ import annotations
 import aiosqlite
 
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
-
-from .session_product_support import (
-    build_session_product_records,
-    hydrate_conversations,
-    hydrate_session_profile,
-    load_async_batch,
-    load_thread_profile_records_async,
+from polylogue.storage.session_product_aggregates import (
     profile_provider_day,
     refresh_async_provider_day_aggregates,
+)
+from polylogue.storage.session_product_batches import hydrate_conversations, load_async_batch
+from polylogue.storage.session_product_rows import build_session_product_records, hydrate_session_profile
+from polylogue.storage.session_product_threads import (
+    load_thread_profile_records_async,
     thread_root_id_async,
 )
 

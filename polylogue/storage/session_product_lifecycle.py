@@ -17,7 +17,7 @@ from polylogue.storage.session_product_status import (
     session_profile_repair_candidate_ids_async,
     session_profile_repair_candidate_ids_sync,
 )
-from polylogue.storage.session_product_support import (
+from polylogue.storage.session_product_threads import (
     thread_conversation_ids_async,
     thread_conversation_ids_sync,
     thread_root_id_async,
