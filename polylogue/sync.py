@@ -30,6 +30,8 @@ from polylogue.archive_products import (
     MaintenanceRunProductQuery,
     ProviderAnalyticsProduct,
     ProviderAnalyticsProductQuery,
+    SessionEnrichmentProduct,
+    SessionEnrichmentProductQuery,
     SessionPhaseProduct,
     SessionPhaseProductQuery,
     SessionProfileProduct,
@@ -146,9 +148,14 @@ class SyncPolylogue:
         """Get durable session-product readiness counters."""
         return _run(self._facade.get_session_product_status())
 
-    def get_session_profile_product(self, conversation_id: str) -> SessionProfileProduct | None:
+    def get_session_profile_product(
+        self,
+        conversation_id: str,
+        *,
+        tier: str = "merged",
+    ) -> SessionProfileProduct | None:
         """Get the versioned durable session-profile product for one conversation."""
-        return _run(self._facade.get_session_profile_product(conversation_id))
+        return _run(self._facade.get_session_profile_product(conversation_id, tier=tier))
 
     def list_session_profile_products(
         self,
@@ -156,6 +163,20 @@ class SyncPolylogue:
     ) -> list[SessionProfileProduct]:
         """List versioned durable session-profile products."""
         return _run(self._facade.list_session_profile_products(query))
+
+    def get_session_enrichment_product(
+        self,
+        conversation_id: str,
+    ) -> SessionEnrichmentProduct | None:
+        """Get the versioned durable session-enrichment product for one conversation."""
+        return _run(self._facade.get_session_enrichment_product(conversation_id))
+
+    def list_session_enrichment_products(
+        self,
+        query: SessionEnrichmentProductQuery | None = None,
+    ) -> list[SessionEnrichmentProduct]:
+        """List versioned durable session-enrichment products."""
+        return _run(self._facade.list_session_enrichment_products(query))
 
     def list_session_tag_rollup_products(
         self,

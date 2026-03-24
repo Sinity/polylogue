@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -25,7 +26,10 @@ from polylogue.storage.store import PublicationRecord
 
 async def load_latest_run_summary(backend) -> object | None:
     """Return the latest pipeline run summary for manifest embedding."""
-    return build_latest_run_summary(await backend.queries.get_latest_run())
+    record = backend.queries.get_latest_run()
+    if inspect.isawaitable(record):
+        record = await record
+    return build_latest_run_summary(record)
 
 
 async def load_artifact_proof_summary_for_backend(backend) -> object | None:

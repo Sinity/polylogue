@@ -57,6 +57,16 @@ def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
         session_profile_columns = _table_columns(conn, "session_profiles")
         if "canonical_session_date" not in session_profile_columns:
             conn.execute("ALTER TABLE session_profiles ADD COLUMN canonical_session_date TEXT")
+        if "last_message_at" not in session_profile_columns:
+            conn.execute("ALTER TABLE session_profiles ADD COLUMN last_message_at TEXT")
+        if "substantive_count" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN substantive_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "attachment_count" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN attachment_count INTEGER NOT NULL DEFAULT 0"
+            )
         if "phase_count" not in session_profile_columns:
             conn.execute(
                 "ALTER TABLE session_profiles ADD COLUMN phase_count INTEGER NOT NULL DEFAULT 0"
@@ -65,6 +75,71 @@ def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "ALTER TABLE session_profiles ADD COLUMN engaged_duration_ms INTEGER NOT NULL DEFAULT 0"
             )
+        if "cost_is_estimated" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN cost_is_estimated INTEGER NOT NULL DEFAULT 0"
+            )
+        if "evidence_payload_json" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "inference_payload_json" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "evidence_search_text" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN evidence_search_text TEXT NOT NULL DEFAULT ''"
+            )
+        if "inference_search_text" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN inference_search_text TEXT NOT NULL DEFAULT ''"
+            )
+        if "enrichment_payload_json" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN enrichment_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "enrichment_search_text" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN enrichment_search_text TEXT NOT NULL DEFAULT ''"
+            )
+        if "enrichment_version" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN enrichment_version INTEGER NOT NULL DEFAULT 1"
+            )
+        if "enrichment_family" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN enrichment_family TEXT NOT NULL DEFAULT 'scored_session_enrichment'"
+            )
+        if "inference_version" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1"
+            )
+        if "inference_family" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
+            )
+        conn.execute(
+            """
+            UPDATE session_profiles
+            SET evidence_search_text = search_text
+            WHERE TRIM(COALESCE(evidence_search_text, '')) = ''
+            """
+        )
+        conn.execute(
+            """
+            UPDATE session_profiles
+            SET inference_search_text = search_text
+            WHERE TRIM(COALESCE(inference_search_text, '')) = ''
+            """
+        )
+        conn.execute(
+            """
+            UPDATE session_profiles
+            SET enrichment_search_text = inference_search_text
+            WHERE TRIM(COALESCE(enrichment_search_text, '')) = ''
+            """
+        )
 
     if _table_exists(conn, "session_work_events"):
         session_work_event_columns = _table_columns(conn, "session_work_events")
@@ -78,6 +153,49 @@ def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
             )
         if "canonical_session_date" not in session_work_event_columns:
             conn.execute("ALTER TABLE session_work_events ADD COLUMN canonical_session_date TEXT")
+        if "evidence_payload_json" not in session_work_event_columns:
+            conn.execute(
+                "ALTER TABLE session_work_events ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "inference_payload_json" not in session_work_event_columns:
+            conn.execute(
+                "ALTER TABLE session_work_events ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "inference_version" not in session_work_event_columns:
+            conn.execute(
+                "ALTER TABLE session_work_events ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1"
+            )
+        if "inference_family" not in session_work_event_columns:
+            conn.execute(
+                "ALTER TABLE session_work_events ADD COLUMN inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
+            )
+
+    if _table_exists(conn, "session_phases"):
+        session_phase_columns = _table_columns(conn, "session_phases")
+        if "confidence" not in session_phase_columns:
+            conn.execute(
+                "ALTER TABLE session_phases ADD COLUMN confidence REAL NOT NULL DEFAULT 0"
+            )
+        if "evidence_reasons_json" not in session_phase_columns:
+            conn.execute(
+                "ALTER TABLE session_phases ADD COLUMN evidence_reasons_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "evidence_payload_json" not in session_phase_columns:
+            conn.execute(
+                "ALTER TABLE session_phases ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "inference_payload_json" not in session_phase_columns:
+            conn.execute(
+                "ALTER TABLE session_phases ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "inference_version" not in session_phase_columns:
+            conn.execute(
+                "ALTER TABLE session_phases ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1"
+            )
+        if "inference_family" not in session_phase_columns:
+            conn.execute(
+                "ALTER TABLE session_phases ADD COLUMN inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
+            )
 
     conn.executescript(_SESSION_PRODUCT_DDL)
     ensure_vec0_table(conn)

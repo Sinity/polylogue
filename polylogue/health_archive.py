@@ -144,8 +144,17 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
             action_rows = derived_statuses["action_events"]
             action_fts = derived_statuses["action_events_fts"]
             message_fts = derived_statuses["messages_fts"]
-            embeddings = derived_statuses["embeddings"]
-            session_phases = derived_statuses.get("session_phases")
+            transcript_embeddings = derived_statuses["transcript_embeddings"]
+            retrieval_evidence = derived_statuses["retrieval_evidence"]
+            retrieval_inference = derived_statuses["retrieval_inference"]
+            retrieval_enrichment = derived_statuses["retrieval_enrichment"]
+            session_profile_rows = derived_statuses.get("session_profile_rows")
+            session_profile_evidence_fts = derived_statuses.get("session_profile_evidence_fts")
+            session_profile_inference_fts = derived_statuses.get("session_profile_inference_fts")
+            session_profile_enrichment_fts = derived_statuses.get("session_profile_enrichment_fts")
+            session_work_event_inference = derived_statuses.get("session_work_event_inference")
+            session_work_event_inference_fts = derived_statuses.get("session_work_event_inference_fts")
+            session_phase_inference = derived_statuses.get("session_phase_inference")
             session_tag_rollups = derived_statuses.get("session_tag_rollups")
             day_session_summaries = derived_statuses.get("day_session_summaries")
             week_session_summaries = derived_statuses.get("week_session_summaries")
@@ -173,43 +182,121 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                     summary=message_fts.detail,
                 )
             )
-            embedding_status = VerifyStatus.OK if embeddings.ready else VerifyStatus.WARNING
+            embedding_status = VerifyStatus.OK if transcript_embeddings.ready else VerifyStatus.WARNING
             checks.append(
                 HealthCheck(
-                    "embedding_coverage",
+                    "transcript_embeddings",
                     embedding_status,
-                    count=embeddings.pending_documents,
-                    summary=embeddings.detail,
+                    count=transcript_embeddings.pending_documents,
+                    summary=transcript_embeddings.detail,
                 )
             )
             freshness_status = (
                 VerifyStatus.OK
-                if embeddings.materialized_rows == 0
+                if transcript_embeddings.materialized_rows == 0
                 or (
-                    embeddings.stale_rows == 0
-                    and embeddings.missing_provenance_rows == 0
+                    transcript_embeddings.stale_rows == 0
+                    and transcript_embeddings.missing_provenance_rows == 0
                 )
                 else VerifyStatus.WARNING
             )
             checks.append(
                 HealthCheck(
-                    "embedding_freshness",
+                    "transcript_embedding_freshness",
                     freshness_status,
-                    count=embeddings.stale_rows,
+                    count=transcript_embeddings.stale_rows,
                     summary=(
                         "No embedded messages to assess freshness"
-                        if embeddings.materialized_rows == 0
+                        if transcript_embeddings.materialized_rows == 0
                         else (
-                            f"Embeddings fresh ({embeddings.materialized_rows:,} messages)"
+                            f"Transcript embeddings fresh ({transcript_embeddings.materialized_rows:,} messages)"
                             if freshness_status is VerifyStatus.OK
                             else (
-                                f"Embeddings stale ({embeddings.stale_rows:,} stale, "
-                                f"{embeddings.missing_provenance_rows:,} missing provenance)"
+                                f"Transcript embeddings stale ({transcript_embeddings.stale_rows:,} stale, "
+                                f"{transcript_embeddings.missing_provenance_rows:,} missing provenance)"
                             )
                         )
                     ),
                 )
             )
+            checks.append(
+                HealthCheck(
+                    "retrieval_evidence",
+                    VerifyStatus.OK if retrieval_evidence.ready else VerifyStatus.WARNING,
+                    count=retrieval_evidence.pending_rows,
+                    summary=retrieval_evidence.detail,
+                )
+            )
+            checks.append(
+                HealthCheck(
+                    "retrieval_inference",
+                    VerifyStatus.OK if retrieval_inference.ready else VerifyStatus.WARNING,
+                    count=retrieval_inference.pending_rows,
+                    summary=retrieval_inference.detail,
+                )
+            )
+            checks.append(
+                HealthCheck(
+                    "retrieval_enrichment",
+                    VerifyStatus.OK if retrieval_enrichment.ready else VerifyStatus.WARNING,
+                    count=retrieval_enrichment.pending_rows,
+                    summary=retrieval_enrichment.detail,
+                )
+            )
+            if session_profile_rows is not None:
+                checks.append(
+                    HealthCheck(
+                        "session_profile_rows",
+                        VerifyStatus.OK if session_profile_rows.ready else VerifyStatus.WARNING,
+                        count=session_profile_rows.materialized_documents,
+                        summary=session_profile_rows.detail,
+                    )
+                )
+            if session_profile_evidence_fts is not None:
+                checks.append(
+                    HealthCheck(
+                        "session_profile_evidence_fts",
+                        VerifyStatus.OK if session_profile_evidence_fts.ready else VerifyStatus.WARNING,
+                        count=session_profile_evidence_fts.materialized_rows,
+                        summary=session_profile_evidence_fts.detail,
+                    )
+                )
+            if session_profile_inference_fts is not None:
+                checks.append(
+                    HealthCheck(
+                        "session_profile_inference_fts",
+                        VerifyStatus.OK if session_profile_inference_fts.ready else VerifyStatus.WARNING,
+                        count=session_profile_inference_fts.materialized_rows,
+                        summary=session_profile_inference_fts.detail,
+                    )
+                )
+            if session_profile_enrichment_fts is not None:
+                checks.append(
+                    HealthCheck(
+                        "session_profile_enrichment_fts",
+                        VerifyStatus.OK if session_profile_enrichment_fts.ready else VerifyStatus.WARNING,
+                        count=session_profile_enrichment_fts.materialized_rows,
+                        summary=session_profile_enrichment_fts.detail,
+                    )
+                )
+            if session_work_event_inference is not None:
+                checks.append(
+                    HealthCheck(
+                        "session_work_event_inference",
+                        VerifyStatus.OK if session_work_event_inference.ready else VerifyStatus.WARNING,
+                        count=session_work_event_inference.materialized_rows,
+                        summary=session_work_event_inference.detail,
+                    )
+                )
+            if session_work_event_inference_fts is not None:
+                checks.append(
+                    HealthCheck(
+                        "session_work_event_inference_fts",
+                        VerifyStatus.OK if session_work_event_inference_fts.ready else VerifyStatus.WARNING,
+                        count=session_work_event_inference_fts.materialized_rows,
+                        summary=session_work_event_inference_fts.detail,
+                    )
+                )
             if session_tag_rollups is not None:
                 checks.append(
                     HealthCheck(
@@ -219,13 +306,13 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                         summary=session_tag_rollups.detail,
                     )
                 )
-            if session_phases is not None:
+            if session_phase_inference is not None:
                 checks.append(
                     HealthCheck(
-                        "session_phases",
-                        VerifyStatus.OK if session_phases.ready else VerifyStatus.WARNING,
-                        count=session_phases.materialized_rows,
-                        summary=session_phases.detail,
+                        "session_phase_inference",
+                        VerifyStatus.OK if session_phase_inference.ready else VerifyStatus.WARNING,
+                        count=session_phase_inference.materialized_rows,
+                        summary=session_phase_inference.detail,
                     )
                 )
             if day_session_summaries is not None:

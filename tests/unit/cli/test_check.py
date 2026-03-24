@@ -319,6 +319,57 @@ def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
     assert manifest["targets"] == ["session_products"]
 
 
+def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products-apply")
+        .provider("claude-code")
+        .title("Scoped Check Repair Apply")
+        .add_message("u1", role="user", text="Repair the durable products")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "check",
+            "--json",
+            "--repair",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["maintenance"]["targets"] == ["session_products"]
+    assert payload["maintenance"]["items"][0]["name"] == "session_products"
+    assert payload["maintenance"]["items"][0]["success"] is True
+
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT preview, target_names_json, manifest_json
+            FROM maintenance_runs
+            ORDER BY executed_at DESC, maintenance_run_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert row["preview"] == 0
+    assert json.loads(row["target_names_json"]) == ["session_products"]
+    manifest = json.loads(row["manifest_json"])
+    assert manifest["targets"] == ["session_products"]
+
+
 class TestCheckCommand:
     """Tests for polylogue check command."""
 

@@ -46,22 +46,55 @@ def render_session_profiles(items: list[object], *, json_mode: bool) -> None:
         return
     click.echo(f"Session profiles: {len(items)}\n")
     for item in items:
-        profile = item.profile
-        projects = ", ".join(profile.get("canonical_projects", [])[:3]) or "-"
+        evidence = item.evidence.model_dump(mode="json") if item.evidence is not None else {}
+        inference = item.inference.model_dump(mode="json") if item.inference is not None else {}
+        projects = ", ".join(inference.get("canonical_projects", [])[:3]) or "-"
         click.echo(
             f"  {item.conversation_id} [{item.provider_name}] "
-            f"{item.primary_work_kind or '-'} "
+            f"tier={item.semantic_tier} "
+            f"{inference.get('primary_work_kind', '-') or '-'} "
             f"{item.title or '(untitled)'}"
         )
         click.echo(
-            f"    first_message_at={item.first_message_at or '-'} "
-            f"session_date={item.canonical_session_date or '-'} "
-            f"engaged_minutes={item.engaged_minutes:g}"
+            f"    first_message_at={evidence.get('first_message_at', '-') or '-'} "
+            f"session_date={evidence.get('canonical_session_date', '-') or '-'} "
+            f"engaged_minutes={inference.get('engaged_minutes', 0) or 0:g}"
         )
         click.echo(
-            f"    messages={profile.get('message_count', 0)} "
-            f"work_events={len(profile.get('work_events', []))} "
+            f"    messages={evidence.get('message_count', 0)} "
+            f"work_events={inference.get('work_event_count', 0)} "
             f"projects={projects}"
+        )
+
+
+def render_session_enrichments(items: list[object], *, json_mode: bool) -> None:
+    if json_mode:
+        emit_product_list(key="session_enrichments", items=items)
+        return
+    if not items:
+        click.echo("No session enrichments matched.")
+        return
+    click.echo(f"Session enrichments: {len(items)}\n")
+    for item in items:
+        enrichment = item.enrichment.model_dump(mode="json")
+        click.echo(
+            f"  {item.conversation_id} [{item.provider_name}] "
+            f"{enrichment.get('refined_work_kind', '-') or '-'} "
+            f"{item.title or '(untitled)'}"
+        )
+        click.echo(
+            f"    confidence={enrichment.get('confidence', 0) or 0:.2f} "
+            f"support={enrichment.get('support_level', '-') or '-'} "
+            f"family={item.enrichment_provenance.enrichment_family}"
+        )
+        click.echo(
+            f"    intent={enrichment.get('intent_summary', '-') or '-'} "
+            f"outcome={enrichment.get('outcome_summary', '-') or '-'}"
+        )
+        blockers = enrichment.get("blockers", [])
+        click.echo(
+            f"    blockers={len(blockers)} "
+            f"signals={', '.join(enrichment.get('support_signals', [])[:4]) or '-'}"
         )
 
 
@@ -74,19 +107,21 @@ def render_session_work_events(items: list[object], *, json_mode: bool) -> None:
         return
     click.echo(f"Work events: {len(items)}\n")
     for item in items:
-        event = item.event
+        evidence = item.evidence.model_dump(mode="json")
+        inference = item.inference.model_dump(mode="json")
         click.echo(
-            f"  {item.event_id} [{item.provider_name}] {item.kind} "
+            f"  {item.event_id} [{item.provider_name}] {inference.get('kind', '-')} "
             f"conversation={item.conversation_id}"
         )
         click.echo(
-            f"    start={item.start_time or '-'} end={item.end_time or '-'} "
-            f"session_date={item.canonical_session_date or '-'} duration_ms={item.duration_ms}"
+            f"    start={evidence.get('start_time', '-') or '-'} end={evidence.get('end_time', '-') or '-'} "
+            f"session_date={evidence.get('canonical_session_date', '-') or '-'} duration_ms={evidence.get('duration_ms', 0)}"
         )
         click.echo(
-            f"    summary={event.get('summary', '-') or '-'} "
-            f"files={len(event.get('file_paths', []))} "
-            f"tools={len(event.get('tools_used', []))}"
+            f"    summary={inference.get('summary', '-') or '-'} "
+            f"confidence={inference.get('confidence', 0) or 0:.2f} "
+            f"files={len(evidence.get('file_paths', []))} "
+            f"tools={len(evidence.get('tools_used', []))}"
         )
 
 
@@ -99,19 +134,21 @@ def render_session_phases(items: list[object], *, json_mode: bool) -> None:
         return
     click.echo(f"Session phases: {len(items)}\n")
     for item in items:
-        phase = item.phase
+        evidence = item.evidence.model_dump(mode="json")
+        inference = item.inference.model_dump(mode="json")
         click.echo(
-            f"  {item.phase_id} [{item.provider_name}] {item.kind} "
+            f"  {item.phase_id} [{item.provider_name}] {inference.get('kind', '-')} "
             f"conversation={item.conversation_id}"
         )
         click.echo(
-            f"    start={item.start_time or '-'} end={item.end_time or '-'} "
-            f"session_date={item.canonical_session_date or '-'} duration_ms={item.duration_ms}"
+            f"    start={evidence.get('start_time', '-') or '-'} end={evidence.get('end_time', '-') or '-'} "
+            f"session_date={evidence.get('canonical_session_date', '-') or '-'} duration_ms={evidence.get('duration_ms', 0)}"
         )
         click.echo(
-            f"    message_range={phase.get('message_range', [])} "
-            f"tools={phase.get('tool_counts', {})} "
-            f"words={phase.get('word_count', 0)}"
+            f"    confidence={inference.get('confidence', 0) or 0:.2f} "
+            f"message_range={evidence.get('message_range', [])} "
+            f"tools={evidence.get('tool_counts', {})} "
+            f"words={evidence.get('word_count', 0)}"
         )
 
 
@@ -246,7 +283,10 @@ def render_archive_debt(items: list[object], *, json_mode: bool) -> None:
             click.echo(
                 f"    lineage preview={item.lineage.latest_preview_at or '-'} "
                 f"apply={item.lineage.latest_apply_at or '-'} "
-                f"ok_apply={item.lineage.latest_successful_apply_at or '-'}"
+                f"ok_apply={item.lineage.latest_successful_apply_at or '-'} "
+                f"validate={item.lineage.latest_validation_at or '-'} "
+                f"ok_validate={item.lineage.latest_successful_validation_at or '-'} "
+                f"regressed={item.lineage.latest_regressed_at or '-'}"
             )
 
 
@@ -257,6 +297,7 @@ __all__ = [
     "render_maintenance_runs",
     "render_products_status",
     "render_provider_analytics",
+    "render_session_enrichments",
     "render_session_phases",
     "render_session_profiles",
     "render_session_tag_rollups",

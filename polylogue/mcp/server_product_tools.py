@@ -15,9 +15,12 @@ if TYPE_CHECKING:
 
 def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
-    async def session_profile(conversation_id: str) -> str:
+    async def session_profile(conversation_id: str, tier: str = "merged") -> str:
         async def run() -> str:
-            product = await hooks.get_archive_ops().get_session_profile_product(conversation_id)
+            product = await hooks.get_archive_ops().get_session_profile_product(
+                conversation_id,
+                tier=tier,
+            )
             if product is None:
                 return hooks.error_json("Conversation not found", conversation_id=conversation_id)
             return hooks.json_payload(product, exclude_none=True)
@@ -88,6 +91,7 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         first_message_until: str | None = None,
         session_date_since: str | None = None,
         session_date_until: str | None = None,
+        tier: str = "merged",
         provider: str | None = None,
         query: str | None = None,
         limit: int = 50,
@@ -105,6 +109,7 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     first_message_until=first_message_until,
                     session_date_since=session_date_since,
                     session_date_until=session_date_until,
+                    tier=tier,
                     query=query,
                     limit=hooks.clamp_limit(limit),
                     offset=max(0, int(offset)),
@@ -120,6 +125,49 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return await hooks.async_safe_call("session_profiles", run)
+
+    @mcp.tool()
+    async def session_enrichments(
+        since: str | None = None,
+        until: str | None = None,
+        first_message_since: str | None = None,
+        first_message_until: str | None = None,
+        session_date_since: str | None = None,
+        session_date_until: str | None = None,
+        refined_work_kind: str | None = None,
+        provider: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> str:
+        async def run() -> str:
+            from polylogue.archive_products import SessionEnrichmentProductQuery
+
+            products = await hooks.get_archive_ops().list_session_enrichment_products(
+                SessionEnrichmentProductQuery(
+                    provider=provider,
+                    since=since,
+                    until=until,
+                    first_message_since=first_message_since,
+                    first_message_until=first_message_until,
+                    session_date_since=session_date_since,
+                    session_date_until=session_date_until,
+                    refined_work_kind=refined_work_kind,
+                    query=query,
+                    limit=hooks.clamp_limit(limit),
+                    offset=max(0, int(offset)),
+                )
+            )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [product.model_dump(mode="json") for product in products],
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("session_enrichments", run)
 
     @mcp.tool()
     async def session_work_events(

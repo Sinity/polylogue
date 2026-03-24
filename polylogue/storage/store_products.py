@@ -8,7 +8,14 @@ from pydantic import BaseModel, field_validator
 
 from polylogue.types import ConversationId
 
-from .store_core import MAINTENANCE_RUN_SCHEMA_VERSION, SESSION_PRODUCT_MATERIALIZER_VERSION
+from .store_core import (
+    MAINTENANCE_RUN_SCHEMA_VERSION,
+    SESSION_ENRICHMENT_FAMILY,
+    SESSION_ENRICHMENT_VERSION,
+    SESSION_INFERENCE_FAMILY,
+    SESSION_INFERENCE_VERSION,
+    SESSION_PRODUCT_MATERIALIZER_VERSION,
+)
 
 
 class SessionProfileRecord(BaseModel):
@@ -28,6 +35,8 @@ class SessionProfileRecord(BaseModel):
     tags: tuple[str, ...] = ()
     auto_tags: tuple[str, ...] = ()
     message_count: int = 0
+    substantive_count: int = 0
+    attachment_count: int = 0
     work_event_count: int = 0
     phase_count: int = 0
     word_count: int = 0
@@ -37,10 +46,30 @@ class SessionProfileRecord(BaseModel):
     total_duration_ms: int = 0
     engaged_duration_ms: int = 0
     wall_duration_ms: int = 0
-    payload: dict[str, Any]
+    cost_is_estimated: bool = False
+    evidence_payload: dict[str, Any]
+    inference_payload: dict[str, Any]
     search_text: str
+    evidence_search_text: str
+    inference_search_text: str
+    enrichment_payload: dict[str, Any]
+    enrichment_search_text: str
+    enrichment_version: int = SESSION_ENRICHMENT_VERSION
+    enrichment_family: str = SESSION_ENRICHMENT_FAMILY
+    inference_version: int = SESSION_INFERENCE_VERSION
+    inference_family: str = SESSION_INFERENCE_FAMILY
 
-    @field_validator("conversation_id", "provider_name", "materialized_at", "search_text")
+    @field_validator(
+        "conversation_id",
+        "provider_name",
+        "materialized_at",
+        "search_text",
+        "evidence_search_text",
+        "inference_search_text",
+        "enrichment_search_text",
+        "enrichment_family",
+        "inference_family",
+    )
     @classmethod
     def profile_non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():
@@ -68,8 +97,11 @@ class SessionWorkEventRecord(BaseModel):
     summary: str
     file_paths: tuple[str, ...] = ()
     tools_used: tuple[str, ...] = ()
-    payload: dict[str, Any]
+    evidence_payload: dict[str, Any]
+    inference_payload: dict[str, Any]
     search_text: str
+    inference_version: int = SESSION_INFERENCE_VERSION
+    inference_family: str = SESSION_INFERENCE_FAMILY
 
     @field_validator(
         "event_id",
@@ -79,6 +111,7 @@ class SessionWorkEventRecord(BaseModel):
         "kind",
         "summary",
         "search_text",
+        "inference_family",
     )
     @classmethod
     def work_event_non_empty_string(cls, v: str) -> str:
@@ -103,10 +136,15 @@ class SessionPhaseRecord(BaseModel):
     end_time: str | None = None
     duration_ms: int = 0
     canonical_session_date: str | None = None
+    confidence: float = 0.0
+    evidence_reasons: tuple[str, ...] = ()
     tool_counts: dict[str, int]
     word_count: int = 0
-    payload: dict[str, Any]
+    evidence_payload: dict[str, Any]
+    inference_payload: dict[str, Any]
     search_text: str
+    inference_version: int = SESSION_INFERENCE_VERSION
+    inference_family: str = SESSION_INFERENCE_FAMILY
 
     @field_validator(
         "phase_id",
@@ -115,6 +153,7 @@ class SessionPhaseRecord(BaseModel):
         "provider_name",
         "kind",
         "search_text",
+        "inference_family",
     )
     @classmethod
     def session_phase_non_empty_string(cls, v: str) -> str:

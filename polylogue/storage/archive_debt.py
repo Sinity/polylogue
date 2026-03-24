@@ -74,11 +74,14 @@ def count_orphaned_attachments_sync(conn: sqlite3.Connection) -> int:
 def session_product_repair_count(
     derived_statuses: dict[str, DerivedModelStatus],
 ) -> int:
-    session_profiles = derived_statuses.get("session_profiles")
-    session_profiles_fts = derived_statuses.get("session_profiles_fts")
-    session_work_events = derived_statuses.get("session_work_events")
-    session_work_events_fts = derived_statuses.get("session_work_events_fts")
-    session_phases = derived_statuses.get("session_phases")
+    session_profile_rows = derived_statuses.get("session_profile_rows")
+    session_profile_merged_fts = derived_statuses.get("session_profile_merged_fts")
+    session_profile_evidence_fts = derived_statuses.get("session_profile_evidence_fts")
+    session_profile_inference_fts = derived_statuses.get("session_profile_inference_fts")
+    session_profile_enrichment_fts = derived_statuses.get("session_profile_enrichment_fts")
+    session_work_event_inference = derived_statuses.get("session_work_event_inference")
+    session_work_event_inference_fts = derived_statuses.get("session_work_event_inference_fts")
+    session_phase_inference = derived_statuses.get("session_phase_inference")
     work_threads = derived_statuses.get("work_threads")
     work_threads_fts = derived_statuses.get("work_threads_fts")
     session_tag_rollups = derived_statuses.get("session_tag_rollups")
@@ -87,11 +90,14 @@ def session_product_repair_count(
     if not all(
         status is not None
         for status in (
-            session_profiles,
-            session_profiles_fts,
-            session_work_events,
-            session_work_events_fts,
-            session_phases,
+            session_profile_rows,
+            session_profile_merged_fts,
+            session_profile_evidence_fts,
+            session_profile_inference_fts,
+            session_profile_enrichment_fts,
+            session_work_event_inference,
+            session_work_event_inference_fts,
+            session_phase_inference,
             work_threads,
             work_threads_fts,
             session_tag_rollups,
@@ -101,22 +107,31 @@ def session_product_repair_count(
     ):
         return 0
     return (
-        max(0, int(session_profiles.pending_documents or 0))
-        + max(0, int(session_profiles.pending_rows or 0))
-        + max(0, int(session_profiles.stale_rows or 0))
-        + max(0, int(session_profiles.orphan_rows or 0))
-        + max(0, int(session_profiles_fts.pending_rows or 0))
-        + max(0, int(session_work_events.pending_rows or 0))
-        + max(0, int(session_work_events.stale_rows or 0))
-        + max(0, int(session_work_events.orphan_rows or 0))
-        + max(0, int(session_work_events_fts.pending_rows or 0))
-        + max(0, int(session_phases.pending_rows or 0))
-        + max(0, int(session_phases.stale_rows or 0))
-        + max(0, int(session_phases.orphan_rows or 0))
+        max(0, int(session_profile_rows.pending_documents or 0))
+        + max(0, int(session_profile_rows.pending_rows or 0))
+        + max(0, int(session_profile_rows.stale_rows or 0))
+        + max(0, int(session_profile_rows.orphan_rows or 0))
+        + max(0, int(session_profile_merged_fts.pending_rows or 0))
+        + max(0, int(session_profile_merged_fts.stale_rows or 0))
+        + max(0, int(session_profile_evidence_fts.pending_rows or 0))
+        + max(0, int(session_profile_evidence_fts.stale_rows or 0))
+        + max(0, int(session_profile_inference_fts.pending_rows or 0))
+        + max(0, int(session_profile_inference_fts.stale_rows or 0))
+        + max(0, int(session_profile_enrichment_fts.pending_rows or 0))
+        + max(0, int(session_profile_enrichment_fts.stale_rows or 0))
+        + max(0, int(session_work_event_inference.pending_rows or 0))
+        + max(0, int(session_work_event_inference.stale_rows or 0))
+        + max(0, int(session_work_event_inference.orphan_rows or 0))
+        + max(0, int(session_work_event_inference_fts.pending_rows or 0))
+        + max(0, int(session_work_event_inference_fts.stale_rows or 0))
+        + max(0, int(session_phase_inference.pending_rows or 0))
+        + max(0, int(session_phase_inference.stale_rows or 0))
+        + max(0, int(session_phase_inference.orphan_rows or 0))
         + max(0, int(work_threads.pending_documents or 0))
         + max(0, int(work_threads.stale_rows or 0))
         + max(0, int(work_threads.orphan_rows or 0))
         + max(0, int(work_threads_fts.pending_rows or 0))
+        + max(0, int(work_threads_fts.stale_rows or 0))
         + max(0, int(session_tag_rollups.pending_rows or 0))
         + max(0, int(session_tag_rollups.stale_rows or 0))
         + max(0, int(day_session_summaries.pending_rows or 0))

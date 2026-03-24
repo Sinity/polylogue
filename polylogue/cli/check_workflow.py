@@ -24,6 +24,7 @@ from polylogue.schemas.verification_requests import (
     SchemaVerificationRequest,
 )
 from polylogue.storage.archive_debt import preview_counts_from_archive_debt
+from polylogue.storage.backends.connection import _clear_connection_cache
 from polylogue.storage.repair import (
     CLEANUP_TARGETS,
     SAFE_REPAIR_TARGETS,
@@ -312,6 +313,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
         selected_targets = _resolve_selected_maintenance_targets(options)
         preview_counts = _build_preview_counts(report) if options.preview else None
         vacuum_ok = result.vacuum_result is None or bool(result.vacuum_result.get("ok", False))
+        _clear_connection_cache()
         record = MaintenanceRunRecord(
             maintenance_run_id=f"maint-{uuid4().hex[:16]}",
             executed_at=datetime.now(timezone.utc).isoformat(),

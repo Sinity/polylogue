@@ -99,6 +99,51 @@ class TestCommandConstruction:
         assert "tests/unit/cli/test_embed.py" in cmd
         assert "tests/unit/storage/test_embedding_stats.py" in cmd
 
+    def test_evidence_tier_contracts_lane_uses_evidence_suite(self):
+        cmd = build_lane_command(LANES["evidence-tier-contracts"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/cli/test_products.py" in cmd
+        assert "tests/unit/storage/test_backend.py" in cmd
+        assert "tests/unit/pipeline/test_prepare_semantic.py" in cmd
+
+    def test_inference_tier_contracts_lane_uses_inference_suite(self):
+        cmd = build_lane_command(LANES["inference-tier-contracts"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/mcp/test_tool_contracts.py" in cmd
+        assert "tests/unit/pipeline/test_prepare_semantic.py" in cmd
+
+    def test_mixed_consumer_contracts_lane_uses_consumer_suite(self):
+        cmd = build_lane_command(LANES["mixed-consumer-contracts"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/cli/test_products.py" in cmd
+        assert "tests/unit/core/test_facade_api.py" in cmd
+        assert "tests/integration/test_health.py" in cmd
+
+    def test_retrieval_band_readiness_lane_uses_embed_health_suite(self):
+        cmd = build_lane_command(LANES["retrieval-band-readiness"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/cli/test_embed.py" in cmd
+        assert "tests/unit/storage/test_embedding_stats.py" in cmd
+        assert "tests/unit/core/test_health_core.py" in cmd
+
+    def test_heuristic_inference_contracts_lane_uses_semantic_product_suite(self):
+        cmd = build_lane_command(LANES["heuristic-inference-contracts"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/cli/test_products.py" in cmd
+        assert "tests/unit/pipeline/test_prepare_semantic.py" in cmd
+
+    def test_probabilistic_enrichment_contracts_lane_uses_enrichment_suite(self):
+        cmd = build_lane_command(LANES["probabilistic-enrichment-contracts"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/storage/test_embedding_stats.py" in cmd
+        assert "tests/unit/mcp/test_tool_contracts.py" in cmd
+
+    def test_governed_cleanup_contracts_lane_uses_health_and_check_suite(self):
+        cmd = build_lane_command(LANES["governed-cleanup-contracts"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/cli/test_check.py" in cmd
+        assert "tests/integration/test_health.py" in cmd
+
     def test_memory_budget_lane_uses_budget_runner(self):
         cmd = build_lane_command(LANES["memory-budget"])
         assert cmd[:3] == [sys.executable, "-m", "devtools.query_memory_budget"]
@@ -159,6 +204,37 @@ class TestCommandConstruction:
         assert "products" in cmd
         assert "debt" in cmd
         assert "--json" in cmd
+
+    def test_live_products_profiles_evidence_lane_uses_tiered_products_entrypoint(self):
+        cmd = build_lane_command(LANES["live-products-profiles-evidence"])
+        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert "products" in cmd
+        assert "profiles" in cmd
+        assert "evidence" in cmd
+        assert "--json" in cmd
+
+    def test_live_products_profiles_inference_lane_uses_tiered_products_entrypoint(self):
+        cmd = build_lane_command(LANES["live-products-profiles-inference"])
+        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert "products" in cmd
+        assert "profiles" in cmd
+        assert "inference" in cmd
+        assert "--json" in cmd
+
+    def test_live_products_enrichments_lane_uses_enrichment_entrypoint(self):
+        cmd = build_lane_command(LANES["live-products-enrichments"])
+        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert "products" in cmd
+        assert "enrichments" in cmd
+        assert "--json" in cmd
+
+    def test_live_session_product_repair_lane_uses_check_repair_target(self):
+        cmd = build_lane_command(LANES["live-session-product-repair"])
+        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert "check" in cmd
+        assert "--repair" in cmd
+        assert "--target" in cmd
+        assert "session_products" in cmd
 
     def test_composite_lane_has_no_direct_command(self):
         with pytest.raises(ValueError, match="composite"):
@@ -268,3 +344,33 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "semantic-product-normalization" in captured.out
         assert "semantic-product-live" in captured.out
+
+    def test_evidence_stewardship_contracts_dry_run_includes_tier_and_retrieval_lanes(self, capsys):
+        exit_code = main(["--lane", "evidence-stewardship-contracts", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "evidence-tier-contracts" in captured.out
+        assert "inference-tier-contracts" in captured.out
+        assert "mixed-consumer-contracts" in captured.out
+        assert "retrieval-band-readiness" in captured.out
+
+    def test_evidence_stewardship_live_dry_run_includes_tiered_and_repair_lanes(self, capsys):
+        exit_code = main(["--lane", "evidence-stewardship-live", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "live-products-profiles-evidence" in captured.out
+        assert "live-products-profiles-inference" in captured.out
+        assert "live-products-work-events" in captured.out
+        assert "live-products-phases" in captured.out
+        assert "live-session-product-repair" in captured.out
+        assert "maintenance-memory-budget" in captured.out
+
+    def test_evidence_stewardship_hardening_dry_run_expands_both_subtrees(self, capsys):
+        exit_code = main(["--lane", "evidence-stewardship-hardening", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "evidence-stewardship-contracts" in captured.out
+        assert "evidence-stewardship-live" in captured.out

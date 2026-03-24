@@ -21,7 +21,7 @@ from polylogue.storage.store import SessionProfileRecord
 
 _PROFILE_BUCKET_DAY_SQL = (
     "COALESCE(sp.canonical_session_date, "
-    "date(COALESCE(sp.first_message_at, json_extract(sp.payload_json, '$.created_at'), sp.source_updated_at, sp.last_message_at)))"
+    "date(COALESCE(sp.first_message_at, json_extract(sp.evidence_payload_json, '$.created_at'), sp.source_updated_at, sp.last_message_at)))"
 )
 
 
@@ -180,7 +180,11 @@ def profile_provider_day(record: SessionProfileRecord | None) -> tuple[str, str]
         return (record.provider_name, record.canonical_session_date)
     day_candidates = [
         record.first_message_at,
-        str(record.payload.get("created_at")) if isinstance(record.payload, dict) and record.payload.get("created_at") else None,
+        (
+            str(record.evidence_payload.get("created_at"))
+            if isinstance(record.evidence_payload, dict) and record.evidence_payload.get("created_at")
+            else None
+        ),
         record.source_updated_at,
         record.last_message_at,
     ]

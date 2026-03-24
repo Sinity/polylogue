@@ -8,7 +8,7 @@ from polylogue.lib.query_support import conversation_has_branches, provider_valu
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
-    from polylogue.lib.query_execution import ConversationQueryPlan
+    from polylogue.lib.query_plan import ConversationQueryPlan
 
 _T = TypeVar("_T")
 

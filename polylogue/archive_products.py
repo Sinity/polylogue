@@ -15,7 +15,7 @@ from polylogue.storage.store import (
     WorkThreadRecord,
 )
 
-ARCHIVE_PRODUCT_CONTRACT_VERSION = 2
+ARCHIVE_PRODUCT_CONTRACT_VERSION = 4
 
 
 class ArchiveProductModel(BaseModel):
@@ -34,59 +34,181 @@ class ArchiveProductProvenance(ArchiveProductModel):
     source_sort_key: float | None = None
 
 
+class ArchiveInferenceProvenance(ArchiveProductProvenance):
+    inference_version: int
+    inference_family: str
+
+
+class ArchiveEnrichmentProvenance(ArchiveProductProvenance):
+    enrichment_version: int
+    enrichment_family: str
+
+
+class SessionEvidencePayload(ArchiveProductModel):
+    created_at: str | None = None
+    updated_at: str | None = None
+    first_message_at: str | None = None
+    last_message_at: str | None = None
+    canonical_session_date: str | None = None
+    message_count: int = 0
+    substantive_count: int = 0
+    attachment_count: int = 0
+    tool_use_count: int = 0
+    thinking_count: int = 0
+    word_count: int = 0
+    total_cost_usd: float = 0.0
+    total_duration_ms: int = 0
+    wall_duration_ms: int = 0
+    cost_is_estimated: bool = False
+    tool_categories: dict[str, int] = Field(default_factory=dict)
+    repo_paths: tuple[str, ...] = ()
+    cwd_paths: tuple[str, ...] = ()
+    branch_names: tuple[str, ...] = ()
+    file_paths_touched: tuple[str, ...] = ()
+    languages_detected: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+    is_continuation: bool = False
+    parent_id: str | None = None
+
+
+class SessionInferencePayload(ArchiveProductModel):
+    primary_work_kind: str | None = None
+    canonical_projects: tuple[str, ...] = ()
+    work_event_count: int = 0
+    phase_count: int = 0
+    engaged_duration_ms: int = 0
+    engaged_minutes: float = 0.0
+    support_level: str = "weak"
+    support_signals: tuple[str, ...] = ()
+    engaged_duration_source: str = "session_total_fallback"
+    project_inference_strength: str = "weak"
+    decision_signal_strength: str = "weak"
+    auto_tags: tuple[str, ...] = ()
+    work_events: tuple[dict[str, Any], ...] = ()
+    phases: tuple[dict[str, Any], ...] = ()
+    decisions: tuple[dict[str, Any], ...] = ()
+
+
+class WorkEventEvidencePayload(ArchiveProductModel):
+    start_index: int
+    end_index: int
+    start_time: str | None = None
+    end_time: str | None = None
+    canonical_session_date: str | None = None
+    duration_ms: int = 0
+    file_paths: tuple[str, ...] = ()
+    tools_used: tuple[str, ...] = ()
+
+
+class WorkEventInferencePayload(ArchiveProductModel):
+    kind: str
+    summary: str
+    confidence: float
+    evidence: tuple[str, ...] = ()
+    support_level: str = "weak"
+    support_signals: tuple[str, ...] = ()
+    fallback_inference: bool = False
+
+
+class SessionPhaseEvidencePayload(ArchiveProductModel):
+    start_time: str | None = None
+    end_time: str | None = None
+    canonical_session_date: str | None = None
+    message_range: tuple[int, int] = (0, 0)
+    duration_ms: int = 0
+    tool_counts: dict[str, int] = Field(default_factory=dict)
+    word_count: int = 0
+
+
+class SessionPhaseInferencePayload(ArchiveProductModel):
+    kind: str
+    confidence: float = 0.0
+    evidence: tuple[str, ...] = ()
+    support_level: str = "weak"
+    support_signals: tuple[str, ...] = ()
+    fallback_inference: bool = False
+
+
+class SessionEnrichmentPayload(ArchiveProductModel):
+    intent_summary: str | None = None
+    outcome_summary: str | None = None
+    blockers: tuple[str, ...] = ()
+    refined_work_kind: str | None = None
+    confidence: float = 0.0
+    support_level: str = "weak"
+    support_signals: tuple[str, ...] = ()
+    input_band_summary: dict[str, int] = Field(default_factory=dict)
+
+
 class SessionProfileProduct(ArchiveProductModel):
     contract_version: int = ARCHIVE_PRODUCT_CONTRACT_VERSION
     product_kind: str = "session_profile"
+    semantic_tier: str = "merged"
     conversation_id: str
     provider_name: str
     title: str | None = None
-    first_message_at: str | None = None
-    canonical_session_date: str | None = None
-    primary_work_kind: str | None = None
-    engaged_duration_ms: int = 0
-    engaged_minutes: float = 0.0
-    canonical_projects: tuple[str, ...] = ()
-    repo_paths: tuple[str, ...] = ()
     provenance: ArchiveProductProvenance
-    profile: dict[str, Any]
+    evidence: SessionEvidencePayload | None = None
+    inference_provenance: ArchiveInferenceProvenance | None = None
+    inference: SessionInferencePayload | None = None
 
     @classmethod
-    def from_record(cls, record: SessionProfileRecord) -> SessionProfileProduct:
+    def from_record(
+        cls,
+        record: SessionProfileRecord,
+        *,
+        tier: str = "merged",
+    ) -> SessionProfileProduct:
+        include_evidence = tier in {"merged", "evidence"}
+        include_inference = tier in {"merged", "inference"}
         return cls(
+            semantic_tier=tier,
             conversation_id=record.conversation_id,
             provider_name=record.provider_name,
             title=record.title,
-            first_message_at=record.first_message_at,
-            canonical_session_date=record.canonical_session_date,
-            primary_work_kind=record.primary_work_kind,
-            engaged_duration_ms=record.engaged_duration_ms,
-            engaged_minutes=round(record.engaged_duration_ms / 60_000.0, 4),
-            canonical_projects=record.canonical_projects,
-            repo_paths=record.repo_paths,
             provenance=ArchiveProductProvenance(
                 materializer_version=record.materializer_version,
                 materialized_at=record.materialized_at,
                 source_updated_at=record.source_updated_at,
                 source_sort_key=record.source_sort_key,
             ),
-            profile=dict(record.payload),
+            evidence=(
+                SessionEvidencePayload.model_validate(record.evidence_payload)
+                if include_evidence
+                else None
+            ),
+            inference_provenance=(
+                ArchiveInferenceProvenance(
+                    materializer_version=record.materializer_version,
+                    materialized_at=record.materialized_at,
+                    source_updated_at=record.source_updated_at,
+                    source_sort_key=record.source_sort_key,
+                    inference_version=record.inference_version,
+                    inference_family=record.inference_family,
+                )
+                if include_inference
+                else None
+            ),
+            inference=(
+                SessionInferencePayload.model_validate(record.inference_payload)
+                if include_inference
+                else None
+            ),
         )
 
 
 class SessionWorkEventProduct(ArchiveProductModel):
     contract_version: int = ARCHIVE_PRODUCT_CONTRACT_VERSION
     product_kind: str = "session_work_event"
+    semantic_tier: str = "inference"
     event_id: str
     conversation_id: str
     provider_name: str
     event_index: int
-    kind: str
-    start_time: str | None = None
-    end_time: str | None = None
-    duration_ms: int = 0
-    canonical_session_date: str | None = None
     provenance: ArchiveProductProvenance
-    event: dict[str, Any]
+    inference_provenance: ArchiveInferenceProvenance
+    evidence: WorkEventEvidencePayload
+    inference: WorkEventInferencePayload
 
     @classmethod
     def from_record(cls, record: SessionWorkEventRecord) -> SessionWorkEventProduct:
@@ -95,18 +217,22 @@ class SessionWorkEventProduct(ArchiveProductModel):
             conversation_id=record.conversation_id,
             provider_name=record.provider_name,
             event_index=record.event_index,
-            kind=record.kind,
-            start_time=record.start_time,
-            end_time=record.end_time,
-            duration_ms=record.duration_ms,
-            canonical_session_date=record.canonical_session_date,
             provenance=ArchiveProductProvenance(
                 materializer_version=record.materializer_version,
                 materialized_at=record.materialized_at,
                 source_updated_at=record.source_updated_at,
                 source_sort_key=record.source_sort_key,
             ),
-            event=dict(record.payload),
+            inference_provenance=ArchiveInferenceProvenance(
+                materializer_version=record.materializer_version,
+                materialized_at=record.materialized_at,
+                source_updated_at=record.source_updated_at,
+                source_sort_key=record.source_sort_key,
+                inference_version=record.inference_version,
+                inference_family=record.inference_family,
+            ),
+            evidence=WorkEventEvidencePayload.model_validate(record.evidence_payload),
+            inference=WorkEventInferencePayload.model_validate(record.inference_payload),
         )
 
 
@@ -138,17 +264,15 @@ class WorkThreadProduct(ArchiveProductModel):
 class SessionPhaseProduct(ArchiveProductModel):
     contract_version: int = ARCHIVE_PRODUCT_CONTRACT_VERSION
     product_kind: str = "session_phase"
+    semantic_tier: str = "inference"
     phase_id: str
     conversation_id: str
     provider_name: str
     phase_index: int
-    kind: str
-    start_time: str | None = None
-    end_time: str | None = None
-    duration_ms: int = 0
-    canonical_session_date: str | None = None
     provenance: ArchiveProductProvenance
-    phase: dict[str, Any]
+    inference_provenance: ArchiveInferenceProvenance
+    evidence: SessionPhaseEvidencePayload
+    inference: SessionPhaseInferencePayload
 
     @classmethod
     def from_record(cls, record: SessionPhaseRecord) -> SessionPhaseProduct:
@@ -157,18 +281,22 @@ class SessionPhaseProduct(ArchiveProductModel):
             conversation_id=record.conversation_id,
             provider_name=record.provider_name,
             phase_index=record.phase_index,
-            kind=record.kind,
-            start_time=record.start_time,
-            end_time=record.end_time,
-            duration_ms=record.duration_ms,
-            canonical_session_date=record.canonical_session_date,
             provenance=ArchiveProductProvenance(
                 materializer_version=record.materializer_version,
                 materialized_at=record.materialized_at,
                 source_updated_at=record.source_updated_at,
                 source_sort_key=record.source_sort_key,
             ),
-            phase=dict(record.payload),
+            inference_provenance=ArchiveInferenceProvenance(
+                materializer_version=record.materializer_version,
+                materialized_at=record.materialized_at,
+                source_updated_at=record.source_updated_at,
+                source_sort_key=record.source_sort_key,
+                inference_version=record.inference_version,
+                inference_family=record.inference_family,
+            ),
+            evidence=SessionPhaseEvidencePayload.model_validate(record.evidence_payload),
+            inference=SessionPhaseInferencePayload.model_validate(record.inference_payload),
         )
 
 
@@ -255,8 +383,13 @@ class ArchiveDebtTargetLineage(ArchiveProductModel):
     latest_run_at: str | None = None
     latest_mode: str | None = None
     latest_preview_at: str | None = None
+    latest_preview_issue_count: int | None = None
     latest_apply_at: str | None = None
     latest_successful_apply_at: str | None = None
+    latest_validation_at: str | None = None
+    latest_validation_issue_count: int | None = None
+    latest_successful_validation_at: str | None = None
+    latest_regressed_at: str | None = None
 
 
 class ArchiveDebtProduct(ArchiveProductModel):
@@ -301,6 +434,56 @@ class SessionProfileProductQuery(ArchiveProductModel):
     first_message_until: str | None = None
     session_date_since: str | None = None
     session_date_until: str | None = None
+    tier: str = "merged"
+    limit: int | None = 50
+    offset: int = 0
+    query: str | None = None
+
+
+class SessionEnrichmentProduct(ArchiveProductModel):
+    contract_version: int = ARCHIVE_PRODUCT_CONTRACT_VERSION
+    product_kind: str = "session_enrichment"
+    semantic_tier: str = "enrichment"
+    conversation_id: str
+    provider_name: str
+    title: str | None = None
+    provenance: ArchiveProductProvenance
+    enrichment_provenance: ArchiveEnrichmentProvenance
+    enrichment: SessionEnrichmentPayload
+
+    @classmethod
+    def from_record(cls, record: SessionProfileRecord) -> SessionEnrichmentProduct:
+        return cls(
+            conversation_id=record.conversation_id,
+            provider_name=record.provider_name,
+            title=record.title,
+            provenance=ArchiveProductProvenance(
+                materializer_version=record.materializer_version,
+                materialized_at=record.materialized_at,
+                source_updated_at=record.source_updated_at,
+                source_sort_key=record.source_sort_key,
+            ),
+            enrichment_provenance=ArchiveEnrichmentProvenance(
+                materializer_version=record.materializer_version,
+                materialized_at=record.materialized_at,
+                source_updated_at=record.source_updated_at,
+                source_sort_key=record.source_sort_key,
+                enrichment_version=record.enrichment_version,
+                enrichment_family=record.enrichment_family,
+            ),
+            enrichment=SessionEnrichmentPayload.model_validate(record.enrichment_payload),
+        )
+
+
+class SessionEnrichmentProductQuery(ArchiveProductModel):
+    provider: str | None = None
+    since: str | None = None
+    until: str | None = None
+    first_message_since: str | None = None
+    first_message_until: str | None = None
+    session_date_since: str | None = None
+    session_date_until: str | None = None
+    refined_work_kind: str | None = None
     limit: int | None = 50
     offset: int = 0
     query: str | None = None
@@ -378,12 +561,14 @@ class ArchiveDebtProductQuery(ArchiveProductModel):
 
 
 __all__ = [
-    "ARCHIVE_PRODUCT_CONTRACT_VERSION",
     "ArchiveDebtProduct",
-    "ArchiveDebtTargetLineage",
     "ArchiveDebtProductQuery",
+    "ARCHIVE_PRODUCT_CONTRACT_VERSION",
+    "ArchiveDebtTargetLineage",
+    "ArchiveEnrichmentProvenance",
     "ArchiveProductModel",
     "ArchiveProductProvenance",
+    "ArchiveInferenceProvenance",
     "DaySessionSummaryProduct",
     "DaySessionSummaryProductQuery",
     "MaintenanceRunProduct",
@@ -394,10 +579,19 @@ __all__ = [
     "SessionPhaseProductQuery",
     "SessionTagRollupProduct",
     "SessionTagRollupQuery",
+    "SessionEvidencePayload",
+    "SessionEnrichmentPayload",
+    "SessionEnrichmentProduct",
+    "SessionEnrichmentProductQuery",
+    "SessionInferencePayload",
     "SessionProfileProduct",
     "SessionProfileProductQuery",
+    "SessionPhaseEvidencePayload",
+    "SessionPhaseInferencePayload",
     "SessionWorkEventProduct",
     "SessionWorkEventProductQuery",
+    "WorkEventEvidencePayload",
+    "WorkEventInferencePayload",
     "WeekSessionSummaryProduct",
     "WeekSessionSummaryProductQuery",
     "WorkThreadProduct",

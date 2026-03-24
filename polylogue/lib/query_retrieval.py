@@ -12,7 +12,7 @@ from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.lib.query_execution import ConversationQueryPlan
+    from polylogue.lib.query_plan import ConversationQueryPlan
     from polylogue.storage.query_models import ConversationRecordQuery
     from polylogue.storage.repository import ConversationRepository
 

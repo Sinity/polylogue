@@ -13,6 +13,7 @@ from polylogue.archive_products import (
     DaySessionSummaryProduct,
     MaintenanceRunProduct,
     ProviderAnalyticsProduct,
+    SessionEnrichmentProduct,
     SessionPhaseProduct,
     SessionProfileProduct,
     SessionTagRollupProduct,
@@ -304,12 +305,19 @@ class TestProductTools:
             conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
-            primary_work_kind="implementation",
+            semantic_tier="merged",
             provenance={
                 "materializer_version": 1,
                 "materialized_at": "2026-03-24T10:00:00+00:00",
             },
-            profile={"conversation_id": "conv-1", "title": "Profiled Session"},
+            evidence={"canonical_session_date": "2026-03-24", "message_count": 2},
+            inference_provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+                "inference_version": 1,
+                "inference_family": "heuristic_session_semantics",
+            },
+            inference={"primary_work_kind": "implementation", "engaged_duration_ms": 120000},
         )
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
@@ -331,36 +339,77 @@ class TestProductTools:
             conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
-            primary_work_kind="implementation",
+            semantic_tier="merged",
             provenance={
                 "materializer_version": 1,
                 "materialized_at": "2026-03-24T10:00:00+00:00",
             },
-            profile={"conversation_id": "conv-1"},
+            evidence={"canonical_session_date": "2026-03-24", "message_count": 2},
+            inference_provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+                "inference_version": 1,
+                "inference_family": "heuristic_session_semantics",
+            },
+            inference={"primary_work_kind": "implementation", "engaged_duration_ms": 120000},
+        )
+        enrichment = SessionEnrichmentProduct(
+            conversation_id="conv-1",
+            provider_name="claude-code",
+            title="Profiled Session",
+            provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+            },
+            enrichment_provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+                "enrichment_version": 1,
+                "enrichment_family": "scored_session_enrichment",
+            },
+            enrichment={
+                "intent_summary": "Plan the refactor",
+                "outcome_summary": "Ran tests",
+                "refined_work_kind": "planning",
+                "confidence": 0.72,
+                "support_level": "moderate",
+            },
         )
         work_event = SessionWorkEventProduct(
             event_id="evt-1",
             conversation_id="conv-1",
             provider_name="claude-code",
             event_index=0,
-            kind="implementation",
             provenance={
                 "materializer_version": 1,
                 "materialized_at": "2026-03-24T10:00:00+00:00",
             },
-            event={"summary": "editing files"},
+            inference_provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+                "inference_version": 1,
+                "inference_family": "heuristic_session_semantics",
+            },
+            evidence={"start_index": 0, "end_index": 1, "file_paths": ["/realm/project/polylogue/README.md"]},
+            inference={"kind": "implementation", "summary": "editing files", "confidence": 0.8},
         )
         phase = SessionPhaseProduct(
             phase_id="phase-1",
             conversation_id="conv-1",
             provider_name="claude-code",
             phase_index=0,
-            kind="implementation",
             provenance={
                 "materializer_version": 1,
                 "materialized_at": "2026-03-24T10:00:00+00:00",
             },
-            phase={"message_range": [0, 2], "tool_counts": {"edit": 1}},
+            inference_provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+                "inference_version": 1,
+                "inference_family": "heuristic_session_semantics",
+            },
+            evidence={"message_range": [0, 2], "tool_counts": {"edit": 1}},
+            inference={"kind": "implementation", "confidence": 0.8},
         )
         thread = WorkThreadProduct(
             thread_id="conv-1",
@@ -442,6 +491,7 @@ class TestProductTools:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.list_session_profile_products = AsyncMock(return_value=[profile])
+            mock_ops.list_session_enrichment_products = AsyncMock(return_value=[enrichment])
             mock_ops.list_session_work_event_products = AsyncMock(return_value=[work_event])
             mock_ops.list_session_phase_products = AsyncMock(return_value=[phase])
             mock_ops.list_session_tag_rollup_products = AsyncMock(return_value=[tag_rollup])
@@ -465,6 +515,12 @@ class TestProductTools:
             events_raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["session_work_events"].fn,
                 kind="implementation",
+                limit=5,
+            )
+            enrichments_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["session_enrichments"].fn,
+                provider="claude-code",
+                refined_work_kind="planning",
                 limit=5,
             )
             phases_raw = await invoke_surface_async(
@@ -509,6 +565,7 @@ class TestProductTools:
 
         profiles_payload = json.loads(profiles_raw)
         events_payload = json.loads(events_raw)
+        enrichments_payload = json.loads(enrichments_raw)
         phases_payload = json.loads(phases_raw)
         threads_payload = json.loads(threads_raw)
         tags_payload = json.loads(tags_raw)
@@ -520,6 +577,7 @@ class TestProductTools:
 
         assert profiles_payload["count"] == 1
         assert profiles_payload["items"][0]["product_kind"] == "session_profile"
+        assert enrichments_payload["items"][0]["product_kind"] == "session_enrichment"
         assert events_payload["items"][0]["product_kind"] == "session_work_event"
         assert phases_payload["items"][0]["product_kind"] == "session_phase"
         assert tags_payload["items"][0]["product_kind"] == "session_tag_rollup"

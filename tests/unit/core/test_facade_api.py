@@ -9,6 +9,7 @@ import pytest
 from polylogue import Polylogue
 from polylogue.archive_products import (
     DaySessionSummaryProductQuery,
+    SessionEnrichmentProductQuery,
     SessionPhaseProductQuery,
     SessionProfileProductQuery,
     SessionTagRollupQuery,
@@ -341,6 +342,13 @@ class TestPolylogueArchiveProducts:
                 limit=10,
             )
         )
+        enrichments = await archive.list_session_enrichment_products(
+            SessionEnrichmentProductQuery(
+                provider="claude-code",
+                session_date_since="2026-03-01",
+                limit=10,
+            )
+        )
         phases = await archive.list_session_phase_products(
             SessionPhaseProductQuery(provider="claude-code", limit=10)
         )
@@ -348,10 +356,26 @@ class TestPolylogueArchiveProducts:
 
         assert profile is not None
         assert profile.product_kind == "session_profile"
-        assert profile.profile["title"] == "Root Thread"
-        assert profile.canonical_session_date == "2026-03-01"
-        assert profile.engaged_duration_ms >= 0
+        assert profile.title == "Root Thread"
+        assert profile.evidence is not None
+        assert profile.evidence.canonical_session_date == "2026-03-01"
+        assert profile.inference is not None
+        assert profile.inference.engaged_duration_ms >= 0
+
+        evidence_only = await archive.get_session_profile_product("conv-root", tier="evidence")
+        inference_only = await archive.get_session_profile_product("conv-root", tier="inference")
+        assert evidence_only is not None
+        assert evidence_only.semantic_tier == "evidence"
+        assert evidence_only.evidence is not None
+        assert evidence_only.inference is None
+        assert inference_only is not None
+        assert inference_only.semantic_tier == "inference"
+        assert inference_only.evidence is None
+        assert inference_only.inference is not None
+
         assert any(item.conversation_id == "conv-root" for item in profiles)
+        assert any(item.conversation_id == "conv-root" for item in enrichments)
+        assert enrichments[0].enrichment.refined_work_kind is not None
         assert any(item.conversation_id == "conv-root" for item in phases)
         assert len(threads) == 1
         assert threads[0].thread["session_count"] == 2

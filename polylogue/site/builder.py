@@ -34,7 +34,7 @@ from polylogue.site.publication_flow import (
 )
 from polylogue.site.scan import iter_conversation_indexes, scan_archive
 from polylogue.site.search import build_search_document, generate_pagefind_config, render_search_markup
-from polylogue.site.templates import build_template_environments
+from polylogue.site.template_environment import build_template_environments
 from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:

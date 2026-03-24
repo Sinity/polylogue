@@ -10,6 +10,7 @@ from polylogue.cli.products_rendering import (
     render_maintenance_runs,
     render_products_status,
     render_provider_analytics,
+    render_session_enrichments,
     render_session_phases,
     render_session_profiles,
     render_session_tag_rollups,
@@ -24,6 +25,7 @@ from polylogue.cli.products_workflow import (
     list_day_session_summary_products,
     list_maintenance_run_products,
     list_provider_analytics_products,
+    list_session_enrichment_products,
     list_session_phase_products,
     list_session_profile_products,
     list_session_tag_rollup_products,
@@ -60,6 +62,13 @@ def products_status_command(env: AppEnv, json_mode: bool) -> None:
 @click.option("--first-message-until", default=None, help="Only sessions whose first message is on/before this timestamp")
 @click.option("--session-date-since", default=None, help="Only sessions whose canonical session date is on/after this date")
 @click.option("--session-date-until", default=None, help="Only sessions whose canonical session date is on/before this date")
+@click.option(
+    "--tier",
+    type=click.Choice(["merged", "evidence", "inference"]),
+    default="merged",
+    show_default=True,
+    help="Return merged, evidence-only, or inference-only profile products",
+)
 @click.option("--query", default=None, help="FTS query against product search text")
 @click.option("--limit", type=int, default=50, show_default=True, help="Maximum rows")
 @click.option("--offset", type=int, default=0, show_default=True, help="Start offset")
@@ -74,6 +83,7 @@ def products_profiles_command(
     first_message_until: str | None,
     session_date_since: str | None,
     session_date_until: str | None,
+    tier: str,
     query: str | None,
     limit: int,
     offset: int,
@@ -89,11 +99,59 @@ def products_profiles_command(
         first_message_until=first_message_until,
         session_date_since=session_date_since,
         session_date_until=session_date_until,
+        tier=tier,
         query=query,
         limit=limit,
         offset=offset,
     )
     render_session_profiles(items, json_mode=json_mode)
+
+
+@products_command.command("enrichments")
+@click.option("--provider", default=None, help="Limit to provider")
+@click.option("--since", default=None, help="Only rows on/after this timestamp")
+@click.option("--until", default=None, help="Only rows on/before this timestamp")
+@click.option("--first-message-since", default=None, help="Only sessions whose first message is on/after this timestamp")
+@click.option("--first-message-until", default=None, help="Only sessions whose first message is on/before this timestamp")
+@click.option("--session-date-since", default=None, help="Only sessions whose canonical session date is on/after this date")
+@click.option("--session-date-until", default=None, help="Only sessions whose canonical session date is on/before this date")
+@click.option("--refined-work-kind", default=None, help="Only this refined enrichment work kind")
+@click.option("--query", default=None, help="FTS query against enrichment search text")
+@click.option("--limit", type=int, default=50, show_default=True, help="Maximum rows")
+@click.option("--offset", type=int, default=0, show_default=True, help="Start offset")
+@click.option("--json", "json_mode", is_flag=True, help="Output as JSON")
+@click.pass_obj
+def products_enrichments_command(
+    env: AppEnv,
+    provider: str | None,
+    since: str | None,
+    until: str | None,
+    first_message_since: str | None,
+    first_message_until: str | None,
+    session_date_since: str | None,
+    session_date_until: str | None,
+    refined_work_kind: str | None,
+    query: str | None,
+    limit: int,
+    offset: int,
+    json_mode: bool,
+) -> None:
+    """List durable probabilistic session-enrichment products."""
+    items = list_session_enrichment_products(
+        env,
+        provider=provider,
+        since=since,
+        until=until,
+        first_message_since=first_message_since,
+        first_message_until=first_message_until,
+        session_date_since=session_date_since,
+        session_date_until=session_date_until,
+        refined_work_kind=refined_work_kind,
+        query=query,
+        limit=limit,
+        offset=offset,
+    )
+    render_session_enrichments(items, json_mode=json_mode)
 
 
 @products_command.command("work-events")
