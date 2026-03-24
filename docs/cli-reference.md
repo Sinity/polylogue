@@ -8,6 +8,7 @@
 polylogue [QUERY...] [FILTERS...] [OUTPUT...]    # Query mode (default)
 polylogue run [OPTIONS...]                        # Run pipeline (ingest → render → index)
 polylogue embed [OPTIONS...]                      # Generate vector embeddings
+polylogue products [COMMAND...]                   # Inspect durable archive products
 polylogue tags [OPTIONS...]                       # List tags with counts
 polylogue site [OPTIONS...]                       # Build static HTML archive
 polylogue sources [OPTIONS...]                    # List configured sources
@@ -41,11 +42,19 @@ Positional arguments are implicit `--contains` (FTS). Multiple positional args a
 |------|-------|-------------|
 | `--contains TEXT` | `-c` | FTS term (repeatable = AND) |
 | `--exclude-text TEXT` | | Exclude FTS term (repeatable) |
+| `--retrieval-lane auto|dialogue|actions|hybrid` | | Select dialogue/action/hybrid retrieval lane |
 | `--provider NAME,...` | `-p` | Include providers (comma = OR) |
 | `--exclude-provider NAME,...` | | Exclude providers |
 | `--tag TAG,...` | `-t` | Include tags (comma = OR, supports `key:value`) |
 | `--exclude-tag TAG,...` | | Exclude tags |
 | `--title TEXT` | | Title contains |
+| `--path TEXT` | | Require touched-path substrings (repeatable = AND) |
+| `--action KIND` | | Require semantic action kinds |
+| `--exclude-action KIND` | | Exclude semantic action kinds |
+| `--action-sequence A,B,C` | | Require ordered semantic action subsequence |
+| `--action-text TEXT` | | Require normalized action evidence text |
+| `--tool NAME` | | Require normalized tool names |
+| `--exclude-tool NAME` | | Exclude normalized tool names |
 | `--has TYPE,...` | | Has: `thinking`, `tools`, `summary`, `attachments` |
 | `--since DATE` | | After date (`today`, `yesterday`, `"last week"`, `2025-01-01`) |
 | `--until DATE` | | Before date |
@@ -68,7 +77,7 @@ Positional arguments are implicit `--contains` (FTS). Multiple positional args a
 | `--list` | | Force list format (even for single result) |
 | `--stats` | | Only statistics, no content |
 | `--count` | | Print matched count and exit |
-| `--stats-by DIM` | | Aggregate statistics by dimension: `provider`, `month`, `year`, `day` |
+| `--stats-by DIM` | | Aggregate statistics by dimension: `provider`, `month`, `year`, `day`, `action`, `tool`, `project`, `work-kind` |
 | `--open` | | Open result in browser/editor |
 | `--transform XFORM` | | Transform output: `strip-tools`, `strip-thinking`, `strip-all` |
 | `--stream` | | Stream output (low memory, requires `--latest` or `-i ID`) |
@@ -110,6 +119,8 @@ polylogue --stats-by month                        # Activity histogram by month
 polylogue -p claude-ai --stats-by provider           # Provider breakdown for Claude
 polylogue --stats-by year                         # Year-by-year overview
 polylogue --since 2025-01 --stats-by day          # Daily breakdown
+polylogue --stats-by project --provider claude-code --since 2026-01-01 --format json
+polylogue --action other --stats-by tool --format json
 ```
 
 **`--stream` mode**: Streams messages to stdout one at a time for constant memory usage on large conversations. Supports `--dialogue-only` to filter to user/assistant messages. Output format is controlled via `--format` (plaintext, markdown, or json for JSON Lines).
@@ -191,6 +202,21 @@ polylogue embed -n 50                     # Limit to 50 conversations
 ```
 
 Generates vector embeddings using Voyage AI, stored in sqlite-vec for semantic search. Requires `VOYAGE_API_KEY` environment variable.
+
+## Products
+
+```bash
+polylogue products status --json
+polylogue products profiles --provider claude-code --limit 25 --json
+polylogue products work-events --kind testing --limit 50 --json
+polylogue products threads --limit 20 --json
+polylogue products tags --provider claude-code --since 2026-01-01 --json
+polylogue products day-summaries --provider claude-code --since 2026-01-01 --json
+polylogue products week-summaries --provider claude-code --since 2026-01-01 --json
+polylogue products maintenance --json
+```
+
+Durable archive products expose versioned, machine-readable session/work and maintenance surfaces backed by the archive read models rather than ad hoc recomputation from raw conversations.
 
 ## Tags
 

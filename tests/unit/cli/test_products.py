@@ -1,0 +1,238 @@
+"""Tests for the durable archive data products CLI surfaces."""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+
+from click.testing import CliRunner
+
+from polylogue.cli.click_app import cli
+from polylogue.services import build_runtime_services
+from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.session_product_lifecycle import (
+    rebuild_session_products_sync,
+    session_product_status_sync,
+)
+from polylogue.storage.store import MaintenanceRunRecord
+from polylogue.sync_bridge import run_coroutine_sync
+from tests.infra.storage_records import ConversationBuilder
+
+
+def _extract_json(output: str) -> dict[str, object]:
+    data = json.loads(output)
+    if isinstance(data, dict) and data.get("status") == "ok":
+        return data["result"]
+    return data
+
+
+def _seed_products(cli_workspace) -> None:
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-root")
+        .provider("claude-code")
+        .title("Root Thread")
+        .created_at("2026-03-01T10:00:00+00:00")
+        .updated_at("2026-03-01T10:10:00+00:00")
+        .add_message("u1", role="user", text="Plan the refactor and inspect README")
+        .add_message(
+            "a1",
+            role="assistant",
+            text="Inspecting and editing files",
+            provider_meta={
+                "content_blocks": [
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Read",
+                        "semantic_type": "file_read",
+                        "input": {"path": "/realm/project/polylogue/README.md"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "semantic_type": "file_edit",
+                        "input": {"path": "/realm/project/polylogue/README.md"},
+                    },
+                ]
+            },
+        )
+        .save()
+    )
+    (
+        ConversationBuilder(db_path, "conv-child")
+        .provider("claude-code")
+        .title("Child Thread")
+        .parent_conversation("conv-root")
+        .branch_type("continuation")
+        .created_at("2026-03-01T11:00:00+00:00")
+        .updated_at("2026-03-01T11:05:00+00:00")
+        .add_message("u2", role="user", text="Run tests for the refactor")
+        .add_message(
+            "a2",
+            role="assistant",
+            text="Running pytest",
+            provider_meta={
+                "content_blocks": [
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "semantic_type": "shell",
+                        "input": {"command": "pytest -q tests/unit/cli/test_products.py"},
+                    }
+                ]
+            },
+        )
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+
+
+def _record_maintenance_lineage() -> None:
+    services = build_runtime_services()
+    try:
+        run_coroutine_sync(
+            services.get_backend().record_maintenance_run(
+                MaintenanceRunRecord(
+                    maintenance_run_id="maint-test-001",
+                    executed_at=datetime.now(timezone.utc).isoformat(),
+                    mode="preview",
+                    preview=True,
+                    repair_selected=True,
+                    cleanup_selected=False,
+                    vacuum_requested=False,
+                    target_names=("session_products",),
+                    success=True,
+                    manifest={"results": [{"name": "session_products", "repaired_count": 2}]},
+                )
+            )
+        )
+    finally:
+        run_coroutine_sync(services.close())
+
+
+def test_products_profiles_json(cli_workspace):
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["products", "profiles", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["count"] == 2
+    first = payload["session_profiles"][0]
+    assert first["contract_version"] == 1
+    assert first["product_kind"] == "session_profile"
+    assert "profile" in first
+    assert "provenance" in first
+
+
+def test_products_threads_and_status_json(cli_workspace):
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    threads = runner.invoke(cli, ["products", "threads", "--json"], catch_exceptions=False)
+    status = runner.invoke(cli, ["products", "status", "--json"], catch_exceptions=False)
+
+    assert threads.exit_code == 0
+    assert status.exit_code == 0
+
+    threads_payload = _extract_json(threads.output)
+    status_payload = _extract_json(status.output)
+    assert threads_payload["count"] == 1
+    assert threads_payload["work_threads"][0]["product_kind"] == "work_thread"
+    assert status_payload["session_products"]["stale_profile_count"] == 0
+    assert status_payload["session_products"]["stale_work_event_count"] == 0
+    assert status_payload["session_products"]["profile_fts_duplicate_count"] == 0
+    assert status_payload["session_products"]["profiles_ready"] is True
+    assert status_payload["session_products"]["threads_ready"] is True
+    assert status_payload["session_products"]["tag_rollups_ready"] is True
+    assert status_payload["session_products"]["day_summaries_ready"] is True
+    assert status_payload["session_products"]["week_summaries_ready"] is True
+
+
+def test_products_tag_and_summary_rollups_json(cli_workspace):
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    tags = runner.invoke(cli, ["products", "tags", "--json"], catch_exceptions=False)
+    days = runner.invoke(cli, ["products", "day-summaries", "--json"], catch_exceptions=False)
+    weeks = runner.invoke(cli, ["products", "week-summaries", "--json"], catch_exceptions=False)
+
+    assert tags.exit_code == 0
+    assert days.exit_code == 0
+    assert weeks.exit_code == 0
+
+    tag_payload = _extract_json(tags.output)
+    day_payload = _extract_json(days.output)
+    week_payload = _extract_json(weeks.output)
+    assert any(item["tag"] == "provider:claude-code" for item in tag_payload["session_tag_rollups"])
+    assert day_payload["count"] == 1
+    assert day_payload["day_session_summaries"][0]["product_kind"] == "day_session_summary"
+    assert week_payload["count"] == 1
+    assert week_payload["week_session_summaries"][0]["product_kind"] == "week_session_summary"
+
+
+def test_products_maintenance_json(cli_workspace):
+    _record_maintenance_lineage()
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["products", "maintenance", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["count"] >= 1
+    assert payload["maintenance_runs"][0]["product_kind"] == "maintenance_run"
+    assert payload["maintenance_runs"][0]["target_names"] == ["session_products"]
+
+
+def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli_workspace):
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-epoch")
+        .provider("claude-code")
+        .title("Epoch-backed timestamps")
+        .created_at("1740823200.0")
+        .updated_at("1740826800.0")
+        .add_message("u1", role="user", text="Inspect the archive state")
+        .add_message(
+            "a1",
+            role="assistant",
+            text="Inspecting files and planning repairs",
+            provider_meta={
+                "content_blocks": [
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Read",
+                        "semantic_type": "file_read",
+                        "input": {"path": "/realm/project/polylogue/README.md"},
+                    }
+                ]
+            },
+        )
+        .save()
+    )
+
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        status = session_product_status_sync(conn)
+
+    assert status["profile_count"] == 1
+    assert status["stale_profile_count"] == 0
+    assert status["stale_work_event_count"] == 0
+    assert status["profiles_ready"] is True
+    assert status["work_events_ready"] is True
+    assert status["profile_fts_duplicate_count"] == 0
+
+
+def test_targeted_session_product_rebuild_does_not_duplicate_profile_fts(cli_workspace):
+    _seed_products(cli_workspace)
+
+    with open_connection(cli_workspace["db_path"]) as conn:
+        rebuild_session_products_sync(conn, conversation_ids=["conv-root"])
+        status = session_product_status_sync(conn)
+
+    assert status["profile_count"] == 2
+    assert status["profile_fts_count"] == 2
+    assert status["profile_fts_duplicate_count"] == 0
+    assert status["profiles_fts_ready"] is True

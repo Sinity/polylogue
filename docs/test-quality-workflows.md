@@ -38,13 +38,16 @@ python -m devtools.run_validation_lanes --lane query-routing
 python -m devtools.run_validation_lanes --lane semantic-stack
 python -m devtools.run_validation_lanes --lane source-provider-fidelity
 python -m devtools.run_validation_lanes --lane maintenance-control-plane
+python -m devtools.run_validation_lanes --lane archive-data-products
 python -m devtools.run_validation_lanes --lane source-runtime-governance
 python -m devtools.run_validation_lanes --lane retrieval-dogfood
 python -m devtools.run_validation_lanes --lane embeddings-coverage
 python -m devtools.run_validation_lanes --lane archive-intelligence
+python -m devtools.run_validation_lanes --lane archive-data-products-live --dry-run
 python -m devtools.run_validation_lanes --lane frontier-local
 python -m devtools.run_validation_lanes --lane frontier-extended
 python -m devtools.run_validation_lanes --lane live-archive-small --dry-run
+python -m devtools.run_validation_lanes --lane live-products-small --dry-run
 python -m devtools.run_validation_lanes --lane live-governance-small --dry-run
 python -m devtools.run_validation_lanes --lane memory-budget --dry-run
 python -m devtools.run_validation_lanes --lane maintenance-memory-budget --dry-run
@@ -59,15 +62,18 @@ Lane intent:
 - `semantic-stack`: harmonization, semantic facts/profile convergence, proof, and contract inventory
 - `source-provider-fidelity`: local source traversal, Drive/runtime boundaries, and provider-ingest fidelity
 - `maintenance-control-plane`: health, maintenance selection, cache/live provenance, and publication maintenance summaries
+- `archive-data-products`: durable archive products, consumer contracts, product-aware grouped stats, and health/governance surfaces
 - `source-runtime-governance`: local closure lane for source/provider fidelity plus runtime maintenance convergence
 - `retrieval-dogfood`: action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payloads
 - `embeddings-coverage`: embedding readiness/coverage stats and embed command contracts
 - `archive-intelligence`: local closure lane for retrieval, embedding readiness, and schema roundtrip
+- `archive-data-products-live`: local durable-product contract lane plus bounded live durable-product dogfood
 - `tui`: Textual Mission Control interaction/state coverage
 - `chaos`: ingestion hostility, interruption, and chronology suites
 - `frontier-local`: machine + query + semantic + TUI + chaos
 - `frontier-extended`: `frontier-local` plus fast scale and the small long-haul campaign
 - `live-archive-small`: bounded live archive embedding/retrieval/health dogfood
+- `live-products-small`: bounded live archive durable-product and grouped-stats dogfood
 - `live-governance-small`: bounded live archive health plus maintenance-preview dogfood
 - `memory-budget`: explicit RSS budget check for a representative live retrieval query
 - `maintenance-memory-budget`: explicit RSS budget check for the live maintenance preview surface

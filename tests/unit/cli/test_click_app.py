@@ -242,6 +242,7 @@ class TestQueryFirstGroupParseArgs:
         result = cli_runner.invoke(cli, ["--help"], catch_exceptions=False)
         assert result.exit_code == 0
         assert "polylogue" in result.output.lower()
+        assert "products" in result.output
         assert "--provider" in result.output
         assert "--latest" in result.output
 
@@ -404,6 +405,7 @@ class TestCliMetadata:
             "dashboard",
             "generate",
             "embed",
+            "products",
             "qa",
             "schema",
             "site",

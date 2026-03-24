@@ -49,6 +49,31 @@ class WorkEvent:
     tools_used: tuple[str, ...]
     summary: str
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "start_index": self.start_index,
+            "end_index": self.end_index,
+            "confidence": self.confidence,
+            "evidence": list(self.evidence),
+            "file_paths": list(self.file_paths),
+            "tools_used": list(self.tools_used),
+            "summary": self.summary,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> WorkEvent:
+        return cls(
+            kind=WorkEventKind(str(payload["kind"])),
+            start_index=int(payload.get("start_index", 0) or 0),
+            end_index=int(payload.get("end_index", 0) or 0),
+            confidence=float(payload.get("confidence", 0.0) or 0.0),
+            evidence=tuple(str(item) for item in payload.get("evidence", []) or []),
+            file_paths=tuple(str(item) for item in payload.get("file_paths", []) or []),
+            tools_used=tuple(str(item) for item in payload.get("tools_used", []) or []),
+            summary=str(payload.get("summary", "") or ""),
+        )
+
 
 # Patterns for classifying user messages
 _DEBUGGING_PATTERNS = ("error", "traceback", "failed", "bug", "fix", "broken", "crash", "exception", "stack trace", "panic")

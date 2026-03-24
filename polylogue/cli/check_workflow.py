@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from polylogue.cli.helpers import fail, load_effective_config
 from polylogue.cli.types import AppEnv
@@ -21,7 +23,13 @@ from polylogue.schemas.verification_requests import (
     ArtifactProofRequest,
     SchemaVerificationRequest,
 )
-from polylogue.storage.repair import run_selected_maintenance
+from polylogue.storage.repair import (
+    CLEANUP_TARGETS,
+    SAFE_REPAIR_TARGETS,
+    run_selected_maintenance,
+)
+from polylogue.storage.store import MaintenanceRunRecord
+from polylogue.sync_bridge import run_coroutine_sync
 
 from .check_support import make_schema_progress_callback, parse_schema_samples, vacuum_database
 
@@ -60,6 +68,7 @@ class CheckCommandOptions:
     schema_record_limit: int | None
     schema_record_offset: int
     schema_quarantine_malformed: bool
+    maintenance_targets: tuple[str, ...]
 
 
 @dataclass
@@ -93,6 +102,47 @@ def _build_preview_counts(report: Any) -> dict[str, int]:
     action_events = derived_models.get("action_events")
     action_events_fts = derived_models.get("action_events_fts")
     messages_fts = derived_models.get("messages_fts")
+    session_profiles = derived_models.get("session_profiles")
+    session_profiles_fts = derived_models.get("session_profiles_fts")
+    session_work_events = derived_models.get("session_work_events")
+    session_work_events_fts = derived_models.get("session_work_events_fts")
+    work_threads = derived_models.get("work_threads")
+    work_threads_fts = derived_models.get("work_threads_fts")
+    session_tag_rollups = derived_models.get("session_tag_rollups")
+    day_session_summaries = derived_models.get("day_session_summaries")
+    week_session_summaries = derived_models.get("week_session_summaries")
+    if (
+        session_profiles is not None
+        and session_profiles_fts is not None
+        and session_work_events is not None
+        and session_work_events_fts is not None
+        and work_threads is not None
+        and work_threads_fts is not None
+        and session_tag_rollups is not None
+        and day_session_summaries is not None
+        and week_session_summaries is not None
+    ):
+        counts["session_products"] = (
+            max(0, int(getattr(session_profiles, "pending_documents", 0) or 0))
+            + max(0, int(getattr(session_profiles, "pending_rows", 0) or 0))
+            + max(0, int(getattr(session_profiles, "stale_rows", 0) or 0))
+            + max(0, int(getattr(session_profiles, "orphan_rows", 0) or 0))
+            + max(0, int(getattr(session_profiles_fts, "pending_rows", 0) or 0))
+            + max(0, int(getattr(session_work_events, "pending_rows", 0) or 0))
+            + max(0, int(getattr(session_work_events, "stale_rows", 0) or 0))
+            + max(0, int(getattr(session_work_events, "orphan_rows", 0) or 0))
+            + max(0, int(getattr(session_work_events_fts, "pending_rows", 0) or 0))
+            + max(0, int(getattr(work_threads, "pending_documents", 0) or 0))
+            + max(0, int(getattr(work_threads, "stale_rows", 0) or 0))
+            + max(0, int(getattr(work_threads, "orphan_rows", 0) or 0))
+            + max(0, int(getattr(work_threads_fts, "pending_rows", 0) or 0))
+            + max(0, int(getattr(session_tag_rollups, "pending_rows", 0) or 0))
+            + max(0, int(getattr(session_tag_rollups, "stale_rows", 0) or 0))
+            + max(0, int(getattr(day_session_summaries, "pending_rows", 0) or 0))
+            + max(0, int(getattr(day_session_summaries, "stale_rows", 0) or 0))
+            + max(0, int(getattr(week_session_summaries, "pending_rows", 0) or 0))
+            + max(0, int(getattr(week_session_summaries, "stale_rows", 0) or 0))
+        )
     if action_events is not None and action_events_fts is not None:
         counts["action_event_read_model"] = max(
             0,
@@ -106,11 +156,47 @@ def _build_preview_counts(report: Any) -> dict[str, int]:
     return counts
 
 
+def _resolve_selected_maintenance_targets(options: CheckCommandOptions) -> tuple[str, ...]:
+    if options.maintenance_targets:
+        return tuple(options.maintenance_targets)
+    targets: list[str] = []
+    if options.repair:
+        targets.extend(SAFE_REPAIR_TARGETS)
+    if options.cleanup:
+        targets.extend(CLEANUP_TARGETS)
+    return tuple(targets)
+
+
+def _build_maintenance_manifest(
+    *,
+    report: Any,
+    options: CheckCommandOptions,
+    targets: tuple[str, ...],
+    maintenance_results: list[Any],
+    vacuum_result: dict[str, Any] | None,
+    preview_counts: dict[str, int] | None,
+) -> dict[str, Any]:
+    return {
+        "report_summary": dict(report.summary),
+        "report_provenance": report.provenance.to_dict(),
+        "derived_models": {
+            name: status.to_dict()
+            for name, status in sorted((report.derived_models or {}).items())
+        },
+        "preview_counts": dict(preview_counts or {}),
+        "targets": list(targets),
+        "results": [result.to_dict() for result in maintenance_results],
+        "vacuum": vacuum_result,
+    }
+
+
 def validate_check_options(options: CheckCommandOptions) -> None:
     if options.vacuum and not (options.repair or options.cleanup):
         fail("check", "--vacuum requires --repair or --cleanup")
     if options.preview and not (options.repair or options.cleanup):
         fail("check", "--preview requires --repair or --cleanup")
+    if options.maintenance_targets and not (options.repair or options.cleanup):
+        fail("check", "--target requires --repair or --cleanup")
     if options.schema_providers and not options.check_schemas:
         fail("check", "--schema-provider requires --schemas")
     if options.schema_samples != "all" and not options.check_schemas:
@@ -161,6 +247,11 @@ def validate_check_options(options: CheckCommandOptions) -> None:
         fail("check", "--roundtrip-provider requires --roundtrip-proof")
     if options.roundtrip_count <= 0:
         fail("check", "--roundtrip-count must be a positive integer")
+    if options.maintenance_targets:
+        if options.repair and not options.cleanup and not any(name in SAFE_REPAIR_TARGETS for name in options.maintenance_targets):
+            fail("check", "--target only selected cleanup targets while running --repair")
+        if options.cleanup and not options.repair and not any(name in CLEANUP_TARGETS for name in options.maintenance_targets):
+            fail("check", "--target only selected repair targets while running --cleanup")
 
 
 def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckCommandResult:
@@ -260,12 +351,15 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
             fail("check", str(exc))
 
     if options.repair or options.cleanup:
+        preview_counts = _build_preview_counts(report) if options.preview else None
+        selected_targets = _resolve_selected_maintenance_targets(options)
         result.maintenance_results = run_selected_maintenance(
             config,
             repair=options.repair,
             cleanup=options.cleanup,
             dry_run=options.preview,
-            preview_counts=_build_preview_counts(report) if options.preview else None,
+            preview_counts=preview_counts,
+            targets=selected_targets,
         )
 
     if (options.repair or options.cleanup) and options.vacuum:
@@ -277,5 +371,30 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
             }
         elif options.json_output:
             result.vacuum_result = vacuum_database(env)
+
+    if result.maintenance_results is not None:
+        selected_targets = _resolve_selected_maintenance_targets(options)
+        preview_counts = _build_preview_counts(report) if options.preview else None
+        vacuum_ok = result.vacuum_result is None or bool(result.vacuum_result.get("ok", False))
+        record = MaintenanceRunRecord(
+            maintenance_run_id=f"maint-{uuid4().hex[:16]}",
+            executed_at=datetime.now(timezone.utc).isoformat(),
+            mode="preview" if options.preview else "apply",
+            preview=options.preview,
+            repair_selected=options.repair,
+            cleanup_selected=options.cleanup,
+            vacuum_requested=options.vacuum,
+            target_names=selected_targets,
+            success=all(result_item.success for result_item in result.maintenance_results) and vacuum_ok,
+            manifest=_build_maintenance_manifest(
+                report=report,
+                options=options,
+                targets=selected_targets,
+                maintenance_results=result.maintenance_results,
+                vacuum_result=result.vacuum_result,
+                preview_counts=preview_counts,
+            ),
+        )
+        run_coroutine_sync(env.backend.record_maintenance_run(record))
 
     return result

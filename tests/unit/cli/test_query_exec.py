@@ -573,6 +573,35 @@ async def test_async_execute_query_uses_action_event_stats_lane_for_semantic_sta
 
 
 @pytest.mark.asyncio
+async def test_async_execute_query_uses_session_product_stats_lane_for_project_stats() -> None:
+    from polylogue.cli.query import async_execute_query
+
+    repo = MagicMock()
+    env = _make_env(repo=repo, config=MagicMock())
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock) as mock_output,
+        patch("polylogue.cli.query_output._output_stats_by") as mock_fallback,
+        patch("polylogue.lib.filters.ConversationFilter.list_summaries", new=AsyncMock(return_value=[_make_summary("conv-semantic-1")])),
+        patch("polylogue.lib.filters.ConversationFilter.can_use_summaries", return_value=True),
+    ):
+        await async_execute_query(
+            env,
+            _make_params(
+                stats_by="project",
+                provider="claude-code",
+                since="2026-01-01",
+                limit=20,
+            ),
+        )
+
+    mock_output.assert_awaited_once()
+    mock_fallback.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("output_format", "dialogue_only", "limit", "expected_fragments"),
     [
@@ -753,6 +782,8 @@ class TestBuildQueryExecutionPlan:
             ({"stats_by": "provider", "query": ()}, QueryAction.STATS_BY),
             ({"stats_by": "action", "query": ()}, QueryAction.STATS_BY),
             ({"stats_by": "tool", "query": ()}, QueryAction.STATS_BY),
+            ({"stats_by": "project", "query": ()}, QueryAction.STATS_BY),
+            ({"stats_by": "work-kind", "query": ()}, QueryAction.STATS_BY),
             ({"add_tag": ["x"], "query": ()}, QueryAction.MODIFY),
             ({"delete_matched": True, "provider": "claude-ai", "query": ()}, QueryAction.DELETE),
             ({"open_result": True, "query": ("abc",)}, QueryAction.OPEN),
@@ -808,6 +839,8 @@ class TestBuildQueryExecutionPlan:
             ({"stats_by": "action", "query": ()}, False, QueryRoute.STATS_BY),
             ({"stats_by": "tool", "query": ()}, True, QueryRoute.STATS_BY),
             ({"stats_by": "tool", "query": ()}, False, QueryRoute.STATS_BY),
+            ({"stats_by": "project", "query": ()}, True, QueryRoute.STATS_BY),
+            ({"stats_by": "work-kind", "query": ()}, True, QueryRoute.STATS_BY),
             (
                 {"set_meta": [("priority", "1")], "query": ("abc",)},
                 True,

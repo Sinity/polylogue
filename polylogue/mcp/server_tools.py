@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
 from polylogue.mcp.payloads import (
@@ -14,6 +14,7 @@ from polylogue.mcp.payloads import (
     MCPHealthReportPayload,
     MCPMetadataPayload,
     MCPMutationStatusPayload,
+    MCPRootPayload,
     MCPStatsByPayload,
     MCPTagCountsPayload,
 )
@@ -400,13 +401,10 @@ def _register_profile_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def session_profile(conversation_id: str) -> str:
         async def _run() -> str:
-            from polylogue.lib.session_products import build_session_profile
-
-            conv = await hooks.get_repo().view(conversation_id)
-            if conv is None:
+            product = await hooks.get_archive_ops().get_session_profile_product(conversation_id)
+            if product is None:
                 return hooks.error_json("Conversation not found", conversation_id=conversation_id)
-            profile = build_session_profile(conv)
-            return json.dumps(profile.to_dict(), indent=2, default=str)
+            return hooks.json_payload(product, exclude_none=True)
 
         return await hooks.async_safe_call("session_profile", _run)
 
@@ -415,34 +413,218 @@ def _register_profile_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         since: str | None = None,
         until: str | None = None,
         provider: str | None = None,
+        query: str | None = None,
         limit: int = 50,
+        offset: int = 0,
     ) -> str:
         async def _run() -> str:
-            from polylogue.lib.session_products import build_session_profile
+            from polylogue.archive_products import SessionProfileProductQuery
 
-            kwargs: dict[str, Any] = {"limit": hooks.clamp_limit(limit)}
-            if provider:
-                kwargs["provider"] = provider
-            if since:
-                kwargs["since"] = since
-            if until:
-                kwargs["until"] = until
-
-            repo = hooks.get_repo()
-            summaries = await repo.list_summaries(**kwargs)
-            ids = [str(s.id) for s in summaries]
-            convs = await repo.get_many(ids)
-
-            profiles = []
-            for conv in convs:
-                try:
-                    profiles.append(build_session_profile(conv).to_dict())
-                except Exception as exc:
-                    logger.debug("Failed to profile %s: %s", conv.id, exc)
-
-            return json.dumps({"count": len(profiles), "profiles": profiles}, indent=2, default=str)
+            products = await hooks.get_archive_ops().list_session_profile_products(
+                SessionProfileProductQuery(
+                    provider=provider,
+                    since=since,
+                    until=until,
+                    query=query,
+                    limit=hooks.clamp_limit(limit),
+                    offset=max(0, int(offset)),
+                )
+            )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [product.model_dump(mode="json") for product in products],
+                    }
+                )
+            )
 
         return await hooks.async_safe_call("session_profiles", _run)
+
+    @mcp.tool()
+    async def session_work_events(
+        conversation_id: str | None = None,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        kind: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> str:
+        async def _run() -> str:
+            from polylogue.archive_products import SessionWorkEventProductQuery
+
+            ops = hooks.get_archive_ops()
+            if conversation_id:
+                products = await ops.get_session_work_event_products(conversation_id)
+            else:
+                products = await ops.list_session_work_event_products(
+                    SessionWorkEventProductQuery(
+                        provider=provider,
+                        since=since,
+                        until=until,
+                        kind=kind,
+                        query=query,
+                        limit=hooks.clamp_limit(limit),
+                        offset=max(0, int(offset)),
+                    )
+                )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [product.model_dump(mode="json") for product in products],
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("session_work_events", _run)
+
+    @mcp.tool()
+    async def session_tag_rollups(
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        query: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> str:
+        async def _run() -> str:
+            from polylogue.archive_products import SessionTagRollupQuery
+
+            products = await hooks.get_archive_ops().list_session_tag_rollup_products(
+                SessionTagRollupQuery(
+                    provider=provider,
+                    since=since,
+                    until=until,
+                    query=query,
+                    limit=hooks.clamp_limit(limit),
+                    offset=max(0, int(offset)),
+                )
+            )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [product.model_dump(mode="json") for product in products],
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("session_tag_rollups", _run)
+
+    @mcp.tool()
+    async def work_threads(
+        since: str | None = None,
+        until: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> str:
+        async def _run() -> str:
+            from polylogue.archive_products import WorkThreadProductQuery
+
+            products = await hooks.get_archive_ops().list_work_thread_products(
+                WorkThreadProductQuery(
+                    since=since,
+                    until=until,
+                    query=query,
+                    limit=hooks.clamp_limit(limit),
+                    offset=max(0, int(offset)),
+                )
+            )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [product.model_dump(mode="json") for product in products],
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("work_threads", _run)
+
+    @mcp.tool()
+    async def day_session_summaries(
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 90,
+        offset: int = 0,
+    ) -> str:
+        async def _run() -> str:
+            from polylogue.archive_products import DaySessionSummaryProductQuery
+
+            products = await hooks.get_archive_ops().list_day_session_summary_products(
+                DaySessionSummaryProductQuery(
+                    provider=provider,
+                    since=since,
+                    until=until,
+                    limit=hooks.clamp_limit(limit),
+                    offset=max(0, int(offset)),
+                )
+            )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [product.model_dump(mode="json") for product in products],
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("day_session_summaries", _run)
+
+    @mcp.tool()
+    async def week_session_summaries(
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 52,
+        offset: int = 0,
+    ) -> str:
+        async def _run() -> str:
+            from polylogue.archive_products import WeekSessionSummaryProductQuery
+
+            products = await hooks.get_archive_ops().list_week_session_summary_products(
+                WeekSessionSummaryProductQuery(
+                    provider=provider,
+                    since=since,
+                    until=until,
+                    limit=hooks.clamp_limit(limit),
+                    offset=max(0, int(offset)),
+                )
+            )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [product.model_dump(mode="json") for product in products],
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("week_session_summaries", _run)
+
+    @mcp.tool()
+    async def maintenance_runs(limit: int = 20) -> str:
+        async def _run() -> str:
+            from polylogue.archive_products import MaintenanceRunProductQuery
+
+            products = await hooks.get_archive_ops().list_maintenance_run_products(
+                MaintenanceRunProductQuery(limit=hooks.clamp_limit(limit))
+            )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [product.model_dump(mode="json") for product in products],
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("maintenance_runs", _run)
 
     @mcp.tool()
     async def archive_coverage() -> str:

@@ -17,6 +17,9 @@ from polylogue.storage.backends.queries import (
     conversations as conversations_q,
 )
 from polylogue.storage.backends.queries import (
+    maintenance_runs as maintenance_runs_q,
+)
+from polylogue.storage.backends.queries import (
     messages as messages_q,
 )
 from polylogue.storage.backends.queries import (
@@ -29,6 +32,9 @@ from polylogue.storage.backends.queries import (
     runs as runs_q,
 )
 from polylogue.storage.backends.queries import (
+    session_products as session_products_q,
+)
+from polylogue.storage.backends.queries import (
     stats as stats_q,
 )
 from polylogue.storage.query_models import ConversationRecordQuery
@@ -37,9 +43,15 @@ from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
+    DaySessionSummaryRecord,
+    MaintenanceRunRecord,
     MessageRecord,
     PublicationRecord,
     RunRecord,
+    SessionProfileRecord,
+    SessionTagRollupRecord,
+    SessionWorkEventRecord,
+    WorkThreadRecord,
 )
 
 
@@ -122,6 +134,134 @@ class SQLiteQueryStore:
 
         async with self._connection_factory() as conn:
             return await action_event_read_model_status_async(conn)
+
+    async def get_session_product_status(self) -> dict[str, int | bool]:
+        """Return readiness metadata for durable session-product read models."""
+        from polylogue.storage.session_product_lifecycle import session_product_status_async
+
+        async with self._connection_factory() as conn:
+            return await session_product_status_async(conn)
+
+    async def get_session_profile(self, conversation_id: str) -> SessionProfileRecord | None:
+        async with self._connection_factory() as conn:
+            return await session_products_q.get_session_profile(conn, conversation_id)
+
+    async def get_session_profiles_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, SessionProfileRecord]:
+        async with self._connection_factory() as conn:
+            return await session_products_q.get_session_profiles_batch(conn, conversation_ids)
+
+    async def list_session_profiles(
+        self,
+        *,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = 50,
+        offset: int = 0,
+        query: str | None = None,
+    ) -> list[SessionProfileRecord]:
+        async with self._connection_factory() as conn:
+            return await session_products_q.list_session_profiles(
+                conn,
+                provider=provider,
+                since=since,
+                until=until,
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
+
+    async def get_session_work_events(
+        self,
+        conversation_id: str,
+    ) -> list[SessionWorkEventRecord]:
+        async with self._connection_factory() as conn:
+            return await session_products_q.get_work_events(conn, conversation_id)
+
+    async def list_session_work_events(
+        self,
+        *,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        kind: str | None = None,
+        limit: int | None = 50,
+        offset: int = 0,
+        query: str | None = None,
+    ) -> list[SessionWorkEventRecord]:
+        async with self._connection_factory() as conn:
+            return await session_products_q.list_work_events(
+                conn,
+                provider=provider,
+                since=since,
+                until=until,
+                kind=kind,
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
+
+    async def get_work_thread(self, thread_id: str) -> WorkThreadRecord | None:
+        async with self._connection_factory() as conn:
+            return await session_products_q.get_work_thread(conn, thread_id)
+
+    async def list_work_threads(
+        self,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = 50,
+        offset: int = 0,
+        query: str | None = None,
+    ) -> list[WorkThreadRecord]:
+        async with self._connection_factory() as conn:
+            return await session_products_q.list_work_threads(
+                conn,
+                since=since,
+                until=until,
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
+
+    async def list_session_tag_rollup_rows(
+        self,
+        *,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        query: str | None = None,
+    ) -> list[SessionTagRollupRecord]:
+        async with self._connection_factory() as conn:
+            return await session_products_q.list_session_tag_rollup_rows(
+                conn,
+                provider=provider,
+                since=since,
+                until=until,
+                query=query,
+            )
+
+    async def list_day_session_summaries(
+        self,
+        *,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[DaySessionSummaryRecord]:
+        async with self._connection_factory() as conn:
+            return await session_products_q.list_day_session_summaries(
+                conn,
+                provider=provider,
+                since=since,
+                until=until,
+            )
+
+    async def list_maintenance_runs(self, *, limit: int = 20) -> list[MaintenanceRunRecord]:
+        async with self._connection_factory() as conn:
+            return await maintenance_runs_q.list_maintenance_runs(conn, limit=limit)
 
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
         """Get message records for a conversation with content blocks attached."""

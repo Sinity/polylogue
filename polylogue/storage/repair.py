@@ -19,8 +19,23 @@ from .action_event_lifecycle import (
 )
 from .backends.connection import connection_context, default_db_path
 from .fts_lifecycle import repair_fts_index_sync
+from .session_product_lifecycle import rebuild_session_products_sync, session_product_status_sync
 
 logger = get_logger(__name__)
+
+SAFE_REPAIR_TARGETS = (
+    "session_products",
+    "action_event_read_model",
+    "dangling_fts",
+    "wal_checkpoint",
+)
+CLEANUP_TARGETS = (
+    "orphaned_messages",
+    "orphaned_content_blocks",
+    "empty_conversations",
+    "orphaned_attachments",
+)
+MAINTENANCE_TARGET_NAMES = SAFE_REPAIR_TARGETS + CLEANUP_TARGETS
 
 
 @dataclass
@@ -364,6 +379,161 @@ def preview_dangling_fts(*, count: int) -> RepairResult:
     )
 
 
+def repair_session_products(config: Config, dry_run: bool = False) -> RepairResult:
+    """Repair durable session-profile, work-event, and work-thread products."""
+    try:
+        with connection_context(None) as conn:
+            status = session_product_status_sync(conn)
+            profile_fts_pending = max(
+                0,
+                int(status["profile_count"]) - int(status["profile_fts_count"]),
+            )
+            profile_fts_duplicates = max(0, int(status.get("profile_fts_duplicate_count", 0)))
+            work_event_fts_pending = max(
+                0,
+                int(status["work_event_count"]) - int(status["work_event_fts_count"]),
+            )
+            work_event_fts_duplicates = max(0, int(status.get("work_event_fts_duplicate_count", 0)))
+            thread_fts_pending = max(
+                0,
+                int(status["thread_count"]) - int(status["thread_fts_count"]),
+            )
+            thread_fts_duplicates = max(0, int(status.get("thread_fts_duplicate_count", 0)))
+            pending = (
+                int(status["missing_profile_count"])
+                + int(status["stale_profile_count"])
+                + int(status["orphan_profile_count"])
+                + int(status["stale_work_event_count"])
+                + int(status["orphan_work_event_count"])
+                + int(status["stale_thread_count"])
+                + int(status["orphan_thread_count"])
+                + int(status["stale_tag_rollup_count"])
+                + int(status["stale_day_summary_count"])
+                + profile_fts_pending
+                + profile_fts_duplicates
+                + work_event_fts_pending
+                + work_event_fts_duplicates
+                + thread_fts_pending
+                + thread_fts_duplicates
+            )
+
+            if dry_run:
+                return RepairResult(
+                    name="session_products",
+                    category=MaintenanceCategory.DERIVED_REPAIR,
+                    destructive=False,
+                    repaired_count=pending,
+                    success=True,
+                    detail=(
+                        "Would: session products already ready"
+                        if pending == 0
+                        and bool(status["profiles_ready"])
+                        and bool(status["profiles_fts_ready"])
+                        and bool(status["work_events_ready"])
+                        and bool(status["work_events_fts_ready"])
+                        and bool(status["threads_ready"])
+                        and bool(status["threads_fts_ready"])
+                        and bool(status["tag_rollups_ready"])
+                        and bool(status["day_summaries_ready"])
+                        and bool(status["week_summaries_ready"])
+                        else (
+                            "Would: rebuild session products "
+                            f"(missing_profiles={int(status['missing_profile_count']):,}, "
+                            f"stale_profiles={int(status['stale_profile_count']):,}, "
+                            f"orphan_profiles={int(status['orphan_profile_count']):,}, "
+                            f"stale_work_events={int(status['stale_work_event_count']):,}, "
+                            f"orphan_work_events={int(status['orphan_work_event_count']):,}, "
+                            f"stale_threads={int(status['stale_thread_count']):,}, "
+                            f"orphan_threads={int(status['orphan_thread_count']):,}, "
+                            f"stale_tag_rollups={int(status['stale_tag_rollup_count']):,}, "
+                            f"stale_day_summaries={int(status['stale_day_summary_count']):,}, "
+                            f"profile_fts_pending={profile_fts_pending:,}, "
+                            f"profile_fts_duplicates={profile_fts_duplicates:,}, "
+                            f"work_event_fts_pending={work_event_fts_pending:,}, "
+                            f"work_event_fts_duplicates={work_event_fts_duplicates:,}, "
+                            f"thread_fts_pending={thread_fts_pending:,}, "
+                            f"thread_fts_duplicates={thread_fts_duplicates:,})"
+                        )
+                    ),
+                )
+
+            rebuilt = rebuild_session_products_sync(conn)
+            conn.commit()
+            refreshed = session_product_status_sync(conn)
+            success = (
+                bool(refreshed["profiles_ready"])
+                and bool(refreshed["profiles_fts_ready"])
+                and bool(refreshed["work_events_ready"])
+                and bool(refreshed["work_events_fts_ready"])
+                and bool(refreshed["threads_ready"])
+                and bool(refreshed["threads_fts_ready"])
+                and bool(refreshed["tag_rollups_ready"])
+                and bool(refreshed["day_summaries_ready"])
+                and bool(refreshed["week_summaries_ready"])
+            )
+            return RepairResult(
+                name="session_products",
+                category=MaintenanceCategory.DERIVED_REPAIR,
+                destructive=False,
+                repaired_count=(
+                    int(rebuilt["profiles"])
+                    + int(rebuilt["work_events"])
+                    + int(rebuilt["threads"])
+                    + int(rebuilt["tag_rollups"])
+                    + int(rebuilt["day_summaries"])
+                ),
+                success=success,
+                detail=(
+                    "Session products ready"
+                    if success
+                    else (
+                        "Session products still incomplete: "
+                        f"profiles={int(refreshed['profile_count']):,}/"
+                        f"{int(refreshed['total_conversations']):,}, "
+                        f"profile_fts={int(refreshed['profile_fts_count']):,}/"
+                        f"{int(refreshed['profile_count']):,}, "
+                        f"work_events={int(refreshed['work_event_count']):,}/"
+                        f"{int(refreshed['expected_work_event_count']):,}, "
+                        f"work_event_fts={int(refreshed['work_event_fts_count']):,}/"
+                        f"{int(refreshed['work_event_count']):,}, "
+                        f"threads={int(refreshed['thread_count']):,}/"
+                        f"{int(refreshed['root_threads']):,}, "
+                        f"thread_fts={int(refreshed['thread_fts_count']):,}/"
+                        f"{int(refreshed['thread_count']):,}, "
+                        f"tag_rollups={int(refreshed['tag_rollup_count']):,}/"
+                        f"{int(refreshed['expected_tag_rollup_count']):,}, "
+                        f"day_summaries={int(refreshed['day_summary_count']):,}/"
+                        f"{int(refreshed['expected_day_summary_count']):,}"
+                    )
+                ),
+            )
+    except Exception as exc:
+        return RepairResult(
+            name="session_products",
+            category=MaintenanceCategory.DERIVED_REPAIR,
+            destructive=False,
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to repair session products: {exc}",
+        )
+
+
+def preview_session_products(*, count: int) -> RepairResult:
+    """Build a dry-run session-product repair result from a known pending count."""
+    return RepairResult(
+        name="session_products",
+        category=MaintenanceCategory.DERIVED_REPAIR,
+        destructive=False,
+        repaired_count=count,
+        success=True,
+        detail=(
+            "Would: session products already ready"
+            if count == 0
+            else f"Would: rebuild session-product rows/fts for {count:,} pending items"
+        ),
+    )
+
+
 def repair_action_event_read_model(config: Config, dry_run: bool = False) -> RepairResult:
     """Repair the durable action-event read model and its action FTS rows."""
     try:
@@ -599,22 +769,33 @@ def run_safe_repairs(
     dry_run: bool = False,
     *,
     preview_counts: dict[str, int] | None = None,
+    targets: tuple[str, ...] = (),
 ) -> list[RepairResult]:
     """Run non-destructive derived-data and database maintenance repairs."""
     preview_counts = preview_counts or {}
-    return [
-        (
+    selected = set(targets) if targets else set(SAFE_REPAIR_TARGETS)
+    results: list[RepairResult] = []
+    if "session_products" in selected:
+        results.append(
+            preview_session_products(count=preview_counts["session_products"])
+            if dry_run and "session_products" in preview_counts
+            else repair_session_products(config, dry_run=dry_run)
+        )
+    if "action_event_read_model" in selected:
+        results.append(
             preview_action_event_read_model(count=preview_counts["action_event_read_model"])
             if dry_run and "action_event_read_model" in preview_counts
             else repair_action_event_read_model(config, dry_run=dry_run)
-        ),
-        (
+        )
+    if "dangling_fts" in selected:
+        results.append(
             preview_dangling_fts(count=preview_counts["dangling_fts"])
             if dry_run and "dangling_fts" in preview_counts
             else repair_dangling_fts(config, dry_run=dry_run)
-        ),
-        repair_wal_checkpoint(config, dry_run=dry_run),
-    ]
+        )
+    if "wal_checkpoint" in selected:
+        results.append(repair_wal_checkpoint(config, dry_run=dry_run))
+    return results
 
 
 def run_archive_cleanup(
@@ -622,27 +803,33 @@ def run_archive_cleanup(
     dry_run: bool = False,
     *,
     preview_counts: dict[str, int] | None = None,
+    targets: tuple[str, ...] = (),
 ) -> list[RepairResult]:
     """Run destructive archive cleanup operations."""
     preview_counts = preview_counts or {}
-    return [
-        (
+    selected = set(targets) if targets else set(CLEANUP_TARGETS)
+    results: list[RepairResult] = []
+    if "orphaned_messages" in selected:
+        results.append(
             preview_orphaned_messages(count=preview_counts["orphaned_messages"])
             if dry_run and "orphaned_messages" in preview_counts
             else repair_orphaned_messages(config, dry_run=dry_run)
-        ),
-        (
+        )
+    if "orphaned_content_blocks" in selected:
+        results.append(
             preview_orphaned_content_blocks(count=preview_counts["orphaned_content_blocks"])
             if dry_run and "orphaned_content_blocks" in preview_counts
             else repair_orphaned_content_blocks(config, dry_run=dry_run)
-        ),
-        (
+        )
+    if "empty_conversations" in selected:
+        results.append(
             preview_empty_conversations(count=preview_counts["empty_conversations"])
             if dry_run and "empty_conversations" in preview_counts
             else repair_empty_conversations(config, dry_run=dry_run)
-        ),
-        repair_orphaned_attachments(config, dry_run=dry_run),
-    ]
+        )
+    if "orphaned_attachments" in selected:
+        results.append(repair_orphaned_attachments(config, dry_run=dry_run))
+    return results
 
 
 def run_selected_maintenance(
@@ -652,15 +839,19 @@ def run_selected_maintenance(
     cleanup: bool,
     dry_run: bool = False,
     preview_counts: dict[str, int] | None = None,
+    targets: tuple[str, ...] = (),
 ) -> list[RepairResult]:
     """Run the selected maintenance operations and return their results."""
     results: list[RepairResult] = []
+    repair_targets = tuple(name for name in targets if name in SAFE_REPAIR_TARGETS)
+    cleanup_targets = tuple(name for name in targets if name in CLEANUP_TARGETS)
     if repair:
         results.extend(
             run_safe_repairs(
                 config,
                 dry_run=dry_run,
                 preview_counts=preview_counts,
+                targets=repair_targets,
             )
         )
     if cleanup:
@@ -669,6 +860,7 @@ def run_selected_maintenance(
                 config,
                 dry_run=dry_run,
                 preview_counts=preview_counts,
+                targets=cleanup_targets,
             )
         )
     return results
@@ -676,9 +868,13 @@ def run_selected_maintenance(
 
 __all__ = [
     "RepairResult",
+    "CLEANUP_TARGETS",
+    "MAINTENANCE_TARGET_NAMES",
+    "SAFE_REPAIR_TARGETS",
     "repair_orphaned_messages",
     "repair_orphaned_content_blocks",
     "repair_empty_conversations",
+    "repair_session_products",
     "repair_action_event_read_model",
     "repair_dangling_fts",
     "repair_orphaned_attachments",

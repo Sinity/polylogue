@@ -17,6 +17,7 @@ from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.embed import embed_command
 from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.commands.mcp import mcp_command
+from polylogue.cli.commands.products import products_command
 from polylogue.cli.commands.qa import qa_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
@@ -113,7 +114,7 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option(
     "--stats-by",
     "stats_by",
-    type=click.Choice(["provider", "month", "year", "day", "action", "tool"]),
+    type=click.Choice(["provider", "month", "year", "day", "action", "tool", "project", "work-kind"]),
     help="Aggregate statistics by dimension",
 )
 @click.option("--open", "open_result", is_flag=True, help="Open result in browser/editor")
@@ -211,6 +212,7 @@ def cli(
         polylogue --action-text "pytest -q" --list
         polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
         polylogue --action other --stats-by tool --format json
+        polylogue --stats-by project --provider claude-code --since 2026-01-01 --format json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
 
@@ -226,6 +228,7 @@ def cli(
         polylogue qa        Composable QA (audit, exercises, invariants)
         polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
+        polylogue products  Inspect durable session/work/maintenance products
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
@@ -257,6 +260,7 @@ cli.add_command(auth_command)
 cli.add_command(completions_command)
 cli.add_command(dashboard_command)
 cli.add_command(embed_command)
+cli.add_command(products_command)
 cli.add_command(site_command)
 cli.add_command(tags_command)
 cli.add_command(generate_command)

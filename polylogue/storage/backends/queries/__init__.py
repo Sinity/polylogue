@@ -5,10 +5,12 @@ from polylogue.storage.backends.queries import (
     artifacts,
     attachments,
     conversations,
+    maintenance_runs,
     messages,
     publications,
     raw,
     runs,
+    session_products,
     stats,
 )
 
@@ -17,9 +19,11 @@ __all__ = [
     "artifacts",
     "attachments",
     "conversations",
+    "maintenance_runs",
     "messages",
     "publications",
     "raw",
     "runs",
+    "session_products",
     "stats",
 ]
