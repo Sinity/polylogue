@@ -7,6 +7,15 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from polylogue.lib.query_plan_description import (
+    describe_plan,
+    effective_fetch_limit,
+    plan_has_filters,
+)
+from polylogue.lib.query_plan_records import (
+    plan_record_query,
+    plan_sql_pushdown_params,
+)
 from polylogue.lib.query_retrieval import (
     action_event_rows_ready,
     can_use_action_event_stats_with,
@@ -36,7 +45,7 @@ from polylogue.lib.query_sorting import (
     sort_generic,
     sort_summaries,
 )
-from polylogue.lib.query_support import conversation_has_branches, provider_values
+from polylogue.lib.query_support import conversation_has_branches
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.types import Provider
 
@@ -101,178 +110,16 @@ class ConversationQueryPlan:
 
     @property
     def record_query(self) -> ConversationRecordQuery:
-        values = provider_values(self.providers)
-        provider = values[0] if len(values) == 1 else None
-        providers = values if len(values) > 1 else ()
-        return ConversationRecordQuery(
-            provider=provider,
-            providers=providers,
-            parent_id=self.parent_id,
-            since=self.since.isoformat() if self.since else None,
-            until=self.until.isoformat() if self.until else None,
-            title_contains=self.title,
-            path_terms=self.path_terms,
-            action_terms=self.action_terms,
-            excluded_action_terms=self.excluded_action_terms,
-            tool_terms=self.tool_terms,
-            excluded_tool_terms=self.excluded_tool_terms,
-            has_tool_use=self.filter_has_tool_use,
-            has_thinking=self.filter_has_thinking,
-            min_messages=self.min_messages,
-            max_messages=self.max_messages,
-            min_words=self.min_words,
-        )
+        return plan_record_query(self)
 
     def sql_pushdown_params(self) -> dict[str, object]:
-        params: dict[str, object] = {}
-        values = provider_values(self.providers)
-        if len(values) == 1:
-            params["provider"] = values[0]
-        elif values:
-            params["providers"] = list(values)
-        if self.parent_id:
-            params["parent_id"] = self.parent_id
-        if self.since:
-            params["since"] = self.since.isoformat()
-        if self.until:
-            params["until"] = self.until.isoformat()
-        if self.title:
-            params["title_contains"] = self.title
-        if self.path_terms:
-            params["path_terms"] = list(self.path_terms)
-        if self.action_terms:
-            params["action_terms"] = list(self.action_terms)
-        if self.excluded_action_terms:
-            params["excluded_action_terms"] = list(self.excluded_action_terms)
-        if self.action_sequence:
-            params["action_sequence"] = list(self.action_sequence)
-        if self.action_text_terms:
-            params["action_text_terms"] = list(self.action_text_terms)
-        if self.tool_terms:
-            params["tool_terms"] = list(self.tool_terms)
-        if self.excluded_tool_terms:
-            params["excluded_tool_terms"] = list(self.excluded_tool_terms)
-        if self.filter_has_tool_use:
-            params["has_tool_use"] = True
-        if self.filter_has_thinking:
-            params["has_thinking"] = True
-        if self.min_messages is not None:
-            params["min_messages"] = self.min_messages
-        if self.max_messages is not None:
-            params["max_messages"] = self.max_messages
-        if self.min_words is not None:
-            params["min_words"] = self.min_words
-        return params
+        return plan_sql_pushdown_params(self)
 
     def describe(self) -> list[str]:
-        parts: list[str] = []
-        if self.fts_terms:
-            parts.append(f"contains: {', '.join(self.fts_terms)}")
-        if self.negative_terms:
-            parts.append(f"exclude text: {', '.join(self.negative_terms)}")
-        if self.retrieval_lane != "auto":
-            parts.append(f"retrieval: {self.retrieval_lane}")
-        if self.path_terms:
-            parts.append(f"path: {', '.join(self.path_terms)}")
-        if self.action_terms:
-            parts.append(f"action: {', '.join(self.action_terms)}")
-        if self.excluded_action_terms:
-            parts.append(f"exclude action: {', '.join(self.excluded_action_terms)}")
-        if self.action_sequence:
-            parts.append(f"action sequence: {' -> '.join(self.action_sequence)}")
-        if self.action_text_terms:
-            parts.append(f"action text: {', '.join(self.action_text_terms)}")
-        if self.tool_terms:
-            parts.append(f"tool: {', '.join(self.tool_terms)}")
-        if self.excluded_tool_terms:
-            parts.append(f"exclude tool: {', '.join(self.excluded_tool_terms)}")
-        if self.providers:
-            parts.append(f"provider: {', '.join(provider_values(self.providers))}")
-        if self.excluded_providers:
-            parts.append(f"exclude provider: {', '.join(provider_values(self.excluded_providers))}")
-        if self.tags:
-            parts.append(f"tag: {', '.join(self.tags)}")
-        if self.excluded_tags:
-            parts.append(f"exclude tag: {', '.join(self.excluded_tags)}")
-        if self.title:
-            parts.append(f"title: {self.title}")
-        if self.has_types:
-            parts.append(f"has: {', '.join(self.has_types)}")
-        if self.filter_has_tool_use:
-            parts.append("has_tool_use")
-        if self.filter_has_thinking:
-            parts.append("has_thinking")
-        if self.min_messages is not None:
-            parts.append(f"min_messages: {self.min_messages}")
-        if self.max_messages is not None:
-            parts.append(f"max_messages: {self.max_messages}")
-        if self.min_words is not None:
-            parts.append(f"min_words: {self.min_words}")
-        if self.since:
-            parts.append(f"since: {self.since.isoformat()}")
-        if self.until:
-            parts.append(f"until: {self.until.isoformat()}")
-        if self.conversation_id:
-            parts.append(f"id: {self.conversation_id}")
-        if self.parent_id:
-            parts.append(f"parent: {self.parent_id}")
-        if self.continuation is True:
-            parts.append("continuation")
-        if self.continuation is False:
-            parts.append("not continuation")
-        if self.sidechain is True:
-            parts.append("sidechain")
-        if self.sidechain is False:
-            parts.append("not sidechain")
-        if self.root is True:
-            parts.append("root")
-        if self.root is False:
-            parts.append("not root")
-        if self.has_branches is True:
-            parts.append("has branches")
-        if self.has_branches is False:
-            parts.append("no branches")
-        if self.predicates:
-            parts.append(f"custom predicates: {len(self.predicates)}")
-        if self.similar_text:
-            parts.append(f"similar: {self.similar_text[:30]}")
-        return parts
+        return describe_plan(self)
 
     def has_filters(self) -> bool:
-        return any(
-            (
-                self.fts_terms,
-                self.negative_terms,
-                self.path_terms,
-                self.action_terms,
-                self.excluded_action_terms,
-                self.action_sequence,
-                self.action_text_terms,
-                self.tool_terms,
-                self.excluded_tool_terms,
-                self.providers,
-                self.excluded_providers,
-                self.tags,
-                self.excluded_tags,
-                self.has_types,
-                self.title is not None,
-                self.conversation_id is not None,
-                self.parent_id is not None,
-                self.since is not None,
-                self.until is not None,
-                self.similar_text is not None,
-                self.continuation is not None,
-                self.sidechain is not None,
-                self.root is not None,
-                self.has_branches is not None,
-                self.filter_has_tool_use,
-                self.filter_has_thinking,
-                self.min_messages is not None,
-                self.max_messages is not None,
-                self.min_words is not None,
-                self.predicates,
-            )
-        )
+        return plan_has_filters(self)
 
     def has_post_filters(self) -> bool:
         return plan_has_post_filters(self)
@@ -305,13 +152,7 @@ class ConversationQueryPlan:
         return matches_action_text_terms(self, conversation)
 
     def effective_fetch_limit(self) -> int | None:
-        if self.limit is None:
-            return None
-        if self.has_post_filters():
-            return max(self.limit * 10, 500)
-        if self.sample is not None:
-            return max(self.sample * 3, 200)
-        return max(self.limit * 2, 2)
+        return effective_fetch_limit(self)
 
     def with_limit(self, limit: int | None) -> ConversationQueryPlan:
         return replace(self, limit=limit)
