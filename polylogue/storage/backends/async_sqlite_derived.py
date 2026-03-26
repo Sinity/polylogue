@@ -5,19 +5,20 @@ from __future__ import annotations
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import maintenance_runs as maintenance_runs_q
 from polylogue.storage.backends.queries import (
-    session_product_profile_queries as session_product_profiles_q,
+    session_product_profile_writes as session_product_profiles_q,
 )
 from polylogue.storage.backends.queries import (
     session_product_thread_queries as session_product_threads_q,
 )
 from polylogue.storage.backends.queries import (
-    session_product_timeline_queries as session_product_timelines_q,
+    session_product_timeline_writes as session_product_timelines_q,
 )
 from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.store import (
     ActionEventRecord,
     MaintenanceRunRecord,
     MessageRecord,
+    SessionPhaseRecord,
     SessionProfileRecord,
     SessionWorkEventRecord,
     WorkThreadRecord,
@@ -72,6 +73,20 @@ class SQLiteDerivedMixin:
         """Replace durable work-event rows for one conversation."""
         async with self._get_connection() as conn:
             await session_product_timelines_q.replace_session_work_events(
+                conn,
+                conversation_id,
+                records,
+                self._transaction_depth,
+            )
+
+    async def replace_session_phases(
+        self,
+        conversation_id: str,
+        records: list[SessionPhaseRecord],
+    ) -> None:
+        """Replace durable phase rows for one conversation."""
+        async with self._get_connection() as conn:
+            await session_product_timelines_q.replace_session_phases(
                 conn,
                 conversation_id,
                 records,
