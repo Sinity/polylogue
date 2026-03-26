@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from click.testing import CliRunner
-
+from polylogue.showcase.cli_boundary import invoke_showcase_cli
 from polylogue.showcase.exercises import (
     EXERCISES,
     Exercise,
@@ -202,28 +200,17 @@ class ShowcaseRunner:
 
     def _run_exercise(self, exercise: Exercise) -> ExerciseResult:
         """Run a single exercise and validate the result."""
-        from polylogue.cli.click_app import cli
-
         t0 = time.monotonic()
 
-        # Build env vars for CliRunner
         env = dict(self._env_vars) if self._env_vars else {}
         env["POLYLOGUE_FORCE_PLAIN"] = "1"
-
-        # Always pass --plain to ensure deterministic output
         args = ["--plain"] + list(exercise.args)
 
-        runner = CliRunner()
-
-        def _invoke() -> tuple[str, int]:
-            res = runner.invoke(cli, args, env=env, catch_exceptions=True)
-            return res.output or "", res.exit_code
-
         try:
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(_invoke)
-                output, exit_code = future.result(timeout=exercise.timeout_s)
-        except FuturesTimeoutError:
+            cli_result = invoke_showcase_cli(args, env=env, timeout=exercise.timeout_s)
+            output = cli_result.output
+            exit_code = cli_result.exit_code
+        except subprocess.TimeoutExpired:
             duration = (time.monotonic() - t0) * 1000
             return ExerciseResult(
                 exercise=exercise,
@@ -276,8 +263,8 @@ class ShowcaseRunner:
         if v.stdout_is_valid_json:
             try:
                 json.loads(output)
-            except json.JSONDecodeError as e:
-                return f"invalid JSON: {e}"
+            except json.JSONDecodeError as exc:
+                return f"invalid JSON: {exc}"
 
         if v.stdout_min_lines is not None:
             line_count = len(output.strip().splitlines())

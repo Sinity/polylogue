@@ -309,7 +309,7 @@ def mock_media_downloader(monkeypatch):
     """
     Patch GoogleAPI's MediaIoBaseDownload with our mock.
 
-    This fixture patches the lazy import mechanism in drive_client.py
+    This fixture patches the lazy import mechanism in drive_gateway.py
     to return our MockMediaIoBaseDownload when MediaIoBaseDownload is requested.
     """
     from tests.infra.drive_mocks import MockMediaIoBaseDownload
@@ -328,10 +328,9 @@ def mock_media_downloader(monkeypatch):
 
         return importlib.import_module(name)
 
-    import polylogue.sources.drive_client as drive_client
+    import polylogue.sources.drive_gateway as drive_gateway
 
-
-    monkeypatch.setattr(drive_client, "_import_module", mock_import_module)
+    monkeypatch.setattr(drive_gateway, "_import_module", mock_import_module)
 
     return {"MockMediaIoBaseDownload": MockMediaIoBaseDownload}
 

@@ -3,227 +3,31 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jinja2 import DictLoader, Environment, FileSystemLoader, select_autoescape
-from markdown_it import MarkdownIt
-from pygments import highlight
-from pygments.formatters import HtmlFormatter
-from pygments.lexers import get_lexer_by_name, guess_lexer
-from pygments.util import ClassNotFound
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from polylogue.paths import conversation_render_root
 from polylogue.rendering.core import (
     ConversationFormatter,
     FormattedConversation,
-    build_rendered_message_payload,
 )
+from polylogue.rendering.renderers.html_highlighting import (
+    HTMLMessageRenderer,
+    PygmentsHighlighter,
+)
+from polylogue.rendering.renderers.html_messages import (
+    _attach_branches,
+    build_conversation_html_messages,
+    build_projection_html_messages,
+)
+from polylogue.rendering.renderers.html_template import get_cached_template
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
-    from polylogue.storage.store import ConversationRenderProjection
-
-
-class PygmentsHighlighter:
-    """Code highlighter using Pygments."""
-
-    def __init__(self, style: str = "monokai") -> None:
-        """Initialize highlighter with a Pygments style.
-
-        Args:
-            style: Pygments style name (default: monokai for dark theme)
-        """
-        self.formatter = HtmlFormatter(
-            style=style,
-            cssclass="highlight",
-            linenos=False,
-            wrapcode=True,
-        )
-
-    def get_css(self) -> str:
-        """Get CSS for syntax highlighting.
-
-        Returns:
-            CSS string for Pygments highlighting
-        """
-        return self.formatter.get_style_defs(".highlight")
-
-    _lexer_cache: dict[str, object] = {}
-
-    def highlight_code(self, code: str, language: str | None = None) -> str:
-        """Highlight code block.
-
-        Args:
-            code: Source code to highlight
-            language: Language hint (optional)
-
-        Returns:
-            HTML with syntax highlighting
-        """
-        try:
-            if language:
-                # Cache named lexers — they're stateless singletons
-                lexer = PygmentsHighlighter._lexer_cache.get(language)
-                if lexer is None:
-                    lexer = get_lexer_by_name(language, stripall=True)
-                    PygmentsHighlighter._lexer_cache[language] = lexer
-            elif len(code) < 50:
-                # Skip expensive guess_lexer() on tiny snippets — rarely accurate
-                lexer = get_lexer_by_name("text", stripall=True)
-            else:
-                lexer = guess_lexer(code)
-        except ClassNotFound:
-            # Fall back to plain text
-            escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            return f'<pre class="highlight"><code>{escaped}</code></pre>'
-
-        return highlight(code, lexer, self.formatter)
-
-
-class MarkdownRenderer:
-    """Enhanced markdown renderer with code highlighting."""
-
-    def __init__(self, highlighter: PygmentsHighlighter | None = None) -> None:
-        """Initialize markdown renderer.
-
-        Args:
-            highlighter: Optional Pygments highlighter instance
-        """
-        self.highlighter = highlighter or PygmentsHighlighter()
-        self.md = MarkdownIt("commonmark", {"html": False, "linkify": True})
-        self.md.enable("table")
-
-    def render(self, text: str) -> str:
-        """Render markdown to HTML with syntax highlighting.
-
-        Args:
-            text: Markdown text to render
-
-        Returns:
-            HTML string with syntax-highlighted code blocks
-        """
-        if not text:
-            return ""
-
-        # First pass: standard markdown rendering
-        html = self.md.render(text)
-
-        # Second pass: enhance code blocks with Pygments
-        html = self._enhance_code_blocks(html)
-
-        return html
-
-    def _enhance_code_blocks(self, html: str) -> str:
-        """Replace code blocks with Pygments-highlighted versions.
-
-        Args:
-            html: HTML string with code blocks
-
-        Returns:
-            HTML with enhanced code blocks
-        """
-        # Match ```language\ncode\n``` patterns that became <pre><code class="language-xxx">
-        pattern = r'<pre><code class="language-(\w+)">(.*?)</code></pre>'
-
-        def replace_code(match: re.Match[str]) -> str:
-            language = match.group(1)
-            code = match.group(2)
-            # Unescape HTML entities
-            code = code.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-            return self.highlighter.highlight_code(code, language)
-
-        html = re.sub(pattern, replace_code, html, flags=re.DOTALL)
-
-        # Also handle code blocks without language (generic <pre><code>)
-        pattern_plain = r'<pre><code>([^<]*)</code></pre>'
-
-        def replace_plain_code(match: re.Match[str]) -> str:
-            code = match.group(1)
-            code = code.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-            # Try to guess the language
-            return self.highlighter.highlight_code(code, None)
-
-        html = re.sub(pattern_plain, replace_plain_code, html, flags=re.DOTALL)
-
-        return html
-
-
-DEFAULT_HTML_TEMPLATE = (Path(__file__).parent.parent / "templates" / "conversation.html").read_text()
-
-# Cached Jinja2 environment + compiled template — avoids re-parsing on every call
-_CACHED_TEMPLATE_ENV: Environment | None = None
-
-
-def _get_cached_template():
-    """Return a module-level cached Jinja2 template for render_conversation_html()."""
-    global _CACHED_TEMPLATE_ENV
-    if _CACHED_TEMPLATE_ENV is None:
-        _CACHED_TEMPLATE_ENV = Environment(
-            loader=DictLoader({"conversation.html": DEFAULT_HTML_TEMPLATE}),
-            autoescape=select_autoescape(["html", "xml"]),
-        )
-    return _CACHED_TEMPLATE_ENV.get_template("conversation.html")
-
-
-_ROLE_CLASS_RE = re.compile(r"[^a-z0-9-]")
-
-
-def _role_css_class(role: str) -> str:
-    """Convert a role name to a CSS-safe class like ``message-tool-use``."""
-    return "message-" + _ROLE_CLASS_RE.sub("-", role.lower())
-
-
-def _attach_branches(messages: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Group branch messages under their mainline siblings.
-
-    Mainline messages (``branch_index == 0``) are returned as the top-level
-    list.  Messages with ``branch_index > 0`` are attached as a ``branches``
-    list on the mainline message that shares the same ``parent_message_id``.
-
-    If no branching is present, the input is returned unchanged (all
-    messages have ``branch_index == 0`` and no ``branches`` key).
-    """
-    # Fast path: if no message has a non-zero branch_index, skip grouping
-    if not any(m.get("branch_index", 0) for m in messages):
-        return messages
-
-    # Index mainline messages by their id for parent lookups
-    mainline: list[dict[str, object]] = []
-    mainline_by_id: dict[str, dict[str, object]] = {}
-
-    for msg in messages:
-        if not msg.get("branch_index"):
-            mainline.append(msg)
-            mainline_by_id[str(msg["id"])] = msg
-
-    # Index mainline messages by parent_id for O(1) sibling lookup
-    mainline_by_parent: dict[str, dict[str, object]] = {}
-    for msg in mainline:
-        pid = msg.get("parent_message_id")
-        if pid:
-            mainline_by_parent[str(pid)] = msg
-
-    # Attach branch messages to the mainline sibling that shares the same parent
-    for msg in messages:
-        branch_idx = msg.get("branch_index", 0)
-        parent_id = msg.get("parent_message_id")
-        if not branch_idx or not parent_id:
-            continue
-
-        sibling = mainline_by_parent.get(str(parent_id))
-
-        if sibling is not None:
-            branches = sibling.setdefault("branches", [])
-            assert isinstance(branches, list)
-            branches.append(msg)
-        else:
-            # No mainline sibling found — include as standalone
-            mainline.append(msg)
-
-    return mainline
+    from polylogue.storage.state_views import ConversationRenderProjection
 
 
 class HTMLRenderer:
@@ -259,7 +63,7 @@ class HTMLRenderer:
         # Initialize Pygments highlighter
         style = "monokai" if theme == "dark" else "default"
         self.highlighter = PygmentsHighlighter(style=style)
-        self.md_renderer = MarkdownRenderer(self.highlighter)
+        self.message_renderer = HTMLMessageRenderer(self.highlighter)
 
         # Pre-compile Jinja2 template once (avoid per-render overhead)
         if self.template_path and self.template_path.exists():
@@ -270,7 +74,7 @@ class HTMLRenderer:
             self._template = self._jinja_env.get_template(self.template_path.name)
         else:
             self._jinja_env = None
-            self._template = _get_cached_template()
+            self._template = get_cached_template()
         self._highlight_css = self.highlighter.get_css()
 
     def supports_format(self) -> str:
@@ -300,26 +104,11 @@ class HTMLRenderer:
         created_at = formatted.metadata["created_at"]
         md_text = formatted.markdown_text
 
-        # --- Generate HTML messages (Pygments + MarkdownIt) ---
-        raw_html_messages: list[dict[str, object]] = []
-        for msg in projection.messages:
-            text = msg.text or ""
-            if not text:
-                continue
-            payload = build_rendered_message_payload(
-                message_id=msg.message_id,
-                role=msg.role,
-                text=text,
-                timestamp=msg.sort_key,
-                parent_message_id=msg.parent_message_id,
-                branch_index=msg.branch_index,
-                render_html=self.md_renderer.render,
-                preview_limit=120,
-            )
-            payload["role_class"] = _role_css_class(str(payload["role"]))
-            raw_html_messages.append(payload)
-
-        html_messages = _attach_branches(raw_html_messages)
+        html_messages = build_projection_html_messages(
+            projection,
+            render_html=self.message_renderer.render,
+            preview_limit=120,
+        )
 
         # --- Render Jinja2 template ---
         html_output = self._template.render(
@@ -377,29 +166,16 @@ def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
     """
     style = "monokai" if theme == "dark" else "default"
     highlighter = PygmentsHighlighter(style=style)
-    md_renderer = MarkdownRenderer(highlighter)
+    message_renderer = HTMLMessageRenderer(highlighter)
 
-    raw_messages: list[dict[str, object]] = []
-    for msg in conv.messages:
-        if not msg.text:
-            continue
-        payload = build_rendered_message_payload(
-            message_id=msg.id,
-            role=msg.role,
-            text=msg.text,
-            timestamp=str(msg.timestamp) if msg.timestamp else None,
-            parent_message_id=msg.parent_id,
-            branch_index=msg.branch_index,
-            render_html=md_renderer.render,
-            preview_limit=120,
-        )
-        payload["role_class"] = _role_css_class(str(payload["role"]))
-        raw_messages.append(payload)
-
-    messages = _attach_branches(raw_messages)
+    messages = build_conversation_html_messages(
+        conv,
+        render_html=message_renderer.render,
+        preview_limit=120,
+    )
     title = conv.display_title or str(conv.id)
 
-    template = _get_cached_template()
+    template = get_cached_template()
 
     return template.render(
         title=title,
@@ -412,5 +188,10 @@ def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
         theme=theme,
     )
 
-
-__all__ = ["HTMLRenderer", "PygmentsHighlighter", "MarkdownRenderer", "render_conversation_html"]
+__all__ = [
+    "HTMLMessageRenderer",
+    "HTMLRenderer",
+    "PygmentsHighlighter",
+    "_attach_branches",
+    "render_conversation_html",
+]

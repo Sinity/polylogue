@@ -26,7 +26,7 @@ from polylogue.cli.run_observers import (
     _format_elapsed,
 )
 from polylogue.config import Config, get_config
-from polylogue.storage.store import RunResult
+from polylogue.storage.state_views import RunResult
 
 
 def _make_env(*, plain: bool) -> MagicMock:
@@ -100,7 +100,7 @@ def test_run_sync_once_forwards_arguments_contract(
     result = _run_result()
 
     with (
-        patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run,
+        patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock) as mock_run,
         patch("builtins.print") as mock_print,
     ):
         mock_run.return_value = result
@@ -125,7 +125,7 @@ def test_run_sync_once_forwards_plan_snapshot_contract() -> None:
     result = _run_result()
 
     with (
-        patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run,
+        patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock) as mock_run,
         patch("builtins.print"),
     ):
         mock_run.return_value = result
@@ -284,7 +284,7 @@ def test_format_elapsed_contract(seconds: float, expected: str) -> None:
 
 def test_plain_progress_observer_stage_switch_contract() -> None:
     with patch("builtins.print") as mock_print, patch(
-        "polylogue.cli.commands.run.time.time",
+        "polylogue.cli.run_observers.time.time",
         side_effect=[100.0, 101.2, 101.2, 102.8, 102.8],
     ):
         observer = _PlainProgressObserver(banner="Running...")
@@ -305,7 +305,7 @@ def test_plain_progress_observer_completion_contract() -> None:
     result = _run_result(conversations=3)
 
     with patch("builtins.print") as mock_print, patch(
-        "polylogue.cli.commands.run.time.time",
+        "polylogue.cli.run_observers.time.time",
         side_effect=[200.0, 205.0],
     ):
         observer = _PlainProgressObserver(banner="Syncing...")

@@ -13,7 +13,8 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.sources import DriveError
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.store import PlanResult, RunResult
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.state_views import PlanResult, RunResult
 from tests.infra.storage_records import DbFactory
 
 
@@ -103,6 +104,7 @@ def _seed_tag_counts(
 ) -> None:
     factory = DbFactory(db_path)
     backend = SQLiteBackend(db_path=db_path)
+    repository = ConversationRepository(backend=backend)
 
     async def _seed() -> None:
         index = 0
@@ -113,7 +115,7 @@ def _seed_tag_counts(
                         id=f"{provider}-{tag}-{index}",
                         provider=provider,
                     )
-                    await backend.add_tag(conversation_id, tag)
+                    await repository.add_tag(conversation_id, tag)
                     index += 1
         finally:
             await backend.close()
@@ -142,15 +144,15 @@ def _invoke_run_direct(
         mock_config.render_root = Path("/render")
         stack.enter_context(patch("polylogue.config.get_config", return_value=mock_config))
         mock_plan = stack.enter_context(patch("polylogue.cli.commands.run.plan_sources"))
-        mock_run = stack.enter_context(patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock))
+        mock_run = stack.enter_context(patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock))
         mock_resolve = stack.enter_context(patch("polylogue.cli.commands.run.resolve_sources", return_value=selected_sources))
         mock_prompt = stack.enter_context(patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=selected_sources))
-        stack.enter_context(patch("polylogue.cli.commands.run.format_plan_counts", return_value="5 conversations, 50 messages"))
-        stack.enter_context(patch("polylogue.cli.commands.run.format_plan_details", return_value="new=2, existing=3"))
-        stack.enter_context(patch("polylogue.cli.commands.run.format_cursors", return_value="cursor snapshot"))
-        stack.enter_context(patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations, 30 messages"))
-        stack.enter_context(patch("polylogue.cli.commands.run.format_run_details", return_value=["Indexed: yes"]))
-        mock_format_index = stack.enter_context(patch("polylogue.cli.commands.run.format_index_status", return_value="Index status: indexed"))
+        stack.enter_context(patch("polylogue.cli.run_workflow.format_plan_counts", return_value="5 conversations, 50 messages"))
+        stack.enter_context(patch("polylogue.cli.run_workflow.format_plan_details", return_value="new=2, existing=3"))
+        stack.enter_context(patch("polylogue.cli.run_workflow.format_cursors", return_value="cursor snapshot"))
+        stack.enter_context(patch("polylogue.cli.run_workflow.format_counts", return_value="3 conversations, 30 messages"))
+        stack.enter_context(patch("polylogue.cli.run_workflow.format_run_details", return_value=["Indexed: yes"]))
+        mock_format_index = stack.enter_context(patch("polylogue.cli.run_workflow.format_index_status", return_value="Index status: indexed"))
         mock_latest = stack.enter_context(patch("polylogue.cli.helpers.latest_render_path", return_value=Path("/render/latest/conversation.html")))
 
         mock_plan.return_value = plan_result
@@ -316,20 +318,22 @@ class TestRunCommand:
             finally:
                 _close_coroutine(coro)
 
-        with patch("polylogue.cli.commands.run.asyncio.run", side_effect=_run_async) as mock_asyncio_run, patch(
+        with patch("polylogue.cli.commands.run.run_coroutine_sync", side_effect=_run_async) as mock_reset_run, patch(
+            "polylogue.cli.run_workflow.run_coroutine_sync", side_effect=_run_async
+        ) as mock_pipeline_run, patch(
             "polylogue.config.get_config", return_value=MagicMock(sources=[], render_root=Path("/render"))
         ), patch("polylogue.cli.commands.run.resolve_sources", return_value=None), patch(
             "polylogue.cli.commands.run.maybe_prompt_sources", return_value=None
-        ), patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations, 30 messages"), patch(
-            "polylogue.cli.commands.run.format_run_details", return_value=["Indexed: yes"]
-        ), patch("polylogue.cli.commands.run.format_index_status", return_value="Index status: indexed"), patch(
-            "polylogue.cli.commands.run.run_sources", new_callable=AsyncMock, return_value=mock_run_result
+        ), patch("polylogue.cli.run_workflow.format_counts", return_value="3 conversations, 30 messages"), patch(
+            "polylogue.cli.run_workflow.format_run_details", return_value=["Indexed: yes"]
+        ), patch("polylogue.cli.run_workflow.format_index_status", return_value="Index status: indexed"), patch(
+            "polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock, return_value=mock_run_result
         ):
             result = runner.invoke(cli, ["run", "--reparse"])
 
         assert result.exit_code == 0
         assert "Reset parse status for 7 raw records." in result.output
-        assert mock_asyncio_run.call_count == 2
+        assert mock_reset_run.call_count + mock_pipeline_run.call_count == 2
 
 
 class TestTagsCommand:
@@ -380,16 +384,31 @@ class TestEmbedCommand:
 
     @pytest.mark.parametrize("stats_rows", [[5, 3, 45, 2], [10, 7, 100, 3]])
     def test_embed_stats_contract(self, runner, cli_workspace, stats_rows):
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open, patch.dict(
+        with patch("polylogue.cli.commands.embed._embedding_status_payload") as mock_payload, patch.dict(
             "os.environ",
             {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
             clear=False,
         ):
-            mock_conn = MagicMock()
-            mock_conn.__enter__.return_value = mock_conn
-            mock_conn.__exit__.return_value = None
-            mock_conn.execute.side_effect = [MagicMock(fetchone=MagicMock(return_value=(value,))) for value in stats_rows]
-            mock_open.return_value = mock_conn
+            total_conversations, embedded_conversations, embedded_messages, pending_conversations = stats_rows
+            mock_payload.return_value = {
+                "status": "partial",
+                "total_conversations": total_conversations,
+                "embedded_conversations": embedded_conversations,
+                "embedded_messages": embedded_messages,
+                "pending_conversations": pending_conversations,
+                "embedding_coverage_percent": round(embedded_conversations / total_conversations * 100, 1)
+                if total_conversations
+                else 0.0,
+                "retrieval_ready": embedded_messages > 0,
+                "freshness_status": "partial",
+                "stale_messages": 0,
+                "messages_missing_provenance": 0,
+                "oldest_embedded_at": None,
+                "newest_embedded_at": None,
+                "embedding_models": {},
+                "embedding_dimensions": {},
+                "retrieval_bands": {},
+            }
             result = runner.invoke(cli, ["embed", "--stats"])
 
         assert result.exit_code == 0
@@ -398,6 +417,27 @@ class TestEmbedCommand:
         assert str(stats_rows[1]) in result.output
         assert str(stats_rows[2]) in result.output
         assert str(stats_rows[3]) in result.output
+
+    def test_embed_stats_json_contract(self, runner, cli_workspace):
+        with patch("polylogue.cli.commands.embed._embedding_status_payload") as mock_payload, patch.dict(
+            "os.environ",
+            {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
+            clear=False,
+        ):
+            mock_payload.return_value = {
+                "status": "partial",
+                "total_conversations": 5,
+                "embedded_conversations": 3,
+                "embedded_messages": 45,
+                "pending_conversations": 2,
+                "embedding_coverage_percent": 60.0,
+                "retrieval_ready": True,
+            }
+            result = runner.invoke(cli, ["embed", "--stats", "--json"])
+
+        assert result.exit_code == 0
+        assert '"status": "partial"' in result.output
+        assert '"embedding_coverage_percent": 60.0' in result.output
 
     def test_embed_no_sqlite_vec_contract(self, runner, cli_workspace):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=None):

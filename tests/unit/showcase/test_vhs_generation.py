@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.showcase.exercises import Exercise, Validation, vhs_exercises
+from polylogue.showcase.exercises import Exercise, vhs_exercises
 from polylogue.showcase.vhs import generate_all_tapes, generate_tape
 
 
@@ -78,7 +78,7 @@ class TestGenerateTape:
         assert 'Type "polylogue --version"' in tape
         # Auto-generated command should NOT be present (since capture_steps overrides)
         lines = tape.splitlines()
-        type_lines = [l for l in lines if l.startswith("Type")]
+        type_lines = [line for line in lines if line.startswith("Type")]
         assert len(type_lines) == 2
 
     def test_custom_dimensions(self):

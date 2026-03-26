@@ -9,7 +9,7 @@ from textual.widgets import Markdown as MarkdownWidget
 from polylogue.rendering.core import format_conversation_markdown
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation
+    from polylogue.lib.conversation_models import Conversation
     from polylogue.storage.repository import ConversationRepository
 
 

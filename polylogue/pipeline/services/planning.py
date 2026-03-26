@@ -6,12 +6,15 @@ import time
 from dataclasses import dataclass
 
 from polylogue.config import Config, Source
+from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.store import PlanResult, RawConversationRecord
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.state_views import PlanResult
+from polylogue.storage.store import RawConversationRecord
 
 from .acquisition import AcquisitionService
-from .validation import ValidateResult, ValidationService
+from .validation import ValidationService
 
 _VALIDATE_STAGES = frozenset({"validate", "parse", "all"})
 _PARSE_STAGES = frozenset({"parse", "all"})
@@ -43,6 +46,7 @@ class PlanningService:
 
     def __init__(self, backend: SQLiteBackend, config: Config):
         self.backend = backend
+        self.repository = ConversationRepository(backend=backend)
         self.config = config
 
     async def collect_validation_backlog(
@@ -154,7 +158,7 @@ class PlanningService:
             nonlocal pending_records
             if not pending_records:
                 return
-            scanned_states = await self.backend.get_raw_conversation_states(
+            scanned_states = await self.repository.get_raw_conversation_states(
                 _dedupe_ids([record.raw_id for record in pending_records])
             )
             preview_records: list[RawConversationRecord] = []

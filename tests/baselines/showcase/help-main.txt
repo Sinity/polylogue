@@ -1,4 +1,4 @@
-Usage: cli [OPTIONS] COMMAND [ARGS]...
+Usage: python -m polylogue [OPTIONS] COMMAND [ARGS]...
 
   Polylogue - AI conversation archive.
 
@@ -11,6 +11,15 @@ Usage: cli [OPTIONS] COMMAND [ARGS]...
       polylogue "error" -p claude-ai --since 2025-01 --list
       polylogue --has thinking --sort tokens --limit 10
       polylogue -t important --stats-by provider
+      polylogue --path /realm/project/polylogue/README.md --action file_read --list
+      polylogue --action search --action file_edit --list
+      polylogue --action-sequence file_read,file_edit,shell --list
+      polylogue --action-text "pytest -q" --list
+      polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
+      polylogue --action other --stats-by tool --format json
+      polylogue --stats-by project --provider claude-code --since 2026-01-01 --format json
+      polylogue --tool bash --exclude-tool read --list
+      polylogue --similar "sqlite locking bug in parser" --limit 5
 
   Modifiers (write operations):
       polylogue "urgent" --add-tag review --dry-run
@@ -19,13 +28,15 @@ Usage: cli [OPTIONS] COMMAND [ARGS]...
   Subcommands:
       polylogue run       Parse/render/index pipeline
       polylogue check     Health check and repair
+      polylogue qa        Composable QA (audit, exercises, invariants)
+      polylogue generate  Synthetic data generation
       polylogue embed     Generate vector embeddings
+      polylogue products  Inspect durable session/work/maintenance products
       polylogue tags      List tags with counts
       polylogue site      Build static HTML archive
       polylogue sources   List configured sources
-      polylogue schema    Schema inference and versioning
+      polylogue schema    Schema generation, package versioning, and evidence
       polylogue mcp       Start MCP server
-      polylogue qa        Snapshot/index QA artifacts
 
   Run `polylogue <command> --help` for subcommand details.
 
@@ -33,21 +44,39 @@ Options:
   -i, --id TEXT                   Conversation ID (exact or prefix match)
   -c, --contains TEXT             FTS term (repeatable = AND)
   --exclude-text TEXT             Exclude FTS term
+  --retrieval-lane [auto|dialogue|actions|hybrid]
+                                  Query lane: dialogue FTS, action text, or
+                                  hybrid
   -p, --provider TEXT             Include providers (comma = OR)
   --exclude-provider TEXT         Exclude providers
-  -t, --tag TEXT                  Include tags (comma = OR, supports key:value)
+  -t, --tag TEXT                  Include tags (comma = OR, supports
+                                  key:value)
   --exclude-tag TEXT              Exclude tags
   --title TEXT                    Title contains
-  --has TEXT                      Filter by content: thinking (reasoning), tools
-                                  (calls), summary, attachments
+  --path TEXT                     Touched path contains substring (repeatable
+                                  = AND)
+  --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
+                                  Require semantic action category (repeatable
+                                  = AND)
+  --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
+                                  Exclude semantic action category (repeatable
+                                  = AND)
+  --action-sequence TEXT          Require ordered semantic action subsequence
+                                  (comma-separated)
+  --action-text TEXT              Require text within normalized action
+                                  evidence (repeatable = AND)
+  --tool TEXT                     Require normalized tool name (repeatable =
+                                  AND)
+  --exclude-tool TEXT             Exclude normalized tool name (repeatable =
+                                  AND)
+  --similar TEXT                  Semantic similarity query (requires
+                                  embeddings)
+  --has TEXT                      Filter by content: thinking (reasoning),
+                                  tools (calls), summary, attachments
   --has-tool-use                  Only conversations with tool use (SQL
                                   pushdown)
   --has-thinking                  Only conversations with thinking blocks (SQL
                                   pushdown)
-  --has-file-ops                  Only conversations with file read/write/edit
-                                  ops
-  --has-git-ops                   Only conversations with git operations
-  --has-subagent                  Only conversations that spawned subagents
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
   --min-words INTEGER             Minimum total word count
@@ -68,14 +97,15 @@ Options:
   --list                          Force list format
   --stats                         Only statistics, no content
   --count                         Print matched count and exit
-  --stats-by [provider|month|year|day]
+  --stats-by [provider|month|year|day|action|tool|project|work-kind]
                                   Aggregate statistics by dimension
   --open                          Open result in browser/editor
   --transform [strip-tools|strip-thinking|strip-all]
                                   Remove content: strip-tools (tool calls),
                                   strip-thinking (reasoning), strip-all (both)
-  --stream                        Stream output (low memory). Requires --latest
-                                  or -i ID. Incompatible with --transform
+  --stream                        Stream output (low memory). Requires
+                                  --latest or -i ID. Incompatible with
+                                  --transform
   -d, --dialogue-only             Show only user/assistant messages
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
@@ -88,17 +118,18 @@ Options:
   -h, --help                      Show this message and exit.
 
 Commands:
-  auth         Authenticate with external services (Google Drive for Gemini).
-  check        Health check with optional repair.
+  auth         Authenticate with external services (Google Drive for...
+  check        Health check with optional maintenance and cleanup previews.
   completions  Generate shell completion scripts.
   dashboard    Launch the Mission Control TUI dashboard.
-  generate     Generate synthetic conversations for demos, testing, and...
   embed        Generate semantic embeddings for conversations.
+  generate     Generate synthetic conversations for demos, testing, and...
   mcp          Start the MCP server for AI assistant integration.
-  qa           Snapshot and index QA artifacts to a reproducible archive path.
+  products     Inspect durable archive data products.
+  qa           Run composable QA: schema audit, exercises, and invariant...
   reset        Reset database, assets, rendered outputs, or auth state.
   run          Run pipeline stages on configured sources.
-  schema       Schema inference, versioning, and promotion.
+  schema       Schema generation, package versioning, and evidence...
   site         Generate a static HTML site from the archive.
   sources      List configured sources.
   tags         List all tags with conversation counts.

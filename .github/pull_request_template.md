@@ -1,43 +1,48 @@
-## Summary
+## Intent
 
-<!-- 1-2 sentences: what this arc accomplishes -->
+What is this PR trying to achieve?
 
-## Problem
+## Source
 
-<!-- What the codebase needed. Why this work was necessary. -->
+- Closes:
+- Related:
+- Derived from doc / report / note:
 
-## Solution
+## Scope
 
-<!-- What was done. Key code patterns, modules created/modified. -->
+What is intentionally in scope here?
 
-## Key Technical Decisions
+## Why This Shape
 
-<!-- - **Decision**: Reasoning -->
+Why is this the right implementation or document shape instead of plausible alternatives?
 
-## What Was Omitted From Rewrite
+## Non-Goals / Deferred Work
 
-<!-- Files/commits excluded and why. -->
+What is explicitly not being solved here?
 
-## Dead Ends
+## Verification
 
-<!-- Approaches tried and abandoned during original development. -->
+List the checks you ran and the exact commands when useful.
 
-<details>
-<summary>Diff Statistics</summary>
-
+```bash
+# commands here
 ```
-<!-- paste diffstat from commits.txt -->
-```
 
-</details>
+## Impact
 
-## Attribution
+- Archive / storage:
+- CLI / API / MCP:
+- Docs / site:
+- Security / privacy:
 
-- **Primary tool**:
-- **Original commits**: N (YYYY-MM-DD → YYYY-MM-DD)
-- **Commits merged**: (fix chains folded)
-- **Commits deleted**: (mutation docs, etc.)
+## Follow-Ups
 
----
+Anything that should become a separate issue after this lands.
 
-<!-- Closes #NN  ← only on LAST PR of the era -->
+## Checklist
+
+- [ ] This branch is tied to an issue or an explicit source document/report.
+- [ ] The PR body explains scope and non-goals clearly.
+- [ ] Verification is recorded honestly.
+- [ ] Docs / operational impact is called out if relevant.
+- [ ] Remaining follow-up work is split out instead of hidden.

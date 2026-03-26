@@ -2,122 +2,15 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 
 import click
 
 from polylogue.cli.helpers import load_effective_config
-from polylogue.cli.machine_errors import emit_success
+from polylogue.cli.qa_capture import run_vhs_capture as _run_vhs_capture
+from polylogue.cli.qa_snapshot import snapshot_results
 from polylogue.cli.types import AppEnv
-from polylogue.paths import safe_path_component
-
-# ---------------------------------------------------------------------------
-# Archival helpers (preserved from the original qa command)
-# ---------------------------------------------------------------------------
-
-
-def _iter_files(root: Path) -> list[Path]:
-    return sorted(path for path in root.rglob("*") if path.is_file())
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _write_index(snapshot_dir: Path, entries: list[dict[str, object]]) -> None:
-    lines = [
-        "# QA Snapshot Index",
-        "",
-        f"- Snapshot: `{snapshot_dir.name}`",
-        f"- Created: `{datetime.now(timezone.utc).isoformat()}`",
-        f"- Files: `{len(entries)}`",
-        "",
-        "| File | Size (bytes) | SHA256 |",
-        "| --- | ---: | --- |",
-    ]
-    for entry in entries:
-        lines.append(
-            f"| `{entry['relative_path']}` | {entry['size_bytes']} | `{entry['sha256']}` |"
-        )
-    (snapshot_dir / "INDEX.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _update_latest_symlink(output_root: Path, snapshot_dir: Path) -> None:
-    latest = output_root / "latest"
-    try:
-        if latest.exists() or latest.is_symlink():
-            latest.unlink()
-        latest.symlink_to(snapshot_dir.name)
-    except OSError:
-        pass
-
-
-def _snapshot_results(
-    source_dir: Path,
-    *,
-    label: str,
-    output_root: Path,
-    json_output: bool,
-    env: AppEnv,
-) -> None:
-    """Archive a QA output directory into a timestamped snapshot."""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    safe_label = safe_path_component(label, fallback="snapshot")
-    snapshot_dir = output_root / f"{stamp}-{safe_label}"
-    snapshot_dir.mkdir(parents=True, exist_ok=False)
-
-    entries: list[dict[str, object]] = []
-    for src_file in _iter_files(source_dir):
-        rel = src_file.relative_to(source_dir)
-        dst_file = snapshot_dir / rel
-        dst_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_file, dst_file)
-        entries.append(
-            {
-                "relative_path": str(rel),
-                "source_path": str(src_file),
-                "size_bytes": dst_file.stat().st_size,
-                "sha256": _sha256(dst_file),
-            }
-        )
-
-    manifest: dict[str, object] = {
-        "snapshot": snapshot_dir.name,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "source_dirs": [str(source_dir)],
-        "entry_count": len(entries),
-        "entries": entries,
-    }
-    (snapshot_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    _write_index(snapshot_dir, entries)
-    _update_latest_symlink(output_root, snapshot_dir)
-
-    if json_output:
-        emit_success({
-            "snapshot_dir": str(snapshot_dir),
-            "entry_count": len(entries),
-            "sources": [str(source_dir)],
-        })
-    else:
-        env.ui.console.print(f"QA snapshot created: {snapshot_dir}")
-        env.ui.console.print(f"Files captured: {len(entries)}")
-
-
-# ---------------------------------------------------------------------------
-# QA command
-# ---------------------------------------------------------------------------
-
 
 _STAGE_CHOICES = click.Choice(["audit", "exercises", "invariants"])
 
@@ -200,7 +93,7 @@ def qa_command(
     if snapshot_from is not None:
         config = load_effective_config(env)
         root = report_dir or (config.archive_root / "qa" / "snapshots")
-        _snapshot_results(
+        snapshot_results(
             snapshot_from,
             label=snapshot_label or "snapshot",
             output_root=root,
@@ -247,11 +140,11 @@ def qa_command(
             run_invariants = False
 
     # --- Execute QA session ---
+    from polylogue.showcase.qa_report import generate_qa_session
     from polylogue.showcase.qa_runner import (
         format_qa_summary,
         run_qa_session,
     )
-    from polylogue.showcase.report import generate_qa_session
 
     result = run_qa_session(
         live=live,
@@ -283,7 +176,7 @@ def qa_command(
     if snapshot_label is not None and result.report_dir:
         config = load_effective_config(env)
         root = config.archive_root / "qa" / "snapshots"
-        _snapshot_results(
+        snapshot_results(
             result.report_dir,
             label=snapshot_label,
             output_root=root,
@@ -293,42 +186,4 @@ def qa_command(
 
     if not result.all_passed:
         raise SystemExit(1)
-
-
-def _run_vhs_capture(env: AppEnv, showcase_result, json_output: bool) -> None:
-    """Run VHS tape captures if available."""
-    try:
-        from polylogue.showcase.vhs import (
-            check_vhs_available,
-            generate_all_tapes,
-            run_vhs_capture,
-        )
-    except ImportError:
-        return
-
-    output_dir = showcase_result.output_dir
-    if output_dir is None:
-        return
-
-    tapes_dir = output_dir / "tapes"
-    captures_dir = output_dir / "captures"
-    captures_dir.mkdir(parents=True, exist_ok=True)
-
-    exercises = [entry.exercise for entry in showcase_result.results]
-    tapes = generate_all_tapes(exercises, output_dir=tapes_dir)
-
-    if check_vhs_available():
-        for name in tapes:
-            tape_path = tapes_dir / f"{name}.tape"
-            gif_path = captures_dir / f"{name}.gif"
-            ok = run_vhs_capture(tape_path, gif_path)
-            if not json_output:
-                status = "ok" if ok else "FAILED"
-                env.ui.console.print(f"  VHS {name}: {status}")
-    elif not json_output:
-        env.ui.console.print(
-            f"VHS binary not found — {len(tapes)} tape(s) generated in {tapes_dir} but not recorded"
-        )
-
-
 __all__ = ["qa_command"]

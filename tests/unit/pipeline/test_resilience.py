@@ -19,9 +19,10 @@ from polylogue.config import Source
 from polylogue.pipeline.services.acquisition import AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.validation import ValidationService
-from polylogue.sources.parsers.base import RawConversationData
+from polylogue.sources.parsers.base import ParsedConversation, RawConversationData
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import RawConversationRecord
+from polylogue.types import ValidationStatus
 from tests.infra.strategies import (
     acquisition_input_batch_strategy,
     build_acquisition_raw_bytes,
@@ -357,10 +358,11 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
         source_path=source_path,
         payload_provider=None,
     )
-    backend = MagicMock()
-    backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
-    backend.mark_raw_validated = AsyncMock()
-    backend.mark_raw_parsed = AsyncMock()
+    backend = MagicMock(spec=SQLiteBackend)
+    service = ValidationService(backend=backend)
+    service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])  # type: ignore[method-assign]
+    service.repository.mark_raw_validated = AsyncMock()  # type: ignore[method-assign]
+    service.repository.mark_raw_parsed = AsyncMock()  # type: ignore[method-assign]
 
     class _SyntheticValidator:
         provider = provider_name
@@ -387,7 +389,7 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
         return_value=validator,
     ):
         with patch.dict("os.environ", {"POLYLOGUE_SCHEMA_VALIDATION": case.mode}, clear=False):
-            result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+            result = await service.validate_raw_ids(raw_ids=["raw-1"])
 
     expected = expected_validation_contract(case)
     if expected["validation_samples_called"]:
@@ -398,12 +400,19 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
     assert result.parseable_raw_ids == (["raw-1"] if expected["parseable"] else [])
     assert result.invalid_raw_ids == ([] if expected["parseable"] else ["raw-1"])
 
-    mark_validated = backend.mark_raw_validated.await_args.kwargs
-    assert mark_validated["status"] == expected["status"]
+    validate_calls = service.repository.mark_raw_validated.await_args_list
+    assert len(validate_calls) >= 1
+    assert validate_calls[0].args[0] == "raw-1"
+    validation_kwargs = validate_calls[0].kwargs
+    assert validation_kwargs["status"] == ValidationStatus.from_string(expected["status"])
+
+    parse_calls = service.repository.mark_raw_parsed.await_args_list
     if expected["mark_raw_parsed"]:
-        backend.mark_raw_parsed.assert_awaited_once()
+        assert len(parse_calls) == 1
+        assert parse_calls[0].args[0] == "raw-1"
+        assert parse_calls[0].kwargs["error"] is not None
     else:
-        backend.mark_raw_parsed.assert_not_awaited()
+        assert parse_calls == []
 
 
 @settings(max_examples=30, deadline=None, suppress_health_check=[HealthCheck.too_slow])
@@ -435,15 +444,24 @@ async def test_parse_raw_record_contract_updates_payload_provider_and_dispatches
         provider_name="chatgpt",
         payload_provider="",
         raw_id="raw-1",
+        file_mtime="2026-03-23T10:00:00Z",
     )
     envelope = MagicMock(provider="gemini", payload={"id": "parsed"})
     schema_resolution = MagicMock(element_kind="conversation_document", package_version="v2")
     schema_registry = MagicMock()
     schema_registry.resolve_payload.return_value = schema_resolution
+    parsed_conversation = ParsedConversation(
+        provider_name="gemini",
+        provider_conversation_id="parsed",
+        title="parsed",
+        created_at=None,
+        updated_at=None,
+        messages=[],
+    )
 
     with patch("polylogue.pipeline.services.parsing.build_raw_payload_envelope", return_value=envelope) as mock_envelope:
         with patch("polylogue.pipeline.services.parsing.SchemaRegistry", return_value=schema_registry):
-            with patch("polylogue.pipeline.services.parsing.parse_payload", return_value=["parsed"]) as mock_parse:
+            with patch("polylogue.pipeline.services.parsing.parse_payload", return_value=[parsed_conversation]) as mock_parse:
                 result = await service._parse_raw_record(raw_record)
 
     mock_envelope.assert_called_once_with(
@@ -460,8 +478,9 @@ async def test_parse_raw_record_contract_updates_payload_provider_and_dispatches
     mock_parse.assert_called_once_with(
         "gemini",
         {"id": "parsed"},
-        "raw-1",
+        "conversation",
         schema_resolution=schema_resolution,
     )
     assert raw_record.payload_provider == "gemini"
-    assert result == ["parsed"]
+    assert result[0].created_at == "2026-03-23T10:00:00Z"
+    assert result[0].updated_at == "2026-03-23T10:00:00Z"

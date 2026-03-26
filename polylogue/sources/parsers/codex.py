@@ -9,14 +9,30 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from polylogue.lib.branch_type import BranchType
-from polylogue.logging import get_logger
 from polylogue.lib.roles import Role
+from polylogue.lib.timestamps import parse_timestamp
+from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.types import Provider
 
 from .base import ParsedConversation, ParsedMessage, content_blocks_from_segments
 
 logger = get_logger(__name__)
+
+
+def _latest_timestamp(*values: str | None) -> str | None:
+    candidates: list[tuple[object, str]] = []
+    for value in values:
+        if not isinstance(value, str) or not value:
+            continue
+        parsed = parse_timestamp(value)
+        if parsed is None:
+            continue
+        candidates.append((parsed, value))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[-1][1]
 
 
 def looks_like(payload: list[object]) -> bool:
@@ -68,6 +84,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
     messages: list[ParsedMessage] = []
     session_id = fallback_id
     session_timestamp: str | None = None
+    latest_message_timestamp: str | None = None
     session_metas_seen: list[str] = []  # Collect all session_meta IDs for parent tracking
     session_git: dict[str, object] | None = None  # Git context from session metadata
     session_instructions: str | None = None  # System instructions from session metadata
@@ -170,6 +187,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
                     provider_meta=msg_meta,
                 )
             )
+            latest_message_timestamp = _latest_timestamp(latest_message_timestamp, record.timestamp)
 
     # Second session_meta ID (if present) is the parent session
     parent_id = session_metas_seen[1] if len(session_metas_seen) > 1 else None
@@ -189,7 +207,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
         provider_conversation_id=session_id,
         title=session_id,
         created_at=session_timestamp,
-        updated_at=None,
+        updated_at=_latest_timestamp(latest_message_timestamp, session_timestamp),
         messages=messages,
         provider_meta=conv_meta,
         parent_conversation_provider_id=parent_id,

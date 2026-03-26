@@ -35,8 +35,46 @@ remembering individual test files or campaign commands.
 python -m devtools.run_validation_lanes --list
 python -m devtools.run_validation_lanes --lane machine-contract
 python -m devtools.run_validation_lanes --lane query-routing
+python -m devtools.run_validation_lanes --lane semantic-stack
+python -m devtools.run_validation_lanes --lane source-provider-fidelity
+python -m devtools.run_validation_lanes --lane maintenance-control-plane
+python -m devtools.run_validation_lanes --lane archive-data-products
+python -m devtools.run_validation_lanes --lane semantic-product-normalization
+python -m devtools.run_validation_lanes --lane evidence-tier-contracts
+python -m devtools.run_validation_lanes --lane inference-tier-contracts
+python -m devtools.run_validation_lanes --lane mixed-consumer-contracts
+python -m devtools.run_validation_lanes --lane retrieval-band-readiness
+python -m devtools.run_validation_lanes --lane evidence-stewardship-contracts
+python -m devtools.run_validation_lanes --lane heuristic-inference-contracts
+python -m devtools.run_validation_lanes --lane probabilistic-enrichment-contracts
+python -m devtools.run_validation_lanes --lane governed-cleanup-contracts
+python -m devtools.run_validation_lanes --lane evidence-stewardship-live --dry-run
+python -m devtools.run_validation_lanes --lane evidence-stewardship-hardening --dry-run
+python -m devtools.run_validation_lanes --lane live-products-enrichments --dry-run
+python -m devtools.run_validation_lanes --lane probabilistic-enrichment-live --dry-run
+python -m devtools.run_validation_lanes --lane governed-cleanup-live --dry-run
+python -m devtools.run_validation_lanes --lane probabilistic-enrichment-hardening --dry-run
+python -m devtools.run_validation_lanes --lane semantic-product-live --dry-run
+python -m devtools.run_validation_lanes --lane semantic-product-hardening --dry-run
+python -m devtools.run_validation_lanes --lane runtime-substrate-contracts
+python -m devtools.run_validation_lanes --lane runtime-substrate-live --dry-run
+python -m devtools.run_validation_lanes --lane runtime-substrate-hardening --dry-run
+python -m devtools.run_validation_lanes --lane source-runtime-governance
+python -m devtools.run_validation_lanes --lane retrieval-dogfood
+python -m devtools.run_validation_lanes --lane embeddings-coverage
+python -m devtools.run_validation_lanes --lane archive-intelligence
+python -m devtools.run_validation_lanes --lane archive-data-products-live --dry-run
+python -m devtools.run_validation_lanes --lane domain-read-model-contracts
+python -m devtools.run_validation_lanes --lane domain-read-model-live --dry-run
+python -m devtools.run_validation_lanes --lane domain-read-model-stewardship --dry-run
 python -m devtools.run_validation_lanes --lane frontier-local
 python -m devtools.run_validation_lanes --lane frontier-extended
+python -m devtools.run_validation_lanes --lane live-archive-small --dry-run
+python -m devtools.run_validation_lanes --lane live-products-small --dry-run
+python -m devtools.run_validation_lanes --lane live-governance-small --dry-run
+python -m devtools.run_validation_lanes --lane memory-budget --dry-run
+python -m devtools.run_validation_lanes --lane maintenance-memory-budget --dry-run
+python -m devtools.run_validation_lanes --lane live-maintenance-preview --dry-run
 python -m devtools.run_validation_lanes --lane live-exercises --dry-run
 ```
 
@@ -44,10 +82,48 @@ Lane intent:
 
 - `machine-contract`: root CLI JSON success/failure and runtime-health machine surfaces
 - `query-routing`: query-first integration plus route-planning/unit proofs
+- `semantic-stack`: harmonization, semantic facts/profile convergence, proof, and contract inventory
+- `source-provider-fidelity`: local source traversal, Drive/runtime boundaries, and provider-ingest fidelity
+- `maintenance-control-plane`: health, maintenance selection, cache/live provenance, and publication maintenance summaries
+- `archive-data-products`: durable archive products, consumer contracts, product-aware grouped stats, and health/governance surfaces
+- `semantic-product-normalization`: semantic/session product normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup
+- `evidence-tier-contracts`: explicit evidence-tier product contracts, chronology fields, and durable evidence payload/query surfaces
+- `inference-tier-contracts`: inference-tier work-event/phase/profile contracts with confidence/provenance-bearing semantic payloads
+- `mixed-consumer-contracts`: CLI, facade, MCP, and health surfaces consuming the same evidence/inference product model
+- `retrieval-band-readiness`: transcript/evidence/inference retrieval-band readiness, embedding stats, and health exposure
+- `evidence-stewardship-contracts`: `evidence-tier-contracts` plus `inference-tier-contracts`, `mixed-consumer-contracts`, and `retrieval-band-readiness`
+- `heuristic-inference-contracts`: support/confidence/provenance contracts for heuristic profile, work-event, and phase products
+- `probabilistic-enrichment-contracts`: durable enrichment-product contract lane across CLI, library, sync, repository, MCP, and retrieval-health surfaces
+- `governed-cleanup-contracts`: archive-debt lineage, maintenance preview/apply semantics, and cleanup-governance contract lane
+- `evidence-stewardship-live`: bounded live archive lane for tiered product views, live session-product repair, health, and retrieval-band budgets
+- `evidence-stewardship-hardening`: `evidence-stewardship-contracts` plus `evidence-stewardship-live`
+- `live-products-enrichments`: bounded live archive lane for enrichment-product reads
+- `probabilistic-enrichment-live`: bounded live archive lane for enrichment products, retrieval bands, and health surfaces
+- `governed-cleanup-live`: bounded live archive lane for cleanup debt preview/validation governance and maintenance budgets
+- `probabilistic-enrichment-hardening`: heuristic inference + probabilistic enrichment + governed cleanup closure lane
+- `semantic-product-live`: bounded live archive lane for normalized product surfaces, debt governance, and maintenance preview/budgets
+- `semantic-product-hardening`: `semantic-product-normalization` plus `semantic-product-live`
+- `runtime-substrate-contracts`: local closure lane for the decomposed query/runtime/product/maintenance contract surfaces
+- `runtime-substrate-live`: bounded live archive dogfooding for runtime-substrate retrieval, governance, and memory budgets
+- `runtime-substrate-hardening`: `runtime-substrate-contracts` plus `runtime-substrate-live`
+- `source-runtime-governance`: local closure lane for source/provider fidelity plus runtime maintenance convergence
+- `retrieval-dogfood`: action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payloads
+- `embeddings-coverage`: embedding readiness/coverage stats and embed command contracts
+- `archive-intelligence`: local closure lane for retrieval, embedding readiness, and schema roundtrip
+- `archive-data-products-live`: local durable-product contract lane plus bounded live durable-product dogfood
+- `domain-read-model-contracts`: local closure lane for domain-banded products, analytics, consumer contracts, and archive-debt governance
+- `domain-read-model-live`: bounded live archive lane for durable products, analytics/debt products, and maintenance governance
+- `domain-read-model-stewardship`: `domain-read-model-contracts` plus `domain-read-model-live`
 - `tui`: Textual Mission Control interaction/state coverage
 - `chaos`: ingestion hostility, interruption, and chronology suites
-- `frontier-local`: machine + query + TUI + chaos
+- `frontier-local`: machine + query + semantic + TUI + chaos
 - `frontier-extended`: `frontier-local` plus fast scale and the small long-haul campaign
+- `live-archive-small`: bounded live archive embedding/retrieval/health dogfood
+- `live-products-small`: bounded live archive durable-product and grouped-stats dogfood
+- `live-governance-small`: bounded live archive health plus maintenance-preview dogfood
+- `memory-budget`: explicit RSS budget check for a representative live retrieval query
+- `maintenance-memory-budget`: explicit RSS budget check for the live maintenance preview surface
+- `live-maintenance-preview`: explicit operator lane for machine-readable repair/cleanup preview output
 - `live-exercises`: explicit operator lane for read-only live archive QA exercises
 
 ### Focused mutation checkpoints

@@ -21,7 +21,7 @@ from polylogue.schemas.registry import (
     SchemaRegistry,
     _fingerprint_hash,
 )
-from polylogue.schemas.schema_generation import _structure_fingerprint
+from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
 
 @pytest.fixture

@@ -9,9 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-import pytest
 from hypothesis import given, settings
-from hypothesis import strategies as st
 
 from polylogue.lib.filters import ConversationFilter
 from tests.infra.strategies.filters import filter_chain_strategy
@@ -113,6 +111,24 @@ class TestExecutionPlan:
         f = _make_filter().exclude_text("secret")
         assert f.can_use_summaries() is False
 
+    def test_content_required_for_path_filters(self):
+        """Path filters reconcile against runtime semantic facts."""
+        f = _make_filter().path("/realm/project/polylogue/README.md")
+        assert f.can_use_summaries() is False
+        assert f._needs_content_loading() is True
+
+    def test_content_required_for_action_filters(self):
+        """Action filters reconcile against runtime semantic facts."""
+        f = _make_filter().action("agent")
+        assert f.can_use_summaries() is False
+        assert f._needs_content_loading() is True
+
+    def test_content_required_for_tool_filters(self):
+        """Tool filters reconcile against runtime semantic facts."""
+        f = _make_filter().tool("bash")
+        assert f.can_use_summaries() is False
+        assert f._needs_content_loading() is True
+
     def test_content_required_for_custom_predicates(self):
         """Custom where() predicates require content loading."""
         f = _make_filter().where(lambda c: len(c.messages) > 5)
@@ -166,6 +182,27 @@ class TestHasPostFilters:
         """Content type filters need post-filtering."""
         f = _make_filter().has("thinking")
         assert f._has_post_filters() is True
+
+    def test_semantic_filters_require_post_filter(self):
+        """Path/action/tool filters need runtime semantic post-filtering."""
+        f = _make_filter().path("/realm/project/polylogue/README.md").action("agent").tool("bash")
+        assert f._has_post_filters() is True
+        assert f.build_query_plan().can_count_in_sql() is False
+
+    def test_candidate_query_keeps_stable_tool_filter_but_clears_unstable_action_filters(self):
+        """Candidate fetch may keep raw tool-name narrowing while clearing stale action/path semantics."""
+        plan = (
+            _make_filter()
+            .path("/realm/project/polylogue/README.md")
+            .action("agent")
+            .tool("bash")
+            .build_query_plan()
+        )
+
+        candidate = plan.fetch_record_query()
+        assert candidate.path_terms == ()
+        assert candidate.action_terms == ()
+        assert candidate.tool_terms == ("bash",)
 
 
 # =============================================================================
