@@ -48,6 +48,7 @@ from polylogue.archive_products import (
     ArchiveDebtProductQuery,
     DaySessionSummaryProductQuery,
     ProviderAnalyticsProductQuery,
+    SessionEnrichmentProductQuery,
     SessionPhaseProductQuery,
     SessionProfileProductQuery,
     SessionTagRollupQuery,
@@ -65,6 +66,13 @@ async with Polylogue() as archive:
     )
     phases = await archive.list_session_phase_products(
         SessionPhaseProductQuery(provider="claude-code", kind="execution", limit=25)
+    )
+    enrichments = await archive.list_session_enrichment_products(
+        SessionEnrichmentProductQuery(
+            provider="claude-code",
+            refined_work_kind="debugging",
+            limit=25,
+        )
     )
     tags = await archive.list_session_tag_rollup_products(
         SessionTagRollupQuery(provider="claude-code", since="2026-01-01")
@@ -93,10 +101,21 @@ async with Polylogue() as archive:
 that can be queried directly instead of rebuilding semantic spans from full
 conversations.
 
+`SessionEnrichmentProduct` exposes the separate enrichment tier directly:
+
+- `intent_summary`
+- `outcome_summary`
+- `blockers`
+- `refined_work_kind`
+- `confidence`
+- `support_level`
+- `support_signals`
+- `provenance`
+
 Provider analytics and archive debt are public products too:
 
 - `ProviderAnalyticsProduct`: provider-level conversation/message/tool/thinking metrics
-- `ArchiveDebtProduct`: governed cleanup/repair debt with maintenance targets
+- `ArchiveDebtProduct`: governed cleanup/repair debt with maintenance targets plus preview/apply/validation lineage
 
 ## Filter Chain API
 

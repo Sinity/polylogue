@@ -7,10 +7,17 @@ from datetime import UTC, datetime
 
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.phases import SessionPhase
-from polylogue.lib.session_profile import SessionProfile, build_session_analysis, build_session_profile
+from polylogue.lib.session_profile import (
+    SessionAnalysis,
+    SessionProfile,
+    build_session_analysis,
+    build_session_profile,
+)
 from polylogue.lib.threads import WorkThread
 from polylogue.lib.work_events import WorkEvent
 from polylogue.storage.store import (
+    SESSION_ENRICHMENT_FAMILY,
+    SESSION_ENRICHMENT_VERSION,
     SESSION_INFERENCE_FAMILY,
     SESSION_INFERENCE_VERSION,
     SESSION_PRODUCT_MATERIALIZER_VERSION,
@@ -49,6 +56,252 @@ def _primary_work_kind(profile: SessionProfile) -> str | None:
     return counts.most_common(1)[0][0]
 
 
+def _dedupe_texts(values: list[str], *, limit: int | None = None, width: int = 180) -> tuple[str, ...]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        candidate = " ".join(str(value or "").split()).strip()
+        if not candidate:
+            continue
+        shortened = candidate[:width]
+        if shortened in seen:
+            continue
+        seen.add(shortened)
+        items.append(shortened)
+        if limit is not None and len(items) >= limit:
+            break
+    return tuple(items)
+
+
+def _support_level(confidence: float, *, support_signals: tuple[str, ...], fallback: bool = False) -> str:
+    if fallback or confidence < 0.55 or not support_signals:
+        return "weak"
+    if confidence >= 0.78 and len(support_signals) >= 2:
+        return "strong"
+    return "moderate"
+
+
+def _event_support_signals(event: WorkEvent) -> tuple[str, ...]:
+    signals = [str(item) for item in event.evidence if str(item).strip()]
+    if event.file_paths:
+        signals.append("touched_paths")
+    if event.tools_used:
+        signals.append("tool_calls")
+    if event.start_time and event.end_time:
+        signals.append("timestamped_range")
+    return tuple(dict.fromkeys(signals))
+
+
+def _event_fallback(event: WorkEvent) -> bool:
+    weak_markers = {"weak_signal", "no_tools", "shell_default"}
+    return not event.evidence or bool(set(event.evidence) & weak_markers)
+
+
+def _phase_support_signals(phase: SessionPhase) -> tuple[str, ...]:
+    signals = [str(item) for item in phase.evidence if str(item).strip()]
+    if phase.tool_counts:
+        signals.append("tool_counts")
+    if phase.start_time and phase.end_time:
+        signals.append("timestamped_range")
+    if phase.word_count > 0:
+        signals.append("word_count")
+    return tuple(dict.fromkeys(signals))
+
+
+def _phase_fallback(phase: SessionPhase) -> bool:
+    return not phase.tool_counts or phase.kind in {"mixed", "conversation"}
+
+
+def _engaged_duration_source(profile: SessionProfile) -> str:
+    return "phase_sum" if any(int(phase.duration_ms or 0) > 0 for phase in profile.phases) else "session_total_fallback"
+
+
+def _project_inference_strength(profile: SessionProfile) -> str:
+    if profile.repo_paths and profile.canonical_projects:
+        return "strong"
+    if profile.canonical_projects and (profile.file_paths_touched or profile.cwd_paths):
+        return "moderate"
+    if profile.canonical_projects:
+        return "weak"
+    return "none"
+
+
+def _decision_signal_strength(profile: SessionProfile) -> str:
+    if not profile.decisions:
+        return "none"
+    best_confidence = max(float(decision.confidence or 0.0) for decision in profile.decisions)
+    if best_confidence >= 0.8:
+        return "strong"
+    if best_confidence >= 0.6:
+        return "moderate"
+    return "weak"
+
+
+def _profile_support_signals(profile: SessionProfile) -> tuple[str, ...]:
+    signals: list[str] = []
+    if profile.repo_paths:
+        signals.append("repo_paths")
+    if profile.file_paths_touched:
+        signals.append("touched_paths")
+    if profile.canonical_projects:
+        signals.append("canonical_projects")
+    if profile.work_events:
+        signals.append("work_events")
+    if profile.phases:
+        signals.append("phases")
+    if profile.decisions:
+        signals.append("decisions")
+    if _engaged_duration_source(profile) == "phase_sum":
+        signals.append("phase_duration_sum")
+    return tuple(signals)
+
+
+def _profile_support_level(profile: SessionProfile) -> str:
+    support_signals = _profile_support_signals(profile)
+    work_confidence = max((float(event.confidence or 0.0) for event in profile.work_events), default=0.0)
+    phase_confidence = max((float(phase.confidence or 0.0) for phase in profile.phases), default=0.0)
+    confidence = max(work_confidence, phase_confidence)
+    fallback = _engaged_duration_source(profile) != "phase_sum" and not profile.work_events and not profile.phases
+    return _support_level(confidence, support_signals=support_signals, fallback=fallback)
+
+
+def _user_turn_texts(analysis: SessionAnalysis | None) -> tuple[str, ...]:
+    if analysis is None:
+        return ()
+    return _dedupe_texts(
+        [
+            message.text
+            for message in analysis.facts.message_facts
+            if message.is_user and not message.is_context_dump and message.text.strip()
+        ],
+        width=220,
+    )
+
+
+def _assistant_turn_texts(analysis: SessionAnalysis | None) -> tuple[str, ...]:
+    if analysis is None:
+        return ()
+    return _dedupe_texts(
+        [
+            message.text
+            for message in analysis.facts.message_facts
+            if message.is_assistant and message.is_substantive and message.text.strip()
+        ],
+        width=220,
+    )
+
+
+def _blocker_texts(analysis: SessionAnalysis | None) -> tuple[str, ...]:
+    if analysis is None:
+        return ()
+    blocker_markers = (
+        "error",
+        "failed",
+        "failure",
+        "blocked",
+        "cannot",
+        "can't",
+        "exception",
+        "traceback",
+        "panic",
+    )
+    texts = [
+        message.text
+        for message in analysis.facts.message_facts
+        if message.is_user
+        and not message.is_context_dump
+        and message.text.strip()
+        and any(marker in message.text.lower() for marker in blocker_markers)
+    ]
+    return _dedupe_texts(texts, limit=4, width=140)
+
+
+def _keyword_work_kind(user_turns: tuple[str, ...], profile: SessionProfile) -> str | None:
+    joined = " ".join(turn.lower() for turn in user_turns)
+    mapping = (
+        ("debugging", ("error", "failed", "traceback", "bug", "fix")),
+        ("testing", ("test", "pytest", "assert", "spec")),
+        ("planning", ("plan", "approach", "architecture", "design")),
+        ("documentation", ("readme", "document", "docs", "docstring")),
+        ("configuration", ("config", "nix", "flake", "settings", "toml", "yaml")),
+        ("refactoring", ("refactor", "cleanup", "rename", "extract", "restructure")),
+        ("data_analysis", ("duckdb", "sql", "analysis", "csv", "plot", "pandas")),
+        ("research", ("search", "compare", "investigate", "look up", "browse")),
+    )
+    for kind, markers in mapping:
+        if any(marker in joined for marker in markers):
+            return kind
+    if profile.work_events:
+        counts = Counter(event.kind.value for event in profile.work_events)
+        return counts.most_common(1)[0][0]
+    return None
+
+
+def _enrichment_support_signals(
+    profile: SessionProfile,
+    analysis: SessionAnalysis | None,
+) -> tuple[str, ...]:
+    signals: list[str] = []
+    user_turns = _user_turn_texts(analysis)
+    if user_turns:
+        signals.append("user_turns")
+    if analysis is not None and analysis.facts.action_events:
+        signals.append("action_events")
+    if profile.file_paths_touched:
+        signals.append("touched_paths")
+    if profile.canonical_projects:
+        signals.append("canonical_projects")
+    if profile.work_events:
+        signals.append("heuristic_work_events")
+    if profile.decisions:
+        signals.append("decisions")
+    if _assistant_turn_texts(analysis):
+        signals.append("assistant_outcome_text")
+    return tuple(signals)
+
+
+def _session_enrichment_payload(
+    profile: SessionProfile,
+    analysis: SessionAnalysis | None,
+) -> dict[str, object]:
+    user_turns = _user_turn_texts(analysis)
+    assistant_turns = _assistant_turn_texts(analysis)
+    blockers = _blocker_texts(analysis)
+    refined_work_kind = _keyword_work_kind(user_turns, profile) or _primary_work_kind(profile)
+    support_signals = _enrichment_support_signals(profile, analysis)
+    input_band_summary = {
+        "user_turns": len(user_turns),
+        "assistant_turns": len(assistant_turns),
+        "action_events": len(analysis.facts.action_events) if analysis is not None else 0,
+        "touched_paths": len(profile.file_paths_touched),
+        "canonical_projects": len(profile.canonical_projects),
+        "decisions": len(profile.decisions),
+    }
+    confidence = min(
+        0.95,
+        0.2
+        + (0.2 if user_turns else 0.0)
+        + (0.15 if analysis is not None and analysis.facts.action_events else 0.0)
+        + (0.15 if profile.file_paths_touched else 0.0)
+        + (0.15 if profile.canonical_projects else 0.0)
+        + (0.1 if profile.work_events else 0.0)
+        + (0.05 if blockers else 0.0),
+    )
+    support_level = _support_level(confidence, support_signals=support_signals)
+    intent_summary = user_turns[0] if user_turns else (profile.title or None)
+    outcome_summary = assistant_turns[-1] if assistant_turns else (user_turns[-1] if user_turns else None)
+    return {
+        "intent_summary": intent_summary,
+        "outcome_summary": outcome_summary,
+        "blockers": list(blockers),
+        "refined_work_kind": refined_work_kind,
+        "confidence": round(confidence, 3),
+        "support_level": support_level,
+        "support_signals": list(support_signals),
+        "input_band_summary": input_band_summary,
+    }
+
+
 def _profile_evidence_payload(profile: SessionProfile) -> dict[str, object]:
     return {
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
@@ -83,6 +336,7 @@ def _profile_evidence_payload(profile: SessionProfile) -> dict[str, object]:
 
 
 def _profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
+    support_signals = _profile_support_signals(profile)
     return {
         "canonical_projects": list(profile.canonical_projects),
         "primary_work_kind": _primary_work_kind(profile),
@@ -90,6 +344,11 @@ def _profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
         "phase_count": len(profile.phases),
         "engaged_duration_ms": profile.engaged_duration_ms,
         "engaged_minutes": round(profile.engaged_duration_ms / 60_000.0, 4),
+        "support_level": _profile_support_level(profile),
+        "support_signals": list(support_signals),
+        "engaged_duration_source": _engaged_duration_source(profile),
+        "project_inference_strength": _project_inference_strength(profile),
+        "decision_signal_strength": _decision_signal_strength(profile),
         "auto_tags": list(profile.auto_tags),
         "work_events": [event.to_dict() for event in profile.work_events],
         "phases": [
@@ -182,11 +441,20 @@ def _event_evidence_payload(event: WorkEvent) -> dict[str, object]:
 
 
 def _event_inference_payload(event: WorkEvent) -> dict[str, object]:
+    support_signals = _event_support_signals(event)
+    fallback_inference = _event_fallback(event)
     return {
         "kind": event.kind.value,
         "summary": _event_summary(event),
         "confidence": event.confidence,
         "evidence": list(event.evidence),
+        "support_level": _support_level(
+            float(event.confidence or 0.0),
+            support_signals=support_signals,
+            fallback=fallback_inference,
+        ),
+        "support_signals": list(support_signals),
+        "fallback_inference": fallback_inference,
     }
 
 
@@ -239,11 +507,38 @@ def _phase_evidence_payload(phase: SessionPhase) -> dict[str, object]:
 
 
 def _phase_inference_payload(phase: SessionPhase) -> dict[str, object]:
+    support_signals = _phase_support_signals(phase)
+    fallback_inference = _phase_fallback(phase)
     return {
         "kind": phase.kind,
         "confidence": phase.confidence,
         "evidence": list(phase.evidence),
+        "support_level": _support_level(
+            float(phase.confidence or 0.0),
+            support_signals=support_signals,
+            fallback=fallback_inference,
+        ),
+        "support_signals": list(support_signals),
+        "fallback_inference": fallback_inference,
     }
+
+
+def _profile_enrichment_search_text(profile: SessionProfile, enrichment_payload: dict[str, object]) -> str:
+    blockers = tuple(str(item) for item in enrichment_payload.get("blockers", []) or [])
+    support_signals = tuple(str(item) for item in enrichment_payload.get("support_signals", []) or [])
+    parts = [
+        profile.provider,
+        profile.title or "",
+        str(enrichment_payload.get("refined_work_kind") or ""),
+        str(enrichment_payload.get("intent_summary") or ""),
+        str(enrichment_payload.get("outcome_summary") or ""),
+        *profile.canonical_projects,
+        *profile.repo_paths,
+        *blockers,
+        *support_signals,
+    ]
+    search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
+    return search_text or profile.conversation_id
 
 
 def _thread_search_text(thread: WorkThread) -> str:
@@ -261,11 +556,13 @@ def _thread_search_text(thread: WorkThread) -> str:
 def build_session_profile_record(
     profile: SessionProfile,
     *,
+    analysis: SessionAnalysis | None = None,
     materialized_at: str | None = None,
 ) -> SessionProfileRecord:
     built_at = materialized_at or _now_iso()
     evidence_payload = _profile_evidence_payload(profile)
     inference_payload = _profile_inference_payload(profile)
+    enrichment_payload = _session_enrichment_payload(profile, analysis)
     return SessionProfileRecord(
         conversation_id=profile.conversation_id,
         materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
@@ -301,9 +598,13 @@ def build_session_profile_record(
         ),
         evidence_payload=evidence_payload,
         inference_payload=inference_payload,
+        enrichment_payload=enrichment_payload,
         search_text=_profile_search_text(profile),
         evidence_search_text=_profile_evidence_search_text(profile),
         inference_search_text=_profile_inference_search_text(profile),
+        enrichment_search_text=_profile_enrichment_search_text(profile, enrichment_payload),
+        enrichment_version=SESSION_ENRICHMENT_VERSION,
+        enrichment_family=SESSION_ENRICHMENT_FAMILY,
         inference_version=SESSION_INFERENCE_VERSION,
         inference_family=SESSION_INFERENCE_FAMILY,
     )
@@ -505,7 +806,7 @@ def build_session_product_records(
     profile = build_session_profile(conversation, analysis=analysis)
     materialized_at = _now_iso()
     return (
-        build_session_profile_record(profile, materialized_at=materialized_at),
+        build_session_profile_record(profile, analysis=analysis, materialized_at=materialized_at),
         build_session_work_event_records(profile, materialized_at=materialized_at),
         build_session_phase_records(profile, materialized_at=materialized_at),
     )

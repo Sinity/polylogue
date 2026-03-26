@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from contextlib import suppress
 
-from polylogue.archive_products import SessionProfileProduct, SessionProfileProductQuery
+from polylogue.archive_products import (
+    SessionEnrichmentProduct,
+    SessionEnrichmentProductQuery,
+    SessionProfileProduct,
+    SessionProfileProductQuery,
+)
 
 
 class PolylogueArchiveMixin:
@@ -55,6 +60,18 @@ class PolylogueArchiveMixin:
         query: SessionProfileProductQuery | None = None,
     ) -> list[SessionProfileProduct]:
         return await self.operations.list_session_profile_products(query)
+
+    async def get_session_enrichment_product(
+        self,
+        conversation_id: str,
+    ) -> SessionEnrichmentProduct | None:
+        return await self.operations.get_session_enrichment_product(conversation_id)
+
+    async def list_session_enrichment_products(
+        self,
+        query: SessionEnrichmentProductQuery | None = None,
+    ) -> list[SessionEnrichmentProduct]:
+        return await self.operations.list_session_enrichment_products(query)
 
     def filter(self):
         from polylogue.lib.filters import ConversationFilter

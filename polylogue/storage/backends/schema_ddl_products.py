@@ -5,7 +5,7 @@ from __future__ import annotations
 SESSION_PRODUCT_DDL = """
         CREATE TABLE IF NOT EXISTS session_profiles (
             conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 2,
+            materializer_version INTEGER NOT NULL DEFAULT 3,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
             source_sort_key REAL,
@@ -37,6 +37,10 @@ SESSION_PRODUCT_DDL = """
             search_text TEXT NOT NULL,
             evidence_search_text TEXT NOT NULL DEFAULT '',
             inference_search_text TEXT NOT NULL DEFAULT '',
+            enrichment_payload_json TEXT NOT NULL DEFAULT '{}',
+            enrichment_search_text TEXT NOT NULL DEFAULT '',
+            enrichment_version INTEGER NOT NULL DEFAULT 1,
+            enrichment_family TEXT NOT NULL DEFAULT 'scored_session_enrichment',
             inference_version INTEGER NOT NULL DEFAULT 1,
             inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'
         );
@@ -132,10 +136,35 @@ SESSION_PRODUCT_DDL = """
             VALUES (new.conversation_id, new.provider_name, new.inference_search_text);
         END;
 
+        CREATE VIRTUAL TABLE IF NOT EXISTS session_profile_enrichment_fts USING fts5(
+            conversation_id UNINDEXED,
+            provider_name UNINDEXED,
+            text,
+            tokenize='unicode61'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS session_profile_enrichment_fts_ai
+        AFTER INSERT ON session_profiles BEGIN
+            INSERT INTO session_profile_enrichment_fts (conversation_id, provider_name, text)
+            VALUES (new.conversation_id, new.provider_name, new.enrichment_search_text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS session_profile_enrichment_fts_ad
+        AFTER DELETE ON session_profiles BEGIN
+            DELETE FROM session_profile_enrichment_fts WHERE conversation_id = old.conversation_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS session_profile_enrichment_fts_au
+        AFTER UPDATE ON session_profiles BEGIN
+            DELETE FROM session_profile_enrichment_fts WHERE conversation_id = old.conversation_id;
+            INSERT INTO session_profile_enrichment_fts (conversation_id, provider_name, text)
+            VALUES (new.conversation_id, new.provider_name, new.enrichment_search_text);
+        END;
+
         CREATE TABLE IF NOT EXISTS session_work_events (
             event_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 2,
+            materializer_version INTEGER NOT NULL DEFAULT 3,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
             source_sort_key REAL,
@@ -189,7 +218,7 @@ SESSION_PRODUCT_DDL = """
         CREATE TABLE IF NOT EXISTS session_phases (
             phase_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 2,
+            materializer_version INTEGER NOT NULL DEFAULT 3,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
             source_sort_key REAL,

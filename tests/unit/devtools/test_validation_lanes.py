@@ -126,6 +126,24 @@ class TestCommandConstruction:
         assert "tests/unit/storage/test_embedding_stats.py" in cmd
         assert "tests/unit/core/test_health_core.py" in cmd
 
+    def test_heuristic_inference_contracts_lane_uses_semantic_product_suite(self):
+        cmd = build_lane_command(LANES["heuristic-inference-contracts"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/cli/test_products.py" in cmd
+        assert "tests/unit/pipeline/test_prepare_semantic.py" in cmd
+
+    def test_probabilistic_enrichment_contracts_lane_uses_enrichment_suite(self):
+        cmd = build_lane_command(LANES["probabilistic-enrichment-contracts"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/storage/test_embedding_stats.py" in cmd
+        assert "tests/unit/mcp/test_tool_contracts.py" in cmd
+
+    def test_governed_cleanup_contracts_lane_uses_health_and_check_suite(self):
+        cmd = build_lane_command(LANES["governed-cleanup-contracts"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/cli/test_check.py" in cmd
+        assert "tests/integration/test_health.py" in cmd
+
     def test_memory_budget_lane_uses_budget_runner(self):
         cmd = build_lane_command(LANES["memory-budget"])
         assert cmd[:3] == [sys.executable, "-m", "devtools.query_memory_budget"]
@@ -201,6 +219,13 @@ class TestCommandConstruction:
         assert "products" in cmd
         assert "profiles" in cmd
         assert "inference" in cmd
+        assert "--json" in cmd
+
+    def test_live_products_enrichments_lane_uses_enrichment_entrypoint(self):
+        cmd = build_lane_command(LANES["live-products-enrichments"])
+        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert "products" in cmd
+        assert "enrichments" in cmd
         assert "--json" in cmd
 
     def test_live_session_product_repair_lane_uses_check_repair_target(self):

@@ -78,6 +78,7 @@ def session_product_repair_count(
     session_profile_merged_fts = derived_statuses.get("session_profile_merged_fts")
     session_profile_evidence_fts = derived_statuses.get("session_profile_evidence_fts")
     session_profile_inference_fts = derived_statuses.get("session_profile_inference_fts")
+    session_profile_enrichment_fts = derived_statuses.get("session_profile_enrichment_fts")
     session_work_event_inference = derived_statuses.get("session_work_event_inference")
     session_work_event_inference_fts = derived_statuses.get("session_work_event_inference_fts")
     session_phase_inference = derived_statuses.get("session_phase_inference")
@@ -93,6 +94,7 @@ def session_product_repair_count(
             session_profile_merged_fts,
             session_profile_evidence_fts,
             session_profile_inference_fts,
+            session_profile_enrichment_fts,
             session_work_event_inference,
             session_work_event_inference_fts,
             session_phase_inference,
@@ -115,6 +117,8 @@ def session_product_repair_count(
         + max(0, int(session_profile_evidence_fts.stale_rows or 0))
         + max(0, int(session_profile_inference_fts.pending_rows or 0))
         + max(0, int(session_profile_inference_fts.stale_rows or 0))
+        + max(0, int(session_profile_enrichment_fts.pending_rows or 0))
+        + max(0, int(session_profile_enrichment_fts.stale_rows or 0))
         + max(0, int(session_work_event_inference.pending_rows or 0))
         + max(0, int(session_work_event_inference.stale_rows or 0))
         + max(0, int(session_work_event_inference.orphan_rows or 0))

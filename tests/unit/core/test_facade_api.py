@@ -9,6 +9,7 @@ import pytest
 from polylogue import Polylogue
 from polylogue.archive_products import (
     DaySessionSummaryProductQuery,
+    SessionEnrichmentProductQuery,
     SessionPhaseProductQuery,
     SessionProfileProductQuery,
     SessionTagRollupQuery,
@@ -341,6 +342,13 @@ class TestPolylogueArchiveProducts:
                 limit=10,
             )
         )
+        enrichments = await archive.list_session_enrichment_products(
+            SessionEnrichmentProductQuery(
+                provider="claude-code",
+                session_date_since="2026-03-01",
+                limit=10,
+            )
+        )
         phases = await archive.list_session_phase_products(
             SessionPhaseProductQuery(provider="claude-code", limit=10)
         )
@@ -366,6 +374,8 @@ class TestPolylogueArchiveProducts:
         assert inference_only.inference is not None
 
         assert any(item.conversation_id == "conv-root" for item in profiles)
+        assert any(item.conversation_id == "conv-root" for item in enrichments)
+        assert enrichments[0].enrichment.refined_work_kind is not None
         assert any(item.conversation_id == "conv-root" for item in phases)
         assert len(threads) == 1
         assert threads[0].thread["session_count"] == 2

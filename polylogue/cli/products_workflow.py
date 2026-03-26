@@ -7,6 +7,7 @@ from polylogue.archive_products import (
     DaySessionSummaryProductQuery,
     MaintenanceRunProductQuery,
     ProviderAnalyticsProductQuery,
+    SessionEnrichmentProductQuery,
     SessionPhaseProductQuery,
     SessionProfileProductQuery,
     SessionTagRollupQuery,
@@ -80,6 +81,40 @@ def list_session_work_event_products(
                 since=since,
                 until=until,
                 kind=kind,
+                query=query,
+                limit=limit,
+                offset=offset,
+            )
+        )
+    )
+
+
+def list_session_enrichment_products(
+    env: AppEnv,
+    *,
+    provider: str | None,
+    since: str | None,
+    until: str | None,
+    first_message_since: str | None,
+    first_message_until: str | None,
+    session_date_since: str | None,
+    session_date_until: str | None,
+    refined_work_kind: str | None,
+    query: str | None,
+    limit: int,
+    offset: int,
+) -> list[object]:
+    return run_coroutine_sync(
+        env.operations.list_session_enrichment_products(
+            SessionEnrichmentProductQuery(
+                provider=provider,
+                since=since,
+                until=until,
+                first_message_since=first_message_since,
+                first_message_until=first_message_until,
+                session_date_since=session_date_since,
+                session_date_until=session_date_until,
+                refined_work_kind=refined_work_kind,
                 query=query,
                 limit=limit,
                 offset=offset,
@@ -256,6 +291,7 @@ __all__ = [
     "list_day_session_summary_products",
     "list_maintenance_run_products",
     "list_provider_analytics_products",
+    "list_session_enrichment_products",
     "list_session_phase_products",
     "list_session_profile_products",
     "list_session_tag_rollup_products",

@@ -106,9 +106,13 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
         [
             "evidence_payload_json",
             "inference_payload_json",
+            "enrichment_payload_json",
             "search_text",
             "evidence_search_text",
             "inference_search_text",
+            "enrichment_search_text",
+            "enrichment_version",
+            "enrichment_family",
             "inference_version",
             "inference_family",
         ]
@@ -117,9 +121,13 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
         [
             _json_or_none(record.evidence_payload),
             _json_or_none(record.inference_payload),
+            _json_or_none(record.enrichment_payload),
             record.search_text,
             record.evidence_search_text,
             record.inference_search_text,
+            record.enrichment_search_text,
+            record.enrichment_version,
+            record.enrichment_family,
             record.inference_version,
             record.inference_family,
         ]

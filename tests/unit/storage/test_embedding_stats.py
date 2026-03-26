@@ -115,6 +115,9 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
                 "profile_inference_fts_count": 2,
                 "profile_inference_fts_ready": True,
                 "profile_inference_fts_duplicate_count": 0,
+                "profile_enrichment_fts_count": 2,
+                "profile_enrichment_fts_ready": True,
+                "profile_enrichment_fts_duplicate_count": 0,
             },
         )
 
@@ -126,9 +129,11 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
         "transcript_embeddings",
         "evidence_retrieval",
         "inference_retrieval",
+        "enrichment_retrieval",
     }
     assert stats.retrieval_bands["evidence_retrieval"]["ready"] is True
     assert stats.retrieval_bands["inference_retrieval"]["ready"] is True
+    assert stats.retrieval_bands["enrichment_retrieval"]["ready"] is True
 
 
 @pytest.mark.asyncio
