@@ -19,7 +19,8 @@ from polylogue.storage.session_product_batches import (
     load_async_batch,
     load_sync_batch,
 )
-from polylogue.storage.session_product_rows import build_session_product_records, hydrate_session_profile
+from polylogue.storage.session_product_profile_rows import hydrate_session_profile
+from polylogue.storage.session_product_rows import build_session_product_records
 from polylogue.storage.session_product_storage import (
     replace_day_session_summaries_sync,
     replace_session_phases_sync,
