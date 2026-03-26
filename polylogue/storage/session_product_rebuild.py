@@ -121,13 +121,15 @@ async def rebuild_session_products_async(
     page_size: int = 100,
     transaction_depth: int = 0,
 ) -> dict[str, int]:
-    from polylogue.storage.backends.queries.session_product_profile_queries import replace_session_profile
+    from polylogue.storage.backends.queries.session_product_profile_writes import (
+        replace_session_profile,
+    )
     from polylogue.storage.backends.queries.session_product_summary_queries import (
         replace_day_session_summaries,
         replace_session_tag_rollup_rows,
     )
     from polylogue.storage.backends.queries.session_product_thread_queries import replace_work_thread
-    from polylogue.storage.backends.queries.session_product_timeline_queries import (
+    from polylogue.storage.backends.queries.session_product_timeline_writes import (
         replace_session_phases,
         replace_session_work_events,
     )
