@@ -24,7 +24,8 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md) | Current cleanup/refactoring program for query-engine, operator-command, repository/repair/build, raw-payload/pipeline, schema-toolchain, and sqlite-vec topology narrowing | Active; this is now the live cleanup-focused broad queue after the executed product/runtime topology cleanup |
+| [programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md) | Current ambitious cleanup/refactoring program for rendering/semantic-proof, operator adapters, storage write/rebuild bands, schema runtime analysis, provider/source boundaries, and domain/query-evidence topology narrowing | Active; this is now the live cleanup-focused broad queue after the executed deep query/service/schema topology cleanup |
+| [programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md) | Executed cleanup/refactoring program for query-engine, operator-command, repository/repair/build, raw-payload/pipeline, schema-toolchain, and sqlite-vec topology narrowing | Executed; query/service/schema/public roots were narrowed substantially, the named runtime-substrate contracts lane passed, and live archive debt/product status remained clean |
 | [programs/product-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/product-and-runtime-topology-cleanup-program-2026-03-26.md) | Executed cleanup/refactoring program for archive-product, health/debt, query-SQL, validation-lane, and declarative-root topology narrowing | Executed; archive-product/session-product/health/debt/template/validation roots were narrowed substantially, the named stewardship lane passed, and live archive debt remains clean |
 | [programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md](./programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md) | Executed convergence program for heuristic-inference hardening, durable enrichment products, retrieval-band rollout, consumer/operator convergence, and governed live cleanup | Executed; enrichment products, retrieval-enrichment health, live governed cleanup apply/validation lineage, and named enrichment/cleanup lanes are now in place |
 | [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md) | Executed convergence program for evidence-tier contracts, inference-tier governance, retrieval/embedding alignment, consumer contract convergence, and live semantic stewardship | Executed; durable evidence/inference product contracts, tiered profile retrieval, retrieval-band health, live migration compatibility, and named validation lanes are now in place |
@@ -127,8 +128,15 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md)
-- the just-executed cleanup program in [programs/product-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/product-and-runtime-topology-cleanup-program-2026-03-26.md) closed the main structural drag around:
+- the current live implementation queue is now [programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md)
+- the just-executed cleanup program in [programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md) closed the main structural drag around:
+  - broad query planning/spec/retrieval roots
+  - broad products/run/QA/check command-family roots
+  - broad repository-archive, repair, builder, mapper, and store-core roots
+  - broad raw-payload, validation, acquisition, and semantic service roots
+  - broad schema toolchain roots for generation, roundtrip, audit, and sampling
+  - the oversized sqlite-vec provider root
+- the older cleanup program in [programs/product-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/product-and-runtime-topology-cleanup-program-2026-03-26.md) closed the preceding structural drag around:
   - broad archive-product contract, mapper, and operator-support roots
   - broad session-product row/store/status roots
   - broad health/debt/MCP/product workflow and rendering roots
@@ -146,13 +154,13 @@ As of this map:
   - `orphaned_attachments=0`
   - `products debt --json` reports zero actionable debt
   - all durable session-product and retrieval-enrichment bands are ready, while transcript embeddings remain intentionally pending
-- the next cleanup drag is now deeper in the runtime substrate:
-  - the query engine still has broad plan/spec/retrieval roots such as `lib/query_plan.py`, `lib/query_spec.py`, and `lib/query_retrieval.py`
-  - operator command files like `cli/commands/products.py`, `cli/commands/run.py`, and `cli/check_workflow.py` still bundle too much wiring
-  - repository/repair/build roots like `repository_archive_reads.py`, `repair_derived.py`, `archive_product_builders.py`, and `mappers_products.py` still carry wide cross-family ownership
-  - `lib/raw_payload.py`, `pipeline/services/validation.py`, `pipeline/services/acquisition.py`, and `pipeline/semantic.py` still mix decoding, inference, concurrency, and lifecycle policy
-  - the schema toolchain still has several large helper roots such as `generation_support.py`, `generation_analysis.py`, `generation_workflow.py`, `roundtrip_proof.py`, and `sampling.py`
-  - `storage/search_providers/sqlite_vec.py` remains the single largest runtime provider boundary
+- the next cleanup drag is now higher in the runtime and operator stack:
+  - rendering and semantic-proof roots like `rendering/semantic_proof_facts.py`, `rendering/semantic_proof_surfaces.py`, `rendering/semantic_proof.py`, and `rendering/renderers/html.py` still carry too much mixed declaration/extraction/comparison/output logic
+  - operator adapter roots like `cli/query_output.py`, `cli/check_rendering.py`, `cli/schema_rendering.py`, `cli/commands/embed.py`, `cli/click_app.py`, `ui/facade.py`, `sync.py`, and `mcp/payloads.py` still bundle too much public-surface glue
+  - storage write/rebuild/status roots like `storage/action_event_rebuild.py`, `storage/embedding_stats.py`, `storage/backends/schema_ddl_products.py`, `storage/session_product_*_rows.py`, `storage/repository_writes.py`, `storage/backends/async_sqlite.py`, and `storage/fts_lifecycle.py` still span too many ownership bands
+  - schema/runtime analysis roots like `schemas/field_stats.py`, `schemas/observation.py`, `schemas/relational_inference.py`, `schemas/validator.py`, `schemas/unified_provider_meta.py`, and `schemas/operator_workflow.py` are still broad
+  - provider/source/parser roots like `sources/providers/claude_code.py`, `sources/providers/gemini.py`, `sources/providers/chatgpt.py`, `sources/parsers/base.py`, `sources/drive_source.py`, `sources/drive_auth.py`, and `sources/decoders.py` still carry too much provider-specific runtime behavior
+  - domain/query evidence roots like `lib/artifact_taxonomy.py`, `lib/action_events.py`, `lib/query_runtime.py`, `lib/viewports.py`, and `archive_product_entities.py` remain oversized
 - the cleanup-only program in [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) is now executed
 - it closed the main structural debt around:
   - broad query-execution and query-store ownership

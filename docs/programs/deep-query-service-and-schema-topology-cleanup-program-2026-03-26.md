@@ -3,12 +3,79 @@
 # Deep Query Service And Schema Topology Cleanup Program
 
 Date: 2026-03-26
-Status: active cleanup/refactoring program
-Role: cleanup-only broad queue after the executed product/runtime topology cleanup
+Status: executed cleanup/refactoring program
+Role: executed cleanup-only broad queue after the executed product/runtime topology cleanup
 
-Replaces as the live queue:
+Replaced as the live queue by:
 
-- `product-and-runtime-topology-cleanup-program-2026-03-26.md`
+- `rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md`
+
+## Execution Record
+
+Executed on 2026-03-26.
+
+The main structural reductions were:
+
+- `polylogue/lib/query_plan.py` reduced from `429` lines to `270`, with plan
+  description/record helpers and retrieval-side candidate shaping moved into
+  `query_plan_description.py`, `query_plan_records.py`,
+  `query_retrieval_candidates.py`, and `query_retrieval_search.py`
+- `polylogue/lib/query_retrieval.py` reduced from `383` lines to `49`, and
+  `polylogue/cli/query_grouped_stats.py` from `249` to `51`, with grouped-stat
+  summary/semantic shaping and retrieval candidate/search helpers split into
+  dedicated modules
+- `polylogue/cli/commands/products.py` reduced from `412` lines to `28`, with
+  session/aggregate/governance command families split into
+  `products_session.py`, `products_aggregate.py`, and
+  `products_governance.py`
+- `polylogue/storage/repository_archive_reads.py` reduced from `426` lines to
+  `22`, `repair_derived.py` from `427` to `21`, `archive_product_builders.py`
+  from `407` to `24`, and `mappers_products.py` from `402` to `27`, with each
+  family narrowed onto dedicated archive-read, repair, rollup/summary, and
+  product-mapper modules
+- `polylogue/lib/raw_payload.py` reduced from `442` lines to `29`,
+  `pipeline/services/validation.py` from `437` to `88`,
+  `pipeline/services/acquisition.py` from `379` to `149`, and
+  `pipeline/semantic.py` from `377` to `25`, with decode/sampling,
+  validation-flow/runtime, acquisition stream/record/persistence, and
+  semantic metadata/capture logic split out
+- `polylogue/schemas/generation_support.py` reduced from `409` lines to `25`,
+  `generation_analysis.py` from `386` to `29`, `generation_workflow.py` from
+  `361` to `62`, `roundtrip_proof.py` from `383` to `23`, `audit.py` from
+  `385` to `24`, and `sampling.py` from `347` to `111`, with schema-toolchain
+  ownership moved into dedicated generation bundle/emission, roundtrip
+  provider/suite, audit model/walker/check/workflow, and sampling DB/session
+  modules
+- `polylogue/storage/search_providers/sqlite_vec.py` reduced from `507` lines
+  to `50`, with support/runtime/embedding/query concerns split into dedicated
+  `sqlite_vec_*` modules while keeping the public provider root stable
+
+Validation and live closure that completed this cleanup program:
+
+- `ruff check $(git diff --name-only --diff-filter=d -- '*.py')`
+- `pytest -q -n 0 tests/unit/cli/test_run.py tests/unit/cli/test_run_laws.py tests/unit/cli/test_query_exec.py tests/unit/cli/test_query_exec_laws.py tests/unit/core/test_filters_props.py tests/unit/mcp/test_tool_contracts.py tests/unit/storage/test_store_ops.py tests/unit/cli/test_click_app.py`
+  → `415 passed`
+- `pytest -q -n 0 tests/unit/storage/test_vec.py tests/unit/storage/test_backend.py tests/unit/storage/test_raw.py tests/unit/storage/test_parse_tracking.py tests/unit/cli/test_products.py tests/unit/core/test_health_core.py tests/integration/test_health.py tests/unit/pipeline/test_resilience.py tests/unit/pipeline/test_run_sources.py tests/unit/pipeline/test_parsing_service.py`
+  → `225 passed`
+- `pytest -q -n 0 tests/unit/core/test_schema_generation.py tests/unit/core/test_sampling.py tests/unit/core/test_schema_laws.py tests/unit/core/test_audit.py tests/integration/test_schema_evidence_roundtrip_lane.py tests/unit/cli/test_check.py`
+  → `160 passed`
+- `pytest -q -n 0 tests/unit/core/test_schema_annotation_contracts.py tests/unit/test_protocol_conformance.py`
+  → `70 passed`
+- `python -m devtools.run_validation_lanes --lane runtime-substrate-contracts`
+  passed after the breakup
+
+Live closure evidence after execution:
+
+- `python -m polylogue --plain products status --json` still reports `5618`
+  profiles, `17833` work events, `12634` phases, `4592` tag rollups, and
+  `1295` day summaries ready
+- `python -m polylogue --plain products debt --json` reports zero actionable
+  debt and validated cleanup lineage for the destructive archive targets
+- `python -m polylogue --plain check --json` reports only the intentional
+  `transcript_embeddings` warning; archive debt and derived-model readiness are
+  otherwise clean
+- `journalctl -u earlyoom --since '60 minutes ago'` showed only a normal memory
+  status line and no new kills
 
 Prerequisite executed programs:
 
