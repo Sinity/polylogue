@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
 
+from polylogue.cli.check_maintenance import (
+    build_preview_counts as _build_preview_counts,
+)
+from polylogue.cli.check_maintenance import (
+    persist_maintenance_run,
+)
+from polylogue.cli.check_maintenance import (
+    resolve_selected_maintenance_targets as _resolve_selected_maintenance_targets,
+)
+from polylogue.cli.check_validation import (
+    validate_check_options as _validate_check_options,
+)
 from polylogue.cli.helpers import fail, load_effective_config
 from polylogue.cli.types import AppEnv
 from polylogue.health_archive import get_health
@@ -23,15 +33,11 @@ from polylogue.schemas.verification_requests import (
     ArtifactProofRequest,
     SchemaVerificationRequest,
 )
-from polylogue.storage.archive_debt import preview_counts_from_archive_debt
-from polylogue.storage.backends.connection import _clear_connection_cache
 from polylogue.storage.repair import (
     CLEANUP_TARGETS,
     SAFE_REPAIR_TARGETS,
     run_selected_maintenance,
 )
-from polylogue.storage.store import MaintenanceRunRecord
-from polylogue.sync_bridge import run_coroutine_sync
 
 from .check_support import make_schema_progress_callback, parse_schema_samples, vacuum_database
 
@@ -87,108 +93,12 @@ class CheckCommandResult:
     maintenance_results: list[Any] | None = None
     vacuum_result: dict[str, Any] | None = None
 
-
-def _build_preview_counts(report: Any) -> dict[str, int]:
-    """Extract maintenance preview counts from the already-computed health report."""
-    return preview_counts_from_archive_debt(getattr(report, "archive_debt", {}) or {})
-
-
-def _resolve_selected_maintenance_targets(options: CheckCommandOptions) -> tuple[str, ...]:
-    if options.maintenance_targets:
-        return tuple(options.maintenance_targets)
-    targets: list[str] = []
-    if options.repair:
-        targets.extend(SAFE_REPAIR_TARGETS)
-    if options.cleanup:
-        targets.extend(CLEANUP_TARGETS)
-    return tuple(targets)
-
-
-def _build_maintenance_manifest(
-    *,
-    report: Any,
-    options: CheckCommandOptions,
-    targets: tuple[str, ...],
-    maintenance_results: list[Any],
-    vacuum_result: dict[str, Any] | None,
-    preview_counts: dict[str, int] | None,
-) -> dict[str, Any]:
-    return {
-        "report_summary": dict(report.summary),
-        "report_provenance": report.provenance.to_dict(),
-        "derived_models": {
-            name: status.to_dict()
-            for name, status in sorted((report.derived_models or {}).items())
-        },
-        "preview_counts": dict(preview_counts or {}),
-        "targets": list(targets),
-        "results": [result.to_dict() for result in maintenance_results],
-        "vacuum": vacuum_result,
-    }
-
-
 def validate_check_options(options: CheckCommandOptions) -> None:
-    if options.vacuum and not (options.repair or options.cleanup):
-        fail("check", "--vacuum requires --repair or --cleanup")
-    if options.preview and not (options.repair or options.cleanup):
-        fail("check", "--preview requires --repair or --cleanup")
-    if options.maintenance_targets and not (options.repair or options.cleanup):
-        fail("check", "--target requires --repair or --cleanup")
-    if options.schema_providers and not options.check_schemas:
-        fail("check", "--schema-provider requires --schemas")
-    if options.schema_samples != "all" and not options.check_schemas:
-        fail("check", "--schema-samples requires --schemas")
-    if options.schema_record_limit is not None and not options.check_schemas:
-        fail("check", "--schema-record-limit requires --schemas")
-    if options.schema_record_offset != 0 and not options.check_schemas:
-        fail("check", "--schema-record-offset requires --schemas")
-    if options.schema_quarantine_malformed and not options.check_schemas:
-        fail("check", "--schema-quarantine-malformed requires --schemas")
-    if options.artifact_providers and not (
-        options.check_proof or options.check_artifacts or options.check_cohorts
-    ):
-        fail("check", "--artifact-provider requires --proof, --artifacts, or --cohorts")
-    if options.artifact_statuses and not (options.check_artifacts or options.check_cohorts):
-        fail("check", "--artifact-status requires --artifacts or --cohorts")
-    if options.artifact_kinds and not (options.check_artifacts or options.check_cohorts):
-        fail("check", "--artifact-kind requires --artifacts or --cohorts")
-    if options.artifact_limit is not None and not (
-        options.check_proof or options.check_artifacts or options.check_cohorts
-    ):
-        fail("check", "--artifact-limit requires --proof, --artifacts, or --cohorts")
-    if options.artifact_offset != 0 and not (
-        options.check_proof or options.check_artifacts or options.check_cohorts
-    ):
-        fail("check", "--artifact-offset requires --proof, --artifacts, or --cohorts")
-    if options.semantic_providers and not options.check_semantic_proof:
-        fail("check", "--semantic-provider requires --semantic-proof")
-    if options.semantic_surfaces and not (options.check_semantic_proof or options.check_semantic_contracts):
-        fail("check", "--semantic-surface requires --semantic-proof or --semantic-contracts")
-    if options.semantic_limit is not None and not options.check_semantic_proof:
-        fail("check", "--semantic-limit requires --semantic-proof")
-    if options.semantic_offset != 0 and not options.check_semantic_proof:
-        fail("check", "--semantic-offset requires --semantic-proof")
-    if options.schema_record_limit is not None and options.schema_record_limit <= 0:
-        fail("check", "--schema-record-limit must be a positive integer")
-    if options.schema_record_offset < 0:
-        fail("check", "--schema-record-offset must be >= 0")
-    if options.artifact_limit is not None and options.artifact_limit <= 0:
-        fail("check", "--artifact-limit must be a positive integer")
-    if options.artifact_offset < 0:
-        fail("check", "--artifact-offset must be >= 0")
-    if options.semantic_limit is not None and options.semantic_limit <= 0:
-        fail("check", "--semantic-limit must be a positive integer")
-    if options.semantic_offset < 0:
-        fail("check", "--semantic-offset must be >= 0")
-    if options.roundtrip_providers and not options.check_roundtrip_proof:
-        fail("check", "--roundtrip-provider requires --roundtrip-proof")
-    if options.roundtrip_count <= 0:
-        fail("check", "--roundtrip-count must be a positive integer")
-    if options.maintenance_targets:
-        if options.repair and not options.cleanup and not any(name in SAFE_REPAIR_TARGETS for name in options.maintenance_targets):
-            fail("check", "--target only selected cleanup targets while running --repair")
-        if options.cleanup and not options.repair and not any(name in CLEANUP_TARGETS for name in options.maintenance_targets):
-            fail("check", "--target only selected repair targets while running --cleanup")
+    _validate_check_options(
+        options,
+        safe_repair_targets=SAFE_REPAIR_TARGETS,
+        cleanup_targets=CLEANUP_TARGETS,
+    )
 
 
 def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckCommandResult:
@@ -289,7 +199,11 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
 
     if options.repair or options.cleanup:
         preview_counts = _build_preview_counts(report) if options.preview else None
-        selected_targets = _resolve_selected_maintenance_targets(options)
+        selected_targets = _resolve_selected_maintenance_targets(
+            options,
+            safe_repair_targets=SAFE_REPAIR_TARGETS,
+            cleanup_targets=CLEANUP_TARGETS,
+        )
         result.maintenance_results = run_selected_maintenance(
             config,
             repair=options.repair,
@@ -310,29 +224,20 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
             result.vacuum_result = vacuum_database(env)
 
     if result.maintenance_results is not None:
-        selected_targets = _resolve_selected_maintenance_targets(options)
-        preview_counts = _build_preview_counts(report) if options.preview else None
-        vacuum_ok = result.vacuum_result is None or bool(result.vacuum_result.get("ok", False))
-        _clear_connection_cache()
-        record = MaintenanceRunRecord(
-            maintenance_run_id=f"maint-{uuid4().hex[:16]}",
-            executed_at=datetime.now(timezone.utc).isoformat(),
-            mode="preview" if options.preview else "apply",
-            preview=options.preview,
-            repair_selected=options.repair,
-            cleanup_selected=options.cleanup,
-            vacuum_requested=options.vacuum,
-            target_names=selected_targets,
-            success=all(result_item.success for result_item in result.maintenance_results) and vacuum_ok,
-            manifest=_build_maintenance_manifest(
-                report=report,
-                options=options,
-                targets=selected_targets,
-                maintenance_results=result.maintenance_results,
-                vacuum_result=result.vacuum_result,
-                preview_counts=preview_counts,
-            ),
+        selected_targets = _resolve_selected_maintenance_targets(
+            options,
+            safe_repair_targets=SAFE_REPAIR_TARGETS,
+            cleanup_targets=CLEANUP_TARGETS,
         )
-        run_coroutine_sync(env.backend.record_maintenance_run(record))
+        preview_counts = _build_preview_counts(report) if options.preview else None
+        persist_maintenance_run(
+            env,
+            report=report,
+            options=options,
+            targets=selected_targets,
+            maintenance_results=result.maintenance_results,
+            vacuum_result=result.vacuum_result,
+            preview_counts=preview_counts,
+        )
 
     return result
