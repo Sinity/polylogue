@@ -15,9 +15,12 @@ if TYPE_CHECKING:
 
 def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
-    async def session_profile(conversation_id: str) -> str:
+    async def session_profile(conversation_id: str, tier: str = "merged") -> str:
         async def run() -> str:
-            product = await hooks.get_archive_ops().get_session_profile_product(conversation_id)
+            product = await hooks.get_archive_ops().get_session_profile_product(
+                conversation_id,
+                tier=tier,
+            )
             if product is None:
                 return hooks.error_json("Conversation not found", conversation_id=conversation_id)
             return hooks.json_payload(product, exclude_none=True)
@@ -88,6 +91,7 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         first_message_until: str | None = None,
         session_date_since: str | None = None,
         session_date_until: str | None = None,
+        tier: str = "merged",
         provider: str | None = None,
         query: str | None = None,
         limit: int = 50,
@@ -105,6 +109,7 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     first_message_until=first_message_until,
                     session_date_since=session_date_since,
                     session_date_until=session_date_until,
+                    tier=tier,
                     query=query,
                     limit=hooks.clamp_limit(limit),
                     offset=max(0, int(offset)),

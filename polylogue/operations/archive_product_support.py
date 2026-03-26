@@ -111,9 +111,14 @@ def _lineage_governance_stage(*, issue_count: int, lineage: ArchiveDebtTargetLin
 class ArchiveProductMixin:
     """Versioned archive-product retrieval methods."""
 
-    async def get_session_profile_product(self, conversation_id: str) -> SessionProfileProduct | None:
+    async def get_session_profile_product(
+        self,
+        conversation_id: str,
+        *,
+        tier: str = "merged",
+    ) -> SessionProfileProduct | None:
         record = await self.repository.get_session_profile_record(conversation_id)
-        return SessionProfileProduct.from_record(record) if record is not None else None
+        return SessionProfileProduct.from_record(record, tier=tier) if record is not None else None
 
     async def list_session_profile_products(
         self,
@@ -128,11 +133,12 @@ class ArchiveProductMixin:
             first_message_until=request.first_message_until,
             session_date_since=request.session_date_since,
             session_date_until=request.session_date_until,
+            tier=request.tier,
             limit=request.limit,
             offset=request.offset,
             query=request.query,
         )
-        return [SessionProfileProduct.from_record(record) for record in records]
+        return [SessionProfileProduct.from_record(record, tier=request.tier) for record in records]
 
     async def list_session_tag_rollup_products(
         self,

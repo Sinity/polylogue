@@ -3,8 +3,8 @@
 # Evidence And Stewardship Platform Convergence Program
 
 Date: 2026-03-24
-Status: active execution program
-Role: canonical broad queue after the cleanup-only debt-retirement wave
+Status: executed
+Role: executed broad queue after the cleanup-only debt-retirement wave
 
 Absorbs and replaces as the live queue:
 
@@ -54,6 +54,49 @@ contractual:
 
 This means the next broad queue should not just add more heuristics. It should
 make the semantic contract honest, typed, versioned, and durable.
+
+## Execution Record
+
+Executed on 2026-03-26.
+
+The main implementation outcomes were:
+
+- explicit evidence-tier and inference-tier payload contracts were added to the
+  durable session-profile, work-event, and phase product families
+- evidence/inference provenance, inference versioning, and tier-specific search
+  bands were persisted in the session-product read models
+- profile products now support explicit `merged`, `evidence`, and `inference`
+  retrieval across CLI, library, sync, repository, and MCP surfaces
+- retrieval health and embedding health now distinguish transcript,
+  evidence-retrieval, and inference-retrieval bands
+- session-product status, repair, debt, and health surfaces now report the
+  evidence/inference split explicitly instead of one mixed “semantic” state
+- live migration compatibility was closed for upgraded databases, including
+  blank tier-search text, legacy `payload_json` columns, and migrated rows with
+  empty tier payload bodies
+- named contract and live validation lanes now cover evidence-tier contracts,
+  inference-tier contracts, mixed consumer surfaces, retrieval-band readiness,
+  and live archive migration under memory budget
+
+Live-archive closure evidence:
+
+- `python -m devtools.run_validation_lanes --lane evidence-stewardship-live`
+  passed against `/home/sinity/.local/share/polylogue/polylogue.db`
+- `products status --json` now reports the durable session-product bands ready:
+  `5618` profiles, `17833` work events, `12634` phases, `4592` tag rollups,
+  `1295` day summaries, and `1295` week summaries
+- `products profiles --tier evidence --json`,
+  `products profiles --tier inference --json`, `products work-events --json`,
+  and `products phases --json` all returned live tiered products successfully
+- `embed --stats --json` now reports retrieval-band readiness separately
+- the maintenance memory-budget lane stayed well within budget (`77.9 MB` peak
+  RSS for the live maintenance preview)
+
+Remaining live archive debt is now explicit rather than hidden:
+
+- `15781` orphaned content blocks
+- `2378` orphaned attachment rows
+- transcript embeddings still intentionally remain unmaterialized
 
 ## Program Thesis
 

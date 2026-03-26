@@ -146,9 +146,14 @@ class SyncPolylogue:
         """Get durable session-product readiness counters."""
         return _run(self._facade.get_session_product_status())
 
-    def get_session_profile_product(self, conversation_id: str) -> SessionProfileProduct | None:
+    def get_session_profile_product(
+        self,
+        conversation_id: str,
+        *,
+        tier: str = "merged",
+    ) -> SessionProfileProduct | None:
         """Get the versioned durable session-profile product for one conversation."""
-        return _run(self._facade.get_session_profile_product(conversation_id))
+        return _run(self._facade.get_session_profile_product(conversation_id, tier=tier))
 
     def list_session_profile_products(
         self,

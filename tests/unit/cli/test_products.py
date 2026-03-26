@@ -145,12 +145,113 @@ def test_products_profiles_json(cli_workspace):
     payload = _extract_json(result.output)
     assert payload["count"] == 2
     first = payload["session_profiles"][0]
-    assert first["contract_version"] == 2
+    assert first["contract_version"] == 3
     assert first["product_kind"] == "session_profile"
-    assert first["canonical_session_date"] == "2026-03-01"
-    assert first["engaged_duration_ms"] >= 0
-    assert "profile" in first
+    assert first["semantic_tier"] == "merged"
+    assert first["evidence"]["canonical_session_date"] == "2026-03-01"
+    assert first["inference"]["engaged_duration_ms"] >= 0
+    assert "evidence" in first
+    assert "inference" in first
     assert "provenance" in first
+
+
+def test_products_profiles_json_supports_explicit_evidence_and_inference_tiers(cli_workspace):
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    evidence_result = runner.invoke(
+        cli,
+        ["products", "profiles", "--tier", "evidence", "--json"],
+        catch_exceptions=False,
+    )
+    inference_result = runner.invoke(
+        cli,
+        ["products", "profiles", "--tier", "inference", "--json"],
+        catch_exceptions=False,
+    )
+
+    assert evidence_result.exit_code == 0
+    assert inference_result.exit_code == 0
+
+    evidence_payload = _extract_json(evidence_result.output)
+    inference_payload = _extract_json(inference_result.output)
+    evidence_profile = evidence_payload["session_profiles"][0]
+    inference_profile = inference_payload["session_profiles"][0]
+
+    assert evidence_profile["semantic_tier"] == "evidence"
+    assert evidence_profile["evidence"]["canonical_session_date"] == "2026-03-01"
+    assert evidence_profile["inference"] is None
+    assert evidence_profile["inference_provenance"] is None
+
+    assert inference_profile["semantic_tier"] == "inference"
+    assert inference_profile["evidence"] is None
+    assert inference_profile["inference"]["engaged_duration_ms"] >= 0
+    assert inference_profile["inference_provenance"]["inference_family"] == "heuristic_session_semantics"
+
+
+def test_products_profiles_json_handles_blank_tier_search_text_from_migrated_rows(cli_workspace):
+    _seed_products(cli_workspace)
+    with open_connection(cli_workspace["db_path"]) as conn:
+        conn.execute("UPDATE session_profiles SET evidence_search_text = '', inference_search_text = ''")
+        conn.commit()
+
+    runner = CliRunner()
+    evidence_result = runner.invoke(
+        cli,
+        ["products", "profiles", "--tier", "evidence", "--json"],
+        catch_exceptions=False,
+    )
+    inference_result = runner.invoke(
+        cli,
+        ["products", "profiles", "--tier", "inference", "--json"],
+        catch_exceptions=False,
+    )
+
+    assert evidence_result.exit_code == 0
+    assert inference_result.exit_code == 0
+    assert _extract_json(evidence_result.output)["count"] == 2
+    assert _extract_json(inference_result.output)["count"] == 2
+
+
+def test_products_reconstructs_tiered_payloads_from_blank_migrated_rows(cli_workspace):
+    _seed_products(cli_workspace)
+    with open_connection(cli_workspace["db_path"]) as conn:
+        conn.execute("UPDATE session_profiles SET evidence_payload_json = '{}', inference_payload_json = '{}'")
+        conn.execute("UPDATE session_work_events SET evidence_payload_json = '{}', inference_payload_json = '{}'")
+        conn.execute("UPDATE session_phases SET evidence_payload_json = '{}', inference_payload_json = '{}'")
+        conn.commit()
+
+    runner = CliRunner()
+    evidence_profiles = runner.invoke(
+        cli,
+        ["products", "profiles", "--tier", "evidence", "--json"],
+        catch_exceptions=False,
+    )
+    inference_profiles = runner.invoke(
+        cli,
+        ["products", "profiles", "--tier", "inference", "--json"],
+        catch_exceptions=False,
+    )
+    work_events = runner.invoke(cli, ["products", "work-events", "--json"], catch_exceptions=False)
+    phases = runner.invoke(cli, ["products", "phases", "--json"], catch_exceptions=False)
+
+    assert evidence_profiles.exit_code == 0
+    assert inference_profiles.exit_code == 0
+    assert work_events.exit_code == 0
+    assert phases.exit_code == 0
+
+    evidence_profiles_payload = _extract_json(evidence_profiles.output)["session_profiles"]
+    inference_profiles_payload = _extract_json(inference_profiles.output)["session_profiles"]
+    work_event = _extract_json(work_events.output)["session_work_events"][0]
+    phase = _extract_json(phases.output)["session_phases"][0]
+
+    assert all(item["evidence"]["message_count"] >= 1 for item in evidence_profiles_payload)
+    assert all(item["evidence"]["canonical_session_date"] == "2026-03-01" for item in evidence_profiles_payload)
+    assert all(item["inference"]["work_event_count"] >= 0 for item in inference_profiles_payload)
+    assert work_event["evidence"]["start_index"] >= 0
+    assert work_event["inference"]["kind"] in {"implementation", "testing", "planning", "debugging"}
+    assert phase["evidence"]["message_range"][0] >= 0
+    assert phase["inference"]["kind"]
 
 
 def test_products_profile_date_filters_and_phases_json(cli_workspace):
@@ -182,6 +283,23 @@ def test_products_profile_date_filters_and_phases_json(cli_workspace):
     assert phase_payload["session_phases"][0]["product_kind"] == "session_phase"
 
 
+def test_session_product_rebuild_supports_legacy_payload_columns(cli_workspace):
+    _seed_products(cli_workspace)
+
+    with open_connection(cli_workspace["db_path"]) as conn:
+        conn.execute("ALTER TABLE session_profiles ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
+        conn.execute("ALTER TABLE session_work_events ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
+        conn.execute("ALTER TABLE session_phases ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
+        conn.commit()
+        rebuild_session_products_sync(conn)
+        status = session_product_status_sync(conn)
+
+    assert status["profile_row_count"] == 2
+    assert status["profile_rows_ready"] is True
+    assert status["work_event_inference_rows_ready"] is True
+    assert status["phase_inference_rows_ready"] is True
+
+
 def test_products_threads_and_status_json(cli_workspace):
     _seed_products(cli_workspace)
 
@@ -196,12 +314,15 @@ def test_products_threads_and_status_json(cli_workspace):
     status_payload = _extract_json(status.output)
     assert threads_payload["count"] == 1
     assert threads_payload["work_threads"][0]["product_kind"] == "work_thread"
-    assert status_payload["session_products"]["stale_profile_count"] == 0
-    assert status_payload["session_products"]["stale_work_event_count"] == 0
-    assert status_payload["session_products"]["stale_phase_count"] == 0
-    assert status_payload["session_products"]["profile_fts_duplicate_count"] == 0
-    assert status_payload["session_products"]["profiles_ready"] is True
-    assert status_payload["session_products"]["phases_ready"] is True
+    assert status_payload["session_products"]["stale_profile_row_count"] == 0
+    assert status_payload["session_products"]["stale_work_event_inference_count"] == 0
+    assert status_payload["session_products"]["stale_phase_inference_count"] == 0
+    assert status_payload["session_products"]["profile_merged_fts_duplicate_count"] == 0
+    assert status_payload["session_products"]["profile_rows_ready"] is True
+    assert status_payload["session_products"]["profile_merged_fts_ready"] is True
+    assert status_payload["session_products"]["profile_evidence_fts_ready"] is True
+    assert status_payload["session_products"]["profile_inference_fts_ready"] is True
+    assert status_payload["session_products"]["phase_inference_rows_ready"] is True
     assert status_payload["session_products"]["threads_ready"] is True
     assert status_payload["session_products"]["tag_rollups_ready"] is True
     assert status_payload["session_products"]["day_summaries_ready"] is True
@@ -314,14 +435,14 @@ def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli
         rebuild_session_products_sync(conn)
         status = session_product_status_sync(conn)
 
-    assert status["profile_count"] == 1
-    assert status["stale_profile_count"] == 0
-    assert status["stale_work_event_count"] == 0
-    assert status["stale_phase_count"] == 0
-    assert status["profiles_ready"] is True
-    assert status["work_events_ready"] is True
-    assert status["phases_ready"] is True
-    assert status["profile_fts_duplicate_count"] == 0
+    assert status["profile_row_count"] == 1
+    assert status["stale_profile_row_count"] == 0
+    assert status["stale_work_event_inference_count"] == 0
+    assert status["stale_phase_inference_count"] == 0
+    assert status["profile_rows_ready"] is True
+    assert status["work_event_inference_rows_ready"] is True
+    assert status["phase_inference_rows_ready"] is True
+    assert status["profile_merged_fts_duplicate_count"] == 0
 
 
 def test_targeted_session_product_rebuild_does_not_duplicate_profile_fts(cli_workspace):
@@ -331,7 +452,7 @@ def test_targeted_session_product_rebuild_does_not_duplicate_profile_fts(cli_wor
         rebuild_session_products_sync(conn, conversation_ids=["conv-root"])
         status = session_product_status_sync(conn)
 
-    assert status["profile_count"] == 2
-    assert status["profile_fts_count"] == 2
-    assert status["profile_fts_duplicate_count"] == 0
-    assert status["profiles_fts_ready"] is True
+    assert status["profile_row_count"] == 2
+    assert status["profile_merged_fts_count"] == 2
+    assert status["profile_merged_fts_duplicate_count"] == 0
+    assert status["profile_merged_fts_ready"] is True

@@ -26,6 +26,7 @@ class SessionProfile:
     substantive_count: int
     tool_use_count: int
     thinking_count: int
+    attachment_count: int
     word_count: int
     total_cost_usd: float
     total_duration_ms: int
@@ -63,6 +64,7 @@ class SessionProfile:
             "substantive_count": self.substantive_count,
             "tool_use_count": self.tool_use_count,
             "thinking_count": self.thinking_count,
+            "attachment_count": self.attachment_count,
             "word_count": self.word_count,
             "total_cost_usd": self.total_cost_usd,
             "total_duration_ms": self.total_duration_ms,
@@ -88,6 +90,8 @@ class SessionProfile:
                     "duration_ms": phase.duration_ms,
                     "tool_counts": phase.tool_counts,
                     "word_count": phase.word_count,
+                    "confidence": phase.confidence,
+                    "evidence": list(phase.evidence),
                 }
                 for phase in self.phases
             ],
@@ -136,6 +140,7 @@ class SessionProfile:
             substantive_count=int(payload.get("substantive_count", 0) or 0),
             tool_use_count=int(payload.get("tool_use_count", 0) or 0),
             thinking_count=int(payload.get("thinking_count", 0) or 0),
+            attachment_count=int(payload.get("attachment_count", 0) or 0),
             word_count=int(payload.get("word_count", 0) or 0),
             total_cost_usd=float(payload.get("total_cost_usd", 0.0) or 0.0),
             total_duration_ms=int(payload.get("total_duration_ms", 0) or 0),
@@ -168,6 +173,8 @@ class SessionProfile:
                     duration_ms=int(item.get("duration_ms", 0) or 0),
                     tool_counts={str(key): int(value or 0) for key, value in (item.get("tool_counts", {}) or {}).items()},
                     word_count=int(item.get("word_count", 0) or 0),
+                    confidence=float(item.get("confidence", 0.0) or 0.0),
+                    evidence=tuple(str(value) for value in item.get("evidence", []) or []),
                 )
                 for item in payload.get("phases", []) or []
                 if isinstance(item, dict)

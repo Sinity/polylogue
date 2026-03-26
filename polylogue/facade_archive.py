@@ -42,8 +42,13 @@ class PolylogueArchiveMixin:
     async def get_session_product_status(self) -> dict[str, int | bool]:
         return await self.operations.get_session_product_status()
 
-    async def get_session_profile_product(self, conversation_id: str) -> SessionProfileProduct | None:
-        return await self.operations.get_session_profile_product(conversation_id)
+    async def get_session_profile_product(
+        self,
+        conversation_id: str,
+        *,
+        tier: str = "merged",
+    ) -> SessionProfileProduct | None:
+        return await self.operations.get_session_profile_product(conversation_id, tier=tier)
 
     async def list_session_profile_products(
         self,

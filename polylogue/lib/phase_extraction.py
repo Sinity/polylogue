@@ -22,23 +22,27 @@ if TYPE_CHECKING:
 _PHASE_GAP = timedelta(minutes=5)
 
 
-def _classify_phase(tool_counts: dict[str, int]) -> str:
+def _classify_phase(tool_counts: dict[str, int]) -> tuple[str, float, tuple[str, ...]]:
     if not tool_counts:
-        return "conversation"
+        return "conversation", 0.55, ("no_tools",)
     dominant = max(tool_counts, key=tool_counts.get)
+    dominant_count = int(tool_counts.get(dominant, 0) or 0)
+    total = max(sum(tool_counts.values()), 1)
+    confidence = round(min(0.95, 0.45 + (dominant_count / total) * 0.5), 3)
+    evidence = (f"dominant_tool:{dominant}", f"dominant_ratio:{dominant_count}/{total}")
     if dominant in ("file_edit", "file_write"):
-        return "implementation"
+        return "implementation", confidence, evidence
     if dominant == "shell":
-        return "execution"
+        return "execution", confidence, evidence
     if dominant in ("file_read", "search"):
-        return "exploration"
+        return "exploration", confidence, evidence
     if dominant == "git":
-        return "version_control"
+        return "version_control", confidence, evidence
     if dominant in ("agent", "subagent"):
-        return "delegation"
+        return "delegation", confidence, evidence
     if dominant == "web":
-        return "web_research"
-    return "mixed"
+        return "web_research", confidence, evidence
+    return "mixed", max(confidence - 0.1, 0.35), evidence
 
 
 def _build_phase(
@@ -59,8 +63,9 @@ def _build_phase(
     if start_time and end_time:
         duration_ms = max(int((end_time - start_time).total_seconds() * 1000), 0)
 
+    kind, confidence, evidence = _classify_phase(dict(tool_counts))
     return SessionPhase(
-        kind=_classify_phase(dict(tool_counts)),
+        kind=kind,
         start_time=start_time,
         end_time=end_time,
         canonical_session_date=(start_time or end_time).date() if (start_time or end_time) else None,
@@ -68,6 +73,8 @@ def _build_phase(
         duration_ms=duration_ms,
         tool_counts=dict(tool_counts),
         word_count=word_count,
+        confidence=confidence,
+        evidence=evidence,
     )
 
 

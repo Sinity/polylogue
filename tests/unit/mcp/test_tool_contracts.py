@@ -304,12 +304,19 @@ class TestProductTools:
             conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
-            primary_work_kind="implementation",
+            semantic_tier="merged",
             provenance={
                 "materializer_version": 1,
                 "materialized_at": "2026-03-24T10:00:00+00:00",
             },
-            profile={"conversation_id": "conv-1", "title": "Profiled Session"},
+            evidence={"canonical_session_date": "2026-03-24", "message_count": 2},
+            inference_provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+                "inference_version": 1,
+                "inference_family": "heuristic_session_semantics",
+            },
+            inference={"primary_work_kind": "implementation", "engaged_duration_ms": 120000},
         )
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
@@ -331,36 +338,55 @@ class TestProductTools:
             conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
-            primary_work_kind="implementation",
+            semantic_tier="merged",
             provenance={
                 "materializer_version": 1,
                 "materialized_at": "2026-03-24T10:00:00+00:00",
             },
-            profile={"conversation_id": "conv-1"},
+            evidence={"canonical_session_date": "2026-03-24", "message_count": 2},
+            inference_provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+                "inference_version": 1,
+                "inference_family": "heuristic_session_semantics",
+            },
+            inference={"primary_work_kind": "implementation", "engaged_duration_ms": 120000},
         )
         work_event = SessionWorkEventProduct(
             event_id="evt-1",
             conversation_id="conv-1",
             provider_name="claude-code",
             event_index=0,
-            kind="implementation",
             provenance={
                 "materializer_version": 1,
                 "materialized_at": "2026-03-24T10:00:00+00:00",
             },
-            event={"summary": "editing files"},
+            inference_provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+                "inference_version": 1,
+                "inference_family": "heuristic_session_semantics",
+            },
+            evidence={"start_index": 0, "end_index": 1, "file_paths": ["/realm/project/polylogue/README.md"]},
+            inference={"kind": "implementation", "summary": "editing files", "confidence": 0.8},
         )
         phase = SessionPhaseProduct(
             phase_id="phase-1",
             conversation_id="conv-1",
             provider_name="claude-code",
             phase_index=0,
-            kind="implementation",
             provenance={
                 "materializer_version": 1,
                 "materialized_at": "2026-03-24T10:00:00+00:00",
             },
-            phase={"message_range": [0, 2], "tool_counts": {"edit": 1}},
+            inference_provenance={
+                "materializer_version": 1,
+                "materialized_at": "2026-03-24T10:00:00+00:00",
+                "inference_version": 1,
+                "inference_family": "heuristic_session_semantics",
+            },
+            evidence={"message_range": [0, 2], "tool_counts": {"edit": 1}},
+            inference={"kind": "implementation", "confidence": 0.8},
         )
         thread = WorkThreadProduct(
             thread_id="conv-1",

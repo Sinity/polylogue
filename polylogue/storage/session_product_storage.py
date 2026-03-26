@@ -13,70 +13,125 @@ from polylogue.storage.store import (
     _json_or_none,
 )
 
+_SYNC_COLUMN_CACHE: dict[tuple[int, str], bool] = {}
+
+
+def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    key = (id(conn), f"{table}.{column}")
+    cached = _SYNC_COLUMN_CACHE.get(key)
+    if cached is not None:
+        return cached
+    found = any(
+        str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    )
+    _SYNC_COLUMN_CACHE[key] = found
+    return found
+
 
 def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfileRecord) -> None:
     conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", (record.conversation_id,))
-    conn.execute(
-        """
-        INSERT INTO session_profiles (
-            conversation_id,
-            materializer_version,
-            materialized_at,
-            source_updated_at,
-            source_sort_key,
-            provider_name,
-            title,
-            first_message_at,
-            last_message_at,
-            canonical_session_date,
-            primary_work_kind,
-            repo_paths_json,
-            canonical_projects_json,
-            tags_json,
-            auto_tags_json,
-            message_count,
-            work_event_count,
-            phase_count,
-            word_count,
-            tool_use_count,
-            thinking_count,
-            total_cost_usd,
-            total_duration_ms,
-            engaged_duration_ms,
-            wall_duration_ms,
-            payload_json,
-            search_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            record.conversation_id,
-            record.materializer_version,
-            record.materialized_at,
-            record.source_updated_at,
-            record.source_sort_key,
-            record.provider_name,
-            record.title,
-            record.first_message_at,
-            record.last_message_at,
-            record.canonical_session_date,
-            record.primary_work_kind,
-            _json_array_or_none(record.repo_paths),
-            _json_array_or_none(record.canonical_projects),
-            _json_array_or_none(record.tags),
-            _json_array_or_none(record.auto_tags),
-            record.message_count,
-            record.work_event_count,
-            record.phase_count,
-            record.word_count,
-            record.tool_use_count,
-            record.thinking_count,
-            record.total_cost_usd,
-            record.total_duration_ms,
-            record.engaged_duration_ms,
-            record.wall_duration_ms,
-            _json_or_none(record.payload),
+    payload_json = _json_or_none(
+        {
+            **record.evidence_payload,
+            **record.inference_payload,
+            "conversation_id": str(record.conversation_id),
+            "provider": record.provider_name,
+            "title": record.title,
+        }
+    )
+    columns = [
+        "conversation_id",
+        "materializer_version",
+        "materialized_at",
+        "source_updated_at",
+        "source_sort_key",
+        "provider_name",
+        "title",
+        "first_message_at",
+        "last_message_at",
+        "canonical_session_date",
+        "primary_work_kind",
+        "repo_paths_json",
+        "canonical_projects_json",
+        "tags_json",
+        "auto_tags_json",
+        "message_count",
+        "substantive_count",
+        "attachment_count",
+        "work_event_count",
+        "phase_count",
+        "word_count",
+        "tool_use_count",
+        "thinking_count",
+        "total_cost_usd",
+        "total_duration_ms",
+        "engaged_duration_ms",
+        "wall_duration_ms",
+        "cost_is_estimated",
+    ]
+    values: list[object] = [
+        record.conversation_id,
+        record.materializer_version,
+        record.materialized_at,
+        record.source_updated_at,
+        record.source_sort_key,
+        record.provider_name,
+        record.title,
+        record.first_message_at,
+        record.last_message_at,
+        record.canonical_session_date,
+        record.primary_work_kind,
+        _json_array_or_none(record.repo_paths),
+        _json_array_or_none(record.canonical_projects),
+        _json_array_or_none(record.tags),
+        _json_array_or_none(record.auto_tags),
+        record.message_count,
+        record.substantive_count,
+        record.attachment_count,
+        record.work_event_count,
+        record.phase_count,
+        record.word_count,
+        record.tool_use_count,
+        record.thinking_count,
+        record.total_cost_usd,
+        record.total_duration_ms,
+        record.engaged_duration_ms,
+        record.wall_duration_ms,
+        int(record.cost_is_estimated),
+    ]
+    if _table_has_column(conn, "session_profiles", "payload_json"):
+        columns.append("payload_json")
+        values.append(payload_json)
+    columns.extend(
+        [
+            "evidence_payload_json",
+            "inference_payload_json",
+            "search_text",
+            "evidence_search_text",
+            "inference_search_text",
+            "inference_version",
+            "inference_family",
+        ]
+    )
+    values.extend(
+        [
+            _json_or_none(record.evidence_payload),
+            _json_or_none(record.inference_payload),
             record.search_text,
-        ),
+            record.evidence_search_text,
+            record.inference_search_text,
+            record.inference_version,
+            record.inference_family,
+        ]
+    )
+    placeholders = ", ".join("?" for _ in columns)
+    conn.execute(
+        f"""
+        INSERT INTO session_profiles (
+            {", ".join(columns)}
+        ) VALUES ({placeholders})
+        """,
+        tuple(values),
     )
 
 
@@ -87,55 +142,88 @@ def replace_session_work_events_sync(
 ) -> None:
     conn.execute("DELETE FROM session_work_events WHERE conversation_id = ?", (conversation_id,))
     if records:
+        has_legacy_payload = _table_has_column(conn, "session_work_events", "payload_json")
+        columns = [
+            "event_id",
+            "conversation_id",
+            "materializer_version",
+            "materialized_at",
+            "source_updated_at",
+            "source_sort_key",
+            "provider_name",
+            "event_index",
+            "kind",
+            "confidence",
+            "start_index",
+            "end_index",
+            "start_time",
+            "end_time",
+            "duration_ms",
+            "canonical_session_date",
+            "summary",
+            "file_paths_json",
+            "tools_used_json",
+        ]
+        if has_legacy_payload:
+            columns.append("payload_json")
+        columns.extend(
+            [
+                "evidence_payload_json",
+                "inference_payload_json",
+                "search_text",
+                "inference_version",
+                "inference_family",
+            ]
+        )
+        placeholders = ", ".join("?" for _ in columns)
         conn.executemany(
-            """
+            f"""
             INSERT INTO session_work_events (
-                event_id,
-                conversation_id,
-                materializer_version,
-                materialized_at,
-                source_updated_at,
-                source_sort_key,
-                provider_name,
-                event_index,
-                kind,
-                confidence,
-                start_index,
-                end_index,
-                start_time,
-                end_time,
-                duration_ms,
-                canonical_session_date,
-                summary,
-                file_paths_json,
-                tools_used_json,
-                payload_json,
-                search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                {", ".join(columns)}
+            ) VALUES ({placeholders})
             """,
             [
-                (
-                    record.event_id,
-                    record.conversation_id,
-                    record.materializer_version,
-                    record.materialized_at,
-                    record.source_updated_at,
-                    record.source_sort_key,
-                    record.provider_name,
-                    record.event_index,
-                    record.kind,
-                    record.confidence,
-                    record.start_index,
-                    record.end_index,
-                    record.start_time,
-                    record.end_time,
-                    record.duration_ms,
-                    record.canonical_session_date,
-                    record.summary,
-                    _json_array_or_none(record.file_paths),
-                    _json_array_or_none(record.tools_used),
-                    _json_or_none(record.payload),
-                    record.search_text,
+                tuple(
+                    [
+                        record.event_id,
+                        record.conversation_id,
+                        record.materializer_version,
+                        record.materialized_at,
+                        record.source_updated_at,
+                        record.source_sort_key,
+                        record.provider_name,
+                        record.event_index,
+                        record.kind,
+                        record.confidence,
+                        record.start_index,
+                        record.end_index,
+                        record.start_time,
+                        record.end_time,
+                        record.duration_ms,
+                        record.canonical_session_date,
+                        record.summary,
+                        _json_array_or_none(record.file_paths),
+                        _json_array_or_none(record.tools_used),
+                    ]
+                    + (
+                        [
+                            _json_or_none(
+                                {
+                                    **record.evidence_payload,
+                                    **record.inference_payload,
+                                }
+                            )
+                        ]
+                        if has_legacy_payload
+                        else []
+                    )
+                    + [
+                        _json_or_none(record.evidence_payload),
+                        _json_or_none(record.inference_payload),
+                        record.search_text,
+                        record.inference_version,
+                        record.inference_family,
+                    ]
                 )
                 for record in records
             ],
@@ -149,51 +237,88 @@ def replace_session_phases_sync(
 ) -> None:
     conn.execute("DELETE FROM session_phases WHERE conversation_id = ?", (conversation_id,))
     if records:
+        has_legacy_payload = _table_has_column(conn, "session_phases", "payload_json")
+        columns = [
+            "phase_id",
+            "conversation_id",
+            "materializer_version",
+            "materialized_at",
+            "source_updated_at",
+            "source_sort_key",
+            "provider_name",
+            "phase_index",
+            "kind",
+            "start_index",
+            "end_index",
+            "start_time",
+            "end_time",
+            "duration_ms",
+            "canonical_session_date",
+            "confidence",
+            "evidence_reasons_json",
+            "tool_counts_json",
+            "word_count",
+        ]
+        if has_legacy_payload:
+            columns.append("payload_json")
+        columns.extend(
+            [
+                "evidence_payload_json",
+                "inference_payload_json",
+                "search_text",
+                "inference_version",
+                "inference_family",
+            ]
+        )
+        placeholders = ", ".join("?" for _ in columns)
         conn.executemany(
-            """
+            f"""
             INSERT INTO session_phases (
-                phase_id,
-                conversation_id,
-                materializer_version,
-                materialized_at,
-                source_updated_at,
-                source_sort_key,
-                provider_name,
-                phase_index,
-                kind,
-                start_index,
-                end_index,
-                start_time,
-                end_time,
-                duration_ms,
-                canonical_session_date,
-                tool_counts_json,
-                word_count,
-                payload_json,
-                search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                {", ".join(columns)}
+            ) VALUES ({placeholders})
             """,
             [
-                (
-                    record.phase_id,
-                    record.conversation_id,
-                    record.materializer_version,
-                    record.materialized_at,
-                    record.source_updated_at,
-                    record.source_sort_key,
-                    record.provider_name,
-                    record.phase_index,
-                    record.kind,
-                    record.start_index,
-                    record.end_index,
-                    record.start_time,
-                    record.end_time,
-                    record.duration_ms,
-                    record.canonical_session_date,
-                    _json_or_none(record.tool_counts),
-                    record.word_count,
-                    _json_or_none(record.payload),
-                    record.search_text,
+                tuple(
+                    [
+                        record.phase_id,
+                        record.conversation_id,
+                        record.materializer_version,
+                        record.materialized_at,
+                        record.source_updated_at,
+                        record.source_sort_key,
+                        record.provider_name,
+                        record.phase_index,
+                        record.kind,
+                        record.start_index,
+                        record.end_index,
+                        record.start_time,
+                        record.end_time,
+                        record.duration_ms,
+                        record.canonical_session_date,
+                        record.confidence,
+                        _json_array_or_none(record.evidence_reasons),
+                        _json_or_none(record.tool_counts),
+                        record.word_count,
+                    ]
+                    + (
+                        [
+                            _json_or_none(
+                                {
+                                    **record.evidence_payload,
+                                    **record.inference_payload,
+                                }
+                            )
+                        ]
+                        if has_legacy_payload
+                        else []
+                    )
+                    + [
+                        _json_or_none(record.evidence_payload),
+                        _json_or_none(record.inference_payload),
+                        record.search_text,
+                        record.inference_version,
+                        record.inference_family,
+                    ]
                 )
                 for record in records
             ],

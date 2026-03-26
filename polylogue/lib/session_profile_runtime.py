@@ -83,6 +83,7 @@ def build_session_profile(
         substantive_count=facts.substantive_messages,
         tool_use_count=facts.tool_messages,
         thinking_count=facts.thinking_messages,
+        attachment_count=facts.attachment_count,
         word_count=facts.word_count,
         total_cost_usd=cost_usd,
         total_duration_ms=conversation.total_duration_ms,

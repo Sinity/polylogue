@@ -60,6 +60,13 @@ def products_status_command(env: AppEnv, json_mode: bool) -> None:
 @click.option("--first-message-until", default=None, help="Only sessions whose first message is on/before this timestamp")
 @click.option("--session-date-since", default=None, help="Only sessions whose canonical session date is on/after this date")
 @click.option("--session-date-until", default=None, help="Only sessions whose canonical session date is on/before this date")
+@click.option(
+    "--tier",
+    type=click.Choice(["merged", "evidence", "inference"]),
+    default="merged",
+    show_default=True,
+    help="Return merged, evidence-only, or inference-only profile products",
+)
 @click.option("--query", default=None, help="FTS query against product search text")
 @click.option("--limit", type=int, default=50, show_default=True, help="Maximum rows")
 @click.option("--offset", type=int, default=0, show_default=True, help="Start offset")
@@ -74,6 +81,7 @@ def products_profiles_command(
     first_message_until: str | None,
     session_date_since: str | None,
     session_date_until: str | None,
+    tier: str,
     query: str | None,
     limit: int,
     offset: int,
@@ -89,6 +97,7 @@ def products_profiles_command(
         first_message_until=first_message_until,
         session_date_since=session_date_since,
         session_date_until=session_date_until,
+        tier=tier,
         query=query,
         limit=limit,
         offset=offset,

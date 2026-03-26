@@ -115,26 +115,34 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
     try:
         with connection_context(None) as conn:
             status = session_product_status_sync(conn)
-            profile_fts_pending = max(0, int(status["profile_count"]) - int(status["profile_fts_count"]))
-            profile_fts_duplicates = max(0, int(status.get("profile_fts_duplicate_count", 0)))
-            work_event_fts_pending = max(0, int(status["work_event_count"]) - int(status["work_event_fts_count"]))
-            work_event_fts_duplicates = max(0, int(status.get("work_event_fts_duplicate_count", 0)))
+            profile_merged_fts_pending = max(0, int(status["profile_row_count"]) - int(status["profile_merged_fts_count"]))
+            profile_merged_fts_duplicates = max(0, int(status.get("profile_merged_fts_duplicate_count", 0)))
+            profile_evidence_fts_pending = max(0, int(status["profile_row_count"]) - int(status["profile_evidence_fts_count"]))
+            profile_evidence_fts_duplicates = max(0, int(status.get("profile_evidence_fts_duplicate_count", 0)))
+            profile_inference_fts_pending = max(0, int(status["profile_row_count"]) - int(status["profile_inference_fts_count"]))
+            profile_inference_fts_duplicates = max(0, int(status.get("profile_inference_fts_duplicate_count", 0)))
+            work_event_fts_pending = max(0, int(status["work_event_inference_count"]) - int(status["work_event_inference_fts_count"]))
+            work_event_fts_duplicates = max(0, int(status.get("work_event_inference_fts_duplicate_count", 0)))
             thread_fts_pending = max(0, int(status["thread_count"]) - int(status["thread_fts_count"]))
             thread_fts_duplicates = max(0, int(status.get("thread_fts_duplicate_count", 0)))
             pending = (
-                int(status["missing_profile_count"])
-                + int(status["stale_profile_count"])
-                + int(status["orphan_profile_count"])
-                + int(status["stale_work_event_count"])
-                + int(status["orphan_work_event_count"])
-                + int(status["stale_phase_count"])
-                + int(status["orphan_phase_count"])
+                int(status["missing_profile_row_count"])
+                + int(status["stale_profile_row_count"])
+                + int(status["orphan_profile_row_count"])
+                + int(status["stale_work_event_inference_count"])
+                + int(status["orphan_work_event_inference_count"])
+                + int(status["stale_phase_inference_count"])
+                + int(status["orphan_phase_inference_count"])
                 + int(status["stale_thread_count"])
                 + int(status["orphan_thread_count"])
                 + int(status["stale_tag_rollup_count"])
                 + int(status["stale_day_summary_count"])
-                + profile_fts_pending
-                + profile_fts_duplicates
+                + profile_merged_fts_pending
+                + profile_merged_fts_duplicates
+                + profile_evidence_fts_pending
+                + profile_evidence_fts_duplicates
+                + profile_inference_fts_pending
+                + profile_inference_fts_duplicates
                 + work_event_fts_pending
                 + work_event_fts_duplicates
                 + thread_fts_pending
@@ -151,11 +159,13 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                     detail=(
                         "Would: session products already ready"
                         if pending == 0
-                        and bool(status["profiles_ready"])
-                        and bool(status["profiles_fts_ready"])
-                        and bool(status["work_events_ready"])
-                        and bool(status["work_events_fts_ready"])
-                        and bool(status["phases_ready"])
+                        and bool(status["profile_rows_ready"])
+                        and bool(status["profile_merged_fts_ready"])
+                        and bool(status["profile_evidence_fts_ready"])
+                        and bool(status["profile_inference_fts_ready"])
+                        and bool(status["work_event_inference_rows_ready"])
+                        and bool(status["work_event_inference_fts_ready"])
+                        and bool(status["phase_inference_rows_ready"])
                         and bool(status["threads_ready"])
                         and bool(status["threads_fts_ready"])
                         and bool(status["tag_rollups_ready"])
@@ -163,19 +173,23 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                         and bool(status["week_summaries_ready"])
                         else (
                             "Would: rebuild session products "
-                            f"(missing_profiles={int(status['missing_profile_count']):,}, "
-                            f"stale_profiles={int(status['stale_profile_count']):,}, "
-                            f"orphan_profiles={int(status['orphan_profile_count']):,}, "
-                            f"stale_work_events={int(status['stale_work_event_count']):,}, "
-                            f"orphan_work_events={int(status['orphan_work_event_count']):,}, "
-                            f"stale_phases={int(status['stale_phase_count']):,}, "
-                            f"orphan_phases={int(status['orphan_phase_count']):,}, "
+                            f"(missing_profile_rows={int(status['missing_profile_row_count']):,}, "
+                            f"stale_profile_rows={int(status['stale_profile_row_count']):,}, "
+                            f"orphan_profile_rows={int(status['orphan_profile_row_count']):,}, "
+                            f"stale_work_event_inference={int(status['stale_work_event_inference_count']):,}, "
+                            f"orphan_work_event_inference={int(status['orphan_work_event_inference_count']):,}, "
+                            f"stale_phase_inference={int(status['stale_phase_inference_count']):,}, "
+                            f"orphan_phase_inference={int(status['orphan_phase_inference_count']):,}, "
                             f"stale_threads={int(status['stale_thread_count']):,}, "
                             f"orphan_threads={int(status['orphan_thread_count']):,}, "
                             f"stale_tag_rollups={int(status['stale_tag_rollup_count']):,}, "
                             f"stale_day_summaries={int(status['stale_day_summary_count']):,}, "
-                            f"profile_fts_pending={profile_fts_pending:,}, "
-                            f"profile_fts_duplicates={profile_fts_duplicates:,}, "
+                            f"profile_merged_fts_pending={profile_merged_fts_pending:,}, "
+                            f"profile_merged_fts_duplicates={profile_merged_fts_duplicates:,}, "
+                            f"profile_evidence_fts_pending={profile_evidence_fts_pending:,}, "
+                            f"profile_evidence_fts_duplicates={profile_evidence_fts_duplicates:,}, "
+                            f"profile_inference_fts_pending={profile_inference_fts_pending:,}, "
+                            f"profile_inference_fts_duplicates={profile_inference_fts_duplicates:,}, "
                             f"work_event_fts_pending={work_event_fts_pending:,}, "
                             f"work_event_fts_duplicates={work_event_fts_duplicates:,}, "
                             f"thread_fts_pending={thread_fts_pending:,}, "
@@ -188,11 +202,13 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
             conn.commit()
             refreshed = session_product_status_sync(conn)
             success = (
-                bool(refreshed["profiles_ready"])
-                and bool(refreshed["profiles_fts_ready"])
-                and bool(refreshed["work_events_ready"])
-                and bool(refreshed["work_events_fts_ready"])
-                and bool(refreshed["phases_ready"])
+                bool(refreshed["profile_rows_ready"])
+                and bool(refreshed["profile_merged_fts_ready"])
+                and bool(refreshed["profile_evidence_fts_ready"])
+                and bool(refreshed["profile_inference_fts_ready"])
+                and bool(refreshed["work_event_inference_rows_ready"])
+                and bool(refreshed["work_event_inference_fts_ready"])
+                and bool(refreshed["phase_inference_rows_ready"])
                 and bool(refreshed["threads_ready"])
                 and bool(refreshed["threads_fts_ready"])
                 and bool(refreshed["tag_rollups_ready"])
@@ -217,11 +233,13 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                     if success
                     else (
                         "Session products still incomplete: "
-                        f"profiles={int(refreshed['profile_count']):,}/{int(refreshed['total_conversations']):,}, "
-                        f"profile_fts={int(refreshed['profile_fts_count']):,}/{int(refreshed['profile_count']):,}, "
-                        f"work_events={int(refreshed['work_event_count']):,}/{int(refreshed['expected_work_event_count']):,}, "
-                        f"work_event_fts={int(refreshed['work_event_fts_count']):,}/{int(refreshed['work_event_count']):,}, "
-                        f"phases={int(refreshed['phase_count']):,}/{int(refreshed['expected_phase_count']):,}, "
+                        f"profile_rows={int(refreshed['profile_row_count']):,}/{int(refreshed['total_conversations']):,}, "
+                        f"profile_merged_fts={int(refreshed['profile_merged_fts_count']):,}/{int(refreshed['profile_row_count']):,}, "
+                        f"profile_evidence_fts={int(refreshed['profile_evidence_fts_count']):,}/{int(refreshed['profile_row_count']):,}, "
+                        f"profile_inference_fts={int(refreshed['profile_inference_fts_count']):,}/{int(refreshed['profile_row_count']):,}, "
+                        f"work_event_inference={int(refreshed['work_event_inference_count']):,}/{int(refreshed['expected_work_event_inference_count']):,}, "
+                        f"work_event_inference_fts={int(refreshed['work_event_inference_fts_count']):,}/{int(refreshed['work_event_inference_count']):,}, "
+                        f"phase_inference={int(refreshed['phase_inference_count']):,}/{int(refreshed['expected_phase_inference_count']):,}, "
                         f"threads={int(refreshed['thread_count']):,}/{int(refreshed['root_threads']):,}, "
                         f"thread_fts={int(refreshed['thread_fts_count']):,}/{int(refreshed['thread_count']):,}, "
                         f"tag_rollups={int(refreshed['tag_rollup_count']):,}/{int(refreshed['expected_tag_rollup_count']):,}, "
