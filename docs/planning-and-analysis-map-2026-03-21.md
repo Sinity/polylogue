@@ -24,7 +24,8 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/product-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/product-and-runtime-topology-cleanup-program-2026-03-26.md) | Current cleanup/refactoring program for archive-product, health/debt, query-SQL, validation-lane, and declarative-root topology narrowing | Active; this is now the live cleanup-focused broad queue after the executed probabilistic-enrichment wave |
+| [programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md) | Current cleanup/refactoring program for query-engine, operator-command, repository/repair/build, raw-payload/pipeline, schema-toolchain, and sqlite-vec topology narrowing | Active; this is now the live cleanup-focused broad queue after the executed product/runtime topology cleanup |
+| [programs/product-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/product-and-runtime-topology-cleanup-program-2026-03-26.md) | Executed cleanup/refactoring program for archive-product, health/debt, query-SQL, validation-lane, and declarative-root topology narrowing | Executed; archive-product/session-product/health/debt/template/validation roots were narrowed substantially, the named stewardship lane passed, and live archive debt remains clean |
 | [programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md](./programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md) | Executed convergence program for heuristic-inference hardening, durable enrichment products, retrieval-band rollout, consumer/operator convergence, and governed live cleanup | Executed; enrichment products, retrieval-enrichment health, live governed cleanup apply/validation lineage, and named enrichment/cleanup lanes are now in place |
 | [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md) | Executed convergence program for evidence-tier contracts, inference-tier governance, retrieval/embedding alignment, consumer contract convergence, and live semantic stewardship | Executed; durable evidence/inference product contracts, tiered profile retrieval, retrieval-band health, live migration compatibility, and named validation lanes are now in place |
 | [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) | Executed cleanup-only architectural debt-retirement record for mixed-role file breakup, ownership narrowing, public-root reduction, and deletion of structural overlap | Executed; high-leverage public roots, semantic runtime bands, search/runtime roots, schema/operator surfaces, and QA/reporting roots were narrowed or deleted |
@@ -126,7 +127,14 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/product-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/product-and-runtime-topology-cleanup-program-2026-03-26.md)
+- the current live implementation queue is now [programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md)
+- the just-executed cleanup program in [programs/product-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/product-and-runtime-topology-cleanup-program-2026-03-26.md) closed the main structural drag around:
+  - broad archive-product contract, mapper, and operator-support roots
+  - broad session-product row/store/status roots
+  - broad health/debt/MCP/product workflow and rendering roots
+  - broad conversation/raw SQL roots
+  - the oversized validation-lane registry
+  - the remaining mixed declarative site template root
 - the just-executed probabilistic/governed-cleanup program in [programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md](./programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md) closed the main semantic-governance gap around:
   - explicit support metadata for heuristic session products
   - durable probabilistic enrichment products queryable from CLI, library, sync, repository, and MCP
@@ -138,11 +146,13 @@ As of this map:
   - `orphaned_attachments=0`
   - `products debt --json` reports zero actionable debt
   - all durable session-product and retrieval-enrichment bands are ready, while transcript embeddings remain intentionally pending
-- the next broad drag is now structural, not capability-shaped:
-  - `archive_products.py`, `session_product_rows.py`, `mappers.py`, `derived_status.py`, `health_archive.py`, `archive_product_support.py`, and `server_product_tools.py` still spread one semantic family across too many broad roots
-  - `conversations.py` and `raw.py` remain broad SQL ownership nodes
-  - `run_validation_lanes.py` has become another large mixed registry
-  - `site/templates.py` remains a large declarative root worth splitting by page family while the current topology is fresh
+- the next cleanup drag is now deeper in the runtime substrate:
+  - the query engine still has broad plan/spec/retrieval roots such as `lib/query_plan.py`, `lib/query_spec.py`, and `lib/query_retrieval.py`
+  - operator command files like `cli/commands/products.py`, `cli/commands/run.py`, and `cli/check_workflow.py` still bundle too much wiring
+  - repository/repair/build roots like `repository_archive_reads.py`, `repair_derived.py`, `archive_product_builders.py`, and `mappers_products.py` still carry wide cross-family ownership
+  - `lib/raw_payload.py`, `pipeline/services/validation.py`, `pipeline/services/acquisition.py`, and `pipeline/semantic.py` still mix decoding, inference, concurrency, and lifecycle policy
+  - the schema toolchain still has several large helper roots such as `generation_support.py`, `generation_analysis.py`, `generation_workflow.py`, `roundtrip_proof.py`, and `sampling.py`
+  - `storage/search_providers/sqlite_vec.py` remains the single largest runtime provider boundary
 - the cleanup-only program in [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) is now executed
 - it closed the main structural debt around:
   - broad query-execution and query-store ownership

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import builtins
 
-from polylogue.storage.session_product_rows import (
+from polylogue.storage.session_product_profile_rows import hydrate_session_profile
+from polylogue.storage.session_product_thread_rows import hydrate_work_thread
+from polylogue.storage.session_product_timeline_rows import (
     hydrate_session_phase,
-    hydrate_session_profile,
     hydrate_work_event,
-    hydrate_work_thread,
 )
 
 
