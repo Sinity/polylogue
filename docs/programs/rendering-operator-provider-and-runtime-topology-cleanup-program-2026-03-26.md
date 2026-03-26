@@ -3,12 +3,12 @@
 # Rendering Operator Provider And Runtime Topology Cleanup Program
 
 Date: 2026-03-26
-Status: active cleanup/refactoring program
-Role: next ambitious cleanup-only broad queue after the executed deep query/service/schema topology cleanup
+Status: absorbed predecessor cleanup/refactoring program
+Role: narrower predecessor broadened into the codebase-wide cleanup/refactoring queue
 
-Replaces as the live queue:
+Replaced as the live queue by:
 
-- `deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md`
+- `codebase-wide-topology-and-debt-retirement-program-2026-03-26.md`
 
 Prerequisite executed programs:
 
