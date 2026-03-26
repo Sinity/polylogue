@@ -24,7 +24,8 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md) | Current execution program for evidence-tier contracts, inference-tier governance, retrieval/embedding alignment, consumer contract convergence, and live semantic stewardship | Active; this is now the live broad queue after the cleanup-only debt-retirement wave |
+| [programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md](./programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md) | Current execution program for probabilistic enrichment products, retrieval-band rollout, consumer convergence, and governed live cleanup | Active; this is now the live broad queue after the executed evidence/stewardship wave |
+| [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md) | Executed convergence program for evidence-tier contracts, inference-tier governance, retrieval/embedding alignment, consumer contract convergence, and live semantic stewardship | Executed; durable evidence/inference product contracts, tiered profile retrieval, retrieval-band health, live migration compatibility, and named validation lanes are now in place |
 | [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) | Executed cleanup-only architectural debt-retirement record for mixed-role file breakup, ownership narrowing, public-root reduction, and deletion of structural overlap | Executed; high-leverage public roots, semantic runtime bands, search/runtime roots, schema/operator surfaces, and QA/reporting roots were narrowed or deleted |
 | [programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md](./programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md) | Broader consumer/governance predecessor covering durable product contracts, governed destructive cleanup, stewardship history, and live archive governance | Absorbed predecessor; replaced as the live queue by the evidence/stewardship platform campaign |
 | [programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md](./programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md) | Executed convergence program for semantic/session product normalization, operator/toolchain narrowing, schema convergence, and live cleanup governance | Executed; canonical normalization, session-product/toolchain decomposition, archive-debt governance stages, and semantic-product validation lanes are now in place |
@@ -124,7 +125,20 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md)
+- the current live implementation queue is now [programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md](./programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md)
+- the evidence/stewardship program in [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md) is now executed
+- it closed the semantic-contract honesty gap around:
+  - explicit evidence-tier vs inference-tier contracts in durable session products
+  - tiered profile retrieval across CLI, repository, library, sync, and MCP
+  - inference provenance/version tracking for profiles, work events, and phases
+  - retrieval-band status for transcript, evidence, and inference retrieval
+  - live migration compatibility for upgraded archives with legacy payload columns and blank tier payload/search fields
+  - named contract, live, and memory-budget validation lanes for the new tier model
+- the next broad drag is now inference quality and archive governance:
+  - heuristic inference still drives important downstream timelines and summaries but remains only moderately strong
+  - transcript embeddings are still unmaterialized, so retrieval bands are honest but not yet fully populated
+  - downstream consumers still need a cleaner migration story for evidence vs heuristic inference vs richer probabilistic enrichment
+  - destructive live cleanup debt remains explicit for orphaned content blocks and attachments, but not yet fully governed through apply-and-validate lineage
 - the cleanup-only program in [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) is now executed
 - it closed the main structural debt around:
   - broad query-execution and query-store ownership
@@ -133,11 +147,6 @@ As of this map:
   - broad QA/reporting and search/runtime public roots
   - broad async-backend, lifecycle, facade, and semantic-surface declaration roots
 - the absorbed consumer/governance predecessor remains [programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md](./programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md)
-- the next broad drag is now semantic-contract honesty rather than structural breakup:
-  - explicit evidence vs inferred semantics are still too mixed in durable session products
-  - downstream consumers can still consume heuristic semantics as if they were canonical facts
-  - retrieval and embeddings need a clearer evidence-rich / inference-rich band model
-  - live stewardship should cover semantic-tier migration and readiness, not only archive cleanup debt
 - the just-executed semantic-product campaign in [programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md](./programs/semantic-product-normalization-and-toolchain-convergence-program-2026-03-24.md) is now executed
 - it closed the main semantic/toolchain drag around:
   - noisy project/repo canonicalization leaking into durable tag/day/week outputs
