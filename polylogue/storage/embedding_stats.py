@@ -120,6 +120,9 @@ def _build_retrieval_bands_from_status(
         and bool(session_status["work_event_inference_fts_ready"])
         and bool(session_status["phase_inference_rows_ready"])
     )
+    enrichment_source_rows = int(session_status["profile_row_count"])
+    enrichment_materialized_rows = int(session_status["profile_enrichment_fts_count"])
+    enrichment_ready = bool(session_status["profile_enrichment_fts_ready"])
 
     return {
         "transcript_embeddings": {
@@ -177,6 +180,22 @@ def _build_retrieval_bands_from_status(
                     f"profile_inference_fts={int(session_status['profile_inference_fts_count']):,}/{int(session_status['profile_row_count']):,}, "
                     f"work_event_inference_fts={int(session_status['work_event_inference_fts_count']):,}/{int(session_status['work_event_inference_count']):,}, "
                     f"phase_inference={int(session_status['phase_inference_count']):,}/{int(session_status['expected_phase_inference_count']):,})"
+                )
+            ),
+        },
+        "enrichment_retrieval": {
+            "status": "ready" if enrichment_ready else "pending",
+            "ready": enrichment_ready,
+            "source_rows": enrichment_source_rows,
+            "materialized_rows": enrichment_materialized_rows,
+            "pending_rows": max(0, enrichment_source_rows - enrichment_materialized_rows),
+            "stale_rows": int(session_status["profile_enrichment_fts_duplicate_count"]),
+            "detail": (
+                f"Enrichment retrieval ready ({enrichment_materialized_rows:,}/{enrichment_source_rows:,} supporting rows)"
+                if enrichment_ready
+                else (
+                    f"Enrichment retrieval pending ({enrichment_materialized_rows:,}/{enrichment_source_rows:,} supporting rows; "
+                    f"profile_enrichment_fts={int(session_status['profile_enrichment_fts_count']):,}/{int(session_status['profile_row_count']):,})"
                 )
             ),
         },

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 
 from click.testing import CliRunner
 
@@ -107,9 +106,27 @@ def _record_maintenance_lineage(cli_workspace) -> None:
             conn,
             MaintenanceRunRecord(
                 maintenance_run_id="maint-test-001",
-                executed_at=datetime.now(timezone.utc).isoformat(),
+                executed_at="2026-03-24T10:00:00+00:00",
                 mode="preview",
                 preview=True,
+                repair_selected=True,
+                cleanup_selected=False,
+                vacuum_requested=False,
+                target_names=("session_products",),
+                success=True,
+                manifest={
+                    "preview_counts": {"session_products": 2},
+                    "results": [{"name": "session_products", "repaired_count": 2}],
+                },
+            ),
+        )
+        record_maintenance_run_sync(
+            conn,
+            MaintenanceRunRecord(
+                maintenance_run_id="maint-test-002",
+                executed_at="2026-03-24T10:05:00+00:00",
+                mode="apply",
+                preview=False,
                 repair_selected=True,
                 cleanup_selected=False,
                 vacuum_requested=False,
@@ -121,16 +138,19 @@ def _record_maintenance_lineage(cli_workspace) -> None:
         record_maintenance_run_sync(
             conn,
             MaintenanceRunRecord(
-                maintenance_run_id="maint-test-002",
-                executed_at=datetime.now(timezone.utc).isoformat(),
-                mode="apply",
-                preview=False,
+                maintenance_run_id="maint-test-003",
+                executed_at="2026-03-24T10:10:00+00:00",
+                mode="preview",
+                preview=True,
                 repair_selected=True,
                 cleanup_selected=False,
                 vacuum_requested=False,
                 target_names=("session_products",),
                 success=True,
-                manifest={"results": [{"name": "session_products", "repaired_count": 2}]},
+                manifest={
+                    "preview_counts": {"session_products": 0},
+                    "results": [{"name": "session_products", "repaired_count": 0}],
+                },
             ),
         )
 
@@ -145,7 +165,7 @@ def test_products_profiles_json(cli_workspace):
     payload = _extract_json(result.output)
     assert payload["count"] == 2
     first = payload["session_profiles"][0]
-    assert first["contract_version"] == 3
+    assert first["contract_version"] == 4
     assert first["product_kind"] == "session_profile"
     assert first["semantic_tier"] == "merged"
     assert first["evidence"]["canonical_session_date"] == "2026-03-01"
@@ -153,6 +173,36 @@ def test_products_profiles_json(cli_workspace):
     assert "evidence" in first
     assert "inference" in first
     assert "provenance" in first
+
+
+def test_products_enrichments_json(cli_workspace):
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "products",
+            "enrichments",
+            "--provider",
+            "claude-code",
+            "--session-date-since",
+            "2026-03-01",
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["count"] == 2
+    first = payload["session_enrichments"][0]
+    assert first["contract_version"] == 4
+    assert first["product_kind"] == "session_enrichment"
+    assert first["semantic_tier"] == "enrichment"
+    assert first["enrichment_provenance"]["enrichment_family"] == "scored_session_enrichment"
+    assert first["enrichment"]["support_level"] in {"weak", "moderate", "strong"}
+    assert "input_band_summary" in first["enrichment"]
 
 
 def test_products_profiles_json_supports_explicit_evidence_and_inference_tiers(cli_workspace):
@@ -322,6 +372,7 @@ def test_products_threads_and_status_json(cli_workspace):
     assert status_payload["session_products"]["profile_merged_fts_ready"] is True
     assert status_payload["session_products"]["profile_evidence_fts_ready"] is True
     assert status_payload["session_products"]["profile_inference_fts_ready"] is True
+    assert status_payload["session_products"]["profile_enrichment_fts_ready"] is True
     assert status_payload["session_products"]["phase_inference_rows_ready"] is True
     assert status_payload["session_products"]["threads_ready"] is True
     assert status_payload["session_products"]["tag_rollups_ready"] is True
@@ -402,6 +453,9 @@ def test_products_debt_json(cli_workspace):
     assert session_product_item["governance_stage"] == "validated"
     assert session_product_item["lineage"]["latest_preview_at"] is not None
     assert session_product_item["lineage"]["latest_successful_apply_at"] is not None
+    assert session_product_item["lineage"]["latest_validation_at"] is not None
+    assert session_product_item["lineage"]["latest_validation_issue_count"] == 0
+    assert session_product_item["lineage"]["latest_successful_validation_at"] is not None
 
 
 def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli_workspace):

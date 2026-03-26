@@ -29,6 +29,7 @@ EXPECTED_TOOL_NAMES = {
     "export_conversation",
     "session_profile",
     "session_profiles",
+    "session_enrichments",
     "session_work_events",
     "session_phases",
     "session_tag_rollups",

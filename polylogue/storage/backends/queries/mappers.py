@@ -224,6 +224,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
     search_text = row["search_text"]
     evidence_search_text = (_row_get(row, "evidence_search_text", "") or "").strip() or search_text
     inference_search_text = (_row_get(row, "inference_search_text", "") or "").strip() or search_text
+    enrichment_search_text = (_row_get(row, "enrichment_search_text", "") or "").strip() or inference_search_text
     legacy_payload = _parse_json(
         _row_get(row, "payload_json"),
         field="payload_json",
@@ -280,10 +281,42 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
             "phase_count": int(_row_get(row, "phase_count", 0) or legacy_payload.get("phase_count") or 0),
             "engaged_duration_ms": int(_row_get(row, "engaged_duration_ms", 0) or legacy_payload.get("engaged_duration_ms") or 0),
             "engaged_minutes": float(legacy_payload.get("engaged_minutes") or 0.0),
+            "support_level": str(legacy_payload.get("support_level") or "weak"),
+            "support_signals": tuple(legacy_payload.get("support_signals") or ()),
+            "engaged_duration_source": str(legacy_payload.get("engaged_duration_source") or "session_total_fallback"),
+            "project_inference_strength": str(legacy_payload.get("project_inference_strength") or "weak"),
+            "decision_signal_strength": str(legacy_payload.get("decision_signal_strength") or "weak"),
             "auto_tags": tuple(_parse_json(_row_get(row, "auto_tags_json")) or legacy_payload.get("auto_tags") or []),
             "work_events": tuple(legacy_payload.get("work_events") or ()),
             "phases": tuple(legacy_payload.get("phases") or ()),
             "decisions": tuple(legacy_payload.get("decisions") or ()),
+        }
+    enrichment_payload = (
+        _parse_json(
+            _row_get(row, "enrichment_payload_json"),
+            field="enrichment_payload_json",
+            record_id=row["conversation_id"],
+        )
+        or {}
+    )
+    if not enrichment_payload:
+        decisions = tuple(inference_payload.get("decisions") or ())
+        enrichment_payload = {
+            "intent_summary": row["title"] or legacy_payload.get("title"),
+            "outcome_summary": decisions[-1].get("summary") if decisions else None,
+            "blockers": (),
+            "refined_work_kind": inference_payload.get("primary_work_kind") or _row_get(row, "primary_work_kind"),
+            "confidence": 0.35 if (inference_payload.get("primary_work_kind") or _row_get(row, "primary_work_kind")) else 0.0,
+            "support_level": "weak",
+            "support_signals": tuple(inference_payload.get("support_signals") or ()),
+            "input_band_summary": {
+                "user_turns": 0,
+                "assistant_turns": 0,
+                "action_events": 0,
+                "touched_paths": len(_parse_json(_row_get(row, "repo_paths_json")) or []),
+                "canonical_projects": len(_parse_json(_row_get(row, "canonical_projects_json")) or []),
+                "decisions": len(decisions),
+            },
         }
     return SessionProfileRecord(
         conversation_id=ConversationId(row["conversation_id"]),
@@ -316,9 +349,13 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         cost_is_estimated=bool(int(_row_get(row, "cost_is_estimated", 0) or 0)),
         evidence_payload=evidence_payload,
         inference_payload=inference_payload,
+        enrichment_payload=enrichment_payload,
         search_text=search_text,
         evidence_search_text=evidence_search_text,
         inference_search_text=inference_search_text,
+        enrichment_search_text=enrichment_search_text,
+        enrichment_version=int(_row_get(row, "enrichment_version", 1) or 1),
+        enrichment_family=_row_get(row, "enrichment_family", "scored_session_enrichment"),
         inference_version=int(_row_get(row, "inference_version", 1) or 1),
         inference_family=_row_get(row, "inference_family", "heuristic_session_semantics"),
     )

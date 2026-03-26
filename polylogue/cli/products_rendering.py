@@ -67,6 +67,37 @@ def render_session_profiles(items: list[object], *, json_mode: bool) -> None:
         )
 
 
+def render_session_enrichments(items: list[object], *, json_mode: bool) -> None:
+    if json_mode:
+        emit_product_list(key="session_enrichments", items=items)
+        return
+    if not items:
+        click.echo("No session enrichments matched.")
+        return
+    click.echo(f"Session enrichments: {len(items)}\n")
+    for item in items:
+        enrichment = item.enrichment.model_dump(mode="json")
+        click.echo(
+            f"  {item.conversation_id} [{item.provider_name}] "
+            f"{enrichment.get('refined_work_kind', '-') or '-'} "
+            f"{item.title or '(untitled)'}"
+        )
+        click.echo(
+            f"    confidence={enrichment.get('confidence', 0) or 0:.2f} "
+            f"support={enrichment.get('support_level', '-') or '-'} "
+            f"family={item.enrichment_provenance.enrichment_family}"
+        )
+        click.echo(
+            f"    intent={enrichment.get('intent_summary', '-') or '-'} "
+            f"outcome={enrichment.get('outcome_summary', '-') or '-'}"
+        )
+        blockers = enrichment.get("blockers", [])
+        click.echo(
+            f"    blockers={len(blockers)} "
+            f"signals={', '.join(enrichment.get('support_signals', [])[:4]) or '-'}"
+        )
+
+
 def render_session_work_events(items: list[object], *, json_mode: bool) -> None:
     if json_mode:
         emit_product_list(key="session_work_events", items=items)
@@ -252,7 +283,10 @@ def render_archive_debt(items: list[object], *, json_mode: bool) -> None:
             click.echo(
                 f"    lineage preview={item.lineage.latest_preview_at or '-'} "
                 f"apply={item.lineage.latest_apply_at or '-'} "
-                f"ok_apply={item.lineage.latest_successful_apply_at or '-'}"
+                f"ok_apply={item.lineage.latest_successful_apply_at or '-'} "
+                f"validate={item.lineage.latest_validation_at or '-'} "
+                f"ok_validate={item.lineage.latest_successful_validation_at or '-'} "
+                f"regressed={item.lineage.latest_regressed_at or '-'}"
             )
 
 
@@ -263,6 +297,7 @@ __all__ = [
     "render_maintenance_runs",
     "render_products_status",
     "render_provider_analytics",
+    "render_session_enrichments",
     "render_session_phases",
     "render_session_profiles",
     "render_session_tag_rollups",

@@ -46,6 +46,8 @@ def collect_derived_model_statuses_sync(
     profile_evidence_fts_duplicates = int(session_status["profile_evidence_fts_duplicate_count"])
     profile_inference_fts_rows = int(session_status["profile_inference_fts_count"])
     profile_inference_fts_duplicates = int(session_status["profile_inference_fts_duplicate_count"])
+    profile_enrichment_fts_rows = int(session_status["profile_enrichment_fts_count"])
+    profile_enrichment_fts_duplicates = int(session_status["profile_enrichment_fts_duplicate_count"])
     expected_work_event_rows = int(session_status["expected_work_event_inference_count"])
     work_event_rows = int(session_status["work_event_inference_count"])
     work_event_fts_rows = int(session_status["work_event_inference_fts_count"])
@@ -89,6 +91,9 @@ def collect_derived_model_statuses_sync(
         and bool(session_status["work_event_inference_fts_ready"])
         and bool(session_status["phase_inference_rows_ready"])
     )
+    enrichment_retrieval_rows = profile_enrichment_fts_rows
+    expected_enrichment_retrieval_rows = profile_rows
+    enrichment_retrieval_ready = bool(session_status["profile_enrichment_fts_ready"])
 
     return {
         "messages_fts": DerivedModelStatus(
@@ -199,6 +204,22 @@ def collect_derived_model_statuses_sync(
             materialized_rows=profile_inference_fts_rows,
             pending_rows=_pending_rows(profile_rows, profile_inference_fts_rows),
             stale_rows=profile_inference_fts_duplicates,
+        ),
+        "session_profile_enrichment_fts": DerivedModelStatus(
+            name="session_profile_enrichment_fts",
+            ready=bool(session_status["profile_enrichment_fts_ready"]),
+            detail=(
+                f"Session-profile enrichment FTS ready ({profile_enrichment_fts_rows:,}/{profile_rows:,} rows)"
+                if bool(session_status["profile_enrichment_fts_ready"])
+                else (
+                    f"Session-profile enrichment FTS pending ({profile_enrichment_fts_rows:,}/{profile_rows:,} rows, "
+                    f"duplicates {profile_enrichment_fts_duplicates:,})"
+                )
+            ),
+            source_rows=profile_rows,
+            materialized_rows=profile_enrichment_fts_rows,
+            pending_rows=_pending_rows(profile_rows, profile_enrichment_fts_rows),
+            stale_rows=profile_enrichment_fts_duplicates,
         ),
         "session_work_event_inference": DerivedModelStatus(
             name="session_work_event_inference",
@@ -406,6 +427,22 @@ def collect_derived_model_statuses_sync(
                 + int(session_status["orphan_work_event_inference_count"])
                 + int(session_status["orphan_phase_inference_count"])
             ),
+        ),
+        "retrieval_enrichment": DerivedModelStatus(
+            name="retrieval_enrichment",
+            ready=enrichment_retrieval_ready,
+            detail=(
+                f"Enrichment retrieval ready ({enrichment_retrieval_rows:,}/{expected_enrichment_retrieval_rows:,} supporting rows)"
+                if enrichment_retrieval_ready
+                else (
+                    f"Enrichment retrieval pending ({enrichment_retrieval_rows:,}/{expected_enrichment_retrieval_rows:,} supporting rows; "
+                    f"profile_enrichment_fts={profile_enrichment_fts_rows:,}/{profile_rows:,})"
+                )
+            ),
+            source_rows=expected_enrichment_retrieval_rows,
+            materialized_rows=enrichment_retrieval_rows,
+            pending_rows=_pending_rows(expected_enrichment_retrieval_rows, enrichment_retrieval_rows),
+            stale_rows=profile_enrichment_fts_duplicates,
         ),
     }
 

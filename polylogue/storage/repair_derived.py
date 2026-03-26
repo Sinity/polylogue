@@ -121,6 +121,8 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
             profile_evidence_fts_duplicates = max(0, int(status.get("profile_evidence_fts_duplicate_count", 0)))
             profile_inference_fts_pending = max(0, int(status["profile_row_count"]) - int(status["profile_inference_fts_count"]))
             profile_inference_fts_duplicates = max(0, int(status.get("profile_inference_fts_duplicate_count", 0)))
+            profile_enrichment_fts_pending = max(0, int(status["profile_row_count"]) - int(status["profile_enrichment_fts_count"]))
+            profile_enrichment_fts_duplicates = max(0, int(status.get("profile_enrichment_fts_duplicate_count", 0)))
             work_event_fts_pending = max(0, int(status["work_event_inference_count"]) - int(status["work_event_inference_fts_count"]))
             work_event_fts_duplicates = max(0, int(status.get("work_event_inference_fts_duplicate_count", 0)))
             thread_fts_pending = max(0, int(status["thread_count"]) - int(status["thread_fts_count"]))
@@ -143,6 +145,8 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                 + profile_evidence_fts_duplicates
                 + profile_inference_fts_pending
                 + profile_inference_fts_duplicates
+                + profile_enrichment_fts_pending
+                + profile_enrichment_fts_duplicates
                 + work_event_fts_pending
                 + work_event_fts_duplicates
                 + thread_fts_pending
@@ -163,6 +167,7 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                         and bool(status["profile_merged_fts_ready"])
                         and bool(status["profile_evidence_fts_ready"])
                         and bool(status["profile_inference_fts_ready"])
+                        and bool(status["profile_enrichment_fts_ready"])
                         and bool(status["work_event_inference_rows_ready"])
                         and bool(status["work_event_inference_fts_ready"])
                         and bool(status["phase_inference_rows_ready"])
@@ -190,6 +195,8 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                             f"profile_evidence_fts_duplicates={profile_evidence_fts_duplicates:,}, "
                             f"profile_inference_fts_pending={profile_inference_fts_pending:,}, "
                             f"profile_inference_fts_duplicates={profile_inference_fts_duplicates:,}, "
+                            f"profile_enrichment_fts_pending={profile_enrichment_fts_pending:,}, "
+                            f"profile_enrichment_fts_duplicates={profile_enrichment_fts_duplicates:,}, "
                             f"work_event_fts_pending={work_event_fts_pending:,}, "
                             f"work_event_fts_duplicates={work_event_fts_duplicates:,}, "
                             f"thread_fts_pending={thread_fts_pending:,}, "
@@ -206,6 +213,7 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                 and bool(refreshed["profile_merged_fts_ready"])
                 and bool(refreshed["profile_evidence_fts_ready"])
                 and bool(refreshed["profile_inference_fts_ready"])
+                and bool(refreshed["profile_enrichment_fts_ready"])
                 and bool(refreshed["work_event_inference_rows_ready"])
                 and bool(refreshed["work_event_inference_fts_ready"])
                 and bool(refreshed["phase_inference_rows_ready"])
@@ -237,6 +245,7 @@ def repair_session_products(config: Config, dry_run: bool = False) -> RepairResu
                         f"profile_merged_fts={int(refreshed['profile_merged_fts_count']):,}/{int(refreshed['profile_row_count']):,}, "
                         f"profile_evidence_fts={int(refreshed['profile_evidence_fts_count']):,}/{int(refreshed['profile_row_count']):,}, "
                         f"profile_inference_fts={int(refreshed['profile_inference_fts_count']):,}/{int(refreshed['profile_row_count']):,}, "
+                        f"profile_enrichment_fts={int(refreshed['profile_enrichment_fts_count']):,}/{int(refreshed['profile_row_count']):,}, "
                         f"work_event_inference={int(refreshed['work_event_inference_count']):,}/{int(refreshed['expected_work_event_inference_count']):,}, "
                         f"work_event_inference_fts={int(refreshed['work_event_inference_fts_count']):,}/{int(refreshed['work_event_inference_count']):,}, "
                         f"phase_inference={int(refreshed['phase_inference_count']):,}/{int(refreshed['expected_phase_inference_count']):,}, "

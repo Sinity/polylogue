@@ -10,6 +10,8 @@ from polylogue.types import ConversationId
 
 from .store_core import (
     MAINTENANCE_RUN_SCHEMA_VERSION,
+    SESSION_ENRICHMENT_FAMILY,
+    SESSION_ENRICHMENT_VERSION,
     SESSION_INFERENCE_FAMILY,
     SESSION_INFERENCE_VERSION,
     SESSION_PRODUCT_MATERIALIZER_VERSION,
@@ -50,6 +52,10 @@ class SessionProfileRecord(BaseModel):
     search_text: str
     evidence_search_text: str
     inference_search_text: str
+    enrichment_payload: dict[str, Any]
+    enrichment_search_text: str
+    enrichment_version: int = SESSION_ENRICHMENT_VERSION
+    enrichment_family: str = SESSION_ENRICHMENT_FAMILY
     inference_version: int = SESSION_INFERENCE_VERSION
     inference_family: str = SESSION_INFERENCE_FAMILY
 
@@ -60,6 +66,8 @@ class SessionProfileRecord(BaseModel):
         "search_text",
         "evidence_search_text",
         "inference_search_text",
+        "enrichment_search_text",
+        "enrichment_family",
         "inference_family",
     )
     @classmethod

@@ -45,8 +45,15 @@ python -m devtools.run_validation_lanes --lane inference-tier-contracts
 python -m devtools.run_validation_lanes --lane mixed-consumer-contracts
 python -m devtools.run_validation_lanes --lane retrieval-band-readiness
 python -m devtools.run_validation_lanes --lane evidence-stewardship-contracts
+python -m devtools.run_validation_lanes --lane heuristic-inference-contracts
+python -m devtools.run_validation_lanes --lane probabilistic-enrichment-contracts
+python -m devtools.run_validation_lanes --lane governed-cleanup-contracts
 python -m devtools.run_validation_lanes --lane evidence-stewardship-live --dry-run
 python -m devtools.run_validation_lanes --lane evidence-stewardship-hardening --dry-run
+python -m devtools.run_validation_lanes --lane live-products-enrichments --dry-run
+python -m devtools.run_validation_lanes --lane probabilistic-enrichment-live --dry-run
+python -m devtools.run_validation_lanes --lane governed-cleanup-live --dry-run
+python -m devtools.run_validation_lanes --lane probabilistic-enrichment-hardening --dry-run
 python -m devtools.run_validation_lanes --lane semantic-product-live --dry-run
 python -m devtools.run_validation_lanes --lane semantic-product-hardening --dry-run
 python -m devtools.run_validation_lanes --lane runtime-substrate-contracts
@@ -85,8 +92,15 @@ Lane intent:
 - `mixed-consumer-contracts`: CLI, facade, MCP, and health surfaces consuming the same evidence/inference product model
 - `retrieval-band-readiness`: transcript/evidence/inference retrieval-band readiness, embedding stats, and health exposure
 - `evidence-stewardship-contracts`: `evidence-tier-contracts` plus `inference-tier-contracts`, `mixed-consumer-contracts`, and `retrieval-band-readiness`
+- `heuristic-inference-contracts`: support/confidence/provenance contracts for heuristic profile, work-event, and phase products
+- `probabilistic-enrichment-contracts`: durable enrichment-product contract lane across CLI, library, sync, repository, MCP, and retrieval-health surfaces
+- `governed-cleanup-contracts`: archive-debt lineage, maintenance preview/apply semantics, and cleanup-governance contract lane
 - `evidence-stewardship-live`: bounded live archive lane for tiered product views, live session-product repair, health, and retrieval-band budgets
 - `evidence-stewardship-hardening`: `evidence-stewardship-contracts` plus `evidence-stewardship-live`
+- `live-products-enrichments`: bounded live archive lane for enrichment-product reads
+- `probabilistic-enrichment-live`: bounded live archive lane for enrichment products, retrieval bands, and health surfaces
+- `governed-cleanup-live`: bounded live archive lane for cleanup debt preview/validation governance and maintenance budgets
+- `probabilistic-enrichment-hardening`: heuristic inference + probabilistic enrichment + governed cleanup closure lane
 - `semantic-product-live`: bounded live archive lane for normalized product surfaces, debt governance, and maintenance preview/budgets
 - `semantic-product-hardening`: `semantic-product-normalization` plus `semantic-product-live`
 - `runtime-substrate-contracts`: local closure lane for the decomposed query/runtime/product/maintenance contract surfaces

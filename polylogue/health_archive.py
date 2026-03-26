@@ -147,9 +147,11 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
             transcript_embeddings = derived_statuses["transcript_embeddings"]
             retrieval_evidence = derived_statuses["retrieval_evidence"]
             retrieval_inference = derived_statuses["retrieval_inference"]
+            retrieval_enrichment = derived_statuses["retrieval_enrichment"]
             session_profile_rows = derived_statuses.get("session_profile_rows")
             session_profile_evidence_fts = derived_statuses.get("session_profile_evidence_fts")
             session_profile_inference_fts = derived_statuses.get("session_profile_inference_fts")
+            session_profile_enrichment_fts = derived_statuses.get("session_profile_enrichment_fts")
             session_work_event_inference = derived_statuses.get("session_work_event_inference")
             session_work_event_inference_fts = derived_statuses.get("session_work_event_inference_fts")
             session_phase_inference = derived_statuses.get("session_phase_inference")
@@ -233,6 +235,14 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                     summary=retrieval_inference.detail,
                 )
             )
+            checks.append(
+                HealthCheck(
+                    "retrieval_enrichment",
+                    VerifyStatus.OK if retrieval_enrichment.ready else VerifyStatus.WARNING,
+                    count=retrieval_enrichment.pending_rows,
+                    summary=retrieval_enrichment.detail,
+                )
+            )
             if session_profile_rows is not None:
                 checks.append(
                     HealthCheck(
@@ -258,6 +268,15 @@ def run_archive_health(config: Config, *, deep: bool = False) -> HealthReport:
                         VerifyStatus.OK if session_profile_inference_fts.ready else VerifyStatus.WARNING,
                         count=session_profile_inference_fts.materialized_rows,
                         summary=session_profile_inference_fts.detail,
+                    )
+                )
+            if session_profile_enrichment_fts is not None:
+                checks.append(
+                    HealthCheck(
+                        "session_profile_enrichment_fts",
+                        VerifyStatus.OK if session_profile_enrichment_fts.ready else VerifyStatus.WARNING,
+                        count=session_profile_enrichment_fts.materialized_rows,
+                        summary=session_profile_enrichment_fts.detail,
                     )
                 )
             if session_work_event_inference is not None:

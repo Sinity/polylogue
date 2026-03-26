@@ -14,6 +14,7 @@ _SESSION_PROFILES_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table
 _SESSION_PROFILES_FTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles_fts'"
 _SESSION_PROFILE_EVIDENCE_FTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profile_evidence_fts'"
 _SESSION_PROFILE_INFERENCE_FTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profile_inference_fts'"
+_SESSION_PROFILE_ENRICHMENT_FTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profile_enrichment_fts'"
 _SESSION_WORK_EVENTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events'"
 _SESSION_WORK_EVENTS_FTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events_fts'"
 _SESSION_PHASES_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='session_phases'"
@@ -28,6 +29,8 @@ _SESSION_PROFILE_EVIDENCE_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT conversatio
 _SESSION_PROFILE_EVIDENCE_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT conversation_id) FROM session_profile_evidence_fts"
 _SESSION_PROFILE_INFERENCE_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT conversation_id) FROM session_profile_inference_fts"
 _SESSION_PROFILE_INFERENCE_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT conversation_id) FROM session_profile_inference_fts"
+_SESSION_PROFILE_ENRICHMENT_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT conversation_id) FROM session_profile_enrichment_fts"
+_SESSION_PROFILE_ENRICHMENT_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT conversation_id) FROM session_profile_enrichment_fts"
 _SESSION_WORK_EVENT_COUNT_SQL = "SELECT COUNT(*) FROM session_work_events"
 _SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT event_id) FROM session_work_events_fts"
 _SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts"
@@ -232,6 +235,7 @@ def session_product_status_sync(conn: sqlite3.Connection) -> dict[str, int | boo
     session_profiles_fts_exists = bool(conn.execute(_SESSION_PROFILES_FTS_EXISTS_SQL).fetchone())
     session_profile_evidence_fts_exists = bool(conn.execute(_SESSION_PROFILE_EVIDENCE_FTS_EXISTS_SQL).fetchone())
     session_profile_inference_fts_exists = bool(conn.execute(_SESSION_PROFILE_INFERENCE_FTS_EXISTS_SQL).fetchone())
+    session_profile_enrichment_fts_exists = bool(conn.execute(_SESSION_PROFILE_ENRICHMENT_FTS_EXISTS_SQL).fetchone())
     session_work_events_exists = bool(conn.execute(_SESSION_WORK_EVENTS_EXISTS_SQL).fetchone())
     session_work_events_fts_exists = bool(conn.execute(_SESSION_WORK_EVENTS_FTS_EXISTS_SQL).fetchone())
     session_phases_exists = bool(conn.execute(_SESSION_PHASES_EXISTS_SQL).fetchone())
@@ -249,6 +253,8 @@ def session_product_status_sync(conn: sqlite3.Connection) -> dict[str, int | boo
     evidence_profile_fts_duplicate_count = int(conn.execute(_SESSION_PROFILE_EVIDENCE_FTS_DUPLICATE_COUNT_SQL).fetchone()[0] or 0) if session_profile_evidence_fts_exists else 0
     inference_profile_fts_count = int(conn.execute(_SESSION_PROFILE_INFERENCE_FTS_DOC_COUNT_SQL).fetchone()[0] or 0) if session_profile_inference_fts_exists else 0
     inference_profile_fts_duplicate_count = int(conn.execute(_SESSION_PROFILE_INFERENCE_FTS_DUPLICATE_COUNT_SQL).fetchone()[0] or 0) if session_profile_inference_fts_exists else 0
+    enrichment_profile_fts_count = int(conn.execute(_SESSION_PROFILE_ENRICHMENT_FTS_DOC_COUNT_SQL).fetchone()[0] or 0) if session_profile_enrichment_fts_exists else 0
+    enrichment_profile_fts_duplicate_count = int(conn.execute(_SESSION_PROFILE_ENRICHMENT_FTS_DUPLICATE_COUNT_SQL).fetchone()[0] or 0) if session_profile_enrichment_fts_exists else 0
     work_event_inference_count = int(conn.execute(_SESSION_WORK_EVENT_COUNT_SQL).fetchone()[0] or 0) if session_work_events_exists else 0
     work_event_inference_fts_count = int(conn.execute(_SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL).fetchone()[0] or 0) if session_work_events_fts_exists else 0
     work_event_inference_fts_duplicate_count = int(conn.execute(_SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL).fetchone()[0] or 0) if session_work_events_fts_exists else 0
@@ -283,6 +289,8 @@ def session_product_status_sync(conn: sqlite3.Connection) -> dict[str, int | boo
         "profile_evidence_fts_duplicate_count": evidence_profile_fts_duplicate_count,
         "profile_inference_fts_count": inference_profile_fts_count,
         "profile_inference_fts_duplicate_count": inference_profile_fts_duplicate_count,
+        "profile_enrichment_fts_count": enrichment_profile_fts_count,
+        "profile_enrichment_fts_duplicate_count": enrichment_profile_fts_duplicate_count,
         "work_event_inference_count": work_event_inference_count,
         "work_event_inference_fts_count": work_event_inference_fts_count,
         "work_event_inference_fts_duplicate_count": work_event_inference_fts_duplicate_count,
@@ -311,6 +319,7 @@ def session_product_status_sync(conn: sqlite3.Connection) -> dict[str, int | boo
         "profile_merged_fts_ready": session_profiles_fts_exists and profile_merged_fts_count == profile_count and profile_merged_fts_duplicate_count == 0,
         "profile_evidence_fts_ready": session_profile_evidence_fts_exists and evidence_profile_fts_count == profile_count and evidence_profile_fts_duplicate_count == 0,
         "profile_inference_fts_ready": session_profile_inference_fts_exists and inference_profile_fts_count == profile_count and inference_profile_fts_duplicate_count == 0,
+        "profile_enrichment_fts_ready": session_profile_enrichment_fts_exists and enrichment_profile_fts_count == profile_count and enrichment_profile_fts_duplicate_count == 0,
         "work_event_inference_rows_ready": session_work_events_exists and work_event_inference_count == expected_work_event_count and stale_work_event_count == 0 and orphan_work_event_count == 0,
         "work_event_inference_fts_ready": session_work_events_fts_exists and work_event_inference_fts_count == work_event_inference_count and work_event_inference_fts_duplicate_count == 0,
         "phase_inference_rows_ready": session_phases_exists and phase_inference_count == expected_phase_count and stale_phase_count == 0 and orphan_phase_count == 0,
@@ -330,6 +339,7 @@ async def session_product_status_async(conn: aiosqlite.Connection) -> dict[str, 
     session_profiles_fts_exists = bool(await (await conn.execute(_SESSION_PROFILES_FTS_EXISTS_SQL)).fetchone())
     session_profile_evidence_fts_exists = bool(await (await conn.execute(_SESSION_PROFILE_EVIDENCE_FTS_EXISTS_SQL)).fetchone())
     session_profile_inference_fts_exists = bool(await (await conn.execute(_SESSION_PROFILE_INFERENCE_FTS_EXISTS_SQL)).fetchone())
+    session_profile_enrichment_fts_exists = bool(await (await conn.execute(_SESSION_PROFILE_ENRICHMENT_FTS_EXISTS_SQL)).fetchone())
     session_work_events_exists = bool(await (await conn.execute(_SESSION_WORK_EVENTS_EXISTS_SQL)).fetchone())
     session_work_events_fts_exists = bool(await (await conn.execute(_SESSION_WORK_EVENTS_FTS_EXISTS_SQL)).fetchone())
     session_phases_exists = bool(await (await conn.execute(_SESSION_PHASES_EXISTS_SQL)).fetchone())
@@ -346,6 +356,8 @@ async def session_product_status_async(conn: aiosqlite.Connection) -> dict[str, 
     evidence_profile_fts_duplicate_count = to_int(await (await conn.execute(_SESSION_PROFILE_EVIDENCE_FTS_DUPLICATE_COUNT_SQL)).fetchone()) if session_profile_evidence_fts_exists else 0
     inference_profile_fts_count = to_int(await (await conn.execute(_SESSION_PROFILE_INFERENCE_FTS_DOC_COUNT_SQL)).fetchone()) if session_profile_inference_fts_exists else 0
     inference_profile_fts_duplicate_count = to_int(await (await conn.execute(_SESSION_PROFILE_INFERENCE_FTS_DUPLICATE_COUNT_SQL)).fetchone()) if session_profile_inference_fts_exists else 0
+    enrichment_profile_fts_count = to_int(await (await conn.execute(_SESSION_PROFILE_ENRICHMENT_FTS_DOC_COUNT_SQL)).fetchone()) if session_profile_enrichment_fts_exists else 0
+    enrichment_profile_fts_duplicate_count = to_int(await (await conn.execute(_SESSION_PROFILE_ENRICHMENT_FTS_DUPLICATE_COUNT_SQL)).fetchone()) if session_profile_enrichment_fts_exists else 0
     work_event_inference_count = to_int(await (await conn.execute(_SESSION_WORK_EVENT_COUNT_SQL)).fetchone()) if session_work_events_exists else 0
     work_event_inference_fts_count = to_int(await (await conn.execute(_SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL)).fetchone()) if session_work_events_fts_exists else 0
     work_event_inference_fts_duplicate_count = to_int(await (await conn.execute(_SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL)).fetchone()) if session_work_events_fts_exists else 0
@@ -380,6 +392,8 @@ async def session_product_status_async(conn: aiosqlite.Connection) -> dict[str, 
         "profile_evidence_fts_duplicate_count": evidence_profile_fts_duplicate_count,
         "profile_inference_fts_count": inference_profile_fts_count,
         "profile_inference_fts_duplicate_count": inference_profile_fts_duplicate_count,
+        "profile_enrichment_fts_count": enrichment_profile_fts_count,
+        "profile_enrichment_fts_duplicate_count": enrichment_profile_fts_duplicate_count,
         "work_event_inference_count": work_event_inference_count,
         "work_event_inference_fts_count": work_event_inference_fts_count,
         "work_event_inference_fts_duplicate_count": work_event_inference_fts_duplicate_count,
@@ -408,6 +422,7 @@ async def session_product_status_async(conn: aiosqlite.Connection) -> dict[str, 
         "profile_merged_fts_ready": session_profiles_fts_exists and profile_merged_fts_count == profile_count and profile_merged_fts_duplicate_count == 0,
         "profile_evidence_fts_ready": session_profile_evidence_fts_exists and evidence_profile_fts_count == profile_count and evidence_profile_fts_duplicate_count == 0,
         "profile_inference_fts_ready": session_profile_inference_fts_exists and inference_profile_fts_count == profile_count and inference_profile_fts_duplicate_count == 0,
+        "profile_enrichment_fts_ready": session_profile_enrichment_fts_exists and enrichment_profile_fts_count == profile_count and enrichment_profile_fts_duplicate_count == 0,
         "work_event_inference_rows_ready": session_work_events_exists and work_event_inference_count == expected_work_event_count and stale_work_event_count == 0 and orphan_work_event_count == 0,
         "work_event_inference_fts_ready": session_work_events_fts_exists and work_event_inference_fts_count == work_event_inference_count and work_event_inference_fts_duplicate_count == 0,
         "phase_inference_rows_ready": session_phases_exists and phase_inference_count == expected_phase_count and stale_phase_count == 0 and orphan_phase_count == 0,

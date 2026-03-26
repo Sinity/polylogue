@@ -95,6 +95,22 @@ def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "ALTER TABLE session_profiles ADD COLUMN inference_search_text TEXT NOT NULL DEFAULT ''"
             )
+        if "enrichment_payload_json" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN enrichment_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "enrichment_search_text" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN enrichment_search_text TEXT NOT NULL DEFAULT ''"
+            )
+        if "enrichment_version" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN enrichment_version INTEGER NOT NULL DEFAULT 1"
+            )
+        if "enrichment_family" not in session_profile_columns:
+            conn.execute(
+                "ALTER TABLE session_profiles ADD COLUMN enrichment_family TEXT NOT NULL DEFAULT 'scored_session_enrichment'"
+            )
         if "inference_version" not in session_profile_columns:
             conn.execute(
                 "ALTER TABLE session_profiles ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1"
@@ -115,6 +131,13 @@ def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
             UPDATE session_profiles
             SET inference_search_text = search_text
             WHERE TRIM(COALESCE(inference_search_text, '')) = ''
+            """
+        )
+        conn.execute(
+            """
+            UPDATE session_profiles
+            SET enrichment_search_text = inference_search_text
+            WHERE TRIM(COALESCE(enrichment_search_text, '')) = ''
             """
         )
 
