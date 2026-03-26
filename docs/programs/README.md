@@ -12,7 +12,7 @@ use the most recent executed and absorbed cleanup records for context.
 Use them in this order:
 
 1. [codebase-wide-topology-and-debt-retirement-program-2026-03-26.md](./codebase-wide-topology-and-debt-retirement-program-2026-03-26.md)
-   Current whole-repository cleanup/refactoring queue covering rendering, CLI/UI/sync, MCP/operations, storage, schema, sources, lib/domain, pipeline/showcase/site, and cross-cutting package-root, test, devtools, and documentation topology.
+   Current whole-repository cleanup/refactoring queue, now with explicit wave-based execution order, parallel workstreams, and closure tactics across rendering, CLI/UI/sync, MCP/operations, storage, schema, sources, lib/domain, pipeline/showcase/site, and cross-cutting package-root, test, devtools, and documentation topology.
 2. [rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md](./rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md)
    Absorbed predecessor queue that scoped the next cleanup wave to rendering/semantic-proof, operator adapters, storage write/rebuild bands, schema runtime analysis, provider/source boundaries, and domain/query-evidence topology narrowing.
 3. [deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md)

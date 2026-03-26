@@ -189,6 +189,378 @@ why it is now single-role rather than merely still broad.
 Each phase must prove the entire affected band still passes, not just the one
 module that was edited.
 
+## Detailed Execution Strategy
+
+This program executes in waves, not by opportunistically touching whichever
+large file is closest.
+
+The operating model is:
+
+1. establish shared contract boundaries first
+2. freeze those boundaries for the rest of the wave
+3. run disjoint write-set lanes in parallel wherever possible
+4. merge only after the owning band’s tests and lint slices pass
+5. keep tests, devtools, and docs moving with the owning code rather than as a
+   trailing cleanup-only appendix
+
+The queue should therefore be read in two dimensions:
+
+- phases define ownership bands
+- waves define actual execution order and parallelization
+
+## Parallelization Rules
+
+### 1. Parallelize By Disjoint Write Set, Not By Theme Alone
+
+Two lanes can run at the same time only if they do not write the same root
+module family.
+
+Examples:
+
+- safe parallel pair: `sources/` lane and `rendering/` lane
+- unsafe parallel pair: two different lanes both editing `cli/` root adapters
+- unsafe parallel pair: storage-query cleanup and repository-write cleanup if
+  both will modify the same repository or SQL root
+
+### 2. Freeze Shared Contracts Before Spawning Downstream Lanes
+
+Parallel downstream work starts only after the relevant shared contract band is
+ stable enough for other lanes to target.
+
+The main contract freeze points are:
+
+- `lib/` domain/query/evidence contracts
+- `storage/` row, DDL, repository, and SQL family boundaries
+- `schemas/` runtime/tooling contract boundaries
+- root CLI/MCP/public operator contracts
+
+### 3. One Owner Per Broad Root Family
+
+At any moment, one lane owns a broad root family:
+
+- one owner for `rendering/*`
+- one owner for `cli` output roots
+- one owner for `cli` control-plane roots
+- one owner for `storage/backends/queries/*`
+- one owner for `schemas/*` runtime/tooling family under active cleanup
+
+### 4. Cross-Cutting Support Files Move With Their Owning Lane
+
+Tests, docs, validation-lane entries, snapshots, and references are updated by
+the same lane that changes the underlying code. They are not deferred to an
+end-of-program janitorial pass except for final consolidation.
+
+### 5. Final Sweep Is Serial
+
+The last sweep for retained broad roots, import cleanup, package roots, and
+composite validation runs serially after all parallel lanes have landed.
+
+## Wave Plan And Parallel Workstreams
+
+## Wave 0: Baseline, Guardrails, And Ownership Map
+
+### Purpose
+
+Create the execution baseline and remove ambiguity before any broad edits land.
+
+### Work
+
+- snapshot current broad roots by package and line count
+- confirm the validation slices attached to each band
+- confirm the live command set used for runtime/memory proof
+- assign lane ownership boundaries so no two lanes touch the same broad root family
+
+### Parallelization
+
+- read-only inventory work can run in parallel
+- no code edits land in this wave
+
+### Output
+
+- updated working notes or execution record with package inventory
+- agreed write-set boundaries for Waves 1 through 5
+
+## Wave 1: Foundation Contract Cleanup
+
+### Purpose
+
+Stabilize the contract-bearing bands that downstream lanes depend on.
+
+### Included Phases
+
+- Phase 4: storage runtime, write, query, rebuild, and search cleanup
+- Phase 5: schema runtime, analysis, verification, and synthetic cleanup
+- Phase 7: domain, evidence, query, and product-entity cleanup
+
+### Critical Path
+
+This is the main dependency wave. Downstream lanes should not start broad code
+moves until these contracts are stable enough.
+
+### Parallel Lanes
+
+#### Lane 1A: Domain And Query Contracts
+
+Write set:
+
+- `polylogue/lib/`
+- `polylogue/archive_product_entities.py`
+
+Primary work:
+
+- narrow evidence/query/model roots
+- isolate contract models from runtime assembly helpers
+- reduce residual broad query-runtime support roots
+
+#### Lane 1B: Storage Families
+
+Write set:
+
+- `polylogue/storage/`
+- `polylogue/storage/backends/queries/`
+- `polylogue/storage/backends/schema_ddl*.py`
+
+Primary work:
+
+- split rebuild, status, DDL, SQL, and row-support roots
+- narrow repository read/write families
+- reduce broad FTS/search orchestration roots
+
+#### Lane 1C: Schema Runtime And Tooling
+
+Write set:
+
+- `polylogue/schemas/`
+
+Primary work:
+
+- split broad analysis/runtime helpers
+- narrow verification, operator workflow, and synthetic helper families
+
+### Parallelization Tactics
+
+- start Lane 1A first and establish any contract changes touching shared domain
+  models
+- Lane 1C can begin in parallel with Lane 1A on read-only survey and on schema
+  roots that do not import moving `lib/` contracts
+- Lane 1B should wait until Lane 1A freezes any moved query/evidence contracts
+  that affect row or repository typing
+- once the shared contracts are frozen, Lane 1B and Lane 1C can proceed in
+  parallel because their write sets are disjoint
+
+### Wave Exit Criteria
+
+- all shared contract moves are landed
+- downstream operator/source/pipeline lanes can target stable imports
+- foundation regression slices for `lib`, `storage`, and `schemas` pass
+
+## Wave 2: Ingest And Provider Runtime Cleanup
+
+### Purpose
+
+Clean up the runtime surfaces that consume the foundation contracts directly.
+
+### Included Phases
+
+- Phase 6: provider, source, parser, and Drive boundary cleanup
+- pipeline half of Phase 8
+
+### Parallel Lanes
+
+#### Lane 2A: Provider And Source Runtime
+
+Write set:
+
+- `polylogue/sources/providers/`
+- `polylogue/sources/drive*.py`
+- `polylogue/sources/decoders.py`
+- `polylogue/sources/dispatch.py`
+- `polylogue/sources/emitter.py`
+
+#### Lane 2B: Parser Family
+
+Write set:
+
+- `polylogue/sources/parsers/`
+
+#### Lane 2C: Pipeline Runtime
+
+Write set:
+
+- `polylogue/pipeline/`
+
+### Parallelization Tactics
+
+- Lane 2A and Lane 2B can run in parallel after Wave 1 because they share the
+  `sources/` band but have mostly disjoint provider-vs-parser write sets
+- Lane 2C can run in parallel with either source lane once any moved provider
+  contracts it imports are frozen
+- if `sources/source_*` or shared parsing contracts move, merge those first,
+  then resume the dependent lane rather than letting both lanes edit shared support roots
+
+### Wave Exit Criteria
+
+- provider runtime, parser scaffolding, and pipeline orchestration roots are
+  narrowed without reintroducing cross-band helpers
+- source and pipeline regression slices pass together
+
+## Wave 3: Presentation And Operator Surface Cleanup
+
+### Purpose
+
+Narrow presentation and operator bands after their supporting contracts are stable.
+
+### Included Phases
+
+- Phase 1: rendering, proof, and output surface cleanup
+- Phase 2: CLI, UI, sync, and operator control-plane cleanup
+- Phase 3: MCP and operations consumer surface cleanup
+- site and showcase half of Phase 8
+
+### Parallel Lanes
+
+#### Lane 3A: Rendering And Output
+
+Write set:
+
+- `polylogue/rendering/`
+- output-facing `polylogue/cli/query_output.py`
+- output-facing `polylogue/cli/check_rendering.py`
+- output-facing `polylogue/cli/schema_rendering.py`
+- output formatting helpers under `cli/` and `rendering/`
+
+#### Lane 3B: CLI, UI, And Sync Control Plane
+
+Write set:
+
+- `polylogue/cli/commands/`
+- `polylogue/cli/click_app.py`
+- `polylogue/cli/helpers.py`
+- `polylogue/cli/check_workflow.py`
+- `polylogue/cli/run_workflow.py`
+- `polylogue/ui/`
+- `polylogue/sync.py`
+
+#### Lane 3C: MCP And Operations
+
+Write set:
+
+- `polylogue/mcp/`
+- `polylogue/operations/`
+
+#### Lane 3D: Site And Showcase Presentation
+
+Write set:
+
+- `polylogue/showcase/`
+- `polylogue/site/`
+
+### Parallelization Tactics
+
+- Lane 3A and Lane 3C can run in parallel immediately after Wave 1 because they
+  mostly consume stabilized domain/storage contracts
+- Lane 3B should avoid overlapping with Lane 3A on shared `cli/` roots; split
+  ownership exactly by file, not by directory
+- Lane 3D can run in parallel with Lane 3C and with most of Lane 3B once any
+  shared rendering/root CLI surfaces it consumes are frozen
+- if a lane needs to move a shared operator contract, land that contract move
+  first, then let the dependent lane rebase and continue
+
+### Wave Exit Criteria
+
+- rendering, CLI/UI/sync, MCP/operations, site, and showcase roots are all
+  thinner and consistently layered
+- operator-facing regression slices and representative CLI/MCP/site/showcase
+  checks pass
+
+## Wave 4: Package-Root, Test, Devtools, And Documentation Convergence
+
+### Purpose
+
+Eliminate support-surface drift introduced by the cleanup waves.
+
+### Included Phases
+
+- Phase 9 in full
+- cross-cutting fallout from Waves 1 through 3
+
+### Work
+
+- remove obsolete re-exports and package-root drift
+- update tests and fixtures that still encode old ownership assumptions
+- narrow validation-lane registry and memory-budget probes to the new topology
+- update CLI/docs/program references that still describe superseded structure
+
+### Parallelization
+
+- tests/docs cleanup can run in parallel with devtools/docs cleanup only if the
+  write sets are disjoint
+- package-root cleanup should run serially at the end of the wave because it is
+  the easiest place to create accidental import churn across the repo
+
+### Wave Exit Criteria
+
+- package roots, tests, devtools, and docs all reflect the new topology
+- no obsolete imports or compatibility-shaped re-exports remain
+
+## Wave 5: Final Sweep, Retained-Root Audit, And Composite Proof
+
+### Purpose
+
+Close the campaign with a serial audit and verification pass.
+
+### Work
+
+- inspect every intentionally retained broad root and justify it in the execution record
+- remove any cleanup leftovers discovered only after the parallel waves merge
+- rerun composite and live validation lanes
+- rerun representative live CLI commands and memory-budget probes
+
+### Parallelization
+
+- none; this wave is intentionally serial
+
+### Wave Exit Criteria
+
+- the execution record can honestly say the whole repo was covered
+- any retained broad root has explicit justification
+- composite proof, live proof, and memory proof all pass
+
+## Commit And Merge Strategy
+
+- one commit per coherent lane or sub-wave, not one commit per file
+- do not mix foundation-contract moves with downstream operator cleanup in the
+  same commit unless the downstream consumer must move in lockstep
+- keep test and doc edits in the same commit as their owning code whenever possible
+- if a wave lands in multiple commits, the last commit of the wave should leave
+  the band green on its own regression slice
+
+## Verification Cadence
+
+### After Each Lane
+
+- run the lane-local pytest slice
+- run `ruff check` on the touched package family
+- run `git diff --check`
+
+### After Each Wave
+
+- run the combined regression slice for the full affected band
+- rerun any composite validation lane that crosses that band
+- update docs/tests/devtools touched by the wave before declaring it closed
+
+### Final Closure
+
+- run the broad targeted pytest matrix spanning all nine bands
+- run at least one named composite lane and one live/archive-oriented lane
+- run:
+  - `python -m polylogue --plain products status --json`
+  - `python -m polylogue --plain products debt --json`
+  - `python -m polylogue --plain check --json`
+  - `python -m polylogue --plain embed --stats --json`
+- run the representative memory-budget probe set
+- confirm `earlyoom` stayed quiet during the representative runs
+
 ## Phase 1: Rendering, Proof, And Output Surface Cleanup
 
 ### Targets
