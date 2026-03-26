@@ -1,10 +1,6 @@
-"""Jinja template definitions and environment helpers for static-site generation."""
+"""Jinja template definitions for static-site generation."""
 
 from __future__ import annotations
-
-from jinja2 import DictLoader, Environment, select_autoescape
-
-from polylogue.rendering.renderers.html import PygmentsHighlighter
 
 INDEX_TEMPLATE = """<!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -645,27 +641,3 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>
 """
-
-
-def build_template_environments(highlighter: PygmentsHighlighter) -> tuple[Environment, Environment]:
-    """Build index/dashboard and conversation template environments."""
-    conversation_template = CONVERSATION_TEMPLATE.replace(
-        "{{ highlight_css }}",
-        highlighter.get_css(),
-    )
-    index_env = Environment(
-        loader=DictLoader({
-            "index.html": INDEX_TEMPLATE,
-            "dashboard.html": DASHBOARD_TEMPLATE,
-        }),
-        autoescape=select_autoescape(["html", "xml"]),
-        enable_async=True,
-    )
-    page_env = Environment(
-        loader=DictLoader({
-            "conversation.html": conversation_template,
-        }),
-        autoescape=select_autoescape(["html", "xml"]),
-        enable_async=True,
-    )
-    return index_env, page_env

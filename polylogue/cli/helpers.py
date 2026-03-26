@@ -13,12 +13,23 @@ from polylogue.config import Config
 from polylogue.health_archive import get_health
 from polylogue.health_cache import cached_health_summary
 from polylogue.logging import get_logger
-from polylogue.operations import compute_provider_comparison, get_provider_counts
+from polylogue.operations import get_provider_counts, list_provider_analytics_products
 from polylogue.pipeline.runner import latest_run
 from polylogue.sync_bridge import run_coroutine_sync
 from polylogue.ui.theme import provider_color
 
 logger = get_logger(__name__)
+
+__all__ = [
+    "fail",
+    "load_effective_config",
+    "load_last_source",
+    "maybe_prompt_sources",
+    "print_summary",
+    "resolve_sources",
+    "save_last_source",
+    "source_state_path",
+]
 
 
 def fail(command: str, message: str) -> NoReturn:
@@ -128,18 +139,39 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
             f"Embeddings: {archive_stats.embedded_conversations:,}/{archive_stats.total_conversations:,} convs, "
             f"{archive_stats.embedded_messages:,} msgs ({archive_stats.embedding_coverage:.1f}%)"
         )
-        if archive_stats.pending_embedding_conversations:
-            embedding_line += f", pending {archive_stats.pending_embedding_conversations:,}"
-        if archive_stats.stale_embedding_messages:
-            embedding_line += f", stale {archive_stats.stale_embedding_messages:,}"
+        pending_embedding_conversations = getattr(
+            archive_stats,
+            "pending_embedding_conversations",
+            0,
+        )
+        stale_embedding_messages = getattr(
+            archive_stats,
+            "stale_embedding_messages",
+            0,
+        )
+        missing_embedding_provenance = getattr(
+            archive_stats,
+            "messages_missing_embedding_provenance",
+            0,
+        )
+        if pending_embedding_conversations:
+            embedding_line += f", pending {pending_embedding_conversations:,}"
+        if stale_embedding_messages:
+            embedding_line += f", stale {stale_embedding_messages:,}"
+        if missing_embedding_provenance:
+            embedding_line += f", missing provenance {missing_embedding_provenance:,}"
         lines.append(embedding_line)
 
     if verbose:
         # Show detailed health checks
-        report = get_health(config)
-        cached = report.cached
-        age = report.age_seconds
-        health_header = f"Health (cached={cached}, age={age}s)" if cached is not None else "Health"
+        report = get_health(config, use_cached=True)
+        provenance = report.provenance
+        health_header = f"Health (source={provenance.source.value}"
+        if provenance.cache_age_seconds is not None:
+            health_header += f", age={provenance.cache_age_seconds}s"
+        if provenance.cache_ttl_seconds is not None:
+            health_header += f", ttl={provenance.cache_ttl_seconds}s"
+        health_header += ")"
         lines.append(health_header)
         checks = report.checks
         if checks:
@@ -164,7 +196,7 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         try:
             if verbose:
                 # Full metrics (slow: ~29s) needed for Deep Dive section
-                metrics = run_coroutine_sync(compute_provider_comparison(services=env.services))
+                metrics = run_coroutine_sync(list_provider_analytics_products(services=env.services))
                 counts: list[tuple[str, int]] = [(m.provider_name, m.conversation_count) for m in metrics]
             else:
                 # Fast path: conversations-table-only query (~1ms)

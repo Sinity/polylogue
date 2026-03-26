@@ -13,6 +13,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from polylogue.lib.action_events import ActionEvent
+from polylogue.lib.project_normalization import normalize_project_names, normalize_repo_path, normalize_repo_paths
 from polylogue.lib.semantic_facts import ConversationSemanticFacts, build_conversation_semantic_facts
 
 if TYPE_CHECKING:
@@ -30,12 +31,7 @@ _LANGUAGE_EXTENSIONS = {
 
 def _repo_root_from_path(path: str) -> str | None:
     """Derive a likely repository root from a file path."""
-    parts = PurePosixPath(path).parts
-    # Look for /realm/project/<name> pattern
-    for i, part in enumerate(parts):
-        if part == "project" and i > 0 and i + 1 < len(parts):
-            return str(PurePosixPath(*parts[: i + 2]))
-    return None
+    return normalize_repo_path(path)
 
 
 def _language_from_path(path: str) -> str | None:
@@ -127,23 +123,15 @@ def extract_attribution_from_action_events(
             if repo:
                 repo_paths.add(repo)
 
-    canonical: set[str] = set()
-    for rp in repo_paths:
-        parts = PurePosixPath(rp).parts
-        for i, part in enumerate(parts):
-            if part == "project" and i + 1 < len(parts):
-                name = parts[i + 1]
-                if name and not name.startswith("."):
-                    canonical.add(name)
-                break
+    normalized_repo_paths = normalize_repo_paths(repo_paths)
 
     return ConversationAttribution(
-        repo_paths=tuple(sorted(repo_paths)),
+        repo_paths=normalized_repo_paths,
         cwd_paths=tuple(sorted(cwd_paths)),
         branch_names=tuple(sorted(branch_names)),
         file_paths_touched=tuple(sorted(file_paths)),
         languages_detected=tuple(sorted(languages)),
-        canonical_projects=tuple(sorted(canonical)),
+        canonical_projects=normalize_project_names(repo_paths=normalized_repo_paths),
     )
 
 
@@ -186,15 +174,15 @@ def extract_attribution(
             if lang_name in text_lower:
                 languages.add(lang_name)
 
+    normalized_repo_paths = normalize_repo_paths(repo_paths)
     return ConversationAttribution(
-        repo_paths=tuple(sorted(repo_paths)),
+        repo_paths=normalized_repo_paths,
         cwd_paths=tuple(sorted(cwd_paths)),
         branch_names=tuple(sorted(branch_names)),
         file_paths_touched=tuple(sorted(file_paths)),
         languages_detected=tuple(sorted(languages)),
-        canonical_projects=tuple(sorted({
-            PurePosixPath(path).name
-            for path in repo_paths
-            if PurePosixPath(path).parent.name == "project"
-        })),
+        canonical_projects=normalize_project_names(
+            base.canonical_projects,
+            repo_paths=normalized_repo_paths,
+        ),
     )

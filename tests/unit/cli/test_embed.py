@@ -143,6 +143,10 @@ class TestShowEmbeddingStats:
                 embedded_conversations=40,
                 embedded_messages=200,
                 pending_conversations=60,
+                retrieval_bands={
+                    "transcript_embeddings": {"ready": False, "status": "partial"},
+                    "evidence_retrieval": {"ready": True, "status": "ready"},
+                },
             ),
         ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
@@ -154,6 +158,7 @@ class TestShowEmbeddingStats:
         assert payload["embedded_conversations"] == 40
         assert payload["pending_conversations"] == 60
         assert payload["retrieval_ready"] is True
+        assert payload["retrieval_bands"]["evidence_retrieval"]["ready"] is True
 
 
 class TestEmbedSingle:
