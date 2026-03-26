@@ -15,8 +15,22 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.config import Source
+from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
-from polylogue.sources import source as source_module
+from polylogue.sources.cursor import (
+    _get_file_mtime,
+    _initialize_cursor_state,
+    _log_source_iteration_summary,
+    _ParseContext,
+    _record_cursor_failure,
+    _select_paths_for_processing,
+)
+from polylogue.sources.decoders import (
+    _decode_json_bytes,
+    _iter_json_stream,
+    _zip_entry_provider_hint,
+    _ZipEntryValidator,
+)
 from polylogue.sources.dispatch import (
     detect_provider,
     parse_drive_payload,
@@ -27,7 +41,8 @@ from polylogue.sources.drive import (
     drive_cache_file_path,
     iter_drive_raw_data,
 )
-from polylogue.sources.drive_client import DriveFile
+from polylogue.sources.drive_types import DriveFile
+from polylogue.sources.emitter import _ConversationEmitter
 from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 from polylogue.sources.parsers.claude import (
     SessionIndexEntry,
@@ -35,22 +50,12 @@ from polylogue.sources.parsers.claude import (
     find_sessions_index,
     parse_sessions_index,
 )
-from polylogue.sources.source import (
-    _ConversationEmitter,
-    _decode_json_bytes,
-    _has_supported_extension,
-    _initialize_cursor_state,
-    _iter_json_stream,
-    _log_source_iteration_summary,
-    _ParseContext,
-    _record_cursor_failure,
-    _select_paths_for_processing,
-    _zip_entry_provider_hint,
-    _ZipEntryValidator,
+from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.sources.source_parsing import (
     iter_source_conversations,
     iter_source_conversations_with_raw,
-    iter_source_raw_data,
 )
+from polylogue.sources.source_walk import _has_supported_extension
 from polylogue.types import Provider
 from tests.infra.source_builders import GenericConversationBuilder, make_claude_chat_message
 from tests.infra.strategies import (
@@ -220,12 +225,12 @@ def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytes
     debugs: list[str] = []
 
     monkeypatch.setattr(
-        source_module.logger,
+        decoders_module.logger,
         "warning",
         lambda message, *args: warnings.append(message % args if args else message),
     )
     monkeypatch.setattr(
-        source_module.logger,
+        decoders_module.logger,
         "debug",
         lambda message, *args: debugs.append(message % args if args else message),
     )
@@ -245,9 +250,9 @@ def test_iter_json_stream_falls_back_to_full_json_load_when_streaming_fails(monk
 
     def broken_items(handle: BytesIO, prefix: str):
         calls.append(prefix)
-        raise source_module.ijson.common.JSONError("boom")
+        raise decoders_module.ijson.common.JSONError("boom")
 
-    monkeypatch.setattr(source_module.ijson, "items", broken_items)
+    monkeypatch.setattr(decoders_module.ijson, "items", broken_items)
 
     raw = b'{"conversations":[{"id":"one"},{"id":"two"}]}'
     items = list(_iter_json_stream(BytesIO(raw), "test.json"))
@@ -811,8 +816,8 @@ def test_select_paths_for_processing_skips_known_mtimes_only_when_mtime_enabled(
     first.write_text("{}", encoding="utf-8")
     second.write_text("{}", encoding="utf-8")
 
-    first_mtime = source_module._get_file_mtime(first)
-    second_mtime = source_module._get_file_mtime(second)
+    first_mtime = _get_file_mtime(first)
+    second_mtime = _get_file_mtime(second)
 
     selected, skipped = _select_paths_for_processing(
         [first, second],
@@ -836,12 +841,12 @@ def test_log_source_iteration_summary_emits_only_relevant_messages(monkeypatch: 
     warnings: list[str] = []
 
     monkeypatch.setattr(
-        source_module.logger,
+        decoders_module.logger,
         "info",
         lambda message, *args: infos.append(message % args if args else message),
     )
     monkeypatch.setattr(
-        source_module.logger,
+        decoders_module.logger,
         "warning",
         lambda message, *args: warnings.append(message % args if args else message),
     )
@@ -1471,7 +1476,7 @@ def test_iter_source_raw_data_skips_known_mtimes_without_reading_file(tmp_path: 
     items = list(
         iter_source_raw_data(
             Source(name="chatgpt", path=tmp_path),
-            known_mtimes={str(skipped): source_module._get_file_mtime(skipped)},
+            known_mtimes={str(skipped): _get_file_mtime(skipped)},
         )
     )
 

@@ -2,15 +2,16 @@
 
 - sources/parsers/: JSON → ParsedConversation for each provider
 - sources/providers/: Pydantic models for provider export formats
-- sources/source.py: Source walking and raw conversation iteration
-- sources/drive*.py: Google Drive integration
+- sources/source_parsing.py: Source walking and parsed conversation iteration
+- sources/source_acquisition.py: Raw source acquisition iteration
+- sources/drive_*.py / drive.py: Google Drive auth, gateway, and source access
 """
 
 from __future__ import annotations
 
 # Drive integration
 from .drive import download_drive_files, iter_drive_conversations
-from .drive_client import DriveClient
+from .drive_source import DriveSourceAPI, DriveSourceClient, build_drive_source_client
 from .drive_types import (
     DriveAuthError,
     DriveError,
@@ -19,22 +20,20 @@ from .drive_types import (
 )
 
 # Core parsing
-from .source import (
-    ParsedAttachment,
-    ParsedConversation,
-    ParsedMessage,
-    iter_source_conversations,
-)
+from .parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
+from .source_parsing import iter_source_conversations
 
 __all__ = [
     "DriveAuthError",
-    "DriveClient",
     "DriveError",
     "DriveFile",
     "DriveNotFoundError",
+    "DriveSourceAPI",
+    "DriveSourceClient",
     "ParsedAttachment",
     "ParsedConversation",
     "ParsedMessage",
+    "build_drive_source_client",
     "download_drive_files",
     "iter_drive_conversations",
     "iter_source_conversations",

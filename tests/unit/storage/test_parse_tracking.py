@@ -18,11 +18,11 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.storage.backends.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
 )
+from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.storage.store import RawConversationRecord
 
 # ─── Backend method tests ──────────────────────────────────────────────────
@@ -414,7 +414,8 @@ class TestMtimeSkip:
     def test_unchanged_file_skipped(self, tmp_path: Path) -> None:
         """Files with matching mtime in known_mtimes are skipped."""
         from polylogue.config import Source
-        from polylogue.sources.source import _get_file_mtime, iter_source_conversations_with_raw
+        from polylogue.sources.cursor import _get_file_mtime
+        from polylogue.sources.source_parsing import iter_source_conversations_with_raw
 
         # Create a test JSON file
         test_file = tmp_path / "test.json"
@@ -439,7 +440,7 @@ class TestMtimeSkip:
     def test_modified_file_not_skipped(self, tmp_path: Path) -> None:
         """Files with different mtime are NOT skipped."""
         from polylogue.config import Source
-        from polylogue.sources.source import iter_source_conversations_with_raw
+        from polylogue.sources.source_parsing import iter_source_conversations_with_raw
 
         test_file = tmp_path / "test.json"
         test_file.write_text('{"title": "test", "mapping": {"1": {"id": "1", "message": {"author": {"role": "user"}, "content": {"parts": ["hello"]}, "create_time": 1000000}}}}')
@@ -457,7 +458,7 @@ class TestMtimeSkip:
     def test_no_known_mtimes_processes_all(self, tmp_path: Path) -> None:
         """Without known_mtimes, all files are processed normally."""
         from polylogue.config import Source
-        from polylogue.sources.source import iter_source_conversations_with_raw
+        from polylogue.sources.source_parsing import iter_source_conversations_with_raw
 
         test_file = tmp_path / "test.json"
         test_file.write_text('{"title": "test", "mapping": {"1": {"id": "1", "message": {"author": {"role": "user"}, "content": {"parts": ["hello"]}, "create_time": 1000000}}}}')

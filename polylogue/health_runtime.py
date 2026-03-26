@@ -133,7 +133,7 @@ def run_runtime_health(config: Config) -> HealthReport:
 
     drive_sources = [source for source in config.sources if source.is_drive]
     if drive_sources and config.drive_config:
-        from polylogue.sources.drive_client import default_credentials_path, default_token_path
+        from polylogue.sources.drive_auth import default_credentials_path, default_token_path
 
         cred = default_credentials_path(config.drive_config)
         token = default_token_path(config.drive_config)

@@ -6,7 +6,14 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.filter_builder import ConversationFilterBuilderMixin
 from polylogue.lib.filter_types import SortField
-from polylogue.lib.query_execution import ConversationQueryPlan
+from polylogue.lib.query_plan import ConversationQueryPlan
+from polylogue.lib.query_plan_execution import (
+    count_for_plan,
+    delete_for_plan,
+    first_for_plan,
+    list_for_plan,
+    list_summaries_for_plan,
+)
 
 if TYPE_CHECKING:
     from polylogue.protocols import VectorProvider
@@ -73,19 +80,19 @@ class ConversationFilter(ConversationFilterBuilderMixin):
         return self._plan.describe()
 
     async def list(self):
-        return await self._plan.list(self._repo)
+        return await list_for_plan(self._plan, self._repo)
 
     async def list_summaries(self):
-        return await self._plan.list_summaries(self._repo)
+        return await list_summaries_for_plan(self._plan, self._repo)
 
     async def first(self):
-        return await self._plan.first(self._repo)
+        return await first_for_plan(self._plan, self._repo)
 
     async def count(self) -> int:
-        return await self._plan.count(self._repo)
+        return await count_for_plan(self._plan, self._repo)
 
     async def delete(self) -> int:
-        return await self._plan.delete(self._repo)
+        return await delete_for_plan(self._plan, self._repo)
 
 
 __all__ = ["ConversationFilter", "SortField"]

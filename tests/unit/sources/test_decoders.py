@@ -1,6 +1,6 @@
 """Tests for source decoding, JSON stream iteration, and ZIP processing.
 
-Production code under test: polylogue/sources/source.py
+Production code under test: polylogue/sources/decoders.py
 Functions: _decode_json_bytes, _iter_json_stream, _ZipEntryValidator, _process_zip
 """
 
@@ -10,20 +10,16 @@ import io
 import json
 import zipfile
 from pathlib import Path
-from unittest.mock import MagicMock
 
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from polylogue.sources.source import (
-    MAX_COMPRESSION_RATIO,
+from polylogue.sources.decoders import (
     MAX_UNCOMPRESSED_SIZE,
-    _ZipEntryValidator,
     _decode_json_bytes,
     _iter_json_stream,
+    _ZipEntryValidator,
 )
-
 
 # =============================================================================
 # _decode_json_bytes
