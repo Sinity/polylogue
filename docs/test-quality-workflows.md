@@ -40,6 +40,13 @@ python -m devtools.run_validation_lanes --lane source-provider-fidelity
 python -m devtools.run_validation_lanes --lane maintenance-control-plane
 python -m devtools.run_validation_lanes --lane archive-data-products
 python -m devtools.run_validation_lanes --lane semantic-product-normalization
+python -m devtools.run_validation_lanes --lane evidence-tier-contracts
+python -m devtools.run_validation_lanes --lane inference-tier-contracts
+python -m devtools.run_validation_lanes --lane mixed-consumer-contracts
+python -m devtools.run_validation_lanes --lane retrieval-band-readiness
+python -m devtools.run_validation_lanes --lane evidence-stewardship-contracts
+python -m devtools.run_validation_lanes --lane evidence-stewardship-live --dry-run
+python -m devtools.run_validation_lanes --lane evidence-stewardship-hardening --dry-run
 python -m devtools.run_validation_lanes --lane semantic-product-live --dry-run
 python -m devtools.run_validation_lanes --lane semantic-product-hardening --dry-run
 python -m devtools.run_validation_lanes --lane runtime-substrate-contracts
@@ -73,6 +80,13 @@ Lane intent:
 - `maintenance-control-plane`: health, maintenance selection, cache/live provenance, and publication maintenance summaries
 - `archive-data-products`: durable archive products, consumer contracts, product-aware grouped stats, and health/governance surfaces
 - `semantic-product-normalization`: semantic/session product normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup
+- `evidence-tier-contracts`: explicit evidence-tier product contracts, chronology fields, and durable evidence payload/query surfaces
+- `inference-tier-contracts`: inference-tier work-event/phase/profile contracts with confidence/provenance-bearing semantic payloads
+- `mixed-consumer-contracts`: CLI, facade, MCP, and health surfaces consuming the same evidence/inference product model
+- `retrieval-band-readiness`: transcript/evidence/inference retrieval-band readiness, embedding stats, and health exposure
+- `evidence-stewardship-contracts`: `evidence-tier-contracts` plus `inference-tier-contracts`, `mixed-consumer-contracts`, and `retrieval-band-readiness`
+- `evidence-stewardship-live`: bounded live archive lane for tiered product views, live session-product repair, health, and retrieval-band budgets
+- `evidence-stewardship-hardening`: `evidence-stewardship-contracts` plus `evidence-stewardship-live`
 - `semantic-product-live`: bounded live archive lane for normalized product surfaces, debt governance, and maintenance preview/budgets
 - `semantic-product-hardening`: `semantic-product-normalization` plus `semantic-product-live`
 - `runtime-substrate-contracts`: local closure lane for the decomposed query/runtime/product/maintenance contract surfaces

@@ -5,7 +5,7 @@ from __future__ import annotations
 SESSION_PRODUCT_DDL = """
         CREATE TABLE IF NOT EXISTS session_profiles (
             conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 1,
+            materializer_version INTEGER NOT NULL DEFAULT 2,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
             source_sort_key REAL,
@@ -20,6 +20,8 @@ SESSION_PRODUCT_DDL = """
             tags_json TEXT,
             auto_tags_json TEXT,
             message_count INTEGER NOT NULL DEFAULT 0,
+            substantive_count INTEGER NOT NULL DEFAULT 0,
+            attachment_count INTEGER NOT NULL DEFAULT 0,
             work_event_count INTEGER NOT NULL DEFAULT 0,
             phase_count INTEGER NOT NULL DEFAULT 0,
             word_count INTEGER NOT NULL DEFAULT 0,
@@ -29,8 +31,14 @@ SESSION_PRODUCT_DDL = """
             total_duration_ms INTEGER NOT NULL DEFAULT 0,
             engaged_duration_ms INTEGER NOT NULL DEFAULT 0,
             wall_duration_ms INTEGER NOT NULL DEFAULT 0,
-            payload_json TEXT NOT NULL,
-            search_text TEXT NOT NULL
+            cost_is_estimated INTEGER NOT NULL DEFAULT 0,
+            evidence_payload_json TEXT NOT NULL DEFAULT '{}',
+            inference_payload_json TEXT NOT NULL DEFAULT '{}',
+            search_text TEXT NOT NULL,
+            evidence_search_text TEXT NOT NULL DEFAULT '',
+            inference_search_text TEXT NOT NULL DEFAULT '',
+            inference_version INTEGER NOT NULL DEFAULT 1,
+            inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'
         );
 
         CREATE INDEX IF NOT EXISTS idx_session_profiles_provider
@@ -74,10 +82,60 @@ SESSION_PRODUCT_DDL = """
             VALUES (new.conversation_id, new.provider_name, new.search_text);
         END;
 
+        CREATE VIRTUAL TABLE IF NOT EXISTS session_profile_evidence_fts USING fts5(
+            conversation_id UNINDEXED,
+            provider_name UNINDEXED,
+            text,
+            tokenize='unicode61'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS session_profile_evidence_fts_ai
+        AFTER INSERT ON session_profiles BEGIN
+            INSERT INTO session_profile_evidence_fts (conversation_id, provider_name, text)
+            VALUES (new.conversation_id, new.provider_name, new.evidence_search_text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS session_profile_evidence_fts_ad
+        AFTER DELETE ON session_profiles BEGIN
+            DELETE FROM session_profile_evidence_fts WHERE conversation_id = old.conversation_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS session_profile_evidence_fts_au
+        AFTER UPDATE ON session_profiles BEGIN
+            DELETE FROM session_profile_evidence_fts WHERE conversation_id = old.conversation_id;
+            INSERT INTO session_profile_evidence_fts (conversation_id, provider_name, text)
+            VALUES (new.conversation_id, new.provider_name, new.evidence_search_text);
+        END;
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS session_profile_inference_fts USING fts5(
+            conversation_id UNINDEXED,
+            provider_name UNINDEXED,
+            text,
+            tokenize='unicode61'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS session_profile_inference_fts_ai
+        AFTER INSERT ON session_profiles BEGIN
+            INSERT INTO session_profile_inference_fts (conversation_id, provider_name, text)
+            VALUES (new.conversation_id, new.provider_name, new.inference_search_text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS session_profile_inference_fts_ad
+        AFTER DELETE ON session_profiles BEGIN
+            DELETE FROM session_profile_inference_fts WHERE conversation_id = old.conversation_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS session_profile_inference_fts_au
+        AFTER UPDATE ON session_profiles BEGIN
+            DELETE FROM session_profile_inference_fts WHERE conversation_id = old.conversation_id;
+            INSERT INTO session_profile_inference_fts (conversation_id, provider_name, text)
+            VALUES (new.conversation_id, new.provider_name, new.inference_search_text);
+        END;
+
         CREATE TABLE IF NOT EXISTS session_work_events (
             event_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 1,
+            materializer_version INTEGER NOT NULL DEFAULT 2,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
             source_sort_key REAL,
@@ -94,8 +152,11 @@ SESSION_PRODUCT_DDL = """
             summary TEXT NOT NULL,
             file_paths_json TEXT,
             tools_used_json TEXT,
-            payload_json TEXT NOT NULL,
-            search_text TEXT NOT NULL
+            evidence_payload_json TEXT NOT NULL DEFAULT '{}',
+            inference_payload_json TEXT NOT NULL DEFAULT '{}',
+            search_text TEXT NOT NULL,
+            inference_version INTEGER NOT NULL DEFAULT 1,
+            inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'
         );
 
         CREATE INDEX IF NOT EXISTS idx_session_work_events_conversation
@@ -128,7 +189,7 @@ SESSION_PRODUCT_DDL = """
         CREATE TABLE IF NOT EXISTS session_phases (
             phase_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 1,
+            materializer_version INTEGER NOT NULL DEFAULT 2,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
             source_sort_key REAL,
@@ -141,10 +202,15 @@ SESSION_PRODUCT_DDL = """
             end_time TEXT,
             duration_ms INTEGER NOT NULL DEFAULT 0,
             canonical_session_date TEXT,
+            confidence REAL NOT NULL DEFAULT 0,
+            evidence_reasons_json TEXT NOT NULL DEFAULT '[]',
             tool_counts_json TEXT NOT NULL DEFAULT '{}',
             word_count INTEGER NOT NULL DEFAULT 0,
-            payload_json TEXT NOT NULL,
-            search_text TEXT NOT NULL
+            evidence_payload_json TEXT NOT NULL DEFAULT '{}',
+            inference_payload_json TEXT NOT NULL DEFAULT '{}',
+            search_text TEXT NOT NULL,
+            inference_version INTEGER NOT NULL DEFAULT 1,
+            inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'
         );
 
         CREATE INDEX IF NOT EXISTS idx_session_phases_conversation

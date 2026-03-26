@@ -18,6 +18,8 @@ class SessionPhase:
     duration_ms: int
     tool_counts: dict[str, int]
     word_count: int
+    confidence: float = 0.0
+    evidence: tuple[str, ...] = ()
 
 
 __all__ = ["SessionPhase"]

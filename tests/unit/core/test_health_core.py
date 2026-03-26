@@ -125,8 +125,10 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "action_event_read_model",
                 "action_event_fts",
                 "fts_sync",
-                "embedding_coverage",
-                "embedding_freshness",
+                "transcript_embeddings",
+                "transcript_embedding_freshness",
+                "retrieval_evidence",
+                "retrieval_inference",
                 "schemas_coverage",
                 "schemas_freshness",
             },
@@ -145,8 +147,10 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "action_event_read_model",
                 "action_event_fts",
                 "fts_sync",
-                "embedding_coverage",
-                "embedding_freshness",
+                "transcript_embeddings",
+                "transcript_embedding_freshness",
+                "retrieval_evidence",
+                "retrieval_inference",
                 "schemas_coverage",
                 "schemas_freshness",
             },
@@ -167,9 +171,9 @@ def test_run_health_core_contract(cli_workspace, deep: bool, expected_checks: se
 @pytest.mark.parametrize(
     ("embedded_conversations", "embedded_messages", "pending_conversations", "expected_status", "expected_text"),
     [
-        (0, 0, 0, "warning", "Embeddings pending"),
-        (2, 50, 1, "warning", "Embeddings pending"),
-        (3, 90, 0, "ok", "Embeddings ready"),
+        (0, 0, 0, "warning", "Transcript embeddings pending"),
+        (2, 50, 1, "warning", "Transcript embeddings pending"),
+        (3, 90, 0, "ok", "Transcript embeddings ready"),
     ],
 )
 def test_run_health_embedding_status_contract(
@@ -193,10 +197,10 @@ def test_run_health_embedding_status_contract(
         embedded_conversations == 3 and pending_conversations == 0
     )
     expected_detail = (
-        f"Embeddings ready ({embedded_conversations:,}/3 conversations, {embedded_messages:,} messages)"
+        f"Transcript embeddings ready ({embedded_conversations:,}/3 conversations, {embedded_messages:,} messages)"
         if embeddings_ready
         else (
-            f"Embeddings pending ({embedded_conversations:,}/3 conversations, "
+            f"Transcript embeddings pending ({embedded_conversations:,}/3 conversations, "
             f"pending {pending_conversations:,}, stale 0, missing provenance 0)"
         )
     )
@@ -225,8 +229,8 @@ def test_run_health_embedding_status_contract(
                 source_rows=0,
                 materialized_rows=0,
             ),
-            "embeddings": DerivedModelStatus(
-                name="embeddings",
+            "transcript_embeddings": DerivedModelStatus(
+                name="transcript_embeddings",
                 ready=embeddings_ready,
                 detail=expected_detail,
                 source_documents=3,
@@ -234,11 +238,25 @@ def test_run_health_embedding_status_contract(
                 materialized_rows=embedded_messages,
                 pending_documents=pending_conversations,
             ),
+            "retrieval_evidence": DerivedModelStatus(
+                name="retrieval_evidence",
+                ready=True,
+                detail="Evidence retrieval ready",
+                source_rows=3,
+                materialized_rows=3,
+            ),
+            "retrieval_inference": DerivedModelStatus(
+                name="retrieval_inference",
+                ready=True,
+                detail="Inference retrieval ready",
+                source_rows=3,
+                materialized_rows=3,
+            ),
         },
     ):
         report = run_archive_health(get_config())
 
-    check = next(c for c in report.checks if c.name == "embedding_coverage")
+    check = next(c for c in report.checks if c.name == "transcript_embeddings")
     assert check.status.value == expected_status
     assert expected_text in check.summary
 
