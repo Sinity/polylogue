@@ -8,7 +8,8 @@ import aiosqlite
 
 from polylogue.lib.threads import build_session_threads
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
-from polylogue.storage.session_product_rows import build_work_thread_record, hydrate_session_profile
+from polylogue.storage.session_product_profile_rows import hydrate_session_profile
+from polylogue.storage.session_product_thread_rows import build_work_thread_record
 
 _ROOT_THREAD_IDS_SQL = """
     SELECT c.conversation_id

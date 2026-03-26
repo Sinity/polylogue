@@ -10,7 +10,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING
 
 from polylogue.publication import SitePublicationManifest
-from polylogue.rendering.renderers.html import MarkdownRenderer, PygmentsHighlighter
+from polylogue.rendering.renderers.html import HTMLMessageRenderer, PygmentsHighlighter
 from polylogue.site.conversation_pages import generate_conversation_page, write_template_stream
 from polylogue.site.index_pages import (
     generate_dashboard,
@@ -66,7 +66,7 @@ class SiteBuilder:
         self._owns_storage = backend is None and repository is None
 
         self._highlighter = PygmentsHighlighter()
-        self._md_renderer = MarkdownRenderer(self._highlighter)
+        self._message_renderer = HTMLMessageRenderer(self._highlighter)
         self.env, self.page_env = build_template_environments(self._highlighter)
 
     def _open_storage(self) -> tuple[SQLiteBackend, ConversationRepository]:
@@ -197,7 +197,7 @@ class SiteBuilder:
             page_env=self.page_env,
             repository=repository,
             conversation=conversation,
-            render_html=self._md_renderer.render,
+            render_html=self._message_renderer.render,
             incremental=incremental,
         )
 

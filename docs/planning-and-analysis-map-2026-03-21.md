@@ -24,7 +24,11 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md](./programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md) | Current execution program for probabilistic enrichment products, retrieval-band rollout, consumer convergence, and governed live cleanup | Active; this is now the live broad queue after the executed evidence/stewardship wave |
+| [programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md](./programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md) | Current whole-repository cleanup/refactoring program with explicit wave-based execution order and parallel workstreams across rendering, CLI/UI/sync, MCP/operations, storage, schema, sources, lib/domain, pipeline/showcase/site, and cross-cutting package-root, test, devtools, and documentation topology | Active; this is now the live whole-repository cleanup queue rather than a hotspot slice |
+| [programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md) | Absorbed predecessor cleanup/refactoring program for rendering/semantic-proof, operator adapters, storage write/rebuild bands, schema runtime analysis, provider/source boundaries, and domain/query-evidence topology narrowing | Absorbed predecessor; broadened into the codebase-wide topology/debt retirement queue |
+| [programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md) | Executed cleanup/refactoring program for query-engine, operator-command, repository/repair/build, raw-payload/pipeline, schema-toolchain, and sqlite-vec topology narrowing | Executed; query/service/schema/public roots were narrowed substantially, the named runtime-substrate contracts lane passed, and live archive debt/product status remained clean |
+| [programs/product-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/product-and-runtime-topology-cleanup-program-2026-03-26.md) | Executed cleanup/refactoring program for archive-product, health/debt, query-SQL, validation-lane, and declarative-root topology narrowing | Executed; archive-product/session-product/health/debt/template/validation roots were narrowed substantially, the named stewardship lane passed, and live archive debt remains clean |
+| [programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md](./programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md) | Executed convergence program for heuristic-inference hardening, durable enrichment products, retrieval-band rollout, consumer/operator convergence, and governed live cleanup | Executed; enrichment products, retrieval-enrichment health, live governed cleanup apply/validation lineage, and named enrichment/cleanup lanes are now in place |
 | [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md) | Executed convergence program for evidence-tier contracts, inference-tier governance, retrieval/embedding alignment, consumer contract convergence, and live semantic stewardship | Executed; durable evidence/inference product contracts, tiered profile retrieval, retrieval-band health, live migration compatibility, and named validation lanes are now in place |
 | [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) | Executed cleanup-only architectural debt-retirement record for mixed-role file breakup, ownership narrowing, public-root reduction, and deletion of structural overlap | Executed; high-leverage public roots, semantic runtime bands, search/runtime roots, schema/operator surfaces, and QA/reporting roots were narrowed or deleted |
 | [programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md](./programs/consumer-contracts-and-governed-live-cleanup-program-2026-03-24.md) | Broader consumer/governance predecessor covering durable product contracts, governed destructive cleanup, stewardship history, and live archive governance | Absorbed predecessor; replaced as the live queue by the evidence/stewardship platform campaign |
@@ -125,20 +129,48 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md](./programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md)
-- the evidence/stewardship program in [programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md](./programs/evidence-and-stewardship-platform-convergence-program-2026-03-24.md) is now executed
-- it closed the semantic-contract honesty gap around:
-  - explicit evidence-tier vs inference-tier contracts in durable session products
-  - tiered profile retrieval across CLI, repository, library, sync, and MCP
-  - inference provenance/version tracking for profiles, work events, and phases
-  - retrieval-band status for transcript, evidence, and inference retrieval
-  - live migration compatibility for upgraded archives with legacy payload columns and blank tier payload/search fields
-  - named contract, live, and memory-budget validation lanes for the new tier model
-- the next broad drag is now inference quality and archive governance:
-  - heuristic inference still drives important downstream timelines and summaries but remains only moderately strong
-  - transcript embeddings are still unmaterialized, so retrieval bands are honest but not yet fully populated
-  - downstream consumers still need a cleaner migration story for evidence vs heuristic inference vs richer probabilistic enrichment
-  - destructive live cleanup debt remains explicit for orphaned content blocks and attachments, but not yet fully governed through apply-and-validate lineage
+- the current live implementation queue is now [programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md](./programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md)
+- it is explicitly the whole-repository cleanup authority now, not just a broad hotspot queue:
+  - every top-level runtime package is in scope
+  - MCP and operations consumer surfaces are in scope
+  - package-root import/re-export cleanup is in scope
+  - tests, devtools, memory-budget probes, validation lanes, and operator docs are in scope
+- the narrower queue in [programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md) has been absorbed because it was still a frontier slice rather than a whole-codebase authority
+- the just-executed cleanup program in [programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md) closed the main structural drag around:
+  - broad query planning/spec/retrieval roots
+  - broad products/run/QA/check command-family roots
+  - broad repository-archive, repair, builder, mapper, and store-core roots
+  - broad raw-payload, validation, acquisition, and semantic service roots
+  - broad schema toolchain roots for generation, roundtrip, audit, and sampling
+  - the oversized sqlite-vec provider root
+- the older cleanup program in [programs/product-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/product-and-runtime-topology-cleanup-program-2026-03-26.md) closed the preceding structural drag around:
+  - broad archive-product contract, mapper, and operator-support roots
+  - broad session-product row/store/status roots
+  - broad health/debt/MCP/product workflow and rendering roots
+  - broad conversation/raw SQL roots
+  - the oversized validation-lane registry
+  - the remaining mixed declarative site template root
+- the just-executed probabilistic/governed-cleanup program in [programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md](./programs/probabilistic-enrichment-and-governed-cleanup-program-2026-03-26.md) closed the main semantic-governance gap around:
+  - explicit support metadata for heuristic session products
+  - durable probabilistic enrichment products queryable from CLI, library, sync, repository, and MCP
+  - enrichment retrieval-band readiness and `embed --stats` health exposure
+  - live governed cleanup apply plus validation lineage for orphaned content blocks and orphaned attachments
+  - named local/live validation lanes for heuristic inference, enrichment contracts, and cleanup governance
+- the live archive is now materially cleaner:
+  - `orphaned_content_blocks=0`
+  - `orphaned_attachments=0`
+  - `products debt --json` reports zero actionable debt
+  - all durable session-product and retrieval-enrichment bands are ready, while transcript embeddings remain intentionally pending
+- the next cleanup drag is now explicitly codebase-wide:
+  - rendering/proof/output roots across `rendering/`, `cli/`, and renderer-facing helpers
+  - operator/control-plane roots across CLI, MCP, UI, sync, and machine/plain adapters
+  - operations/archive-support roots consumed by public product/query surfaces
+  - storage write/rebuild/status/DDL/query/search roots across repository, backend, lifecycle, and provider bands
+  - schema runtime/tooling/verification/synthetic roots across the full `schemas/` subsystem
+  - source/provider/parser/decode/Drive roots across the full `sources/` subsystem
+  - domain/evidence/query model roots across `lib/` and archive-product entity contracts
+  - pipeline/showcase/site/UI roots that still carry broad orchestration or page/report family logic
+  - cross-cutting root/package/test/devtools/docs topology that must move with the above cleanup rather than lag behind it
 - the cleanup-only program in [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) is now executed
 - it closed the main structural debt around:
   - broad query-execution and query-store ownership

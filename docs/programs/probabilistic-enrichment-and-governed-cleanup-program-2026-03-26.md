@@ -3,12 +3,64 @@
 # Probabilistic Enrichment And Governed Cleanup Program
 
 Date: 2026-03-26
-Status: active execution program
-Role: canonical broad queue after the executed evidence/stewardship wave
+Status: executed broad execution program
+Role: executed record for probabilistic enrichment, retrieval-band rollout, and governed live cleanup
 
-Replaces as the live queue:
+Replaced as the live queue by:
 
-- `evidence-and-stewardship-platform-convergence-program-2026-03-24.md`
+- `product-and-runtime-topology-cleanup-program-2026-03-26.md`
+
+## Execution Record
+
+This program is executed.
+
+The main codebase changes were:
+
+- heuristic inference contract hardening across durable session products,
+  adding explicit `support_level`, `support_signals`,
+  `engaged_duration_source`, fallback markers, and inference-strength fields
+  for profiles, work events, and phases
+- a separate probabilistic enrichment product family added to durable
+  `session_profiles`, including contract/storage/query support for intent,
+  outcome, blockers, refined work kind, confidence, support, and provenance
+- public/operator convergence for enrichment products across CLI, archive
+  library, sync, repository, and MCP via `products enrichments`,
+  `list_session_enrichment_products(...)`, and `session_enrichments`
+- enrichment retrieval rollout through `session_profile_enrichment_fts`,
+  derived-model status, archive health exposure, retrieval-band reporting, and
+  repair/debt accounting
+- governed live cleanup closure for `orphaned_content_blocks` and
+  `orphaned_attachments`, including preview/apply/validation lineage and live
+  archive cleanup application
+- new validation lanes for heuristic inference, probabilistic enrichment,
+  enrichment live dogfooding, and governed cleanup live validation
+
+Live archive closure after execution:
+
+- `products status --json` reports `5618` profiles, `17833` work events,
+  `12634` phases, `4592` tag rollups, and `1295` day summaries, all ready
+- `products enrichments --json` returns durable enrichment products with live
+  confidence/support/provenance payloads
+- `products debt --json` reports zero actionable debt, with
+  `orphaned_content_blocks` and `orphaned_attachments` both validated after
+  governed apply plus validation preview
+- `check --json` reports zero orphaned content blocks and zero orphaned
+  attachments, while all retrieval/status bands except transcript embeddings
+  are ready
+- `embed --stats --json` now reports `retrieval_enrichment` ready alongside the
+  existing evidence/inference bands
+
+Validation and live proofs that closed this program:
+
+- `ruff check $(git diff --name-only --diff-filter=d -- '*.py')`
+- `pytest -q -n 0 tests/unit/cli/test_products.py tests/unit/core/test_facade_api.py tests/unit/mcp/test_tool_contracts.py tests/unit/storage/test_embedding_stats.py tests/unit/core/test_health_core.py`
+  → `134 passed`
+- `pytest -q -n 0 tests/unit/cli/test_check.py tests/unit/cli/test_embed.py tests/unit/cli/test_click_app.py tests/unit/devtools/test_validation_lanes.py tests/unit/storage/test_backend.py tests/integration/test_health.py`
+  → `284 passed`
+- `python -m devtools.run_validation_lanes --lane probabilistic-enrichment-hardening`
+- `python -m devtools.run_validation_lanes --lane governed-cleanup-live`
+- `journalctl -u earlyoom --since '60 minutes ago'` showed no new kills during
+  closure work
 
 Prerequisite executed programs:
 
