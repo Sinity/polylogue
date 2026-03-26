@@ -7,7 +7,7 @@ import sqlite3
 import aiosqlite
 import pytest
 
-import polylogue.storage.embedding_stats as embedding_stats_mod
+from polylogue.storage import embedding_stats_runtime as embedding_stats_runtime_mod
 from polylogue.storage.embedding_stats import (
     read_embedding_stats_async,
     read_embedding_stats_sync,
@@ -86,7 +86,7 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
         conn.commit()
 
         monkeypatch.setattr(
-            embedding_stats_mod,
+            embedding_stats_runtime_mod,
             "action_event_read_model_status_sync",
             lambda _conn: {
                 "count": 2,
@@ -96,7 +96,7 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
             },
         )
         monkeypatch.setattr(
-            embedding_stats_mod,
+            embedding_stats_runtime_mod,
             "session_product_status_sync",
             lambda _conn: {
                 "profile_row_count": 2,
