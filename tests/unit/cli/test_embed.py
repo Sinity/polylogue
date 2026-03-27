@@ -15,7 +15,7 @@ from polylogue.cli.commands.embed import (
     _embed_single,
     _show_embedding_stats,
 )
-from polylogue.storage.embedding_stats import EmbeddingStatsSnapshot
+from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
 
 
 @pytest.fixture

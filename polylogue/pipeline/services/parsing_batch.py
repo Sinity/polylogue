@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 import orjson
 
 from polylogue.logging import get_logger
-from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
+from polylogue.storage.state_views import RawConversationStateUpdate
 
 if TYPE_CHECKING:
     from polylogue.pipeline.services.parsing import ParsingService

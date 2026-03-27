@@ -100,7 +100,7 @@ class PinSet:
 
 def _pins_path(provider: Provider | str) -> Path:
     """Path to the pins.json for a provider package."""
-    from polylogue.schemas.runtime_registry_support import SCHEMA_DIR
+    from polylogue.schemas.runtime_registry import SCHEMA_DIR
 
     provider_str = str(provider)
     return SCHEMA_DIR / provider_str / "pins.json"
@@ -142,7 +142,7 @@ def resolve_pinned_paths(
     produce entries. If no pin exists for a role, it maps to None (and
     the extractor falls back to well-known-name heuristics).
     """
-    result: dict[str, str | None] = {role: None for role in PINNABLE_ROLES}
+    result: dict[str, str | None] = dict.fromkeys(PINNABLE_ROLES)
 
     # First: apply confirmed pins directly
     for role in PINNABLE_ROLES:

@@ -36,14 +36,16 @@ async def list_summaries_for_plan(
     plan: ConversationQueryPlan,
     repository,
 ):
-    if not plan.can_use_summaries():
+    can_use_action_stats = await plan.can_use_action_event_stats_with(repository)
+    uses_action_read_model = plan._uses_action_read_model()
+    if not plan.can_use_summaries() and not uses_action_read_model:
         msg = (
             "Cannot use list_summaries() with content-dependent filters "
             "(regex, has:thinking, has:tools, etc.). Use list() instead."
         )
         raise ValueError(msg)
 
-    if plan._uses_action_read_model() and not await plan._action_event_rows_ready(repository):
+    if uses_action_read_model and not can_use_action_stats:
         conversations = await list_for_plan(plan, repository)
         return [conversation_to_summary(conversation) for conversation in conversations]
 

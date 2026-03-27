@@ -7,12 +7,10 @@ import json
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.storage.action_event_lifecycle import rebuild_action_event_read_model_sync
+from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.session_product_lifecycle import (
-    rebuild_session_products_sync,
-    session_product_status_sync,
-)
+from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+from polylogue.storage.session_product_status import session_product_status_sync
 from tests.infra.storage_records import ConversationBuilder
 
 

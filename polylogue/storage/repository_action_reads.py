@@ -9,6 +9,9 @@ from polylogue.storage.store import ActionEventRecord
 
 
 class RepositoryActionReadMixin:
+    async def get_action_event_read_model_status(self) -> dict[str, int | bool]:
+        return await self.queries.get_action_event_read_model_status()
+
     async def get_action_event_records(self, conversation_id: str) -> list[ActionEventRecord]:
         return await self.queries.get_action_events(conversation_id)
 

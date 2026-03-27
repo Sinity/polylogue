@@ -23,7 +23,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.schemas.audit import AuditReport
+from polylogue.schemas.audit_models import AuditReport
 from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.invariants import InvariantResult

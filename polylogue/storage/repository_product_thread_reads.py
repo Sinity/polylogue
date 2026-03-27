@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.storage.session_product_thread_rows import hydrate_work_thread
+from polylogue.storage.session_product_threads import hydrate_work_thread
 
 
 class RepositoryProductThreadReadMixin:

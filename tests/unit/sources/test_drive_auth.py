@@ -21,7 +21,6 @@ from polylogue.sources.drive_auth import (
 )
 from polylogue.sources.drive_types import DriveAuthError
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

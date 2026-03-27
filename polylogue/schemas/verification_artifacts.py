@@ -5,13 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.lib.artifact_taxonomy import ArtifactKind
-from polylogue.storage.artifact_observations import (
-    ensure_artifact_observations,
-)
-from polylogue.storage.artifact_observations import (
+from polylogue.storage.artifact_persistence import ensure_artifact_observations
+from polylogue.storage.artifact_queries import (
     list_artifact_cohorts as list_durable_artifact_cohorts,
 )
-from polylogue.storage.artifact_observations import (
+from polylogue.storage.artifact_queries import (
     list_artifact_observations as list_durable_artifact_observations,
 )
 from polylogue.storage.backends.connection import open_connection
@@ -20,8 +18,7 @@ from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 
 from .verification_models import ArtifactProofReport, ProviderArtifactProof
-from .verification_requests import ArtifactObservationQuery, ArtifactProofRequest
-from .verification_support import bounded_window
+from .verification_requests import ArtifactObservationQuery, ArtifactProofRequest, bounded_window
 
 
 def _increment_count(counter: dict[str, int], key: str, amount: int = 1) -> None:

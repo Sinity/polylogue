@@ -12,11 +12,8 @@ Covers:
 from __future__ import annotations
 
 from polylogue.lib.viewports import ToolCategory, classify_tool
-from polylogue.pipeline.semantic import (
-    extract_subagent_spawns,
-    extract_tool_metadata,
-    parse_git_operation,
-)
+from polylogue.pipeline.semantic_capture import extract_subagent_spawns, parse_git_operation
+from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 
 # =============================================================================
 # Tests for classify_tool

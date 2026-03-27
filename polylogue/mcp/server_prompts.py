@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from polylogue.mcp.query_support import build_query_spec
+from polylogue.mcp.server_tools import build_query_spec
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP

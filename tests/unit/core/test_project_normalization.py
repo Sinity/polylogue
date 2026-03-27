@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from polylogue.archive_product_builders import aggregate_day_session_summary_products
+from polylogue.archive_product_summaries import aggregate_day_session_summary_products
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.project_normalization import (

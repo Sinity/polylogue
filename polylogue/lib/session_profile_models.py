@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from polylogue.lib.attribution import ConversationAttribution
-from polylogue.lib.decision_models import Decision
-from polylogue.lib.phase_models import SessionPhase
+from polylogue.lib.decision_extraction import Decision
+from polylogue.lib.phase_extraction import SessionPhase
 from polylogue.lib.project_normalization import normalize_project_names, normalize_repo_paths
 from polylogue.lib.semantic_facts import ConversationSemanticFacts
-from polylogue.lib.work_event_models import WorkEvent
+from polylogue.lib.work_event_extraction import WorkEvent
 
 
 @dataclass(frozen=True)

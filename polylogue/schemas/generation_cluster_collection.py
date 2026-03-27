@@ -51,9 +51,9 @@ def collect_cluster_analysis(
     max_samples: int | None,
     reservoir_size: int,
 ) -> ClusterCollectionResult:
-    from polylogue.schemas import generation_analysis as generation_analysis_root
+    from polylogue.schemas.sampling import iter_schema_units
 
-    units = list(generation_analysis_root.iter_schema_units(provider, db_path=db_path, max_samples=max_samples))
+    units = list(iter_schema_units(provider, db_path=db_path, max_samples=max_samples))
     profile_summaries: dict[tuple[str, tuple[str, ...]], _ProfileSummary] = {}
     total_schema_samples = 0
     artifact_counts: dict[str, int] = {}

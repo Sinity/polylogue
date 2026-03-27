@@ -8,6 +8,7 @@ from dimensions rather than manually assigned.
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 from polylogue.types import ExerciseIOMode
 
 

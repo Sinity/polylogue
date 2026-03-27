@@ -15,6 +15,7 @@ from .claude_common import (
     extract_messages_from_chat_messages as _extract_messages_from_chat_messages,
 )
 from .claude_common import extract_text_from_segments as _extract_text_from_segments
+from .claude_common import normalize_timestamp as _normalize_timestamp
 from .claude_index import (
     SessionIndexEntry,
 )
@@ -51,6 +52,10 @@ def extract_text_from_segments(segments: list[object]) -> str | None:
 
 def extract_messages_from_chat_messages(chat_messages: list[object]):
     return _extract_messages_from_chat_messages(chat_messages)
+
+
+def normalize_timestamp(timestamp: int | float | str | None) -> str | None:
+    return _normalize_timestamp(timestamp)
 
 
 def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation:

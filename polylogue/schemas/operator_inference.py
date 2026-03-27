@@ -138,7 +138,7 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
 
 
 def audit_schemas(request):
-    from polylogue.schemas.audit import audit_all_providers, audit_provider
+    from polylogue.schemas.audit_workflow import audit_all_providers, audit_provider
 
     return audit_provider(request.provider) if request.provider else audit_all_providers()
 

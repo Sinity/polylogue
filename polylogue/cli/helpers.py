@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from polylogue.cli.formatting import format_sources_summary
-from polylogue.cli.helper_render_paths import latest_render_path
 from polylogue.cli.helper_source_selection import maybe_prompt_sources, resolve_sources
 from polylogue.cli.helper_source_state import load_last_source, save_last_source, source_state_path
 from polylogue.cli.helper_summary import print_summary_impl
@@ -11,6 +12,25 @@ from polylogue.cli.helper_support import fail, load_effective_config
 from polylogue.health import cached_health_summary, get_health
 from polylogue.operations import get_provider_counts, list_provider_analytics_products
 from polylogue.pipeline.runner import latest_run
+
+
+def latest_render_path(render_root: Path) -> Path | None:
+    if not render_root.exists():
+        return None
+    candidates = list(render_root.rglob("conversation.md")) + list(render_root.rglob("conversation.html"))
+    if not candidates:
+        return None
+    latest: Path | None = None
+    latest_mtime = 0.0
+    for path in candidates:
+        try:
+            mtime = path.stat().st_mtime
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+                latest = path
+        except OSError:
+            continue
+    return latest
 
 
 def print_summary(env, *, verbose: bool = False) -> None:

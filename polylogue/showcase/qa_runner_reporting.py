@@ -27,15 +27,6 @@ def save_qa_reports(result: QAResult, report_dir: Path) -> None:
             json.dumps({"error": result.proof_error}, indent=2, sort_keys=True)
         )
 
-    if result.roundtrip_proof_report is not None:
-        (report_dir / "roundtrip-proof.json").write_text(
-            json.dumps(result.roundtrip_proof_report.to_dict(), indent=2, sort_keys=True)
-        )
-    elif result.roundtrip_proof_error is not None:
-        (report_dir / "roundtrip-proof.json").write_text(
-            json.dumps({"error": result.roundtrip_proof_error}, indent=2, sort_keys=True)
-        )
-
     from polylogue.showcase.qa_report import generate_qa_markdown, generate_qa_session
     from polylogue.showcase.report_files import save_reports
 

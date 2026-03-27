@@ -18,7 +18,7 @@ from polylogue.cli.check_maintenance import (
 from polylogue.cli.check_validation import (
     validate_check_options as _validate_check_options,
 )
-from polylogue.cli.helpers import fail, load_effective_config
+from polylogue.cli.helpers import load_effective_config
 from polylogue.cli.types import AppEnv
 from polylogue.health import get_health, run_runtime_health
 from polylogue.schemas.operator_workflow import (
@@ -56,15 +56,12 @@ class CheckCommandOptions:
     check_proof: bool
     check_artifacts: bool
     check_cohorts: bool
-    check_roundtrip_proof: bool
     schema_providers: tuple[str, ...]
     artifact_providers: tuple[str, ...]
     artifact_statuses: tuple[str, ...]
     artifact_kinds: tuple[str, ...]
     artifact_limit: int | None
     artifact_offset: int
-    roundtrip_providers: tuple[str, ...]
-    roundtrip_count: int
     schema_samples: str
     schema_record_limit: int | None
     schema_record_offset: int
@@ -80,7 +77,6 @@ class CheckCommandResult:
     proof_report: Any | None = None
     artifact_rows: list[Any] | None = None
     cohort_rows: list[Any] | None = None
-    roundtrip_report: Any | None = None
     maintenance_results: list[Any] | None = None
     vacuum_result: dict[str, Any] | None = None
 
@@ -147,17 +143,6 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
             ),
             db_path=config.db_path,
         ).rows
-
-    if options.check_roundtrip_proof:
-        from polylogue.schemas.roundtrip_proof import prove_schema_evidence_roundtrip_suite
-
-        try:
-            result.roundtrip_report = prove_schema_evidence_roundtrip_suite(
-                providers=list(options.roundtrip_providers) if options.roundtrip_providers else None,
-                count=options.roundtrip_count,
-            )
-        except ValueError as exc:
-            fail("check", str(exc))
 
     if options.repair or options.cleanup:
         preview_counts = _build_preview_counts(report) if options.preview else None
