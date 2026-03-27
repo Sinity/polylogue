@@ -7,12 +7,14 @@ import builtins
 from polylogue.lib.conversation_models import Conversation
 from polylogue.storage.action_event_rows import attach_blocks_to_messages, build_action_event_records
 from polylogue.storage.search_cache import invalidate_search_cache
-from polylogue.storage.session_product_lifecycle import (
+from polylogue.storage.session_product_refresh_deletes import (
     delete_session_products_for_conversation_async,
-    refresh_session_products_for_conversation_async,
     refresh_thread_after_conversation_delete_async,
-    thread_root_id_async,
 )
+from polylogue.storage.session_product_refresh_updates import (
+    refresh_session_products_for_conversation_async,
+)
+from polylogue.storage.session_product_threads import thread_root_id_async
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,

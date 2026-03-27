@@ -8,7 +8,7 @@ from polylogue.lib.hashing import hash_text
 from polylogue.lib.phases import SessionPhase
 from polylogue.lib.session_profile import SessionProfile
 from polylogue.lib.work_events import WorkEvent
-from polylogue.storage.session_product_row_signal_support import (
+from polylogue.storage.session_product_profiles import (
     event_fallback,
     event_summary,
     event_support_signals,
@@ -24,7 +24,6 @@ from polylogue.storage.store import (
     SessionPhaseRecord,
     SessionWorkEventRecord,
 )
-
 
 # ---------------------------------------------------------------------------
 # Work-event row builders and hydration

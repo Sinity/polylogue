@@ -281,7 +281,7 @@ class TestPolylogueArchiveProducts:
     @pytest.mark.asyncio
     async def test_durable_session_products_are_publicly_queryable(self, cli_workspace):
         from polylogue.storage.backends.connection import open_connection
-        from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+        from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
         from tests.infra.storage_records import ConversationBuilder
 
         db_path = cli_workspace["db_path"]

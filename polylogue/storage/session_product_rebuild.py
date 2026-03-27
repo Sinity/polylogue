@@ -11,6 +11,7 @@ from polylogue.archive_product_builders import (
     build_day_session_summary_records,
     build_session_tag_rollup_records,
 )
+from polylogue.lib.session_profile import build_session_analysis, build_session_profile
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
 from polylogue.storage.session_product_batches import (
     _ALL_CONVERSATION_IDS_SQL,
@@ -19,8 +20,11 @@ from polylogue.storage.session_product_batches import (
     load_async_batch,
     load_sync_batch,
 )
-from polylogue.storage.session_product_profiles import hydrate_session_profile
-from polylogue.storage.session_product_rows import build_session_product_records
+from polylogue.storage.session_product_profiles import (
+    build_session_profile_record,
+    hydrate_session_profile,
+    now_iso,
+)
 from polylogue.storage.session_product_storage import (
     replace_day_session_summaries_sync,
     replace_session_phases_sync,
@@ -33,6 +37,23 @@ from polylogue.storage.session_product_threads import (
     build_all_thread_records_async,
     build_all_thread_records_sync,
 )
+from polylogue.storage.session_product_timeline_rows import (
+    build_session_phase_records,
+    build_session_work_event_records,
+)
+
+
+def build_session_product_records(
+    conversation,
+) -> tuple[object, list[object], list[object]]:
+    analysis = build_session_analysis(conversation)
+    profile = build_session_profile(conversation, analysis=analysis)
+    materialized_at = now_iso()
+    return (
+        build_session_profile_record(profile, analysis=analysis, materialized_at=materialized_at),
+        build_session_work_event_records(profile, materialized_at=materialized_at),
+        build_session_phase_records(profile, materialized_at=materialized_at),
+    )
 
 
 def rebuild_session_products_sync(
@@ -208,6 +229,7 @@ async def rebuild_session_products_async(
 
 
 __all__ = [
+    "build_session_product_records",
     "rebuild_session_products_async",
     "rebuild_session_products_sync",
 ]

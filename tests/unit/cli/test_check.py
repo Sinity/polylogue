@@ -100,7 +100,7 @@ class TestHealthReportConstruction:
 
 
 def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
-    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
     (
@@ -136,7 +136,7 @@ def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
 
 
 def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
-    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
     (
