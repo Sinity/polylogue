@@ -11,14 +11,24 @@ Performance characteristics:
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from pathlib import Path
 
-import aiosqlite
-
 from polylogue.storage.backends.async_sqlite_archive import SQLiteArchiveMixin
+from polylogue.storage.backends.async_sqlite_connections import (
+    bulk_connection as backend_bulk_connection,
+)
+from polylogue.storage.backends.async_sqlite_connections import (
+    bulk_flush as backend_bulk_flush,
+)
+from polylogue.storage.backends.async_sqlite_connections import (
+    connection as backend_connection,
+)
+from polylogue.storage.backends.async_sqlite_connections import (
+    get_connection as backend_get_connection,
+)
+from polylogue.storage.backends.async_sqlite_connections import (
+    read_pool as backend_read_pool,
+)
 from polylogue.storage.backends.async_sqlite_derived_actions import (
     SQLiteDerivedActionsMixin,
 )
@@ -30,13 +40,30 @@ from polylogue.storage.backends.async_sqlite_derived_products import (
 )
 from polylogue.storage.backends.async_sqlite_derived_stats import SQLiteDerivedStatsMixin
 from polylogue.storage.backends.async_sqlite_raw import SQLiteRawMixin
-from polylogue.storage.backends.async_sqlite_schema import ensure_schema
-from polylogue.storage.backends.async_sqlite_support import (
-    configure_connection,
-    default_db_path,
+from polylogue.storage.backends.async_sqlite_runtime import (
+    ensure_schema as ensure_backend_schema,
 )
-from polylogue.storage.backends.connection import DB_TIMEOUT
-from polylogue.storage.backends.query_store import SQLiteQueryStore
+from polylogue.storage.backends.async_sqlite_runtime import (
+    ensure_schema_once,
+    initialize_backend_state,
+)
+from polylogue.storage.backends.async_sqlite_support import default_db_path
+from polylogue.storage.backends.async_sqlite_transactions import (
+    begin as backend_begin,
+)
+from polylogue.storage.backends.async_sqlite_transactions import (
+    close_backend,
+)
+from polylogue.storage.backends.async_sqlite_transactions import (
+    commit as backend_commit,
+)
+from polylogue.storage.backends.async_sqlite_transactions import (
+    rollback as backend_rollback,
+)
+from polylogue.storage.backends.async_sqlite_transactions import (
+    transaction as backend_transaction,
+)
+from polylogue.storage.backends.schema import SCHEMA_DDL
 
 
 class SQLiteBackend(
@@ -82,30 +109,7 @@ class SQLiteBackend(
         Args:
             db_path: Path to SQLite database file. If None, uses default path.
         """
-        self._db_path = Path(db_path) if db_path is not None else default_db_path()
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write lock for serializing write operations
-        self._write_lock = asyncio.Lock()
-
-        # Lock and flag for schema initialization (prevents race condition)
-        self._schema_lock = asyncio.Lock()
-        self._schema_ensured = False
-
-        # Transaction depth tracking for savepoint nesting
-        self._transaction_depth = 0
-
-        # Persistent connection for explicit transaction control
-        self._txn_conn: aiosqlite.Connection | None = None
-
-        # Reusable connection for bulk operations (e.g., acquisition)
-        self._bulk_conn: aiosqlite.Connection | None = None
-
-        # Connection pool for concurrent read operations (e.g., rendering)
-        self._read_pool: asyncio.Queue[aiosqlite.Connection] | None = None
-
-        # Canonical low-level read/query surface.
-        self.queries = SQLiteQueryStore(connection_factory=self._get_connection)
+        initialize_backend_state(self, db_path)
 
     @property
     def db_path(self) -> Path:
@@ -117,26 +121,15 @@ class SQLiteBackend(
         """Return the active transaction nesting depth."""
         return self._transaction_depth
 
-    @asynccontextmanager
-    async def connection(self) -> AsyncIterator[aiosqlite.Connection]:
+    def connection(self):
         """Public connection context for read/query helpers."""
-        async with self._get_connection() as conn:
-            yield conn
+        return backend_connection(self)
 
     async def _ensure_schema_once(self) -> None:
         """Ensure schema is initialized exactly once (thread-safe via asyncio lock)."""
-        if self._schema_ensured:
-            return
-        async with self._schema_lock:
-            if self._schema_ensured:
-                return
-            async with aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT) as init_conn:
-                await configure_connection(init_conn)
-                await self._ensure_schema(init_conn)
-            self._schema_ensured = True
+        await ensure_schema_once(self)
 
-    @asynccontextmanager
-    async def bulk_connection(self) -> AsyncIterator[None]:
+    def bulk_connection(self):
         """Keep a single connection alive for many sequential operations.
 
         When active, ``_get_connection()`` reuses this connection instead of
@@ -147,23 +140,7 @@ class SQLiteBackend(
         This avoids both connection-per-call overhead (fd/WAL exhaustion)
         and per-item fsync overhead (each commit forces a WAL flush).
         """
-        await self._ensure_schema_once()
-        conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
-        await configure_connection(conn)
-        await conn.execute("BEGIN IMMEDIATE")
-        self._bulk_conn = conn
-        # Suppress per-item commits in methods that check _transaction_depth
-        self._transaction_depth += 1
-        try:
-            yield
-            await conn.commit()
-        except BaseException:
-            await conn.rollback()
-            raise
-        finally:
-            self._transaction_depth -= 1
-            self._bulk_conn = None
-            await conn.close()
+        return backend_bulk_connection(self)
 
     async def bulk_flush(self) -> None:
         """Commit the current bulk transaction and start a new one.
@@ -171,12 +148,9 @@ class SQLiteBackend(
         Call periodically during long bulk operations for intermediate
         durability.  Safe to call outside ``bulk_connection()`` (no-op).
         """
-        if self._bulk_conn is not None:
-            await self._bulk_conn.commit()
-            await self._bulk_conn.execute("BEGIN IMMEDIATE")
+        await backend_bulk_flush(self)
 
-    @asynccontextmanager
-    async def read_pool(self, size: int = 4) -> AsyncIterator[None]:
+    def read_pool(self, size: int = 4):
         """Open a pool of reusable read connections for concurrent operations.
 
         While active, ``_get_connection()`` borrows from the pool instead of
@@ -189,26 +163,9 @@ class SQLiteBackend(
         Args:
             size: Number of connections in the pool (match worker count)
         """
-        await self._ensure_schema_once()
-        pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue()
-        connections: list[aiosqlite.Connection] = []
+        return backend_read_pool(self, size=size)
 
-        for _ in range(size):
-            conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
-            await configure_connection(conn)
-            connections.append(conn)
-            pool.put_nowait(conn)
-
-        self._read_pool = pool
-        try:
-            yield
-        finally:
-            self._read_pool = None
-            for conn in connections:
-                await conn.close()
-
-    @asynccontextmanager
-    async def _get_connection(self) -> AsyncIterator[aiosqlite.Connection]:
+    def _get_connection(self):
         """Get async database connection with schema ensured.
 
         Connection reuse priority:
@@ -217,120 +174,39 @@ class SQLiteBackend(
         3. Read pool connection when inside read_pool() context
         4. Fresh connection per call (fallback)
         """
-        await self._ensure_schema_once()
+        return backend_get_connection(self)
 
-        # Reuse transaction connection when inside begin/commit block
-        if self._txn_conn is not None and self._transaction_depth > 0:
-            yield self._txn_conn
-            return
-
-        # Reuse bulk connection when inside bulk_connection() context
-        if self._bulk_conn is not None:
-            yield self._bulk_conn
-            return
-
-        # Borrow from read pool when available
-        if self._read_pool is not None:
-            conn = await self._read_pool.get()
-            try:
-                yield conn
-            finally:
-                self._read_pool.put_nowait(conn)
-            return
-
-        async with aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT) as conn:
-            await configure_connection(conn)
-            yield conn
-
-    async def _ensure_schema(self, conn: aiosqlite.Connection) -> None:
+    async def _ensure_schema(self, conn) -> None:
         """Ensure database schema exists and is at the current schema version."""
-        await ensure_schema(conn)
+        await ensure_backend_schema(conn)
 
-    @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[None]:
+    def transaction(self):
         """Context manager for database transactions.
 
         Acquires write lock to serialize write operations and manages
         explicit transaction control with savepoint nesting.
         """
-        async with self._write_lock:
-            # Create persistent connection for explicit transaction if needed
-            if self._txn_conn is None:
-                self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
-                await configure_connection(self._txn_conn)
-
-            await self.begin()
-            try:
-                yield
-                await self.commit()
-            except Exception:
-                await self.rollback()
-                raise
+        return backend_transaction(self)
 
     async def begin(self) -> None:
         """Begin a transaction or nested savepoint."""
-        await self._ensure_schema_once()
-        if self._txn_conn is None:
-            self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
-            await configure_connection(self._txn_conn)
-
-        if self._transaction_depth == 0:
-            await self._txn_conn.execute("BEGIN IMMEDIATE")
-        else:
-            await self._txn_conn.execute(f"SAVEPOINT sp_{self._transaction_depth}")
-        self._transaction_depth += 1
+        await backend_begin(self)
 
     async def commit(self) -> None:
         """Commit the current transaction or release savepoint."""
-        if self._transaction_depth <= 0:
-            from polylogue.errors import DatabaseError
-
-            raise DatabaseError("No active transaction to commit")
-
-        if self._txn_conn is None:
-            from polylogue.errors import DatabaseError
-
-            raise DatabaseError("No transaction connection")
-
-        self._transaction_depth -= 1
-
-        if self._transaction_depth == 0:
-            await self._txn_conn.commit()
-            await self._txn_conn.close()
-            self._txn_conn = None
-        else:
-            await self._txn_conn.execute(f"RELEASE SAVEPOINT sp_{self._transaction_depth}")
+        await backend_commit(self)
 
     async def rollback(self) -> None:
         """Rollback to the last begin() or savepoint."""
-        if self._transaction_depth <= 0:
-            from polylogue.errors import DatabaseError
-
-            raise DatabaseError("No active transaction to rollback")
-
-        if self._txn_conn is None:
-            from polylogue.errors import DatabaseError
-
-            raise DatabaseError("No transaction connection")
-
-        self._transaction_depth -= 1
-
-        if self._transaction_depth == 0:
-            await self._txn_conn.rollback()
-            await self._txn_conn.close()
-            self._txn_conn = None
-        else:
-            await self._txn_conn.execute(f"ROLLBACK TO SAVEPOINT sp_{self._transaction_depth}")
+        await backend_rollback(self)
 
     async def close(self) -> None:
         """Close database connections."""
-        if self._txn_conn is not None:
-            await self._txn_conn.close()
-            self._txn_conn = None
-        self._transaction_depth = 0
+        await close_backend(self)
 
 
 __all__ = [
+    "SCHEMA_DDL",
     "SQLiteBackend",
     "default_db_path",
 ]
