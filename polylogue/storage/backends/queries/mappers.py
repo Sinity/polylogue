@@ -12,7 +12,6 @@ from polylogue.storage.backends.queries.mappers_archive import (
 )
 from polylogue.storage.backends.queries.mappers_products import (
     _row_to_day_session_summary_record,
-    _row_to_maintenance_run_record,
     _row_to_session_phase_record,
     _row_to_session_profile_record,
     _row_to_session_tag_rollup_record,
@@ -29,7 +28,6 @@ __all__ = [
     "_row_to_content_block",
     "_row_to_conversation",
     "_row_to_day_session_summary_record",
-    "_row_to_maintenance_run_record",
     "_row_to_message",
     "_row_to_raw_conversation",
     "_row_to_session_phase_record",

@@ -9,12 +9,10 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.storage.action_event_lifecycle import rebuild_action_event_read_model_sync
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.backends.queries.maintenance_runs import record_maintenance_run_sync
 from polylogue.storage.session_product_lifecycle import (
     rebuild_session_products_sync,
     session_product_status_sync,
 )
-from polylogue.storage.store import MaintenanceRunRecord
 from tests.infra.storage_records import ConversationBuilder
 
 
@@ -98,61 +96,6 @@ def _seed_products(cli_workspace) -> None:
     with open_connection(db_path) as conn:
         rebuild_session_products_sync(conn)
         rebuild_action_event_read_model_sync(conn)
-
-
-def _record_maintenance_lineage(cli_workspace) -> None:
-    with open_connection(cli_workspace["db_path"]) as conn:
-        record_maintenance_run_sync(
-            conn,
-            MaintenanceRunRecord(
-                maintenance_run_id="maint-test-001",
-                executed_at="2026-03-24T10:00:00+00:00",
-                mode="preview",
-                preview=True,
-                repair_selected=True,
-                cleanup_selected=False,
-                vacuum_requested=False,
-                target_names=("session_products",),
-                success=True,
-                manifest={
-                    "preview_counts": {"session_products": 2},
-                    "results": [{"name": "session_products", "repaired_count": 2}],
-                },
-            ),
-        )
-        record_maintenance_run_sync(
-            conn,
-            MaintenanceRunRecord(
-                maintenance_run_id="maint-test-002",
-                executed_at="2026-03-24T10:05:00+00:00",
-                mode="apply",
-                preview=False,
-                repair_selected=True,
-                cleanup_selected=False,
-                vacuum_requested=False,
-                target_names=("session_products",),
-                success=True,
-                manifest={"results": [{"name": "session_products", "repaired_count": 2}]},
-            ),
-        )
-        record_maintenance_run_sync(
-            conn,
-            MaintenanceRunRecord(
-                maintenance_run_id="maint-test-003",
-                executed_at="2026-03-24T10:10:00+00:00",
-                mode="preview",
-                preview=True,
-                repair_selected=True,
-                cleanup_selected=False,
-                vacuum_requested=False,
-                target_names=("session_products",),
-                success=True,
-                manifest={
-                    "preview_counts": {"session_products": 0},
-                    "results": [{"name": "session_products", "repaired_count": 0}],
-                },
-            ),
-        )
 
 
 def test_products_profiles_json(cli_workspace):
@@ -350,37 +293,17 @@ def test_session_product_rebuild_supports_legacy_payload_columns(cli_workspace):
     assert status["phase_inference_rows_ready"] is True
 
 
-def test_products_threads_and_status_json(cli_workspace):
+def test_products_threads_json(cli_workspace):
     _seed_products(cli_workspace)
 
     runner = CliRunner()
     threads = runner.invoke(cli, ["products", "threads", "--json"], catch_exceptions=False)
-    status = runner.invoke(cli, ["products", "status", "--json"], catch_exceptions=False)
 
     assert threads.exit_code == 0
-    assert status.exit_code == 0
 
     threads_payload = _extract_json(threads.output)
-    status_payload = _extract_json(status.output)
     assert threads_payload["count"] == 1
     assert threads_payload["work_threads"][0]["product_kind"] == "work_thread"
-    assert status_payload["session_products"]["stale_profile_row_count"] == 0
-    assert status_payload["session_products"]["stale_work_event_inference_count"] == 0
-    assert status_payload["session_products"]["stale_phase_inference_count"] == 0
-    assert status_payload["session_products"]["profile_merged_fts_duplicate_count"] == 0
-    assert status_payload["session_products"]["profile_rows_ready"] is True
-    assert status_payload["session_products"]["profile_merged_fts_ready"] is True
-    assert status_payload["session_products"]["profile_evidence_fts_ready"] is True
-    assert status_payload["session_products"]["profile_inference_fts_ready"] is True
-    assert status_payload["session_products"]["profile_enrichment_fts_ready"] is True
-    assert status_payload["session_products"]["phase_inference_rows_ready"] is True
-    assert status_payload["session_products"]["threads_ready"] is True
-    assert status_payload["session_products"]["tag_rollups_ready"] is True
-    assert status_payload["session_products"]["day_summaries_ready"] is True
-    assert status_payload["session_products"]["week_summaries_ready"] is True
-    assert status_payload["archive_debt"]["tracked_items"] >= 1
-    assert status_payload["archive_debt"]["actionable_items"] == 0
-    assert status_payload["archive_debt"]["issue_rows"] == 0
 
 
 def test_products_tag_and_summary_rollups_json(cli_workspace):
@@ -405,19 +328,6 @@ def test_products_tag_and_summary_rollups_json(cli_workspace):
     assert week_payload["week_session_summaries"][0]["product_kind"] == "week_session_summary"
 
 
-def test_products_maintenance_json(cli_workspace):
-    _record_maintenance_lineage(cli_workspace)
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["products", "maintenance", "--json"], catch_exceptions=False)
-
-    assert result.exit_code == 0
-    payload = _extract_json(result.output)
-    assert payload["count"] >= 1
-    assert payload["maintenance_runs"][0]["product_kind"] == "maintenance_run"
-    assert payload["maintenance_runs"][0]["target_names"] == ["session_products"]
-
-
 def test_products_analytics_json(cli_workspace):
     _seed_products(cli_workspace)
 
@@ -436,26 +346,6 @@ def test_products_analytics_json(cli_workspace):
     assert item["provider_name"] == "claude-code"
     assert item["conversation_count"] == 2
     assert item["tool_use_count"] == 2
-
-
-def test_products_debt_json(cli_workspace):
-    _seed_products(cli_workspace)
-    _record_maintenance_lineage(cli_workspace)
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["products", "debt", "--json"], catch_exceptions=False)
-
-    assert result.exit_code == 0
-    payload = _extract_json(result.output)
-    assert payload["count"] >= 1
-    assert {item["product_kind"] for item in payload["archive_debt"]} == {"archive_debt"}
-    session_product_item = next(item for item in payload["archive_debt"] if item["debt_name"] == "session_products")
-    assert session_product_item["governance_stage"] == "validated"
-    assert session_product_item["lineage"]["latest_preview_at"] is not None
-    assert session_product_item["lineage"]["latest_successful_apply_at"] is not None
-    assert session_product_item["lineage"]["latest_validation_at"] is not None
-    assert session_product_item["lineage"]["latest_validation_issue_count"] == 0
-    assert session_product_item["lineage"]["latest_successful_validation_at"] is not None
 
 
 def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli_workspace):

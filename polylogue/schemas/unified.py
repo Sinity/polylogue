@@ -1,18 +1,24 @@
-"""Unified provider harmonization over typed adapters and explicit fallback paths.
+"""Unified provider harmonization — typed adapters with schema-driven fallback.
 
 This module is the public runtime entrypoint for turning provider-native payloads
 or extracted provider metadata into a ``HarmonizedMessage``.
 
-The implementation is intentionally split behind this API:
+Architecture:
+- Provider adapters (``unified_adapters.py``) handle per-message extraction
+  from already-parsed records (where the parser has extracted messages from
+  the wire format)
+- Schema extraction (``schemas/extraction.py``) operates at the record level
+  and is used by parsers that want generic extraction from raw wire-format data
+- Fallback extraction (``unified_fallbacks.py``) handles malformed/partial data
+- Provider meta hydration (``unified_provider_meta.py``) handles DB-stored records
 
-- ``unified_models`` owns the harmonized runtime model and token helpers
-- ``unified_adapters`` owns typed provider-adapter routing
-- ``unified_fallbacks`` owns malformed/rawless fallback extraction
-- ``unified_provider_meta`` owns DB/provider-meta hydration and parsed-message flow
+The distinction: adapters work on extracted messages (post-parse), schema
+extraction works on raw records (pre-parse or during parse).
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from pydantic import ValidationError
@@ -43,14 +49,49 @@ from polylogue.schemas.unified_provider_meta import (
 )
 from polylogue.types import Provider
 
+logger = logging.getLogger(__name__)
+
 
 def extract_harmonized_message(provider: Provider | str, raw: dict[str, Any]) -> HarmonizedMessage:
-    """Extract ``HarmonizedMessage`` from raw provider data."""
+    """Extract ``HarmonizedMessage`` from a provider-native message payload.
+
+    This operates on already-extracted message dicts (post-parse), not on
+    raw wire-format records. For record-level schema-driven extraction,
+    use ``schemas.extraction.extract_message_from_schema`` directly.
+    """
     p = provider if isinstance(provider, Provider) else Provider.from_string(provider)
     try:
         return extract_with_adapter(p, raw)
     except (ValidationError, ValueError):
         return extract_fallback_message(p, raw)
+
+
+def try_schema_extraction(provider: Provider | str, raw: dict[str, Any]) -> HarmonizedMessage | None:
+    """Record-level schema extraction. Returns None if unavailable.
+
+    This is for raw wire-format records (pre-parse). Parsers can call
+    this to extract messages from records using schema semantic annotations
+    instead of provider-specific Pydantic models.
+    """
+    p = provider if isinstance(provider, Provider) else Provider.from_string(provider)
+    try:
+        from polylogue.schemas.extraction import extract_message_from_schema
+        from polylogue.schemas.runtime_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        resolution = registry.resolve_payload(str(p), raw)
+        if resolution is None:
+            return None
+        schema = registry.get_element_schema(
+            resolution.provider,
+            version=resolution.package_version,
+            element_kind=resolution.element_kind,
+        )
+        if schema is None:
+            return None
+        return extract_message_from_schema(raw, schema=schema, provider=p)
+    except Exception:
+        return None
 
 
 __all__ = [
@@ -75,4 +116,5 @@ __all__ = [
     "extract_tool_calls",
     "harmonize_parsed_message",
     "is_message_record",
+    "try_schema_extraction",
 ]

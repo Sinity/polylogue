@@ -1,18 +1,28 @@
 from __future__ import annotations
 
-import importlib
-import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from polylogue.logging import get_logger
+
 from ..paths import drive_credentials_path, drive_token_path
-from .drive_types import SCOPES, CachedCredentialState, DriveAuthError
+from .drive_auth_support import (
+    DriveAuthPrompter,
+    UIAuthPrompter,
+    _PromptBridge,
+    import_auth_module,
+    load_cached_credentials,
+    persist_token,
+    refresh_credentials_if_needed,
+    run_manual_auth_flow,
+)
+from .drive_types import SCOPES, DriveAuthError
 from .token_store import TokenStore, create_token_store
 
 logger = get_logger(__name__)
+_import_auth_module = import_auth_module
 
 
 # ---------------------------------------------------------------------------
@@ -83,56 +93,6 @@ def _resolve_token_path(config: object | None = None) -> Path:
     return default_token_path(config)
 
 
-# ---------------------------------------------------------------------------
-# Prompter protocol + UI adapter
-# ---------------------------------------------------------------------------
-
-
-class DriveAuthPrompter(Protocol):
-    """Interface for interactive OAuth prompts."""
-
-    def announce_auth_url(self, url: str) -> None:
-        """Display the authorization URL to the user."""
-        ...
-
-    def request_authorization_code(self) -> str | None:
-        """Prompt the user for the authorization code. Returns None if cancelled."""
-        ...
-
-
-class UIAuthPrompter:
-    """Adapter bridging a generic UI object to DriveAuthPrompter."""
-
-    def __init__(self, ui: object) -> None:
-        self._ui = ui
-
-    def announce_auth_url(self, url: str) -> None:
-        console = getattr(self._ui, "console", None)
-        if console:
-            getattr(console, "print", print)("Open this URL in your browser to authorize Drive access:")
-            getattr(console, "print", print)(url)
-
-    def request_authorization_code(self) -> str | None:
-        code = getattr(self._ui, "input", lambda x: None)("Paste the authorization code")
-        return code or None
-
-
-# ---------------------------------------------------------------------------
-# DriveAuthManager
-# ---------------------------------------------------------------------------
-
-
-def _import_auth_module(name: str) -> Any:
-    try:
-        return importlib.import_module(name)
-    except ModuleNotFoundError as exc:
-        raise DriveAuthError(
-            "Drive dependencies are not available. "
-            "Install google-api-python-client + google-auth-oauthlib "
-            "or run Polylogue from a Nix build/dev shell."
-        ) from exc
-
-
 class DriveAuthManager:
     """Owns Drive credential acquisition and token lifecycle."""
 
@@ -157,73 +117,25 @@ class DriveAuthManager:
     def _resolved_token_path(self) -> Path:
         return self._token_path or _resolve_token_path(self._config)
 
-    def _load_cached_credentials(
-        self,
-        credentials_cls: Any,
-        token_path: Path,
-    ) -> CachedCredentialState:
-        creds = None
-        had_invalid_token_path = False
-
-        token_data = self._token_store.load("drive_token")
-        if token_data:
-            try:
-                creds = credentials_cls.from_authorized_user_info(json.loads(token_data), SCOPES)
-            except (OSError, ValueError, json.JSONDecodeError):
-                creds = None
-
-        if creds is None and token_path.exists():
-            try:
-                creds = credentials_cls.from_authorized_user_file(str(token_path), SCOPES)
-            except (OSError, ValueError):
-                had_invalid_token_path = True
-                creds = None
-
-        return CachedCredentialState(creds=creds, had_invalid_token_path=had_invalid_token_path)
+    def _load_cached_credentials(self, credentials_cls: Any, token_path: Path):
+        return load_cached_credentials(
+            token_store=self._token_store,
+            credentials_cls=credentials_cls,
+            token_path=token_path,
+        )
 
     def _persist_token(self, creds: Any, token_path: Path) -> None:
-        self._token_store.save("drive_token", creds.to_json())
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(creds.to_json(), encoding="utf-8")
-        token_path.chmod(0o600)
+        persist_token(token_store=self._token_store, creds=creds, token_path=token_path)
 
     def _refresh_credentials_if_needed(self, creds: Any, token_path: Path) -> Any:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                import google.auth.transport.requests as _gtr
-                transport = _gtr.Request()
-                transport.session.timeout = 30
-                creds.refresh(transport)
-            except Exception as exc:
-                raise DriveAuthError(
-                    f"Failed to refresh OAuth token: {exc}. "
-                    "Try re-authenticating with 'polylogue auth'."
-                ) from exc
-
-        if creds and creds.valid:
-            self._persist_token(creds, token_path)
-            return creds
-
-        if creds and not creds.valid and not creds.refresh_token:
-            raise DriveAuthError(
-                f"Drive token at {token_path} is invalid and cannot be refreshed "
-                "(no refresh token). Delete it and re-run with --interactive to re-authorize."
-            )
-
-        return creds
+        return refresh_credentials_if_needed(
+            creds=creds,
+            token_path=token_path,
+            token_store=self._token_store,
+        )
 
     def _run_manual_auth_flow(self, flow: Any) -> Any:
-        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-        if self._prompter is not None:
-            self._prompter.announce_auth_url(auth_url)
-        code = self._prompter.request_authorization_code() if self._prompter is not None else None
-        if not code:
-            raise DriveAuthError("Drive authorization cancelled.") from None
-        try:
-            flow.fetch_token(code=code)
-        except Exception as exc:
-            raise DriveAuthError(f"Drive authorization failed: {exc}") from exc
-        return flow.credentials
+        return run_manual_auth_flow(flow=flow, prompter=self._prompter)
 
     def load_credentials(self) -> Any:
         """Load or acquire Google OAuth credentials. Triggers interactive auth if needed."""
@@ -271,20 +183,6 @@ class DriveAuthManager:
         self._token_store.delete("drive_token")
         if token_path.exists():
             token_path.unlink()
-
-
-class _PromptBridge:
-    """Minimal bridge so _resolve_credentials_path sees a non-plain UI when a prompter exists."""
-
-    def __init__(self, prompter: DriveAuthPrompter) -> None:
-        self._prompter = prompter
-
-    @property
-    def plain(self) -> bool:
-        return False
-
-    def input(self, prompt: str, **_: object) -> str | None:
-        return None
 
 
 __all__ = [

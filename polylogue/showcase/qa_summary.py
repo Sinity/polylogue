@@ -5,7 +5,6 @@ from __future__ import annotations
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.report_common import (
     format_count_mapping,
-    format_semantic_metric_summary,
     status_label,
 )
 
@@ -18,7 +17,6 @@ def generate_qa_summary(result, *, session: dict | None = None) -> str:
         session = generate_qa_session(result)
     lines: list[str] = []
     proof_summary = session["proof"].get("report", {}).get("summary")
-    semantic_summary = session["semantic_proof"].get("report", {}).get("summary")
 
     lines.append(f"Schema Audit: {status_label(result.audit_status)}")
     if result.proof_error:
@@ -44,36 +42,6 @@ def generate_qa_summary(result, *, session: dict | None = None) -> str:
             lines.append(
                 f"  Reasons: {format_count_mapping(proof_summary['resolution_reasons'])}"
             )
-    if result.semantic_proof_error:
-        lines.append(f"Semantic Proof: FAIL ({result.semantic_proof_error})")
-    elif semantic_summary is not None:
-        lines.append(
-            "Semantic Proof: "
-            f"surfaces={semantic_summary['surface_count']}, "
-            f"clean_surfaces={semantic_summary['clean_surfaces']}, "
-            f"critical_surfaces={semantic_summary['critical_surfaces']}, "
-            f"total_conversations={semantic_summary['total_conversations']}, "
-            f"preserved_checks={semantic_summary['preserved_checks']}, "
-            f"declared_loss_checks={semantic_summary['declared_loss_checks']}, "
-            f"critical_loss_checks={semantic_summary['critical_loss_checks']}"
-        )
-        if semantic_summary["metric_summary"]:
-            lines.append(
-                f"  Metrics: {format_semantic_metric_summary(semantic_summary['metric_summary'])}"
-            )
-        for surface, surface_report in sorted(
-            session["semantic_proof"].get("report", {}).get("surfaces", {}).items()
-        ):
-            surface_summary = surface_report["summary"]
-            lines.append(
-                f"  {surface}: clean={surface_summary['clean_conversations']}, "
-                f"critical={surface_summary['critical_conversations']}, "
-                f"preserved_checks={surface_summary['preserved_checks']}, "
-                f"declared_loss_checks={surface_summary['declared_loss_checks']}, "
-                f"critical_loss_checks={surface_summary['critical_loss_checks']}"
-            )
-    elif result.semantic_proof_status is OutcomeStatus.SKIP:
-        lines.append("Semantic Proof: SKIPPED")
     roundtrip_summary = session["roundtrip_proof"].get("report", {}).get("summary")
     if result.roundtrip_proof_error:
         lines.append(f"Roundtrip Proof: FAIL ({result.roundtrip_proof_error})")

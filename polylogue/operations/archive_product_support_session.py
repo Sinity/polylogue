@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from polylogue.archive_products import (
-    MaintenanceRunProduct,
-    MaintenanceRunProductQuery,
     SessionEnrichmentProduct,
     SessionEnrichmentProductQuery,
     SessionPhaseProduct,
@@ -139,14 +137,6 @@ class ArchiveProductSessionMixin:
             query=request.query,
         )
         return [WorkThreadProduct.from_record(record) for record in records]
-
-    async def list_maintenance_run_products(
-        self,
-        query: MaintenanceRunProductQuery | None = None,
-    ) -> list[MaintenanceRunProduct]:
-        request = query or MaintenanceRunProductQuery()
-        records = await self.repository.list_maintenance_runs(limit=request.limit)
-        return [MaintenanceRunProduct.from_record(record) for record in records]
 
 
 __all__ = ["ArchiveProductSessionMixin"]

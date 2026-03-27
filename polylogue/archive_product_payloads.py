@@ -105,21 +105,7 @@ class SessionEnrichmentPayload(ArchiveProductModel):
     input_band_summary: dict[str, int] = Field(default_factory=dict)
 
 
-class ArchiveDebtTargetLineage(ArchiveProductModel):
-    latest_run_at: str | None = None
-    latest_mode: str | None = None
-    latest_preview_at: str | None = None
-    latest_preview_issue_count: int | None = None
-    latest_apply_at: str | None = None
-    latest_successful_apply_at: str | None = None
-    latest_validation_at: str | None = None
-    latest_validation_issue_count: int | None = None
-    latest_successful_validation_at: str | None = None
-    latest_regressed_at: str | None = None
-
-
 __all__ = [
-    "ArchiveDebtTargetLineage",
     "SessionEnrichmentPayload",
     "SessionEvidencePayload",
     "SessionInferencePayload",

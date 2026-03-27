@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from polylogue.storage.store_core import (
     ACTION_EVENT_MATERIALIZER_VERSION,
-    MAINTENANCE_RUN_SCHEMA_VERSION,
     MAX_ATTACHMENT_SIZE,
     MAX_RAW_CONTENT_SIZE,
     SESSION_ENRICHMENT_FAMILY,
@@ -27,7 +26,6 @@ from polylogue.storage.store_core import (
 )
 from polylogue.storage.store_products import (
     DaySessionSummaryRecord,
-    MaintenanceRunRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionTagRollupRecord,
@@ -43,10 +41,8 @@ __all__ = [
     "ContentBlockRecord",
     "ConversationRecord",
     "DaySessionSummaryRecord",
-    "MAINTENANCE_RUN_SCHEMA_VERSION",
     "MAX_ATTACHMENT_SIZE",
     "MAX_RAW_CONTENT_SIZE",
-    "MaintenanceRunRecord",
     "MessageRecord",
     "PublicationRecord",
     "RawConversationRecord",
