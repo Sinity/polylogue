@@ -20,8 +20,7 @@ from polylogue.cli.check_validation import (
 )
 from polylogue.cli.helpers import fail, load_effective_config
 from polylogue.cli.types import AppEnv
-from polylogue.health_archive import get_health
-from polylogue.health_runtime import run_runtime_health
+from polylogue.health import get_health, run_runtime_health
 from polylogue.schemas.operator_workflow import (
     list_artifact_cohorts,
     list_artifact_observations,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from polylogue.cli.check_rendering_plain_support import status_icon
 from polylogue.cli.check_workflow import CheckCommandOptions, CheckCommandResult
 from polylogue.cli.types import AppEnv
-from polylogue.health_models import VerifyStatus
+from polylogue.health import VerifyStatus
 
 
 def build_health_lines(
@@ -22,18 +22,13 @@ def build_health_lines(
 
     summary = result.report.summary
     provenance = result.report.provenance
+    source_val = getattr(provenance.source, "value", provenance.source) if hasattr(provenance, "source") else "live"
     lines.extend(
         [
             "",
             (
                 f"Summary: {summary.get('ok', 0)} ok, {summary.get('warning', 0)} warnings, "
-                f"{summary.get('error', 0)} errors (source={provenance.source.value}"
-                + (
-                    f", age={provenance.cache_age_seconds}s, ttl={provenance.cache_ttl_seconds}s"
-                    if provenance.cache_age_seconds is not None
-                    else ""
-                )
-                + ")"
+                f"{summary.get('error', 0)} errors (source={source_val})"
             ),
         ]
     )

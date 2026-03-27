@@ -8,11 +8,6 @@ from polylogue.cli.products_rendering_aggregate import (
     render_session_tag_rollups,
     render_week_session_summaries,
 )
-from polylogue.cli.products_rendering_governance import (
-    render_archive_debt,
-    render_maintenance_runs,
-    render_products_status,
-)
 from polylogue.cli.products_rendering_session import (
     render_session_enrichments,
     render_session_phases,
@@ -23,10 +18,7 @@ from polylogue.cli.products_rendering_session import (
 from polylogue.cli.products_rendering_support import summarize_archive_debt
 
 __all__ = [
-    "render_archive_debt",
     "render_day_session_summaries",
-    "render_maintenance_runs",
-    "render_products_status",
     "render_provider_analytics",
     "render_session_enrichments",
     "render_session_phases",

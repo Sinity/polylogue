@@ -201,7 +201,7 @@ class TestResourceSurfaces:
         mock_report.summary = "All systems operational"
 
         with patch("polylogue.mcp.server._get_config") as mock_get_config, patch(
-            "polylogue.health_archive.get_health"
+            "polylogue.health.get_health"
         ) as mock_get_health:
             mock_get_config.return_value = MagicMock()
             mock_get_health.return_value = mock_report
