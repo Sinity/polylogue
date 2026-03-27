@@ -4,6 +4,8 @@ Each product type is a ``ProductType`` descriptor that defines:
 - how to display items in plain text (via ``fields``)
 - what the JSON key is for API responses
 - what display name to use in CLI output
+- how to fetch data (query class + operations method name)
+- CLI command configuration (name, help, options)
 
 The rendering is generic: ``render_product_items()`` handles JSON mode
 (all types) and plain-text mode (using field descriptors). Adding a new
@@ -16,13 +18,11 @@ only the *transport/presentation* layer is generic.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 import click
-
-from polylogue.cli.machine_errors import emit_success
-
 
 # -------------------------------------------------------------------
 # Field descriptors
@@ -37,6 +37,27 @@ class ProductField:
     """Function that takes an item and returns a display string."""
     group: int = 0
     """Fields with the same group number are displayed on the same line."""
+
+
+# -------------------------------------------------------------------
+# CLI option descriptor
+# -------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class CliOption:
+    """Describes one Click option for a product command."""
+
+    param_name: str
+    """Python parameter name (snake_case)."""
+    flags: tuple[str, ...]
+    """Click flags, e.g. ('--provider',)."""
+    help: str = ""
+    type: type | click.ParamType | None = None
+    default: Any = None
+    show_default: bool = False
+    is_flag: bool = False
+    expose_value_as: str | None = None
+    """If set, Click will expose the value under this name instead of param_name."""
 
 
 # -------------------------------------------------------------------
@@ -62,6 +83,32 @@ class ProductType:
     empty_message: str = "No items matched."
     """Message shown when no items match the query."""
 
+    # --- Dispatch metadata ---
+
+    query_class_path: str = ""
+    """Dotted import path to the query class, e.g.
+    'polylogue.archive_products.SessionProfileProductQuery'."""
+
+    operations_method: str = ""
+    """Name of the async method on ArchiveOperations, e.g.
+    'list_session_profile_products'."""
+
+    cli_command_name: str = ""
+    """Click command name, e.g. 'profiles'. Defaults to name with _ -> -."""
+
+    cli_help: str = ""
+    """Help string for the Click command."""
+
+    cli_options: list[CliOption] = field(default_factory=list)
+    """Extra Click options beyond the standard --json, --limit, --offset."""
+
+    mcp_default_limit: int = 50
+    """Default limit for MCP tool calls."""
+
+    @property
+    def resolved_cli_command_name(self) -> str:
+        return self.cli_command_name or self.name.replace("_", "-")
+
 
 # -------------------------------------------------------------------
 # Generic rendering
@@ -84,6 +131,8 @@ def render_product_items(
     Plain mode: format using field descriptors.
     """
     if json_mode:
+        from polylogue.cli.machine_errors import emit_success
+
         emit_success({
             "count": len(items),
             product_type.json_key: [_model_payload(item) for item in items],
@@ -179,6 +228,28 @@ def list_product_types() -> list[str]:
 
 
 # -------------------------------------------------------------------
+# Shared option sets
+# -------------------------------------------------------------------
+
+_COMMON_TIME_OPTIONS: list[CliOption] = [
+    CliOption("since", ("--since",), help="Only rows on/after this timestamp"),
+    CliOption("until", ("--until",), help="Only rows on/before this timestamp"),
+]
+
+_SESSION_TIME_OPTIONS: list[CliOption] = [
+    *_COMMON_TIME_OPTIONS,
+    CliOption("first_message_since", ("--first-message-since",), help="Only sessions whose first message is on/after this timestamp"),
+    CliOption("first_message_until", ("--first-message-until",), help="Only sessions whose first message is on/before this timestamp"),
+    CliOption("session_date_since", ("--session-date-since",), help="Only sessions whose canonical session date is on/after this date"),
+    CliOption("session_date_until", ("--session-date-until",), help="Only sessions whose canonical session date is on/before this date"),
+]
+
+_PROVIDER_OPTION = CliOption("provider", ("--provider",), help="Limit to provider")
+
+_QUERY_OPTION = CliOption("query", ("--query",), help="FTS query against product search text")
+
+
+# -------------------------------------------------------------------
 # Product type registrations
 # -------------------------------------------------------------------
 
@@ -187,6 +258,16 @@ register(ProductType(
     display_name="Session Profiles",
     json_key="session_profiles",
     empty_message="No session profiles matched.",
+    query_class_path="polylogue.archive_products.SessionProfileProductQuery",
+    operations_method="list_session_profile_products",
+    cli_command_name="profiles",
+    cli_help="List durable session-profile products.",
+    cli_options=[
+        _PROVIDER_OPTION,
+        *_SESSION_TIME_OPTIONS,
+        CliOption("tier", ("--tier",), type=click.Choice(["merged", "evidence", "inference"]), default="merged", show_default=True, help="Return merged, evidence-only, or inference-only profile products"),
+        _QUERY_OPTION,
+    ],
     fields=[
         ProductField("", lambda i: f"{i.conversation_id} [{i.provider_name}]", group=0),
         ProductField("tier", _attr("semantic_tier"), group=0),
@@ -202,6 +283,16 @@ register(ProductType(
     display_name="Session Enrichments",
     json_key="session_enrichments",
     empty_message="No session enrichments matched.",
+    query_class_path="polylogue.archive_products.SessionEnrichmentProductQuery",
+    operations_method="list_session_enrichment_products",
+    cli_command_name="enrichments",
+    cli_help="List durable probabilistic session-enrichment products.",
+    cli_options=[
+        _PROVIDER_OPTION,
+        *_SESSION_TIME_OPTIONS,
+        CliOption("refined_work_kind", ("--refined-work-kind",), help="Only this refined enrichment work kind"),
+        _QUERY_OPTION,
+    ],
     fields=[
         ProductField("", lambda i: f"{i.conversation_id} [{i.provider_name}]", group=0),
         ProductField("", _nested("enrichment", "refined_work_kind"), group=0),
@@ -216,6 +307,17 @@ register(ProductType(
     display_name="Work Events",
     json_key="session_work_events",
     empty_message="No work events matched.",
+    query_class_path="polylogue.archive_products.SessionWorkEventProductQuery",
+    operations_method="list_session_work_event_products",
+    cli_command_name="work-events",
+    cli_help="List durable work-event products.",
+    cli_options=[
+        CliOption("conversation_id", ("--conversation-id",), help="Only events from one conversation"),
+        _PROVIDER_OPTION,
+        *_COMMON_TIME_OPTIONS,
+        CliOption("kind", ("--kind",), help="Only this work-event kind"),
+        _QUERY_OPTION,
+    ],
     fields=[
         ProductField("", lambda i: f"{i.event_id} [{i.provider_name}]", group=0),
         ProductField("kind", _nested("inference", "kind"), group=0),
@@ -231,6 +333,16 @@ register(ProductType(
     display_name="Session Phases",
     json_key="session_phases",
     empty_message="No session phases matched.",
+    query_class_path="polylogue.archive_products.SessionPhaseProductQuery",
+    operations_method="list_session_phase_products",
+    cli_command_name="phases",
+    cli_help="List durable session-phase products.",
+    cli_options=[
+        CliOption("conversation_id", ("--conversation-id",), help="Only phases from one conversation"),
+        _PROVIDER_OPTION,
+        *_COMMON_TIME_OPTIONS,
+        CliOption("kind", ("--kind",), help="Only this session phase kind"),
+    ],
     fields=[
         ProductField("", lambda i: f"{i.phase_id} [{i.provider_name}]", group=0),
         ProductField("kind", _nested("inference", "kind"), group=0),
@@ -245,6 +357,14 @@ register(ProductType(
     display_name="Work Threads",
     json_key="work_threads",
     empty_message="No work threads matched.",
+    query_class_path="polylogue.archive_products.WorkThreadProductQuery",
+    operations_method="list_work_thread_products",
+    cli_command_name="threads",
+    cli_help="List durable work-thread products.",
+    cli_options=[
+        *_COMMON_TIME_OPTIONS,
+        _QUERY_OPTION,
+    ],
     fields=[
         ProductField("", _attr("thread_id"), group=0),
         ProductField("project", _attr("dominant_project", "-"), group=0),
@@ -259,6 +379,16 @@ register(ProductType(
     display_name="Session Tag Rollups",
     json_key="session_tag_rollups",
     empty_message="No session tag rollups matched.",
+    query_class_path="polylogue.archive_products.SessionTagRollupQuery",
+    operations_method="list_session_tag_rollup_products",
+    cli_command_name="tags",
+    cli_help="List durable session-tag rollup products.",
+    cli_options=[
+        _PROVIDER_OPTION,
+        *_COMMON_TIME_OPTIONS,
+        CliOption("query", ("--query",), help="Substring match against the tag name"),
+    ],
+    mcp_default_limit=100,
     fields=[
         ProductField("", _attr("tag"), group=0),
         ProductField("conversations", _attr("conversation_count", "0"), group=0),
@@ -272,6 +402,15 @@ register(ProductType(
     display_name="Day Session Summaries",
     json_key="day_session_summaries",
     empty_message="No day summaries matched.",
+    query_class_path="polylogue.archive_products.DaySessionSummaryProductQuery",
+    operations_method="list_day_session_summary_products",
+    cli_command_name="day-summaries",
+    cli_help="List durable day-level session summary products.",
+    cli_options=[
+        _PROVIDER_OPTION,
+        *_COMMON_TIME_OPTIONS,
+    ],
+    mcp_default_limit=90,
     fields=[
         ProductField("", _attr("date"), group=0),
         ProductField("sessions", lambda i: str(i.summary.get("session_count", 0)) if hasattr(i, "summary") else "0", group=0),
@@ -284,6 +423,15 @@ register(ProductType(
     display_name="Week Session Summaries",
     json_key="week_session_summaries",
     empty_message="No week summaries matched.",
+    query_class_path="polylogue.archive_products.WeekSessionSummaryProductQuery",
+    operations_method="list_week_session_summary_products",
+    cli_command_name="week-summaries",
+    cli_help="List durable week-level session summary products.",
+    cli_options=[
+        _PROVIDER_OPTION,
+        *_COMMON_TIME_OPTIONS,
+    ],
+    mcp_default_limit=52,
     fields=[
         ProductField("", _attr("iso_week"), group=0),
         ProductField("sessions", lambda i: str(i.summary.get("session_count", 0)) if hasattr(i, "summary") else "0", group=0),
@@ -296,6 +444,13 @@ register(ProductType(
     display_name="Provider Analytics",
     json_key="provider_analytics",
     empty_message="No provider analytics matched.",
+    query_class_path="polylogue.archive_products.ProviderAnalyticsProductQuery",
+    operations_method="list_provider_analytics_products",
+    cli_command_name="analytics",
+    cli_help="List canonical provider-level analytics products.",
+    cli_options=[
+        CliOption("provider", ("--provider",), help="Limit to one provider"),
+    ],
     fields=[
         ProductField("", _attr("provider_name"), group=0),
         ProductField("conversations", _attr("conversation_count", "0"), group=0),
@@ -307,10 +462,60 @@ register(ProductType(
 ))
 
 
+# -------------------------------------------------------------------
+# Generic data fetching
+# -------------------------------------------------------------------
+
+def _resolve_query_class(dotted_path: str) -> type:
+    """Import and return a class from a dotted path."""
+    module_path, class_name = dotted_path.rsplit(".", 1)
+    import importlib
+    mod = importlib.import_module(module_path)
+    return getattr(mod, class_name)
+
+
+def fetch_products(
+    product_type: ProductType,
+    operations: object,
+    **kwargs: Any,
+) -> list[Any]:
+    """Fetch product items using the registry dispatch metadata.
+
+    Constructs the query object from ``product_type.query_class_path``
+    using **kwargs, then calls the async operations method synchronously.
+    """
+    from polylogue.sync_bridge import run_coroutine_sync
+
+    query_cls = _resolve_query_class(product_type.query_class_path)
+    # Filter kwargs to only fields the query class accepts
+    accepted = set(query_cls.model_fields)
+    filtered = {k: v for k, v in kwargs.items() if k in accepted}
+    query = query_cls(**filtered)
+    method = getattr(operations, product_type.operations_method)
+    return run_coroutine_sync(method(query))
+
+
+async def fetch_products_async(
+    product_type: ProductType,
+    operations: object,
+    **kwargs: Any,
+) -> list[Any]:
+    """Async variant of ``fetch_products()``."""
+    query_cls = _resolve_query_class(product_type.query_class_path)
+    accepted = set(query_cls.model_fields)
+    filtered = {k: v for k, v in kwargs.items() if k in accepted}
+    query = query_cls(**filtered)
+    method = getattr(operations, product_type.operations_method)
+    return await method(query)
+
+
 __all__ = [
+    "CliOption",
     "PRODUCT_REGISTRY",
     "ProductField",
     "ProductType",
+    "fetch_products",
+    "fetch_products_async",
     "get_product_type",
     "list_product_types",
     "register",

@@ -7,17 +7,23 @@ appropriate output. No per-product-type rendering/workflow/command files.
 
 from polylogue.products.registry import (
     PRODUCT_REGISTRY,
+    CliOption,
     ProductField,
     ProductType,
+    fetch_products,
+    fetch_products_async,
     get_product_type,
     list_product_types,
     render_product_items,
 )
 
 __all__ = [
+    "CliOption",
     "PRODUCT_REGISTRY",
     "ProductField",
     "ProductType",
+    "fetch_products",
+    "fetch_products_async",
     "get_product_type",
     "list_product_types",
     "render_product_items",
