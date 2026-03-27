@@ -58,7 +58,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     models: set[str] = set()
 
     # Deferred import avoids circular dependency via pipeline/__init__.py.
-    from polylogue.pipeline.semantic import detect_context_compaction  # noqa: PLC0415
+    from polylogue.pipeline.semantic_capture import detect_context_compaction  # noqa: PLC0415
 
     for index, item in enumerate(payload, start=1):
         if not isinstance(item, dict):

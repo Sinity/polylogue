@@ -19,7 +19,6 @@ from polylogue.schemas.synthetic.relations import (
     TimeDeltaConstraint,
 )
 
-
 # ---------------------------------------------------------------------------
 # ForeignKeyGraph
 # ---------------------------------------------------------------------------

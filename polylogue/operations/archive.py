@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from polylogue.archive_product_builders import (
+from polylogue.archive_product_rollups import aggregate_session_tag_rollup_products
+from polylogue.archive_product_summaries import (
     aggregate_day_session_summary_products,
-    aggregate_session_tag_rollup_products,
     aggregate_week_session_summary_products,
 )
 from polylogue.archive_products import (

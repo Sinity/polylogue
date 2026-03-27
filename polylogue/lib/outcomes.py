@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any
 
 
 class OutcomeStatus(str, Enum):

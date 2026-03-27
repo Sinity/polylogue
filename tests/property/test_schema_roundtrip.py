@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from hypothesis import given, settings
 
 from tests.infra.strategies.schema_driven import schema_conformant_payload

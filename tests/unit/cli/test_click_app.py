@@ -495,7 +495,7 @@ class TestQaCommand:
 
     def test_json_output_uses_composed_qa_session_payload(self, cli_runner):
         from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-        from polylogue.schemas.audit import AuditReport
+        from polylogue.schemas.audit_models import AuditReport
         from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
         from polylogue.showcase.qa_runner import QAResult
 

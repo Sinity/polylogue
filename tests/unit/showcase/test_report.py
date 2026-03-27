@@ -16,7 +16,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.schemas.audit import AuditReport
+from polylogue.schemas.audit_models import AuditReport
 from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_report import (
@@ -26,7 +26,7 @@ from polylogue.showcase.qa_report import (
 )
 from polylogue.showcase.qa_runner import QAResult
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
-from polylogue.showcase.showcase_report import (
+from polylogue.showcase.showcase_report_payloads import (
     generate_json_report,
     generate_showcase_session,
     write_showcase_session,
