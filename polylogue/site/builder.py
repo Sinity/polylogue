@@ -16,7 +16,6 @@ from polylogue.site.publication_flow import (
     load_archive_maintenance_summary_for_backend,
     load_artifact_proof_summary_for_backend,
     load_latest_run_summary,
-    load_semantic_proof_summary_for_backend,
     record_site_publication_manifest,
     write_site_publication_manifest,
 )
@@ -129,7 +128,6 @@ class SiteBuilder:
                 incremental=incremental,
                 latest_run=await load_latest_run_summary(backend),
                 artifact_proof=await load_artifact_proof_summary_for_backend(backend),
-                semantic_proof=await load_semantic_proof_summary_for_backend(backend),
                 maintenance=await load_archive_maintenance_summary_for_backend(backend),
             )
             write_site_publication_manifest(self.output_dir, manifest)
