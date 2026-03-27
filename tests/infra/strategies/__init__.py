@@ -104,11 +104,6 @@ from tests.infra.strategies.providers import (
     provider_semantic_case_strategy,
     provider_source_case_strategy,
 )
-from tests.infra.strategies.search import (
-    fts5_match_text_strategy,
-    search_query_strategy,
-    search_with_since_strategy,
-)
 from tests.infra.strategies.schema import (
     SessionJsonlFileSpec,
     dynamic_key_strategy,
@@ -122,6 +117,11 @@ from tests.infra.strategies.schema import (
 from tests.infra.strategies.schema_driven import (
     schema_conformant_payload,
     strip_schema_extensions,
+)
+from tests.infra.strategies.search import (
+    fts5_match_text_strategy,
+    search_query_strategy,
+    search_with_since_strategy,
 )
 from tests.infra.strategies.site import (
     SiteArchiveSpec,

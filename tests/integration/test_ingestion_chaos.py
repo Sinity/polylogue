@@ -6,15 +6,10 @@ and that error context is preserved for diagnostics.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
 from tests.infra.chaos_sources import (
     ChaosInboxBuilder,
-    build_corrupted_codex_inbox,
-    build_mixed_provider_inbox,
 )
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 

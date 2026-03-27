@@ -7,9 +7,10 @@ identifying provider date ranges, gaps, and truncated sessions.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.lib.models import ConversationSummary

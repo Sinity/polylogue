@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.schemas.audit import AuditReport
+from polylogue.schemas.audit_models import AuditReport
 from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercises import Exercise, Validation
 from polylogue.showcase.invariants import InvariantResult

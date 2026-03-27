@@ -94,7 +94,7 @@ def run_qa_session(
         result.audit_skipped = True
     else:
         try:
-            from polylogue.schemas.audit import audit_all_providers, audit_provider
+            from polylogue.schemas.audit_workflow import audit_all_providers, audit_provider
 
             result.audit_report = audit_provider(provider) if provider else audit_all_providers()
             if not result.audit_report.all_passed:

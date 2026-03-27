@@ -999,7 +999,7 @@ def test_chatgpt_full_parse_with_string_author():
 # =============================================================================
 
 
-from polylogue.pipeline.semantic import (
+from polylogue.pipeline.semantic_capture import (
     detect_context_compaction,
     extract_file_changes,
     extract_thinking_traces,

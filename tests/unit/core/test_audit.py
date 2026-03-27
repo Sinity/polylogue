@@ -5,16 +5,14 @@ and AuditReport aggregation properties.
 """
 from __future__ import annotations
 
-import pytest
-
+from polylogue.lib.outcomes import OutcomeCheck as CheckResult
 from polylogue.lib.outcomes import OutcomeStatus
-from polylogue.schemas.audit import (
-    AuditReport,
-    CheckResult,
+from polylogue.schemas.audit_checks import (
     check_annotation_coverage,
     check_privacy_guards,
     check_semantic_roles,
 )
+from polylogue.schemas.audit_models import AuditReport
 
 PASS = OutcomeStatus.OK
 WARN = OutcomeStatus.WARNING

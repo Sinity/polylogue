@@ -12,7 +12,6 @@ import pytest
 
 from polylogue.mcp.server import _clamp_limit, _safe_call
 
-
 # =============================================================================
 # _clamp_limit boundary tests
 # =============================================================================

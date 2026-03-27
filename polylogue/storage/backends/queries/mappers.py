@@ -47,11 +47,15 @@ from polylogue.storage.backends.queries.mappers_archive import (  # noqa: E402
     _row_to_message,
     _row_to_raw_conversation,
 )
-from polylogue.storage.backends.queries.mappers_products import (  # noqa: E402
+from polylogue.storage.backends.queries.mappers_product_aggregates import (  # noqa: E402
     _row_to_day_session_summary_record,
-    _row_to_session_phase_record,
-    _row_to_session_profile_record,
     _row_to_session_tag_rollup_record,
+)
+from polylogue.storage.backends.queries.mappers_product_profiles import (  # noqa: E402
+    _row_to_session_profile_record,
+)
+from polylogue.storage.backends.queries.mappers_product_timelines import (  # noqa: E402
+    _row_to_session_phase_record,
     _row_to_session_work_event_record,
     _row_to_work_thread_record,
 )

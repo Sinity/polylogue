@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-
 _SAFE_ENUM_MAX_LEN = 50  # structural enums are short tokens, not content
 
 _FILE_EXTENSIONS = frozenset({

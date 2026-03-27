@@ -6,7 +6,6 @@ provides structured + human-readable output for QA auditing.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -98,8 +97,8 @@ class SchemaReport:
             "",
             "## Summary",
             "",
-            f"| Metric | Value |",
-            f"| --- | ---: |",
+            "| Metric | Value |",
+            "| --- | ---: |",
             f"| Total fields | {self.total_fields} |",
             f"| Fields with enums | {self.fields_with_enums} |",
             f"| Values considered | {self.total_values_considered} |",
