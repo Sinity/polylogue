@@ -3,16 +3,16 @@
 This directory holds planning and execution-program documents rather than
 operator reference docs.
 
-The current live execution queue is the codebase-wide topology/debt retirement
-program. It is now the whole-repository cleanup authority rather than just a
-hotspot queue: every top-level package, MCP/operations surfaces, package-root
-topology, tests, devtools, and docs are explicitly in scope. Start there, then
-use the most recent executed and absorbed cleanup records for context.
+There is no newer cleanup/refactoring queue yet. The latest whole-repository
+cleanup authority is now the executed codebase-wide topology/debt retirement
+record. It closed the full-repo hotspot wave, the final broad regression slice,
+the named composite/live validation lanes, and the representative live
+memory-budget proofs.
 
 Use them in this order:
 
 1. [codebase-wide-topology-and-debt-retirement-program-2026-03-26.md](./codebase-wide-topology-and-debt-retirement-program-2026-03-26.md)
-   Current whole-repository cleanup/refactoring queue, now with explicit wave-based execution order, parallel workstreams, and closure tactics across rendering, CLI/UI/sync, MCP/operations, storage, schema, sources, lib/domain, pipeline/showcase/site, and cross-cutting package-root, test, devtools, and documentation topology.
+   Executed whole-repository cleanup/refactoring record with explicit wave-based execution order, parallel workstreams, and final closure evidence across rendering, CLI/UI/sync, MCP/operations, storage, schema, sources, lib/domain, pipeline/showcase/site, and cross-cutting package-root, test, devtools, and documentation topology.
 2. [rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md](./rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md)
    Absorbed predecessor queue that scoped the next cleanup wave to rendering/semantic-proof, operator adapters, storage write/rebuild bands, schema runtime analysis, provider/source boundaries, and domain/query-evidence topology narrowing.
 3. [deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md)
