@@ -6,17 +6,18 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.paths import db_path as default_db_path
-from polylogue.schemas.generation_analysis import (
+from polylogue.schemas.generation_cluster_collection import (
+    _collect_cluster_accumulators,
+)
+from polylogue.schemas.generation_cluster_support import (
     _cluster_profile_tokens,
     _cluster_reservoir_size,
     _cluster_sort_key,
-    _collect_cluster_accumulators,
 )
-from polylogue.schemas.generation_models import _ProviderBundle
+from polylogue.schemas.generation_models import GenerationResult, _ProviderBundle
 from polylogue.schemas.generation_packages import (
     _build_package_candidates,
 )
-from polylogue.schemas.generation_provider_bundle_failures import build_provider_error_bundle
 from polylogue.schemas.generation_provider_bundle_packages import (
     build_provider_catalog_artifacts,
     build_success_provider_bundle,
@@ -25,6 +26,29 @@ from polylogue.schemas.generation_support import GENSON_AVAILABLE
 from polylogue.schemas.observation import PROVIDERS, resolve_provider_config
 from polylogue.schemas.registry import ClusterManifest, SchemaCluster
 from polylogue.types import Provider
+
+
+def build_provider_error_bundle(
+    provider: str,
+    *,
+    error: str,
+    sample_count: int = 0,
+    cluster_count: int = 0,
+    artifact_counts: dict[str, int] | None = None,
+    manifest=None,
+) -> _ProviderBundle:
+    """Build a provider bundle carrying only an error result."""
+    return _ProviderBundle(
+        result=GenerationResult(
+            provider=provider,
+            schema=None,
+            sample_count=sample_count,
+            error=error,
+            cluster_count=cluster_count,
+            artifact_counts=artifact_counts or {},
+        ),
+        manifest=manifest,
+    )
 
 
 def _build_provider_bundle(

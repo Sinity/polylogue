@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from polylogue.lib.phase_models import SessionPhase
 from polylogue.lib.semantic_facts import (
     ConversationSemanticFacts,
     MessageSemanticFacts,
@@ -17,6 +17,22 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from polylogue.lib.models import Conversation
+
+
+@dataclass(frozen=True)
+class SessionPhase:
+    """A temporal phase within a conversation session."""
+
+    kind: str
+    start_time: datetime | None
+    end_time: datetime | None
+    canonical_session_date: date | None
+    message_range: tuple[int, int]
+    duration_ms: int
+    tool_counts: dict[str, int]
+    word_count: int
+    confidence: float = 0.0
+    evidence: tuple[str, ...] = ()
 
 
 _PHASE_GAP = timedelta(minutes=5)
@@ -111,4 +127,4 @@ def extract_phases(
     return phases
 
 
-__all__ = ["extract_phases"]
+__all__ = ["SessionPhase", "extract_phases"]
