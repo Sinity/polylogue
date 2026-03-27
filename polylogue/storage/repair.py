@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.logging import get_logger
-from polylogue.maintenance_models import DerivedModelStatus
+from polylogue.maintenance_models import DerivedModelStatus, MaintenanceCategory
 
 logger = get_logger(__name__)
 
@@ -23,7 +23,7 @@ class RepairResult:
     """Result of a repair operation."""
 
     name: str
-    category: str
+    category: MaintenanceCategory
     destructive: bool
     repaired_count: int
     success: bool
@@ -32,7 +32,7 @@ class RepairResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
-            "category": self.category,
+            "category": self.category.value,
             "destructive": self.destructive,
             "repaired_count": self.repaired_count,
             "success": self.success,
@@ -58,10 +58,9 @@ CLEANUP_TARGETS = (
 )
 MAINTENANCE_TARGET_NAMES = SAFE_REPAIR_TARGETS + CLEANUP_TARGETS
 
-# Category constants (replaces MaintenanceCategory enum).
-_CAT_DERIVED = "derived_repair"
-_CAT_CLEANUP = "archive_cleanup"
-_CAT_DB = "database_maintenance"
+_CAT_DERIVED = MaintenanceCategory.DERIVED_REPAIR
+_CAT_CLEANUP = MaintenanceCategory.ARCHIVE_CLEANUP
+_CAT_DB = MaintenanceCategory.DATABASE_MAINTENANCE
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +186,7 @@ class ArchiveDebtStatus:
     """Simple debt/orphan status for a single maintenance target."""
 
     name: str
-    category: str
+    category: MaintenanceCategory
     destructive: bool
     issue_count: int
     detail: str
@@ -200,7 +199,7 @@ class ArchiveDebtStatus:
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
-            "category": self.category,
+            "category": self.category.value,
             "destructive": self.destructive,
             "issue_count": self.issue_count,
             "detail": self.detail,
@@ -304,7 +303,7 @@ def preview_counts_from_archive_debt(
 def _run_sql_repair(
     name: str,
     *,
-    category: str,
+    category: MaintenanceCategory,
     destructive: bool,
     count_sql: str,
     action_sql: str | None,
@@ -449,7 +448,8 @@ def preview_orphaned_attachments(*, count: int) -> RepairResult:
 
 def repair_session_products(config: Any, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
-    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync, session_product_status_sync
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+    from polylogue.storage.session_product_status import session_product_status_sync
 
     try:
         with connection_context(None) as conn:
@@ -530,12 +530,12 @@ def preview_session_products(*, count: int) -> RepairResult:
 
 
 def repair_action_event_read_model(config: Any, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.action_event_lifecycle import (
-        action_event_read_model_status_sync,
+    from polylogue.storage.action_event_rebuild_runtime import (
         action_event_repair_candidates_sync,
         rebuild_action_event_read_model_sync,
         valid_action_event_source_ids_sync,
     )
+    from polylogue.storage.action_event_status import action_event_read_model_status_sync
     from polylogue.storage.backends.connection import connection_context
     from polylogue.storage.fts_lifecycle import repair_fts_index_sync
 

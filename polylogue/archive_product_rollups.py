@@ -6,12 +6,12 @@ from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from polylogue.archive_product_support import (
+from polylogue.archive_products import (
+    SessionTagRollupProduct,
     profile_bucket_day,
     profile_timestamp_values,
     records_provenance,
 )
-from polylogue.archive_products import SessionTagRollupProduct
 from polylogue.lib.project_normalization import normalize_project_breakdown, normalize_project_names
 from polylogue.lib.session_profile import SessionProfile
 from polylogue.storage.store import SessionTagRollupRecord

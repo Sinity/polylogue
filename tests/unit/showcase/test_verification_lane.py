@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
 
 class TestVerifyShowcaseImportable:
     """Verify the script is importable and has expected interface."""

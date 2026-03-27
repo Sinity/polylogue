@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import builtins
 
-from polylogue.storage.session_product_profile_rows import hydrate_session_profile
+from polylogue.storage.session_product_profiles import hydrate_session_profile
 
 
 class RepositoryProductProfileReadMixin:

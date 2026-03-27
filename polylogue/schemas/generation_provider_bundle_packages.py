@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from polylogue.schemas.generation_analysis import (
+from polylogue.schemas.generation_cluster_support import (
     _artifact_priority,
     _cluster_profile_tokens,
     _cluster_sort_key,

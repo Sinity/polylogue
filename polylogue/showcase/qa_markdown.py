@@ -29,7 +29,6 @@ def generate_qa_markdown(
     lines.append("| --- | --- |")
     lines.append(f"| Schema Audit | {status_label(result.audit_status)} |")
     lines.append(f"| Artifact Proof | {status_label(result.proof_status)} |")
-    lines.append(f"| Roundtrip Proof | {status_label(result.roundtrip_proof_status)} |")
     lines.append(f"| Exercises | {status_label(result.showcase_status)} |")
     lines.append(f"| Invariants | {status_label(result.invariant_status)} |")
     lines.append(f"| Overall | {status_label(result.overall_status)} |")
@@ -98,37 +97,6 @@ def generate_qa_markdown(
             lines.append("")
     elif result.proof_error:
         lines.extend(["## Artifact Proof", "", f"- Error: {result.proof_error}", ""])
-
-    roundtrip_report = session["roundtrip_proof"].get("report")
-    if roundtrip_report is not None:
-        roundtrip_summary = roundtrip_report["summary"]
-        lines.extend([
-            "## Roundtrip Proof",
-            "",
-            "| Metric | Value |",
-            "| --- | ---: |",
-            f"| Providers | {roundtrip_summary['provider_count']} |",
-            f"| Clean providers | {roundtrip_summary['clean_providers']} |",
-            f"| Failed providers | {roundtrip_summary['failed_providers']} |",
-            f"| Synthetic artifacts | {roundtrip_summary['artifact_count']} |",
-            f"| Parsed conversations | {roundtrip_summary['parsed_conversations']} |",
-            f"| Persisted conversations | {roundtrip_summary['persisted_conversations']} |",
-            "",
-            "### Providers",
-            "",
-            "| Provider | Package | Element | Failed stages |",
-            "| --- | --- | --- | --- |",
-        ])
-        for provider, provider_report in sorted(roundtrip_report["providers"].items()):
-            provider_summary = provider_report["summary"]
-            failed_stages = ", ".join(provider_summary["failed_stages"]) or "-"
-            lines.append(
-                f"| {provider} | {provider_report['package_version']} | "
-                f"{provider_report['element_kind'] or '-'} | {failed_stages} |"
-            )
-        lines.append("")
-    elif result.roundtrip_proof_error:
-        lines.extend(["## Roundtrip Proof", "", f"- Error: {result.roundtrip_proof_error}", ""])
 
     showcase_summary = session["showcase"]["summary"]
     if showcase_summary is not None:

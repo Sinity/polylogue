@@ -29,8 +29,6 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
             "count": len(result.cohort_rows),
             "items": [row.model_dump(mode="json") for row in result.cohort_rows],
         }
-    if result.roundtrip_report is not None:
-        out["roundtrip_proof"] = result.roundtrip_report.to_dict()
     if result.maintenance_results is not None:
         out["maintenance"] = {
             "targets": list(options.maintenance_targets),

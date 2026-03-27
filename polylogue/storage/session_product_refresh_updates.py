@@ -10,8 +10,8 @@ from polylogue.storage.session_product_aggregates import (
     refresh_async_provider_day_aggregates,
 )
 from polylogue.storage.session_product_batches import hydrate_conversations, load_async_batch
-from polylogue.storage.session_product_profile_rows import hydrate_session_profile
-from polylogue.storage.session_product_rows import build_session_product_records
+from polylogue.storage.session_product_profiles import hydrate_session_profile
+from polylogue.storage.session_product_rebuild import build_session_product_records
 from polylogue.storage.session_product_threads import (
     load_thread_profile_records_async,
     thread_root_id_async,
@@ -35,7 +35,7 @@ async def refresh_session_products_for_conversation_async(
         replace_session_phases,
         replace_session_work_events,
     )
-    from polylogue.storage.session_product_thread_rows import build_work_thread_record
+    from polylogue.storage.session_product_threads import build_work_thread_record
 
     old_profile_record = await (
         await conn.execute(

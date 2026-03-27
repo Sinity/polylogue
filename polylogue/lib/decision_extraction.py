@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from polylogue.lib.decision_models import Decision
 from polylogue.lib.semantic_facts import ConversationSemanticFacts, build_conversation_semantic_facts
+
+
+@dataclass(frozen=True)
+class Decision:
+    """An explicit decision point in a conversation."""
+
+    index: int
+    summary: str
+    confidence: float
+    context: str
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
@@ -64,4 +74,4 @@ def extract_decisions(
     return decisions
 
 
-__all__ = ["extract_decisions"]
+__all__ = ["Decision", "extract_decisions"]

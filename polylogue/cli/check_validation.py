@@ -51,10 +51,6 @@ def validate_check_options(
         fail("check", "--artifact-limit must be a positive integer")
     if options.artifact_offset < 0:
         fail("check", "--artifact-offset must be >= 0")
-    if options.roundtrip_providers and not options.check_roundtrip_proof:
-        fail("check", "--roundtrip-provider requires --roundtrip-proof")
-    if options.roundtrip_count <= 0:
-        fail("check", "--roundtrip-count must be a positive integer")
     if options.maintenance_targets:
         if options.repair and not options.cleanup and not any(name in safe_repair_targets for name in options.maintenance_targets):
             fail("check", "--target only selected cleanup targets while running --repair")

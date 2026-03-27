@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import date, datetime
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from polylogue.lib.phase_extraction import extract_phases
@@ -10,7 +13,89 @@ from polylogue.lib.semantic_facts import (
     MessageSemanticFacts,
     build_conversation_semantic_facts,
 )
-from polylogue.lib.work_event_models import WorkEvent, WorkEventKind
+
+
+class WorkEventKind(str, Enum):
+    """Classification of work performed in a message range."""
+
+    PLANNING = "planning"
+    IMPLEMENTATION = "implementation"
+    DEBUGGING = "debugging"
+    REVIEW = "review"
+    TESTING = "testing"
+    RESEARCH = "research"
+    CONFIGURATION = "configuration"
+    DOCUMENTATION = "documentation"
+    REFACTORING = "refactoring"
+    DATA_ANALYSIS = "data_analysis"
+    CONVERSATION = "conversation"
+
+
+@dataclass(frozen=True)
+class WorkEvent:
+    """A classified segment of work within a conversation."""
+
+    kind: WorkEventKind
+    start_index: int
+    end_index: int
+    confidence: float
+    evidence: tuple[str, ...]
+    file_paths: tuple[str, ...]
+    tools_used: tuple[str, ...]
+    summary: str
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    canonical_session_date: date | None = None
+    duration_ms: int = 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "start_index": self.start_index,
+            "end_index": self.end_index,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "canonical_session_date": (
+                self.canonical_session_date.isoformat()
+                if self.canonical_session_date
+                else None
+            ),
+            "duration_ms": self.duration_ms,
+            "confidence": self.confidence,
+            "evidence": list(self.evidence),
+            "file_paths": list(self.file_paths),
+            "tools_used": list(self.tools_used),
+            "summary": self.summary,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> WorkEvent:
+        return cls(
+            kind=WorkEventKind(str(payload["kind"])),
+            start_index=int(payload.get("start_index", 0) or 0),
+            end_index=int(payload.get("end_index", 0) or 0),
+            start_time=(
+                datetime.fromisoformat(str(payload["start_time"]))
+                if payload.get("start_time")
+                else None
+            ),
+            end_time=(
+                datetime.fromisoformat(str(payload["end_time"]))
+                if payload.get("end_time")
+                else None
+            ),
+            canonical_session_date=(
+                date.fromisoformat(str(payload["canonical_session_date"]))
+                if payload.get("canonical_session_date")
+                else None
+            ),
+            duration_ms=int(payload.get("duration_ms", 0) or 0),
+            confidence=float(payload.get("confidence", 0.0) or 0.0),
+            evidence=tuple(str(item) for item in payload.get("evidence", []) or []),
+            file_paths=tuple(str(item) for item in payload.get("file_paths", []) or []),
+            tools_used=tuple(str(item) for item in payload.get("tools_used", []) or []),
+            summary=str(payload.get("summary", "") or ""),
+        )
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
@@ -25,12 +110,33 @@ _DOCUMENTATION_PATTERNS = ("document", "readme", "docstring", "comment", "explai
 _CONFIGURATION_PATTERNS = ("config", "toml", "yaml", "nix", "flake", "settings", "env")
 _DATA_ANALYSIS_PATTERNS = ("data", "analysis", "query", "sql", "duckdb", "pandas", "plot", "chart", "csv")
 
+# Text signals as weighted inputs (not short-circuit overrides).
+# Order matters — first match wins. These are checked only after action
+# evidence, or as a fallback when no action evidence is available.
+_TEXT_SIGNAL_TABLE: list[tuple[tuple[str, ...], WorkEventKind, str]] = [
+    (_DEBUGGING_PATTERNS, WorkEventKind.DEBUGGING, "user_text_debugging"),
+    (_PLANNING_PATTERNS, WorkEventKind.PLANNING, "user_text_planning"),
+    (_TESTING_PATTERNS, WorkEventKind.TESTING, "user_text_testing"),
+    (_REVIEW_PATTERNS, WorkEventKind.REVIEW, "user_text_review"),
+    (_REFACTORING_PATTERNS, WorkEventKind.REFACTORING, "user_text_refactoring"),
+    (_DOCUMENTATION_PATTERNS, WorkEventKind.DOCUMENTATION, "user_text_documentation"),
+    (_CONFIGURATION_PATTERNS, WorkEventKind.CONFIGURATION, "user_text_configuration"),
+    (_DATA_ANALYSIS_PATTERNS, WorkEventKind.DATA_ANALYSIS, "user_text_data_analysis"),
+]
+
 
 def _classify_message_range(
     messages: list[MessageSemanticFacts],
     start: int,
     end: int,
 ) -> tuple[WorkEventKind, float, list[str]]:
+    """Classify a message range by combining action evidence with text signals.
+
+    Actions are primary evidence. Text keywords are weighted signals that
+    influence the result, not short-circuit overrides. This prevents a
+    single mention of "error" from labeling a 2-hour implementation session
+    as "debugging".
+    """
     category_counts: dict[str, int] = {}
     user_text = ""
     evidence: list[str] = []
@@ -44,35 +150,33 @@ def _classify_message_range(
             category_counts[cat] = category_counts.get(cat, 0) + 1
 
     text_lower = user_text.strip()
-    if text_lower:
-        if any(pattern in text_lower for pattern in _DEBUGGING_PATTERNS):
-            return WorkEventKind.DEBUGGING, 0.8, ["user_text_debugging"]
-        if any(pattern in text_lower for pattern in _PLANNING_PATTERNS):
-            return WorkEventKind.PLANNING, 0.8, ["user_text_planning"]
-        if any(pattern in text_lower for pattern in _TESTING_PATTERNS):
-            return WorkEventKind.TESTING, 0.75, ["user_text_testing"]
-        if any(pattern in text_lower for pattern in _REVIEW_PATTERNS):
-            return WorkEventKind.REVIEW, 0.75, ["user_text_review"]
-        if any(pattern in text_lower for pattern in _REFACTORING_PATTERNS):
-            return WorkEventKind.REFACTORING, 0.75, ["user_text_refactoring"]
-        if any(pattern in text_lower for pattern in _DOCUMENTATION_PATTERNS):
-            return WorkEventKind.DOCUMENTATION, 0.7, ["user_text_documentation"]
-        if any(pattern in text_lower for pattern in _CONFIGURATION_PATTERNS):
-            return WorkEventKind.CONFIGURATION, 0.7, ["user_text_configuration"]
-        if any(pattern in text_lower for pattern in _DATA_ANALYSIS_PATTERNS):
-            return WorkEventKind.DATA_ANALYSIS, 0.7, ["user_text_data_analysis"]
 
+    # Collect text signals (weighted, not short-circuit)
+    text_signal: WorkEventKind | None = None
+    text_signal_name: str | None = None
+    if text_lower:
+        for patterns, kind, name in _TEXT_SIGNAL_TABLE:
+            if any(pattern in text_lower for pattern in patterns):
+                text_signal = kind
+                text_signal_name = name
+                break
+
+    # Action-based classification (primary evidence)
     edit_count = category_counts.get("file_edit", 0) + category_counts.get("file_write", 0)
     read_count = category_counts.get("file_read", 0)
     search_count = category_counts.get("search", 0)
     shell_count = category_counts.get("shell", 0)
     git_count = category_counts.get("git", 0)
     agent_count = category_counts.get("agent", 0) + category_counts.get("subagent", 0)
+    total_actions = sum(category_counts.values())
 
+    # Strong action evidence overrides text signals
     if edit_count >= 2:
         evidence.append("file_edits")
-        if shell_count and any(pattern in user_text for pattern in _TESTING_PATTERNS):
-            return WorkEventKind.TESTING, 0.7, evidence + ["shell_test"]
+        if shell_count and text_signal == WorkEventKind.TESTING:
+            return WorkEventKind.TESTING, 0.7, evidence + ["shell_test", text_signal_name or ""]
+        if text_signal == WorkEventKind.REFACTORING:
+            return WorkEventKind.REFACTORING, 0.7, evidence + [text_signal_name or ""]
         return WorkEventKind.IMPLEMENTATION, 0.75, evidence
     if agent_count >= 2 and edit_count == 0:
         return WorkEventKind.PLANNING, 0.7, ["agent_orchestration"]
@@ -81,11 +185,16 @@ def _classify_message_range(
     if git_count >= 1:
         return WorkEventKind.REVIEW, 0.6, ["git_operations"]
     if shell_count >= 2:
-        if any(pattern in user_text for pattern in _TESTING_PATTERNS):
-            return WorkEventKind.TESTING, 0.65, ["shell_testing"]
-        if any(pattern in user_text for pattern in _DEBUGGING_PATTERNS):
-            return WorkEventKind.DEBUGGING, 0.65, ["shell_debugging"]
+        if text_signal == WorkEventKind.TESTING:
+            return WorkEventKind.TESTING, 0.65, ["shell_testing", text_signal_name or ""]
+        if text_signal == WorkEventKind.DEBUGGING:
+            return WorkEventKind.DEBUGGING, 0.65, ["shell_debugging", text_signal_name or ""]
         return WorkEventKind.IMPLEMENTATION, 0.5, ["shell_default"]
+
+    # No strong action evidence — fall back to text signal if present
+    if text_signal is not None and text_signal_name:
+        # Lower confidence since text-only, no action corroboration
+        return text_signal, 0.5, [text_signal_name]
     if not category_counts:
         return WorkEventKind.CONVERSATION, 0.6, ["no_tools"]
     return WorkEventKind.IMPLEMENTATION, 0.4, ["weak_signal"]
@@ -228,4 +337,4 @@ def extract_work_events(
     return _merge_adjacent(events)
 
 
-__all__ = ["extract_work_events"]
+__all__ = ["WorkEvent", "WorkEventKind", "extract_work_events"]

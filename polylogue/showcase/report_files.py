@@ -8,9 +8,9 @@ from typing import Any
 from polylogue.publication import OutputManifest
 from polylogue.showcase.runner import ShowcaseResult
 
-from .showcase_report import (
+from .showcase_report_payloads import generate_json_report
+from .showcase_report_text import (
     generate_cookbook,
-    generate_json_report,
     generate_showcase_markdown,
     generate_summary,
 )

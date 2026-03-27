@@ -46,11 +46,10 @@ COMPOSITE_LANES = {
     ),
     "archive-intelligence": composite_lane(
         "archive-intelligence",
-        "Local archive-intelligence closure lane for retrieval, embedding readiness, and schema roundtrip",
+        "Local archive-intelligence closure lane for retrieval and embedding readiness",
         1800,
         "retrieval-dogfood",
         "embeddings-coverage",
-        "schema-roundtrip",
     ),
     "archive-data-products-live": composite_lane(
         "archive-data-products-live",

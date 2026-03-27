@@ -16,11 +16,7 @@ import pytest
 
 from polylogue.schemas.field_stats import FieldStats
 from polylogue.schemas.relational_inference import (
-    ForeignKeyRelation,
-    MutualExclusion,
     RelationalAnnotations,
-    StringLengthProfile,
-    TimeDeltaRelation,
     infer_relations,
 )
 

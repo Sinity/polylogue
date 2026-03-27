@@ -19,9 +19,8 @@ from polylogue.pipeline.prepare_models import (
     TransformResult,
     _timestamp_sort_key,
 )
-from polylogue.pipeline.prepare_transform_attachments import plan_attachment_materialization
 from polylogue.pipeline.prepare_transform_content import canonicalize_conversation_content
-from polylogue.pipeline.semantic import extract_tool_metadata
+from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 from polylogue.schemas.code_detection import detect_language
 from polylogue.storage.store import (
     AttachmentRecord,
@@ -30,6 +29,22 @@ from polylogue.storage.store import (
     MessageRecord,
 )
 from polylogue.types import AttachmentId, MessageId
+
+
+def plan_attachment_materialization(
+    source_path: str | None,
+    target_path: str | None,
+) -> AttachmentMaterializationPlan:
+    if not source_path or not target_path or source_path == target_path:
+        return AttachmentMaterializationPlan()
+
+    source = Path(source_path)
+    target = Path(target_path)
+    if not source.exists():
+        return AttachmentMaterializationPlan()
+    if target.exists():
+        return AttachmentMaterializationPlan(delete_after_save=[source])
+    return AttachmentMaterializationPlan(move_before_save=[(source, target)])
 
 
 def transform_to_records(convo, source_name: str, *, archive_root: Path) -> TransformResult:

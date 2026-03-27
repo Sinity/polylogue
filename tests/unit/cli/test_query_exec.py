@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.cli.query_plan import QueryAction, QueryRoute
+from polylogue.cli.query import QueryAction, QueryRoute
 from polylogue.cli.types import AppEnv
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
@@ -203,8 +203,13 @@ async def test_async_execute_query_errors_for_similar_without_embeddings() -> No
 
 @pytest.mark.asyncio
 async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
-    from polylogue.cli.query import async_execute_query
-    from polylogue.cli.query_plan import QueryAction, QueryExecutionPlan, QueryMutationSpec, QueryOutputSpec
+    from polylogue.cli.query import (
+        QueryAction,
+        QueryExecutionPlan,
+        QueryMutationSpec,
+        QueryOutputSpec,
+        async_execute_query,
+    )
     from polylogue.lib.query_spec import QuerySpecError
 
     env = _make_env(repo=MagicMock(), config=MagicMock())
@@ -769,7 +774,7 @@ def test_open_result_contract(results, render_root_exists: bool, html_exists: bo
 
 class TestBuildQueryExecutionPlan:
     def test_delete_without_filters_raises(self) -> None:
-        from polylogue.cli.query_plan import QueryPlanError, build_query_execution_plan
+        from polylogue.cli.query import QueryPlanError, build_query_execution_plan
         with pytest.raises(QueryPlanError, match="--delete requires at least one filter"):
             build_query_execution_plan({"delete_matched": True, "query": ()})
 
@@ -791,17 +796,17 @@ class TestBuildQueryExecutionPlan:
         ],
     )
     def test_action_selection(self, params: dict[str, object], expected_action: QueryAction) -> None:
-        from polylogue.cli.query_plan import build_query_execution_plan
+        from polylogue.cli.query import build_query_execution_plan
         plan = build_query_execution_plan(params)
         assert plan.action == expected_action
 
     def test_stream_format_converts_json_to_json_lines(self) -> None:
-        from polylogue.cli.query_plan import build_query_execution_plan
+        from polylogue.cli.query import build_query_execution_plan
         plan = build_query_execution_plan({"stream": True, "output_format": "json", "query": ("abc",)})
         assert plan.output.stream_format() == "json-lines"
 
     def test_summary_list_preference_requires_plain_listing_shape(self) -> None:
-        from polylogue.cli.query_plan import build_query_execution_plan
+        from polylogue.cli.query import build_query_execution_plan
         plan = build_query_execution_plan({"list_mode": True, "query": ("abc",)})
         assert plan.prefers_summary_list() is True
 
@@ -809,7 +814,7 @@ class TestBuildQueryExecutionPlan:
         assert transformed.prefers_summary_list() is False
 
     def test_mutation_fields_are_normalized(self) -> None:
-        from polylogue.cli.query_plan import build_query_execution_plan
+        from polylogue.cli.query import build_query_execution_plan
         plan = build_query_execution_plan(
             {
                 "set_meta": [("priority", 3)],
@@ -865,6 +870,6 @@ class TestBuildQueryExecutionPlan:
         ],
     )
     def test_route_resolution(self, params: dict[str, object], can_use_summaries: bool, expected_route: QueryRoute) -> None:
-        from polylogue.cli.query_plan import build_query_execution_plan, resolve_query_route
+        from polylogue.cli.query import build_query_execution_plan, resolve_query_route
         plan = build_query_execution_plan(params)
         assert resolve_query_route(plan, can_use_summaries=can_use_summaries) == expected_route

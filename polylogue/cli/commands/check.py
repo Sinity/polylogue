@@ -7,7 +7,8 @@ from typing import Any
 import click
 
 from polylogue.cli.check_options import apply_check_command_options
-from polylogue.cli.check_rendering import emit_json_output, render_plain_output
+from polylogue.cli.check_rendering_json import emit_json_output
+from polylogue.cli.check_rendering_plain import render_plain_output
 from polylogue.cli.check_support import (
     format_count_mapping as _format_count_mapping_impl,
 )
@@ -46,15 +47,12 @@ def check_command(
     check_proof: bool,
     check_artifacts: bool,
     check_cohorts: bool,
-    check_roundtrip_proof: bool,
     schema_providers: tuple[str, ...],
     artifact_providers: tuple[str, ...],
     artifact_statuses: tuple[str, ...],
     artifact_kinds: tuple[str, ...],
     artifact_limit: int | None,
     artifact_offset: int,
-    roundtrip_providers: tuple[str, ...],
-    roundtrip_count: int,
     schema_samples: str,
     schema_record_limit: int | None,
     schema_record_offset: int,
@@ -76,15 +74,12 @@ def check_command(
         check_proof=check_proof,
         check_artifacts=check_artifacts,
         check_cohorts=check_cohorts,
-        check_roundtrip_proof=check_roundtrip_proof,
         schema_providers=schema_providers,
         artifact_providers=artifact_providers,
         artifact_statuses=artifact_statuses,
         artifact_kinds=artifact_kinds,
         artifact_limit=artifact_limit,
         artifact_offset=artifact_offset,
-        roundtrip_providers=roundtrip_providers,
-        roundtrip_count=roundtrip_count,
         schema_samples=schema_samples,
         schema_record_limit=schema_record_limit,
         schema_record_offset=schema_record_offset,
