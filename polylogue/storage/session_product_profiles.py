@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, datetime
 
-from polylogue.lib.phases import SessionPhase
+from polylogue.lib.phase_extraction import SessionPhase
 from polylogue.lib.session_profile import SessionAnalysis, SessionProfile
-from polylogue.lib.work_events import WorkEvent
+from polylogue.lib.work_event_extraction import WorkEvent
 from polylogue.storage.store import (
     SESSION_ENRICHMENT_FAMILY,
     SESSION_ENRICHMENT_VERSION,

@@ -7,13 +7,12 @@ from polylogue.lib.raw_payload_decode import (
     WireFormat,
     build_raw_payload_envelope,
 )
-from polylogue.lib.raw_payload_sampling import (
+from polylogue.lib.raw_payload_sampling_buckets import is_record_candidate, record_bucket_key
+from polylogue.lib.raw_payload_sampling_extract import (
     collect_limited_samples,
     extract_payload_samples,
     extract_record_samples_from_raw_content,
-    is_record_candidate,
     limit_samples,
-    record_bucket_key,
 )
 
 __all__ = [
