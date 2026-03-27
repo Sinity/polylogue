@@ -8,8 +8,7 @@ import aiosqlite
 
 from polylogue.lib.threads import WorkThread, build_session_threads
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
-from polylogue.storage.session_product_profiles import hydrate_session_profile
-from polylogue.storage.session_product_row_signal_support import now_iso
+from polylogue.storage.session_product_profiles import hydrate_session_profile, now_iso
 from polylogue.storage.store import SESSION_PRODUCT_MATERIALIZER_VERSION, WorkThreadRecord
 
 _ROOT_THREAD_IDS_SQL = """

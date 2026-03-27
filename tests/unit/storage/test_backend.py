@@ -332,7 +332,7 @@ async def test_backend_transaction_contracts(tmp_path: Path) -> None:
 async def test_backend_delete_contracts(tmp_path: Path) -> None:
     """Deleting a conversation must remove rows, attachments, and FTS entries exactly once."""
     from polylogue.storage.index import ensure_index, update_index_for_conversations
-    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 
     backend = SQLiteBackend(db_path=tmp_path / "delete.db")
     repo = ConversationRepository(backend=backend)
