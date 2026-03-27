@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.health_models import VerifyStatus
+from polylogue.health import VerifyStatus
 
 
 def status_icon(status: VerifyStatus, *, plain: bool) -> str:

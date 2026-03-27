@@ -36,7 +36,6 @@ EXPECTED_TOOL_NAMES = {
     "work_threads",
     "day_session_summaries",
     "week_session_summaries",
-    "maintenance_runs",
 }
 
 EXPECTED_RESOURCE_URIS = {

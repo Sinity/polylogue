@@ -76,12 +76,8 @@ def print_summary_impl(
     if verbose:
         report = get_health_fn(config, use_cached=True)
         provenance = report.provenance
-        health_header = f"Health (source={provenance.source.value}"
-        if provenance.cache_age_seconds is not None:
-            health_header += f", age={provenance.cache_age_seconds}s"
-        if provenance.cache_ttl_seconds is not None:
-            health_header += f", ttl={provenance.cache_ttl_seconds}s"
-        health_header += ")"
+        source_val = getattr(provenance.source, "value", provenance.source) if hasattr(provenance, "source") else "live"
+        health_header = f"Health (source={source_val})"
         lines.append(health_header)
         for check in report.checks:
             status_str = str(check.status) if check.status else "?"
