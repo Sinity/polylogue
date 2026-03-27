@@ -57,8 +57,6 @@ class CheckCommandOptions:
     check_proof: bool
     check_artifacts: bool
     check_cohorts: bool
-    check_semantic_proof: bool
-    check_semantic_contracts: bool
     check_roundtrip_proof: bool
     schema_providers: tuple[str, ...]
     artifact_providers: tuple[str, ...]
@@ -66,10 +64,6 @@ class CheckCommandOptions:
     artifact_kinds: tuple[str, ...]
     artifact_limit: int | None
     artifact_offset: int
-    semantic_providers: tuple[str, ...]
-    semantic_surfaces: tuple[str, ...]
-    semantic_limit: int | None
-    semantic_offset: int
     roundtrip_providers: tuple[str, ...]
     roundtrip_count: int
     schema_samples: str
@@ -87,8 +81,6 @@ class CheckCommandResult:
     proof_report: Any | None = None
     artifact_rows: list[Any] | None = None
     cohort_rows: list[Any] | None = None
-    semantic_report: Any | None = None
-    semantic_contracts: list[Any] | None = None
     roundtrip_report: Any | None = None
     maintenance_results: list[Any] | None = None
     vacuum_result: dict[str, Any] | None = None
@@ -156,35 +148,6 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
             ),
             db_path=config.db_path,
         ).rows
-
-    if options.check_semantic_proof:
-        from polylogue.rendering.semantic_proof import prove_semantic_surface_suite
-
-        try:
-            result.semantic_report = prove_semantic_surface_suite(
-                providers=list(options.semantic_providers) if options.semantic_providers else None,
-                surfaces=list(options.semantic_surfaces) if options.semantic_surfaces else None,
-                record_limit=options.semantic_limit,
-                record_offset=options.semantic_offset,
-            )
-        except ValueError as exc:
-            fail("check", str(exc))
-
-    if options.check_semantic_contracts:
-        from polylogue.rendering.semantic_surface_registry import (
-            list_semantic_surface_specs,
-            resolve_semantic_surfaces,
-            semantic_surface_spec,
-        )
-
-        try:
-            if options.semantic_surfaces:
-                resolved = resolve_semantic_surfaces(list(options.semantic_surfaces))
-                result.semantic_contracts = [semantic_surface_spec(name) for name in resolved]
-            else:
-                result.semantic_contracts = list(list_semantic_surface_specs())
-        except ValueError as exc:
-            fail("check", str(exc))
 
     if options.check_roundtrip_proof:
         from polylogue.schemas.roundtrip_proof import prove_schema_evidence_roundtrip_suite

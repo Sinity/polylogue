@@ -12,7 +12,6 @@ from polylogue.showcase.qa_runner_stages import (
     generate_extra_exercises,
     populate_proof,
     populate_roundtrip_proof,
-    populate_semantic_proof,
 )
 from polylogue.showcase.runner import ShowcaseRunner
 from polylogue.showcase.workspace import (
@@ -101,7 +100,6 @@ def run_qa_session(
             result.audit_report = audit_provider(provider) if provider else audit_all_providers()
             if not result.audit_report.all_passed:
                 populate_proof(result, workspace_env=workspace_env_for_runner)
-                populate_semantic_proof(result, workspace_env=workspace_env_for_runner)
                 populate_roundtrip_proof(result, provider=provider)
                 result.exercises_skipped = True
                 result.invariants_skipped = True
@@ -114,7 +112,6 @@ def run_qa_session(
         except Exception as exc:
             result.audit_error = str(exc)
             populate_proof(result, workspace_env=workspace_env_for_runner)
-            populate_semantic_proof(result, workspace_env=workspace_env_for_runner)
             populate_roundtrip_proof(result, provider=provider)
             result.exercises_skipped = True
             result.invariants_skipped = True
@@ -124,7 +121,6 @@ def run_qa_session(
             return result
 
     populate_proof(result, workspace_env=workspace_env_for_runner)
-    populate_semantic_proof(result, workspace_env=workspace_env_for_runner)
     populate_roundtrip_proof(result, provider=provider)
 
     if skip_exercises:

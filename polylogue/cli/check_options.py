@@ -36,18 +36,6 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[.
     click.option("--artifacts", "check_artifacts", is_flag=True, help="List durable artifact observations"),
     click.option("--cohorts", "check_cohorts", is_flag=True, help="Summarize durable artifact cohorts"),
     click.option(
-        "--semantic-proof",
-        "check_semantic_proof",
-        is_flag=True,
-        help="Run semantic preservation proof across canonical, export, query, stream, and MCP read surfaces",
-    ),
-    click.option(
-        "--semantic-contracts",
-        "check_semantic_contracts",
-        is_flag=True,
-        help="List declared semantic-proof surface contracts and aliases",
-    ),
-    click.option(
         "--roundtrip-proof",
         "check_roundtrip_proof",
         is_flag=True,
@@ -79,26 +67,6 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[.
         default=0,
         show_default=True,
         help="Start offset for artifact proof/listing/cohorting",
-    ),
-    click.option(
-        "--semantic-provider",
-        "semantic_providers",
-        multiple=True,
-        help="Limit semantic proof to conversation providers (repeatable)",
-    ),
-    click.option(
-        "--semantic-surface",
-        "semantic_surfaces",
-        multiple=True,
-        help="Limit semantic proof to canonical/export/query/stream/MCP surfaces such as canonical, export_all, query_all, stream_all, mcp_all, read_all, or all",
-    ),
-    click.option("--semantic-limit", type=int, default=None, help="Limit semantic proof to N conversations"),
-    click.option(
-        "--semantic-offset",
-        type=int,
-        default=0,
-        show_default=True,
-        help="Start offset for semantic proof",
     ),
     click.option(
         "--roundtrip-provider",

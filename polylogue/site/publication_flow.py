@@ -19,7 +19,6 @@ from polylogue.site.publication_support import (
     build_latest_run_summary,
     load_archive_maintenance_summary,
     load_artifact_proof_summary,
-    load_semantic_proof_summary,
 )
 from polylogue.storage.store import PublicationRecord
 
@@ -37,16 +36,6 @@ async def load_artifact_proof_summary_for_backend(backend) -> object | None:
     if not isinstance(getattr(backend, "db_path", None), Path):
         return None
     return await asyncio.to_thread(load_artifact_proof_summary, db_path=backend.db_path)
-
-
-async def load_semantic_proof_summary_for_backend(backend) -> object | None:
-    """Return semantic-preservation proof summary for manifest embedding."""
-    if not isinstance(getattr(backend, "db_path", None), Path):
-        return None
-    return await asyncio.to_thread(
-        load_semantic_proof_summary,
-        db_path=backend.db_path,
-    )
 
 
 async def load_archive_maintenance_summary_for_backend(backend) -> object | None:
@@ -70,7 +59,6 @@ async def build_site_publication_manifest(
     incremental: bool,
     latest_run: object | None,
     artifact_proof: object | None,
-    semantic_proof: object | None,
     maintenance: object | None,
 ) -> SitePublicationManifest:
     """Build the typed site publication manifest from build outputs."""
@@ -121,7 +109,6 @@ async def build_site_publication_manifest(
         ),
         latest_run=latest_run,
         artifact_proof=artifact_proof,
-        semantic_proof=semantic_proof,
         maintenance=maintenance,
         artifacts=artifact_manifest,
     )
@@ -162,7 +149,6 @@ __all__ = [
     "load_archive_maintenance_summary_for_backend",
     "load_artifact_proof_summary_for_backend",
     "load_latest_run_summary",
-    "load_semantic_proof_summary_for_backend",
     "record_site_publication_manifest",
     "write_site_publication_manifest",
 ]
