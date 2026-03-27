@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
     MCPConversationDetailPayload,
@@ -12,7 +13,6 @@ from polylogue.mcp.payloads import (
     MCPHealthReportPayload,
     MCPStatsByPayload,
 )
-from polylogue.mcp.query_support import build_query_spec
 from polylogue.mcp.server_maintenance_tools import register_maintenance_tools
 from polylogue.mcp.server_mutation_tools import register_mutation_tools
 from polylogue.mcp.server_product_tools import register_product_tools
@@ -21,6 +21,15 @@ if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
     from polylogue.mcp.server_support import ServerCallbacks
+
+
+def build_query_spec(**params: Any) -> ConversationQuerySpec:
+    normalized = dict(params)
+    if "has_tool_use" in normalized:
+        normalized["filter_has_tool_use"] = normalized.pop("has_tool_use")
+    if "has_thinking" in normalized:
+        normalized["filter_has_thinking"] = normalized.pop("has_thinking")
+    return ConversationQuerySpec.from_params(normalized)
 
 
 def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:

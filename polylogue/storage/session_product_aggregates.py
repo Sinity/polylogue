@@ -13,7 +13,7 @@ from polylogue.archive_product_builders import (
 )
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
 from polylogue.storage.session_product_profiles import hydrate_session_profile
-from polylogue.storage.session_product_storage_aggregates import (
+from polylogue.storage.session_product_storage import (
     replace_day_session_summaries_sync,
     replace_session_tag_rollup_rows_sync,
 )
