@@ -21,9 +21,8 @@ from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.sources.parsers.base import ParsedConversation, RawConversationData
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.state_views import RawConversationStateUpdate
-from polylogue.types import ValidationStatus
 from polylogue.storage.store import RawConversationRecord
+from polylogue.types import ValidationStatus
 from tests.infra.strategies import (
     acquisition_input_batch_strategy,
     build_acquisition_raw_bytes,
@@ -362,7 +361,8 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
     backend = MagicMock(spec=SQLiteBackend)
     service = ValidationService(backend=backend)
     service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])  # type: ignore[method-assign]
-    service.repository.update_raw_state = AsyncMock()  # type: ignore[method-assign]
+    service.repository.mark_raw_validated = AsyncMock()  # type: ignore[method-assign]
+    service.repository.mark_raw_parsed = AsyncMock()  # type: ignore[method-assign]
 
     class _SyntheticValidator:
         provider = provider_name
@@ -400,21 +400,19 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
     assert result.parseable_raw_ids == (["raw-1"] if expected["parseable"] else [])
     assert result.invalid_raw_ids == ([] if expected["parseable"] else ["raw-1"])
 
-    update_calls = service.repository.update_raw_state.await_args_list
-    assert len(update_calls) >= 1
-    assert update_calls[0].args[0] == "raw-1"
-    validation_state = update_calls[0].kwargs["state"]
-    assert isinstance(validation_state, RawConversationStateUpdate)
-    assert validation_state.validation_status == ValidationStatus.from_string(expected["status"])
+    validate_calls = service.repository.mark_raw_validated.await_args_list
+    assert len(validate_calls) >= 1
+    assert validate_calls[0].args[0] == "raw-1"
+    validation_kwargs = validate_calls[0].kwargs
+    assert validation_kwargs["status"] == ValidationStatus.from_string(expected["status"])
 
-    parse_updates = len(update_calls)
+    parse_calls = service.repository.mark_raw_parsed.await_args_list
     if expected["mark_raw_parsed"]:
-        assert parse_updates == 2
-        parse_state = update_calls[1].kwargs["state"]
-        assert isinstance(parse_state, RawConversationStateUpdate)
-        assert parse_state.parse_error is not None
+        assert len(parse_calls) == 1
+        assert parse_calls[0].args[0] == "raw-1"
+        assert parse_calls[0].kwargs["error"] is not None
     else:
-        assert parse_updates == 1
+        assert parse_calls == []
 
 
 @settings(max_examples=30, deadline=None, suppress_health_check=[HealthCheck.too_slow])
