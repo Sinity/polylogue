@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import click
 
 from polylogue.cli.query_helpers import no_results
+from polylogue.cli.query_output_delivery import (
+    copy_to_clipboard as _copy_to_clipboard_impl,
+)
+from polylogue.cli.query_output_delivery import (
+    open_in_browser as _open_in_browser_impl,
+)
+from polylogue.cli.query_output_delivery import (
+    open_result as _open_result_impl,
+)
+from polylogue.cli.query_output_formatting import (
+    format_list as _format_list,
+)
+from polylogue.cli.query_output_formatting import (
+    render_conversation_rich as _render_conversation_rich,
+)
 from polylogue.cli.query_stream_output import (
     render_stream_footer as _render_stream_footer,
 )
@@ -26,9 +40,6 @@ from polylogue.cli.query_stream_output import (
 )
 from polylogue.cli.query_stream_output import (
     write_message_streaming as _write_message_streaming_impl,
-)
-from polylogue.cli.query_summary_output import (
-    conversations_to_csv as _conversations_to_csv,
 )
 from polylogue.cli.query_summary_output import (
     format_summary_list as _format_summary_list,
@@ -57,10 +68,7 @@ from polylogue.cli.query_summary_output import (
 from polylogue.cli.query_summary_output import (
     output_summary_list as _output_summary_list_impl,
 )
-from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_conversation
-
-logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -109,92 +117,12 @@ def output_results(
     _send_output(env, content, destinations, output_format, None)
 
 
-def _format_list(
-    results: list[Conversation],
-    output_format: str,
-    fields: str | None,
-) -> str:
-    """Format a list of conversations for output."""
-    from polylogue.rendering.formatting import _conv_to_dict
-
-    if output_format == "json":
-        return json.dumps([_conv_to_dict(c, fields) for c in results], indent=2)
-    if output_format == "yaml":
-        import yaml  # type: ignore[import-untyped]
-
-        return str(yaml.dump([_conv_to_dict(c, fields) for c in results], default_flow_style=False, allow_unicode=True))
-    if output_format == "csv":
-        return _conversations_to_csv(results)
-
-    lines = []
-    for conv in results:
-        date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else "unknown"
-        raw_title = conv.display_title or conv.id[:20]
-        title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
-        msg_count = len(conv.messages)
-        lines.append(f"{conv.id[:24]:24s}  {date:10s}  {conv.provider:12s}  {title} ({msg_count} msgs)")
-    return "\n".join(lines)
-
-
-def _render_conversation_rich(env: AppEnv, conv: Conversation) -> None:
-    """Render a conversation with Rich role colors and thinking block styling."""
-    from rich import box
-    from rich.markdown import Markdown
-    from rich.panel import Panel
-    from rich.text import Text
-
-    from polylogue.ui.theme import THINKING_STYLE, provider_color, role_color
-
-    console = env.ui.console
-    title = conv.display_title or conv.id
-    pc = provider_color(conv.provider)
-    header = Text()
-    header.append(title, style="bold")
-    if conv.display_date:
-        header.append(f"  {conv.display_date.strftime('%Y-%m-%d %H:%M')}", style="dim")
-    header.append(f"  [{pc.hex}]{conv.provider}[/{pc.hex}]")
-    console.print(header)
-    console.print()
-
-    for msg in conv.messages:
-        if not msg.text:
-            continue
-        role = msg.role or "unknown"
-        rc = role_color(role)
-        is_thinking = msg.is_thinking
-        if is_thinking:
-            content = Text(msg.text[:500], style=THINKING_STYLE["rich_style"])
-            if len(msg.text) > 500:
-                content.append(f"\n... ({len(msg.text):,} chars)", style="dim")
-            panel = Panel(
-                content,
-                title=f"{THINKING_STYLE['icon']} Thinking",
-                title_align="left",
-                border_style=THINKING_STYLE["border_color"],
-                box=box.SIMPLE,
-                padding=(0, 1),
-            )
-            console.print(panel)
-            continue
-        try:
-            md = Markdown(msg.text)
-            panel = Panel(
-                md,
-                title=f"[{rc.label}]{role.capitalize()}[/{rc.label}]",
-                title_align="left",
-                border_style=rc.hex,
-                box=box.ROUNDED,
-                padding=(0, 1),
-            )
-            console.print(panel)
-        except Exception:
-            console.print(f"[{rc.label}]{role.capitalize()}:[/{rc.label}] {msg.text[:200]}")
-        console.print()
-
-
 _output_summary_list = _output_summary_list_impl
 _output_stats_by = _output_stats_by_conversations
 _write_message_streaming = _write_message_streaming_impl
+_copy_to_clipboard = _copy_to_clipboard_impl
+_open_in_browser = _open_in_browser_impl
+_open_result = _open_result_impl
 
 
 def _send_output(
@@ -217,112 +145,3 @@ def _send_output(
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
             env.ui.console.print(f"Wrote to {path}")
-
-
-def _open_in_browser(
-    env: AppEnv,
-    content: str,
-    output_format: str,
-    conv: Conversation | None,
-) -> None:
-    """Open content in browser."""
-    import tempfile
-    import webbrowser
-
-    if output_format != "html":
-        if conv:
-            from polylogue.rendering.formatting import _conv_to_html
-
-            content = _conv_to_html(conv)
-        else:
-            from html import escape as _html_escape
-
-            content = f"<html><body><pre>{_html_escape(content)}</pre></body></html>"
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as handle:
-        handle.write(content)
-        temp_path = handle.name
-
-    webbrowser.open(f"file://{temp_path}")
-    env.ui.console.print(f"Opened in browser: {temp_path}")
-
-
-def _copy_to_clipboard(env: AppEnv, content: str) -> None:
-    """Copy content to clipboard."""
-    import subprocess
-
-    clipboard_cmds = [
-        ["xclip", "-selection", "clipboard"],
-        ["xsel", "--clipboard", "--input"],
-        ["pbcopy"],
-        ["clip"],
-    ]
-
-    for cmd in clipboard_cmds:
-        try:
-            subprocess.run(
-                cmd,
-                input=content.encode("utf-8"),
-                capture_output=True,
-                check=True,
-            )
-            env.ui.console.print("Copied to clipboard.")
-            return
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            continue
-
-    click.echo("Could not copy to clipboard (no clipboard tool found).", err=True)
-
-
-def _open_result(
-    env: AppEnv,
-    results: list[Conversation],
-    params: dict[str, Any],
-) -> None:
-    """Open result in browser or editor."""
-    if not results:
-        env.ui.console.print("No conversations matched.")
-        raise SystemExit(2)
-
-    conv = results[0]
-
-    from polylogue.cli.helpers import latest_render_path, load_effective_config
-
-    try:
-        config = load_effective_config(env)
-    except Exception as exc:
-        logger.warning("Config load failed, falling back to defaults: %s", exc)
-        config = None
-
-    render_root = None
-    if config and hasattr(config, "render_root") and config.render_root:
-        render_root = Path(config.render_root)
-    else:
-        import os
-
-        render_root_env = os.environ.get("POLYLOGUE_RENDER_ROOT")
-        if render_root_env:
-            render_root = Path(render_root_env)
-
-    if not render_root or not render_root.exists():
-        click.echo("No rendered outputs found.", err=True)
-        click.echo("Run 'polylogue run' first to render conversations.", err=True)
-        raise SystemExit(1)
-
-    conv_id_short = str(conv.id)[:8] if conv.id else ""
-    html_file = next(render_root.rglob(f"*{conv_id_short}*/conversation.html"), None)
-    md_file = next(render_root.rglob(f"*{conv_id_short}*/conversation.md"), None)
-
-    render_file = html_file or md_file
-    if not render_file:
-        render_file = latest_render_path(render_root)
-
-    if not render_file:
-        click.echo("No rendered output found for this conversation.", err=True)
-        click.echo("Run 'polylogue run' to render conversations.", err=True)
-        raise SystemExit(1)
-
-    import webbrowser
-
-    webbrowser.open(f"file://{render_file}")
-    env.ui.console.print(f"Opened: {render_file}")
