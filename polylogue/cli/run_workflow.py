@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 import click
 
 from polylogue.cli.formatting import (
@@ -15,10 +13,10 @@ from polylogue.cli.formatting import (
     format_run_details,
 )
 from polylogue.cli.helpers import fail
-from polylogue.cli.run_observers import progress_observer as _progress_observer
-from polylogue.cli.types import AppEnv
+from polylogue.cli.run_display_workflow import render_sources
+from polylogue.cli.run_observers import progress_observer
+from polylogue.cli.run_watch_workflow import WatchDisplayObserver, WatchStatusObserver
 from polylogue.config import Config
-from polylogue.lib.run_activity import conversation_activity_counts
 from polylogue.lib.timestamps import format_timestamp
 from polylogue.pipeline.observers import CompositeObserver, RunObserver
 from polylogue.pipeline.runner import run_sources
@@ -30,40 +28,42 @@ from polylogue.sync_bridge import run_coroutine_sync
 
 def execute_sync_once(
     cfg: Config,
-    env: AppEnv,
+    env,
     stage: str,
     selected_sources: list[str] | None,
     render_format: str,
     plan_snapshot: PlanResult | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> RunResult:
-    return run_coroutine_sync(run_sources(
-        config=cfg,
-        stage=stage,
-        plan=plan_snapshot,
-        ui=env.ui,
-        source_names=selected_sources,
-        progress_callback=progress_callback,
-        render_format=render_format,
-        backend=env.backend,
-        repository=env.repository,
-    ))
+    return run_coroutine_sync(
+        run_sources(
+            config=cfg,
+            stage=stage,
+            plan=plan_snapshot,
+            ui=env.ui,
+            source_names=selected_sources,
+            progress_callback=progress_callback,
+            render_format=render_format,
+            backend=env.backend,
+            repository=env.repository,
+        )
+    )
 
 
 def run_with_progress(
     cfg: Config,
-    env: AppEnv,
+    env,
     stage: str,
     selected_sources: list[str] | None,
     render_format: str,
     plan_snapshot: PlanResult | None = None,
     observer: RunObserver | None = None,
 ) -> RunResult:
-    with _progress_observer(env) as progress_observer:
+    with progress_observer(env) as progress_observer_handle:
         progress_bridge = (
-            CompositeObserver([progress_observer, observer])
+            CompositeObserver([progress_observer_handle, observer])
             if observer is not None
-            else progress_observer
+            else progress_observer_handle
         )
         result = execute_sync_once(
             cfg,
@@ -74,13 +74,13 @@ def run_with_progress(
             plan_snapshot=plan_snapshot,
             progress_callback=progress_bridge.on_progress,
         )
-        progress_observer.on_completed(result)
+        progress_observer_handle.on_completed(result)
         return result
 
 
 def run_sync_once(
     cfg: Config,
-    env: AppEnv,
+    env,
     stage: str,
     selected_sources: list[str] | None,
     render_format: str,
@@ -108,9 +108,9 @@ def run_sync_once(
 
 
 def display_result(
-    env: AppEnv,
-    cfg: Config,
-    result: RunResult,
+    env,
+    cfg,
+    result,
     stage: str,
     selected_sources: list[str] | None,
 ) -> None:
@@ -166,70 +166,15 @@ def display_result(
         )
 
 
-class WatchDisplayObserver(RunObserver):
-    """Print result summary when conversation changes arrive in watch mode."""
-
-    def __init__(self, env: AppEnv, cfg: Config, stage: str, selected_sources: list[str] | None) -> None:
-        self._env = env
-        self._cfg = cfg
-        self._stage = stage
-        self._selected_sources = selected_sources
-
-    def on_completed(self, result: RunResult) -> None:
-        activity_count, _, _ = conversation_activity_counts(result.counts, result.drift)
-        if activity_count > 0:
-            display_result(self._env, self._cfg, result, self._stage, self._selected_sources)
-
-
-class WatchStatusObserver(RunObserver):
-    """Print idle and error status in watch mode."""
-
-    def on_idle(self, result: RunResult) -> None:
-        click.echo(f"No conversation changes at {time.strftime('%H:%M:%S')}")
-
-    def on_error(self, exc: Exception) -> None:
-        if isinstance(exc, DriveError):
-            click.echo(f"Sync error: {exc}", err=True)
-        else:
-            click.echo(f"Unexpected error during sync: {exc}", err=True)
-
-
-def render_sources(env: AppEnv, *, json_output: bool) -> None:
-    from polylogue.cli.machine_errors import emit_success
-
-    cfg = env.config
-    if json_output:
-        payload = [
-            {
-                "name": source.name,
-                "path": str(source.path) if source.path else None,
-                "folder": source.folder,
-                "kind": "drive" if source.folder else "path",
-            }
-            for source in cfg.sources
-        ]
-        emit_success({"sources": payload})
-        return
-    lines = []
-    for source in cfg.sources:
-        if source.folder:
-            lines.append(f"{source.name}: drive folder '{source.folder}'")
-        elif source.path:
-            lines.append(f"{source.name}: {source.path}")
-        else:
-            lines.append(f"{source.name}: (missing path)")
-    env.ui.summary("Sources", lines)
-
-
 def handle_drive_error(exc: DriveError) -> None:
     fail("run", str(exc))
 
 
 def render_preview_summary(
-    env: AppEnv,
+    env,
     *,
     selected_sources: list[str] | None,
-    plan_snapshot: PlanResult | None,
+    plan_snapshot,
 ) -> None:
     plan_lines = []
     if selected_sources:
@@ -251,9 +196,17 @@ __all__ = [
     "WatchStatusObserver",
     "display_result",
     "execute_sync_once",
+    "format_counts",
+    "format_cursors",
+    "format_index_status",
+    "format_plan_counts",
+    "format_plan_details",
+    "format_run_details",
     "handle_drive_error",
     "render_preview_summary",
     "render_sources",
+    "run_coroutine_sync",
+    "run_sources",
     "run_sync_once",
     "run_with_progress",
 ]
