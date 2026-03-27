@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.storage.session_product_timeline_event_rows import hydrate_work_event
-from polylogue.storage.session_product_timeline_phase_rows import hydrate_session_phase
+from polylogue.storage.session_product_timeline_rows import hydrate_session_phase, hydrate_work_event
 
 
 class RepositoryProductTimelineReadMixin:

@@ -20,7 +20,13 @@ from polylogue.storage.store import (
     MessageRecord,
 )
 
-from .repository_support import provider_conversation_id
+
+def provider_conversation_id(conversation_id: str, provider: str | None) -> str:
+    """Strip only the canonical provider prefix from conversation IDs."""
+    if not provider:
+        return conversation_id
+    prefix = f"{provider}:"
+    return conversation_id[len(prefix) :] if conversation_id.startswith(prefix) else conversation_id
 
 
 def conversation_to_record(conversation: Conversation) -> ConversationRecord:

@@ -21,15 +21,13 @@ from polylogue.storage.session_product_batches import (
 )
 from polylogue.storage.session_product_profiles import hydrate_session_profile
 from polylogue.storage.session_product_rows import build_session_product_records
-from polylogue.storage.session_product_storage_aggregates import (
+from polylogue.storage.session_product_storage import (
     replace_day_session_summaries_sync,
-    replace_session_tag_rollup_rows_sync,
-    replace_work_thread_sync,
-)
-from polylogue.storage.session_product_storage_profiles import replace_session_profile_sync
-from polylogue.storage.session_product_storage_timeline import (
     replace_session_phases_sync,
+    replace_session_profile_sync,
+    replace_session_tag_rollup_rows_sync,
     replace_session_work_events_sync,
+    replace_work_thread_sync,
 )
 from polylogue.storage.session_product_threads import (
     build_all_thread_records_async,

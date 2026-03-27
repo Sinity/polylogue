@@ -139,7 +139,7 @@ class ConversationRuntimeMixin:
 
     @property
     def total_cost_usd(self) -> float:
-        from polylogue.lib.model_support import _coerce_optional_float
+        from polylogue.lib.message_model_runtime import _coerce_optional_float
 
         message_total = sum(message.cost_usd or 0.0 for message in self.messages)
         if message_total > 0.0:
@@ -150,7 +150,7 @@ class ConversationRuntimeMixin:
 
     @property
     def total_duration_ms(self) -> int:
-        from polylogue.lib.model_support import _coerce_optional_int
+        from polylogue.lib.message_model_runtime import _coerce_optional_int
 
         message_total = sum(message.duration_ms or 0 for message in self.messages)
         if message_total > 0:

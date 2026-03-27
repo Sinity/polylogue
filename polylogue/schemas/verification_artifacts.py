@@ -18,8 +18,7 @@ from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 
 from .verification_models import ArtifactProofReport, ProviderArtifactProof
-from .verification_requests import ArtifactObservationQuery, ArtifactProofRequest
-from .verification_support import bounded_window
+from .verification_requests import ArtifactObservationQuery, ArtifactProofRequest, bounded_window
 
 
 def _increment_count(counter: dict[str, int], key: str, amount: int = 1) -> None:

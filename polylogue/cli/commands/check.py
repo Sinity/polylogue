@@ -7,7 +7,8 @@ from typing import Any
 import click
 
 from polylogue.cli.check_options import apply_check_command_options
-from polylogue.cli.check_rendering import emit_json_output, render_plain_output
+from polylogue.cli.check_rendering_json import emit_json_output
+from polylogue.cli.check_rendering_plain import render_plain_output
 from polylogue.cli.check_support import (
     format_count_mapping as _format_count_mapping_impl,
 )

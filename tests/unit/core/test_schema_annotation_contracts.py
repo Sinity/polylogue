@@ -28,7 +28,7 @@ from polylogue.schemas.generation_support import (
 from polylogue.schemas.generation_workflow import (
     generate_schema_from_samples,
 )
-from polylogue.schemas.semantic_inference import (
+from polylogue.schemas.semantic_inference_runtime import (
     infer_semantic_roles,
 )
 
