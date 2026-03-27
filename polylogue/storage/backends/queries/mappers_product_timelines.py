@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from polylogue.storage.backends.queries.mappers_support import _parse_json, _row_get
+from polylogue.storage.backends.queries.mappers import _parse_json, _row_get
 from polylogue.storage.store import SessionPhaseRecord, SessionWorkEventRecord, WorkThreadRecord
 from polylogue.types import ConversationId
 
