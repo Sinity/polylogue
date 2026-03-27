@@ -1,4 +1,4 @@
-"""Thread support for session-product lifecycle flows."""
+"""Thread row builders, queries, and lifecycle support for session products."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import sqlite3
 
 import aiosqlite
 
-from polylogue.lib.threads import build_session_threads
+from polylogue.lib.threads import WorkThread, build_session_threads
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
-from polylogue.storage.session_product_profile_rows import hydrate_session_profile
-from polylogue.storage.session_product_thread_rows import build_work_thread_record
+from polylogue.storage.session_product_profiles import hydrate_session_profile, now_iso
+from polylogue.storage.store import SESSION_PRODUCT_MATERIALIZER_VERSION, WorkThreadRecord
 
 _ROOT_THREAD_IDS_SQL = """
     SELECT c.conversation_id
@@ -47,6 +47,59 @@ _THREAD_CONVERSATION_IDS_SQL = """
     FROM descendants
     ORDER BY conversation_id
 """
+
+
+# ---------------------------------------------------------------------------
+# Row builders and hydration
+# ---------------------------------------------------------------------------
+
+
+def thread_search_text(thread: WorkThread) -> str:
+    parts = [
+        thread.thread_id,
+        thread.root_id,
+        thread.dominant_project or "",
+        *thread.session_ids,
+        *thread.work_event_breakdown.keys(),
+    ]
+    search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
+    return search_text or thread.thread_id
+
+
+def build_work_thread_record(
+    thread: WorkThread,
+    *,
+    materialized_at: str | None = None,
+) -> WorkThreadRecord:
+    built_at = materialized_at or now_iso()
+    return WorkThreadRecord(
+        thread_id=thread.thread_id,
+        root_id=thread.root_id,
+        materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
+        materialized_at=built_at,
+        start_time=thread.start_time.isoformat() if thread.start_time else None,
+        end_time=thread.end_time.isoformat() if thread.end_time else None,
+        dominant_project=thread.dominant_project,
+        session_ids=thread.session_ids,
+        session_count=len(thread.session_ids),
+        depth=thread.depth,
+        branch_count=thread.branch_count,
+        total_messages=thread.total_messages,
+        total_cost_usd=thread.total_cost_usd,
+        wall_duration_ms=thread.wall_duration_ms,
+        work_event_breakdown=thread.work_event_breakdown,
+        payload=thread.to_dict(),
+        search_text=thread_search_text(thread),
+    )
+
+
+def hydrate_work_thread(record: WorkThreadRecord) -> WorkThread:
+    return WorkThread.from_dict(record.payload)
+
+
+# ---------------------------------------------------------------------------
+# Thread queries
+# ---------------------------------------------------------------------------
 
 
 def thread_root_id_sync(conn: sqlite3.Connection, conversation_id: str) -> str | None:
@@ -131,10 +184,13 @@ async def build_all_thread_records_async(conn: aiosqlite.Connection) -> list[obj
 __all__ = [
     "build_all_thread_records_async",
     "build_all_thread_records_sync",
+    "build_work_thread_record",
+    "hydrate_work_thread",
     "load_thread_profile_records_async",
     "load_thread_profile_records_sync",
     "thread_conversation_ids_async",
     "thread_conversation_ids_sync",
     "thread_root_id_async",
     "thread_root_id_sync",
+    "thread_search_text",
 ]

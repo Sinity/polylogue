@@ -8,7 +8,7 @@ from pydantic import BaseModel, field_validator
 
 from polylogue.types import ConversationId
 
-from .store_core import (
+from .store_constants import (
     SESSION_INFERENCE_FAMILY,
     SESSION_INFERENCE_VERSION,
     SESSION_PRODUCT_MATERIALIZER_VERSION,

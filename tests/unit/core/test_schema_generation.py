@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from polylogue.schemas.generation_analysis import _collect_cluster_accumulators
+from polylogue.schemas.generation_cluster_collection import _collect_cluster_accumulators
 from polylogue.schemas.generation_workflow import _build_provider_bundle
 from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
@@ -335,7 +335,7 @@ class TestProfileClustering:
         ]
 
         monkeypatch.setattr(
-            "polylogue.schemas.generation_analysis.iter_schema_units",
+            "polylogue.schemas.sampling.iter_schema_units",
             lambda *args, **kwargs: iter(units),
         )
 
@@ -382,7 +382,7 @@ class TestProfileClustering:
         ]
 
         monkeypatch.setattr(
-            "polylogue.schemas.generation_analysis.iter_schema_units",
+            "polylogue.schemas.sampling.iter_schema_units",
             lambda *args, **kwargs: iter(units),
         )
 

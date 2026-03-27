@@ -14,11 +14,7 @@ Usage::
 
 from __future__ import annotations
 
-import json
 from typing import Any
-
-from polylogue.lib.viewport_enums import ContentType
-
 
 # -------------------------------------------------------------------
 # Markdown rendering

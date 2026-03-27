@@ -8,6 +8,10 @@ search/web targets, and message-scoped event identity.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+
 from polylogue.lib.action_event_fields import (
     build_search_text,
     extract_branch_names,
@@ -18,10 +22,37 @@ from polylogue.lib.action_event_fields import (
     make_action_event_id,
     normalize_output_text,
 )
-from polylogue.lib.action_event_models import ActionEvent
 from polylogue.lib.action_event_parsing import build_tool_calls_from_content_blocks
 from polylogue.lib.models import Message
-from polylogue.lib.viewports import ToolCall
+from polylogue.lib.viewports import ToolCall, ToolCategory
+from polylogue.types import Provider
+
+
+@dataclass(frozen=True, slots=True)
+class ActionEvent:
+    """Normalized semantic event derived from a message tool call."""
+
+    event_id: str
+    message_id: str
+    timestamp: datetime | None
+    sequence_index: int
+    kind: ToolCategory
+    tool_name: str
+    tool_id: str | None
+    provider: Provider | None
+    affected_paths: tuple[str, ...]
+    cwd_path: str | None
+    branch_names: tuple[str, ...]
+    command: str | None
+    query: str | None
+    url: str | None
+    output_text: str | None
+    search_text: str
+    raw: dict[str, Any]
+
+    @property
+    def normalized_tool_name(self) -> str:
+        return (self.tool_name or "unknown").strip().lower()
 
 
 def build_action_event(message: Message, call: ToolCall, *, sequence_index: int) -> ActionEvent:

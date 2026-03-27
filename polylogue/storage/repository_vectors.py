@@ -9,7 +9,17 @@ from polylogue.logging import get_logger
 from polylogue.protocols import VectorProvider
 from polylogue.storage.embedding_stats import read_embedding_stats_async
 
-from .repository_support import resolve_optional_vector_provider
+
+def resolve_optional_vector_provider(
+    vector_provider: VectorProvider | None,
+) -> VectorProvider | None:
+    """Resolve the explicitly supplied provider or create the default one."""
+    if vector_provider is not None:
+        return vector_provider
+
+    from polylogue.storage.search_providers import create_vector_provider
+
+    return create_vector_provider()
 
 logger = get_logger(__name__)
 

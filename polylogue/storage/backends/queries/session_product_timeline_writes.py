@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.backends.queries.session_product_query_support import table_has_column
 from polylogue.storage.store import (
     SessionPhaseRecord,
     SessionWorkEventRecord,
@@ -16,6 +15,20 @@ __all__ = [
     "replace_session_phases",
     "replace_session_work_events",
 ]
+
+_ASYNC_COLUMN_CACHE: dict[tuple[int, str], bool] = {}
+
+
+async def _table_has_column(conn: aiosqlite.Connection, table: str, column: str) -> bool:
+    key = (id(conn), f"{table}.{column}")
+    cached = _ASYNC_COLUMN_CACHE.get(key)
+    if cached is not None:
+        return cached
+    cursor = await conn.execute(f"PRAGMA table_info({table})")
+    rows = await cursor.fetchall()
+    found = any(str(row["name"] if "name" in row else row[1]) == column for row in rows)
+    _ASYNC_COLUMN_CACHE[key] = found
+    return found
 
 
 async def replace_session_work_events(
@@ -29,7 +42,7 @@ async def replace_session_work_events(
         (conversation_id,),
     )
     if records:
-        has_legacy_payload = await table_has_column(conn, "session_work_events", "payload_json")
+        has_legacy_payload = await _table_has_column(conn, "session_work_events", "payload_json")
         columns = [
             "event_id",
             "conversation_id",
@@ -130,7 +143,7 @@ async def replace_session_phases(
         (conversation_id,),
     )
     if records:
-        has_legacy_payload = await table_has_column(conn, "session_phases", "payload_json")
+        has_legacy_payload = await _table_has_column(conn, "session_phases", "payload_json")
         columns = [
             "phase_id",
             "conversation_id",

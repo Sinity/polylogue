@@ -6,13 +6,14 @@ from collections import Counter, defaultdict
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from polylogue.archive_product_support import (
+from polylogue.archive_products import (
+    DaySessionSummaryProduct,
+    WeekSessionSummaryProduct,
     date_from_iso,
     profile_bucket_day,
     profile_timestamp_values,
     records_provenance,
 )
-from polylogue.archive_products import DaySessionSummaryProduct, WeekSessionSummaryProduct
 from polylogue.lib.project_normalization import normalize_project_names
 from polylogue.lib.session_profile import SessionProfile
 from polylogue.lib.session_summaries import DaySessionSummary, summarize_day, summarize_week

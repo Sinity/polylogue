@@ -11,8 +11,7 @@ from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.runner import ShowcaseResult
 
 if TYPE_CHECKING:
-    from polylogue.schemas.audit import AuditReport
-    from polylogue.schemas.roundtrip_proof import RoundtripProofSuiteReport
+    from polylogue.schemas.audit_models import AuditReport
     from polylogue.schemas.verification_models import ArtifactProofReport
 
 
@@ -25,8 +24,6 @@ class QAResult:
     audit_skipped: bool = False
     proof_report: ArtifactProofReport | None = None
     proof_error: str | None = None
-    roundtrip_proof_report: RoundtripProofSuiteReport | None = None
-    roundtrip_proof_error: str | None = None
     showcase_result: ShowcaseResult | None = None
     exercises_skipped: bool = False
     invariant_results: list[InvariantResult] = field(default_factory=list)
@@ -52,14 +49,6 @@ class QAResult:
         return OutcomeStatus.OK if self.proof_report.is_clean else OutcomeStatus.ERROR
 
     @property
-    def roundtrip_proof_status(self) -> OutcomeStatus:
-        if self.roundtrip_proof_error is not None:
-            return OutcomeStatus.ERROR
-        if self.roundtrip_proof_report is None:
-            return OutcomeStatus.SKIP
-        return OutcomeStatus.OK if self.roundtrip_proof_report.is_clean else OutcomeStatus.ERROR
-
-    @property
     def showcase_status(self) -> OutcomeStatus:
         if self.exercises_skipped:
             return OutcomeStatus.SKIP
@@ -82,7 +71,6 @@ class QAResult:
             for stage in (
                 self.audit_status,
                 self.proof_status,
-                self.roundtrip_proof_status,
                 self.showcase_status,
                 self.invariant_status,
             )

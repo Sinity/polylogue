@@ -3,7 +3,7 @@
 This directory currently contains four different kinds of material:
 
 1. operator and architecture docs
-2. active planning/program docs
+2. planning indexes and archived program records
 3. analysis inputs and audits
 4. generated campaign artifacts
 
@@ -29,10 +29,10 @@ reading `docs/` as one undifferentiated list.
 ## Planning And Analysis
 
 - [planning-and-analysis-map-2026-03-21.md](./planning-and-analysis-map-2026-03-21.md) - canonical index for plans, backlog docs, audits, and scratch notes
-- [programs/README.md](./programs/README.md) - program and execution-plan docs
+- [programs/README.md](./programs/README.md) - entrypoint for planning and archived program history
 - [analysis/README.md](./analysis/README.md) - audits, research reports, and raw design inputs
-- [programs/intentional-forward-program-2026-03-21.md](./programs/intentional-forward-program-2026-03-21.md) - current live execution program
-- [programs/artifact-cohort-control-plane-program-2026-03-21.md](./programs/artifact-cohort-control-plane-program-2026-03-21.md) - latest executed subprogram
+- [archive/programs/README.md](./archive/programs/README.md) - archived execution-program corpus
+- [archive/programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md](./archive/programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md) - latest whole-repository cleanup authority record
 
 ## Generated Campaign Artifacts
 

@@ -11,11 +11,35 @@ from typing import TYPE_CHECKING
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.search_providers.hybrid_conversations import _resolve_ranked_conversation_ids
 from polylogue.storage.search_providers.hybrid_factory import create_hybrid_provider
-from polylogue.storage.search_providers.hybrid_rrf import reciprocal_rank_fusion
 
 if TYPE_CHECKING:
     from polylogue.protocols import VectorProvider
     from polylogue.storage.search_providers.fts5 import FTS5Provider
+
+
+# ---------------------------------------------------------------------------
+# Reciprocal Rank Fusion (formerly hybrid_rrf.py)
+# ---------------------------------------------------------------------------
+
+
+def reciprocal_rank_fusion(
+    *result_lists: list[tuple[str, float]],
+    k: int = 60,
+) -> list[tuple[str, float]]:
+    """Combine multiple ranked result lists using Reciprocal Rank Fusion."""
+    scores: dict[str, float] = {}
+
+    for result_list in result_lists:
+        seen_in_list: set[str] = set()
+        for rank, (item_id, _original_score) in enumerate(result_list, start=1):
+            if item_id in seen_in_list:
+                continue
+            seen_in_list.add(item_id)
+            rrf_score = 1.0 / (k + rank)
+            scores[item_id] = scores.get(item_id, 0.0) + rrf_score
+
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
 
 class HybridSearchProvider:
     """SearchProvider combining FTS5 and vector search with RRF fusion.

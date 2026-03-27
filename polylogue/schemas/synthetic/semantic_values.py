@@ -16,8 +16,7 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from polylogue.schemas.synthetic.showcase import ConversationTheme, _SHOWCASE_THEMES
-
+from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, ConversationTheme
 
 # =============================================================================
 # Role-based text generation (the original _text_for_role logic)

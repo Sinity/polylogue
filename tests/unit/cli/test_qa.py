@@ -11,11 +11,8 @@ import json
 from polylogue.showcase.exercises import Exercise, Validation
 from polylogue.showcase.report_files import save_reports
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
-from polylogue.showcase.showcase_report import (
-    generate_cookbook,
-    generate_json_report,
-    generate_summary,
-)
+from polylogue.showcase.showcase_report_payloads import generate_json_report
+from polylogue.showcase.showcase_report_text import generate_cookbook, generate_summary
 
 
 def _make_result(exercises: list[Exercise] | None = None) -> ShowcaseResult:

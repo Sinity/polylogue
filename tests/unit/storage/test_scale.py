@@ -359,7 +359,7 @@ class TestPerformanceBudget:
                     semantic_type='file_read',
                 ))
         await backend.save_content_blocks(blocks)
-        from polylogue.storage.action_event_lifecycle import rebuild_action_event_read_model_sync
+        from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
 
         with open_connection(backend.db_path) as conn:
             rebuild_action_event_read_model_sync(conn)

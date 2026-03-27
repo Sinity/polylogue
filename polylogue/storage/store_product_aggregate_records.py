@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, field_validator
 
-from .store_core import SESSION_PRODUCT_MATERIALIZER_VERSION
+from .store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
 
 
 class SessionTagRollupRecord(BaseModel):

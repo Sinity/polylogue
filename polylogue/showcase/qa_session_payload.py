@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 def generate_qa_session(result: QAResult) -> dict[str, Any]:
     """Generate a structured full QA session record."""
-    from polylogue.showcase.showcase_report import generate_showcase_session
+    from polylogue.showcase.showcase_report_payloads import generate_showcase_session
 
     showcase_session = (
         generate_showcase_session(result.showcase_result)
@@ -57,12 +57,6 @@ def build_qa_session_payload(
     if result.proof_error is not None:
         proof_payload["error"] = result.proof_error
 
-    roundtrip_proof_payload: dict[str, Any] = {"status": result.roundtrip_proof_status.value}
-    if result.roundtrip_proof_report is not None:
-        roundtrip_proof_payload["report"] = result.roundtrip_proof_report.to_dict()
-    if result.roundtrip_proof_error is not None:
-        roundtrip_proof_payload["error"] = result.roundtrip_proof_error
-
     showcase_payload: dict[str, Any] = {
         "status": result.showcase_status.value,
         "skipped": result.exercises_skipped,
@@ -76,7 +70,6 @@ def build_qa_session_payload(
         "timestamp": timestamp,
         "audit": audit_payload,
         "proof": proof_payload,
-        "roundtrip_proof": roundtrip_proof_payload,
         "showcase": showcase_payload,
         "invariants": {
             "status": result.invariant_status.value,
