@@ -4,8 +4,21 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.backends.queries.session_product_query_support import table_has_column
 from polylogue.storage.store import SessionProfileRecord, _json_array_or_none, _json_or_none
+
+_ASYNC_COLUMN_CACHE: dict[tuple[int, str], bool] = {}
+
+
+async def _table_has_column(conn: aiosqlite.Connection, table: str, column: str) -> bool:
+    key = (id(conn), f"{table}.{column}")
+    cached = _ASYNC_COLUMN_CACHE.get(key)
+    if cached is not None:
+        return cached
+    cursor = await conn.execute(f"PRAGMA table_info({table})")
+    rows = await cursor.fetchall()
+    found = any(str(row["name"] if "name" in row else row[1]) == column for row in rows)
+    _ASYNC_COLUMN_CACHE[key] = found
+    return found
 
 __all__ = ["replace_session_profile"]
 
@@ -88,7 +101,7 @@ async def replace_session_profile(
         record.wall_duration_ms,
         int(record.cost_is_estimated),
     ]
-    if await table_has_column(conn, "session_profiles", "payload_json"):
+    if await _table_has_column(conn, "session_profiles", "payload_json"):
         columns.append("payload_json")
         values.append(payload_json)
     columns.extend(

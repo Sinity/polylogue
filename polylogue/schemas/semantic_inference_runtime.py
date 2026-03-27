@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.semantic_inference_models import SEMANTIC_ROLES, SemanticCandidate
-from polylogue.schemas.semantic_inference_scoring import (
+from polylogue.schemas.semantic_inference_conversation_scoring import score_title
+from polylogue.schemas.semantic_inference_message_scoring import (
     score_body,
     score_container,
     score_role,
     score_timestamp,
-    score_title,
 )
+from polylogue.schemas.semantic_inference_models import SEMANTIC_ROLES, SemanticCandidate
 
 
 def infer_semantic_roles(stats: dict[str, FieldStats]) -> list[SemanticCandidate]:

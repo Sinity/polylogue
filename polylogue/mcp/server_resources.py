@@ -13,7 +13,7 @@ from polylogue.mcp.payloads import (
     MCPHealthReportPayload,
     MCPTagCountsPayload,
 )
-from polylogue.mcp.query_support import build_query_spec
+from polylogue.mcp.server_tools import build_query_spec
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP

@@ -12,13 +12,11 @@ from polylogue.storage.session_product_threads import (
     build_work_thread_record,
     hydrate_work_thread,
 )
-from polylogue.storage.session_product_timeline_event_rows import (
-    build_session_work_event_records,
-    hydrate_work_event,
-)
-from polylogue.storage.session_product_timeline_phase_rows import (
+from polylogue.storage.session_product_timeline_rows import (
     build_session_phase_records,
+    build_session_work_event_records,
     hydrate_session_phase,
+    hydrate_work_event,
 )
 
 
