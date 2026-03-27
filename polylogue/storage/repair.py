@@ -448,7 +448,8 @@ def preview_orphaned_attachments(*, count: int) -> RepairResult:
 
 def repair_session_products(config: Any, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
-    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync, session_product_status_sync
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+    from polylogue.storage.session_product_status import session_product_status_sync
 
     try:
         with connection_context(None) as conn:

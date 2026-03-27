@@ -11,7 +11,7 @@ from polylogue.storage.session_product_aggregates import (
 )
 from polylogue.storage.session_product_batches import hydrate_conversations, load_async_batch
 from polylogue.storage.session_product_profiles import hydrate_session_profile
-from polylogue.storage.session_product_rows import build_session_product_records
+from polylogue.storage.session_product_rebuild import build_session_product_records
 from polylogue.storage.session_product_threads import (
     load_thread_profile_records_async,
     thread_root_id_async,
