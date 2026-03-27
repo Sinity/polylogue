@@ -7,7 +7,7 @@ from polylogue.storage.search_query_builders import (
     build_ranked_action_search_query,
     build_ranked_conversation_search_query,
 )
-from polylogue.storage.search_query_support import escape_fts5_query, normalize_fts5_query
+from polylogue.storage.search_query_support import _FTS5_SPECIAL, escape_fts5_query, normalize_fts5_query
 
 
 def search_messages(*args, **kwargs):
@@ -18,6 +18,7 @@ def search_messages(*args, **kwargs):
 __all__ = [
     "SearchHit",
     "SearchResult",
+    "_FTS5_SPECIAL",
     "build_ranked_action_search_query",
     "build_ranked_conversation_search_query",
     "escape_fts5_query",

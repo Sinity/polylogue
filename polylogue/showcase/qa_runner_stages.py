@@ -40,22 +40,7 @@ def populate_proof(result: QAResult, *, workspace_env: dict[str, str] | None) ->
     except Exception as exc:
         result.proof_error = str(exc)
 
-
-def populate_roundtrip_proof(result: QAResult, *, provider: str | None) -> None:
-    """Populate the synthetic schema/evidence roundtrip proof stage."""
-    from polylogue.schemas.roundtrip_proof import prove_schema_evidence_roundtrip_suite
-
-    try:
-        result.roundtrip_proof_report = prove_schema_evidence_roundtrip_suite(
-            providers=[provider] if provider else None,
-            count=1,
-        )
-    except Exception as exc:
-        result.roundtrip_proof_error = str(exc)
-
-
 __all__ = [
     "generate_extra_exercises",
     "populate_proof",
-    "populate_roundtrip_proof",
 ]

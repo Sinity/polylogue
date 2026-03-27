@@ -5,7 +5,7 @@ from __future__ import annotations
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.session_profile import SessionProfile
 from polylogue.lib.work_events import WorkEvent
-from polylogue.storage.session_product_row_support import (
+from polylogue.storage.session_product_row_signal_support import (
     event_fallback,
     event_summary,
     event_support_signals,

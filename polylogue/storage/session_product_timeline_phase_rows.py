@@ -7,7 +7,7 @@ from datetime import datetime
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.phases import SessionPhase
 from polylogue.lib.session_profile import SessionProfile
-from polylogue.storage.session_product_row_support import (
+from polylogue.storage.session_product_row_signal_support import (
     now_iso,
     phase_fallback,
     phase_support_signals,

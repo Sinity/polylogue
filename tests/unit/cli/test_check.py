@@ -15,11 +15,6 @@ from polylogue.schemas.operator_models import (
     ArtifactObservationListResult,
     ArtifactProofResult,
 )
-from polylogue.schemas.roundtrip_proof import (
-    ProviderRoundtripProofReport,
-    RoundtripProofSuiteReport,
-    RoundtripStageReport,
-)
 from polylogue.schemas.verification_models import (
     ArtifactProofReport,
     ProviderArtifactProof,
@@ -52,51 +47,6 @@ def _extract_json(output: str) -> dict:
     if isinstance(data, dict) and data.get("status") == "ok" and "result" in data:
         return data["result"]
     return data
-
-
-def _make_roundtrip_report(*, clean: bool = True) -> RoundtripProofSuiteReport:
-    status = "ok" if clean else "error"
-    failed = [] if clean else ["artifact_proof"]
-    provider_report = ProviderRoundtripProofReport(
-        provider="chatgpt",
-        package_version="v1",
-        element_kind="conversation_document",
-        wire_encoding="json",
-        stages={
-            "selection": RoundtripStageReport("selection", "ok", "selected"),
-            "synthetic": RoundtripStageReport("synthetic", "ok", "generated", {"generated_artifacts": 1}),
-            "acquisition": RoundtripStageReport("acquisition", "ok", "acquired"),
-            "validation": RoundtripStageReport("validation", "ok", "validated"),
-            "parse_dispatch": RoundtripStageReport(
-                "parse_dispatch",
-                "ok",
-                "parsed",
-                {"parsed_conversations": 1},
-            ),
-            "prepare_persist": RoundtripStageReport(
-                "prepare_persist",
-                "ok",
-                "persisted",
-                {"persisted_conversations": 1},
-            ),
-            "corpus_verification": RoundtripStageReport("corpus_verification", "ok", "verified"),
-            "artifact_proof": RoundtripStageReport("artifact_proof", status, "proof", error=None if clean else "boom"),
-        },
-    )
-    if not clean:
-        provider_report = ProviderRoundtripProofReport(
-            provider="chatgpt",
-            package_version="v1",
-            element_kind="conversation_document",
-            wire_encoding="json",
-            stages={
-                **provider_report.stages,
-                "artifact_proof": RoundtripStageReport("artifact_proof", "error", "boom", error="boom"),
-            },
-        )
-    assert provider_report.summary["failed_stages"] == failed
-    return RoundtripProofSuiteReport(provider_reports={"chatgpt": provider_report})
-
 
 class TestHealthReportConstruction:
     """Tests for proper HealthReport instantiation."""
@@ -817,77 +767,6 @@ class TestCheckCommandSupplementary:
         assert request.providers == ["claude-code"]
         assert request.record_limit == 25
         assert request.record_offset == 50
-
-    def test_check_roundtrip_proof_json_output(self, cli_workspace):
-        """--roundtrip-proof adds roundtrip_proof block to JSON output."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        fake_report = _make_roundtrip_report()
-
-        with patch(
-            "polylogue.schemas.roundtrip_proof.prove_schema_evidence_roundtrip_suite",
-            return_value=fake_report,
-        ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "check", "--json", "--roundtrip-proof"])
-
-        assert result.exit_code == 0
-        data = _extract_json(result.output)
-        assert data["roundtrip_proof"]["summary"]["provider_count"] == 1
-        assert data["roundtrip_proof"]["summary"]["clean"] is True
-        assert "chatgpt" in data["roundtrip_proof"]["providers"]
-
-    def test_check_roundtrip_proof_plain_output(self, cli_workspace):
-        """--roundtrip-proof renders the roundtrip proof summary in plain output."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        fake_report = _make_roundtrip_report(clean=False)
-
-        with patch(
-            "polylogue.schemas.roundtrip_proof.prove_schema_evidence_roundtrip_suite",
-            return_value=fake_report,
-        ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "check", "--roundtrip-proof"])
-
-        assert result.exit_code == 0
-        assert "Roundtrip proof:" in result.output
-        assert "failed=1" in result.output
-        assert "chatgpt: failed, package=v1" in result.output
-
-    def test_check_roundtrip_proof_forwards_scope(self, cli_workspace):
-        """Roundtrip provider/count are forwarded to the proof workflow."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        fake_report = _make_roundtrip_report()
-
-        with patch(
-            "polylogue.schemas.roundtrip_proof.prove_schema_evidence_roundtrip_suite",
-            return_value=fake_report,
-        ) as mock_roundtrip:
-            runner = CliRunner()
-            result = runner.invoke(
-                cli,
-                [
-                    "--plain",
-                    "check",
-                    "--json",
-                    "--roundtrip-proof",
-                    "--roundtrip-provider",
-                    "chatgpt",
-                    "--roundtrip-count",
-                    "2",
-                ],
-            )
-
-        assert result.exit_code == 0
-        mock_roundtrip.assert_called_once_with(providers=["chatgpt"], count=2)
 
     def test_check_artifacts_json_output(self, cli_workspace):
         """--artifacts adds artifact_observations rows to JSON output."""

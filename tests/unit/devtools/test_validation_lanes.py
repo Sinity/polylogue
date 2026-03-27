@@ -256,7 +256,6 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "retrieval-dogfood" in captured.out
         assert "embeddings-coverage" in captured.out
-        assert "schema-roundtrip" in captured.out
 
     def test_source_runtime_governance_dry_run_includes_new_lanes(self, capsys):
         exit_code = main(["--lane", "source-runtime-governance", "--dry-run"])

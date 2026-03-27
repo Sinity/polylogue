@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
+
+
+class MaintenanceCategory(str, Enum):
+    DERIVED_REPAIR = "derived_repair"
+    ARCHIVE_CLEANUP = "archive_cleanup"
+    DATABASE_MAINTENANCE = "database_maintenance"
 
 
 @dataclass(frozen=True)
@@ -41,5 +48,4 @@ class DerivedModelStatus:
             "matches_version": self.matches_version,
         }
 
-
-__all__ = ["DerivedModelStatus"]
+__all__ = ["DerivedModelStatus", "MaintenanceCategory"]

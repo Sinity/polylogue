@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 
-from .action_event_lifecycle import rebuild_action_event_read_model_sync
+from .action_event_rebuild_runtime import rebuild_action_event_read_model_sync
 from .backends.connection import connection_context, open_connection
 from .fts_lifecycle import (
     _chunked as _chunked,
@@ -58,6 +58,7 @@ def index_status(conn: sqlite3.Connection | None = None) -> dict[str, object]:
 
 
 __all__ = [
+    "_chunked",
     "rebuild_index",
     "update_index_for_conversations",
     "index_status",

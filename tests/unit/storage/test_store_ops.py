@@ -80,7 +80,7 @@ def _record_query(**kwargs) -> ConversationRecordQuery:
 @pytest.mark.asyncio
 async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
     """Low-level list/count filters must honor persisted semantic paths."""
-    from polylogue.storage.action_event_lifecycle import rebuild_action_event_read_model_sync
+    from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
     from polylogue.storage.store import ContentBlockRecord
     from tests.infra.storage_records import ConversationBuilder
 
@@ -218,7 +218,7 @@ async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
     """Low-level list/count filters must honor semantic action categories."""
-    from polylogue.storage.action_event_lifecycle import rebuild_action_event_read_model_sync
+    from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
     from polylogue.storage.store import ContentBlockRecord
     from tests.infra.storage_records import ConversationBuilder
 

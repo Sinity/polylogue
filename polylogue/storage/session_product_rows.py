@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 from polylogue.lib.session_profile import build_session_analysis, build_session_profile
-from polylogue.storage.session_product_profile_rows import (
+from polylogue.storage.session_product_profiles import (
     build_session_profile_record,
     hydrate_session_profile,
 )
-from polylogue.storage.session_product_row_support import now_iso
-from polylogue.storage.session_product_thread_rows import (
+from polylogue.storage.session_product_row_signal_support import now_iso
+from polylogue.storage.session_product_threads import (
     build_work_thread_record,
     hydrate_work_thread,
 )
-from polylogue.storage.session_product_timeline_rows import (
-    build_session_phase_records,
+from polylogue.storage.session_product_timeline_event_rows import (
     build_session_work_event_records,
-    hydrate_session_phase,
     hydrate_work_event,
+)
+from polylogue.storage.session_product_timeline_phase_rows import (
+    build_session_phase_records,
+    hydrate_session_phase,
 )
 
 
