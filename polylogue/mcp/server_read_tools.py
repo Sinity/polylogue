@@ -62,7 +62,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     def health_check() -> str:
         def run() -> str:
-            from polylogue.health_archive import get_health
+            from polylogue.health import get_health
 
             report = get_health(hooks.get_config())
             return hooks.json_payload(

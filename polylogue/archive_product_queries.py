@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pydantic import Field
-
 from polylogue.archive_product_base import ArchiveProductModel
 
 
@@ -64,10 +62,6 @@ class WorkThreadProductQuery(ArchiveProductModel):
     query: str | None = None
 
 
-class MaintenanceRunProductQuery(ArchiveProductModel):
-    limit: int = Field(default=20, ge=1)
-
-
 class SessionTagRollupQuery(ArchiveProductModel):
     provider: str | None = None
     since: str | None = None
@@ -109,7 +103,6 @@ class ArchiveDebtProductQuery(ArchiveProductModel):
 __all__ = [
     "ArchiveDebtProductQuery",
     "DaySessionSummaryProductQuery",
-    "MaintenanceRunProductQuery",
     "ProviderAnalyticsProductQuery",
     "SessionEnrichmentProductQuery",
     "SessionPhaseProductQuery",

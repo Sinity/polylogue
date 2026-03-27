@@ -1,37 +1,9 @@
-"""Typed runtime-governance and maintenance metadata."""
+"""Derived model status type used by health and derived-status modules."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
-
-
-class TruthSource(StrEnum):
-    LIVE = "live"
-    CACHE = "cache"
-
-
-class MaintenanceCategory(StrEnum):
-    DERIVED_REPAIR = "derived_repair"
-    ARCHIVE_CLEANUP = "archive_cleanup"
-    DATABASE_MAINTENANCE = "database_maintenance"
-
-
-@dataclass(frozen=True)
-class ReportProvenance:
-    source: TruthSource = TruthSource.LIVE
-    cache_age_seconds: int | None = None
-    cache_ttl_seconds: int | None = None
-    cache_path: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "source": self.source.value,
-            "cache_age_seconds": self.cache_age_seconds,
-            "cache_ttl_seconds": self.cache_ttl_seconds,
-            "cache_path": self.cache_path,
-        }
 
 
 @dataclass(frozen=True)
@@ -70,35 +42,4 @@ class DerivedModelStatus:
         }
 
 
-@dataclass(frozen=True)
-class ArchiveDebtStatus:
-    name: str
-    category: MaintenanceCategory
-    destructive: bool
-    issue_count: int
-    detail: str
-    maintenance_target: str
-
-    @property
-    def healthy(self) -> bool:
-        return self.issue_count == 0
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "category": self.category.value,
-            "destructive": self.destructive,
-            "issue_count": self.issue_count,
-            "detail": self.detail,
-            "maintenance_target": self.maintenance_target,
-            "healthy": self.healthy,
-        }
-
-
-__all__ = [
-    "ArchiveDebtStatus",
-    "DerivedModelStatus",
-    "MaintenanceCategory",
-    "ReportProvenance",
-    "TruthSource",
-]
+__all__ = ["DerivedModelStatus"]

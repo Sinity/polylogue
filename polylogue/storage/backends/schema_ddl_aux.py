@@ -89,29 +89,8 @@ PUBLICATION_DDL = """
 """
 
 
-MAINTENANCE_RUN_DDL = """
-        CREATE TABLE IF NOT EXISTS maintenance_runs (
-            maintenance_run_id TEXT PRIMARY KEY,
-            schema_version INTEGER NOT NULL DEFAULT 1,
-            executed_at TEXT NOT NULL,
-            mode TEXT NOT NULL,
-            preview INTEGER NOT NULL DEFAULT 0,
-            repair_selected INTEGER NOT NULL DEFAULT 0,
-            cleanup_selected INTEGER NOT NULL DEFAULT 0,
-            vacuum_requested INTEGER NOT NULL DEFAULT 0,
-            target_names_json TEXT,
-            success INTEGER NOT NULL DEFAULT 1,
-            manifest_json TEXT NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_maintenance_runs_executed
-        ON maintenance_runs(executed_at DESC);
-"""
-
-
 __all__ = [
     "ARTIFACT_OBSERVATION_DDL",
-    "MAINTENANCE_RUN_DDL",
     "PUBLICATION_DDL",
     "VEC0_DDL",
 ]
