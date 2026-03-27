@@ -6,64 +6,16 @@ search (FTS5) with semantic vector search (sqlite-vec) using Reciprocal Rank Fus
 
 from __future__ import annotations
 
-from pathlib import Path
-from sqlite3 import Connection
 from typing import TYPE_CHECKING
 
-from polylogue.storage.backends.connection import _build_provider_scope_filter, open_connection
+from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.search_providers.hybrid_conversations import _resolve_ranked_conversation_ids
+from polylogue.storage.search_providers.hybrid_factory import create_hybrid_provider
+from polylogue.storage.search_providers.hybrid_rrf import reciprocal_rank_fusion
 
 if TYPE_CHECKING:
     from polylogue.protocols import VectorProvider
     from polylogue.storage.search_providers.fts5 import FTS5Provider
-
-
-def reciprocal_rank_fusion(
-    *result_lists: list[tuple[str, float]],
-    k: int = 60,
-) -> list[tuple[str, float]]:
-    """Combine multiple ranked result lists using Reciprocal Rank Fusion.
-
-    RRF is a simple but effective method for combining search results from
-    different ranking sources. Each result receives a score based on its
-    position: score = 1 / (k + rank), where k is a constant (default 60).
-
-    The k parameter prevents over-weighting of top results. Higher k values
-    reduce the influence of rank position differences.
-
-    Reference: Cormack, G. V., Clarke, C. L. A., & Büttcher, S. (2009).
-    "Reciprocal rank fusion outperforms Condorcet and individual rank learning methods"
-
-    Args:
-        *result_lists: Variable number of ranked result lists, each containing
-            (item_id, score) tuples. Scores from input lists are ignored;
-            only the ranking matters.
-        k: Rank fusion constant (default: 60). Higher values reduce the
-            importance of rank differences.
-
-    Returns:
-        Fused results as (item_id, rrf_score) tuples, sorted by descending score.
-
-    Example:
-        >>> fts_results = [("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)]
-        >>> vec_results = [("msg2", 0.95), ("msg1", 0.85), ("msg4", 0.6)]
-        >>> fused = reciprocal_rank_fusion(fts_results, vec_results)
-        >>> # msg1 and msg2 score higher because they appear in both lists
-    """
-    scores: dict[str, float] = {}
-
-    for result_list in result_lists:
-        seen_in_list: set[str] = set()
-        for rank, (item_id, _original_score) in enumerate(result_list, start=1):
-            if item_id in seen_in_list:
-                # Duplicate within same list — score only the best (first) occurrence
-                continue
-            seen_in_list.add(item_id)
-            rrf_score = 1.0 / (k + rank)
-            scores[item_id] = scores.get(item_id, 0.0) + rrf_score
-
-    # Sort by fused score descending
-    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
 
 class HybridSearchProvider:
     """SearchProvider combining FTS5 and vector search with RRF fusion.
@@ -190,107 +142,9 @@ class HybridSearchProvider:
                 scope_names=providers,
             )
 
-
-def _resolve_ranked_conversation_ids(
-    conn: Connection,
-    *,
-    message_results: list[tuple[str, float]],
-    limit: int,
-    scope_names: list[str] | None,
-) -> list[str]:
-    """Resolve ranked message hits into unique conversation IDs in SQL."""
-    if not message_results or limit <= 0:
-        return []
-
-    values_sql = ", ".join("(?, ?)" for _ in message_results)
-    params: list[object] = []
-    for rank, (message_id, _score) in enumerate(message_results, start=1):
-        params.extend((message_id, rank))
-
-    scope_clause = ""
-    if scope_names:
-        scope_sql, scope_params = _build_provider_scope_filter(
-            scope_names,
-            provider_column="conversations.provider_name",
-        )
-        scope_clause = f"WHERE {scope_sql}"
-        params.extend(scope_params)
-
-    params.append(limit)
-    rows = conn.execute(
-        f"""
-        WITH ranked_messages(message_id, message_rank) AS (
-            VALUES {values_sql}
-        ),
-        candidate_hits AS (
-            SELECT
-                messages.conversation_id,
-                ranked_messages.message_rank
-            FROM ranked_messages
-            JOIN messages ON messages.message_id = ranked_messages.message_id
-            JOIN conversations ON conversations.conversation_id = messages.conversation_id
-            {scope_clause}
-        ),
-        ranked_conversations AS (
-            SELECT
-                conversation_id,
-                message_rank,
-                ROW_NUMBER() OVER (
-                    PARTITION BY conversation_id
-                    ORDER BY message_rank ASC, conversation_id ASC
-                ) AS conversation_rank
-            FROM candidate_hits
-        )
-        SELECT conversation_id
-        FROM ranked_conversations
-        WHERE conversation_rank = 1
-        ORDER BY message_rank ASC, conversation_id ASC
-        LIMIT ?
-        """,
-        tuple(params),
-    ).fetchall()
-    return [row["conversation_id"] for row in rows]
-
-
-def create_hybrid_provider(
-    db_path: Path | None = None,
-    vector_provider: VectorProvider | None = None,
-    rrf_k: int = 60,
-) -> HybridSearchProvider | None:
-    """Create a hybrid search provider if vector search is available.
-
-    Factory function that creates a HybridSearchProvider if both FTS5
-    and vector search are available. Returns None if vector search is
-    not configured.
-
-    Args:
-        db_path: Optional database path for FTS5 provider
-        vector_provider: Optional vector provider (uses default if None)
-        rrf_k: RRF fusion constant
-
-    Returns:
-        HybridSearchProvider if vector search is available, None otherwise.
-    """
-    from polylogue.storage.search_providers import create_vector_provider
-    from polylogue.storage.search_providers.fts5 import FTS5Provider
-
-    # Get or create vector provider
-    vec_provider = vector_provider or create_vector_provider(db_path=db_path)
-    if vec_provider is None:
-        return None
-
-    # Create FTS5 provider
-    fts_provider = FTS5Provider(db_path=db_path)
-
-    return HybridSearchProvider(
-        fts_provider=fts_provider,
-        vector_provider=vec_provider,
-        rrf_k=rrf_k,
-    )
-
-
 __all__ = [
     "HybridSearchProvider",
-    "reciprocal_rank_fusion",
+    "_resolve_ranked_conversation_ids",
     "create_hybrid_provider",
+    "reciprocal_rank_fusion",
 ]

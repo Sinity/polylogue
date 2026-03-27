@@ -929,15 +929,15 @@ async def test_search_after_index(workspace_env, storage_repository):
 
 
 def test_health_cached(workspace_env):
-    """Test that health status is cached."""
+    """Test that get_health returns a live report even with use_cached=True (cache removed)."""
     from polylogue.config import get_config
-    from polylogue.health_archive import get_health
+    from polylogue.health import get_health
 
     config = get_config()
     get_health(config)
     second = get_health(config, use_cached=True)
-    assert second.provenance.source.value == "cache"
-    assert second.provenance.cache_age_seconds is not None
+    assert second.provenance.source == "live"
+    assert second.timestamp > 0
 
 
 def test_search_invalid_query_reports_error(monkeypatch, workspace_env):

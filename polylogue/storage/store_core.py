@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from polylogue.storage.store_constants import (
     ACTION_EVENT_MATERIALIZER_VERSION,
-    MAINTENANCE_RUN_SCHEMA_VERSION,
     MAX_ATTACHMENT_SIZE,
     MAX_RAW_CONTENT_SIZE,
     SESSION_ENRICHMENT_FAMILY,
@@ -37,7 +36,6 @@ __all__ = [
     "ArtifactObservationRecord",
     "ContentBlockRecord",
     "ConversationRecord",
-    "MAINTENANCE_RUN_SCHEMA_VERSION",
     "MAX_ATTACHMENT_SIZE",
     "MAX_RAW_CONTENT_SIZE",
     "MessageRecord",

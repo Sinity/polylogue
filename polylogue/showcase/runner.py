@@ -2,75 +2,20 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from polylogue.showcase.cli_boundary import invoke_showcase_cli
-from polylogue.showcase.exercises import (
-    EXERCISES,
-    Exercise,
-    topological_order,
+from polylogue.showcase.exercises import Exercise
+from polylogue.showcase.showcase_runner_models import ExerciseResult, ShowcaseResult
+from polylogue.showcase.showcase_runner_support import (
+    generate_showcase_fixtures,
+    run_exercise,
+    seed_workspace_with,
+    select_exercises,
+    validate_exercise_output,
 )
-from polylogue.showcase.workspace import (
-    create_verification_workspace,
-    generate_synthetic_fixtures,
-    run_pipeline_for_fixture_workspace,
-)
-
-
-@dataclass
-class ExerciseResult:
-    """Result of running a single exercise."""
-
-    exercise: Exercise
-    passed: bool
-    exit_code: int
-    output: str
-    error: str | None = None
-    duration_ms: float = 0
-    skipped: bool = False
-    skip_reason: str | None = None
-
-
-@dataclass
-class ShowcaseResult:
-    """Aggregate result of a full showcase run."""
-
-    results: list[ExerciseResult] = field(default_factory=list)
-    total_duration_ms: float = 0
-    workspace_dir: Path | None = None
-    output_dir: Path | None = None
-
-    @property
-    def passed(self) -> int:
-        return sum(1 for r in self.results if r.passed and not r.skipped)
-
-    @property
-    def failed(self) -> int:
-        return sum(1 for r in self.results if not r.passed and not r.skipped)
-
-    @property
-    def skipped(self) -> int:
-        return sum(1 for r in self.results if r.skipped)
-
-    def group_counts(self) -> dict[str, dict[str, int]]:
-        """Return pass/fail/skip counts by group."""
-        counts: dict[str, dict[str, int]] = {}
-        for r in self.results:
-            g = r.exercise.group
-            if g not in counts:
-                counts[g] = {"pass": 0, "fail": 0, "skip": 0}
-            if r.skipped:
-                counts[g]["skip"] += 1
-            elif r.passed:
-                counts[g]["pass"] += 1
-            else:
-                counts[g]["fail"] += 1
-        return counts
 
 
 class ShowcaseRunner:
@@ -104,10 +49,9 @@ class ShowcaseRunner:
         """Execute all applicable exercises and return results."""
         import tempfile
 
-        t0 = time.monotonic()
+        started = time.monotonic()
         result = ShowcaseResult()
 
-        # Set up output directory
         if self.output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True)
         else:
@@ -117,161 +61,73 @@ class ShowcaseRunner:
         exercises_dir = self.output_dir / "exercises"
         exercises_dir.mkdir(exist_ok=True)
 
-        # Seed workspace if not live mode
         if not self.live:
             if self._workspace_env:
-                # Workspace already prepared externally (by qa_runner)
                 self._env_vars = dict(self._workspace_env)
             else:
                 self._workspace_dir = self.output_dir / "workspace"
                 self._seed_workspace(self._workspace_dir)
                 result.workspace_dir = self._workspace_dir
 
-        # Build exercise list
-        exercises = self._select_exercises()
-        exercises = topological_order(exercises)
-
-        # Track completed exercises for dependency resolution
         completed: set[str] = set()
-
-        # Execute
-        for exercise in exercises:
-            # Check dependencies
+        for exercise in self._select_exercises():
             if exercise.depends_on and exercise.depends_on not in completed:
-                er = ExerciseResult(
-                    exercise=exercise,
-                    passed=False,
-                    exit_code=-1,
-                    output="",
-                    skipped=True,
-                    skip_reason=f"dependency {exercise.depends_on!r} not completed",
+                result.results.append(
+                    ExerciseResult(
+                        exercise=exercise,
+                        passed=False,
+                        exit_code=-1,
+                        output="",
+                        skipped=True,
+                        skip_reason=f"dependency {exercise.depends_on!r} not completed",
+                    )
                 )
-                result.results.append(er)
                 continue
 
-            er = self._run_exercise(exercise)
-            result.results.append(er)
+            exercise_result = self._run_exercise(exercise)
+            result.results.append(exercise_result)
 
-            if er.passed and not er.skipped:
+            if exercise_result.passed and not exercise_result.skipped:
                 completed.add(exercise.name)
 
-            # Save output
             safe_name = f"{exercise.group}--{exercise.name}{exercise.output_ext}"
-            (exercises_dir / safe_name).write_text(er.output or "")
+            (exercises_dir / safe_name).write_text(exercise_result.output or "")
 
-            if self.fail_fast and not er.passed and not er.skipped:
+            if self.fail_fast and not exercise_result.passed and not exercise_result.skipped:
                 break
 
-        result.total_duration_ms = (time.monotonic() - t0) * 1000
+        result.total_duration_ms = (time.monotonic() - started) * 1000
         return result
 
     def _select_exercises(self) -> list[Exercise]:
-        """Filter exercises based on mode, env, and tier."""
-        # Combine static catalog with any dynamically generated exercises
-        all_exercises = list(EXERCISES) + list(self.extra_exercises)
-
-        selected: list[Exercise] = []
-        for ex in all_exercises:
-            # Env-based filtering
-            if ex.env == "live" and not self.live:
-                continue  # live-only exercises require --live mode
-            if ex.env == "seeded" and self.live:
-                continue  # seeded-only exercises don't run against live data
-
-            # Skip writes in live mode (protect real data)
-            if self.live and ex.writes:
-                continue
-
-            if self.tier_filter is not None and ex.tier != self.tier_filter:
-                continue
-            selected.append(ex)
-        return selected
+        return select_exercises(
+            live=self.live,
+            tier_filter=self.tier_filter,
+            extra_exercises=self.extra_exercises,
+        )
 
     def _seed_workspace(self, workspace_dir: Path) -> None:
-        """Populate an isolated verification workspace and ingest its fixtures."""
-        workspace = create_verification_workspace(workspace_dir)
-        self._generate_synthetic_fixtures(workspace.fixture_dir, count=self.synthetic_count)
-        run_pipeline_for_fixture_workspace(workspace)
-        self._env_vars = dict(workspace.env_vars)
+        self._env_vars = seed_workspace_with(
+            workspace_dir,
+            synthetic_count=self.synthetic_count,
+            generate_fixtures=lambda fixture_dir: self._generate_synthetic_fixtures(
+                fixture_dir,
+                count=self.synthetic_count,
+            ),
+        )
 
     def _generate_synthetic_fixtures(self, fixture_dir: Path, *, count: int) -> None:
-        """Generate schema-driven synthetic fixtures for all providers."""
-        generate_synthetic_fixtures(fixture_dir, count=count, style="showcase")
+        generate_showcase_fixtures(fixture_dir, count=count)
 
     def _run_exercise(self, exercise: Exercise) -> ExerciseResult:
-        """Run a single exercise and validate the result."""
-        t0 = time.monotonic()
-
-        env = dict(self._env_vars) if self._env_vars else {}
-        env["POLYLOGUE_FORCE_PLAIN"] = "1"
-        args = ["--plain"] + list(exercise.args)
-
-        try:
-            cli_result = invoke_showcase_cli(args, env=env, timeout=exercise.timeout_s)
-            output = cli_result.output
-            exit_code = cli_result.exit_code
-        except subprocess.TimeoutExpired:
-            duration = (time.monotonic() - t0) * 1000
-            return ExerciseResult(
-                exercise=exercise,
-                passed=False,
-                exit_code=-1,
-                output="",
-                error=f"timed out after {exercise.timeout_s:.0f}s",
-                duration_ms=duration,
-            )
-        except Exception as e:
-            duration = (time.monotonic() - t0) * 1000
-            return ExerciseResult(
-                exercise=exercise,
-                passed=False,
-                exit_code=-1,
-                output="",
-                error=f"invoke crashed: {e}",
-                duration_ms=duration,
-            )
-
-        duration = (time.monotonic() - t0) * 1000
-
-        # Validate
-        error = self._validate(exercise, output, exit_code)
-
-        return ExerciseResult(
-            exercise=exercise,
-            passed=error is None,
-            exit_code=exit_code,
-            output=output,
-            error=error,
-            duration_ms=duration,
+        return run_exercise(
+            exercise,
+            env_vars=self._env_vars,
+            invoke_showcase_cli_fn=invoke_showcase_cli,
         )
 
     def _validate(self, exercise: Exercise, output: str, exit_code: int) -> str | None:
-        """Validate exercise output against its Validation spec. Returns error or None."""
-        v = exercise.validation
+        return validate_exercise_output(exercise, output, exit_code)
 
-        if v.exit_code is not None and exit_code != v.exit_code:
-            return f"exit code {exit_code}, expected {v.exit_code}"
 
-        for needle in v.stdout_contains:
-            if needle not in output:
-                return f"output missing {needle!r}"
-
-        for needle in v.stdout_not_contains:
-            if needle in output:
-                return f"output unexpectedly contains {needle!r}"
-
-        if v.stdout_is_valid_json:
-            try:
-                json.loads(output)
-            except json.JSONDecodeError as exc:
-                return f"invalid JSON: {exc}"
-
-        if v.stdout_min_lines is not None:
-            line_count = len(output.strip().splitlines())
-            if line_count < v.stdout_min_lines:
-                return f"only {line_count} lines, expected >= {v.stdout_min_lines}"
-
-        if v.custom:
-            return v.custom(output, exit_code)
-
-        return None
+__all__ = ["ExerciseResult", "ShowcaseResult", "ShowcaseRunner"]
