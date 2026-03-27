@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 
 from polylogue.lib.hashing import hash_text
-from polylogue.lib.phases import SessionPhase
+from polylogue.lib.phase_extraction import SessionPhase
 from polylogue.lib.session_profile import SessionProfile
-from polylogue.lib.work_events import WorkEvent
+from polylogue.lib.work_event_extraction import WorkEvent
 from polylogue.storage.session_product_profiles import (
     event_fallback,
     event_summary,
