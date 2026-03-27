@@ -110,12 +110,33 @@ _DOCUMENTATION_PATTERNS = ("document", "readme", "docstring", "comment", "explai
 _CONFIGURATION_PATTERNS = ("config", "toml", "yaml", "nix", "flake", "settings", "env")
 _DATA_ANALYSIS_PATTERNS = ("data", "analysis", "query", "sql", "duckdb", "pandas", "plot", "chart", "csv")
 
+# Text signals as weighted inputs (not short-circuit overrides).
+# Order matters — first match wins. These are checked only after action
+# evidence, or as a fallback when no action evidence is available.
+_TEXT_SIGNAL_TABLE: list[tuple[tuple[str, ...], WorkEventKind, str]] = [
+    (_DEBUGGING_PATTERNS, WorkEventKind.DEBUGGING, "user_text_debugging"),
+    (_PLANNING_PATTERNS, WorkEventKind.PLANNING, "user_text_planning"),
+    (_TESTING_PATTERNS, WorkEventKind.TESTING, "user_text_testing"),
+    (_REVIEW_PATTERNS, WorkEventKind.REVIEW, "user_text_review"),
+    (_REFACTORING_PATTERNS, WorkEventKind.REFACTORING, "user_text_refactoring"),
+    (_DOCUMENTATION_PATTERNS, WorkEventKind.DOCUMENTATION, "user_text_documentation"),
+    (_CONFIGURATION_PATTERNS, WorkEventKind.CONFIGURATION, "user_text_configuration"),
+    (_DATA_ANALYSIS_PATTERNS, WorkEventKind.DATA_ANALYSIS, "user_text_data_analysis"),
+]
+
 
 def _classify_message_range(
     messages: list[MessageSemanticFacts],
     start: int,
     end: int,
 ) -> tuple[WorkEventKind, float, list[str]]:
+    """Classify a message range by combining action evidence with text signals.
+
+    Actions are primary evidence. Text keywords are weighted signals that
+    influence the result, not short-circuit overrides. This prevents a
+    single mention of "error" from labeling a 2-hour implementation session
+    as "debugging".
+    """
     category_counts: dict[str, int] = {}
     user_text = ""
     evidence: list[str] = []
@@ -129,35 +150,33 @@ def _classify_message_range(
             category_counts[cat] = category_counts.get(cat, 0) + 1
 
     text_lower = user_text.strip()
-    if text_lower:
-        if any(pattern in text_lower for pattern in _DEBUGGING_PATTERNS):
-            return WorkEventKind.DEBUGGING, 0.8, ["user_text_debugging"]
-        if any(pattern in text_lower for pattern in _PLANNING_PATTERNS):
-            return WorkEventKind.PLANNING, 0.8, ["user_text_planning"]
-        if any(pattern in text_lower for pattern in _TESTING_PATTERNS):
-            return WorkEventKind.TESTING, 0.75, ["user_text_testing"]
-        if any(pattern in text_lower for pattern in _REVIEW_PATTERNS):
-            return WorkEventKind.REVIEW, 0.75, ["user_text_review"]
-        if any(pattern in text_lower for pattern in _REFACTORING_PATTERNS):
-            return WorkEventKind.REFACTORING, 0.75, ["user_text_refactoring"]
-        if any(pattern in text_lower for pattern in _DOCUMENTATION_PATTERNS):
-            return WorkEventKind.DOCUMENTATION, 0.7, ["user_text_documentation"]
-        if any(pattern in text_lower for pattern in _CONFIGURATION_PATTERNS):
-            return WorkEventKind.CONFIGURATION, 0.7, ["user_text_configuration"]
-        if any(pattern in text_lower for pattern in _DATA_ANALYSIS_PATTERNS):
-            return WorkEventKind.DATA_ANALYSIS, 0.7, ["user_text_data_analysis"]
 
+    # Collect text signals (weighted, not short-circuit)
+    text_signal: WorkEventKind | None = None
+    text_signal_name: str | None = None
+    if text_lower:
+        for patterns, kind, name in _TEXT_SIGNAL_TABLE:
+            if any(pattern in text_lower for pattern in patterns):
+                text_signal = kind
+                text_signal_name = name
+                break
+
+    # Action-based classification (primary evidence)
     edit_count = category_counts.get("file_edit", 0) + category_counts.get("file_write", 0)
     read_count = category_counts.get("file_read", 0)
     search_count = category_counts.get("search", 0)
     shell_count = category_counts.get("shell", 0)
     git_count = category_counts.get("git", 0)
     agent_count = category_counts.get("agent", 0) + category_counts.get("subagent", 0)
+    total_actions = sum(category_counts.values())
 
+    # Strong action evidence overrides text signals
     if edit_count >= 2:
         evidence.append("file_edits")
-        if shell_count and any(pattern in user_text for pattern in _TESTING_PATTERNS):
-            return WorkEventKind.TESTING, 0.7, evidence + ["shell_test"]
+        if shell_count and text_signal == WorkEventKind.TESTING:
+            return WorkEventKind.TESTING, 0.7, evidence + ["shell_test", text_signal_name or ""]
+        if text_signal == WorkEventKind.REFACTORING:
+            return WorkEventKind.REFACTORING, 0.7, evidence + [text_signal_name or ""]
         return WorkEventKind.IMPLEMENTATION, 0.75, evidence
     if agent_count >= 2 and edit_count == 0:
         return WorkEventKind.PLANNING, 0.7, ["agent_orchestration"]
@@ -166,11 +185,16 @@ def _classify_message_range(
     if git_count >= 1:
         return WorkEventKind.REVIEW, 0.6, ["git_operations"]
     if shell_count >= 2:
-        if any(pattern in user_text for pattern in _TESTING_PATTERNS):
-            return WorkEventKind.TESTING, 0.65, ["shell_testing"]
-        if any(pattern in user_text for pattern in _DEBUGGING_PATTERNS):
-            return WorkEventKind.DEBUGGING, 0.65, ["shell_debugging"]
+        if text_signal == WorkEventKind.TESTING:
+            return WorkEventKind.TESTING, 0.65, ["shell_testing", text_signal_name or ""]
+        if text_signal == WorkEventKind.DEBUGGING:
+            return WorkEventKind.DEBUGGING, 0.65, ["shell_debugging", text_signal_name or ""]
         return WorkEventKind.IMPLEMENTATION, 0.5, ["shell_default"]
+
+    # No strong action evidence — fall back to text signal if present
+    if text_signal is not None and text_signal_name:
+        # Lower confidence since text-only, no action corroboration
+        return text_signal, 0.5, [text_signal_name]
     if not category_counts:
         return WorkEventKind.CONVERSATION, 0.6, ["no_tools"]
     return WorkEventKind.IMPLEMENTATION, 0.4, ["weak_signal"]
