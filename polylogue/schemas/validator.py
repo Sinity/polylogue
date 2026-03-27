@@ -1,88 +1,46 @@
-"""JSON Schema validation for provider exports with drift detection.
-
-This module provides strict validation of provider export formats against
-generated schemas, with special handling for drift detection (new/changed fields).
-
-Usage:
-    validator = SchemaValidator.for_provider("chatgpt")
-    result = validator.validate(export_data)
-
-    if result.is_valid:
-        print("Export validates against schema")
-    if result.has_drift:
-        print(f"Detected drift: {result.drift_warnings}")
-"""
+"""JSON Schema validation for provider exports with drift detection."""
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
 from typing import Any
 
 try:
     import jsonschema
-    from jsonschema import Draft202012Validator, ValidationError
+    from jsonschema import Draft202012Validator
 except ImportError:
     jsonschema = None
     Draft202012Validator = None
-    ValidationError = Exception
 
-from polylogue.lib.raw_payload import extract_payload_samples
-from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
+from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.types import Provider
 
-_RECORD_VALIDATION_PROVIDERS = {Provider.CLAUDE_CODE, Provider.CODEX}
-
-_UUID_KEY_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    re.IGNORECASE,
+from .validator_models import ValidationResult
+from .validator_resolution import (
+    available_providers as _available_providers,
 )
-
-@dataclass
-class ValidationResult:
-    """Result of schema validation with drift detection."""
-
-    is_valid: bool
-    """Whether the data passes schema validation."""
-
-    errors: list[str] = field(default_factory=list)
-    """Validation errors (required fields missing, type mismatches)."""
-
-    drift_warnings: list[str] = field(default_factory=list)
-    """Drift warnings (new fields, changed structures)."""
-
-    @property
-    def has_drift(self) -> bool:
-        """Whether drift was detected (valid but changed)."""
-        return len(self.drift_warnings) > 0
-
-    def raise_if_invalid(self) -> None:
-        """Raise ValueError if validation failed."""
-        if not self.is_valid:
-            raise ValueError(f"Schema validation failed: {'; '.join(self.errors)}")
+from .validator_resolution import (
+    canonical_provider as _canonical_provider,
+)
+from .validator_resolution import (
+    resolve_payload_schema,
+    resolve_provider_schema,
+)
+from .validator_support import (
+    detect_drift,
+    format_validation_error,
+    looks_dynamic_key,
+)
+from .validator_support import (
+    validation_samples as collect_validation_samples,
+)
 
 
 class SchemaValidator:
-    """Validates data against JSON schemas with drift detection.
+    """Validates data against JSON schemas with drift detection."""
 
-    Drift detection identifies changes that don't break the schema but
-    indicate the provider format may have changed:
-    - New fields not in the schema
-    - Fields with unexpected types (when schema allows multiple)
-    - Nested structures that differ from samples
-    """
-
-    # Class-level cache: avoids re-reading schema files and re-compiling
-    # validators for the same provider during a pipeline run.
     _cache: dict[tuple[str, str, str, bool], SchemaValidator] = {}
 
     def __init__(self, schema: dict[str, Any], strict: bool = True, provider: Provider | None = None):
-        """Initialize validator with a schema.
-
-        Args:
-            schema: JSON Schema dict
-            strict: If True, treat unexpected fields as drift warnings
-        """
         if jsonschema is None:
             raise ImportError("jsonschema not installed. Run: pip install jsonschema")
 
@@ -93,44 +51,16 @@ class SchemaValidator:
 
     @classmethod
     def canonical_provider(cls, provider: str | Provider) -> Provider:
-        """Normalize provider names to canonical schema provider names."""
-        return Provider.from_string(canonical_schema_provider(str(provider)))
+        return _canonical_provider(provider)
 
     @classmethod
     def for_provider(cls, provider: str | Provider, strict: bool = True) -> SchemaValidator:
-        """Create a validator for a specific provider, caching by (provider, strict).
-
-        Args:
-            provider: Provider name (chatgpt, claude-ai, claude-code, codex, gemini)
-            strict: If True, treat unexpected fields as drift warnings
-
-        Returns:
-            SchemaValidator configured for the provider
-
-        Raises:
-            FileNotFoundError: If no schema exists for the provider
-        """
-        canonical_provider = cls.canonical_provider(provider)
-        registry = SchemaRegistry()
-        package = registry.get_package(str(canonical_provider), version="default") if hasattr(registry, "get_package") else None
-        package_version = package.version if package is not None else "latest"
-        element_kind = package.default_element_kind if package is not None else "default"
-        key = (str(canonical_provider), package_version, element_kind, strict)
+        canonical, schema, base_key = resolve_provider_schema(provider, registry_cls=SchemaRegistry)
+        key = (*base_key, strict)
         cached = cls._cache.get(key)
         if cached is not None:
             return cached
-
-        if package is not None and hasattr(registry, "get_element_schema"):
-            schema = registry.get_element_schema(
-                str(canonical_provider),
-                version=package.version,
-                element_kind=package.default_element_kind,
-            )
-        else:
-            schema = registry.get_schema(str(canonical_provider), version="latest")
-        if schema is None:
-            raise FileNotFoundError(f"No schema found for provider: {provider} (canonical: {canonical_provider})")
-        instance = cls(schema, strict=strict, provider=canonical_provider)
+        instance = cls(schema, strict=strict, provider=canonical)
         cls._cache[key] = instance
         return instance
 
@@ -143,67 +73,29 @@ class SchemaValidator:
         source_path: str | None = None,
         strict: bool = True,
     ) -> SchemaValidator:
-        """Create a validator matched to the most likely schema version."""
-        canonical_provider = cls.canonical_provider(provider)
-        registry = SchemaRegistry()
-        resolution = (
-            registry.resolve_payload(
-                str(canonical_provider),
-                payload,
-                source_path=source_path,
-            )
-            if hasattr(registry, "resolve_payload")
-            else None
+        canonical, schema, base_key = resolve_payload_schema(
+            provider,
+            payload,
+            source_path=source_path,
+            registry_cls=SchemaRegistry,
         )
-        package_version = resolution.package_version if resolution is not None else "latest"
-        element_kind = resolution.element_kind if resolution is not None else "default"
-        key = (str(canonical_provider), package_version, element_kind, strict)
+        key = (*base_key, strict)
         cached = cls._cache.get(key)
         if cached is not None:
             return cached
-
-        if hasattr(registry, "get_element_schema"):
-            schema = registry.get_element_schema(
-                str(canonical_provider),
-                version=package_version,
-                element_kind=None if element_kind == "default" else element_kind,
-            )
-        else:
-            schema = registry.get_schema(str(canonical_provider), version=package_version)
-        if schema is None:
-            raise FileNotFoundError(
-                "No schema found for provider: "
-                f"{provider} (canonical: {canonical_provider}, package: {package_version}, element: {element_kind})"
-            )
-        instance = cls(schema, strict=strict, provider=canonical_provider)
+        instance = cls(schema, strict=strict, provider=canonical)
         cls._cache[key] = instance
         return instance
 
     @classmethod
     def available_providers(cls) -> list[str]:
-        """List providers with available schemas."""
-        return SchemaRegistry().list_providers()
+        return _available_providers(registry_cls=SchemaRegistry)
 
     def validate(self, data: Any) -> ValidationResult:
-        """Validate data against the schema with drift detection.
-
-        Args:
-            data: Data to validate (typically a dict from JSON)
-
-        Returns:
-            ValidationResult with is_valid, errors, and drift_warnings
-        """
-        errors: list[str] = []
+        errors = [format_validation_error(error) for error in self._validator.iter_errors(data)]
         drift_warnings: list[str] = []
-
-        # Run schema validation
-        for error in self._validator.iter_errors(data):
-            errors.append(self._format_error(error))
-
-        # Drift detection (only if data is a dict and strict mode)
         if self.strict and isinstance(data, dict):
-            drift_warnings.extend(self._detect_drift(data, self.schema, ""))
-
+            drift_warnings.extend(detect_drift(data, self.schema, ""))
         return ValidationResult(
             is_valid=len(errors) == 0,
             errors=errors,
@@ -211,95 +103,22 @@ class SchemaValidator:
         )
 
     def validation_samples(self, payload: Any, *, max_samples: int | None = None) -> list[dict[str, Any]]:
-        """Extract representative objects from a payload for validation.
-
-        For record-oriented providers (JSONL), this returns a stratified subset of
-        record dicts when explicitly bounded. By default it validates all record
-        dicts. For document-oriented providers, this returns the top-level payload
-        object or all dict documents in a list payload.
-        """
-        granularity = self.schema.get("x-polylogue-sample-granularity")
-        if not isinstance(granularity, str):
-            granularity = "record" if self.provider in _RECORD_VALIDATION_PROVIDERS else "document"
-        return extract_payload_samples(
+        return collect_validation_samples(
             payload,
-            sample_granularity=granularity,
+            schema=self.schema,
+            provider=self.provider,
             max_samples=max_samples,
         )
 
-    def _format_error(self, error: ValidationError) -> str:
-        """Format a validation error for display."""
-        path = ".".join(str(p) for p in error.absolute_path) or "root"
-        return f"{path}: {error.message}"
-
-    def _detect_drift(
-        self,
-        data: dict[str, Any],
-        schema: dict[str, Any],
-        path: str,
-    ) -> list[str]:
-        """Detect fields in data not present in schema (drift)."""
-        warnings: list[str] = []
-
-        # Get expected properties from schema
-        schema_props = set(schema.get("properties", {}).keys())
-        has_additional = schema.get("additionalProperties", True)
-
-        # Check for unexpected fields
-        for key, value in data.items():
-            current_path = f"{path}.{key}" if path else key
-
-            if key not in schema_props:
-                if has_additional is False:
-                    # Schema explicitly disallows additional properties
-                    warnings.append(f"Unexpected field: {current_path}")
-                elif has_additional is True:
-                    # Schema allows any additional properties - no warning
-                    pass
-                elif isinstance(has_additional, dict):
-                    # Field is allowed by additionalProperties schema but not named -> Drift
-                    dynamic_container = bool(schema.get("x-polylogue-dynamic-keys"))
-                    if not dynamic_container and not self._looks_dynamic_key(key):
-                        warnings.append(f"Unexpected field: {current_path}")
-                    # Recurse if value is dict to find nested drift
-                    if isinstance(value, dict):
-                        warnings.extend(self._detect_drift(value, has_additional, current_path))
-            else:
-                # Known property - recurse into nested objects
-                prop_schema = schema["properties"][key]
-                if isinstance(value, dict) and "properties" in prop_schema:
-                    warnings.extend(self._detect_drift(value, prop_schema, current_path))
-                elif isinstance(value, list) and "items" in prop_schema:
-                    items_schema = prop_schema["items"]
-                    if isinstance(items_schema, dict) and "properties" in items_schema:
-                        for i, item in enumerate(value):
-                            if isinstance(item, dict):
-                                warnings.extend(self._detect_drift(item, items_schema, f"{current_path}[{i}]"))
-
-        return warnings
-
     def _looks_dynamic_key(self, key: str) -> bool:
-        """Detect dynamic identifier keys (UUIDs, hashes, generated IDs)."""
-        if _UUID_KEY_RE.match(key):
-            return True
-        if re.match(r"^[0-9a-f]{24,}$", key, re.IGNORECASE):
-            return True
-        return bool(re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE))
+        return looks_dynamic_key(key)
+
 
 def validate_provider_export(
     data: Any,
     provider: str | Provider,
     strict: bool = True,
 ) -> ValidationResult:
-    """Convenience function to validate a provider export.
-
-    Args:
-        data: Export data to validate
-        provider: Provider name
-        strict: If True, detect drift (new/changed fields)
-
-    Returns:
-        ValidationResult
-    """
+    """Convenience function to validate a provider export."""
     validator = SchemaValidator.for_provider(provider, strict=strict)
     return validator.validate(data)

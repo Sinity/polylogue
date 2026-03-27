@@ -7,10 +7,9 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from polylogue.logging import get_logger
-from polylogue.pipeline.services.validation_runtime import _ValidationOutcome, _validate_record_sync
-from polylogue.pipeline.stage_models import ValidateResult, ValidatedRawRecord
+from polylogue.pipeline.services.validation_runtime import _validate_record_sync, _ValidationOutcome
+from polylogue.pipeline.stage_models import ValidatedRawRecord, ValidateResult
 from polylogue.protocols import ProgressCallback
-from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
@@ -62,12 +61,10 @@ async def validate_raw_ids(
         result = ValidateResult()
         for index, raw_id in enumerate(raw_ids, start=1):
             if persist:
-                await repository.update_raw_state(
+                await repository.mark_raw_validated(
                     raw_id,
-                    state=RawConversationStateUpdate(
-                        validation_status=ValidationStatus.SKIPPED,
-                        validation_mode=validation_mode,
-                    ),
+                    status=ValidationStatus.SKIPPED,
+                    mode=validation_mode,
                 )
             result.records.append(
                 ValidatedRawRecord(
@@ -139,12 +136,12 @@ async def evaluate_raw_records(
     if mode is ValidationMode.OFF:
         for raw_record in raw_records:
             if persist:
-                await repository.update_raw_state(
+                await repository.mark_raw_validated(
                     raw_record.raw_id,
-                    state=RawConversationStateUpdate(
-                        validation_status=ValidationStatus.SKIPPED,
-                        validation_mode=mode,
-                    ),
+                    status=ValidationStatus.SKIPPED,
+                    mode=mode,
+                    provider=Provider.from_string(raw_record.provider_name),
+                    payload_provider=raw_record.payload_provider,
                 )
             result.records.append(
                 ValidatedRawRecord(
@@ -195,24 +192,20 @@ async def evaluate_raw_records(
         )
 
         if persist:
-            await repository.update_raw_state(
+            await repository.mark_raw_validated(
                 raw_record.raw_id,
-                state=RawConversationStateUpdate(
-                    validation_status=outcome.validation_status,
-                    validation_error=outcome.validation_error,
-                    validation_drift_count=outcome.drift_count,
-                    validation_provider=outcome.canonical_provider,
-                    validation_mode=mode,
-                    payload_provider=outcome.payload_provider,
-                ),
+                status=outcome.validation_status,
+                error=outcome.validation_error,
+                drift_count=outcome.drift_count,
+                provider=outcome.canonical_provider,
+                mode=mode,
+                payload_provider=outcome.payload_provider,
             )
             if not outcome.parseable and outcome.validation_error is not None:
-                await repository.update_raw_state(
+                await repository.mark_raw_parsed(
                     raw_record.raw_id,
-                    state=RawConversationStateUpdate(
-                        parse_error=outcome.validation_error,
-                        payload_provider=outcome.payload_provider,
-                    ),
+                    error=outcome.validation_error,
+                    payload_provider=outcome.payload_provider,
                 )
 
         if progress_callback is not None:
