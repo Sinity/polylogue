@@ -42,31 +42,6 @@ def generate_qa_summary(result, *, session: dict | None = None) -> str:
             lines.append(
                 f"  Reasons: {format_count_mapping(proof_summary['resolution_reasons'])}"
             )
-    roundtrip_summary = session["roundtrip_proof"].get("report", {}).get("summary")
-    if result.roundtrip_proof_error:
-        lines.append(f"Roundtrip Proof: FAIL ({result.roundtrip_proof_error})")
-    elif roundtrip_summary is not None:
-        lines.append(
-            "Roundtrip Proof: "
-            f"providers={roundtrip_summary['provider_count']}, "
-            f"clean={roundtrip_summary['clean_providers']}, "
-            f"failed={roundtrip_summary['failed_providers']}, "
-            f"artifacts={roundtrip_summary['artifact_count']}, "
-            f"parsed_conversations={roundtrip_summary['parsed_conversations']}, "
-            f"persisted_conversations={roundtrip_summary['persisted_conversations']}"
-        )
-        for provider, provider_report in sorted(
-            session["roundtrip_proof"].get("report", {}).get("providers", {}).items()
-        ):
-            provider_summary = provider_report["summary"]
-            failed_stages = ", ".join(provider_summary["failed_stages"]) or "-"
-            lines.append(
-                f"  {provider}: package={provider_report['package_version']}, "
-                f"element={provider_report['element_kind'] or '-'}, "
-                f"failed_stages={failed_stages}"
-            )
-    elif result.roundtrip_proof_status is OutcomeStatus.SKIP:
-        lines.append("Roundtrip Proof: SKIPPED")
     if result.audit_status is OutcomeStatus.ERROR:
         if result.audit_error:
             lines.append(f"  Error: {result.audit_error}")

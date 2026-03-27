@@ -17,11 +17,6 @@ from hypothesis import strategies as st
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.schemas.audit import AuditReport
-from polylogue.schemas.roundtrip_proof import (
-    ProviderRoundtripProofReport,
-    RoundtripProofSuiteReport,
-    RoundtripStageReport,
-)
 from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_report import (
@@ -71,32 +66,6 @@ def _make_showcase(results: list[ExerciseResult]) -> ShowcaseResult:
     sr.results = results
     sr.total_duration_ms = sum(r.duration_ms for r in results)
     return sr
-
-
-def _make_roundtrip_report(*, clean: bool = True) -> RoundtripProofSuiteReport:
-    status = "ok" if clean else "error"
-    return RoundtripProofSuiteReport(
-        provider_reports={
-            "chatgpt": ProviderRoundtripProofReport(
-                provider="chatgpt",
-                package_version="v1",
-                element_kind="conversation_document",
-                wire_encoding="json",
-                stages={
-                    "selection": RoundtripStageReport("selection", "ok", "selected"),
-                    "synthetic": RoundtripStageReport("synthetic", "ok", "generated", {"generated_artifacts": 1}),
-                    "acquisition": RoundtripStageReport("acquisition", "ok", "acquired"),
-                    "validation": RoundtripStageReport("validation", "ok", "validated"),
-                    "parse_dispatch": RoundtripStageReport("parse_dispatch", "ok", "parsed", {"parsed_conversations": 1}),
-                    "prepare_persist": RoundtripStageReport("prepare_persist", "ok", "persisted", {"persisted_conversations": 1}),
-                    "corpus_verification": RoundtripStageReport("corpus_verification", "ok", "verified"),
-                    "artifact_proof": RoundtripStageReport("artifact_proof", status, "proof", error=None if clean else "boom"),
-                },
-            )
-        },
-    )
-
-
 # ---------------------------------------------------------------------------
 # Law 1: generate_showcase_session always has required top-level keys
 # ---------------------------------------------------------------------------
@@ -286,7 +255,6 @@ def test_full_qa_session_contains_composed_stage_payloads():
     assert session["proof"]["report"]["summary"]["unsupported_parseable_records"] == 1
     assert session["proof"]["report"]["summary"]["package_versions"] == {"v1": 1}
     assert session["proof"]["report"]["summary"]["element_kinds"] == {"conversation_document": 1}
-    assert session["roundtrip_proof"]["status"] == "skip"
     assert session["showcase"]["summary"] == {
         "total": 2,
         "passed": 1,
@@ -317,7 +285,6 @@ def test_generate_qa_summary_reports_stage_statuses():
             },
             total_records=1,
         ),
-        roundtrip_proof_report=_make_roundtrip_report(),
         exercises_skipped=True,
         invariants_skipped=True,
     )
@@ -328,7 +295,6 @@ def test_generate_qa_summary_reports_stage_statuses():
     assert "Artifact Proof: contract_backed=1" in summary
     assert "Packages: v1=1" in summary
     assert "Elements: conversation_document=1" in summary
-    assert "Roundtrip Proof: providers=1" in summary
     assert "Exercises: SKIPPED" in summary
     assert "Invariants: SKIPPED" in summary
 
@@ -355,7 +321,6 @@ def test_generate_qa_markdown_includes_artifact_proof_section():
             },
             total_records=2,
         ),
-        roundtrip_proof_report=_make_roundtrip_report(),
         exercises_skipped=True,
         invariants_skipped=True,
     )
@@ -363,11 +328,8 @@ def test_generate_qa_markdown_includes_artifact_proof_section():
     markdown = generate_qa_markdown(qa_result)
 
     assert "## Artifact Proof" in markdown
-    assert "## Roundtrip Proof" in markdown
     assert "| Unsupported parseable | 1 |" in markdown
     assert "| v4 | 1 |" in markdown
     assert "| subagent_conversation_stream | 1 |" in markdown
     assert "| bundle_scope | 1 |" in markdown
     assert "| claude-code | 2 | 0 | 1 | 1 | 0 | 0 |" in markdown
-    assert "| Providers | 1 |" in markdown
-    assert "| chatgpt | v1 | conversation_document | - |" in markdown

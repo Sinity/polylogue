@@ -12,7 +12,7 @@ from polylogue.archive_product_builders import (
     date_from_iso,
 )
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
-from polylogue.storage.session_product_profile_rows import hydrate_session_profile
+from polylogue.storage.session_product_profiles import hydrate_session_profile
 from polylogue.storage.session_product_storage_aggregates import (
     replace_day_session_summaries_sync,
     replace_session_tag_rollup_rows_sync,

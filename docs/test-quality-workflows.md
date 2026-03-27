@@ -109,7 +109,7 @@ Lane intent:
 - `source-runtime-governance`: local closure lane for source/provider fidelity plus runtime maintenance convergence
 - `retrieval-dogfood`: action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payloads
 - `embeddings-coverage`: embedding readiness/coverage stats and embed command contracts
-- `archive-intelligence`: local closure lane for retrieval, embedding readiness, and schema roundtrip
+- `archive-intelligence`: local closure lane for retrieval and embedding readiness
 - `archive-data-products-live`: local durable-product contract lane plus bounded live durable-product dogfood
 - `domain-read-model-contracts`: local closure lane for domain-banded products, analytics, consumer contracts, and archive-debt governance
 - `domain-read-model-live`: bounded live archive lane for durable products, analytics/debt products, and maintenance governance

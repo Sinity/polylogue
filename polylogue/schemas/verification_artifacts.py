@@ -5,13 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.lib.artifact_taxonomy import ArtifactKind
-from polylogue.storage.artifact_observations import (
-    ensure_artifact_observations,
-)
-from polylogue.storage.artifact_observations import (
+from polylogue.storage.artifact_persistence import ensure_artifact_observations
+from polylogue.storage.artifact_queries import (
     list_artifact_cohorts as list_durable_artifact_cohorts,
 )
-from polylogue.storage.artifact_observations import (
+from polylogue.storage.artifact_queries import (
     list_artifact_observations as list_durable_artifact_observations,
 )
 from polylogue.storage.backends.connection import open_connection

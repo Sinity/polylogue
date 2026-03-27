@@ -11,7 +11,7 @@ from polylogue.archive_product_summaries import (
     aggregate_week_session_summary_products,
     build_day_session_summary_records,
 )
-from polylogue.archive_product_support import date_from_iso, day_after
+from polylogue.archive_products import date_from_iso, day_after
 
 __all__ = [
     "aggregate_day_session_summary_products",
