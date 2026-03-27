@@ -60,7 +60,7 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
         "first_message_at",
         "last_message_at",
         "canonical_session_date",
-        "primary_work_kind",
+
         "repo_paths_json",
         "canonical_projects_json",
         "tags_json",
@@ -90,7 +90,7 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
         record.first_message_at,
         record.last_message_at,
         record.canonical_session_date,
-        record.primary_work_kind,
+
         _json_array_or_none(record.repo_paths),
         _json_array_or_none(record.canonical_projects),
         _json_array_or_none(record.tags),

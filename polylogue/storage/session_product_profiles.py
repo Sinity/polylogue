@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from datetime import UTC, datetime
 
 from polylogue.lib.phase_extraction import SessionPhase
@@ -91,7 +90,6 @@ def session_enrichment_payload(
     user_turns = user_turn_texts(analysis)
     assistant_turns = assistant_turn_texts(analysis)
     blockers_val = blocker_texts(analysis)
-    refined_work_kind = None  # primary_work_kind heuristic removed
     support_signals_val = enrichment_support_signals(profile, analysis)
     input_band_summary = {
         "user_turns": len(user_turns),
@@ -99,7 +97,6 @@ def session_enrichment_payload(
         "action_events": len(analysis.facts.action_events) if analysis is not None else 0,
         "touched_paths": len(profile.file_paths_touched),
         "canonical_projects": len(profile.canonical_projects),
-        "decisions": len(profile.decisions),
     }
     confidence = min(
         0.95,
@@ -117,7 +114,6 @@ def session_enrichment_payload(
         "intent_summary": intent_summary,
         "outcome_summary": outcome_summary,
         "blockers": list(blockers_val),
-        "refined_work_kind": refined_work_kind,
         "confidence": round(confidence, 3),
         "support_level": support_level(confidence, support_signals=support_signals_val),
         "support_signals": list(support_signals_val),
@@ -170,7 +166,6 @@ def profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
         "support_signals": list(signals),
         "engaged_duration_source": engaged_duration_source(profile),
         "project_inference_strength": project_inference_strength(profile),
-        "decision_signal_strength": decision_signal_strength(profile),
         "auto_tags": list(profile.auto_tags),
         "work_events": [event.to_dict() for event in profile.work_events],
         "phases": [
@@ -190,15 +185,6 @@ def profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
                 "evidence": list(phase.evidence),
             }
             for phase in profile.phases
-        ],
-        "decisions": [
-            {
-                "index": decision.index,
-                "summary": decision.summary,
-                "confidence": decision.confidence,
-                "context": decision.context,
-            }
-            for decision in profile.decisions
         ],
     }
 
@@ -228,7 +214,6 @@ def build_session_profile_record(
         title=profile.title,
         first_message_at=profile.first_message_at.isoformat() if profile.first_message_at else None,
         last_message_at=profile.last_message_at.isoformat() if profile.last_message_at else None,
-        primary_work_kind=None,
         repo_paths=profile.repo_paths,
         canonical_projects=profile.canonical_projects,
         tags=profile.tags,
@@ -363,17 +348,6 @@ def project_inference_strength(profile: SessionProfile) -> str:
     return "none"
 
 
-def decision_signal_strength(profile: SessionProfile) -> str:
-    if not profile.decisions:
-        return "none"
-    best_confidence = max(float(decision.confidence or 0.0) for decision in profile.decisions)
-    if best_confidence >= 0.8:
-        return "strong"
-    if best_confidence >= 0.6:
-        return "moderate"
-    return "weak"
-
-
 def profile_support_signals(profile: SessionProfile) -> tuple[str, ...]:
     signals: list[str] = []
     if profile.repo_paths:
@@ -386,8 +360,6 @@ def profile_support_signals(profile: SessionProfile) -> tuple[str, ...]:
         signals.append("work_events")
     if profile.phases:
         signals.append("phases")
-    if profile.decisions:
-        signals.append("decisions")
     if engaged_duration_source(profile) == "phase_sum":
         signals.append("phase_duration_sum")
     return tuple(signals)
@@ -491,8 +463,6 @@ def enrichment_support_signals(
         signals.append("canonical_projects")
     if profile.work_events:
         signals.append("heuristic_work_events")
-    if profile.decisions:
-        signals.append("decisions")
     if assistant_turn_texts(analysis):
         signals.append("assistant_outcome_text")
     return tuple(signals)
@@ -502,7 +472,6 @@ __all__ = [
     "assistant_turn_texts",
     "blocker_texts",
     "build_session_profile_record",
-    "decision_signal_strength",
     "dedupe_texts",
     "engaged_duration_source",
     "enrichment_support_signals",

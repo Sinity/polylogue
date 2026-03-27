@@ -139,7 +139,7 @@ def hydrate_work_event(record: SessionWorkEventRecord) -> WorkEvent:
 
 def phase_id(conversation_id: str, phase_index: int, phase: SessionPhase) -> str:
     seed = (
-        f"{conversation_id}:{phase_index}:phase:{phase.message_range[0]}:"
+        f"{conversation_id}:{phase_index}:{phase.message_range[0]}:"
         f"{phase.message_range[1]}:{phase.start_time.isoformat() if phase.start_time else ''}:"
         f"{phase.end_time.isoformat() if phase.end_time else ''}"
     )
