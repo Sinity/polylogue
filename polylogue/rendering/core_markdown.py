@@ -15,6 +15,14 @@ if TYPE_CHECKING:
     from polylogue.storage.state_views import ConversationRenderProjection
 
 
+def _has_structured_blocks(blocks: list[Any]) -> bool:
+    """Check if a block list contains typed blocks worth rendering structurally."""
+    return any(
+        isinstance(b, dict) and b.get("type") in ("thinking", "tool_use", "tool_result", "code")
+        for b in blocks
+    )
+
+
 def format_message_text(text: str) -> str:
     """Format message text, wrapping JSON-looking payloads in fenced blocks."""
     if not text:
@@ -64,8 +72,9 @@ def render_markdown_document(
         text = msg["text"] or ""
         timestamp = msg.get("timestamp")
         msg_atts = attachments_by_message.get(message_id, [])
+        content_blocks = msg.get("content_blocks")
 
-        if not text.strip() and not msg_atts:
+        if not text.strip() and not msg_atts and not content_blocks:
             continue
 
         lines.append(f"## {role}")
@@ -73,10 +82,18 @@ def render_markdown_document(
             lines.append(f"_Timestamp: {timestamp}_")
         lines.append("")
 
-        formatted_text = format_message_text(text)
-        if formatted_text:
-            lines.append(formatted_text)
-            lines.append("")
+        # Structure-preserving: if we have typed content blocks, render them
+        if content_blocks and _has_structured_blocks(content_blocks):
+            from polylogue.rendering.blocks import render_blocks_markdown
+            block_text = render_blocks_markdown(content_blocks)
+            if block_text:
+                lines.append(block_text)
+                lines.append("")
+        elif text:
+            formatted_text = format_message_text(text)
+            if formatted_text:
+                lines.append(formatted_text)
+                lines.append("")
 
         for att in msg_atts:
             append_attachment_markdown(att, lines, archive_root)
@@ -127,6 +144,7 @@ def _normalize_markdown_message(
     text: str | None,
     timestamp: Any,
     default_role: Role | str,
+    content_blocks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     normalized_role = role if isinstance(role, Role) else (Role.normalize(str(role)) if role else default_role)
     return {
@@ -134,6 +152,7 @@ def _normalize_markdown_message(
         "role": str(normalized_role),
         "text": text,
         "timestamp": _normalize_markdown_timestamp(timestamp),
+        "content_blocks": content_blocks,
     }
 
 
@@ -153,6 +172,13 @@ def format_conversation_markdown(conv: Conversation) -> str:
 
     for msg in conv.messages:
         message_id = str(msg.id)
+        # Carry content blocks through if the message has them
+        raw_blocks = None
+        if getattr(msg, "content_blocks", None):
+            raw_blocks = [
+                b.model_dump(mode="json") if hasattr(b, "model_dump") else b
+                for b in msg.content_blocks
+            ]
         normalized_messages.append(
             _normalize_markdown_message(
                 message_id=message_id,
@@ -160,6 +186,7 @@ def format_conversation_markdown(conv: Conversation) -> str:
                 text=msg.text,
                 timestamp=msg.timestamp,
                 default_role="message",
+                content_blocks=raw_blocks,
             )
         )
         if getattr(msg, "attachments", None):
