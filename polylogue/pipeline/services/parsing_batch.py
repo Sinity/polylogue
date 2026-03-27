@@ -1,8 +1,13 @@
+"""Batch processing of raw conversation records through the parse pipeline.
+
+Performance-critical: uses bulk_connection() for all writes to eliminate
+per-operation connection overhead, processes conversations sequentially
+(SQLite is single-writer), and defers session product refresh to a
+single post-batch pass.
+"""
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -30,9 +35,18 @@ async def process_raw_batch(
     result: ParseResult,
     progress_callback: ProgressCallback | None,
 ) -> None:
-    """Process a batch of raw conversation IDs."""
+    """Process a batch of raw conversation IDs.
+
+    Architecture:
+    1. Load raw records from DB (batched read)
+    2. Parse each record (CPU-bound, fast — ~36K msgs/s)
+    3. Write all conversations under bulk_connection() (sequential,
+       single transaction — eliminates per-connection overhead)
+    4. Refresh session products for changed conversations (batched)
+    """
     raw_records = await service.repository.get_raw_conversations_batch(batch_ids)
 
+    # Phase 1: Parse all records (fast, CPU-bound)
     work_items: list[tuple[ParsedConversation, str, str]] = []
     failed_raw_ids: dict[str, str] = {}
     payload_providers: dict[str, str | None] = {}
@@ -85,20 +99,14 @@ async def process_raw_batch(
 
     cache = await PrepareCache.load(backend, candidate_cids)
 
-    worker_count = min(os.cpu_count() or 4, 16)
-    queue: asyncio.Queue[tuple[ParsedConversation, str, str] | None] = asyncio.Queue(
-        maxsize=worker_count * 2
-    )
+    # Phase 2: Write all conversations under bulk_connection()
+    # Sequential writes: SQLite is single-writer, concurrent workers
+    # just add lock contention and async thread-crossing overhead.
     succeeded_raw_ids: set[str] = set()
-    tracking_lock = asyncio.Lock()
+    changed_conversation_ids: list[str] = []
 
-    async def _worker() -> None:
-        while True:
-            item = await queue.get()
-            if item is None:
-                queue.task_done()
-                return
-            convo_item, source_name_item, raw_id = item
+    async with backend.bulk_connection():
+        for convo_item, source_name_item, raw_id in work_items:
             try:
                 persisted = await prepare_records(
                     convo_item,
@@ -114,29 +122,44 @@ async def process_raw_batch(
                     persisted.counts,
                     persisted.content_changed,
                 )
-                async with tracking_lock:
-                    succeeded_raw_ids.add(raw_id)
+                succeeded_raw_ids.add(raw_id)
+                if persisted.content_changed:
+                    changed_conversation_ids.append(persisted.conversation_id)
             except Exception as exc:
                 logger.error("Error processing conversation: %s", exc)
                 result.parse_failures += 1
-                async with tracking_lock:
-                    failed_raw_ids[raw_id] = str(exc)[:500]
+                failed_raw_ids[raw_id] = str(exc)[:500]
             finally:
                 if progress_callback:
                     progress_callback(1)
-                queue.task_done()
 
-    workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
-
-    for item in work_items:
-        await queue.put(item)
     del work_items
 
-    await queue.join()
-    for _ in range(worker_count):
-        await queue.put(None)
-    await asyncio.gather(*workers)
+    # Phase 3: Refresh session products for changed conversations (post-batch)
+    # Uses the incremental per-conversation refresh, not the full rebuild.
+    # The full rebuild does DELETE + re-INSERT for ALL threads/tags/day-summaries
+    # which is O(total_conversations). Incremental refresh only touches the
+    # affected conversations.
+    if changed_conversation_ids:
+        try:
+            from polylogue.storage.session_product_refresh_updates import (
+                refresh_session_products_for_conversation_async,
+            )
 
+            async with backend.connection() as conn:
+                for cid in changed_conversation_ids:
+                    await refresh_session_products_for_conversation_async(
+                        conn,
+                        cid,
+                        transaction_depth=1,
+                    )
+                await conn.commit()
+        except Exception as exc:
+            logger.warning(
+                "Session product refresh failed (non-fatal): %s", exc,
+            )
+
+    # Phase 4: Update raw record states
     for rid in succeeded_raw_ids:
         if rid not in failed_raw_ids:
             await service.repository.update_raw_state(

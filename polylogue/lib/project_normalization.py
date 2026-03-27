@@ -45,6 +45,7 @@ def _repo_path_project_token(value: str) -> str | None:
     return token or None
 
 
+@lru_cache(maxsize=4096)
 def normalize_project_name(value: object) -> str | None:
     raw = str(value or "").strip()
     if not raw:
@@ -68,6 +69,7 @@ def normalize_project_name(value: object) -> str | None:
     return None
 
 
+@lru_cache(maxsize=4096)
 def normalize_repo_path(value: object) -> str | None:
     raw = str(value or "").strip()
     if not raw:
