@@ -316,8 +316,28 @@ def event_summary(event: WorkEvent) -> str:
 
 
 def primary_work_kind(profile: SessionProfile) -> str | None:
+    """Determine the primary work kind, weighted by event duration.
+
+    Uses duration_ms to weight each event. Falls back to count-based if
+    no events have duration data. This prevents 10 small debugging events
+    (2 min each) from outweighing 3 large implementation events (40 min each).
+    """
     if not profile.work_events:
         return None
+
+    # Try duration-weighted first
+    duration_by_kind: Counter[str] = Counter()
+    has_duration = False
+    for event in profile.work_events:
+        duration = event.duration_ms or 0
+        if duration > 0:
+            has_duration = True
+        duration_by_kind[event.kind.value] += duration
+
+    if has_duration and duration_by_kind.total() > 0:
+        return duration_by_kind.most_common(1)[0][0]
+
+    # Fall back to count-based if no duration data
     counts = Counter(event.kind.value for event in profile.work_events)
     return counts.most_common(1)[0][0]
 
