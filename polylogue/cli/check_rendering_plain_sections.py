@@ -12,9 +12,6 @@ from polylogue.cli.check_rendering_plain_health import (
     append_runtime_lines,
     build_health_lines,
 )
-from polylogue.cli.check_rendering_plain_semantics import (
-    append_roundtrip_lines,
-)
 from polylogue.cli.check_workflow import CheckCommandOptions, CheckCommandResult
 from polylogue.cli.types import AppEnv
 
@@ -31,7 +28,6 @@ def build_report_lines(
     append_artifact_proof_lines(lines, result)
     append_artifact_observation_lines(lines, result)
     append_runtime_lines(lines, result, plain=env.ui.plain)
-    append_roundtrip_lines(lines, result)
     return lines
 
 

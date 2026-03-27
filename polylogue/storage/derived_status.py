@@ -5,12 +5,12 @@ from __future__ import annotations
 import sqlite3
 
 from polylogue.maintenance_models import DerivedModelStatus
-from polylogue.storage.action_event_lifecycle import action_event_read_model_status_sync
+from polylogue.storage.action_event_status import action_event_read_model_status_sync
 from polylogue.storage.derived_status_products import build_archive_product_statuses
 from polylogue.storage.derived_status_retrieval import build_retrieval_statuses
 from polylogue.storage.embedding_stats import read_embedding_stats_sync
 from polylogue.storage.fts_lifecycle import fts_index_status_sync
-from polylogue.storage.session_product_lifecycle import session_product_status_sync
+from polylogue.storage.session_product_status import session_product_status_sync
 
 
 def collect_derived_model_statuses_sync(

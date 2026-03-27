@@ -7,7 +7,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
-from polylogue.storage.action_event_lifecycle import rebuild_action_event_read_model_async
+from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_async
 from polylogue.storage.fts_lifecycle import (
     ensure_fts_index_async,
     fts_index_status_async,

@@ -107,6 +107,18 @@ def generate_showcase_markdown(
     *,
     git_sha: str | None = None,
 ) -> str:
+    def _status_marker(result_entry) -> str:
+        if result_entry.skipped:
+            return "[SKIP]"
+        return "[PASS]" if result_entry.passed else "[FAIL]"
+
+    def _truncated_output(output: str, *, max_lines: int = 10) -> list[str]:
+        output_lines = output.rstrip().splitlines()
+        if len(output_lines) <= max_lines:
+            return output_lines
+        remaining = len(output_lines) - max_lines
+        return [*output_lines[:max_lines], f"... ({remaining} more lines)"]
+
     lines: list[str] = []
     lines.append("# Showcase QA Session")
     lines.append("")
@@ -147,14 +159,16 @@ def generate_showcase_markdown(
             lines.append(f"### {current_group}")
             lines.append("")
 
-        status = "SKIPPED" if result_entry.skipped else "PASS" if result_entry.passed else "FAIL"
         lines.append(
-            f"- `{status}` `{result_entry.exercise.name}`: {result_entry.exercise.description}"
+            f"- {_status_marker(result_entry)} `{result_entry.exercise.name}`: {result_entry.exercise.description}"
         )
         if result_entry.error:
             lines.append(f"  Error: {result_entry.error}")
         if result_entry.skip_reason:
             lines.append(f"  Reason: {result_entry.skip_reason}")
+        if result_entry.output and not result_entry.passed and not result_entry.skipped:
+            for output_line in _truncated_output(result_entry.output):
+                lines.append(f"  {output_line}")
     lines.append("")
     return "\n".join(lines)
 

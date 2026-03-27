@@ -589,6 +589,13 @@ def write_message_streaming(message: Message | MessageRecord, output_format: str
         sys.stdout.flush()
 
 
+def no_results(env: AppEnv, params: dict[str, Any], *, exit_code: int = 2) -> None:
+    """Delegate the no-results contract to the canonical query helper."""
+    from polylogue.cli.query import no_results as query_no_results
+
+    query_no_results(env, params, exit_code=exit_code)
+
+
 # ---------------------------------------------------------------------------
 # Main output dispatch (from original query_output.py)
 # ---------------------------------------------------------------------------

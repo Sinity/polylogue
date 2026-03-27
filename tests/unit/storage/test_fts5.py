@@ -165,10 +165,8 @@ def test_rebuild_index_with_empty_database(test_conn):
 
 def test_action_event_status_ignores_orphan_tool_sources(test_conn):
     """Action-event readiness should ignore orphaned tool-use blocks outside reachable conversations."""
-    from polylogue.storage.action_event_lifecycle import (
-        action_event_read_model_status_sync,
-        rebuild_action_event_read_model_sync,
-    )
+    from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
+    from polylogue.storage.action_event_status import action_event_read_model_status_sync
 
     conv = make_conversation("conv1", title="Action ready")
     msg = make_message(

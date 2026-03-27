@@ -35,12 +35,6 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[.
     click.option("--proof", "check_proof", is_flag=True, help="Run durable artifact support proof"),
     click.option("--artifacts", "check_artifacts", is_flag=True, help="List durable artifact observations"),
     click.option("--cohorts", "check_cohorts", is_flag=True, help="Summarize durable artifact cohorts"),
-    click.option(
-        "--roundtrip-proof",
-        "check_roundtrip_proof",
-        is_flag=True,
-        help="Run the synthetic schema-and-evidence roundtrip proof lane in an isolated workspace",
-    ),
     click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)"),
     click.option(
         "--artifact-provider",
@@ -67,19 +61,6 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[.
         default=0,
         show_default=True,
         help="Start offset for artifact proof/listing/cohorting",
-    ),
-    click.option(
-        "--roundtrip-provider",
-        "roundtrip_providers",
-        multiple=True,
-        help="Limit roundtrip proof to specific providers (repeatable)",
-    ),
-    click.option(
-        "--roundtrip-count",
-        type=int,
-        default=1,
-        show_default=True,
-        help="Synthetic artifacts per provider for roundtrip proof",
     ),
     click.option(
         "--schema-samples",
