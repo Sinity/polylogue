@@ -57,12 +57,6 @@ def build_qa_session_payload(
     if result.proof_error is not None:
         proof_payload["error"] = result.proof_error
 
-    semantic_proof_payload: dict[str, Any] = {"status": result.semantic_proof_status.value}
-    if result.semantic_proof_report is not None:
-        semantic_proof_payload["report"] = result.semantic_proof_report.to_dict()
-    if result.semantic_proof_error is not None:
-        semantic_proof_payload["error"] = result.semantic_proof_error
-
     roundtrip_proof_payload: dict[str, Any] = {"status": result.roundtrip_proof_status.value}
     if result.roundtrip_proof_report is not None:
         roundtrip_proof_payload["report"] = result.roundtrip_proof_report.to_dict()
@@ -82,7 +76,6 @@ def build_qa_session_payload(
         "timestamp": timestamp,
         "audit": audit_payload,
         "proof": proof_payload,
-        "semantic_proof": semantic_proof_payload,
         "roundtrip_proof": roundtrip_proof_payload,
         "showcase": showcase_payload,
         "invariants": {

@@ -41,20 +41,6 @@ def populate_proof(result: QAResult, *, workspace_env: dict[str, str] | None) ->
         result.proof_error = str(exc)
 
 
-def populate_semantic_proof(result: QAResult, *, workspace_env: dict[str, str] | None) -> None:
-    """Populate the semantic proof stage against the active archive."""
-    from polylogue.rendering.semantic_proof import prove_semantic_surface_suite
-
-    try:
-        if workspace_env:
-            with override_workspace_env(workspace_env):
-                result.semantic_proof_report = prove_semantic_surface_suite()
-        else:
-            result.semantic_proof_report = prove_semantic_surface_suite()
-    except Exception as exc:
-        result.semantic_proof_error = str(exc)
-
-
 def populate_roundtrip_proof(result: QAResult, *, provider: str | None) -> None:
     """Populate the synthetic schema/evidence roundtrip proof stage."""
     from polylogue.schemas.roundtrip_proof import prove_schema_evidence_roundtrip_suite
@@ -72,5 +58,4 @@ __all__ = [
     "generate_extra_exercises",
     "populate_proof",
     "populate_roundtrip_proof",
-    "populate_semantic_proof",
 ]

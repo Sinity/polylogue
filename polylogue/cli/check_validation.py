@@ -43,14 +43,6 @@ def validate_check_options(
         options.check_proof or options.check_artifacts or options.check_cohorts
     ):
         fail("check", "--artifact-offset requires --proof, --artifacts, or --cohorts")
-    if options.semantic_providers and not options.check_semantic_proof:
-        fail("check", "--semantic-provider requires --semantic-proof")
-    if options.semantic_surfaces and not (options.check_semantic_proof or options.check_semantic_contracts):
-        fail("check", "--semantic-surface requires --semantic-proof or --semantic-contracts")
-    if options.semantic_limit is not None and not options.check_semantic_proof:
-        fail("check", "--semantic-limit requires --semantic-proof")
-    if options.semantic_offset != 0 and not options.check_semantic_proof:
-        fail("check", "--semantic-offset requires --semantic-proof")
     if options.schema_record_limit is not None and options.schema_record_limit <= 0:
         fail("check", "--schema-record-limit must be a positive integer")
     if options.schema_record_offset < 0:
@@ -59,10 +51,6 @@ def validate_check_options(
         fail("check", "--artifact-limit must be a positive integer")
     if options.artifact_offset < 0:
         fail("check", "--artifact-offset must be >= 0")
-    if options.semantic_limit is not None and options.semantic_limit <= 0:
-        fail("check", "--semantic-limit must be a positive integer")
-    if options.semantic_offset < 0:
-        fail("check", "--semantic-offset must be >= 0")
     if options.roundtrip_providers and not options.check_roundtrip_proof:
         fail("check", "--roundtrip-provider requires --roundtrip-proof")
     if options.roundtrip_count <= 0:
