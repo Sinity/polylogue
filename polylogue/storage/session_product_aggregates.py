@@ -6,11 +6,9 @@ import sqlite3
 
 import aiosqlite
 
-from polylogue.archive_product_builders import (
-    build_day_session_summary_records,
-    build_session_tag_rollup_records,
-    date_from_iso,
-)
+from polylogue.archive_product_rollups import build_session_tag_rollup_records
+from polylogue.archive_product_summaries import build_day_session_summary_records
+from polylogue.archive_products import date_from_iso
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
 from polylogue.storage.session_product_profiles import hydrate_session_profile
 from polylogue.storage.session_product_storage import (

@@ -203,8 +203,13 @@ async def test_async_execute_query_errors_for_similar_without_embeddings() -> No
 
 @pytest.mark.asyncio
 async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
-    from polylogue.cli.query import async_execute_query
-    from polylogue.cli.query import QueryAction, QueryExecutionPlan, QueryMutationSpec, QueryOutputSpec
+    from polylogue.cli.query import (
+        QueryAction,
+        QueryExecutionPlan,
+        QueryMutationSpec,
+        QueryOutputSpec,
+        async_execute_query,
+    )
     from polylogue.lib.query_spec import QuerySpecError
 
     env = _make_env(repo=MagicMock(), config=MagicMock())

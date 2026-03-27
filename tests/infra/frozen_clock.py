@@ -6,10 +6,9 @@ controlled values, advancing by a fixed delta on each call.
 
 from __future__ import annotations
 
-import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Iterator
 from unittest.mock import patch
 
 

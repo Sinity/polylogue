@@ -8,8 +8,6 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-import pytest
-
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import (
     Conversation,
@@ -21,7 +19,6 @@ from polylogue.rendering.renderers.html import (
     _attach_branches,
     render_conversation_html,
 )
-
 
 # =============================================================================
 # Branch rendering helpers (from test_branch_rendering.py)

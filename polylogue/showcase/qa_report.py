@@ -9,7 +9,7 @@ from polylogue.showcase.qa_summary import generate_qa_summary
 
 def generate_qa_session(result):
     """Generate a structured full QA session record."""
-    from polylogue.showcase.showcase_report import generate_showcase_session
+    from polylogue.showcase.showcase_report_payloads import generate_showcase_session
 
     showcase_session = (
         generate_showcase_session(result.showcase_result)

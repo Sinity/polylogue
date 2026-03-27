@@ -15,7 +15,6 @@ from hypothesis import strategies as st
 
 from polylogue.sources.drive_source import (
     DriveSourceClient,
-    _build_drive_file,
     _build_folder_lookup_query,
     _is_supported_drive_payload,
     _looks_like_id,
@@ -32,7 +31,6 @@ from polylogue.sources.drive_types import (
 from tests.infra.drive_mocks import (
     FakeDriveServiceGateway,
     MockDriveService,
-    MockMediaIoBaseDownload,
     mock_drive_file,
 )
 from tests.infra.strategies import json_document_strategy

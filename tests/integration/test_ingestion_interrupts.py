@@ -240,8 +240,8 @@ def test_concurrent_pipeline_runs_serialized(tmp_path):
         raise
 
     # Verify both completed successfully
-    assert p1.returncode == 0, f"Pipeline 1 failed"
-    assert p2.returncode == 0, f"Pipeline 2 failed"
+    assert p1.returncode == 0, "Pipeline 1 failed"
+    assert p2.returncode == 0, "Pipeline 2 failed"
 
     # Verify each wrote to its own DB correctly
     db1 = workspace1["paths"]["db_path"]

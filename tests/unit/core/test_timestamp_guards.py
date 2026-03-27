@@ -15,14 +15,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-from hypothesis import given, example
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from polylogue.lib.dates import parse_date
 from polylogue.lib.timestamps import format_timestamp, parse_timestamp
 from polylogue.schemas.schema_inference import _is_safe_enum_value
 from tests.infra.tables import FORMAT_TIMESTAMP_TABLE, PARSE_TIMESTAMP_FORMAT_TABLE
-
 
 # =============================================================================
 # Property: parse_timestamp never crashes on any input

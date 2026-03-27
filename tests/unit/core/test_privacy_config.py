@@ -5,8 +5,6 @@ value allow/deny patterns, and TOML config loading.
 """
 from __future__ import annotations
 
-import pytest
-
 from polylogue.schemas.privacy_config import PrivacyConfig, load_privacy_config
 
 
