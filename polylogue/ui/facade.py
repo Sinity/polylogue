@@ -1,40 +1,47 @@
-"""Terminal UI facade.
-
-Polylogue ships with a small UI layer. Interactive mode relies entirely on the
-bundled Python stack (questionary + Rich) so it works anywhere without external
-CLI binaries, while plain mode falls back to basic stdout prompting.
-"""
+"""Terminal UI facade."""
 
 from __future__ import annotations
 
-import difflib
-import json
-import os
-import sys
-from collections import deque
 from collections.abc import Iterable
-from contextlib import suppress
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Protocol, runtime_checkable
 
 import questionary
-from pygments import highlight
-from pygments.formatters import TerminalFormatter
-from pygments.lexers import get_lexer_by_name
 from rich import box
-from rich.align import Align
 from rich.console import Console
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.syntax import Syntax
-from rich.text import Text
 from rich.theme import Theme
 
 from polylogue.errors import PolylogueError
+from polylogue.ui.facade_console import ConsoleLike, PlainConsole
+from polylogue.ui.facade_prompts import (
+    _NO_STUB_RESPONSE,
+    consume_choose_stub,
+    consume_confirm_stub,
+    consume_input_stub,
+    load_prompt_responses,
+    pop_prompt_response,
+    require_plain_prompt_tty,
+)
+from polylogue.ui.facade_rendering import (
+    render_banner as _render_banner,
+)
+from polylogue.ui.facade_rendering import (
+    render_code as _render_code,
+)
+from polylogue.ui.facade_rendering import (
+    render_diff as _render_diff,
+)
+from polylogue.ui.facade_rendering import (
+    render_markdown as _render_markdown,
+)
+from polylogue.ui.facade_rendering import (
+    render_status as _render_status,
+)
+from polylogue.ui.facade_rendering import (
+    render_summary as _render_summary,
+)
 from polylogue.ui.theme import rich_theme_styles
 
-_NO_STUB_RESPONSE = object()
+__all__ = ["ConsoleFacade", "ConsoleLike", "PlainConsole", "UIError", "create_console_facade"]
 
 
 class UIError(PolylogueError):
@@ -45,197 +52,50 @@ class UIError(PolylogueError):
         self.prompt_topic = prompt_topic
 
 
-@runtime_checkable
-class ConsoleLike(Protocol):
-    def print(self, *objects: object, **kwargs: object) -> None: ...
-
-
-class PlainConsole:
-    """Minimal Console shim for non-interactive mode."""
-
-    def __init__(self, *_: object, **__: object) -> None:
-        pass
-
-    def print(self, *objects: object, **_: object) -> None:
-        import io
-
-        from rich.console import Console as RichConsole
-        from rich.table import Table
-
-        parts = []
-        for obj in objects:
-            if isinstance(obj, Table):
-                # Render Rich tables to plain text via an in-memory console
-                buf = io.StringIO()
-                tmp = RichConsole(file=buf, highlight=False, no_color=True)
-                tmp.print(obj)
-                parts.append(buf.getvalue().rstrip())
-            else:
-                raw = str(obj)
-                # Strip Rich markup (e.g. [bold], [green], [/#d97757]) for plain output
-                with suppress(Exception):
-                    raw = Text.from_markup(raw).plain
-                parts.append(raw)
-        print(" ".join(parts))
-
-
 @dataclass
 class ConsoleFacade:
-    """Pure Python facade for terminal UI - no external binaries required."""
+    """Pure Python facade for terminal UI."""
 
     plain: bool
     console: Console | PlainConsole = field(init=False)
-
     theme: Theme = field(init=False, repr=False)
-    _prompt_responses: deque[dict[str, object]] = field(init=False, repr=False)
+    _prompt_responses: object = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.theme = Theme(rich_theme_styles())
         if self.plain:
             self.console = PlainConsole()
         else:
-            self.console = Console(
-                no_color=False, force_terminal=True, theme=self.theme
-            )
+            self.console = Console(no_color=False, force_terminal=True, theme=self.theme)
         self._panel_box = box.ROUNDED
         self._banner_box = box.DOUBLE
-        self._prompt_responses = self._load_prompt_responses()
+        self._prompt_responses = load_prompt_responses(UIError)
 
-    def _load_prompt_responses(self) -> deque[dict[str, object]]:
-        prompt_file = os.environ.get("POLYLOGUE_TEST_PROMPT_FILE")
-        if not prompt_file:
-            return deque()
-        entries: deque[dict[str, object]] = deque()
-        for line in Path(prompt_file).read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                if isinstance(data, dict):
-                    entries.append(data)
-            except json.JSONDecodeError as exc:
-                raise UIError(f"Invalid prompt stub entry: {line}") from exc
-        return entries
+    def _load_prompt_responses(self):
+        return load_prompt_responses(UIError)
 
-    def _pop_prompt_response(self, kind: str) -> dict[str, object] | None:
-        if not self._prompt_responses:
-            return None
-        entry = self._prompt_responses.popleft()
-        expected = entry.get("type")
-        if expected and expected != kind:
-            raise UIError(f"Prompt stub expected '{expected}' but got '{kind}'")
-        return entry
+    def _pop_prompt_response(self, kind: str):
+        return pop_prompt_response(self._prompt_responses, kind, UIError)
 
     def _require_plain_prompt_tty(self, prompt_topic: str) -> None:
-        if not sys.stdin.isatty():
-            raise UIError(
-                f"Plain mode cannot prompt for {prompt_topic}",
-                prompt_topic=prompt_topic,
-            )
+        require_plain_prompt_tty(prompt_topic, UIError)
 
-    def _consume_confirm_stub(self, *, default: bool) -> bool | object:
-        response = self._pop_prompt_response("confirm")
-        if response is None:
-            return _NO_STUB_RESPONSE
-        if response.get("use_default"):
-            return default
-        value = response.get("value")
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            lowered = value.lower()
-            if lowered in {"y", "yes", "true", "1"}:
-                return True
-            if lowered in {"n", "no", "false", "0"}:
-                return False
-        return _NO_STUB_RESPONSE
+    def _consume_confirm_stub(self, *, default: bool):
+        return consume_confirm_stub(self._prompt_responses, default=default, ui_error_cls=UIError)
 
-    def _consume_choose_stub(self, options: list[str]) -> str | None | object:
-        response = self._pop_prompt_response("choose")
-        if response is None:
-            return _NO_STUB_RESPONSE
-        if response.get("use_default"):
-            return options[0] if options else None
-        if "value" in response:
-            value = response["value"]
-            if isinstance(value, str) and value in options:
-                return value
-        if "index" in response:
-            try:
-                index_val = response["index"]
-                idx: int | None = None
-                if isinstance(index_val, int):
-                    idx = index_val
-                elif isinstance(index_val, str):
-                    idx = int(index_val)
-                if idx is not None and 0 <= idx < len(options):
-                    return options[idx]
-            except (KeyError, ValueError, TypeError):
-                pass
-        return _NO_STUB_RESPONSE
+    def _consume_choose_stub(self, options: list[str]):
+        return consume_choose_stub(self._prompt_responses, options, UIError)
 
-    def _consume_input_stub(self, *, default: str | None) -> str | None | object:
-        response = self._pop_prompt_response("input")
-        if response is None:
-            return _NO_STUB_RESPONSE
-        if response.get("use_default"):
-            return default
-        if "value" in response:
-            value = response["value"]
-            return None if value is None else str(value)
-        return _NO_STUB_RESPONSE
+    def _consume_input_stub(self, *, default: str | None):
+        return consume_input_stub(self._prompt_responses, default=default, ui_error_cls=UIError)
 
     def banner(self, title: str, subtitle: str | None = None) -> None:
-        """Display a banner message."""
-        if self.plain:
-            self.console.print(f"== {title} ==")
-            if subtitle:
-                self.console.print(subtitle)
-            return
-
-        title_text = Text(style="banner.title")
-        title_text.append("◈ ", style="banner.icon")
-        title_text.append(title)
-        if subtitle:
-            title_text.append(f"\n{subtitle}", style="banner.subtitle")
-        panel = Panel(
-            Align.left(title_text),
-            border_style="banner.border",
-            box=self._banner_box,
-            padding=(1, 3),
-        )
-        self.console.print(panel)
+        _render_banner(self.console, plain=self.plain, banner_box=self._banner_box, title=title, subtitle=subtitle)
 
     def summary(self, title: str, lines: Iterable[str]) -> None:
-        """Display a summary panel."""
-        lines_list = list(lines)
-        text = "\n".join(lines_list)
-        if self.plain:
-            self.console.print(f"-- {title} --")
-            if text:
-                self.console.print(text)
-            return
-
-        summary_text = Text()
-        for line in lines_list:
-            summary_text.append("• ", style="summary.bullet")
-            # Parse markup in line content (e.g., [green]✓[/green])
-            parsed = Text.from_markup(line, style="summary.text")
-            summary_text.append_text(parsed)
-            summary_text.append("\n")
-        panel = Panel(
-            summary_text if summary_text.plain else Text(text, style="summary.text"),
-            title=f"  {title}  ",
-            title_align="left",
-            border_style="panel.border",
-            box=self._panel_box,
-            padding=(1, 2),
-        )
-        self.console.print(panel)
+        _render_summary(self.console, plain=self.plain, panel_box=self._panel_box, title=title, lines=list(lines))
 
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
-        """Ask for confirmation."""
         stub_result = self._consume_confirm_stub(default=default)
         if stub_result is not _NO_STUB_RESPONSE:
             return bool(stub_result)
@@ -252,7 +112,6 @@ class ConsoleFacade:
         return default if result is None else result
 
     def choose(self, prompt: str, options: list[str]) -> str | None:
-        """Choose from a list of options."""
         if not options:
             return None
         stub_result = self._consume_choose_stub(options)
@@ -275,15 +134,12 @@ class ConsoleFacade:
                         return options[selected - 1]
                 self.console.print("Enter a number corresponding to your choice.")
         if len(options) > 12:
-            result: str | None = questionary.autocomplete(
-                prompt, choices=options, match_middle=True
-            ).ask()
+            result: str | None = questionary.autocomplete(prompt, choices=options, match_middle=True).ask()
         else:
             result = questionary.select(prompt, choices=options).ask()
         return result
 
     def input(self, prompt: str, *, default: str | None = None) -> str | None:
-        """Get text input from user."""
         stub_result = self._consume_input_stub(default=default)
         if stub_result is not _NO_STUB_RESPONSE:
             return stub_result
@@ -299,98 +155,32 @@ class ConsoleFacade:
         return result if result else default
 
     def render_markdown(self, content: str) -> None:
-        """Render Markdown content."""
-        if self.plain:
-            self.console.print(content)
-            return
-
-        md = Markdown(content, style="summary.text")
-        panel = Panel(
-            md,
-            border_style="markdown.border",
-            box=self._panel_box,
-            padding=(1, 2),
-        )
-        self.console.print(panel)
+        _render_markdown(self.console, plain=self.plain, panel_box=self._panel_box, content=content)
 
     def render_code(self, code: str, language: str = "python") -> None:
-        """Render syntax-highlighted code."""
-        if self.plain:
-            self.console.print(code)
-            return
-
-        syntax = Syntax(code, language, theme="monokai", line_numbers=True)
-        panel = Panel(
-            syntax,
-            border_style="code.border",
-            box=self._panel_box,
-            padding=(0, 1),
-        )
-        self.console.print(panel)
+        _render_code(self.console, plain=self.plain, panel_box=self._panel_box, code=code, language=language)
 
     def render_diff(self, old_text: str, new_text: str, filename: str = "file") -> None:
-        """Render a diff between two texts."""
-        old_lines = old_text.splitlines(keepends=True)
-        new_lines = new_text.splitlines(keepends=True)
-
-        diff = difflib.unified_diff(
-            old_lines,
-            new_lines,
-            fromfile=f"a/{filename}",
-            tofile=f"b/{filename}",
-            lineterm="",
-        )
-
-        diff_text = "".join(diff)
-
-        if self.plain:
-            self.console.print(diff_text)
-            return
-
-        try:
-            if isinstance(self.console, Console):
-                with self.console.pager():
-                    lexer = get_lexer_by_name("diff")
-                    highlighted = highlight(diff_text, lexer, TerminalFormatter())
-                    self.console.print(highlighted, markup=False, highlight=False)
-            else:
-                self.console.print(diff_text)
-        except (ImportError, AttributeError):
-            # Pygments not available or lexer not found - fall back to basic syntax
-            if isinstance(self.console, Console):
-                syntax = Syntax(diff_text, "diff", theme="ansi_dark")
-                self.console.print(syntax)
-            else:
-                self.console.print(diff_text)
+        _render_diff(self.console, plain=self.plain, filename=filename, old_text=old_text, new_text=new_text)
 
     def error(self, message: str) -> None:
-        """Display an error message."""
         self._status("✗", "status.icon.error", message)
 
     def warning(self, message: str) -> None:
-        """Display a warning message."""
         self._status("!", "status.icon.warning", message)
 
     def success(self, message: str) -> None:
-        """Display a success message."""
         self._status("✓", "status.icon.success", message)
 
     def info(self, message: str) -> None:
-        """Display an info message."""
         if self.plain:
             self.console.print(message)
             return
         self._status("ℹ", "status.icon.info", message)
 
     def _status(self, icon: str, icon_style: str, message: str) -> None:
-        if self.plain:
-            prefix = icon if icon in {"✓", "✗"} else icon.upper()
-            self.console.print(f"{prefix} {message}")
-            return
-        text = Text()
-        text.append(f"{icon} ", style=icon_style)
-        text.append(message, style="status.message")
-        self.console.print(text)
+        _render_status(self.console, plain=self.plain, icon=icon, icon_style=icon_style, message=message)
+
 
 def create_console_facade(plain: bool) -> ConsoleFacade:
     """Create a console facade."""

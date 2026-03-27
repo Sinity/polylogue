@@ -19,7 +19,16 @@ from pathlib import Path
 import aiosqlite
 
 from polylogue.storage.backends.async_sqlite_archive import SQLiteArchiveMixin
-from polylogue.storage.backends.async_sqlite_derived import SQLiteDerivedMixin
+from polylogue.storage.backends.async_sqlite_derived_actions import (
+    SQLiteDerivedActionsMixin,
+)
+from polylogue.storage.backends.async_sqlite_derived_maintenance import (
+    SQLiteDerivedMaintenanceMixin,
+)
+from polylogue.storage.backends.async_sqlite_derived_products import (
+    SQLiteDerivedProductsMixin,
+)
+from polylogue.storage.backends.async_sqlite_derived_stats import SQLiteDerivedStatsMixin
 from polylogue.storage.backends.async_sqlite_raw import SQLiteRawMixin
 from polylogue.storage.backends.async_sqlite_schema import ensure_schema
 from polylogue.storage.backends.async_sqlite_support import (
@@ -30,7 +39,14 @@ from polylogue.storage.backends.connection import DB_TIMEOUT
 from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 
-class SQLiteBackend(SQLiteArchiveMixin, SQLiteDerivedMixin, SQLiteRawMixin):
+class SQLiteBackend(
+    SQLiteArchiveMixin,
+    SQLiteDerivedActionsMixin,
+    SQLiteDerivedProductsMixin,
+    SQLiteDerivedMaintenanceMixin,
+    SQLiteDerivedStatsMixin,
+    SQLiteRawMixin,
+):
     """Async SQLite storage backend implementation.
 
     This backend provides async/await API for database operations, enabling

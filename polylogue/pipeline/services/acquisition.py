@@ -1,29 +1,18 @@
-"""Async acquisition service for pipeline operations.
-
-The acquire stage reads source files and stores raw bytes to raw_conversations.
-It does NOT parse - that's the parse stage's job.
-
-Data flow:
-    [Source Files] → ACQUIRE → [raw_conversations]
-"""
+"""Async acquisition service for pipeline operations."""
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-from collections.abc import AsyncIterator, Awaitable, Callable
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from polylogue.lib.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
+from polylogue.pipeline.services.acquisition_persistence import persist_raw_record
+from polylogue.pipeline.services.acquisition_records import ScanResult
+from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stream
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.protocols import ProgressCallback
-from polylogue.sources.parsers.base import RawConversationData
 from polylogue.sources.source_acquisition import iter_source_raw_data
-from polylogue.storage.artifact_observations import inspect_raw_artifact
-from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
+from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
@@ -32,18 +21,7 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-__all__ = ["AcquisitionService", "AcquireResult"]
-
-
-class ScanResult:
-    """Result of scanning raw payloads from sources without persisting them."""
-
-    def __init__(self) -> None:
-        self.counts: dict[str, int] = {
-            "scanned": 0,
-            "errors": 0,
-        }
-        self.cursors: dict[str, dict[str, object]] = {}
+__all__ = ["AcquisitionService", "AcquireResult", "iter_source_raw_data"]
 
 
 class AcquisitionService:
@@ -75,24 +53,7 @@ class AcquisitionService:
         *,
         result: AcquireResult,
     ) -> None:
-        """Persist one raw record and update acquisition counters."""
-        try:
-            observation = inspect_raw_artifact(record)
-            inserted = await self.repository.save_raw_conversation(record)
-            await self.repository.save_artifact_observation(observation)
-            if inserted:
-                result.acquired += 1
-                result.raw_ids.append(record.raw_id)
-            else:
-                result.skipped += 1
-        except Exception as exc:
-            logger.error(
-                "Failed to store raw conversation",
-                source=record.source_name,
-                path=record.source_path,
-                error=str(exc),
-            )
-            result.errors += 1
+        await persist_raw_record(self.repository, record, result=result)
 
     async def visit_sources(
         self,
@@ -117,7 +78,7 @@ class AcquisitionService:
             logger.debug("Scanning source", source=source.name)
             cursor_state: dict[str, object] = {}
             try:
-                async for record in self._iter_raw_record_stream(
+                async for record in iter_raw_record_stream(
                     source,
                     known_mtimes=known_mtimes,
                     ui=ui,
@@ -186,151 +147,3 @@ class AcquisitionService:
             result.errors += visit_result.counts["errors"]
 
         return result
-
-    async def _iter_source_raw_stream(
-        self,
-        source: Source,
-        *,
-        known_mtimes: dict[str, str] | None = None,
-    ) -> AsyncIterator[RawConversationData]:
-        """Stream raw source payloads without materializing the full iterator.
-
-        Args:
-            source: Source to iterate
-            known_mtimes: Optional {source_path: file_mtime} for skipping unchanged files
-
-        Yields:
-            RawConversationData entries
-        """
-        iterator = iter_source_raw_data(source, known_mtimes=known_mtimes)
-        sentinel = object()
-        batch_size = 128
-
-        def _next_batch() -> list[RawConversationData]:
-            batch: list[RawConversationData] = []
-            for _ in range(batch_size):
-                item = next(iterator, sentinel)
-                if item is sentinel:
-                    break
-                batch.append(item)
-            return batch
-
-        loop = asyncio.get_running_loop()
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            while True:
-                batch = await loop.run_in_executor(executor, _next_batch)
-                if not batch:
-                    break
-                for item in batch:
-                    yield item
-
-    async def _iter_drive_raw_stream(
-        self,
-        source: Source,
-        *,
-        known_mtimes: dict[str, str] | None = None,
-        ui: object | None = None,
-        cursor_state: dict[str, object] | None = None,
-        drive_config: DriveConfig | None = None,
-    ) -> AsyncIterator[RawConversationData]:
-        """Stream Drive payloads as raw records without touching the local cache."""
-        from polylogue.sources.drive import iter_drive_raw_data
-
-        sentinel = object()
-        batch_size = 32
-        iterator = iter_drive_raw_data(
-            source=source,
-            ui=ui,
-            cursor_state=cursor_state,
-            drive_config=drive_config,
-            known_mtimes=known_mtimes,
-        )
-
-        def _next_batch() -> list[RawConversationData]:
-            batch: list[RawConversationData] = []
-            for _ in range(batch_size):
-                item = next(iterator, sentinel)
-                if item is sentinel:
-                    break
-                batch.append(item)
-            return batch
-
-        loop = asyncio.get_running_loop()
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            while True:
-                batch = await loop.run_in_executor(executor, _next_batch)
-                if not batch:
-                    break
-                for item in batch:
-                    yield item
-
-    async def _iter_raw_record_stream(
-        self,
-        source: Source,
-        *,
-        known_mtimes: dict[str, str] | None = None,
-        ui: object | None = None,
-        cursor_state: dict[str, object] | None = None,
-        drive_config: DriveConfig | None = None,
-    ) -> AsyncIterator[RawConversationRecord]:
-        """Yield prepared RawConversationRecord values for a source."""
-        raw_stream: AsyncIterator[RawConversationData]
-        if source.is_drive:
-            raw_stream = self._iter_drive_raw_stream(
-                source,
-                known_mtimes=known_mtimes,
-                ui=ui,
-                cursor_state=cursor_state,
-                drive_config=drive_config,
-            )
-        else:
-            raw_stream = self._iter_source_raw_stream(
-                source,
-                known_mtimes=known_mtimes,
-            )
-
-        async for raw_data in raw_stream:
-            try:
-                yield self._make_raw_record(raw_data, source.name)
-            except ValueError as exc:
-                logger.warning(
-                    "Skipping raw payload",
-                    source=source.name,
-                    path=raw_data.source_path,
-                    error=str(exc),
-                )
-
-    def _make_raw_record(self, raw_data: RawConversationData, source_name: str) -> RawConversationRecord:
-        """Prepare a raw conversation record from scanned payload bytes.
-
-        Args:
-            raw_data: Raw conversation data to store
-            source_name: Config source name (e.g., "inbox"), stored separately
-
-        Returns:
-            RawConversationRecord ready for persistence
-        """
-        size = len(raw_data.raw_bytes)
-        if size > MAX_RAW_CONTENT_SIZE:
-            raise ValueError(
-                f"Oversized source file at {raw_data.source_path} "
-                f"({size} bytes > {MAX_RAW_CONTENT_SIZE} max)"
-            )
-
-        raw_id = hashlib.sha256(raw_data.raw_bytes).hexdigest()
-        acquired_at = datetime.now(timezone.utc).isoformat()
-        provider_name = canonical_acquisition_provider(
-            str(raw_data.provider_hint) if raw_data.provider_hint is not None else None,
-            source_name=source_name,
-        )
-
-        return RawConversationRecord(
-            raw_id=raw_id,
-            provider_name=provider_name,
-            source_name=source_name,  # Config source name, distinct from provider
-            source_path=raw_data.source_path,
-            source_index=raw_data.source_index,
-            raw_content=raw_data.raw_bytes,
-            acquired_at=acquired_at,
-            file_mtime=raw_data.file_mtime,
-        )

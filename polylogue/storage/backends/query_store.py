@@ -9,12 +9,34 @@ import aiosqlite
 
 from polylogue.storage.backends.query_store_archive import SQLiteQueryStoreArchiveMixin
 from polylogue.storage.backends.query_store_maintenance import SQLiteQueryStoreMaintenanceMixin
-from polylogue.storage.backends.query_store_products import SQLiteQueryStoreProductsMixin
+from polylogue.storage.backends.query_store_product_actions import (
+    SQLiteQueryStoreProductActionsMixin,
+)
+from polylogue.storage.backends.query_store_product_profiles import (
+    SQLiteQueryStoreProductProfilesMixin,
+)
+from polylogue.storage.backends.query_store_product_status import (
+    SQLiteQueryStoreProductStatusMixin,
+)
+from polylogue.storage.backends.query_store_product_summaries import (
+    SQLiteQueryStoreProductSummariesMixin,
+)
+from polylogue.storage.backends.query_store_product_threads import (
+    SQLiteQueryStoreProductThreadsMixin,
+)
+from polylogue.storage.backends.query_store_product_timelines import (
+    SQLiteQueryStoreProductTimelinesMixin,
+)
 
 
 class SQLiteQueryStore(
     SQLiteQueryStoreArchiveMixin,
-    SQLiteQueryStoreProductsMixin,
+    SQLiteQueryStoreProductActionsMixin,
+    SQLiteQueryStoreProductStatusMixin,
+    SQLiteQueryStoreProductProfilesMixin,
+    SQLiteQueryStoreProductTimelinesMixin,
+    SQLiteQueryStoreProductThreadsMixin,
+    SQLiteQueryStoreProductSummariesMixin,
     SQLiteQueryStoreMaintenanceMixin,
 ):
     """Canonical low-level read/query API for SQLite archive state."""
