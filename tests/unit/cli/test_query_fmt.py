@@ -24,7 +24,7 @@ import pytest
 import yaml
 from rich.console import Console
 
-from polylogue.cli.query_helpers import describe_query_filters
+from polylogue.cli.query import describe_query_filters
 from polylogue.cli.query_output import (
     _format_list,
     _output_stats_by,
