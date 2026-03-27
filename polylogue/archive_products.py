@@ -10,7 +10,6 @@ from polylogue.archive_product_base import (
 from polylogue.archive_product_entities import (
     ArchiveDebtProduct,
     DaySessionSummaryProduct,
-    MaintenanceRunProduct,
     ProviderAnalyticsProduct,
     SessionEnrichmentProduct,
     SessionPhaseProduct,
@@ -21,7 +20,6 @@ from polylogue.archive_product_entities import (
     WorkThreadProduct,
 )
 from polylogue.archive_product_payloads import (
-    ArchiveDebtTargetLineage,
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
@@ -33,7 +31,6 @@ from polylogue.archive_product_payloads import (
 from polylogue.archive_product_queries import (
     ArchiveDebtProductQuery,
     DaySessionSummaryProductQuery,
-    MaintenanceRunProductQuery,
     ProviderAnalyticsProductQuery,
     SessionEnrichmentProductQuery,
     SessionPhaseProductQuery,
@@ -48,15 +45,12 @@ __all__ = [
     "ARCHIVE_PRODUCT_CONTRACT_VERSION",
     "ArchiveDebtProduct",
     "ArchiveDebtProductQuery",
-    "ArchiveDebtTargetLineage",
     "ArchiveEnrichmentProvenance",
     "ArchiveInferenceProvenance",
     "ArchiveProductModel",
     "ArchiveProductProvenance",
     "DaySessionSummaryProduct",
     "DaySessionSummaryProductQuery",
-    "MaintenanceRunProduct",
-    "MaintenanceRunProductQuery",
     "ProviderAnalyticsProduct",
     "ProviderAnalyticsProductQuery",
     "SessionEnrichmentPayload",

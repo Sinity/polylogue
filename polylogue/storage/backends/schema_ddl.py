@@ -18,9 +18,6 @@ from polylogue.storage.backends.schema_ddl_aux import (
     ARTIFACT_OBSERVATION_DDL as _ARTIFACT_OBSERVATION_DDL,
 )
 from polylogue.storage.backends.schema_ddl_aux import (
-    MAINTENANCE_RUN_DDL as _MAINTENANCE_RUN_DDL,
-)
-from polylogue.storage.backends.schema_ddl_aux import (
     PUBLICATION_DDL as _PUBLICATION_DDL,
 )
 from polylogue.storage.backends.schema_ddl_aux import (
@@ -44,8 +41,6 @@ SCHEMA_DDL = (
     + "\n\n"
     + _PUBLICATION_DDL
     + "\n\n"
-    + _MAINTENANCE_RUN_DDL
-    + "\n\n"
     + _ARCHIVE_STORAGE_DDL
     + "\n\n"
     + _MESSAGE_FTS_DDL
@@ -62,7 +57,6 @@ __all__ = [
     "_ACTION_FTS_DDL",
     "_ARTIFACT_OBSERVATION_DDL",
     "_ARCHIVE_STORAGE_DDL",
-    "_MAINTENANCE_RUN_DDL",
     "_MESSAGE_FTS_DDL",
     "_PUBLICATION_DDL",
     "_RAW_ARCHIVE_DDL",

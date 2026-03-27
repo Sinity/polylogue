@@ -7,9 +7,6 @@ import click
 from polylogue.cli.commands.products_aggregate import (
     register_aggregate_product_commands,
 )
-from polylogue.cli.commands.products_governance import (
-    register_governance_product_commands,
-)
 from polylogue.cli.commands.products_session import (
     register_session_product_commands,
 )
@@ -20,7 +17,6 @@ def products_command() -> None:
     """Inspect durable archive data products."""
 
 
-register_governance_product_commands(products_command)
 register_session_product_commands(products_command)
 register_aggregate_product_commands(products_command)
 

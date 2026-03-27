@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.health_models import HealthCheck, HealthReport, VerifyStatus
+from polylogue.health import HealthCheck, HealthReport, VerifyStatus
 from polylogue.schemas.operator_models import (
     ArtifactCohortListResult,
     ArtifactObservationListResult,
@@ -184,21 +184,6 @@ def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
     assert payload["maintenance"]["items"][0]["name"] == "session_products"
     assert payload["maintenance"]["items"][0]["repaired_count"] > 0
 
-    with open_connection(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT preview, target_names_json, manifest_json
-            FROM maintenance_runs
-            ORDER BY executed_at DESC, maintenance_run_id DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    assert row is not None
-    assert row["preview"] == 1
-    assert json.loads(row["target_names_json"]) == ["session_products"]
-    manifest = json.loads(row["manifest_json"])
-    assert manifest["targets"] == ["session_products"]
-
 
 def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
     from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
@@ -234,21 +219,6 @@ def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
     assert payload["maintenance"]["targets"] == ["session_products"]
     assert payload["maintenance"]["items"][0]["name"] == "session_products"
     assert payload["maintenance"]["items"][0]["success"] is True
-
-    with open_connection(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT preview, target_names_json, manifest_json
-            FROM maintenance_runs
-            ORDER BY executed_at DESC, maintenance_run_id DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    assert row is not None
-    assert row["preview"] == 0
-    assert json.loads(row["target_names_json"]) == ["session_products"]
-    manifest = json.loads(row["manifest_json"])
-    assert manifest["targets"] == ["session_products"]
 
 
 class TestCheckCommand:

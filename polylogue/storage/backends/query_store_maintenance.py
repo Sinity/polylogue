@@ -1,21 +1,16 @@
-"""Maintenance/raw/run/publication query band for SQLiteQueryStore."""
+"""Raw/run/publication query band for SQLiteQueryStore (maintenance run queries removed)."""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from polylogue.storage.backends.queries import maintenance_runs as maintenance_runs_q
 from polylogue.storage.backends.queries import publications as publications_q
 from polylogue.storage.backends.queries import raw as raw_queries
 from polylogue.storage.backends.queries import runs as runs_q
-from polylogue.storage.store import MaintenanceRunRecord, PublicationRecord, RunRecord
+from polylogue.storage.store import PublicationRecord, RunRecord
 
 
 class SQLiteQueryStoreMaintenanceMixin:
-    async def list_maintenance_runs(self, *, limit: int = 20) -> list[MaintenanceRunRecord]:
-        async with self._connection_factory() as conn:
-            return await maintenance_runs_q.list_maintenance_runs(conn, limit=limit)
-
     def raw_id_query(
         self,
         *,

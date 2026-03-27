@@ -7,8 +7,6 @@ from polylogue.archive_products import (
     ArchiveDebtProductQuery,
     DaySessionSummaryProduct,
     DaySessionSummaryProductQuery,
-    MaintenanceRunProduct,
-    MaintenanceRunProductQuery,
     ProviderAnalyticsProduct,
     ProviderAnalyticsProductQuery,
     SessionPhaseProduct,
@@ -75,12 +73,6 @@ class PolylogueProductsMixin:
         query: WeekSessionSummaryProductQuery | None = None,
     ) -> list[WeekSessionSummaryProduct]:
         return await self.operations.list_week_session_summary_products(query)
-
-    async def list_maintenance_run_products(
-        self,
-        query: MaintenanceRunProductQuery | None = None,
-    ) -> list[MaintenanceRunProduct]:
-        return await self.operations.list_maintenance_run_products(query)
 
     async def list_provider_analytics_products(
         self,

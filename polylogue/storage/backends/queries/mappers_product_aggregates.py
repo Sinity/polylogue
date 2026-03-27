@@ -1,4 +1,4 @@
-"""Row mappers for aggregate and governance product records."""
+"""Row mappers for aggregate product records."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import sqlite3
 from polylogue.storage.backends.queries.mappers_support import _parse_json, _row_get
 from polylogue.storage.store import (
     DaySessionSummaryRecord,
-    MaintenanceRunRecord,
     SessionTagRollupRecord,
 )
 
@@ -65,24 +64,7 @@ def _row_to_day_session_summary_record(row: sqlite3.Row) -> DaySessionSummaryRec
     )
 
 
-def _row_to_maintenance_run_record(row: sqlite3.Row) -> MaintenanceRunRecord:
-    return MaintenanceRunRecord(
-        maintenance_run_id=row["maintenance_run_id"],
-        schema_version=int(_row_get(row, "schema_version", 1) or 1),
-        executed_at=row["executed_at"],
-        mode=row["mode"],
-        preview=bool(_row_get(row, "preview", 0)),
-        repair_selected=bool(_row_get(row, "repair_selected", 0)),
-        cleanup_selected=bool(_row_get(row, "cleanup_selected", 0)),
-        vacuum_requested=bool(_row_get(row, "vacuum_requested", 0)),
-        target_names=tuple(_parse_json(_row_get(row, "target_names_json")) or []),
-        success=bool(_row_get(row, "success", 0)),
-        manifest=_parse_json(row["manifest_json"], field="manifest_json", record_id=row["maintenance_run_id"]) or {},
-    )
-
-
 __all__ = [
     "_row_to_day_session_summary_record",
-    "_row_to_maintenance_run_record",
     "_row_to_session_tag_rollup_record",
 ]

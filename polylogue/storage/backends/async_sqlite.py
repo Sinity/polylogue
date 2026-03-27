@@ -32,9 +32,6 @@ from polylogue.storage.backends.async_sqlite_connections import (
 from polylogue.storage.backends.async_sqlite_derived_actions import (
     SQLiteDerivedActionsMixin,
 )
-from polylogue.storage.backends.async_sqlite_derived_maintenance import (
-    SQLiteDerivedMaintenanceMixin,
-)
 from polylogue.storage.backends.async_sqlite_derived_products import (
     SQLiteDerivedProductsMixin,
 )
@@ -70,7 +67,6 @@ class SQLiteBackend(
     SQLiteArchiveMixin,
     SQLiteDerivedActionsMixin,
     SQLiteDerivedProductsMixin,
-    SQLiteDerivedMaintenanceMixin,
     SQLiteDerivedStatsMixin,
     SQLiteRawMixin,
 ):

@@ -35,11 +35,6 @@
     --proof                         Run durable artifact support proof
     --artifacts                     List durable artifact observations
     --cohorts                       Summarize durable artifact cohorts
-    --semantic-proof                Run semantic preservation proof across
-                                    canonical, export, query, stream, and MCP
-                                    read surfaces
-    --semantic-contracts            List declared semantic-proof surface
-                                    contracts and aliases
     --roundtrip-proof               Run the synthetic schema-and-evidence
                                     roundtrip proof lane in an isolated
                                     workspace
@@ -55,15 +50,6 @@
                                     observation rows
     --artifact-offset INTEGER       Start offset for artifact
                                     proof<PATH>  [default: 0]
-    --semantic-provider TEXT        Limit semantic proof to conversation
-                                    providers (repeatable)
-    --semantic-surface TEXT         Limit semantic proof to
-                                    canonical<PATH> surfaces
-                                    such as canonical, export_all, query_all,
-                                    stream_all, mcp_all, read_all, or all
-    --semantic-limit INTEGER        Limit semantic proof to N conversations
-    --semantic-offset INTEGER       Start offset for semantic proof  [default:
-                                    0]
     --roundtrip-provider TEXT       Limit roundtrip proof to specific providers
                                     (repeatable)
     --roundtrip-count INTEGER       Synthetic artifacts per provider for
