@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -11,18 +10,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.publication import SitePublicationManifest
 from polylogue.rendering.renderers.html import HTMLMessageRenderer, PygmentsHighlighter
-from polylogue.site.conversation_pages import generate_conversation_page, write_template_stream
-from polylogue.site.index_pages import (
-    generate_dashboard,
-    generate_provider_indexes,
-    generate_root_index,
-)
-from polylogue.site.models import (
-    ArchiveIndexStats,
-    ConversationIndex,
-    ConversationPageBuildStats,
-    SiteConfig,
-)
+from polylogue.site.models import ArchiveIndexStats, ConversationIndex, ConversationPageBuildStats, SiteConfig
 from polylogue.site.publication_flow import (
     build_site_publication_manifest,
     load_archive_maintenance_summary_for_backend,
@@ -32,8 +20,20 @@ from polylogue.site.publication_flow import (
     record_site_publication_manifest,
     write_site_publication_manifest,
 )
-from polylogue.site.scan import iter_conversation_indexes, scan_archive
-from polylogue.site.search import build_search_document, generate_pagefind_config, render_search_markup
+from polylogue.site.site_builder_archive import (
+    generate_conversation_page_for_builder,
+    iter_conversation_indexes_for_builder,
+    scan_archive_for_builder,
+    search_document_for_builder,
+)
+from polylogue.site.site_builder_pages import (
+    generate_dashboard_for_builder,
+    generate_pagefind_config_for_builder,
+    generate_provider_indexes_for_builder,
+    generate_root_index_for_builder,
+    search_markup_for_builder,
+    write_template_stream_for_builder,
+)
 from polylogue.site.template_environment import build_template_environments
 from polylogue.sync_bridge import run_coroutine_sync
 
@@ -92,9 +92,7 @@ class SiteBuilder:
         try:
             generated_display = datetime.now().strftime("%Y-%m-%d %H:%M")
             generated_at = datetime.now(timezone.utc).isoformat()
-            archive_stats, conversation_pages = await self._scan_archive(
-                incremental=incremental
-            )
+            archive_stats, conversation_pages = await self._scan_archive(incremental=incremental)
 
             await self._generate_root_index(archive_stats, generated_at=generated_display)
             provider_index_pages = await self._generate_provider_indexes(
@@ -143,123 +141,46 @@ class SiteBuilder:
                 self._backend = None
                 self._repository = None
 
-    async def _iter_conversation_indexes(
-        self,
-        *,
-        provider: str | None = None,
-        backend: SQLiteBackend | None = None,
-        repository: ConversationRepository | None = None,
-    ) -> AsyncIterator[ConversationIndex]:
-        """Yield lightweight conversation indexes in repository sort order."""
-        if backend is None or repository is None:
-            backend, repository = self._open_storage()
-        async for conversation in iter_conversation_indexes(
-            repository=repository,
-            backend=backend,
-            page_size=self.SUMMARY_PAGE_SIZE,
+    async def _iter_conversation_indexes(self, *, provider: str | None = None, backend=None, repository=None):
+        async for conversation in iter_conversation_indexes_for_builder(
+            self,
             provider=provider,
+            backend=backend,
+            repository=repository,
         ):
             yield conversation
 
     def _search_document(self, conversation: ConversationIndex) -> dict[str, str]:
-        return build_search_document(conversation)
+        return search_document_for_builder(self, conversation)
 
-    async def _scan_archive(
-        self,
-        *,
-        incremental: bool,
-    ) -> tuple[ArchiveIndexStats, ConversationPageBuildStats]:
-        backend, repository = self._open_storage()
-        return await scan_archive(
-            output_dir=self.output_dir,
-            config=self.config,
-            conversation_iter=lambda: self._iter_conversation_indexes(
-                backend=backend,
-                repository=repository,
-            ),
-            generate_conversation_page=lambda conversation, rebuild: self._generate_conversation_page(
-                repository,
-                conversation,
-                incremental=rebuild,
-            ),
+    async def _scan_archive(self, *, incremental: bool) -> tuple[ArchiveIndexStats, ConversationPageBuildStats]:
+        return await scan_archive_for_builder(self, incremental=incremental)
+
+    async def _generate_conversation_page(self, repository, conversation: ConversationIndex, *, incremental: bool = True) -> str:
+        return await generate_conversation_page_for_builder(
+            self,
+            repository,
+            conversation,
             incremental=incremental,
         )
 
-    async def _generate_conversation_page(
-        self,
-        repository: ConversationRepository,
-        conversation: ConversationIndex,
-        *,
-        incremental: bool = True,
-    ) -> str:
-        return await generate_conversation_page(
-            output_dir=self.output_dir,
-            page_env=self.page_env,
-            repository=repository,
-            conversation=conversation,
-            render_html=self._message_renderer.render,
-            incremental=incremental,
-        )
+    async def _write_template_stream(self, template: Template, output_path: Path, **context: object) -> None:
+        await write_template_stream_for_builder(self, template, output_path, **context)
 
-    async def _write_template_stream(
-        self,
-        template: Template,
-        output_path: Path,
-        **context: object,
-    ) -> None:
-        await write_template_stream(template, output_path, **context)
+    async def _generate_root_index(self, archive_stats: ArchiveIndexStats, *, generated_at: str) -> None:
+        await generate_root_index_for_builder(self, archive_stats, generated_at=generated_at)
 
-    async def _generate_root_index(
-        self,
-        archive_stats: ArchiveIndexStats,
-        *,
-        generated_at: str,
-    ) -> None:
-        await generate_root_index(
-            output_dir=self.output_dir,
-            env=self.env,
-            config=self.config,
-            archive_stats=archive_stats,
-            generated_at=generated_at,
-            write_stream=self._write_template_stream,
-        )
+    async def _generate_provider_indexes(self, archive_stats: ArchiveIndexStats, *, generated_at: str) -> int:
+        return await generate_provider_indexes_for_builder(self, archive_stats, generated_at=generated_at)
 
-    async def _generate_provider_indexes(
-        self,
-        archive_stats: ArchiveIndexStats,
-        *,
-        generated_at: str,
-    ) -> int:
-        return await generate_provider_indexes(
-            output_dir=self.output_dir,
-            env=self.env,
-            config=self.config,
-            archive_stats=archive_stats,
-            generated_at=generated_at,
-            conversation_iter_factory=lambda provider=None: self._iter_conversation_indexes(provider=provider),
-            write_stream=self._write_template_stream,
-        )
-
-    async def _generate_dashboard(
-        self,
-        archive_stats: ArchiveIndexStats,
-        *,
-        generated_at: str,
-    ) -> None:
-        await generate_dashboard(
-            output_dir=self.output_dir,
-            env=self.env,
-            config=self.config,
-            archive_stats=archive_stats,
-            generated_at=generated_at,
-            write_stream=self._write_template_stream,
-        )
+    async def _generate_dashboard(self, archive_stats: ArchiveIndexStats, *, generated_at: str) -> None:
+        await generate_dashboard_for_builder(self, archive_stats, generated_at=generated_at)
 
     def _search_markup(self) -> str:
-        return render_search_markup(self.config)
+        return search_markup_for_builder(self)
 
     def _generate_pagefind_config(self) -> str:
-        return generate_pagefind_config(self.output_dir)
+        return generate_pagefind_config_for_builder(self)
 
 
 __all__ = [
