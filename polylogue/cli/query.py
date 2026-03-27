@@ -1,34 +1,383 @@
-"""Query execution entrypoint for the query-first CLI."""
+"""Query execution entrypoint, routing, planning, and shared helpers for the query-first CLI."""
 
 from __future__ import annotations
 
 import inspect
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import click
 
-from polylogue.cli import query_actions as _query_actions
-from polylogue.cli import query_output as _query_output
-from polylogue.cli.query_helpers import no_results
-from polylogue.cli.query_plan import (
-    QueryPlanError,
-    QueryRoute,
-    build_query_execution_plan,
-    resolve_query_route,
-)
-from polylogue.lib.query_spec import QuerySpecError
+from polylogue.cli.root_request import RootModeRequest
+from polylogue.cli.types import AppEnv
+from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 from polylogue.logging import get_logger
 from polylogue.sync_bridge import run_coroutine_sync
 
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from polylogue.cli.query_plan import QueryExecutionPlan
-    from polylogue.cli.types import AppEnv
+    from polylogue.lib.models import Conversation, ConversationSummary
+
+
+# ---------------------------------------------------------------------------
+# Query helpers (from query_helpers.py)
+# ---------------------------------------------------------------------------
+
+
+def coerce_query_spec(params: dict[str, Any] | ConversationQuerySpec) -> ConversationQuerySpec:
+    if isinstance(params, ConversationQuerySpec):
+        return params
+    return ConversationQuerySpec.from_params(params)
+
+
+def describe_query_filters(params: dict[str, Any] | ConversationQuerySpec) -> list[str]:
+    """Build a human-readable list of active filters from params or spec."""
+    return coerce_query_spec(params).describe()
+
+
+def no_results(
+    env: AppEnv,
+    params: dict[str, Any] | ConversationQuerySpec,
+    *,
+    exit_code: int = 2,
+) -> NoReturn:
+    """Print a helpful no-results message and exit."""
+    filters = describe_query_filters(params)
+    if filters:
+        click.echo("No conversations matched filters:", err=True)
+        for item in filters:
+            click.echo(f"  {item}", err=True)
+        click.echo("Hint: try broadening your filters or use --list to browse", err=True)
+    else:
+        click.echo("No conversations matched.", err=True)
+    raise SystemExit(exit_code)
+
+
+def result_id(result: Conversation | ConversationSummary) -> str:
+    return str(result.id)
+
+
+def result_provider(result: Conversation | ConversationSummary) -> str:
+    return str(result.provider)
+
+
+def result_title(result: Conversation | ConversationSummary) -> str:
+    title = result.display_title
+    return title if title else result_id(result)[:20]
+
+
+def result_date(result: Conversation | ConversationSummary) -> datetime | None:
+    display_date = getattr(result, "display_date", None)
+    if isinstance(display_date, datetime):
+        return display_date
+    updated_at = getattr(result, "updated_at", None)
+    if isinstance(updated_at, datetime):
+        return updated_at
+    created_at = getattr(result, "created_at", None)
+    if isinstance(created_at, datetime):
+        return created_at
+    return None
+
+
+def summary_to_dict(summary: ConversationSummary, message_count: int) -> dict[str, object]:
+    return {
+        "id": str(summary.id),
+        "provider": str(summary.provider),
+        "title": summary.display_title,
+        "date": summary.display_date.isoformat() if summary.display_date else None,
+        "tags": summary.tags,
+        "summary": summary.summary,
+        "messages": message_count,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Query plan (from query_plan.py)
+# ---------------------------------------------------------------------------
+
+
+class QueryPlanError(ValueError):
+    """Raised when CLI query parameters describe an invalid plan."""
+
+
+class QueryAction(str, Enum):
+    COUNT = "count"
+    STREAM = "stream"
+    STATS = "stats"
+    STATS_BY = "stats-by"
+    MODIFY = "modify"
+    DELETE = "delete"
+    OPEN = "open"
+    SHOW = "show"
+
+
+class QueryRoute(str, Enum):
+    COUNT = "count"
+    SUMMARY_LIST = "summary-list"
+    STREAM = "stream"
+    STATS_SQL = "stats-sql"
+    SUMMARY_STATS = "summary-stats"
+    STATS_BY = "stats-by"
+    SUMMARY_MODIFY = "summary-modify"
+    SUMMARY_DELETE = "summary-delete"
+    MODIFY = "modify"
+    DELETE = "delete"
+    OPEN = "open"
+    SHOW = "show"
+
+
+@dataclass(frozen=True)
+class QueryOutputSpec:
+    output_format: str
+    destinations: tuple[str, ...]
+    fields: str | None
+    dialogue_only: bool
+    transform: str | None
+    list_mode: bool
+
+    def stream_format(self) -> str:
+        if self.output_format == "json":
+            return "json-lines"
+        if self.output_format in {"plaintext", "markdown", "json-lines"}:
+            return self.output_format
+        return "plaintext"
+
+
+@dataclass(frozen=True)
+class QueryMutationSpec:
+    set_meta: tuple[tuple[str, str], ...]
+    add_tags: tuple[str, ...]
+    delete_matched: bool
+    dry_run: bool
+    force: bool
+
+    @property
+    def has_operations(self) -> bool:
+        return bool(self.set_meta or self.add_tags)
+
+
+@dataclass(frozen=True)
+class QueryExecutionPlan:
+    selection: ConversationQuerySpec
+    action: QueryAction
+    output: QueryOutputSpec
+    mutation: QueryMutationSpec
+    stats_dimension: str | None = None
+
+    def prefers_summary_list(self) -> bool:
+        return (
+            self.action == QueryAction.SHOW
+            and self.output.list_mode
+            and self.output.transform is None
+            and not self.output.dialogue_only
+        )
+
+    def prefers_summary_stats(self) -> bool:
+        return self.action == QueryAction.STATS_BY and self.stats_dimension in {"provider", "month", "year", "day"}
+
+    def prefers_summary_mutation(self) -> bool:
+        return self.action in {QueryAction.MODIFY, QueryAction.DELETE}
+
+
+def resolve_query_route(
+    plan: QueryExecutionPlan,
+    *,
+    can_use_summaries: bool,
+) -> QueryRoute:
+    if plan.action == QueryAction.COUNT:
+        return QueryRoute.COUNT
+    if plan.prefers_summary_list() and can_use_summaries:
+        return QueryRoute.SUMMARY_LIST
+    if plan.action == QueryAction.STREAM:
+        return QueryRoute.STREAM
+    if plan.action == QueryAction.STATS:
+        return QueryRoute.STATS_SQL
+    if plan.prefers_summary_stats() and can_use_summaries:
+        return QueryRoute.SUMMARY_STATS
+    if plan.action == QueryAction.STATS_BY:
+        return QueryRoute.STATS_BY
+    if plan.action == QueryAction.MODIFY:
+        return QueryRoute.SUMMARY_MODIFY if can_use_summaries else QueryRoute.MODIFY
+    if plan.action == QueryAction.DELETE:
+        return QueryRoute.SUMMARY_DELETE if can_use_summaries else QueryRoute.DELETE
+    if plan.action == QueryAction.OPEN:
+        return QueryRoute.OPEN
+    return QueryRoute.SHOW
+
+
+def build_query_execution_plan(params: Mapping[str, object]) -> QueryExecutionPlan:
+    selection = ConversationQuerySpec.from_params(dict(params))
+
+    output_dest = str(params.get("output") or "stdout")
+    destinations = tuple(part.strip() for part in output_dest.split(",") if part.strip()) or ("stdout",)
+    output = QueryOutputSpec(
+        output_format=str(params.get("output_format") or "markdown"),
+        destinations=destinations,
+        fields=str(params["fields"]) if params.get("fields") is not None else None,
+        dialogue_only=bool(params.get("dialogue_only", False)),
+        transform=str(params["transform"]) if params.get("transform") is not None else None,
+        list_mode=bool(params.get("list_mode", False)),
+    )
+
+    raw_set_meta = params.get("set_meta") or ()
+    set_meta = tuple((str(key), str(value)) for key, value in raw_set_meta)
+    add_tags = tuple(str(tag) for tag in (params.get("add_tag") or ()))
+    mutation = QueryMutationSpec(
+        set_meta=set_meta,
+        add_tags=add_tags,
+        delete_matched=bool(params.get("delete_matched", False)),
+        dry_run=bool(params.get("dry_run", False)),
+        force=bool(params.get("force", False)),
+    )
+
+    stats_dimension = str(params["stats_by"]) if params.get("stats_by") else None
+
+    if params.get("count_only"):
+        action = QueryAction.COUNT
+    elif params.get("stream"):
+        action = QueryAction.STREAM
+    elif params.get("stats_only"):
+        action = QueryAction.STATS
+    elif stats_dimension is not None:
+        action = QueryAction.STATS_BY
+    elif mutation.delete_matched:
+        action = QueryAction.DELETE
+    elif mutation.has_operations:
+        action = QueryAction.MODIFY
+    elif params.get("open_result"):
+        action = QueryAction.OPEN
+    else:
+        action = QueryAction.SHOW
+
+    if action == QueryAction.DELETE and not selection.has_filters():
+        raise QueryPlanError(
+            "--delete requires at least one filter to prevent accidental deletion of the entire archive."
+        )
+
+    return QueryExecutionPlan(
+        selection=selection,
+        action=action,
+        output=output,
+        mutation=mutation,
+        stats_dimension=stats_dimension,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Query frontdoor (from query_frontdoor.py)
+# ---------------------------------------------------------------------------
+
+_ROOT_GLOBAL_OPTIONS = frozenset({"--plain", "--verbose", "-v"})
+
+
+def _option_arity(group: click.Group) -> dict[str, int]:
+    value_options: dict[str, int] = {}
+    for param in group.params:
+        if isinstance(param, click.Option) and not param.is_flag:
+            nargs = param.nargs if param.nargs > 0 else 1
+            for opt in param.opts + param.secondary_opts:
+                value_options[opt] = nargs
+    return value_options
+
+
+def _matches_option(option: str, token: str) -> bool:
+    return token == option or token.startswith(f"{option}=")
+
+
+def _is_root_global_option(token: str) -> bool:
+    return any(_matches_option(option, token) for option in _ROOT_GLOBAL_OPTIONS)
+
+
+def _iter_option_values(args: list[str], start: int, nargs: int) -> Iterable[str]:
+    for offset in range(1, nargs + 1):
+        if start + offset < len(args):
+            yield args[start + offset]
+
+
+def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[str], tuple[str, ...], bool]:
+    option_arity = _option_arity(group)
+    option_args: list[str] = []
+    query_terms: list[str] = []
+    query_mode_locked = False
+    index = 0
+
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            query_terms.extend(args[index + 1 :])
+            break
+        if arg.startswith("-"):
+            option_args.append(arg)
+            nargs = option_arity.get(arg, 0)
+            if not _is_root_global_option(arg):
+                query_mode_locked = True
+            option_args.extend(_iter_option_values(args, index, nargs))
+            index += nargs + 1
+            continue
+        if not query_terms and not query_mode_locked and arg in group.commands:
+            return args, (), True
+        query_terms.append(arg)
+        index += 1
+
+    return option_args, tuple(query_terms), False
+
+
+def handle_query_mode(
+    ctx: click.Context,
+    *,
+    show_stats: Any,
+) -> None:
+    """Handle query mode: display stats or perform search."""
+    env: AppEnv = ctx.obj
+    request = RootModeRequest.from_context(ctx)
+
+    if request.should_show_stats():
+        show_stats(env, verbose=bool(request.params.get("verbose", False)))
+        return
+
+    execute_query(env, request.query_params())
+
+
+class QueryFirstGroupBase(click.Group):
+    """Custom Click group that routes to query mode by default."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        """Parse args, preserving raw query terms instead of rewriting them as hidden options."""
+        parse_args, query_terms, has_subcommand = _split_query_mode_args(self, args)
+        ctx.meta["polylogue_has_subcommand"] = has_subcommand
+        if not has_subcommand:
+            ctx.meta["polylogue_query_terms"] = query_terms
+        return list(super().parse_args(ctx, parse_args))
+
+    def invoke(self, ctx: click.Context) -> Any:
+        """Invoke the group, dispatching to query or stats mode if no subcommand."""
+        if ctx.meta.get("polylogue_has_subcommand", False):
+            return super().invoke(ctx)
+
+        assert self.callback is not None, "QueryFirstGroup requires a callback"
+        with ctx:
+            ctx.invoke(self.callback, **ctx.params)
+
+        self.handle_default_mode(ctx)
+
+    def handle_default_mode(self, ctx: click.Context) -> None:
+        """Dispatch no-subcommand mode for subclasses."""
+        raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
+# Query execution (original query.py)
+# ---------------------------------------------------------------------------
 
 
 def project_query_results(results: list[Any], plan: QueryExecutionPlan) -> list[Any]:
     """Apply post-selection transforms consistently before final output."""
+    from polylogue.cli import query_actions as _query_actions
+
     projected = results
     if plan.output.transform is not None:
         projected = _query_actions.apply_transform(projected, plan.output.transform)
@@ -63,6 +412,8 @@ async def _await_if_needed(value: Any) -> Any:
 
 async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     """Async core of execute_query."""
+    from polylogue.cli import query_actions as _query_actions
+    from polylogue.cli import query_output as _query_output
     from polylogue.cli.helpers import fail, load_effective_config
     from polylogue.config import ConfigError
 
@@ -247,3 +598,26 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         return
 
     _query_output.output_results(env, results, params)
+
+
+__all__ = [
+    "QueryAction",
+    "QueryExecutionPlan",
+    "QueryFirstGroupBase",
+    "QueryMutationSpec",
+    "QueryOutputSpec",
+    "QueryPlanError",
+    "QueryRoute",
+    "build_query_execution_plan",
+    "coerce_query_spec",
+    "describe_query_filters",
+    "execute_query",
+    "handle_query_mode",
+    "no_results",
+    "resolve_query_route",
+    "result_date",
+    "result_id",
+    "result_provider",
+    "result_title",
+    "summary_to_dict",
+]

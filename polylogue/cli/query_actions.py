@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
-from polylogue.cli.query_helpers import result_date, result_id, result_provider, result_title
+from polylogue.cli.query import result_date, result_id, result_provider, result_title
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
