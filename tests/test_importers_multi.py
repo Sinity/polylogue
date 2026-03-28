@@ -1,10 +1,26 @@
 import json
+import os
 import zipfile
 from pathlib import Path
+
+import pytest
 
 from polylogue.importers.chatgpt import import_chatgpt_export
 from polylogue.importers.claude_ai import import_claude_export
 from polylogue.importers.claude_code import import_claude_code_session
+
+
+@pytest.fixture(autouse=True)
+def _polylogue_state_home(tmp_path, monkeypatch):
+    state_home = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    from polylogue import util
+
+    state_dir = state_home / "polylogue"
+    monkeypatch.setattr(util, "STATE_HOME", state_dir)
+    monkeypatch.setattr(util, "STATE_PATH", state_dir / "state.json")
+    monkeypatch.setattr(util, "RUNS_PATH", state_dir / "runs.json")
+    return state_home
 
 
 def _write(path: Path, data) -> Path:
@@ -303,3 +319,73 @@ def test_import_claude_export_zip_with_attachment(tmp_path):
     attachments = list(results[0].attachments_dir.iterdir())
     assert attachments and attachments[0].name.startswith("result")
     assert attachments[0].read_text(encoding="utf-8") == "claude attachment"
+
+
+def test_import_chatgpt_export_repeat_skips(tmp_path):
+    export_dir = tmp_path / "chatgpt_repeat"
+    export_dir.mkdir()
+    conversations = [
+        {
+            "id": "repeat-id",
+            "title": "Repeat Chat",
+            "create_time": 1,
+            "update_time": 2,
+            "mapping": {
+                "user": {
+                    "message": {
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["Hello"]},
+                    }
+                }
+            },
+        }
+    ]
+    (export_dir / "conversations.json").write_text(json.dumps(conversations), encoding="utf-8")
+
+    out_dir = tmp_path / "out_repeat"
+    first = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert len(first) == 1
+    assert not first[0].skipped
+
+    state_path = Path(os.environ["XDG_STATE_HOME"]) / "polylogue/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    entry = state["conversations"]["chatgpt"]["repeat-id"]
+    assert entry["collapseThreshold"] == 10
+    assert entry["dirty"] is False
+    assert entry["attachmentPolicy"]["lineThreshold"] >= 10
+
+    md_path = first[0].markdown_path
+    contents = md_path.read_text(encoding="utf-8")
+    assert "polylogue:" in contents
+    assert ('"collapseThreshold": 10' in contents or 'collapseThreshold: 10' in contents)
+    assert ('"dirty": false' in contents.lower() or 'dirty: false' in contents.lower())
+
+    md_path.write_text(contents + "\nmanual edit\n", encoding="utf-8")
+
+    second = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert len(second) == 1
+    assert second[0].skipped
+    assert second[0].document is None
+    assert second[0].markdown_path == first[0].markdown_path
+    assert second[0].skip_reason == "dirty-local"
+    assert second[0].dirty
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    entry = state["conversations"]["chatgpt"]["repeat-id"]
+    assert entry["dirty"] is True
+    assert "localHash" in entry
+
+    rerun_contents = md_path.read_text(encoding="utf-8")
+    assert ('"dirty": true' in rerun_contents.lower() or 'dirty: true' in rerun_contents.lower())
