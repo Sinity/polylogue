@@ -16,6 +16,7 @@ from polylogue.cli.formatting import (
     format_index_status,
     format_plan_counts,
     format_plan_details,
+    format_run_details,
 )
 from polylogue.cli.helpers import (
     fail,
@@ -98,6 +99,9 @@ class _PlainProgressObserver(RunObserver):
 
     def on_completed(self, result: RunResult) -> None:
         total_elapsed = time.time() - self.pipeline_start
+        count_summary = format_counts(result.counts)
+        if count_summary:
+            print(f"  Counts: {count_summary}", flush=True)
         print(f"  Pipeline complete in {_format_elapsed(total_elapsed)}", flush=True)
 
 
@@ -235,6 +239,7 @@ def _display_result(
     """Display sync result summary."""
     run_lines = [
         f"Counts: {format_counts(result.counts)}",
+        *format_run_details(result.counts),
         f"Duration: {result.duration_ms}ms",
     ]
     title_parts: list[str] = []

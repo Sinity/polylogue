@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from polylogue.lib.dates import parse_date
 from polylogue.lib.log import get_logger
+from polylogue.types import Provider
 
 logger = get_logger(__name__)
 
@@ -72,8 +73,8 @@ class ConversationFilter:
         self._predicates: list[Callable[[Conversation], bool]] = []
         self._fts_terms: list[str] = []
         self._negative_fts_terms: list[str] = []
-        self._providers: list[str] = []
-        self._excluded_providers: list[str] = []
+        self._providers: list[Provider] = []
+        self._excluded_providers: list[Provider] = []
         self._tags: list[str] = []
         self._excluded_tags: list[str] = []
         self._has_types: list[str] = []
@@ -86,6 +87,16 @@ class ConversationFilter:
         self._limit_count: int | None = None
         self._sample_count: int | None = None
         self._similar_text: str | None = None
+        # SQL-pushable stats filters (via conversation_stats JOIN)
+        self._filter_has_tool_use: bool = False
+        self._filter_has_thinking: bool = False
+        self._min_messages: int | None = None
+        self._max_messages: int | None = None
+        self._min_words: int | None = None
+        # SQL-pushable semantic filters (via EXISTS on content_blocks.semantic_type)
+        self._filter_has_file_ops: bool = False
+        self._filter_has_git_ops: bool = False
+        self._filter_has_subagent: bool = False
 
     # --- Filter methods (return self for chaining) ---
 
@@ -99,14 +110,18 @@ class ConversationFilter:
         self._negative_fts_terms.append(text)
         return self
 
-    def provider(self, *names: str) -> ConversationFilter:
+    def provider(self, *names: Provider | str) -> ConversationFilter:
         """Filter to conversations from specific providers."""
-        self._providers.extend(names)
+        self._providers.extend(
+            n if isinstance(n, Provider) else Provider.from_string(n) for n in names
+        )
         return self
 
-    def exclude_provider(self, *names: str) -> ConversationFilter:
+    def exclude_provider(self, *names: Provider | str) -> ConversationFilter:
         """Exclude conversations from specific providers."""
-        self._excluded_providers.extend(names)
+        self._excluded_providers.extend(
+            n if isinstance(n, Provider) else Provider.from_string(n) for n in names
+        )
         return self
 
     def tag(self, *tags: str) -> ConversationFilter:
@@ -210,6 +225,46 @@ class ConversationFilter:
             self._predicates.append(lambda c: c.is_root)
         else:
             self._predicates.append(lambda c: not c.is_root)
+        return self
+
+    def has_tool_use(self) -> ConversationFilter:
+        """Filter to conversations that contain tool_use or tool_result blocks (SQL pushdown)."""
+        self._filter_has_tool_use = True
+        return self
+
+    def has_thinking(self) -> ConversationFilter:
+        """Filter to conversations that contain thinking blocks (SQL pushdown)."""
+        self._filter_has_thinking = True
+        return self
+
+    def min_messages(self, n: int) -> ConversationFilter:
+        """Filter to conversations with at least n messages (SQL pushdown)."""
+        self._min_messages = n
+        return self
+
+    def max_messages(self, n: int) -> ConversationFilter:
+        """Filter to conversations with at most n messages (SQL pushdown)."""
+        self._max_messages = n
+        return self
+
+    def min_words(self, n: int) -> ConversationFilter:
+        """Filter to conversations with at least n total words (SQL pushdown)."""
+        self._min_words = n
+        return self
+
+    def has_file_operations(self) -> ConversationFilter:
+        """Filter to conversations containing file read/write/edit operations (SQL pushdown)."""
+        self._filter_has_file_ops = True
+        return self
+
+    def has_git_operations(self) -> ConversationFilter:
+        """Filter to conversations containing git operations (SQL pushdown)."""
+        self._filter_has_git_ops = True
+        return self
+
+    def has_subagent_spawns(self) -> ConversationFilter:
+        """Filter to conversations that spawned subagents via Task tool (SQL pushdown)."""
+        self._filter_has_subagent = True
         return self
 
     def parent(self, conversation_id: str) -> ConversationFilter:
@@ -365,6 +420,22 @@ class ConversationFilter:
             params["until"] = self._until_date.isoformat()
         if self._title_pattern:
             params["title_contains"] = self._title_pattern
+        if self._filter_has_tool_use:
+            params["has_tool_use"] = True
+        if self._filter_has_thinking:
+            params["has_thinking"] = True
+        if self._min_messages is not None:
+            params["min_messages"] = self._min_messages
+        if self._max_messages is not None:
+            params["max_messages"] = self._max_messages
+        if self._min_words is not None:
+            params["min_words"] = self._min_words
+        if self._filter_has_file_ops:
+            params["has_file_ops"] = True
+        if self._filter_has_git_ops:
+            params["has_git_ops"] = True
+        if self._filter_has_subagent:
+            params["has_subagent"] = True
         return params
 
     def _describe_active_filters(self) -> list[str]:
@@ -382,6 +453,22 @@ class ConversationFilter:
             parts.append(f"exclude tag: {', '.join(self._excluded_tags)}")
         if self._has_types:
             parts.append(f"has: {', '.join(self._has_types)}")
+        if self._filter_has_tool_use:
+            parts.append("has_tool_use")
+        if self._filter_has_thinking:
+            parts.append("has_thinking")
+        if self._filter_has_file_ops:
+            parts.append("has_file_ops")
+        if self._filter_has_git_ops:
+            parts.append("has_git_ops")
+        if self._filter_has_subagent:
+            parts.append("has_subagent")
+        if self._min_messages is not None:
+            parts.append(f"min_messages: {self._min_messages}")
+        if self._max_messages is not None:
+            parts.append(f"max_messages: {self._max_messages}")
+        if self._min_words is not None:
+            parts.append(f"min_words: {self._min_words}")
         if self._since_date:
             parts.append(f"since: {self._since_date.isoformat()}")
         if self._until_date:
@@ -397,6 +484,10 @@ class ConversationFilter:
         if self._similar_text:
             parts.append(f"similar: {self._similar_text[:30]}")
         return parts
+
+    def describe(self) -> list[str]:
+        """Return human-readable descriptions of active filters."""
+        return self._describe_active_filters()
 
     def _has_post_filters(self) -> bool:
         """Check if any filters require in-memory post-processing."""
@@ -429,8 +520,10 @@ class ConversationFilter:
             # Sampling needs a full pool to draw from
             return max(self._sample_count * 3, 200)
 
-        # Simple case: limit is the only constraint, with small safety margin
-        return max(self._limit_count * 2, 50)
+        # Simple case: no post-filters and no sampling.
+        # SQL ORDER BY sort_key DESC is consistent with the Python date sort, so
+        # a factor-of-2 safety margin is enough — no arbitrary minimum needed.
+        return max(self._limit_count * 2, 2)
 
     async def _fetch_generic(
         self,
@@ -563,8 +656,10 @@ class ConversationFilter:
         Returns:
             Number of conversations deleted
         """
-        # Get all matching conversations
-        results = await self.list()
+        if self.can_use_summaries():
+            results: list[Conversation | ConversationSummary] = await self.list_summaries()
+        else:
+            results = await self.list()
         deleted_count = 0
 
         for conv in results:
@@ -621,6 +716,8 @@ class ConversationFilter:
 
         Returns True if we need to load full Conversation objects,
         False if we can use lightweight ConversationSummary objects.
+        Note: has_tool_use(), has_thinking(), min_messages(), max_messages(), min_words()
+        are SQL pushdowns and do NOT require content loading.
         """
         # These filters require message access
         if self._has_types:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -16,6 +16,7 @@ from polylogue.schemas.unified import (
     extract_claude_code_text,
     extract_codex_text,
     extract_content_blocks,
+    extract_from_provider_meta,
     extract_harmonized_message,
     extract_reasoning_traces,
     extract_token_usage,
@@ -29,8 +30,8 @@ from polylogue.schemas.validator import (
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.index import rebuild_index
+from polylogue.storage.repository import ConversationRepository
 from tests.infra.helpers import ConversationBuilder
 
 # =============================================================================
@@ -310,6 +311,23 @@ class TestConversationFilterTerminal:
         final_count = await ConversationFilter(filter_repo).count()
         assert final_count == initial_count - 1
 
+    @pytest.mark.asyncio
+    async def test_filter_delete_uses_summaries_when_possible(self, filter_repo):
+        """delete() uses summary-only loading for content-independent filters."""
+        filter_obj = ConversationFilter(filter_repo).provider("claude").limit(1)
+        filter_obj.list_summaries = AsyncMock(  # type: ignore[method-assign]
+            return_value=[ConversationSummary(id="claude-1", provider="claude")]
+        )
+        filter_obj.list = AsyncMock(side_effect=AssertionError("full conversations should not be loaded"))  # type: ignore[method-assign]
+        delete_mock = AsyncMock(return_value=True)
+        filter_repo.backend.delete_conversation = delete_mock  # type: ignore[method-assign]
+
+        deleted = await filter_obj.delete()
+
+        assert deleted == 1
+        filter_obj.list_summaries.assert_awaited_once()
+        delete_mock.assert_awaited_once_with("claude-1")
+
 
 class TestConversationFilterSort:
     """Tests for sorting."""
@@ -516,7 +534,7 @@ class TestFiltersApplyFiltersLogic:
         results = await (ConversationFilter(filter_repo_populated)
                    .sort(sort_key)
                    .list())
-        assert len(results) >= 0
+        assert len(results) == 3, f"Sort '{sort_key}' should return all 3 conversations"
 
 
 class TestFiltersIDPrefixResolution:
@@ -765,11 +783,10 @@ class TestUnifiedExtractContentBlocks:
     @pytest.mark.parametrize("content,expected_len,expected_types,description", CONTENT_BLOCKS_CASES)
     def test_extract_content_blocks(self, content, expected_len, expected_types, description):
         """Test content block extraction with various block types."""
-        from polylogue.lib.viewports import ContentType
         result = extract_content_blocks(content)
         assert len(result) == expected_len
         if expected_types:
-            for block, expected_type in zip(result, expected_types):
+            for block, expected_type in zip(result, expected_types, strict=True):
                 assert block.type.value == expected_type
 
 
@@ -874,6 +891,57 @@ class TestUnifiedHarmonizeParsedMessage:
         result = harmonize_parsed_message("claude-ai", meta)
         assert isinstance(result, HarmonizedMessage)
 
+    def test_harmonize_parsed_message_claude_code_raw_preserves_tool_fields(self):
+        """Claude Code raw format should extract tool id/input/category correctly."""
+        raw_record = {
+            "type": "assistant",
+            "uuid": "msg-1",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need to read file"},
+                    {"type": "thinking", "thinking": "First inspect the repo"},
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Read",
+                        "input": {"file_path": "README.md"},
+                    },
+                ],
+            },
+        }
+        result = harmonize_parsed_message("claude-code", {"raw": raw_record})
+        assert result is not None
+        assert result.id == "msg-1"
+        assert result.role == "assistant"
+        assert result.text == "Need to read file"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].id == "tool-1"
+        assert result.tool_calls[0].input == {"file_path": "README.md"}
+        assert result.tool_calls[0].category.value == "file_read"
+        assert len(result.reasoning_traces) == 1
+        assert result.reasoning_traces[0].text == "First inspect the repo"
+
+    def test_extract_from_provider_meta_claude_code_raw_extracts_text(self):
+        """Raw format extraction should produce text from text-only blocks."""
+        raw_record = {
+            "type": "assistant",
+            "uuid": "msg-2",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "line one"},
+                    {"type": "text", "text": "line two"},
+                    {"type": "thinking", "thinking": "some reasoning"},
+                ],
+            },
+        }
+        result = extract_from_provider_meta("claude-code", {"raw": raw_record})
+        assert result.text == "line one\nline two"
+        assert result.role == "assistant"
+        assert len(result.reasoning_traces) == 1
+
 
 class TestUnifiedBulkHarmonize:
     """Test bulk_harmonize edge cases."""
@@ -931,8 +999,7 @@ class TestValidatorAvailableProviders:
 
     def test_available_providers_missing_schema_dir(self):
         """Test when SCHEMA_DIR doesn't exist."""
-        with patch("polylogue.schemas.validator.SCHEMA_DIR") as mock_dir:
-            mock_dir.exists.return_value = False
+        with patch("polylogue.schemas.validator.SchemaRegistry.list_providers", return_value=[]):
             result = SchemaValidator.available_providers()
             assert result == []
 

@@ -10,8 +10,10 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import sys
 from collections import deque
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -36,6 +38,10 @@ from polylogue.lib.theme import rich_theme_styles
 class UIError(PolylogueError):
     """UI-related errors (prompt stubs, user interaction)."""
 
+    def __init__(self, message: str, *, prompt_topic: str | None = None) -> None:
+        super().__init__(message)
+        self.prompt_topic = prompt_topic
+
 
 @runtime_checkable
 class ConsoleLike(Protocol):
@@ -49,13 +55,26 @@ class PlainConsole:
         pass
 
     def print(self, *objects: object, **_: object) -> None:
-        raw = " ".join(str(obj) for obj in objects)
-        # Strip Rich markup (e.g. [bold], [green], [/#d97757]) for plain output
-        try:
-            text = Text.from_markup(raw).plain
-        except Exception:
-            text = raw
-        print(text)
+        import io
+
+        from rich.console import Console as RichConsole
+        from rich.table import Table
+
+        parts = []
+        for obj in objects:
+            if isinstance(obj, Table):
+                # Render Rich tables to plain text via an in-memory console
+                buf = io.StringIO()
+                tmp = RichConsole(file=buf, highlight=False, no_color=True)
+                tmp.print(obj)
+                parts.append(buf.getvalue().rstrip())
+            else:
+                raw = str(obj)
+                # Strip Rich markup (e.g. [bold], [green], [/#d97757]) for plain output
+                with suppress(Exception):
+                    raw = Text.from_markup(raw).plain
+                parts.append(raw)
+        print(" ".join(parts))
 
 
 @dataclass
@@ -156,8 +175,6 @@ class ConsoleFacade:
 
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
         """Ask for confirmation."""
-        if self.plain:
-            return default
         response = self._pop_prompt_response("confirm")
         if response is not None:
             if response.get("use_default"):
@@ -171,14 +188,25 @@ class ConsoleFacade:
                     return True
                 if lowered in {"n", "no", "false", "0"}:
                     return False
+        if self.plain:
+            if not sys.stdin.isatty():
+                raise UIError(
+                    "Plain mode cannot prompt for confirmation prompts",
+                    prompt_topic="confirmation prompts",
+                )
+            try:
+                value = input(f"{prompt} [{'Y/n' if default else 'y/N'}]: ").strip()
+            except EOFError:
+                return default
+            if not value:
+                return default
+            return value.lower() in {"y", "yes"}
         result = questionary.confirm(prompt, default=default).ask()
         return default if result is None else result
 
     def choose(self, prompt: str, options: list[str]) -> str | None:
         """Choose from a list of options."""
         if not options:
-            return None
-        if self.plain:
             return None
         response = self._pop_prompt_response("choose")
         if response is not None:
@@ -201,6 +229,26 @@ class ConsoleFacade:
                 except (KeyError, ValueError, TypeError):
                     # Response missing index, or index not numeric/valid
                     pass
+        if self.plain:
+            if not sys.stdin.isatty():
+                raise UIError(
+                    "Plain mode cannot prompt for menu selections",
+                    prompt_topic="menu selections",
+                )
+            for idx, option in enumerate(options, start=1):
+                self.console.print(f"{idx}. {option}")
+            while True:
+                try:
+                    value = input(f"{prompt} [1-{len(options)}]: ").strip()
+                except EOFError:
+                    return None
+                if not value:
+                    return None
+                if value.isdigit():
+                    selected = int(value)
+                    if 1 <= selected <= len(options):
+                        return options[selected - 1]
+                self.console.print("Enter a number corresponding to your choice.")
         if len(options) > 12:
             result: str | None = questionary.autocomplete(
                 prompt, choices=options, match_middle=True
@@ -211,8 +259,6 @@ class ConsoleFacade:
 
     def input(self, prompt: str, *, default: str | None = None) -> str | None:
         """Get text input from user."""
-        if self.plain:
-            return default
         response = self._pop_prompt_response("input")
         if response is not None:
             if response.get("use_default"):
@@ -220,6 +266,18 @@ class ConsoleFacade:
             if "value" in response:
                 value = response["value"]
                 return None if value is None else str(value)
+        if self.plain:
+            if not sys.stdin.isatty():
+                raise UIError(
+                    "Plain mode cannot prompt for text input",
+                    prompt_topic="text input",
+                )
+            suffix = f" [{default}]" if default else ""
+            try:
+                value = input(f"{prompt}{suffix}: ").strip()
+            except EOFError:
+                return default
+            return value or default
         result: str | None = questionary.text(prompt, default=default or "").ask()
         return result if result else default
 
@@ -317,18 +375,6 @@ class ConsoleFacade:
         text.append(message, style="status.message")
         self.console.print(text)
 
-
-@dataclass
-class PlainConsoleFacade(ConsoleFacade):
-    """Plain console facade for non-interactive environments."""
-
-    def __post_init__(self) -> None:
-        self.plain = True
-        super().__post_init__()
-
-
 def create_console_facade(plain: bool) -> ConsoleFacade:
     """Create a console facade."""
-    if plain:
-        return PlainConsoleFacade(plain=True)
-    return ConsoleFacade(plain=False)
+    return ConsoleFacade(plain=plain)
