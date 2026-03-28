@@ -422,6 +422,7 @@ class SQLiteBackend:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        path_terms: list[str] | None = None,
         limit: int | None = None,
         offset: int = 0,
         has_tool_use: bool = False,
@@ -435,6 +436,7 @@ class SQLiteBackend:
     ) -> list[ConversationRecord]:
         """List conversations with optional filtering and pagination."""
         return await self.queries.list_conversations(
+<<<<<<< HEAD
             source=source,
             provider=provider,
             providers=providers,
@@ -452,6 +454,48 @@ class SQLiteBackend:
             has_file_ops=has_file_ops,
             has_git_ops=has_git_ops,
             has_subagent=has_subagent,
+||||||| parent of 2166554a (feat: improve dogfooded query retrieval surfaces)
+            ConversationRecordQuery(
+                source=source,
+                provider=provider,
+                providers=tuple(providers or ()),
+                parent_id=parent_id,
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                limit=limit,
+                offset=offset,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            )
+=======
+            ConversationRecordQuery(
+                source=source,
+                provider=provider,
+                providers=tuple(providers or ()),
+                parent_id=parent_id,
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                path_terms=tuple(path_terms or ()),
+                limit=limit,
+                offset=offset,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            )
+>>>>>>> 2166554a (feat: improve dogfooded query retrieval surfaces)
         )
 
     async def count_conversations(
@@ -462,6 +506,7 @@ class SQLiteBackend:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        path_terms: list[str] | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
@@ -473,6 +518,7 @@ class SQLiteBackend:
     ) -> int:
         """Count conversations matching filters without loading records."""
         return await self.queries.count_conversations(
+<<<<<<< HEAD
             source=source,
             provider=provider,
             providers=providers,
@@ -487,6 +533,42 @@ class SQLiteBackend:
             has_file_ops=has_file_ops,
             has_git_ops=has_git_ops,
             has_subagent=has_subagent,
+||||||| parent of 2166554a (feat: improve dogfooded query retrieval surfaces)
+            ConversationRecordQuery(
+                source=source,
+                provider=provider,
+                providers=tuple(providers or ()),
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            )
+=======
+            ConversationRecordQuery(
+                source=source,
+                provider=provider,
+                providers=tuple(providers or ()),
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                path_terms=tuple(path_terms or ()),
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            )
+>>>>>>> 2166554a (feat: improve dogfooded query retrieval surfaces)
         )
 
     async def aggregate_message_stats(

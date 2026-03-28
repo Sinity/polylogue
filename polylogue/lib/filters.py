@@ -86,6 +86,7 @@ class ConversationFilter:
         self._since_date: datetime | None = None
         self._until_date: datetime | None = None
         self._title_pattern: str | None = None
+        self._path_terms: list[str] = []
         self._id_prefix: str | None = None
         self._sort_field: SortField = "date"
         self._sort_reverse: bool = False
@@ -122,10 +123,150 @@ class ConversationFilter:
         )
         return self
 
+<<<<<<< HEAD
     def exclude_provider(self, *names: Provider | str) -> ConversationFilter:
         """Exclude conversations from specific providers."""
         self._excluded_providers.extend(
             n if isinstance(n, Provider) else Provider.from_string(n) for n in names
+||||||| parent of 2166554a (feat: improve dogfooded query retrieval surfaces)
+    def _load_query_plan(self, query_plan: ConversationQueryPlan) -> None:
+        self._fts_terms = list(query_plan.query_terms + query_plan.contains_terms)
+        self._negative_fts_terms = list(query_plan.negative_terms)
+        self._providers = [Provider.from_string(provider) for provider in query_plan.providers]
+        self._excluded_providers = [Provider.from_string(provider) for provider in query_plan.excluded_providers]
+        self._tags = list(query_plan.tags)
+        self._excluded_tags = list(query_plan.excluded_tags)
+        self._has_types = list(query_plan.has_types)
+        self._since_date = query_plan.since
+        self._until_date = query_plan.until
+        self._title_pattern = query_plan.title
+        self._id_prefix = query_plan.conversation_id
+        self._parent_id = query_plan.parent_id
+        self._sort_field = query_plan.sort
+        self._sort_reverse = query_plan.reverse
+        self._limit_count = query_plan.limit
+        self._sample_count = query_plan.sample
+        self._similar_text = query_plan.similar_text
+        self._continuation = query_plan.continuation
+        self._sidechain = query_plan.sidechain
+        self._root = query_plan.root
+        self._has_branches = query_plan.has_branches
+        self._filter_has_tool_use = query_plan.filter_has_tool_use
+        self._filter_has_thinking = query_plan.filter_has_thinking
+        self._min_messages = query_plan.min_messages
+        self._max_messages = query_plan.max_messages
+        self._min_words = query_plan.min_words
+        self._filter_has_file_ops = query_plan.filter_has_file_ops
+        self._filter_has_git_ops = query_plan.filter_has_git_ops
+        self._filter_has_subagent = query_plan.filter_has_subagent
+        self._predicates = list(query_plan.predicates)
+        self._vector_provider = query_plan.vector_provider
+
+    def build_query_plan(self) -> ConversationQueryPlan:
+        """Compile the fluent builder state to the canonical immutable plan."""
+        return ConversationQueryPlan(
+            query_terms=tuple(self._fts_terms),
+            negative_terms=tuple(self._negative_fts_terms),
+            providers=tuple(self._providers),
+            excluded_providers=tuple(self._excluded_providers),
+            tags=tuple(self._tags),
+            excluded_tags=tuple(self._excluded_tags),
+            has_types=tuple(self._has_types),
+            title=self._title_pattern,
+            conversation_id=self._id_prefix,
+            parent_id=self._parent_id,
+            since=self._since_date,
+            until=self._until_date,
+            sort=self._sort_field,
+            reverse=self._sort_reverse,
+            limit=self._limit_count,
+            sample=self._sample_count,
+            similar_text=self._similar_text,
+            predicates=tuple(self._predicates),
+            continuation=self._continuation,
+            sidechain=self._sidechain,
+            root=self._root,
+            has_branches=self._has_branches,
+            filter_has_tool_use=self._filter_has_tool_use,
+            filter_has_thinking=self._filter_has_thinking,
+            min_messages=self._min_messages,
+            max_messages=self._max_messages,
+            min_words=self._min_words,
+            filter_has_file_ops=self._filter_has_file_ops,
+            filter_has_git_ops=self._filter_has_git_ops,
+            filter_has_subagent=self._filter_has_subagent,
+            vector_provider=self._vector_provider,
+=======
+    def _load_query_plan(self, query_plan: ConversationQueryPlan) -> None:
+        self._fts_terms = list(query_plan.query_terms + query_plan.contains_terms)
+        self._negative_fts_terms = list(query_plan.negative_terms)
+        self._providers = [Provider.from_string(provider) for provider in query_plan.providers]
+        self._excluded_providers = [Provider.from_string(provider) for provider in query_plan.excluded_providers]
+        self._tags = list(query_plan.tags)
+        self._excluded_tags = list(query_plan.excluded_tags)
+        self._has_types = list(query_plan.has_types)
+        self._since_date = query_plan.since
+        self._until_date = query_plan.until
+        self._title_pattern = query_plan.title
+        self._path_terms = list(query_plan.path_terms)
+        self._id_prefix = query_plan.conversation_id
+        self._parent_id = query_plan.parent_id
+        self._sort_field = query_plan.sort
+        self._sort_reverse = query_plan.reverse
+        self._limit_count = query_plan.limit
+        self._sample_count = query_plan.sample
+        self._similar_text = query_plan.similar_text
+        self._continuation = query_plan.continuation
+        self._sidechain = query_plan.sidechain
+        self._root = query_plan.root
+        self._has_branches = query_plan.has_branches
+        self._filter_has_tool_use = query_plan.filter_has_tool_use
+        self._filter_has_thinking = query_plan.filter_has_thinking
+        self._min_messages = query_plan.min_messages
+        self._max_messages = query_plan.max_messages
+        self._min_words = query_plan.min_words
+        self._filter_has_file_ops = query_plan.filter_has_file_ops
+        self._filter_has_git_ops = query_plan.filter_has_git_ops
+        self._filter_has_subagent = query_plan.filter_has_subagent
+        self._predicates = list(query_plan.predicates)
+        self._vector_provider = query_plan.vector_provider
+
+    def build_query_plan(self) -> ConversationQueryPlan:
+        """Compile the fluent builder state to the canonical immutable plan."""
+        return ConversationQueryPlan(
+            query_terms=tuple(self._fts_terms),
+            negative_terms=tuple(self._negative_fts_terms),
+            providers=tuple(self._providers),
+            excluded_providers=tuple(self._excluded_providers),
+            tags=tuple(self._tags),
+            excluded_tags=tuple(self._excluded_tags),
+            has_types=tuple(self._has_types),
+            title=self._title_pattern,
+            path_terms=tuple(self._path_terms),
+            conversation_id=self._id_prefix,
+            parent_id=self._parent_id,
+            since=self._since_date,
+            until=self._until_date,
+            sort=self._sort_field,
+            reverse=self._sort_reverse,
+            limit=self._limit_count,
+            sample=self._sample_count,
+            similar_text=self._similar_text,
+            predicates=tuple(self._predicates),
+            continuation=self._continuation,
+            sidechain=self._sidechain,
+            root=self._root,
+            has_branches=self._has_branches,
+            filter_has_tool_use=self._filter_has_tool_use,
+            filter_has_thinking=self._filter_has_thinking,
+            min_messages=self._min_messages,
+            max_messages=self._max_messages,
+            min_words=self._min_words,
+            filter_has_file_ops=self._filter_has_file_ops,
+            filter_has_git_ops=self._filter_has_git_ops,
+            filter_has_subagent=self._filter_has_subagent,
+            vector_provider=self._vector_provider,
+>>>>>>> 2166554a (feat: improve dogfooded query retrieval surfaces)
         )
         return self
 

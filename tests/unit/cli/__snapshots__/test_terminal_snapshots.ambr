@@ -25,6 +25,18 @@
     --semantic-proof                Run semantic preservation proof across
                                     canonical, export, query, stream, and MCP
                                     read surfaces
+<<<<<<< HEAD
+||||||| parent of 2166554a (feat: improve dogfooded query retrieval surfaces)
+    --roundtrip-proof               Run the synthetic schema-and-evidence
+                                    roundtrip proof lane in an isolated
+                                    workspace
+=======
+    --semantic-contracts            List declared semantic-proof surface
+                                    contracts and aliases
+    --roundtrip-proof               Run the synthetic schema-and-evidence
+                                    roundtrip proof lane in an isolated
+                                    workspace
+>>>>>>> 2166554a (feat: improve dogfooded query retrieval surfaces)
     --schema-provider TEXT          Limit schema verification to DB provider
                                     name (repeatable)
     --artifact-provider TEXT        Limit artifact proof<PATH> to
@@ -123,6 +135,8 @@
         polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
+        polylogue --path <PATH> --has-file-ops --list
+        polylogue --similar "sqlite locking bug in parser" --limit 5
   
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
@@ -152,6 +166,10 @@
                                     key:value)
     --exclude-tag TEXT              Exclude tags
     --title TEXT                    Title contains
+    --path TEXT                     Touched path contains substring (repeatable
+                                    = AND)
+    --similar TEXT                  Semantic similarity query (requires
+                                    embeddings)
     --has TEXT                      Filter by content: thinking (reasoning),
                                     tools (calls), summary, attachments
     --has-tool-use                  Only conversations with tool use (SQL
@@ -234,6 +252,10 @@
         polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
+        polylogue --path <PATH> --
+  has-file-ops --list
+        polylogue --similar "sqlite locking bug in parser" --l
+  imit 5
   
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
@@ -268,6 +290,12 @@
                                     key:value)
     --exclude-tag TEXT              Exclude tags
     --title TEXT                    Title contains
+    --path TEXT                     Touched path contains subs
+  tring (repeatable
+                                    = AND)
+    --similar TEXT                  Semantic similarity query
+  (requires
+                                    embeddings)
     --has TEXT                      Filter by content: thinkin
   g (reasoning),
                                     tools (calls), summary, at
@@ -384,6 +412,8 @@
         polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
+        polylogue --path <PATH> --has-file-ops --list
+        polylogue --similar "sqlite locking bug in parser" --limit 5
   
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
@@ -413,6 +443,10 @@
                                     key:value)
     --exclude-tag TEXT              Exclude tags
     --title TEXT                    Title contains
+    --path TEXT                     Touched path contains substring (repeatable
+                                    = AND)
+    --similar TEXT                  Semantic similarity query (requires
+                                    embeddings)
     --has TEXT                      Filter by content: thinking (reasoning),
                                     tools (calls), summary, attachments
     --has-tool-use                  Only conversations with tool use (SQL

@@ -75,6 +75,21 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
 
+    if plan.selection.similar_text and vector_provider is None:
+        click.echo(
+            "Error: --similar requires vector search support. Configure VOYAGE_API_KEY and build embeddings with `polylogue embed` first.",
+            err=True,
+        )
+        raise SystemExit(1)
+    if plan.selection.similar_text:
+        archive_stats = await repo.get_archive_stats()
+        if archive_stats.embedded_messages <= 0:
+            click.echo(
+                "Error: --similar requires existing embeddings. Run `polylogue embed` first.",
+                err=True,
+            )
+            raise SystemExit(1)
+
     try:
         filter_chain = plan.selection.build_filter(
             repo,

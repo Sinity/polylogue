@@ -46,6 +46,7 @@ class ConversationQuerySpec:
     query_terms: tuple[str, ...] = ()
     contains_terms: tuple[str, ...] = ()
     exclude_text_terms: tuple[str, ...] = ()
+    path_terms: tuple[str, ...] = ()
     providers: tuple[Provider, ...] = ()
     excluded_providers: tuple[Provider, ...] = ()
     tags: tuple[str, ...] = ()
@@ -66,6 +67,7 @@ class ConversationQuerySpec:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
+    similar_text: str | None = None
     # Semantic content filters (EXISTS subquery on content_blocks.semantic_type)
     filter_has_file_ops: bool = False
     filter_has_git_ops: bool = False
@@ -78,6 +80,7 @@ class ConversationQuerySpec:
             query_terms=_as_tuple(params.get("query")),
             contains_terms=_as_tuple(params.get("contains")),
             exclude_text_terms=_as_tuple(params.get("exclude_text")),
+            path_terms=_as_tuple(params.get("path_terms") or params.get("path")),
             providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("provider"))),
             excluded_providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("exclude_provider"))),
             tags=_split_csv(params.get("tag")),
@@ -97,6 +100,7 @@ class ConversationQuerySpec:
             min_messages=int(params["min_messages"]) if params.get("min_messages") else None,
             max_messages=int(params["max_messages"]) if params.get("max_messages") else None,
             min_words=int(params["min_words"]) if params.get("min_words") else None,
+            similar_text=str(params["similar_text"]) if params.get("similar_text") else None,
             filter_has_file_ops=bool(params.get("filter_has_file_ops")),
             filter_has_git_ops=bool(params.get("filter_has_git_ops")),
             filter_has_subagent=bool(params.get("filter_has_subagent")),
@@ -111,6 +115,8 @@ class ConversationQuerySpec:
             parts.append(f"contains: {', '.join(self.contains_terms)}")
         if self.exclude_text_terms:
             parts.append(f"exclude text: {', '.join(self.exclude_text_terms)}")
+        if self.path_terms:
+            parts.append(f"path: {', '.join(self.path_terms)}")
         if self.providers:
             parts.append(f"provider: {', '.join(p.value for p in self.providers)}")
         if self.excluded_providers:
@@ -139,6 +145,8 @@ class ConversationQuerySpec:
             parts.append(f"max_messages: {self.max_messages}")
         if self.min_words is not None:
             parts.append(f"min_words: {self.min_words}")
+        if self.similar_text:
+            parts.append(f"similar: {self.similar_text}")
         if self.since:
             parts.append(f"since: {self.since}")
         if self.until:
@@ -154,6 +162,7 @@ class ConversationQuerySpec:
                 self.query_terms,
                 self.contains_terms,
                 self.exclude_text_terms,
+                self.path_terms,
                 self.providers,
                 self.excluded_providers,
                 self.tags,
@@ -172,9 +181,154 @@ class ConversationQuerySpec:
                 self.min_messages is not None,
                 self.max_messages is not None,
                 self.min_words is not None,
+                self.similar_text is not None,
             )
         )
 
+<<<<<<< HEAD
+||||||| parent of 2166554a (feat: improve dogfooded query retrieval surfaces)
+    def to_plan(
+        self,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> ConversationQueryPlan:
+        """Compile the immutable spec to the canonical execution plan."""
+        plan = ConversationQueryPlan(
+            query_terms=self.query_terms,
+            contains_terms=self.contains_terms,
+            negative_terms=self.exclude_text_terms,
+            providers=self.providers,
+            excluded_providers=self.excluded_providers,
+            tags=self.tags,
+            excluded_tags=self.excluded_tags,
+            has_types=self.has_types,
+            title=self.title,
+            conversation_id=self.conversation_id,
+            since=_parse_query_date("since", self.since),
+            until=_parse_query_date("until", self.until),
+            sort=self.sort or "date",
+            reverse=self.reverse,
+            limit=self.limit,
+            sample=self.sample,
+            filter_has_tool_use=self.filter_has_tool_use,
+            filter_has_thinking=self.filter_has_thinking,
+            min_messages=self.min_messages,
+            max_messages=self.max_messages,
+            min_words=self.min_words,
+            filter_has_file_ops=self.filter_has_file_ops,
+            filter_has_git_ops=self.filter_has_git_ops,
+            filter_has_subagent=self.filter_has_subagent,
+            vector_provider=vector_provider,
+        )
+        if self.latest:
+            plan = replace(plan, sort="date", limit=1)
+        return plan
+
+    async def list(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> list[Conversation]:
+        return await self.build_filter(repository, vector_provider=vector_provider).list()
+
+    async def list_summaries(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> list[ConversationSummary]:
+        return await self.build_filter(repository, vector_provider=vector_provider).list_summaries()
+
+    async def count(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> int:
+        return await self.build_filter(repository, vector_provider=vector_provider).count()
+
+    async def delete(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> int:
+        return await self.build_filter(repository, vector_provider=vector_provider).delete()
+
+=======
+    def to_plan(
+        self,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> ConversationQueryPlan:
+        """Compile the immutable spec to the canonical execution plan."""
+        plan = ConversationQueryPlan(
+            query_terms=self.query_terms,
+            contains_terms=self.contains_terms,
+            negative_terms=self.exclude_text_terms,
+            path_terms=self.path_terms,
+            providers=self.providers,
+            excluded_providers=self.excluded_providers,
+            tags=self.tags,
+            excluded_tags=self.excluded_tags,
+            has_types=self.has_types,
+            title=self.title,
+            conversation_id=self.conversation_id,
+            since=_parse_query_date("since", self.since),
+            until=_parse_query_date("until", self.until),
+            sort=self.sort or "date",
+            reverse=self.reverse,
+            limit=self.limit,
+            sample=self.sample,
+            filter_has_tool_use=self.filter_has_tool_use,
+            filter_has_thinking=self.filter_has_thinking,
+            min_messages=self.min_messages,
+            max_messages=self.max_messages,
+            min_words=self.min_words,
+            similar_text=self.similar_text,
+            filter_has_file_ops=self.filter_has_file_ops,
+            filter_has_git_ops=self.filter_has_git_ops,
+            filter_has_subagent=self.filter_has_subagent,
+            vector_provider=vector_provider,
+        )
+        if self.latest:
+            plan = replace(plan, sort="date", limit=1)
+        return plan
+
+    async def list(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> list[Conversation]:
+        return await self.build_filter(repository, vector_provider=vector_provider).list()
+
+    async def list_summaries(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> list[ConversationSummary]:
+        return await self.build_filter(repository, vector_provider=vector_provider).list_summaries()
+
+    async def count(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> int:
+        return await self.build_filter(repository, vector_provider=vector_provider).count()
+
+    async def delete(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> int:
+        return await self.build_filter(repository, vector_provider=vector_provider).delete()
+
+>>>>>>> 2166554a (feat: improve dogfooded query retrieval surfaces)
     def build_filter(
         self,
         repository: ConversationRepository,

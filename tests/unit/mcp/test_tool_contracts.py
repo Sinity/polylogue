@@ -44,6 +44,15 @@ QUERY_TOOL_CASES = [
         },
     ),
     (
+        "search",
+        {"query": "hello", "path": "/realm/project/polylogue/README.md", "limit": 5},
+        {
+            "contains": ("hello",),
+            "path": ("/realm/project/polylogue/README.md",),
+            "limit": (5,),
+        },
+    ),
+    (
         "list_conversations",
         {"limit": 10},
         {
@@ -58,6 +67,14 @@ QUERY_TOOL_CASES = [
             "since": ("2024-01-01",),
             "tag": ("bug",),
             "title": ("incident",),
+            "limit": (2,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"path": "/realm/project/polylogue/README.md", "limit": 2},
+        {
+            "path": ("/realm/project/polylogue/README.md",),
             "limit": (2,),
         },
     ),
@@ -90,7 +107,39 @@ class TestQueryTools:
         assert len(payload) == 1
         assert payload[0]["id"] == simple_conversation.id
         for method_name, method_args in expected_calls.items():
+<<<<<<< HEAD
             getattr(filter_instance, method_name).assert_called_once_with(*method_args)
+||||||| parent of 2166554a (feat: improve dogfooded query retrieval surfaces)
+            expected_value = method_args[0] if len(method_args) == 1 else method_args
+            if method_name == "contains":
+                assert spec.query_terms == (expected_value,)
+            elif method_name == "provider":
+                assert tuple(str(provider) for provider in spec.providers) == (expected_value,)
+            elif method_name == "since":
+                assert spec.since == expected_value
+            elif method_name == "tag":
+                assert spec.tags == (expected_value,)
+            elif method_name == "title":
+                assert spec.title == expected_value
+            elif method_name == "limit":
+                assert spec.limit == expected_value
+=======
+            expected_value = method_args[0] if len(method_args) == 1 else method_args
+            if method_name == "contains":
+                assert spec.query_terms == (expected_value,)
+            elif method_name == "provider":
+                assert tuple(str(provider) for provider in spec.providers) == (expected_value,)
+            elif method_name == "since":
+                assert spec.since == expected_value
+            elif method_name == "path":
+                assert spec.path_terms == (expected_value,)
+            elif method_name == "tag":
+                assert spec.tags == (expected_value,)
+            elif method_name == "title":
+                assert spec.title == expected_value
+            elif method_name == "limit":
+                assert spec.limit == expected_value
+>>>>>>> 2166554a (feat: improve dogfooded query retrieval surfaces)
 
     @pytest.mark.asyncio
     async def test_search_with_empty_query(self, mcp_server):

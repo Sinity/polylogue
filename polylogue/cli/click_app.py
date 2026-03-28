@@ -221,6 +221,8 @@ def mcp_command(env: AppEnv, transport: str) -> None:
 @click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)")
 @click.option("--exclude-tag", help="Exclude tags")
 @click.option("--title", help="Title contains")
+@click.option("--path", "path_terms", multiple=True, help="Touched path contains substring (repeatable = AND)")
+@click.option("--similar", "similar_text", help="Semantic similarity query (requires embeddings)")
 @click.option("--has", "has_type", multiple=True, help="Filter by content: thinking (reasoning), tools (calls), summary, attachments")
 @click.option("--has-tool-use", "filter_has_tool_use", is_flag=True, help="Only conversations with tool use (SQL pushdown)")
 @click.option("--has-thinking", "filter_has_thinking", is_flag=True, help="Only conversations with thinking blocks (SQL pushdown)")
@@ -297,6 +299,8 @@ def cli(
     tag: str | None,
     exclude_tag: str | None,
     title: str | None,
+    path_terms: tuple[str, ...],
+    similar_text: str | None,
     has_type: tuple[str, ...],
     filter_has_tool_use: bool,
     filter_has_thinking: bool,
@@ -349,6 +353,8 @@ def cli(
         polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
+        polylogue --path /realm/project/polylogue/README.md --has-file-ops --list
+        polylogue --similar "sqlite locking bug in parser" --limit 5
 
     \b
     Modifiers (write operations):

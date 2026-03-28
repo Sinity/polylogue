@@ -41,8 +41,12 @@ from tests.infra.strategies.storage import (
     TagAssignmentSpec,
     TitleSearchSpec,
     expected_tag_counts,
-    literal_title_search_strategy as infra_title_search_strategy,
     seed_conversation_graph,
+)
+from tests.infra.strategies.storage import (
+    literal_title_search_strategy as infra_title_search_strategy,
+)
+from tests.infra.strategies.storage import (
     tag_assignment_strategy as infra_tag_assignment_strategy,
 )
 
@@ -66,6 +70,137 @@ def _attachment_row(conn, attachment_id: str):
         "SELECT * FROM attachments WHERE attachment_id = ?",
         (attachment_id,),
     ).fetchone()
+
+
+@pytest.mark.asyncio
+async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
+    """Low-level list/count filters must honor persisted semantic paths."""
+    from polylogue.storage.store import ContentBlockRecord
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "path-filter.db"
+    target_path = "/realm/project/polylogue/README.md"
+    other_path = "/realm/project/polylogue/docs/cli-reference.md"
+
+    (ConversationBuilder(db_path, "conv-readme")
+     .provider("claude-code")
+     .title("README work")
+     .add_message(
+         "m1",
+         role="assistant",
+         text="Inspecting the repository README",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-readme-0",
+                 message_id="m1",
+                 conversation_id="conv-readme",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Read",
+                 metadata=f'{{"path":"{target_path}"}}',
+                 semantic_type="file_read",
+             )
+         ],
+     )
+     .save())
+
+    (ConversationBuilder(db_path, "conv-other")
+     .provider("claude-code")
+     .title("CLI docs work")
+     .add_message(
+         "m2",
+         role="assistant",
+         text="Inspecting docs",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-other-0",
+                 message_id="m2",
+                 conversation_id="conv-other",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Read",
+                 metadata=f'{{"path":"{other_path}"}}',
+                 semantic_type="file_read",
+             )
+         ],
+     )
+     .save())
+
+    backend = SQLiteBackend(db_path=db_path)
+    try:
+        matches = await backend.list_conversations(path_terms=[target_path], limit=10)
+        assert [record.conversation_id for record in matches] == ["conv-readme"]
+        assert await backend.count_conversations(path_terms=[target_path]) == 1
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
+    """Combined FTS + path queries must keep the path constraint after search ranking."""
+    from polylogue.lib.filters import ConversationFilter
+    from polylogue.storage.store import ContentBlockRecord
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "path-fts.db"
+    target_path = "/realm/project/polylogue/README.md"
+
+    (ConversationBuilder(db_path, "conv-match")
+     .provider("claude-code")
+     .title("Path match")
+     .add_message(
+         "m1",
+         role="assistant",
+         text="Investigating the same parser regression",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-match-0",
+                 message_id="m1",
+                 conversation_id="conv-match",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Read",
+                 metadata=f'{{"path":"{target_path}"}}',
+                 semantic_type="file_read",
+             )
+         ],
+     )
+     .save())
+
+    (ConversationBuilder(db_path, "conv-no-path")
+     .provider("claude-code")
+     .title("No path match")
+     .add_message(
+         "m2",
+         role="assistant",
+         text="Investigating the same parser regression",
+         content_blocks=[
+             ContentBlockRecord(
+                 block_id="blk-nopath-0",
+                 message_id="m2",
+                 conversation_id="conv-no-path",
+                 block_index=0,
+                 type="tool_use",
+                 tool_name="Read",
+                 metadata='{"path":"/realm/project/polylogue/docs/cli-reference.md"}',
+                 semantic_type="file_read",
+             )
+         ],
+     )
+     .save())
+
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
+    try:
+        results = await (
+            ConversationFilter(repo)
+            .contains("parser regression")
+            .path(target_path)
+            .list()
+        )
+        assert [str(conversation.id) for conversation in results] == ["conv-match"]
+    finally:
+        await backend.close()
 
 
 def test_store_records_roundtrip_contract(test_conn) -> None:
@@ -597,8 +732,8 @@ class TestTitleSearchLaws:
     async def test_title_search_finds_matching(self, spec: dict):
         """Searching by title substring finds the matching conversation."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            from polylogue.storage.repository import ConversationRepository
             from polylogue.storage.index import rebuild_index
+            from polylogue.storage.repository import ConversationRepository
             from tests.infra.storage_records import ConversationBuilder
 
             db_path = Path(tmp_dir) / "search.db"
@@ -953,7 +1088,8 @@ class TestCacheThreadSafety:
     def test_concurrent_invalidation(self):
         """Concurrent invalidation doesn't corrupt state."""
         import threading
-        from polylogue.storage.search_cache import invalidate_search_cache, get_cache_stats
+
+        from polylogue.storage.search_cache import get_cache_stats, invalidate_search_cache
 
         initial_stats = get_cache_stats()
         initial_version = initial_stats["cache_version"]
@@ -1126,7 +1262,7 @@ class TestInfraTagAssignment:
 
             expected = expected_tag_counts(spec)
             actual: dict[str, int] = {}
-            for conv, tags in zip(spec.conversations, spec.tag_sequences, strict=True):
+            for conv, _tags in zip(spec.conversations, spec.tag_sequences, strict=True):
                 stored = await repo.get(conv.conversation_id)
                 if stored:
                     for tag in stored.tags:
