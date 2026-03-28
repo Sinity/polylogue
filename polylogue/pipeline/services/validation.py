@@ -20,6 +20,7 @@ from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.pipeline.stage_models import ValidateResult, ValidatedRawRecord
 >>>>>>> e0f4c2ca (fix: restore typed pipeline state contracts)
 from polylogue.protocols import ProgressCallback
+from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
@@ -262,10 +263,18 @@ class ValidationService:
             result = ValidateResult()
             for index, raw_id in enumerate(raw_ids, start=1):
                 if persist:
+<<<<<<< HEAD
                     await self.backend.mark_raw_validated(
+||||||| parent of f0bf2180 (refactor: unify raw-state persistence through typed update surface)
+                    await self.repository.mark_raw_validated(
+=======
+                    await self.repository.update_raw_state(
+>>>>>>> f0bf2180 (refactor: unify raw-state persistence through typed update surface)
                         raw_id,
-                        status=ValidationStatus.SKIPPED,
-                        mode=validation_mode,
+                        state=RawConversationStateUpdate(
+                            validation_status=ValidationStatus.SKIPPED,
+                            validation_mode=validation_mode,
+                        ),
                     )
                 result.records.append(
                     ValidatedRawRecord(
@@ -344,10 +353,18 @@ class ValidationService:
         if validation_mode is ValidationMode.OFF:
             for raw_record in raw_records:
                 if persist:
+<<<<<<< HEAD
                     await self.backend.mark_raw_validated(
+||||||| parent of f0bf2180 (refactor: unify raw-state persistence through typed update surface)
+                    await self.repository.mark_raw_validated(
+=======
+                    await self.repository.update_raw_state(
+>>>>>>> f0bf2180 (refactor: unify raw-state persistence through typed update surface)
                         raw_record.raw_id,
-                        status=ValidationStatus.SKIPPED,
-                        mode=validation_mode,
+                        state=RawConversationStateUpdate(
+                            validation_status=ValidationStatus.SKIPPED,
+                            validation_mode=validation_mode,
+                        ),
                     )
                 result.records.append(
                     ValidatedRawRecord(
@@ -413,20 +430,36 @@ class ValidationService:
             )
 
             if persist:
+<<<<<<< HEAD
                 await self.backend.mark_raw_validated(
+||||||| parent of f0bf2180 (refactor: unify raw-state persistence through typed update surface)
+                await self.repository.mark_raw_validated(
+=======
+                await self.repository.update_raw_state(
+>>>>>>> f0bf2180 (refactor: unify raw-state persistence through typed update surface)
                     raw_record.raw_id,
-                    status=outcome.validation_status,
-                    error=outcome.validation_error,
-                    drift_count=outcome.drift_count,
-                    provider=outcome.canonical_provider,
-                    mode=validation_mode,
-                    payload_provider=outcome.payload_provider,
+                    state=RawConversationStateUpdate(
+                        validation_status=outcome.validation_status,
+                        validation_error=outcome.validation_error,
+                        validation_drift_count=outcome.drift_count,
+                        validation_provider=outcome.canonical_provider,
+                        validation_mode=validation_mode,
+                        payload_provider=outcome.payload_provider,
+                    ),
                 )
                 if not outcome.parseable and outcome.validation_error is not None:
+<<<<<<< HEAD
                     await self.backend.mark_raw_parsed(
+||||||| parent of f0bf2180 (refactor: unify raw-state persistence through typed update surface)
+                    await self.repository.mark_raw_parsed(
+=======
+                    await self.repository.update_raw_state(
+>>>>>>> f0bf2180 (refactor: unify raw-state persistence through typed update surface)
                         raw_record.raw_id,
-                        error=outcome.validation_error,
-                        payload_provider=outcome.payload_provider,
+                        state=RawConversationStateUpdate(
+                            parse_error=outcome.validation_error,
+                            payload_provider=outcome.payload_provider,
+                        ),
                     )
 
             if progress_callback is not None:

@@ -21,6 +21,8 @@ from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.sources.parsers.base import ParsedConversation, RawConversationData
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.state_views import RawConversationStateUpdate
+from polylogue.types import ValidationStatus
 from polylogue.storage.store import RawConversationRecord
 from tests.infra.strategies import (
     acquisition_input_batch_strategy,
@@ -357,10 +359,23 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
         source_path=source_path,
         payload_provider=None,
     )
+<<<<<<< HEAD
     backend = MagicMock()
     backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
     backend.mark_raw_validated = AsyncMock()
     backend.mark_raw_parsed = AsyncMock()
+||||||| parent of f0bf2180 (refactor: unify raw-state persistence through typed update surface)
+    backend = MagicMock(spec=SQLiteBackend)
+    service = ValidationService(backend=backend)
+    service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])  # type: ignore[method-assign]
+    service.repository.mark_raw_validated = AsyncMock()  # type: ignore[method-assign]
+    service.repository.mark_raw_parsed = AsyncMock()  # type: ignore[method-assign]
+=======
+    backend = MagicMock(spec=SQLiteBackend)
+    service = ValidationService(backend=backend)
+    service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])  # type: ignore[method-assign]
+    service.repository.update_raw_state = AsyncMock()  # type: ignore[method-assign]
+>>>>>>> f0bf2180 (refactor: unify raw-state persistence through typed update surface)
 
     class _SyntheticValidator:
         provider = provider_name
@@ -398,12 +413,41 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
     assert result.parseable_raw_ids == (["raw-1"] if expected["parseable"] else [])
     assert result.invalid_raw_ids == ([] if expected["parseable"] else ["raw-1"])
 
+<<<<<<< HEAD
     mark_validated = backend.mark_raw_validated.await_args.kwargs
     assert mark_validated["status"] == expected["status"]
+||||||| parent of f0bf2180 (refactor: unify raw-state persistence through typed update surface)
+    mark_validated = service.repository.mark_raw_validated.await_args.kwargs
+    assert mark_validated["status"] == expected["status"]
+=======
+    update_calls = service.repository.update_raw_state.await_args_list
+    assert len(update_calls) >= 1
+    assert update_calls[0].args[0] == "raw-1"
+    validation_state = update_calls[0].kwargs["state"]
+    assert isinstance(validation_state, RawConversationStateUpdate)
+    assert validation_state.validation_status == ValidationStatus.from_string(expected["status"])
+
+    parse_updates = len(update_calls)
+>>>>>>> f0bf2180 (refactor: unify raw-state persistence through typed update surface)
     if expected["mark_raw_parsed"]:
+<<<<<<< HEAD
         backend.mark_raw_parsed.assert_awaited_once()
+||||||| parent of f0bf2180 (refactor: unify raw-state persistence through typed update surface)
+        service.repository.mark_raw_parsed.assert_awaited_once()
+=======
+        assert parse_updates == 2
+        parse_state = update_calls[1].kwargs["state"]
+        assert isinstance(parse_state, RawConversationStateUpdate)
+        assert parse_state.parse_error is not None
+>>>>>>> f0bf2180 (refactor: unify raw-state persistence through typed update surface)
     else:
+<<<<<<< HEAD
         backend.mark_raw_parsed.assert_not_awaited()
+||||||| parent of f0bf2180 (refactor: unify raw-state persistence through typed update surface)
+        service.repository.mark_raw_parsed.assert_not_awaited()
+=======
+        assert parse_updates == 1
+>>>>>>> f0bf2180 (refactor: unify raw-state persistence through typed update surface)
 
 
 @settings(max_examples=30, deadline=None, suppress_health_check=[HealthCheck.too_slow])

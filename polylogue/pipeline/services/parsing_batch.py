@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import orjson
 
 from polylogue.logging import get_logger
+from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
 
@@ -61,10 +63,12 @@ async def process_raw_batch(
 
     if not work_items:
         for rid, error in failed_raw_ids.items():
-            await service.repository.mark_raw_parsed(
+            await service.repository.update_raw_state(
                 rid,
-                error=error,
-                payload_provider=payload_providers.get(rid),
+                state=RawConversationStateUpdate(
+                    parse_error=error,
+                    payload_provider=payload_providers.get(rid),
+                ),
             )
         return
 
@@ -135,21 +139,31 @@ async def process_raw_batch(
 
     for rid in succeeded_raw_ids:
         if rid not in failed_raw_ids:
-            await service.repository.mark_raw_parsed(
+            await service.repository.update_raw_state(
                 rid,
-                payload_provider=payload_providers.get(rid),
+                state=RawConversationStateUpdate(
+                    parsed_at=datetime.now(timezone.utc).isoformat(),
+                    parse_error=None,
+                    payload_provider=payload_providers.get(rid),
+                ),
             )
     for rid in skipped_raw_ids:
         if rid not in failed_raw_ids and rid not in succeeded_raw_ids:
-            await service.repository.mark_raw_parsed(
+            await service.repository.update_raw_state(
                 rid,
-                payload_provider=payload_providers.get(rid),
+                state=RawConversationStateUpdate(
+                    parsed_at=datetime.now(timezone.utc).isoformat(),
+                    parse_error=None,
+                    payload_provider=payload_providers.get(rid),
+                ),
             )
     for rid, error in failed_raw_ids.items():
-        await service.repository.mark_raw_parsed(
+        await service.repository.update_raw_state(
             rid,
-            error=error,
-            payload_provider=payload_providers.get(rid),
+            state=RawConversationStateUpdate(
+                parse_error=error,
+                payload_provider=payload_providers.get(rid),
+            ),
         )
 
 

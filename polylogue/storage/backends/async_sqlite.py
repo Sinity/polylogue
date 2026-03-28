@@ -54,7 +54,12 @@ from polylogue.storage.query_models import ConversationRecordQuery
 =======
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.state_views import RawConversationState
+<<<<<<< HEAD
 >>>>>>> e0f4c2ca (fix: restore typed pipeline state contracts)
+||||||| parent of f0bf2180 (refactor: unify raw-state persistence through typed update surface)
+=======
+from polylogue.storage.state_views import RawConversationStateUpdate
+>>>>>>> f0bf2180 (refactor: unify raw-state persistence through typed update surface)
 from polylogue.storage.store import (
     ArtifactObservationRecord,
     AttachmentRecord,
@@ -969,6 +974,21 @@ class SQLiteBackend:
         """Retrieve a raw conversation by ID."""
         async with self._get_connection() as conn:
             return await raw_queries.get_raw_conversation(conn, raw_id)
+
+    async def update_raw_state(
+        self,
+        raw_id: str,
+        *,
+        state: RawConversationStateUpdate,
+    ) -> None:
+        """Apply a typed raw-state mutation."""
+        async with self._get_connection() as conn:
+            await raw_queries.apply_raw_state_update(
+                conn,
+                raw_id,
+                state=state,
+                transaction_depth=self._transaction_depth,
+            )
 
     async def mark_raw_parsed(
         self,
