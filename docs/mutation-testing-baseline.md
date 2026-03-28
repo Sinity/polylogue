@@ -111,11 +111,11 @@ the follow-up source/helper/query pass.
 
 | Campaign | Commit | Killed | Survived | Timeout | Not checked | Interpretation |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| `cli-query` | `e759af23458d` | 963 | 1018 | 16 | 0 | Query execution/output still has very high survivor density; the next wave needs stronger route/error/mutation laws, not more infrastructure. |
+| `cli-query` | `e058c8240959` | 935 | 1007 | 20 | 0 | Clean post-concentration rerun: helper ownership is cleaner and survivors are still concentrated in `_async_execute_query` routing plus mutation-heavy modifier/delete paths. |
 | `drive-client` | `7e7c310037f9` | 553 | 327 | 4 | 0 | Drive transport/auth seams are mutation-usable now; remaining residue clusters around credential loading, folder resolution, and retry/download paths. |
 | `repository` | `e759af23458d` | 569 | 104 | 35 | 0 | Repository laws improved materially; the main remaining issue is timeout-heavy hydration/read-path coverage, not blind spots. |
 | `site-builder` | `2bdb267e93b7` | 245 | 228 | 1 | 0 | Streaming/site generation laws materially improved this area and it is now mainly a regression guard. |
-| `source-detection` | `e759af23458d` | 713 | 435 | 3 | 0 | Detection/dispatch now has zero `not_checked`; remaining survivors cluster in ZIP filtering, emit paths, and provider sniffing. |
+| `source-detection` | `e058c8240959` | 702 | 445 | 4 | 0 | Clean post-concentration rerun after pruning edge-test duplication; reach is still complete, but survivors remain concentrated in ZIP filtering, emit paths, and provider sniffing. |
 | `providers-semantics` | `c0596770631e` | 805 | 504 | 2 | 0 | First focused concentration rerun after source semantic test collapse; reach is still clean and survivor mass remains concentrated in `extract_content_blocks`, `to_meta`, and fallback Claude Code harmonization. |
 | `sources-parse` | `c0596770631e` | 3455 | 2482 | 10 | 0 | First focused concentration rerun after source semantic test collapse; the broad source surface remains fully reachable, with remaining work concentrated in drive-client seams and provider semantic survivor mass. |
 
@@ -126,15 +126,15 @@ the follow-up source/helper/query pass.
 - We are ready for the next targeted law/property wave.
 - The current highest-yield next fronts are:
   1. `sources-parse`
-  2. `cli-query`
-  3. `providers-semantics`
+  2. `providers-semantics`
+  3. `cli-query`
   4. `drive-client` plus the adjacent `source-detection` seam
   5. `repository`
 - We are not ready to claim source/provider/harmonization semantics are exhaustively specified.
   The reruns removed reach failures, but they did not saturate the semantic space.
 - The dominant structural issues are now:
   - survivor concentration in `polylogue.schemas.unified` and provider viewport shaping,
-  - high survivor/timeout mass in query orchestration,
+  - high survivor density in source parsing/detection and query orchestration,
   - drive-client transport/auth behavior still carrying a large untouched surface.
 - Additional mutmut infrastructure work is not the bottleneck now. The next
   gains come from stronger laws, better generators/oracles, and code
