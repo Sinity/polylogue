@@ -1,7 +1,8 @@
+"""Unified repository for conversation read/write operations."""
+
 from __future__ import annotations
 
 import builtins
-import threading
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
@@ -19,7 +20,6 @@ from .store import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.lib import filters
     from polylogue.lib.stats import ArchiveStats
     from polylogue.protocols import VectorProvider
 
@@ -44,14 +44,15 @@ class RepositoryMessageSource(MessageSource):
 class ConversationRepository:
     """Unified repository for conversation read/write operations.
 
-    Encapsulates the write lock for thread-safety and provides methods for
-    querying, retrieving, and storing conversation data.
+    Write safety is provided by SQLite's ``BEGIN IMMEDIATE`` transactions
+    in the backend layer (combined with ``busy_timeout=30000``), not by a
+    Python-level lock.  This allows concurrent reads from other threads
+    to proceed unblocked during writes.
     """
 
     def __init__(self, backend: SQLiteBackend) -> None:
         self._backend = backend
-        self._write_lock = threading.Lock()
-        # Store db_path for thread workers in IngestionService
+        # Store db_path for thread workers in ParsingService
         self._db_path = getattr(backend, "_db_path", None)
 
     @property
@@ -270,15 +271,15 @@ class ConversationRepository:
         msg_to_conv = self._get_message_conversation_mapping(message_ids)
 
         conv_scores: dict[str, float] = {}
-        for msg_id, score in results:
+        for msg_id, distance in results:
             conv_id = msg_to_conv.get(msg_id)
             if conv_id:
-                conv_scores[conv_id] = max(conv_scores.get(conv_id, 0.0), score)
+                # Lower distance = more similar; keep the best (lowest) per conversation
+                conv_scores[conv_id] = min(conv_scores.get(conv_id, float("inf")), distance)
 
         ranked_ids = sorted(
             conv_scores.keys(),
             key=lambda x: conv_scores[x],
-            reverse=True,
         )[:limit]
 
         return self._get_many(ranked_ids)
@@ -291,12 +292,6 @@ class ConversationRepository:
             query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
             rows = conn.execute(query, message_ids).fetchall()
         return {row["message_id"]: row["conversation_id"] for row in rows}
-
-    def filter(self) -> filters.ConversationFilter:
-        """Create a filter builder for chainable queries."""
-        from polylogue.lib import filters
-
-        return filters.ConversationFilter(self)
 
     # --- Write Methods ---
 
@@ -329,53 +324,51 @@ class ConversationRepository:
         if backend is None:
             raise RuntimeError("Backend is not initialized")
 
-        with self._write_lock:
-            backend.begin()
-            try:
-                existing = backend.get_conversation(conversation.conversation_id)
-                backend.save_conversation(conversation)
-                if existing and existing.content_hash == conversation.content_hash:
-                    counts["skipped_conversations"] += 1
+        backend.begin()
+        try:
+            existing = backend.get_conversation(conversation.conversation_id)
+            backend.save_conversation(conversation)
+            if existing and existing.content_hash == conversation.content_hash:
+                counts["skipped_conversations"] += 1
+            else:
+                counts["conversations"] += 1
+
+            existing_messages = {msg.message_id: msg for msg in backend.get_messages(conversation.conversation_id)}
+            for message in messages:
+                existing_msg = existing_messages.get(message.message_id)
+                if existing_msg and existing_msg.content_hash == message.content_hash:
+                    counts["skipped_messages"] += 1
                 else:
-                    counts["conversations"] += 1
+                    counts["messages"] += 1
 
-                existing_messages = {msg.message_id: msg for msg in backend.get_messages(conversation.conversation_id)}
-                for message in messages:
-                    existing_msg = existing_messages.get(message.message_id)
-                    if existing_msg and existing_msg.content_hash == message.content_hash:
-                        counts["skipped_messages"] += 1
-                    else:
-                        counts["messages"] += 1
+            if messages:
+                backend.save_messages(messages)
 
-                if messages:
-                    backend.save_messages(messages)
+            existing_attachments = {
+                att.attachment_id: att for att in backend.get_attachments(conversation.conversation_id)
+            }
+            for attachment in attachments:
+                if attachment.attachment_id in existing_attachments:
+                    counts["skipped_attachments"] += 1
+                else:
+                    counts["attachments"] += 1
 
-                existing_attachments = {
-                    att.attachment_id: att for att in backend.get_attachments(conversation.conversation_id)
-                }
-                for attachment in attachments:
-                    if attachment.attachment_id in existing_attachments:
-                        counts["skipped_attachments"] += 1
-                    else:
-                        counts["attachments"] += 1
+            new_attachment_ids: set[str] = {str(att.attachment_id) for att in attachments}
+            backend.prune_attachments(conversation.conversation_id, new_attachment_ids)
 
-                new_attachment_ids: set[str] = {str(att.attachment_id) for att in attachments}
-                backend.prune_attachments(conversation.conversation_id, new_attachment_ids)
+            if attachments:
+                backend.save_attachments(attachments)
 
-                if attachments:
-                    backend.save_attachments(attachments)
-
-                backend.commit()
-            except Exception:
-                backend.rollback()
-                raise
+            backend.commit()
+        except Exception:
+            backend.rollback()
+            raise
 
         return counts
 
     def record_run(self, record: RunRecord) -> None:
         """Record a pipeline run audit entry."""
-        with self._write_lock:
-            self._backend.record_run(record)
+        self._backend.record_run(record)
 
     # --- Metadata CRUD ---
 
@@ -383,32 +376,26 @@ class ConversationRepository:
         return self._backend.get_metadata(conversation_id)
 
     def update_metadata(self, conversation_id: str, key: str, value: object) -> None:
-        with self._write_lock:
-            self._backend.update_metadata(conversation_id, key, value)
+        self._backend.update_metadata(conversation_id, key, value)
 
     def delete_metadata(self, conversation_id: str, key: str) -> None:
-        with self._write_lock:
-            self._backend.delete_metadata(conversation_id, key)
+        self._backend.delete_metadata(conversation_id, key)
 
     def add_tag(self, conversation_id: str, tag: str) -> None:
-        with self._write_lock:
-            self._backend.add_tag(conversation_id, tag)
+        self._backend.add_tag(conversation_id, tag)
 
     def remove_tag(self, conversation_id: str, tag: str) -> None:
-        with self._write_lock:
-            self._backend.remove_tag(conversation_id, tag)
+        self._backend.remove_tag(conversation_id, tag)
 
     def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
-        """List all tags with counts. Read-only, no write lock needed."""
+        """List all tags with counts."""
         return self._backend.list_tags(provider=provider)
 
     def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
-        with self._write_lock:
-            self._backend.set_metadata(conversation_id, metadata)
+        self._backend.set_metadata(conversation_id, metadata)
 
     def delete_conversation(self, conversation_id: str) -> bool:
-        with self._write_lock:
-            return self._backend.delete_conversation(conversation_id)
+        return self._backend.delete_conversation(conversation_id)
 
     # --- Vector Search Methods ---
 
@@ -498,6 +485,10 @@ class ConversationRepository:
             "SELECT COUNT(*) FROM messages"
         ).fetchone()[0]
 
+        att_count = conn.execute(
+            "SELECT COUNT(*) FROM attachments"
+        ).fetchone()[0]
+
         provider_rows = conn.execute(
             """
             SELECT provider_name, COUNT(*) as count
@@ -518,19 +509,20 @@ class ConversationRepository:
                 "SELECT COUNT(*) FROM message_embeddings"
             ).fetchone()[0]
         except Exception as exc:
-            logger.debug("Embedding stats query failed: %s", exc)
+            logger.warning("Embedding stats query failed: %s", exc)
 
         # Get database size
         db_size = 0
         try:
-            import os
-            db_size = os.path.getsize(self._db_path) if self._db_path else 0
+            from pathlib import Path
+            db_size = Path(self._db_path).stat().st_size if self._db_path else 0
         except Exception as exc:
-            logger.debug("DB size check failed: %s", exc)
+            logger.warning("DB size check failed: %s", exc)
 
         return ArchiveStats(
             total_conversations=conv_count,
             total_messages=msg_count,
+            total_attachments=att_count,
             providers=providers,
             embedded_conversations=embedded_convs,
             embedded_messages=embedded_msgs,
