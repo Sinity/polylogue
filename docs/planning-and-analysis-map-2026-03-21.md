@@ -24,6 +24,12 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
+<<<<<<< ours
+||||||| base
+| [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Current planned execution program for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Planned; canonical next implementation campaign |
+=======
+| [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Executed convergence campaign for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Executed; canonical record of the convergence campaign |
+>>>>>>> theirs
 | [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md) | Most recent executed closure slice for the remaining machine/runtime/testing frontier | Executed; current canonical record of the runtime-contract and validation-lane closure |
 | [programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md) | Most recent executed proof program covering query summary/list surfaces, stream surfaces, MCP read payloads, and showcase hardening | Executed; current canonical record of the read-surface proof lane |
 | [programs/multi-surface-semantic-proof-program-2026-03-22.md](./programs/multi-surface-semantic-proof-program-2026-03-22.md) | Executed semantic/export proof program extending proof from canonical markdown to broader export/query surfaces | Executed; predecessor proof-lane record |
@@ -108,6 +114,26 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
+<<<<<<< ours
+||||||| base
+- the next live implementation campaign is now [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md)
+- that program specifically targets remaining architectural drag inside main code rather than a missing product surface:
+  - query spec vs mutable filter execution
+  - backend/query-store/repository overlap
+  - Click front-door routing semantics
+  - showcase/QA catalog and runner embedding
+  - schema runtime vs tooling entanglement
+  - over-broad package-root exports
+=======
+- the convergence campaign in [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) is now executed
+- it closed the previously identified main-code drag around:
+  - query spec vs mutable filter execution
+  - backend/query-store/repository overlap
+  - Click front-door routing semantics
+  - showcase/QA catalog and runner embedding
+  - schema runtime vs tooling entanglement
+  - over-broad package-root exports
+>>>>>>> theirs
 - the publication-control-plane half of Step 5 from [programs/intentional-forward-program-2026-03-21.md](./programs/intentional-forward-program-2026-03-21.md) has been executed via [programs/publication-control-plane-program-2026-03-22.md](./programs/publication-control-plane-program-2026-03-22.md)
 - the site/repo-shape half of Step 5 is now executed via [programs/site-and-repo-shape-streamlining-program-2026-03-22.md](./programs/site-and-repo-shape-streamlining-program-2026-03-22.md)
 - schema package/version authority correction has now been executed via [programs/schema-package-authority-program-2026-03-22.md](./programs/schema-package-authority-program-2026-03-22.md)
@@ -116,7 +142,13 @@ As of this map:
 - the multi-surface proof lane is now executed via [programs/multi-surface-semantic-proof-program-2026-03-22.md](./programs/multi-surface-semantic-proof-program-2026-03-22.md), which extended semantic proof across export/query surfaces and routed that suite through QA/publication/showcase
 - the read-surface proof and showcase-hardening lane is now executed via [programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md), which covers query summary/list surfaces, stream surfaces, MCP read payloads, and matching showcase proof coverage
 - the remaining runtime/testing reservoir has now been executed via [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md), which closes the root machine contract, query/TUI hardening, and named validation lanes for chaos/scale/live operator workflows
+<<<<<<< ours
 - the next frontier is therefore no longer the old testing-reliability backlog bucket; future work should be selected intentionally from the strategic-reference programs rather than assumed from unresolved reservoir notes
+||||||| base
+- the next frontier is therefore no longer the old testing-reliability backlog bucket; the live queue is now the convergence campaign above, and later work should be selected intentionally from the strategic-reference programs rather than assumed from unresolved reservoir notes
+=======
+- there is therefore no single canonical live implementation queue recorded in this map right now; later work should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
+>>>>>>> theirs
 
 ## Maintenance Rule
 
