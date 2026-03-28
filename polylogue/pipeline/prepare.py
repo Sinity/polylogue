@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,107 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _timestamp_sort_key(ts: str | None) -> float | None:
+    """Convert a timestamp string to a numeric sort key.
+
+    Handles both Unix epoch (numeric) and ISO-8601 formats.
+    Returns None for None timestamps (sorted last by queries).
+    """
+    if ts is None:
+        return None
+    # Fast path: numeric (epoch seconds or milliseconds)
+    try:
+        val = float(ts)
+        # Values > year 3000 in seconds are likely milliseconds
+        if val > 32503680000:
+            val = val / 1000
+        return val
+    except (ValueError, TypeError):
+        pass
+    # Slow path: ISO-8601 → epoch
+    from datetime import datetime, timezone
+
+    try:
+        # Handle 'Z' suffix and various ISO formats
+        normalized = ts.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+@dataclass
+class PrepareCache:
+    """Pre-loaded batch data for prepare_records, replacing per-conversation DB queries.
+
+    Instead of 3 queries per conversation (existing lookup, parent check, message IDs),
+    we bulk-load all needed data for an entire batch in 2 queries total.
+    """
+
+    # {conversation_id: ExistingConversation}
+    existing: dict[str, ExistingConversation] = field(default_factory=dict)
+    # Set of all conversation_ids that exist in the DB (for parent FK check)
+    known_ids: set[str] = field(default_factory=set)
+    # {conversation_id: {provider_message_id: message_id}}
+    message_ids: dict[str, dict[str, MessageId]] = field(default_factory=dict)
+
+    @classmethod
+    async def load(cls, backend: SQLiteBackend, candidate_cids: set[str]) -> PrepareCache:
+        """Bulk-load all data needed for a batch of conversations.
+
+        Replaces N per-conversation queries with 2 bulk queries:
+        1. Existing conversations (id + content_hash)
+        2. Message ID mappings for all known conversations
+        """
+        cache = cls()
+        if not candidate_cids:
+            return cache
+
+        cid_list = list(candidate_cids)
+
+        # Query 1: Existing conversations — bulk fetch by conversation_id
+        for chunk_start in range(0, len(cid_list), 500):
+            chunk = cid_list[chunk_start : chunk_start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            async with backend._get_connection() as conn:
+                cursor = await conn.execute(
+                    f"SELECT conversation_id, content_hash FROM conversations "
+                    f"WHERE conversation_id IN ({placeholders})",
+                    tuple(chunk),
+                )
+                rows = await cursor.fetchall()
+            for row in rows:
+                cid = row["conversation_id"]
+                cache.existing[cid] = ExistingConversation(
+                    conversation_id=cid, content_hash=row["content_hash"],
+                )
+                cache.known_ids.add(cid)
+
+        # Query 2: Message ID mappings for existing conversations
+        existing_cids = list(cache.known_ids)
+        for chunk_start in range(0, len(existing_cids), 500):
+            chunk = existing_cids[chunk_start : chunk_start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            async with backend._get_connection() as conn:
+                cursor = await conn.execute(
+                    f"SELECT conversation_id, provider_message_id, message_id "
+                    f"FROM messages WHERE conversation_id IN ({placeholders}) "
+                    f"AND provider_message_id IS NOT NULL",
+                    tuple(chunk),
+                )
+                rows = await cursor.fetchall()
+            for row in rows:
+                cid = row["conversation_id"]
+                if cid not in cache.message_ids:
+                    cache.message_ids[cid] = {}
+                if row["provider_message_id"]:
+                    cache.message_ids[cid][str(row["provider_message_id"])] = MessageId(row["message_id"])
+
+        return cache
+
+
 async def prepare_records(
     convo,
     source_name: str,
@@ -37,6 +139,7 @@ async def prepare_records(
     backend: SQLiteBackend | None = None,
     repository: ConversationRepository | None = None,
     raw_id: str | None = None,
+    cache: PrepareCache | None = None,
 ) -> tuple[str, dict[str, int], bool]:
     """Async version of prepare_records for converting ParsedConversation to records.
 
@@ -47,6 +150,7 @@ async def prepare_records(
         backend: SQLiteBackend for database lookups
         repository: ConversationRepository for saving
         raw_id: Optional raw conversation ID
+        cache: Optional PrepareCache for batch lookups (avoids per-conversation queries)
 
     Returns:
         Tuple of (conversation_id, result_counts, content_changed)
@@ -72,20 +176,22 @@ async def prepare_records(
         )
 
     content_hash = conversation_content_hash(convo)
+    candidate_cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
 
-    # Use the passed backend for lookups
+    # Look up existing conversation — use batch cache if available, else query DB
     existing = None
-    if backend:
+    if cache is not None:
+        existing = cache.existing.get(candidate_cid)
+    elif backend:
         async with backend._get_connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT conversation_id, content_hash
                 FROM conversations
-                WHERE provider_name = ? AND provider_conversation_id = ?
-                ORDER BY updated_at DESC, rowid DESC
+                WHERE conversation_id = ?
                 LIMIT 1
                 """,
-                (convo.provider_name, convo.provider_conversation_id),
+                (candidate_cid,),
             )
             row = await cursor.fetchone()
         if row:
@@ -95,22 +201,26 @@ async def prepare_records(
         cid: ConversationId = ConversationId(existing.conversation_id)
         changed = existing.content_hash != content_hash
     else:
-        cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
+        cid = candidate_cid
         changed = False
 
     # Resolve parent conversation ID if present (provider ID → internal polylogue ID)
     # Only set FK if the parent conversation already exists in the database,
     # otherwise the FK constraint fails when child is parsed before parent.
     parent_conversation_id = None
-    if convo.parent_conversation_provider_id and backend:
+    if convo.parent_conversation_provider_id:
         candidate_parent = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
-        async with backend._get_connection() as conn:
-            cursor = await conn.execute(
-                "SELECT 1 FROM conversations WHERE conversation_id = ?",
-                (candidate_parent,),
-            )
-            if await cursor.fetchone():
+        if cache is not None:
+            if candidate_parent in cache.known_ids:
                 parent_conversation_id = candidate_parent
+        elif backend:
+            async with backend._get_connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                    (candidate_parent,),
+                )
+                if await cursor.fetchone():
+                    parent_conversation_id = candidate_parent
 
     # Merge source into provider_meta rather than overwriting
     merged_provider_meta: dict[str, object] = {"source": source_name}
@@ -124,6 +234,7 @@ async def prepare_records(
         title=convo.title,
         created_at=convo.created_at,
         updated_at=convo.updated_at,
+        sort_key=_timestamp_sort_key(convo.updated_at),
         content_hash=content_hash,
         provider_meta=merged_provider_meta,
         parent_conversation_id=parent_conversation_id,
@@ -134,9 +245,11 @@ async def prepare_records(
     messages: list[MessageRecord] = []
     message_ids: dict[str, MessageId] = {}
 
-    # Retrieve existing message ID mapping using the same backend
+    # Retrieve existing message ID mapping — use batch cache if available
     existing_message_ids: dict[str, MessageId] = {}
-    if backend:
+    if cache is not None:
+        existing_message_ids = cache.message_ids.get(cid, {})
+    elif backend:
         async with backend._get_connection() as conn:
             cursor = await conn.execute(
                 """
@@ -179,6 +292,7 @@ async def prepare_records(
                 role=msg.role,
                 text=msg.text,
                 timestamp=msg.timestamp,
+                sort_key=_timestamp_sort_key(msg.timestamp),
                 content_hash=message_hash,
                 provider_meta=enriched_meta,
                 parent_message_id=parent_message_id,
@@ -231,5 +345,7 @@ async def prepare_records(
 
 
 __all__ = [
+    "PrepareCache",
+    "_timestamp_sort_key",
     "prepare_records",
 ]

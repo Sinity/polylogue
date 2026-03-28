@@ -10,10 +10,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from polylogue.lib.models import Conversation
 
 from polylogue.assets import asset_path
-from polylogue.storage.backends.sqlite import open_connection
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 
 @dataclass
@@ -48,17 +51,19 @@ class ConversationFormatter:
         # Or convert to HTML in HTMLRenderer
     """
 
-    def __init__(self, archive_root: Path, db_path: Path | None = None):
+    def __init__(self, archive_root: Path, db_path: Path | None = None, backend: SQLiteBackend | None = None):
         """Initialize the formatter.
 
         Args:
             archive_root: Root directory for archived conversations
             db_path: Optional database path (defaults to standard location)
+            backend: Optional async SQLite backend instance
         """
         self.archive_root = archive_root
         self.db_path = db_path
+        self.backend = backend
 
-    def format(self, conversation_id: str) -> FormattedConversation:
+    async def format(self, conversation_id: str) -> FormattedConversation:
         """Format a conversation to structured output.
 
         Args:
@@ -70,32 +75,30 @@ class ConversationFormatter:
         Raises:
             ValueError: If conversation not found
         """
+        # Use provided backend or create one
+        backend = self.backend or SQLiteBackend(db_path=self.db_path)
+
         # Query database
-        with open_connection(self.db_path) as conn:
-            convo = conn.execute(
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute(
                 "SELECT * FROM conversations WHERE conversation_id = ?",
                 (conversation_id,),
-            ).fetchone()
+            )
+            convo = await cursor.fetchone()
             if not convo:
                 raise ValueError(f"Conversation not found: {conversation_id}")
 
-            messages = conn.execute(
+            cursor = await conn.execute(
                 """
                 SELECT * FROM messages
                 WHERE conversation_id = ?
-                ORDER BY
-                    (timestamp IS NULL),
-                    CASE
-                        WHEN timestamp IS NULL THEN NULL
-                        WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS INTEGER)
-                        ELSE CAST(timestamp AS REAL)
-                    END,
-                    message_id
+                ORDER BY (sort_key IS NULL), sort_key, message_id
                 """,
                 (conversation_id,),
-            ).fetchall()
+            )
+            messages = await cursor.fetchall()
 
-            attachments = conn.execute(
+            cursor = await conn.execute(
                 """
                 SELECT
                     attachment_refs.message_id,
@@ -109,7 +112,8 @@ class ConversationFormatter:
                 WHERE attachment_refs.conversation_id = ?
                 """,
                 (conversation_id,),
-            ).fetchall()
+            )
+            attachments = await cursor.fetchall()
 
         # Build attachments mapping
         attachments_by_message: dict[str, list[Any]] = {}
@@ -233,4 +237,58 @@ class ConversationFormatter:
         return "\n".join(lines).strip() + "\n"
 
 
-__all__ = ["ConversationFormatter", "FormattedConversation"]
+def format_conversation_markdown(conv: Conversation) -> str:
+    """Format a loaded Conversation domain object to markdown.
+
+    Works with a Conversation that has messages already loaded (eager or lazy).
+    This avoids duplicating markdown formatting logic in multiple places
+    (TUI browser, CLI display, etc.)
+
+    Args:
+        conv: A Conversation domain object with .title, .provider, .messages
+
+    Returns:
+        Formatted markdown string
+    """
+    lines = [f"# {conv.title or 'Untitled'}", ""]
+
+    if hasattr(conv, "provider") and conv.provider:
+        lines.append(f"**Provider:** {conv.provider}")
+    if hasattr(conv, "created_at") and conv.created_at:
+        lines.append(f"**Date:** {conv.created_at}")
+    lines.append("")
+
+    for msg in conv.messages:
+        role = (msg.role.value if hasattr(msg.role, "value") else str(msg.role)) if msg.role else "unknown"
+        text = msg.text or ""
+
+        if not text.strip():
+            continue
+
+        lines.append(f"## {role}")
+        if hasattr(msg, "timestamp") and msg.timestamp:
+            lines.append(f"_{msg.timestamp}_")
+        lines.append("")
+
+        # Wrap raw JSON in code blocks
+        stripped = text.strip()
+        if (stripped.startswith("{") and stripped.endswith("}")) or (
+            stripped.startswith("[") and stripped.endswith("]")
+        ):
+            try:
+                parsed = json.loads(stripped)
+                text = f"```json\n{json.dumps(parsed, indent=2)}\n```"
+            except json.JSONDecodeError:
+                pass
+
+        lines.append(text)
+        lines.append("")
+
+        if hasattr(msg, "attachments") and msg.attachments:
+            lines.append(f"**Attachments:** {len(msg.attachments)}")
+            lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+__all__ = ["ConversationFormatter", "FormattedConversation", "format_conversation_markdown"]

@@ -15,9 +15,9 @@ Usage:
 
 from __future__ import annotations
 
+import gzip
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 try:
@@ -28,9 +28,7 @@ except ImportError:
     Draft202012Validator = None
     ValidationError = Exception
 
-
-# Schema directory relative to this file
-SCHEMA_DIR = Path(__file__).parent.parent / "schemas" / "providers"
+from polylogue.schemas.registry import SCHEMA_DIR
 
 
 @dataclass
@@ -67,6 +65,10 @@ class SchemaValidator:
     - Nested structures that differ from samples
     """
 
+    # Class-level cache: avoids re-reading schema files and re-compiling
+    # validators for the same provider during a pipeline run.
+    _cache: dict[tuple[str, bool], SchemaValidator] = {}
+
     def __init__(self, schema: dict[str, Any], strict: bool = True):
         """Initialize validator with a schema.
 
@@ -81,12 +83,9 @@ class SchemaValidator:
         self.strict = strict
         self._validator = Draft202012Validator(schema)
 
-        # Extract known property names for drift detection
-        self._known_properties = self._extract_known_properties(schema)
-
     @classmethod
     def for_provider(cls, provider: str, strict: bool = True) -> SchemaValidator:
-        """Create a validator for a specific provider.
+        """Create a validator for a specific provider, caching by (provider, strict).
 
         Args:
             provider: Provider name (chatgpt, claude-ai, claude-code, codex, gemini)
@@ -98,19 +97,34 @@ class SchemaValidator:
         Raises:
             FileNotFoundError: If no schema exists for the provider
         """
-        schema_path = SCHEMA_DIR / f"{provider}.schema.json"
-        if not schema_path.exists():
-            raise FileNotFoundError(f"No schema found for provider: {provider}")
+        key = (provider, strict)
+        cached = cls._cache.get(key)
+        if cached is not None:
+            return cached
 
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        return cls(schema, strict=strict)
+        gz_path = SCHEMA_DIR / f"{provider}.schema.json.gz"
+        plain_path = SCHEMA_DIR / f"{provider}.schema.json"
+        if gz_path.exists():
+            schema = json.loads(gzip.decompress(gz_path.read_bytes()).decode("utf-8"))
+        elif plain_path.exists():
+            schema = json.loads(plain_path.read_text(encoding="utf-8"))
+        else:
+            raise FileNotFoundError(f"No schema found for provider: {provider}")
+        instance = cls(schema, strict=strict)
+        cls._cache[key] = instance
+        return instance
 
     @classmethod
     def available_providers(cls) -> list[str]:
         """List providers with available schemas."""
         if not SCHEMA_DIR.exists():
             return []
-        return sorted(p.stem.replace(".schema", "") for p in SCHEMA_DIR.glob("*.schema.json"))
+        names: set[str] = set()
+        for pattern in ("*.schema.json.gz", "*.schema.json"):
+            for p in SCHEMA_DIR.glob(pattern):
+                name = p.name.replace(".schema.json.gz", "").replace(".schema.json", "")
+                names.add(name)
+        return sorted(names)
 
     def validate(self, data: Any) -> ValidationResult:
         """Validate data against the schema with drift detection.
@@ -186,25 +200,6 @@ class SchemaValidator:
                                 warnings.extend(self._detect_drift(item, items_schema, f"{current_path}[{i}]"))
 
         return warnings
-
-    def _extract_known_properties(self, schema: dict[str, Any]) -> set[str]:
-        """Extract all known property names from schema (recursively)."""
-        props: set[str] = set()
-
-        if "properties" in schema:
-            props.update(schema["properties"].keys())
-            for prop_schema in schema["properties"].values():
-                if isinstance(prop_schema, dict):
-                    props.update(self._extract_known_properties(prop_schema))
-
-        if "items" in schema and isinstance(schema["items"], dict):
-            props.update(self._extract_known_properties(schema["items"]))
-
-        if "additionalProperties" in schema and isinstance(schema["additionalProperties"], dict):
-            props.update(self._extract_known_properties(schema["additionalProperties"]))
-
-        return props
-
 
 def validate_provider_export(
     data: Any,

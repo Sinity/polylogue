@@ -18,6 +18,7 @@ from uuid import uuid4
 from polylogue.config import Config, Source
 from polylogue.lib.json import dumps, loads
 from polylogue.lib.log import get_logger
+from polylogue.lib.metrics import PipelineMetrics
 from polylogue.storage.store import PlanResult, RunRecord, RunResult
 
 logger = get_logger(__name__)
@@ -207,6 +208,7 @@ async def run_sources(
     from polylogue.services import get_backend, get_repository
 
     start = time.perf_counter()
+    metrics = PipelineMetrics()
 
     backend = get_backend()
     repository = get_repository()
@@ -233,26 +235,23 @@ async def run_sources(
     if stage == "acquire":
         from polylogue.pipeline.services.acquisition import AcquisitionService
 
-        stage_t0 = time.perf_counter()
+        sm = metrics.start_stage("acquire")
         acquire_service = AcquisitionService(backend=backend)
         sources = _select_sources(config, source_names)
         acquire_result = await acquire_service.acquire_sources(
             sources,
             progress_callback=progress_callback,
         )
+        sm.stop(items=acquire_result.counts["acquired"])
         counts["acquired"] = acquire_result.counts["acquired"]
         counts["skipped"] = acquire_result.counts["skipped"]
-        logger.info(
-            "Acquire stage complete",
-            elapsed_s=round(time.perf_counter() - stage_t0, 1),
-            **acquire_result.counts,
-        )
+        logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
 
     # Parse stage (acquire + parse, replaces old "ingest")
     elif stage in {"parse", "all"}:
         from polylogue.pipeline.services.parsing import ParsingService
 
-        stage_t0 = time.perf_counter()
+        sm = metrics.start_stage("parse")
         parsing_service = ParsingService(
             repository=repository,
             archive_root=config.archive_root,
@@ -265,6 +264,7 @@ async def run_sources(
             download_assets=True,
             progress_callback=progress_callback,
         )
+        sm.stop(items=parse_result.counts.get("conversations", 0))
 
         # Merge results
         for key, value in parse_result.counts.items():
@@ -274,9 +274,7 @@ async def run_sources(
         changed_counts.update(parse_result.changed_counts)
         processed_ids = parse_result.processed_ids
         logger.info(
-            "Parse stage complete",
-            elapsed_s=round(time.perf_counter() - stage_t0, 1),
-            conversations=parse_result.counts.get("conversations", 0),
+            "Parse stage complete", **sm.to_dict(),
             processed_ids=len(processed_ids),
             parse_failures=parse_result.parse_failures,
         )
@@ -307,7 +305,7 @@ async def run_sources(
         from polylogue.pipeline.services.rendering import RenderService
         from polylogue.rendering.renderers import create_renderer
 
-        stage_t0 = time.perf_counter()
+        sm = metrics.start_stage("render")
         ids = (
             await _all_conversation_ids(backend, source_names)
             if stage == "render"
@@ -331,13 +329,12 @@ async def run_sources(
             render_failures = render_result.failures
             if render_failures:
                 counts["render_failures"] = len(render_failures)
-            logger.info(
-                "Render stage complete",
-                elapsed_s=round(time.perf_counter() - stage_t0, 1),
-                rendered=render_result.rendered_count,
-                failures=len(render_failures),
-                total=len(ids),
-            )
+        sm.stop(items=counts.get("rendered", 0))
+        logger.info(
+            "Render stage complete", **sm.to_dict(),
+            failures=len(render_failures),
+            total=len(ids) if ids else 0,
+        )
 
     # Indexing stage
     indexed = False
@@ -347,6 +344,7 @@ async def run_sources(
 
     index_service = IndexService(config=config, backend=backend)
 
+    sm = metrics.start_stage("index")
     try:
         if stage == "index":
             if progress_callback is not None:
@@ -373,6 +371,8 @@ async def run_sources(
         logger.error("Indexing failed", error=str(exc))
         index_error = str(exc)
         indexed = False
+    sm.stop(items=len(processed_ids) if processed_ids else 0)
+    logger.info("Index stage complete", **sm.to_dict(), indexed=indexed)
 
     # Calculate drift and finalize
     duration_ms = int((time.perf_counter() - start) * 1000)
@@ -411,6 +411,7 @@ async def run_sources(
         "indexed": indexed,
         "index_error": index_error,
         "duration_ms": duration_ms,
+        "metrics": metrics.to_summary(),
     }
     _write_run_json(config.archive_root, run_payload)
 

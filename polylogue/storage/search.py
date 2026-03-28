@@ -1,6 +1,7 @@
+"""Full-text search and FTS5 query escaping."""
+
 from __future__ import annotations
 
-import logging
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -8,15 +9,20 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+from polylogue.lib.log import get_logger
 from polylogue.render_paths import render_root
 
-from .backends.sqlite import DatabaseError, open_connection
+from polylogue.errors import DatabaseError
+
+from .backends.connection import open_connection
 from .search_cache import SearchCacheKey
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-# FTS5 special characters that need escaping or quoting (+ is inclusion operator)
-_FTS5_SPECIAL = re.compile(r'[":*^(){}[\]|&!+\-]')
+# FTS5 special characters that need escaping or quoting.
+# Includes documented operators (" : * ^ ( ) { } [ ] | & ! + -) plus characters
+# that are syntactically problematic in FTS5 queries (' \ ; % =).
+_FTS5_SPECIAL = re.compile(r'''['":*^(){}\[\]|&!+\-\\;%=,]''')
 # FTS5 boolean/special operators that should be treated as literals when alone
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 # Pattern to detect queries that are only asterisks (dangerous wildcard-only)
@@ -97,6 +103,11 @@ def escape_fts5_query(query: str) -> str:
 
     query = query.strip()
 
+    # Strip control characters (U+0000-U+001F, U+007F) — never useful in searches
+    query = re.sub(r'[\x00-\x1f\x7f]', '', query)
+    if not query:
+        return '""'  # Only contained control characters
+
     # Check for asterisk-only queries (dangerous wildcard-only pattern)
     if _ASTERISK_ONLY.match(query):
         return '""'  # Treat as empty query
@@ -165,7 +176,7 @@ def _search_messages_impl(
     with open_connection(db_path) as conn:
         exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         if not exists:
-            raise DatabaseError("Search index not built. Run `polylogue sync` with index enabled.")
+            raise DatabaseError("Search index not built. Run `polylogue run` with index enabled.")
 
         # Escape the query to avoid syntax errors with special characters
         fts_query = escape_fts5_query(query)
@@ -205,11 +216,7 @@ def _search_messages_impl(
                 raise ValueError(f"Invalid --since date '{since}': {exc}. Use ISO format (e.g., 2023-01-01)") from exc
             since_ts = since_dt.timestamp()
             sql += """
-                AND CASE
-                    WHEN messages.timestamp GLOB '*[^0-9.]*'
-                    THEN CAST(strftime('%s', messages.timestamp) AS REAL)
-                    ELSE CAST(messages.timestamp AS REAL)
-                END >= ?
+                AND messages.sort_key >= ?
             """
             params.append(since_ts)
 
@@ -274,7 +281,7 @@ def search_messages(
     """Search for messages using FTS5 full-text search.
 
     This function uses an LRU cache for repeated queries. The cache is
-    automatically invalidated when conversations are re-ingested.
+    automatically invalidated when conversations are re-parsed.
 
     Args:
         query: Search query string (automatically escaped for FTS5)
