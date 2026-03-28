@@ -27,6 +27,7 @@ Read in this order:
 <<<<<<< ours
 <<<<<<< ours
 <<<<<<< ours
+<<<<<<< ours
 ||||||| base
 | [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Current planned execution program for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Planned; canonical next implementation campaign |
 =======
@@ -38,6 +39,12 @@ Read in this order:
 | [programs/schema-toolchain-convergence-program-2026-03-23.md](./programs/schema-toolchain-convergence-program-2026-03-23.md) | Current planned execution program for converging schema tooling, synthetic generation, and schema operator workflows around the canonical package model | Planned; canonical next implementation campaign |
 =======
 | [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md) | Current planned execution program for converging schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path around the canonical package model | Planned; canonical next implementation campaign |
+>>>>>>> theirs
+||||||| base
+| [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md) | Executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path around the canonical package model | Executed; most recent evidence-pipeline convergence campaign |
+=======
+| [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md) | Current planned execution program for harmonization, canonical semantic facts, downstream semantic products, and semantic proof/export contract convergence | Planned; canonical next implementation campaign |
+| [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md) | Executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path around the canonical package model | Executed; most recent evidence-pipeline convergence campaign |
 >>>>>>> theirs
 | [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Executed convergence campaign for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Executed; canonical record of the convergence campaign |
 >>>>>>> theirs
@@ -128,6 +135,7 @@ As of this map:
 <<<<<<< ours
 <<<<<<< ours
 <<<<<<< ours
+<<<<<<< ours
 ||||||| base
 - the next live implementation campaign is now [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md)
 - that program specifically targets remaining architectural drag inside main code rather than a missing product surface:
@@ -148,6 +156,22 @@ As of this map:
 >>>>>>> theirs
 - that program targets the biggest remaining main-code cluster after the convergence wave:
   - runtime-safe schema observation helpers still living too close to tooling
+||||||| base
+- the schema-and-evidence pipeline campaign is now executed via [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md)
+- it closed the remaining evidence-pipeline drag around:
+  - runtime-safe schema observation helpers living too close to tooling
+=======
+- the current live implementation queue is now [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md)
+- that program targets the strongest remaining main-code cluster after the evidence-pipeline wave:
+  - harmonization boundary cleanup around `schemas/unified.py` and `lib/provider_semantics.py`
+  - a missing canonical semantic facts layer shared by profiles, tags, and proof
+  - downstream semantic products that still compose several separate extraction passes
+  - a large semantic proof stack that still mixes facts, surface policy, and suite orchestration
+  - semantic preservation/loss contracts that are stronger than before but still not declared once in one registry
+- the schema-and-evidence pipeline campaign is now executed via [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md)
+- it closed the remaining evidence-pipeline drag around:
+  - runtime-safe schema observation helpers living too close to tooling
+>>>>>>> theirs
   - monolithic schema generation orchestration
   - monolithic synthetic corpus generation
 <<<<<<< ours
@@ -183,6 +207,7 @@ As of this map:
 <<<<<<< ours
 <<<<<<< ours
 <<<<<<< ours
+<<<<<<< ours
 - the next frontier is therefore no longer the old testing-reliability backlog bucket; future work should be selected intentionally from the strategic-reference programs rather than assumed from unresolved reservoir notes
 ||||||| base
 - the next frontier is therefore no longer the old testing-reliability backlog bucket; the live queue is now the convergence campaign above, and later work should be selected intentionally from the strategic-reference programs rather than assumed from unresolved reservoir notes
@@ -198,6 +223,12 @@ As of this map:
 - later work after the schema-toolchain campaign should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
 =======
 - later work after the schema-and-evidence pipeline campaign should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
+>>>>>>> theirs
+||||||| base
+- there is no new canonical implementation queue selected yet after that campaign
+- later work should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
+=======
+- later work should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
 >>>>>>> theirs
 
 ## Maintenance Rule

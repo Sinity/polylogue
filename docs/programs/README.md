@@ -8,6 +8,7 @@ Use them in this order:
 <<<<<<< ours
 <<<<<<< ours
 <<<<<<< ours
+<<<<<<< ours
 1. [runtime-contract-and-validation-lanes-program-2026-03-22.md](./runtime-contract-and-validation-lanes-program-2026-03-22.md)
 ||||||| base
 1. [core-architecture-convergence-program-2026-03-23.md](./core-architecture-convergence-program-2026-03-23.md)
@@ -29,7 +30,19 @@ Use them in this order:
 >>>>>>> theirs
 2. [core-architecture-convergence-program-2026-03-23.md](./core-architecture-convergence-program-2026-03-23.md)
 >>>>>>> theirs
+||||||| base
+1. [schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./schema-and-evidence-pipeline-convergence-program-2026-03-23.md)
+   Most recent executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path.
+2. [core-architecture-convergence-program-2026-03-23.md](./core-architecture-convergence-program-2026-03-23.md)
+=======
+1. [semantic-stack-convergence-program-2026-03-23.md](./semantic-stack-convergence-program-2026-03-23.md)
+   Current planned execution program for harmonization, semantic facts, downstream semantic products, and semantic proof/export contracts.
+2. [schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./schema-and-evidence-pipeline-convergence-program-2026-03-23.md)
+   Most recent executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path.
+3. [core-architecture-convergence-program-2026-03-23.md](./core-architecture-convergence-program-2026-03-23.md)
+>>>>>>> theirs
    Executed convergence program for query/storage/front-door/showcase/schema/API streamlining.
+<<<<<<< ours
 <<<<<<< ours
 2. [runtime-contract-and-validation-lanes-program-2026-03-22.md](./runtime-contract-and-validation-lanes-program-2026-03-22.md)
 >>>>>>> theirs
@@ -38,7 +51,13 @@ Use them in this order:
 =======
 3. [runtime-contract-and-validation-lanes-program-2026-03-22.md](./runtime-contract-and-validation-lanes-program-2026-03-22.md)
 >>>>>>> theirs
+||||||| base
+3. [runtime-contract-and-validation-lanes-program-2026-03-22.md](./runtime-contract-and-validation-lanes-program-2026-03-22.md)
+=======
+4. [runtime-contract-and-validation-lanes-program-2026-03-22.md](./runtime-contract-and-validation-lanes-program-2026-03-22.md)
+>>>>>>> theirs
    Executed closure slice for the remaining runtime/testing frontier.
+<<<<<<< ours
 <<<<<<< ours
 2. [read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./read-surface-proof-and-showcase-hardening-program-2026-03-22.md)
 ||||||| base
@@ -46,7 +65,13 @@ Use them in this order:
 =======
 4. [read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./read-surface-proof-and-showcase-hardening-program-2026-03-22.md)
 >>>>>>> theirs
+||||||| base
+4. [read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./read-surface-proof-and-showcase-hardening-program-2026-03-22.md)
+=======
+5. [read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./read-surface-proof-and-showcase-hardening-program-2026-03-22.md)
+>>>>>>> theirs
    Most recent executed read-surface proof and showcase-hardening program.
+<<<<<<< ours
 <<<<<<< ours
 3. [multi-surface-semantic-proof-program-2026-03-22.md](./multi-surface-semantic-proof-program-2026-03-22.md)
 ||||||| base
@@ -54,7 +79,13 @@ Use them in this order:
 =======
 5. [multi-surface-semantic-proof-program-2026-03-22.md](./multi-surface-semantic-proof-program-2026-03-22.md)
 >>>>>>> theirs
+||||||| base
+5. [multi-surface-semantic-proof-program-2026-03-22.md](./multi-surface-semantic-proof-program-2026-03-22.md)
+=======
+6. [multi-surface-semantic-proof-program-2026-03-22.md](./multi-surface-semantic-proof-program-2026-03-22.md)
+>>>>>>> theirs
    Executed semantic/export proof program.
+<<<<<<< ours
 <<<<<<< ours
 4. [schema-package-authority-program-2026-03-22.md](./schema-package-authority-program-2026-03-22.md)
 ||||||| base
@@ -62,7 +93,13 @@ Use them in this order:
 =======
 6. [schema-package-authority-program-2026-03-22.md](./schema-package-authority-program-2026-03-22.md)
 >>>>>>> theirs
+||||||| base
+6. [schema-package-authority-program-2026-03-22.md](./schema-package-authority-program-2026-03-22.md)
+=======
+7. [schema-package-authority-program-2026-03-22.md](./schema-package-authority-program-2026-03-22.md)
+>>>>>>> theirs
    Executed schema package/version authority program.
+<<<<<<< ours
 <<<<<<< ours
 5. [semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md](./semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md)
 ||||||| base
@@ -70,7 +107,13 @@ Use them in this order:
 =======
 7. [semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md](./semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md)
 >>>>>>> theirs
+||||||| base
+7. [semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md](./semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md)
+=======
+8. [semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md](./semantic-proof-and-showcase-proof-lanes-program-2026-03-22.md)
+>>>>>>> theirs
    Executed canonical markdown semantic-proof slice plus black-box showcase proof-lane coverage.
+<<<<<<< ours
 <<<<<<< ours
 6. [intentional-forward-program-2026-03-21.md](./intentional-forward-program-2026-03-21.md)
 7. [artifact-cohort-control-plane-program-2026-03-21.md](./artifact-cohort-control-plane-program-2026-03-21.md)
@@ -89,6 +132,19 @@ Use them in this order:
 10. [publication-control-plane-program-2026-03-22.md](./publication-control-plane-program-2026-03-22.md)
 11. [site-and-repo-shape-streamlining-program-2026-03-22.md](./site-and-repo-shape-streamlining-program-2026-03-22.md)
 12. the broader reference programs in this directory as needed
+>>>>>>> theirs
+||||||| base
+8. [intentional-forward-program-2026-03-21.md](./intentional-forward-program-2026-03-21.md)
+9. [artifact-cohort-control-plane-program-2026-03-21.md](./artifact-cohort-control-plane-program-2026-03-21.md)
+10. [publication-control-plane-program-2026-03-22.md](./publication-control-plane-program-2026-03-22.md)
+11. [site-and-repo-shape-streamlining-program-2026-03-22.md](./site-and-repo-shape-streamlining-program-2026-03-22.md)
+12. the broader reference programs in this directory as needed
+=======
+9. [intentional-forward-program-2026-03-21.md](./intentional-forward-program-2026-03-21.md)
+10. [artifact-cohort-control-plane-program-2026-03-21.md](./artifact-cohort-control-plane-program-2026-03-21.md)
+11. [publication-control-plane-program-2026-03-22.md](./publication-control-plane-program-2026-03-22.md)
+12. [site-and-repo-shape-streamlining-program-2026-03-22.md](./site-and-repo-shape-streamlining-program-2026-03-22.md)
+13. the broader reference programs in this directory as needed
 >>>>>>> theirs
 
 The canonical planning index remains:
