@@ -40,10 +40,16 @@ def _run_sync_once(
         last_update = [time.time()]
         processed = [0]
 
+        last_desc = [""]
+
         def plain_progress(amount: int, desc: str | None = None) -> None:
             processed[0] += amount
             now = time.time()
-            if now - last_update[0] >= 1:
+            # Always print on stage transitions (new desc), rate-limit otherwise
+            is_stage_change = desc is not None and desc != last_desc[0]
+            if is_stage_change:
+                last_desc[0] = desc
+            if is_stage_change or now - last_update[0] >= 1:
                 print(f"  {desc or 'Processing'}: {processed[0]:,} items...", flush=True)
                 last_update[0] = now
 
