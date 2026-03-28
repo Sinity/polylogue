@@ -10,6 +10,8 @@ Data flow:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import sqlite3
 from datetime import datetime, timezone
@@ -18,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from polylogue.lib.log import get_logger
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.sources.source import iter_source_conversations_with_raw
-from polylogue.storage.store import RawConversationRecord
+from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import Source
@@ -81,47 +83,62 @@ class AcquisitionService:
         """
         result = AcquireResult()
 
-        for source in sources:
-            logger.debug("Acquiring from source", source=source.name)
+        # Load known mtimes once for the entire acquisition phase.
+        # Files whose mtime hasn't changed will be skipped entirely,
+        # replacing a full read+SHA256 with a single stat() call.
+        known_mtimes = await self.backend.get_known_source_mtimes()
 
-            try:
-                # Run the sync iterator in a thread pool to avoid blocking
-                for raw_data, _parsed in await asyncio.to_thread(
-                    self._iter_source_conversations,
-                    source,
-                ):
-                    if raw_data is None:
-                        # This shouldn't happen with capture_raw=True, but handle it
-                        logger.warning("No raw data captured for conversation")
-                        result.counts["errors"] += 1
-                        continue
+        # Use a single persistent connection with batched commits for the
+        # entire acquisition phase.  This avoids fd/WAL exhaustion from
+        # connection-per-INSERT and eliminates per-item fsync overhead.
+        flush_interval = 500
+        items_since_flush = 0
 
-                    try:
-                        raw_id = await self._store_raw(raw_data, source.name)
-                        if raw_id:
-                            result.counts["acquired"] += 1
-                            result.raw_ids.append(raw_id)
-                        else:
-                            result.counts["skipped"] += 1
-                    except sqlite3.DatabaseError as exc:
-                        logger.error(
-                            "Failed to store raw conversation",
-                            source=source.name,
-                            path=raw_data.source_path,
-                            error=str(exc),
-                        )
-                        result.counts["errors"] += 1
+        async with self.backend.bulk_connection():
+            for source in sources:
+                logger.debug("Acquiring from source", source=source.name)
 
-                    if progress_callback:
-                        progress_callback(1, desc="Acquiring")
+                try:
+                    # Stream source items from a dedicated worker thread to avoid
+                    # event-loop blocking and full-list materialization.
+                    async for raw_data, _parsed in self._iter_source_conversations_stream(source, known_mtimes=known_mtimes):
+                        if raw_data is None:
+                            # This shouldn't happen with capture_raw=True, but handle it
+                            logger.warning("No raw data captured for conversation")
+                            result.counts["errors"] += 1
+                            continue
 
-            except Exception as exc:
-                logger.error(
-                    "Failed to iterate source",
-                    source=source.name,
-                    error=str(exc),
-                )
-                result.counts["errors"] += 1
+                        try:
+                            raw_id = await self._store_raw(raw_data, source.name)
+                            if raw_id:
+                                result.counts["acquired"] += 1
+                                result.raw_ids.append(raw_id)
+                            else:
+                                result.counts["skipped"] += 1
+                        except sqlite3.DatabaseError as exc:
+                            logger.error(
+                                "Failed to store raw conversation",
+                                source=source.name,
+                                path=raw_data.source_path,
+                                error=str(exc),
+                            )
+                            result.counts["errors"] += 1
+
+                        items_since_flush += 1
+                        if items_since_flush >= flush_interval:
+                            await self.backend.bulk_flush()
+                            items_since_flush = 0
+
+                        if progress_callback:
+                            progress_callback(1, desc=f"Acquiring [{source.name}]")
+
+                except Exception as exc:
+                    logger.error(
+                        "Failed to iterate source",
+                        source=source.name,
+                        error=str(exc),
+                    )
+                    result.counts["errors"] += 1
 
         logger.info(
             "Acquisition complete",
@@ -132,22 +149,42 @@ class AcquisitionService:
 
         return result
 
-    @staticmethod
-    def _iter_source_conversations(source: Source) -> list[tuple[RawConversationData | None, Any]]:
-        """Wrapper for sync source iteration to run in thread pool.
+    async def _iter_source_conversations_stream(
+        self,
+        source: Source,
+        *,
+        known_mtimes: dict[str, str] | None = None,
+    ) -> AsyncIterator[tuple[RawConversationData | None, Any]]:
+        """Stream source conversations without materializing the full iterator.
 
         Args:
             source: Source to iterate
+            known_mtimes: Optional {source_path: file_mtime} for skipping unchanged files
 
-        Returns:
-            List of (raw_data, parsed) tuples
+        Yields:
+            Tuples of (raw_data, parsed)
         """
-        return list(
-            iter_source_conversations_with_raw(
-                source,
-                capture_raw=True,
-            )
-        )
+        iterator = iter_source_conversations_with_raw(source, capture_raw=True, known_mtimes=known_mtimes)
+        sentinel = object()
+        batch_size = 128
+
+        def _next_batch() -> list[tuple[RawConversationData | None, Any]]:
+            batch: list[tuple[RawConversationData | None, Any]] = []
+            for _ in range(batch_size):
+                item = next(iterator, sentinel)
+                if item is sentinel:
+                    break
+                batch.append(item)
+            return batch
+
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            while True:
+                batch = await loop.run_in_executor(executor, _next_batch)
+                if not batch:
+                    break
+                for item in batch:
+                    yield item
 
     async def _store_raw(self, raw_data: RawConversationData, source_name: str) -> str | None:
         """Store raw conversation data.
@@ -157,8 +194,19 @@ class AcquisitionService:
             source_name: Config source name (e.g., "inbox"), stored separately
 
         Returns:
-            raw_id if newly stored, None if already exists
+            raw_id if newly stored, None if already exists or skipped
         """
+        size = len(raw_data.raw_bytes)
+        if size > MAX_RAW_CONTENT_SIZE:
+            logger.warning(
+                "Skipping oversized source file (%.0f MB > %d MB limit)",
+                size / (1024 * 1024),
+                MAX_RAW_CONTENT_SIZE // (1024 * 1024),
+                path=raw_data.source_path,
+                source=source_name,
+            )
+            return None
+
         raw_id = hashlib.sha256(raw_data.raw_bytes).hexdigest()
         acquired_at = datetime.now(timezone.utc).isoformat()
 

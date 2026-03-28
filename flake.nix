@@ -61,6 +61,7 @@
             aiosqlite
             glom
             mcp
+            pyyaml
           ];
 
           # Skip tests in build (run in checks instead)

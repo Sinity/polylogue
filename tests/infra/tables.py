@@ -234,4 +234,17 @@ UNIFIED_ROLE_NORMALIZATION: list[tuple[str, str, str, str]] = [
     # Codex
     ("codex", "user", "user", "codex_user"),
     ("codex", "assistant", "assistant", "codex_assistant"),
+    ("codex", "system", "system", "codex_system"),
+    ("codex", "tool", "tool", "codex_tool"),
+    ("codex", "function", "tool", "codex_function"),
+    # Claude Code additional system record types
+    ("claude-code", "file-history-snapshot", "system", "cc_file_history"),
+    ("claude-code", "queue-operation", "system", "cc_queue_op"),
+    ("claude-code", "custom", "unknown", "cc_custom"),
+    # Gemini additional roles (matching full GEMINI_ROLE_MAPPING table)
+    ("gemini", "assistant", "assistant", "gem_assistant"),
+    ("gemini", "system", "system", "gem_system"),
+    ("gemini", "SYSTEM", "system", "gem_system_upper"),
+    ("gemini", "unknown_role", "unknown", "gem_unknown"),
+    ("gemini", "", "unknown", "gem_empty"),
 ]

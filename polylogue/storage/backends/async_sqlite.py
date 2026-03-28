@@ -101,6 +101,12 @@ class SQLiteBackend:
         # Persistent connection for explicit transaction control
         self._txn_conn: aiosqlite.Connection | None = None
 
+        # Reusable connection for bulk operations (e.g., acquisition)
+        self._bulk_conn: aiosqlite.Connection | None = None
+
+        # Connection pool for concurrent read operations (e.g., rendering)
+        self._read_pool: asyncio.Queue[aiosqlite.Connection] | None = None
+
     async def _ensure_schema_once(self) -> None:
         """Ensure schema is initialized exactly once (thread-safe via asyncio lock)."""
         if self._schema_ensured:
@@ -116,18 +122,112 @@ class SQLiteBackend:
             self._schema_ensured = True
 
     @asynccontextmanager
+    async def bulk_connection(self) -> AsyncIterator[None]:
+        """Keep a single connection alive for many sequential operations.
+
+        When active, ``_get_connection()`` reuses this connection instead of
+        opening a new one per call.  All writes are grouped in a single
+        transaction — call ``bulk_flush()`` periodically for intermediate
+        durability.  On exit the final transaction is committed.
+
+        This avoids both connection-per-call overhead (fd/WAL exhaustion)
+        and per-item fsync overhead (each commit forces a WAL flush).
+        """
+        await self._ensure_schema_once()
+        conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA foreign_keys = ON")
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+        await conn.execute("BEGIN IMMEDIATE")
+        self._bulk_conn = conn
+        # Suppress per-item commits in methods that check _transaction_depth
+        self._transaction_depth += 1
+        try:
+            yield
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
+        finally:
+            self._transaction_depth -= 1
+            self._bulk_conn = None
+            await conn.close()
+
+    async def bulk_flush(self) -> None:
+        """Commit the current bulk transaction and start a new one.
+
+        Call periodically during long bulk operations for intermediate
+        durability.  Safe to call outside ``bulk_connection()`` (no-op).
+        """
+        if self._bulk_conn is not None:
+            await self._bulk_conn.commit()
+            await self._bulk_conn.execute("BEGIN IMMEDIATE")
+
+    @asynccontextmanager
+    async def read_pool(self, size: int = 4) -> AsyncIterator[None]:
+        """Open a pool of reusable read connections for concurrent operations.
+
+        While active, ``_get_connection()`` borrows from the pool instead of
+        opening a fresh connection per call.  This eliminates per-call
+        overhead: thread spawn, PRAGMA negotiation, and schema checks.
+
+        Use for read-heavy phases like rendering where many concurrent
+        tasks each need short-lived DB access.
+
+        Args:
+            size: Number of connections in the pool (match worker count)
+        """
+        await self._ensure_schema_once()
+        pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue()
+        connections: list[aiosqlite.Connection] = []
+
+        for _ in range(size):
+            conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys = ON")
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+            connections.append(conn)
+            pool.put_nowait(conn)
+
+        self._read_pool = pool
+        try:
+            yield
+        finally:
+            self._read_pool = None
+            for conn in connections:
+                await conn.close()
+
+    @asynccontextmanager
     async def _get_connection(self) -> AsyncIterator[aiosqlite.Connection]:
         """Get async database connection with schema ensured.
 
-        When a transaction is active (_txn_conn is set and depth > 0),
-        reuses the transaction connection to avoid deadlocks.
-        Otherwise, creates a fresh connection per call.
+        Connection reuse priority:
+        1. Transaction connection (_txn_conn) when inside begin/commit block
+        2. Bulk connection (_bulk_conn) when inside bulk_connection() context
+        3. Read pool connection when inside read_pool() context
+        4. Fresh connection per call (fallback)
         """
         await self._ensure_schema_once()
 
         # Reuse transaction connection when inside begin/commit block
         if self._txn_conn is not None and self._transaction_depth > 0:
             yield self._txn_conn
+            return
+
+        # Reuse bulk connection when inside bulk_connection() context
+        if self._bulk_conn is not None:
+            yield self._bulk_conn
+            return
+
+        # Borrow from read pool when available
+        if self._read_pool is not None:
+            conn = await self._read_pool.get()
+            try:
+                yield conn
+            finally:
+                self._read_pool.put_nowait(conn)
             return
 
         async with aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT) as conn:
@@ -363,8 +463,8 @@ class SQLiteBackend:
                 SELECT * FROM conversations
                 {where_sql}
                 ORDER BY
-                    CASE WHEN updated_at IS NULL OR updated_at = '' THEN 1 ELSE 0 END,
-                    updated_at DESC,
+                    (sort_key IS NULL) ASC,
+                    sort_key DESC,
                     conversation_id DESC
             """
 
@@ -414,6 +514,101 @@ class SQLiteBackend:
             row = await cursor.fetchone()
             return int(row["cnt"])
 
+    async def aggregate_message_stats(
+        self,
+        conversation_ids: list[str] | None = None,
+    ) -> dict[str, int]:
+        """Compute aggregate message statistics via SQL.
+
+        Returns dict with keys: total, user, assistant, system, words_approx,
+        attachments, min_sort_key, max_sort_key, providers.
+
+        Uses index-only scans wherever possible.  The messages table rows are
+        large (text + provider_meta), so full-table scans are avoided.
+        - Message count: GROUP BY conversation_id uses the conversation_id
+          index (reads ~4K small index entries, not 1.6M data pages).
+        - Role/word breakdown: skipped (would require full-table scan).
+        - Provider/date/attachments: derived from the small conversations table.
+        """
+        async with self._get_connection() as conn:
+            if conversation_ids is not None:
+                # --- Filtered path ---
+                await conn.execute("CREATE TEMP TABLE IF NOT EXISTS _stat_ids (cid TEXT PRIMARY KEY)")
+                await conn.execute("DELETE FROM _stat_ids")
+                await conn.executemany(
+                    "INSERT OR IGNORE INTO _stat_ids (cid) VALUES (?)",
+                    [(cid,) for cid in conversation_ids],
+                )
+
+                # Message count via index-only GROUP BY (0.16s for 1.6M msgs)
+                msg_row = await (await conn.execute("""
+                    SELECT SUM(cnt) FROM (
+                        SELECT COUNT(*) as cnt FROM messages
+                        WHERE conversation_id IN (SELECT cid FROM _stat_ids)
+                        GROUP BY conversation_id
+                    )
+                """)).fetchone()
+                msg_total = msg_row[0] or 0
+
+                # Date range + provider breakdown from conversations table
+                date_row = await (await conn.execute("""
+                    SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk
+                    FROM conversations WHERE conversation_id IN (SELECT cid FROM _stat_ids)
+                """)).fetchone()
+
+                prov_rows = await (await conn.execute("""
+                    SELECT provider_name, COUNT(*) as cnt
+                    FROM conversations WHERE conversation_id IN (SELECT cid FROM _stat_ids)
+                    GROUP BY provider_name ORDER BY cnt DESC
+                """)).fetchall()
+                providers = {r["provider_name"]: r["cnt"] for r in prov_rows}
+
+                # Attachment count
+                att_row = await (await conn.execute("""
+                    SELECT COUNT(*) as cnt FROM attachment_refs
+                    WHERE conversation_id IN (SELECT cid FROM _stat_ids)
+                """)).fetchone()
+
+                await conn.execute("DROP TABLE IF EXISTS _stat_ids")
+
+                return {
+                    "total": msg_total,
+                    "user": 0,
+                    "assistant": 0,
+                    "system": 0,
+                    "words_approx": 0,
+                    "attachments": att_row["cnt"] or 0,
+                    "min_sort_key": date_row["min_sk"],
+                    "max_sort_key": date_row["max_sk"],
+                    "providers": providers,
+                }
+
+            # --- Unfiltered path ---
+            msg_total = (await (await conn.execute("SELECT COUNT(*) FROM messages")).fetchone())[0] or 0
+
+            date_row = await (await conn.execute(
+                "SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM conversations"
+            )).fetchone()
+
+            prov_rows = await (await conn.execute(
+                "SELECT provider_name, COUNT(*) as cnt FROM conversations GROUP BY provider_name ORDER BY cnt DESC"
+            )).fetchall()
+            providers = {r["provider_name"]: r["cnt"] for r in prov_rows}
+
+            att_cnt = (await (await conn.execute("SELECT COUNT(*) FROM attachment_refs")).fetchone())[0] or 0
+
+            return {
+                "total": msg_total,
+                "user": 0,
+                "assistant": 0,
+                "system": 0,
+                "words_approx": 0,
+                "attachments": att_cnt,
+                "min_sort_key": date_row["min_sk"],
+                "max_sort_key": date_row["max_sk"],
+                "providers": providers,
+            }
+
     async def conversation_exists_by_hash(self, content_hash: str) -> bool:
         """Check if conversation with given content hash exists.
 
@@ -450,6 +645,7 @@ class SQLiteBackend:
                     title,
                     created_at,
                     updated_at,
+                    sort_key,
                     content_hash,
                     provider_meta,
                     metadata,
@@ -457,11 +653,12 @@ class SQLiteBackend:
                     parent_conversation_id,
                     branch_type,
                     raw_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(conversation_id) DO UPDATE SET
                     title = excluded.title,
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at,
+                    sort_key = excluded.sort_key,
                     content_hash = excluded.content_hash,
                     provider_meta = excluded.provider_meta,
                     parent_conversation_id = excluded.parent_conversation_id,
@@ -484,6 +681,7 @@ class SQLiteBackend:
                     record.title,
                     record.created_at,
                     record.updated_at,
+                    record.sort_key,
                     record.content_hash,
                     _json_or_none(record.provider_meta),
                     _json_or_none(record.metadata) or "{}",
@@ -552,7 +750,7 @@ class SQLiteBackend:
         """Get all messages for a conversation."""
         async with self._get_connection() as conn:
             cursor = await conn.execute(
-                "SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp",
+                "SELECT * FROM messages WHERE conversation_id = ? ORDER BY (sort_key IS NULL), sort_key, message_id",
                 (conversation_id,),
             )
             rows = await cursor.fetchall()
@@ -571,7 +769,7 @@ class SQLiteBackend:
         async with self._get_connection() as conn:
             placeholders = ",".join("?" for _ in conversation_ids)
             cursor = await conn.execute(
-                f"SELECT * FROM messages WHERE conversation_id IN ({placeholders}) ORDER BY timestamp",
+                f"SELECT * FROM messages WHERE conversation_id IN ({placeholders}) ORDER BY (sort_key IS NULL), sort_key, message_id",
                 conversation_ids,
             )
             rows = await cursor.fetchall()
@@ -600,16 +798,18 @@ class SQLiteBackend:
                     role,
                     text,
                     timestamp,
+                    sort_key,
                     content_hash,
                     provider_meta,
                     version,
                     parent_message_id,
                     branch_index
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     role = excluded.role,
                     text = excluded.text,
                     timestamp = excluded.timestamp,
+                    sort_key = excluded.sort_key,
                     content_hash = excluded.content_hash,
                     provider_meta = excluded.provider_meta,
                     parent_message_id = excluded.parent_message_id,
@@ -631,6 +831,7 @@ class SQLiteBackend:
                     r.role,
                     r.text,
                     r.timestamp,
+                    r.sort_key,
                     r.content_hash,
                     _json_or_none(r.provider_meta),
                     r.version,
@@ -763,16 +964,21 @@ class SQLiteBackend:
 
             await conn.executemany(ref_query, ref_data)
 
-            # 3. Recalculate ref counts using the same async connection
-            for aid in {r.attachment_id for r in records}:
-                await conn.execute(
-                    """
-                    UPDATE attachments
-                    SET ref_count = (SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?)
-                    WHERE attachment_id = ?
-                    """,
-                    (aid, aid),
+            # 3. Recalculate ref counts in a single statement
+            affected_aids = list({r.attachment_id for r in records})
+            placeholders = ", ".join("?" for _ in affected_aids)
+            await conn.execute(
+                f"""
+                UPDATE attachments
+                SET ref_count = (
+                    SELECT COUNT(*)
+                    FROM attachment_refs
+                    WHERE attachment_refs.attachment_id = attachments.attachment_id
                 )
+                WHERE attachment_id IN ({placeholders})
+                """,
+                tuple(affected_aids),
+            )
             if self._transaction_depth == 0:
                 await conn.commit()
 
@@ -824,16 +1030,21 @@ class SQLiteBackend:
                     (conversation_id,),
                 )
 
-            # Update ref counts first, then clean up orphans
-            for aid in attachment_ids_to_check:
-                await conn.execute(
-                    """
-                    UPDATE attachments
-                    SET ref_count = (SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?)
-                    WHERE attachment_id = ?
-                    """,
-                    (aid, aid),
+            # Update ref counts in bulk, then clean up orphans
+            aids_list = list(attachment_ids_to_check)
+            aid_placeholders = ", ".join("?" for _ in aids_list)
+            await conn.execute(
+                f"""
+                UPDATE attachments
+                SET ref_count = (
+                    SELECT COUNT(*)
+                    FROM attachment_refs
+                    WHERE attachment_refs.attachment_id = attachments.attachment_id
                 )
+                WHERE attachment_id IN ({aid_placeholders})
+                """,
+                tuple(aids_list),
+            )
 
             # Clean up orphaned attachments (ref_count <= 0)
             await conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
@@ -896,6 +1107,13 @@ class SQLiteBackend:
             return str(rows[0]["conversation_id"])
 
         return None  # No match or ambiguous
+
+    async def get_last_sync_timestamp(self) -> str | None:
+        """Return the timestamp of the most recent ingestion run, or None."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT MAX(timestamp) as last FROM runs")
+            row = await cursor.fetchone()
+            return row["last"] if row and row["last"] else None
 
     async def search_conversations(
         self, query: str, limit: int = 100, providers: list[str] | None = None
@@ -1218,7 +1436,7 @@ class SQLiteBackend:
                 if dialogue_only:
                     query += " AND role IN ('user', 'assistant', 'human')"
 
-                query += " ORDER BY timestamp"
+                query += " ORDER BY (sort_key IS NULL), sort_key, message_id"
 
                 # Calculate how many to fetch this round
                 fetch_limit = chunk_size
@@ -1366,6 +1584,8 @@ class SQLiteBackend:
             True if inserted, False if already exists
         """
         async with self._get_connection() as conn:
+            # Two-step: try INSERT OR IGNORE first (cheap for the common
+            # "already exists" case), then update mtime metadata if needed.
             cursor = await conn.execute(
                 """
                 INSERT OR IGNORE INTO raw_conversations (
@@ -1376,8 +1596,10 @@ class SQLiteBackend:
                     source_index,
                     raw_content,
                     acquired_at,
-                    file_mtime
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    file_mtime,
+                    parsed_at,
+                    parse_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.raw_id,
@@ -1388,11 +1610,26 @@ class SQLiteBackend:
                     record.raw_content,
                     record.acquired_at,
                     record.file_mtime,
+                    record.parsed_at,
+                    record.parse_error,
                 ),
             )
+            inserted = bool(cursor.rowcount > 0)
+
+            # If the record already existed, update mtime/source_path so
+            # the mtime-based skip can settle on subsequent runs (a file
+            # may be renamed or touched without changing content).
+            if not inserted and record.file_mtime is not None:
+                await conn.execute(
+                    "UPDATE raw_conversations SET file_mtime = ?, source_path = ? "
+                    "WHERE raw_id = ? AND (file_mtime IS NOT ? OR source_path IS NOT ?)",
+                    (record.file_mtime, record.source_path,
+                     record.raw_id, record.file_mtime, record.source_path),
+                )
+
             if self._transaction_depth == 0:
                 await conn.commit()
-            return bool(cursor.rowcount > 0)
+            return inserted
 
     async def get_raw_conversation(self, raw_id: str) -> RawConversationRecord | None:
         """Retrieve a raw conversation by ID.
@@ -1414,6 +1651,112 @@ class SQLiteBackend:
                 return None
 
             return _row_to_raw_conversation(row)
+
+    async def mark_raw_parsed(self, raw_id: str, *, error: str | None = None) -> None:
+        """Mark a raw conversation as parsed (or record a parse error).
+
+        On success (error=None): sets parsed_at, clears parse_error.
+        On failure (error=...): sets parse_error, leaves parsed_at NULL
+        so the record will be retried on next run.
+
+        Args:
+            raw_id: Raw conversation ID to update
+            error: If not None, the parse error message
+        """
+        from datetime import datetime, timezone
+
+        async with self._get_connection() as conn:
+            if error is None:
+                await conn.execute(
+                    "UPDATE raw_conversations SET parsed_at = ?, parse_error = NULL WHERE raw_id = ?",
+                    (datetime.now(timezone.utc).isoformat(), raw_id),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE raw_conversations SET parse_error = ? WHERE raw_id = ?",
+                    (error[:2000], raw_id),  # Truncate to avoid bloating the DB
+                )
+            if self._transaction_depth == 0:
+                await conn.commit()
+
+    async def get_known_source_mtimes(self) -> dict[str, str]:
+        """Return {source_path: file_mtime} for all raw records with an mtime.
+
+        Used by the acquisition stage to skip files whose mtime hasn't changed
+        since the last run, replacing a full file read + SHA256 hash with a
+        single stat() call.
+
+        Returns:
+            Dict mapping source_path to its last-known file_mtime
+        """
+        result: dict[str, str] = {}
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT source_path, file_mtime FROM raw_conversations WHERE file_mtime IS NOT NULL"
+            )
+            while True:
+                rows = await cursor.fetchmany(1000)
+                if not rows:
+                    break
+                for row in rows:
+                    result[row["source_path"]] = row["file_mtime"]
+        return result
+
+    async def reset_parse_status(self, *, provider: str | None = None) -> int:
+        """Clear parsed_at/parse_error to force re-parsing on next run.
+
+        Args:
+            provider: If set, only reset records for this provider.
+                      If None, reset all records.
+
+        Returns:
+            Number of records reset
+        """
+        async with self._get_connection() as conn:
+            if provider is not None:
+                cursor = await conn.execute(
+                    "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
+                    "WHERE provider_name = ? AND (parsed_at IS NOT NULL OR parse_error IS NOT NULL)",
+                    (provider,),
+                )
+            else:
+                cursor = await conn.execute(
+                    "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
+                    "WHERE parsed_at IS NOT NULL OR parse_error IS NOT NULL"
+                )
+            if self._transaction_depth == 0:
+                await conn.commit()
+            return cursor.rowcount
+
+    async def get_raw_conversations_batch(
+        self, raw_ids: list[str],
+    ) -> list[RawConversationRecord]:
+        """Fetch multiple raw conversations in a single query.
+
+        Replaces sequential per-ID queries with one ``IN (?)`` query,
+        eliminating N connection round-trips per batch.
+
+        Args:
+            raw_ids: List of raw_id hashes to fetch
+
+        Returns:
+            List of found records (missing IDs are silently skipped)
+        """
+        if not raw_ids:
+            return []
+        async with self._get_connection() as conn:
+            placeholders = ",".join("?" * len(raw_ids))
+            cursor = await conn.execute(
+                f"SELECT * FROM raw_conversations WHERE raw_id IN ({placeholders})",  # noqa: S608
+                raw_ids,
+            )
+            records: list[RawConversationRecord] = []
+            while True:
+                rows = await cursor.fetchmany(200)
+                if not rows:
+                    break
+                records.extend(_row_to_raw_conversation(row) for row in rows)
+            return records
 
     async def iter_raw_conversations(
         self,

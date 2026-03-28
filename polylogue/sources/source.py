@@ -663,7 +663,11 @@ def iter_source_conversations(
 
 
 def iter_source_conversations_with_raw(
-    source: Source, *, cursor_state: dict[str, Any] | None = None, capture_raw: bool = True
+    source: Source,
+    *,
+    cursor_state: dict[str, Any] | None = None,
+    capture_raw: bool = True,
+    known_mtimes: dict[str, str] | None = None,
 ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
     """Iterate over conversations with optional raw byte capture.
 
@@ -679,6 +683,9 @@ def iter_source_conversations_with_raw(
         source: Source configuration to iterate
         cursor_state: Optional state dict for tracking progress
         capture_raw: Whether to capture raw bytes (True by default)
+        known_mtimes: Optional dict of {source_path: file_mtime} from previous runs.
+            Files whose current mtime matches the known mtime are skipped entirely,
+            replacing a full read+SHA256 with a single stat() call.
 
     Yields:
         Tuples of (RawConversationData | None, ParsedConversation)
@@ -712,11 +719,22 @@ def iter_source_conversations_with_raw(
 
     # Phase 2: Process each file
     failed_count = 0
+    skipped_mtime = 0
     for path in paths:
+        # Compute file_mtime once (used for both skip check and raw capture)
+        file_mtime = _get_file_mtime(path) if capture_raw else None
+
+        # Mtime-based skip: if we've seen this file before and its mtime
+        # hasn't changed, skip the full read+hash entirely.
+        if known_mtimes and file_mtime:
+            path_str = str(path)
+            if path_str in known_mtimes and known_mtimes[path_str] == file_mtime:
+                skipped_mtime += 1
+                continue
+
         try:
             provider_hint = detect_provider(None, path) or source.name
             should_group = provider_hint in _GROUP_PROVIDERS
-            file_mtime = _get_file_mtime(path) if capture_raw else None
 
             if path.suffix.lower() == ".zip":
                 yield from _process_zip(
@@ -760,6 +778,14 @@ def iter_source_conversations_with_raw(
             failed_count += 1
             logger.error("Unexpected error processing %s: %s", path, exc)
             _record_cursor_failure(cursor_state, str(path), str(exc))
+
+    if skipped_mtime > 0:
+        logger.info(
+            "Skipped %d of %d files from source %r (unchanged mtime)",
+            skipped_mtime,
+            len(paths),
+            source.name,
+        )
 
     # Emit a prominent summary if any files were skipped
     if failed_count > 0:
