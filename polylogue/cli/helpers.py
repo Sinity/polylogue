@@ -11,18 +11,12 @@ from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config, get_config
 from polylogue.health import cached_health_summary, get_health
+from polylogue.lib.theme import provider_color
 from polylogue.pipeline.runner import latest_run
 
 
 def fail(command: str, message: str) -> NoReturn:
     raise SystemExit(f"{command}: {message}")
-
-
-def is_declarative() -> bool:
-    value = os.environ.get("POLYLOGUE_DECLARATIVE")
-    if not value:
-        return False
-    return value.lower() not in {"0", "false", "no"}
 
 
 def source_state_path() -> Path:
@@ -166,16 +160,7 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
                         bar_len = 0
 
                     bar = "█" * bar_len
-                    # Colors per provider matching typical brand colors loosely
-                    color = "white"
-                    if "claude" in m.provider_name:
-                        color = "#d97757"  # Claude orange-ish
-                    elif "chatgpt" in m.provider_name:
-                        color = "#10a37f"  # OpenAI green
-                    elif "gemini" in m.provider_name:
-                        color = "#4285f4"  # Google blue
-                    elif "codex" in m.provider_name:
-                        color = "cyan"
+                    color = provider_color(m.provider_name).hex
 
                     # Format:   claude-code:   512 (41%)  │  ████████████
                     name_padded = f"{m.provider_name}:".ljust(14)

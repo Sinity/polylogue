@@ -11,7 +11,7 @@
 - `polylogue/rendering/`: Markdown/HTML output renderers.
 - `polylogue/ui/`: Terminal UI (Rich-based plain + Textual TUI).
 - `polylogue/mcp/`: Model Context Protocol server.
-- `nix/devshell.nix`: dev shell defining the Python dependencies and common CLI helpers.
+- `flake.nix`: Nix flake with package, devShell, checks, and NixOS modules.
 - Provider walkthroughs and sample workflows live under `docs/` (see `docs/providers/`).
 
 ## Development Workflow
