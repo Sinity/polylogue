@@ -64,8 +64,14 @@ class AcquisitionService:
         drive_config: DriveConfig | None = None,
         progress_label: str = "Scanning",
         on_record: Callable[[RawConversationRecord], Awaitable[None]] | None = None,
+        lightweight: bool = False,
     ) -> ScanResult:
-        """Visit source raw payloads incrementally without forcing list materialization."""
+        """Visit source raw payloads incrementally without forcing list materialization.
+
+        Args:
+            lightweight: Strip raw bytes from most records after hashing.
+                Use for preview/planning to prevent OOM on large archives.
+        """
         result = ScanResult()
         known_mtimes = await self.repository.get_known_source_mtimes()
 
@@ -84,6 +90,7 @@ class AcquisitionService:
                     ui=ui,
                     cursor_state=cursor_state,
                     drive_config=drive_config,
+                    lightweight=lightweight,
                 ):
                     await _consume(record)
                     if progress_callback:
