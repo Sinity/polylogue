@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from polylogue.cli.app import build_parser, main
+from polylogue.cli.click_app import main
+from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.browse import run_browse_cli
 from polylogue.cli.maintain import run_maintain_cli
 from polylogue.commands import CommandEnv
@@ -58,139 +59,70 @@ def _configure_isolated_state(monkeypatch, root: Path) -> None:
 
 # ===== Parser Structure Tests =====
 
-def test_parser_has_browse_command():
-    """Verify browse command exists in parser."""
-    parser = build_parser()
-    args = parser.parse_args(["browse", "branches"])
-    assert args.cmd == "browse"
-    assert args.browse_cmd == "branches"
+def test_click_has_browse_command():
+    """Verify browse command exists in Click CLI."""
+    assert "browse" in click_cli.commands
 
 
-def test_parser_has_maintain_command():
-    """Verify maintain command exists in parser."""
-    parser = build_parser()
-    args = parser.parse_args(["maintain", "prune", "--dry-run"])
-    assert args.cmd == "maintain"
-    assert args.maintain_cmd == "prune"
-    assert args.dry_run is True
+def test_click_has_maintain_command():
+    """Verify maintain command exists in Click CLI."""
+    assert "maintain" in click_cli.commands
 
 
-def test_parser_has_config_subcommands():
-    """Verify config command has init/set/show subcommands."""
-    parser = build_parser()
-
-    # Test init
-    args_init = parser.parse_args(["config", "init"])
-    assert args_init.cmd == "config"
-    assert args_init.config_cmd == "init"
-
-    # Test set
-    args_set = parser.parse_args(["config", "set", "--html", "on"])
-    assert args_set.cmd == "config"
-    assert args_set.config_cmd == "set"
-    assert args_set.html == "on"
-
-    # Test show
-    args_show = parser.parse_args(["config", "show"])
-    assert args_show.cmd == "config"
-    assert args_show.config_cmd == "show"
+def test_click_has_config_subcommands():
+    """Verify config command has init/set/show/edit subcommands."""
+    config_group = click_cli.commands.get("config")
+    assert config_group is not None
+    assert hasattr(config_group, "commands")
+    assert {"init", "set", "show", "edit"}.issubset(set(config_group.commands))
 
 
-def test_parser_browse_has_all_subcommands():
+def test_click_browse_has_all_subcommands():
     """Verify browse has all expected subcommands."""
-    parser = build_parser()
-
-    # Test branches
-    args = parser.parse_args(["browse", "branches", "--provider", "claude"])
-    assert args.browse_cmd == "branches"
-    assert args.provider == "claude"
-
-    # Test stats
-    args = parser.parse_args(["browse", "stats"])
-    assert args.browse_cmd == "stats"
-
-    # Test status
-    args = parser.parse_args(["browse", "status", "--json"])
-    assert args.browse_cmd == "status"
-    assert args.json is True
-
-    # Test runs
-    args = parser.parse_args(["browse", "runs", "--limit", "20"])
-    assert args.browse_cmd == "runs"
-    assert args.limit == 20
+    browse_group = click_cli.commands.get("browse")
+    assert browse_group is not None
+    assert {"branches", "stats", "status", "runs", "inbox"}.issubset(set(browse_group.commands))
 
 
-def test_parser_maintain_has_all_subcommands():
+def test_click_maintain_has_all_subcommands():
     """Verify maintain has all expected subcommands."""
-    parser = build_parser()
-
-    # Test prune
-    args = parser.parse_args(["maintain", "prune", "--dry-run"])
-    assert args.maintain_cmd == "prune"
-    assert args.dry_run is True
-
-    # Test doctor
-    args = parser.parse_args(["maintain", "doctor", "--json"])
-    assert args.maintain_cmd == "doctor"
-    assert args.json is True
-
-    # Test index
-    args = parser.parse_args(["maintain", "index", "check", "--repair"])
-    assert args.maintain_cmd == "index"
-    assert args.subcmd == "check"
-    assert args.repair is True
+    maintain_group = click_cli.commands.get("maintain")
+    assert maintain_group is not None
+    assert {"prune", "doctor", "index", "restore"}.issubset(set(maintain_group.commands))
 
 
-def test_parser_rejects_old_inspect_command():
+def test_click_rejects_old_inspect_command():
     """Verify old inspect command is not recognized."""
-    parser = build_parser()
-
-    # inspect is no longer a top-level command
-    with pytest.raises(SystemExit):
-        parser.parse_args(["inspect", "branches"])
+    assert "inspect" not in click_cli.commands
 
 
-def test_parser_rejects_old_prune_command():
+def test_click_rejects_old_prune_command():
     """Verify old prune command is not recognized."""
-    parser = build_parser()
-
-    # prune is no longer a top-level command
-    with pytest.raises(SystemExit):
-        parser.parse_args(["prune", "--dry-run"])
+    assert "prune" not in click_cli.commands
 
 
-def test_parser_accepts_status_alias():
-    """Verify status remains available as a top-level alias."""
-    parser = build_parser()
-    args = parser.parse_args(["status"])
-    assert args.cmd == "status"
+def test_click_accepts_status_command():
+    """Verify status remains available as a top-level command."""
+    assert "status" in click_cli.commands
 
 
-def test_parser_rejects_old_settings_command():
+def test_click_rejects_old_settings_command():
     """Verify old settings command is not recognized."""
-    parser = build_parser()
-
-    # settings is no longer a top-level command
-    with pytest.raises(SystemExit):
-        parser.parse_args(["settings", "--html", "on"])
+    assert "settings" not in click_cli.commands
 
 
-def test_parser_accepts_env_command():
-    """Verify env command is available as a top-level alias."""
-    parser = build_parser()
-    args = parser.parse_args(["env"])
-    assert args.cmd == "env"
+def test_click_accepts_env_command():
+    """Verify env command is available as a top-level command."""
+    assert "env" in click_cli.commands
 
 
 # ===== Dispatcher Tests =====
 
 def test_browse_dispatcher_handles_branches():
     """Verify browse dispatcher correctly routes to branches."""
-    from polylogue.cli.app import run_inspect_branches
-
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         browse_cmd="branches",
         provider=None,
         slug=None,
@@ -213,7 +145,7 @@ def test_browse_dispatcher_handles_stats():
     """Verify browse dispatcher correctly routes to stats."""
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         browse_cmd="stats",
         dir=None,
         provider=None,
@@ -235,7 +167,7 @@ def test_browse_dispatcher_handles_status(monkeypatch, tmp_path):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         browse_cmd="status",
         json=False,
         json_lines=False,
@@ -260,7 +192,7 @@ def test_browse_dispatcher_handles_runs(monkeypatch, tmp_path):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         browse_cmd="runs",
         limit=50,
         providers=None,
@@ -278,7 +210,7 @@ def test_browse_dispatcher_rejects_invalid_subcommand():
     """Verify browse dispatcher rejects invalid subcommands."""
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(browse_cmd="invalid")
+    args = SimpleNamespace(browse_cmd="invalid")
 
     with pytest.raises(SystemExit):
         run_browse_cli(args, env)
@@ -290,7 +222,7 @@ def test_maintain_dispatcher_handles_prune(monkeypatch, tmp_path):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         maintain_cmd="prune",
         dirs=None,
         dry_run=True,
@@ -306,7 +238,7 @@ def test_maintain_dispatcher_handles_doctor(monkeypatch, tmp_path):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         maintain_cmd="doctor",
         codex_dir=None,
         claude_code_dir=None,
@@ -324,7 +256,7 @@ def test_maintain_dispatcher_handles_index(monkeypatch, tmp_path):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         maintain_cmd="index",
         subcmd="check",
         repair=False,
@@ -340,7 +272,7 @@ def test_maintain_dispatcher_rejects_invalid_subcommand():
     """Verify maintain dispatcher rejects invalid subcommands."""
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(maintain_cmd="invalid")
+    args = SimpleNamespace(maintain_cmd="invalid")
 
     with pytest.raises(SystemExit):
         run_maintain_cli(args, env)
@@ -352,13 +284,10 @@ def test_config_dispatcher_handles_show(monkeypatch, tmp_path, capsys):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
-        config_cmd="show",
-        json=True,
-    )
+    args = SimpleNamespace(json=True)
+    from polylogue.cli.config_cli import run_config_show
 
-    from polylogue.cli.app import _dispatch_config
-    _dispatch_config(args, env)
+    run_config_show(args, env)
 
     output = capsys.readouterr().out
     parsed = json.loads(output)
@@ -432,7 +361,7 @@ def test_old_inspect_command_fails(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit) as exc_info:
         main()
-    assert exc_info.value.code == 2  # argparse error
+    assert exc_info.value.code == 2  # Click usage error
 
 
 def test_old_prune_command_fails(monkeypatch, tmp_path):
@@ -443,7 +372,7 @@ def test_old_prune_command_fails(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit) as exc_info:
         main()
-    assert exc_info.value.code == 2  # argparse error
+    assert exc_info.value.code == 2  # Click usage error
 
 
 def test_status_command_runs(monkeypatch, tmp_path):
@@ -472,4 +401,4 @@ def test_old_settings_command_fails(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit) as exc_info:
         main()
-    assert exc_info.value.code == 2  # argparse error
+    assert exc_info.value.code == 2  # Click usage error

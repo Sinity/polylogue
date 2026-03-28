@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import argparse
 import json
+from types import SimpleNamespace
 from typing import Any, Dict, List
 
 from ..commands import CommandEnv
@@ -9,12 +9,11 @@ from ..index_health import verify_qdrant_collection, verify_sqlite_indexes
 from ..schema import stamp_payload
 
 
-def run_index_cli(args: argparse.Namespace, env: CommandEnv) -> None:
-    # subcmd is enforced by argparse (required=True), so this always calls check
+def run_index_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     run_index_check(args, env)
 
 
-def run_index_check(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_index_check(args: SimpleNamespace, env: CommandEnv) -> None:
     report: Dict[str, Any] = {
         "sqlite": {"status": "ok", "messages": []},
         "qdrant": {"status": "skipped", "messages": []},
