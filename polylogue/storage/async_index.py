@@ -1,39 +1,44 @@
+"""Async full-text search index management for SQLite.
+
+Provides async/await API for FTS5 index creation, rebuilding, and status checking.
+All operations use the SQLiteBackend for non-blocking database access.
+"""
+
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Iterable, Sequence
 
-from .backends.connection import connection_context, open_connection
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 
-def ensure_index(conn: sqlite3.Connection) -> None:
+async def ensure_index(backend: SQLiteBackend) -> None:
     """Create FTS5 index table if it doesn't exist.
 
     Args:
-        conn: Active SQLite database connection
+        backend: Async SQLite backend instance
     """
-    conn.execute(
-        """
-        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-            message_id UNINDEXED,
-            conversation_id UNINDEXED,
-            content
-        );
-        """
-    )
+    async with backend._get_connection() as conn:
+        await conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                message_id UNINDEXED,
+                conversation_id UNINDEXED,
+                content
+            );
+            """
+        )
 
 
-def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
+async def rebuild_index(backend: SQLiteBackend) -> None:
     """Rebuild the entire FTS5 search index from scratch.
 
     Args:
-        conn: Optional SQLite connection. If None, creates a new connection.
+        backend: Async SQLite backend instance
     """
-
-    def _do(db_conn: sqlite3.Connection) -> None:
-        ensure_index(db_conn)
-        db_conn.execute("DELETE FROM messages_fts")
-        db_conn.execute(
+    async with backend._get_connection() as conn:
+        await ensure_index(backend)
+        await conn.execute("DELETE FROM messages_fts")
+        await conn.execute(
             """
             INSERT INTO messages_fts (message_id, conversation_id, content)
             SELECT messages.message_id, messages.conversation_id, messages.text
@@ -41,26 +46,25 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
             WHERE messages.text IS NOT NULL
             """
         )
-        db_conn.commit()
-
-    with connection_context(conn) as db_conn:
-        _do(db_conn)
+        await conn.commit()
 
 
-def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite3.Connection | None = None) -> None:
+async def update_index_for_conversations(
+    conversation_ids: Sequence[str], backend: SQLiteBackend
+) -> None:
     """Update FTS5 search index for specific conversations.
 
     Optimized for batch operations using a single delete then batch insert.
 
     Args:
         conversation_ids: List of conversation IDs to re-index
-        conn: Optional SQLite connection. If None, creates a new connection.
+        backend: Async SQLite backend instance
     """
     if not conversation_ids:
         return
 
-    def _do(db_conn: sqlite3.Connection) -> None:
-        ensure_index(db_conn)
+    async with backend._get_connection() as conn:
+        await ensure_index(backend)
 
         # Keep placeholder counts under SQLite parameter limits and avoid
         # materializing all message rows in Python.
@@ -69,11 +73,11 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
             placeholders = ", ".join("?" for _ in chunk_ids)
             params = tuple(chunk_ids)
 
-            db_conn.execute(
+            await conn.execute(
                 f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
                 params,
             )
-            db_conn.execute(
+            await conn.execute(
                 f"""
                 INSERT INTO messages_fts (message_id, conversation_id, content)
                 SELECT message_id, conversation_id, text
@@ -83,37 +87,43 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
                 params,
             )
 
-        db_conn.commit()
-
-    with connection_context(conn) as db_conn:
-        _do(db_conn)
+        await conn.commit()
 
 
 def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
+    """Split a sequence into chunks of given size."""
     for idx in range(0, len(items), size):
         yield items[idx : idx + size]
 
 
-def index_status(conn: sqlite3.Connection | None = None) -> dict[str, object]:
-    def _query(c: sqlite3.Connection) -> dict[str, object]:
-        row = c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
+async def index_status(backend: SQLiteBackend) -> dict[str, object]:
+    """Get FTS5 index status information.
+
+    Args:
+        backend: Async SQLite backend instance
+
+    Returns:
+        Dictionary with 'exists' (bool) and 'count' (int) keys
+    """
+    async with backend._get_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+        )
+        row = await cursor.fetchone()
         exists = bool(row)
         count = 0
         if exists:
             # COUNT(*) on FTS virtual table is O(N) and extremely slow (minutes on large DBs).
             # The backing docsize table has one row per indexed document and counts instantly.
-            count = c.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
+            cursor = await conn.execute("SELECT COUNT(*) FROM messages_fts_docsize")
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
         return {"exists": exists, "count": int(count)}
-
-    if conn is not None:
-        return _query(conn)
-    with open_connection(None) as fallback_conn:
-        return _query(fallback_conn)
 
 
 __all__ = [
+    "ensure_index",
     "rebuild_index",
     "update_index_for_conversations",
     "index_status",
-    "ensure_index",
 ]

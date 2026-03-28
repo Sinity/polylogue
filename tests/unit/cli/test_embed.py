@@ -116,10 +116,10 @@ _MOCK_MESSAGES = [
 
 @pytest.fixture
 def mock_repository():
-    """Mock ConversationRepository."""
+    """Mock ConversationRepository with async backend for batch embedding."""
     repo = MagicMock()
     repo.backend = MagicMock()
-    repo.backend.get_messages = MagicMock(return_value=_MOCK_MESSAGES)
+    repo.backend.get_messages = AsyncMock(return_value=_MOCK_MESSAGES)
     return repo
 
 
@@ -269,7 +269,7 @@ class TestEmbedBatch:
 
         with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchall.return_value = convs
+            mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -285,7 +285,7 @@ class TestEmbedBatch:
 
         with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchall.return_value = []
+            mock_conn.execute.return_value.fetchmany.side_effect = [[], []]
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -298,19 +298,20 @@ class TestEmbedBatch:
     def test_embed_batch_error_handling(self, mock_env, mock_repository, capsys):
         """_embed_batch continues on error and reports counts."""
         mock_vec_provider = MagicMock()
-        mock_repository.backend.get_messages.side_effect = [
+        mock_repository.backend.get_messages = AsyncMock(side_effect=[
             [{"message_id": "m1"}],  # First conv succeeds
             ValueError("Embed failed"),  # Second conv fails
             [{"message_id": "m3"}],  # Third conv succeeds
-        ]
+        ])
 
+        convs = [
+            {"conversation_id": "conv-1", "title": "Test 1"},
+            {"conversation_id": "conv-2", "title": "Test 2"},
+            {"conversation_id": "conv-3", "title": "Test 3"},
+        ]
         with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchall.return_value = [
-                {"conversation_id": "conv-1", "title": "Test 1"},
-                {"conversation_id": "conv-2", "title": "Test 2"},
-                {"conversation_id": "conv-3", "title": "Test 3"},
-            ]
+            mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -663,15 +664,15 @@ class TestEmbedBatchRichMode:
         else:
             if isinstance(messages_side_effect, list) and len(messages_side_effect) > 0 and not isinstance(messages_side_effect[0], dict):
                 # It's a list of lists/results
-                mock_repository.backend.get_messages.side_effect = messages_side_effect
+                mock_repository.backend.get_messages = AsyncMock(side_effect=messages_side_effect)
             else:
-                mock_repository.backend.get_messages.return_value = messages_side_effect
+                mock_repository.backend.get_messages = AsyncMock(return_value=messages_side_effect)
 
         convs = [{"conversation_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
 
         with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchall.return_value = convs
+            mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
 
