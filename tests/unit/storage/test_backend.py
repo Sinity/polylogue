@@ -27,7 +27,7 @@ from polylogue.storage.store import (
     RawConversationRecord,
     _json_or_none,
 )
-from tests.infra.helpers import (
+from tests.infra.storage_records import (
     _make_ref_id,
     make_attachment,
     make_conversation,

@@ -46,7 +46,7 @@ class TestExportJsonl:
 
     def test_export_jsonl_with_conversation(self, workspace_env, db_path):
         """Exports conversation with messages and attachments."""
-        from tests.infra.helpers import ConversationBuilder
+        from tests.infra.storage_records import ConversationBuilder
 
         (
             ConversationBuilder(db_path, "test-conv")

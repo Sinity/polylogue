@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from polylogue.rendering.renderers import HTMLRenderer
 from polylogue.sources import RecordBundle, save_bundle
-from tests.infra.helpers import make_attachment, make_conversation, make_message
+from tests.infra.storage_records import make_attachment, make_conversation, make_message
 
 # ============================================================================
 # RENDER: Markdown Output Tests

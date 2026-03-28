@@ -156,7 +156,7 @@ async def test_repository(test_db):
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
 
-    from tests.infra.helpers import DbFactory
+    from tests.infra.storage_records import DbFactory
 
     factory = DbFactory(test_db)
     factory.create_conversation(
@@ -178,7 +178,7 @@ async def test_repository(test_db):
 
 async def test_repository_get_includes_attachment_conversation_id(test_db):
     """ConversationRepository.get_eager() returns attachments with conversation_id field."""
-    from tests.infra.helpers import DbFactory
+    from tests.infra.storage_records import DbFactory
 
     factory = DbFactory(test_db)
     factory.create_conversation(
@@ -216,7 +216,7 @@ async def test_repository_get_includes_attachment_conversation_id(test_db):
 
 async def test_repository_get_with_multiple_attachments(test_db):
     """get_eager() correctly groups multiple attachments per message."""
-    from tests.infra.helpers import DbFactory
+    from tests.infra.storage_records import DbFactory
 
     factory = DbFactory(test_db)
     factory.create_conversation(
@@ -262,7 +262,7 @@ async def test_repository_get_with_multiple_attachments(test_db):
 
 async def test_repository_get_attachment_metadata_decoded(test_db):
     """Attachment provider_meta JSON is properly decoded."""
-    from tests.infra.helpers import DbFactory
+    from tests.infra.storage_records import DbFactory
 
     factory = DbFactory(test_db)
     meta = {"original_name": "photo.png", "source": "upload"}

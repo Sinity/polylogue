@@ -1,13 +1,4 @@
-"""Test utilities and builders for Polylogue test suite.
-
-These helpers reduce boilerplate in parametrized tests and provide consistent
-test data generation across the test suite.
-
-Usage:
-    from tests.infra.helpers import ConversationBuilder, make_message, db_setup
-
-Created during aggressive test consolidation to eliminate repeated patterns.
-"""
+"""Shared storage-record builders and DB seeding helpers for tests."""
 
 from __future__ import annotations
 
@@ -571,14 +562,13 @@ class ConversationBuilder:
         return self.conv
 
     async def build(self):
-        """Save to database and return a full Conversation domain object."""
+        """Save to the DB and return the hydrated domain conversation."""
         from polylogue.storage.backends.async_sqlite import SQLiteBackend
         from polylogue.storage.repository import ConversationRepository
 
         self.save()
-        backend = SQLiteBackend(db_path=self.db_path)
-        repo = ConversationRepository(backend=backend)
-        return await repo.get(self.conv.conversation_id)
+        async with ConversationRepository(backend=SQLiteBackend(db_path=self.db_path)) as repo:
+            return await repo.get(self.conv.conversation_id)
 
 
 # =============================================================================
@@ -715,103 +705,8 @@ def make_attachment(
     )
 
 
-# =============================================================================
-# PARAMETRIZED TEST HELPERS
-# =============================================================================
-
-
-def assert_messages_ordered(markdown_text: str, *expected_order: str):
-    """Assert messages appear in given order in markdown output.
-
-    Usage:
-        assert_messages_ordered(result.markdown_text, "First", "Second", "Third")
-    """
-    indices = []
-    for text in expected_order:
-        try:
-            idx = markdown_text.index(text)
-            indices.append((idx, text))
-        except ValueError as exc:
-            raise AssertionError(f"Expected text '{text}' not found in markdown") from exc
-
-    # Verify order
-    for i in range(len(indices) - 1):
-        if indices[i][0] >= indices[i + 1][0]:
-            raise AssertionError(
-                f"Order violation: '{indices[i][1]}' (index {indices[i][0]}) "
-                f"should come before '{indices[i + 1][1]}' (index {indices[i + 1][0]})"
-            )
-
-
-def assert_contains_all(text: str, *expected: str):
-    """Assert text contains all expected substrings.
-
-    Usage:
-        assert_contains_all(result, "user", "assistant", "Hello")
-    """
-    for expected_text in expected:
-        assert expected_text in text, f"Expected '{expected_text}' not found in text"
-
-
-def assert_not_contains_any(text: str, *unexpected: str):
-    """Assert text does NOT contain any of the given substrings.
-
-    Usage:
-        assert_not_contains_any(result, "ERROR", "FAIL", "```json")
-    """
-    for unexpected_text in unexpected:
-        assert unexpected_text not in text, f"Unexpected '{unexpected_text}' found in text"
-
-
-# =============================================================================
-# TEST DATA GENERATORS
-# =============================================================================
-
-
-def make_chatgpt_node(
-    msg_id: str,
-    role: str,
-    content_parts: list[str],
-    children: list[str] | None = None,
-    timestamp: float | None = None,
-    metadata: dict | None = None,
-    parent: str | None = None,
-) -> dict[str, Any]:
-    """Generate ChatGPT mapping node for parser tests.
-
-    Usage:
-        node = make_chatgpt_node("msg1", "user", ["Hello"], timestamp=1704067200)
-        node = make_chatgpt_node("msg2", "assistant", ["Hi"], parent="node1")
-    """
-    node = {
-        "id": msg_id,
-        "message": {
-            "id": msg_id,
-            "author": {"role": role},
-            "content": {"parts": content_parts},
-        },
-    }
-    if children:
-        node["children"] = children
-    if parent:
-        node["parent"] = parent
-    if timestamp:
-        node["message"]["create_time"] = timestamp
-    if metadata:
-        node["message"]["metadata"] = metadata
-    return node
-
-
-# =============================================================================
-# LEGACY FACTORY (dict-based API, simpler for quick seeding)
-# =============================================================================
-
-
 class DbFactory:
-    """Helper to seed the database with consistent records via dict-based API.
-
-    For new tests, prefer ConversationBuilder (fluent API).
-    """
+    """Low-ceremony DB seeder built on top of ConversationBuilder."""
 
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -827,399 +722,54 @@ class DbFactory:
         updated_at: datetime | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        """Create a conversation with messages in the DB."""
+        """Create a conversation with simple dict-shaped messages and attachments."""
         cid = id or str(uuid4())
         created_iso = (created_at or datetime.now(timezone.utc)).isoformat()
         updated_iso = (updated_at or datetime.now(timezone.utc)).isoformat()
 
-        conv_rec = ConversationRecord(
-            conversation_id=cid,
-            provider_name=provider,
-            provider_conversation_id=f"ext-{cid}",
-            title=title,
-            created_at=created_iso,
-            updated_at=updated_iso,
-            content_hash=uuid4().hex,
-            metadata=metadata,
+        builder = (
+            ConversationBuilder(self.db_path, cid)
+            .provider(provider)
+            .title(title)
+            .created_at(created_iso)
+            .updated_at(updated_iso)
+            .metadata(metadata)
         )
 
-        msg_recs = []
-        att_recs = []
+        for msg in messages or []:
+            message_id = msg.get("id")
+            message_kwargs: dict[str, Any] = {
+                "provider_message_id": msg.get("provider_message_id"),
+                "parent_message_id": msg.get("parent_message_id"),
+                "branch_index": msg.get("branch_index", 0),
+                "content_blocks": msg.get("content_blocks", []),
+            }
+            if "provider_meta" in msg:
+                message_kwargs["provider_meta"] = msg["provider_meta"]
+            if "word_count" in msg:
+                message_kwargs["word_count"] = msg["word_count"]
+            if "has_tool_use" in msg:
+                message_kwargs["has_tool_use"] = msg["has_tool_use"]
+            if "has_thinking" in msg:
+                message_kwargs["has_thinking"] = msg["has_thinking"]
 
-        if messages:
-            for msg in messages:
-                mid = msg.get("id") or str(uuid4())
-                from polylogue.pipeline.prepare import _timestamp_sort_key
-                ts = msg.get("timestamp") or datetime.now(timezone.utc).isoformat()
-                m_rec = MessageRecord(
-                    message_id=mid,
-                    conversation_id=cid,
-                    role=msg.get("role", "user"),
-                    text=msg.get("text", "hello"),
-                    sort_key=_timestamp_sort_key(ts),
-                    content_hash=uuid4().hex,
-                )
-                msg_recs.append(m_rec)
-
-                if "attachments" in msg:
-                    for att in msg["attachments"]:
-                        aid = att.get("id") or str(uuid4())
-                        att_recs.append(
-                            AttachmentRecord(
-                                attachment_id=aid,
-                                conversation_id=cid,
-                                message_id=mid,
-                                mime_type=att.get("mime_type", "application/octet-stream"),
-                                size_bytes=att.get("size_bytes", 1024),
-                                provider_meta=att.get("meta"),
-                            )
-                        )
-
-        with open_connection(self.db_path) as conn:
-            store_records(
-                conversation=conv_rec,
-                messages=msg_recs,
-                attachments=att_recs,
-                conn=conn,
+            builder.add_message(
+                message_id=message_id,
+                role=msg.get("role", "user"),
+                text=msg.get("text", msg.get("content", "hello")),
+                timestamp=msg.get("timestamp", ...),
+                **message_kwargs,
             )
+
+            for att in msg.get("attachments", []):
+                builder.add_attachment(
+                    attachment_id=att.get("id"),
+                    message_id=message_id if message_id is not None else ...,
+                    mime_type=att.get("mime_type", "application/octet-stream"),
+                    size_bytes=att.get("size_bytes", 1024),
+                    path=att.get("path"),
+                    provider_meta=att.get("meta") or att.get("provider_meta"),
+                )
+
+        builder.save()
         return cid
-
-
-def make_claude_chat_message(
-    uuid: str,
-    sender: str,
-    text: str,
-    attachments: list[dict] | None = None,
-    files: list[dict] | None = None,
-    timestamp: str | None = None,
-) -> dict[str, Any]:
-    """Generate Claude AI chat_messages entry for parser tests.
-
-    Usage:
-        msg = make_claude_chat_message("u1", "human", "Hello")
-    """
-    msg = {
-        "uuid": uuid,
-        "text": text,
-    }
-
-    if sender:
-        msg["sender"] = sender
-    if attachments:
-        msg["attachments"] = attachments
-    if files:
-        msg["files"] = files
-    if timestamp:
-        msg["created_at"] = timestamp
-
-    return msg
-
-
-# =============================================================================
-# FILE DATA BUILDERS (For creating test inbox files)
-# =============================================================================
-
-
-class InboxBuilder:
-    """Fluent builder for creating test inbox directories with files.
-
-    Example:
-        inbox = (InboxBuilder(tmp_path)
-                 .add_codex_conversation("conv1", messages=[("user", "Hello")])
-                 .add_chatgpt_export("conv2", nodes=[...])
-                 .add_claude_export("conv3", chat_messages=[...])
-                 .build())
-    """
-
-    def __init__(self, base_path: Path):
-        self.base_path = base_path
-        self.base_path.mkdir(parents=True, exist_ok=True)
-        self.files: list[tuple[Path, str]] = []
-
-    def add_json_file(self, filename: str, data: Any) -> InboxBuilder:
-        """Add a raw JSON file."""
-        import json
-        path = self.base_path / filename
-        self.files.append((path, json.dumps(data, indent=2)))
-        return self
-
-    def add_jsonl_file(self, filename: str, entries: list[Any]) -> InboxBuilder:
-        """Add a JSONL file with multiple entries."""
-        import json
-        path = self.base_path / filename
-        content = "\n".join(json.dumps(entry) for entry in entries) + "\n"
-        self.files.append((path, content))
-        return self
-
-    def add_codex_conversation(
-        self,
-        conv_id: str,
-        title: str | None = None,
-        messages: list[tuple[str, str]] | None = None,
-        filename: str | None = None,
-    ) -> InboxBuilder:
-        """Add a simple Codex/generic format conversation.
-
-        Args:
-            conv_id: Conversation ID
-            title: Optional title
-            messages: List of (role, content) tuples
-            filename: Custom filename (default: {conv_id}.json)
-        """
-        if messages is None:
-            messages = [("user", "Hello"), ("assistant", "Hi there!")]
-
-        payload: dict[str, Any] = {
-            "id": conv_id,
-            "messages": [
-                {"id": f"m{i+1}", "role": role, "content": content}
-                for i, (role, content) in enumerate(messages)
-            ],
-        }
-        if title:
-            payload["title"] = title
-
-        fname = filename or f"{conv_id}.json"
-        return self.add_json_file(fname, payload)
-
-    def add_chatgpt_export(
-        self,
-        conv_id: str,
-        title: str | None = None,
-        nodes: list[dict] | None = None,
-        filename: str | None = None,
-    ) -> InboxBuilder:
-        """Add a ChatGPT export format conversation.
-
-        Args:
-            conv_id: Conversation ID
-            title: Optional title
-            nodes: List of mapping node dicts (use make_chatgpt_node())
-            filename: Custom filename
-        """
-        if nodes is None:
-            nodes = [
-                make_chatgpt_node("n1", "user", ["Hello"], timestamp=1704067200),
-                make_chatgpt_node("n2", "assistant", ["Hi there!"], timestamp=1704067201),
-            ]
-
-        # Build mapping from nodes
-        mapping = {}
-        for node in nodes:
-            mapping[node["id"]] = node
-
-        payload: dict[str, Any] = {
-            "id": conv_id,
-            "mapping": mapping,
-        }
-        if title:
-            payload["title"] = title
-
-        fname = filename or f"chatgpt_{conv_id}.json"
-        return self.add_json_file(fname, payload)
-
-    def add_claude_export(
-        self,
-        conv_id: str,
-        name: str | None = None,
-        chat_messages: list[dict] | None = None,
-        filename: str | None = None,
-        wrap_in_conversations: bool = True,
-    ) -> InboxBuilder:
-        """Add a Claude AI export format conversation.
-
-        Args:
-            conv_id: Conversation ID
-            name: Conversation name/title
-            chat_messages: List of message dicts (use make_claude_chat_message())
-            filename: Custom filename
-            wrap_in_conversations: Wrap in {"conversations": [...]} structure
-        """
-        if chat_messages is None:
-            chat_messages = [
-                make_claude_chat_message("m1", "human", "Hello"),
-                make_claude_chat_message("m2", "assistant", "Hi there!"),
-            ]
-
-        conversation = {
-            "id": conv_id,
-            "chat_messages": chat_messages,
-        }
-        if name:
-            conversation["name"] = name
-
-        payload = {"conversations": [conversation]} if wrap_in_conversations else conversation
-
-        fname = filename or f"claude_{conv_id}.json"
-        return self.add_json_file(fname, payload)
-
-    def build(self) -> Path:
-        """Write all files and return the inbox path."""
-        for path, content in self.files:
-            path.write_text(content, encoding="utf-8")
-        return self.base_path
-
-    def get_file_path(self, filename: str) -> Path:
-        """Get path to a specific file in the inbox."""
-        return self.base_path / filename
-
-
-class ChatGPTExportBuilder:
-    """Builder for ChatGPT export format with proper node structure.
-
-    Example:
-        export = (ChatGPTExportBuilder("conv1")
-                  .title("My Chat")
-                  .add_node("user", "Hello")
-                  .add_node("assistant", "Hi there!")
-                  .add_node("user", "How are you?", model_slug="gpt-4")
-                  .build())
-    """
-
-    def __init__(self, conv_id: str):
-        self.conv_id = conv_id
-        self._title: str | None = None
-        self._nodes: list[dict] = []
-        self._node_counter = 0
-        self._timestamp = 1704067200.0  # Base timestamp
-
-    def title(self, title: str) -> ChatGPTExportBuilder:
-        self._title = title
-        return self
-
-    def add_node(
-        self,
-        role: str,
-        *content_parts: str,
-        node_id: str | None = None,
-        metadata: dict | None = None,
-        model_slug: str | None = None,
-    ) -> ChatGPTExportBuilder:
-        """Add a message node."""
-        self._node_counter += 1
-        nid = node_id or f"node-{self._node_counter}"
-
-        meta = metadata or {}
-        if model_slug:
-            meta["model_slug"] = model_slug
-
-        node = make_chatgpt_node(
-            nid,
-            role,
-            list(content_parts),
-            timestamp=self._timestamp,
-            metadata=meta if meta else None,
-        )
-        self._nodes.append(node)
-        self._timestamp += 1.0
-        return self
-
-    def add_system_node(self, content: str, node_id: str | None = None) -> ChatGPTExportBuilder:
-        """Add a system message node."""
-        return self.add_node("system", content, node_id=node_id)
-
-    def add_tool_node(
-        self,
-        tool_name: str,
-        result: str,
-        node_id: str | None = None,
-    ) -> ChatGPTExportBuilder:
-        """Add a tool result node."""
-        return self.add_node(
-            "tool",
-            result,
-            node_id=node_id,
-            metadata={"name": tool_name},
-        )
-
-    def build(self) -> dict[str, Any]:
-        """Build the ChatGPT export structure."""
-        mapping = {node["id"]: node for node in self._nodes}
-        result: dict[str, Any] = {
-            "id": self.conv_id,
-            "mapping": mapping,
-        }
-        if self._title:
-            result["title"] = self._title
-        return result
-
-    def write_to(self, path: Path) -> Path:
-        """Build and write to file."""
-        import json
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.build(), indent=2), encoding="utf-8")
-        return path
-
-
-class GenericConversationBuilder:
-    """Builder for simple/Codex format conversations.
-
-    Example:
-        conv = (GenericConversationBuilder("conv1")
-                .title("Test Chat")
-                .add_message("user", "Hello")
-                .add_message("assistant", "Hi!")
-                .build())
-    """
-
-    def __init__(self, conv_id: str):
-        self.conv_id = conv_id
-        self._title: str | None = None
-        self._messages: list[dict] = []
-        self._msg_counter = 0
-
-    def title(self, title: str) -> GenericConversationBuilder:
-        self._title = title
-        return self
-
-    def add_message(
-        self,
-        role: str,
-        content: str,
-        message_id: str | None = None,
-        text: str | None = None,  # Alias for content
-    ) -> GenericConversationBuilder:
-        """Add a message. Uses 'content' key by default, but can use 'text'."""
-        self._msg_counter += 1
-        msg_id = message_id or f"m{self._msg_counter}"
-
-        msg: dict[str, Any] = {
-            "id": msg_id,
-            "role": role,
-        }
-        # Support both content and text keys
-        if text is not None:
-            msg["text"] = text
-        else:
-            msg["content"] = content
-
-        self._messages.append(msg)
-        return self
-
-    def add_user(self, content: str, **kwargs) -> GenericConversationBuilder:
-        """Shorthand for add_message with role='user'."""
-        return self.add_message("user", content, **kwargs)
-
-    def add_assistant(self, content: str, **kwargs) -> GenericConversationBuilder:
-        """Shorthand for add_message with role='assistant'."""
-        return self.add_message("assistant", content, **kwargs)
-
-    def build(self) -> dict[str, Any]:
-        """Build the conversation structure."""
-        result: dict[str, Any] = {
-            "id": self.conv_id,
-            "messages": self._messages,
-        }
-        if self._title:
-            result["title"] = self._title
-        return result
-
-    def write_to(self, path: Path) -> Path:
-        """Build and write to file."""
-        import json
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.build(), indent=2), encoding="utf-8")
-        return path
-
-
-

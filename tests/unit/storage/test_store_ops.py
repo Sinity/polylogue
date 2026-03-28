@@ -17,7 +17,7 @@ from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
 )
-from tests.infra.helpers import (
+from tests.infra.storage_records import (
     _make_ref_id,
     _prune_attachment_refs,
     make_attachment,
