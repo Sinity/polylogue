@@ -59,7 +59,7 @@
             markdown-it-py
             pygments
             ijson
-            qdrant-client
+            sqlite-vec
             questionary
             click
             tenacity
@@ -72,6 +72,7 @@
             pydantic-settings
             dependency-injector
             aiosqlite
+            glom
           ];
 
           # Skip tests in build (run in checks instead)
@@ -137,7 +138,7 @@
               ${pkgs.uv}/bin/uv venv
               source .venv/bin/activate
               ${pkgs.uv}/bin/uv pip install -e ".[dev]"
-              pytest -q --ignore=tests/test_qdrant.py
+              pytest -q
               touch $out
             '';
       }
