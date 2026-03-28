@@ -13,21 +13,28 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import orjson
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
+from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
-from polylogue.sources.source import _parse_json_payload
+from polylogue.pipeline.services.ingest_state import IngestState
+from polylogue.protocols import ProgressCallback
+from polylogue.sources.source import parse_payload
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import Config, Source
+    from polylogue.pipeline.services.acquisition import AcquireResult
+    from polylogue.pipeline.services.validation import ValidateResult
     from polylogue.sources.parsers.base import ParsedConversation
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
@@ -52,7 +59,6 @@ class ParseResult:
         }
         self.processed_ids: set[str] = set()
         self.parse_failures: int = 0
-        self.drift_counts: dict[str, int] = {}  # provider -> drift warning count
         self._lock = asyncio.Lock()
 
     async def merge_result(
@@ -84,6 +90,16 @@ class ParseResult:
                     self.counts[key] += value
 
 
+@dataclass
+class IngestResult:
+    """Result of acquire -> validate -> parse orchestration."""
+
+    acquire_result: AcquireResult
+    validation_result: ValidateResult | None
+    parse_result: ParseResult
+    parse_raw_ids: list[str]
+
+
 class ParsingService:
     """Service for parsing conversations from sources asynchronously.
 
@@ -96,7 +112,6 @@ class ParsingService:
         repository: ConversationRepository,
         archive_root: Path,
         config: Config,
-        drive_client_factory: Any | None = None,
     ):
         """Initialize the async parsing service.
 
@@ -104,15 +119,17 @@ class ParsingService:
             repository: Async storage repository for database operations
             archive_root: Root directory for archived conversations
             config: Application configuration
-            drive_client_factory: Optional factory callable returning a DriveClient
         """
         self.repository = repository
         self.archive_root = archive_root
         self.config = config
-        self.drive_client_factory = drive_client_factory
-        # Per-run drift tracking (reset each parse_from_raw call)
-        self._drift_counts: dict[str, int] = {}
-        self._drift_lock = asyncio.Lock()
+
+    def _require_backend(self) -> SQLiteBackend:
+        """Return the repository backend or fail explicitly."""
+        backend = self.repository.backend
+        if backend is None:
+            raise RuntimeError("repository backend is not initialized")
+        return backend
 
     async def parse_sources(
         self,
@@ -120,13 +137,14 @@ class ParsingService:
         *,
         ui: object | None = None,
         download_assets: bool = True,
-        progress_callback: Any | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> ParseResult:
-        """Parse conversations from sources via acquire → parse flow.
+        """Parse conversations from sources via acquire → validate → parse flow.
 
-        This is a convenience method that runs both stages:
+        This is a convenience method that runs the three pipeline stages:
         1. ACQUIRE: Store raw bytes to raw_conversations
-        2. PARSE: Parse raw_conversations into conversations
+        2. VALIDATE: Persist validation status for raw payloads
+        3. PARSE: Parse validated raw_conversations into conversations
 
         Args:
             sources: List of sources to ingest
@@ -137,69 +155,120 @@ class ParsingService:
         Returns:
             ParseResult with counts and processed conversation IDs
         """
+        ingest_result = await self.ingest_sources(
+            sources=sources,
+            progress_callback=progress_callback,
+            parse_records=True,
+        )
+        return ingest_result.parse_result
+
+    async def ingest_sources(
+        self,
+        *,
+        sources: list[Source],
+        stage: str = "all",
+        ui: object | None = None,
+        progress_callback: ProgressCallback | None = None,
+        parse_records: bool = True,
+    ) -> IngestResult:
+        """Canonical ingestion orchestration for runtime callers.
+
+        Flow:
+        1. Acquire raw payloads directly into ``raw_conversations`` (streaming)
+        2. Collect pending validation backlog scoped to the selected sources
+        3. Validate pending raw payloads (new + backlog)
+        4. Optionally parse validated raw payloads
+        """
         from polylogue.pipeline.services.acquisition import AcquisitionService
+        from polylogue.pipeline.services.planning import PlanningService
+        from polylogue.pipeline.services.validation import ValidationService
 
-        backend = self.repository._backend
-        if backend is None:
-            raise RuntimeError("Repository backend is not initialized")
+        backend = self._require_backend()
 
-        # Stage 0: Sync Drive sources to local cache (if any)
-        await self._sync_drive_sources(sources, progress_callback=progress_callback)
-
-        # Stage 1: ACQUIRE - store raw bytes (async)
         acquire_service = AcquisitionService(backend=backend)
         acquire_result = await acquire_service.acquire_sources(
             sources,
+            ui=ui,
             progress_callback=progress_callback,
+            drive_config=self.config.drive_config,
         )
+        source_names = [source.name for source in sources]
+        ingest_state = IngestState(
+            source_names=tuple(source_names),
+            parse_requested=parse_records,
+        )
+        ingest_state.record_acquired(acquire_result.raw_ids)
 
-        # Find unparsed raw records (never successfully parsed or had errors)
-        unparsed_ids: list[str] = []
-        async with backend._get_connection() as conn:
-            cursor = await conn.execute(
-                "SELECT raw_id FROM raw_conversations WHERE parsed_at IS NULL"
+        planning_service = PlanningService(backend=backend, config=self.config)
+        validation_ids = list(acquire_result.raw_ids)
+        if stage in {"validate", "parse", "all"}:
+            validation_ids.extend(
+                await planning_service.collect_validation_backlog(
+                    source_names=source_names or None,
+                    exclude_raw_ids=validation_ids,
+                )
             )
-            while True:
-                rows = await cursor.fetchmany(500)
-                if not rows:
-                    break
-                unparsed_ids.extend(row["raw_id"] for row in rows)
+        ingest_state.record_validation_candidates(validation_ids)
 
-        # Combine newly acquired + unparsed raw IDs
-        all_raw_ids = list(acquire_result.raw_ids)
-        if unparsed_ids:
-            seen = set(all_raw_ids)
-            for uid in unparsed_ids:
-                if uid not in seen:
-                    all_raw_ids.append(uid)
-                    seen.add(uid)
-            logger.info(
-                "Found unparsed raw records",
-                unparsed=len(unparsed_ids),
-                newly_acquired=len(acquire_result.raw_ids),
-            )
-
-        # Stage 2: PARSE - parse raw_conversations into conversations
-        if all_raw_ids:
-            return await self.parse_from_raw(
-                raw_ids=all_raw_ids,
+        validation_result = None
+        if validation_ids:
+            validation_service = ValidationService(backend=backend)
+            validation_result = await validation_service.validate_raw_ids(
+                raw_ids=validation_ids,
                 progress_callback=progress_callback,
             )
-        else:
-            # Nothing to process
-            return ParseResult()
+        ingest_state.record_validation_result(
+            validation_result.parseable_raw_ids if validation_result else [],
+        )
+
+        parse_raw_ids: list[str] = []
+        parse_result = ParseResult()
+        if parse_records:
+            parse_raw_ids = await planning_service.collect_parse_backlog(
+                source_names=source_names or None,
+                exclude_raw_ids=validation_ids,
+            )
+            if validation_result is not None:
+                parse_raw_ids.extend(validation_result.parseable_raw_ids)
+                parse_raw_ids = list(dict.fromkeys(parse_raw_ids))
+            current_validation_ids = set(ingest_state.validation_raw_ids)
+            persisted_validated_ids = [
+                raw_id
+                for raw_id in parse_raw_ids
+                if raw_id not in current_validation_ids
+            ]
+            ingest_state.record_parse_candidates(
+                parse_raw_ids,
+                persisted_validated_raw_ids=persisted_validated_ids,
+            )
+            if parse_raw_ids:
+                parse_result = await self.parse_from_raw(
+                    raw_ids=parse_raw_ids,
+                    progress_callback=progress_callback,
+                )
+            ingest_state.record_parse_completed()
+            parse_raw_ids = ingest_state.parse_raw_ids
+
+        return IngestResult(
+            acquire_result=acquire_result,
+            validation_result=validation_result,
+            parse_result=parse_result,
+            parse_raw_ids=parse_raw_ids,
+        )
 
     # Batch size for processing raw records to limit memory usage.
     # Each raw record may contain multi-MB JSONL content; loading thousands
     # at once caused OOM kills on archives with >3000 conversations.
-    RAW_BATCH_SIZE = 200
+    # 50 records × ~2-5MB avg = 100-250MB peak per batch — sustainable on
+    # memory-constrained systems (200 caused OOM with a 14GB raw DB).
+    RAW_BATCH_SIZE = 50
 
     async def parse_from_raw(
         self,
         *,
         raw_ids: list[str] | None = None,
         provider: str | None = None,
-        progress_callback: Any | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> ParseResult:
         """Parse raw_conversations from DB into conversations.
 
@@ -220,14 +289,8 @@ class ParsingService:
         """
         result = ParseResult()
 
-        # Reset per-run drift tracking
-        async with self._drift_lock:
-            self._drift_counts.clear()
-
         # Use the repository's backend - same connection management
-        backend = self.repository._backend
-        if backend is None:
-            raise RuntimeError("Repository backend is not initialized")
+        backend = self._require_backend()
 
         # Collect raw_ids to process (just IDs, not full records — memory-safe)
         if raw_ids is not None:
@@ -236,7 +299,12 @@ class ParsingService:
                 progress_callback(0, desc=f"Parsing ({total:,} raw)")
             for batch_start in range(0, total, self.RAW_BATCH_SIZE):
                 batch_ids = raw_ids[batch_start : batch_start + self.RAW_BATCH_SIZE]
-                await self._process_raw_batch(backend, batch_ids, result, progress_callback, total=total)
+                await self._process_raw_batch(
+                    backend,
+                    batch_ids,
+                    result,
+                    progress_callback,
+                )
         else:
             if progress_callback is not None:
                 progress_callback(0, desc="Parsing")
@@ -244,28 +312,33 @@ class ParsingService:
             async for raw_record in backend.iter_raw_conversations(provider=provider):
                 batch_ids.append(raw_record.raw_id)
                 if len(batch_ids) >= self.RAW_BATCH_SIZE:
-                    await self._process_raw_batch(backend, batch_ids, result, progress_callback)
+                    await self._process_raw_batch(
+                        backend,
+                        batch_ids,
+                        result,
+                        progress_callback,
+                    )
                     batch_ids = []
             if batch_ids:
-                await self._process_raw_batch(backend, batch_ids, result, progress_callback)
+                await self._process_raw_batch(
+                    backend,
+                    batch_ids,
+                    result,
+                    progress_callback,
+                )
 
         if result.processed_ids:
             invalidate_search_cache()
             logger.debug("Search cache invalidated after parsing %d conversations", len(result.processed_ids))
 
-        # Copy per-run drift counts to result and check regeneration threshold
-        result.drift_counts = dict(self._drift_counts)
-        await self._maybe_regenerate_schemas(result.drift_counts)
-
         return result
 
     async def _process_raw_batch(
         self,
-        backend: Any,
+        backend: SQLiteBackend,
         batch_ids: list[str],
         result: ParseResult,
-        progress_callback: Any | None,
-        total: int | None = None,
+        progress_callback: ProgressCallback | None,
     ) -> None:
         """Process a batch of raw conversation IDs.
 
@@ -381,7 +454,10 @@ class ParsingService:
         for rid, error in failed_raw_ids.items():
             await backend.mark_raw_parsed(rid, error=error)
 
-    async def _parse_raw_record(self, raw_record: RawConversationRecord) -> list[ParsedConversation]:
+    async def _parse_raw_record(
+        self,
+        raw_record: RawConversationRecord,
+    ) -> list[ParsedConversation]:
         """Parse a raw conversation record into ParsedConversation(s).
 
         Handles both single JSON documents and JSONL (newline-delimited JSON).
@@ -393,193 +469,17 @@ class ParsingService:
         Returns:
             List of parsed conversations (usually 1, but could be more for bundles)
         """
-        content = raw_record.raw_content
-        # orjson accepts both bytes and str, avoiding decode overhead for bytes
-        raw = content if isinstance(content, (bytes, str)) else str(content)
-
-        # Try single JSON first (fast path for chatgpt, claude-ai)
-        try:
-            payload = orjson.loads(raw)
-        except (orjson.JSONDecodeError, ValueError):
-            # Fall back to JSONL parsing (claude-code, codex, gemini)
-            text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-            lines = []
-            for line in text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    lines.append(orjson.loads(line))
-                except (orjson.JSONDecodeError, ValueError):
-                    continue
-            if not lines:
-                raise
-            payload = lines
-
-        # Schema validation: non-blocking, logs drift and errors
-        await self._validate_payload(raw_record.provider_name, payload, raw_record.raw_id)
+        envelope = build_raw_payload_envelope(
+            raw_record.raw_content,
+            source_path=raw_record.source_path,
+            fallback_provider=raw_record.provider_name,
+        )
 
         # Use the existing parser dispatcher
-        return _parse_json_payload(
-            raw_record.provider_name,
-            payload,
+        return parse_payload(
+            envelope.provider,
+            envelope.payload,
             raw_record.raw_id,  # Use raw_id as fallback conversation ID
         )
 
-    async def _validate_payload(
-        self,
-        provider_name: str,
-        payload: Any,
-        raw_id: str,
-    ) -> None:
-        """Run schema validation on a parsed payload, logging drift and errors.
-
-        Never raises — validation is advisory, not blocking.
-        For list payloads (JSONL), validates the first item as a sample.
-        """
-        from polylogue.schemas.validator import SchemaValidator
-
-        try:
-            validator = SchemaValidator.for_provider(provider_name)
-        except (FileNotFoundError, ImportError):
-            return
-
-        # For JSONL payloads, sample-validate the first dict item
-        sample: Any
-        if isinstance(payload, list):
-            dicts = [item for item in payload if isinstance(item, dict)]
-            if not dicts:
-                return
-            sample = dicts[0]
-        elif isinstance(payload, dict):
-            sample = payload
-        else:
-            return
-
-        try:
-            result = validator.validate(sample)
-            if not result.is_valid:
-                logger.warning(
-                    "Schema validation errors for %s",
-                    provider_name,
-                    raw_id=raw_id,
-                    errors=result.errors[:5],
-                )
-            if result.has_drift:
-                logger.info(
-                    "Schema drift detected for %s",
-                    provider_name,
-                    raw_id=raw_id,
-                    drift=result.drift_warnings[:10],
-                )
-                async with self._drift_lock:
-                    self._drift_counts[provider_name] = self._drift_counts.get(provider_name, 0) + 1
-        except Exception as exc:
-            logger.debug(
-                "Schema validation skipped for %s: %s",
-                provider_name,
-                exc,
-            )
-
-    # Drift threshold: auto-regenerate schema if a provider exceeds this
-    # many drift warnings in a single parsing run.
-    DRIFT_REGEN_THRESHOLD = 5
-
-    async def _maybe_regenerate_schemas(self, drift_counts: dict[str, int]) -> None:
-        """Auto-regenerate schemas for providers with excessive drift.
-
-        If a provider accumulated more than DRIFT_REGEN_THRESHOLD drift
-        warnings during this parsing run, regenerate its schema from the
-        current database samples and register it as a new version.
-        """
-        from polylogue.schemas.registry import SchemaRegistry
-        from polylogue.schemas.schema_inference import generate_provider_schema
-
-        providers_to_regen = [p for p, count in drift_counts.items() if count > self.DRIFT_REGEN_THRESHOLD]
-
-        if not providers_to_regen:
-            return
-
-        backend = self.repository._backend
-        db_path = backend._db_path if backend else None
-
-        registry = SchemaRegistry()
-
-        for provider in providers_to_regen:
-            try:
-                gen_result = generate_provider_schema(provider, db_path=db_path)
-                if gen_result.success and gen_result.schema:
-                    version = registry.register_schema(provider, gen_result.schema)
-                    logger.info(
-                        "Auto-regenerated schema for %s as %s (drift=%d)",
-                        provider,
-                        version,
-                        drift_counts[provider],
-                    )
-                else:
-                    logger.warning(
-                        "Schema regeneration failed for %s: %s",
-                        provider,
-                        gen_result.error,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "Schema regeneration error for %s: %s",
-                    provider,
-                    exc,
-                )
-
-
-    async def _sync_drive_sources(
-        self,
-        sources: list[Source],
-        *,
-        progress_callback: Any | None = None,
-    ) -> None:
-        """Sync Drive sources to their local cache directories.
-
-        Downloads new/changed files from Google Drive to the source's local path,
-        so the normal file-based acquisition pipeline can pick them up.
-
-        Runs synchronous Google API calls in a thread pool to avoid blocking.
-        """
-        drive_sources = [s for s in sources if s.is_drive and s.path]
-        if not drive_sources:
-            return
-
-        for source in drive_sources:
-            if progress_callback:
-                progress_callback(0, desc=f"Syncing Drive [{source.name}]")
-
-            try:
-                result = await asyncio.to_thread(
-                    self._sync_one_drive_source, source,
-                )
-                if result:
-                    logger.info(
-                        "Drive sync complete",
-                        source=source.name,
-                        downloaded=len(result.downloaded_files),
-                        failed=len(result.failed_files),
-                        total=result.total_files,
-                    )
-            except Exception as exc:
-                # Drive errors are non-fatal — log and continue with local sources
-                logger.warning(
-                    "Skipping Drive source %s: %s", source.name, exc,
-                )
-
-    def _sync_one_drive_source(self, source: Source) -> Any:
-        """Sync a single Drive source (runs in thread pool)."""
-        from polylogue.sources.drive import download_drive_files
-        from polylogue.sources.drive_client import DriveClient
-
-        source.path.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
-
-        drive_config = self.config.drive_config if hasattr(self.config, "drive_config") else None
-        client = DriveClient(config=drive_config)
-        folder_id = client.resolve_folder_id(source.folder)  # type: ignore[arg-type]
-        return download_drive_files(client, folder_id, source.path)  # type: ignore[arg-type]
-
-
-__all__ = ["ParsingService", "ParseResult"]
+__all__ = ["ParsingService", "ParseResult", "IngestResult"]

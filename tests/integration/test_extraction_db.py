@@ -1,7 +1,7 @@
-"""Validate extraction logic against real database data.
+"""Validate extraction logic against seeded synthetic database data.
 
-Uses polylogue database's `provider_meta.raw` as ground truth.
-Extraction must work on 100% of real data with zero errors.
+Uses `raw_conversations.raw_content` as ground truth.
+Extraction should work on 100% of seeded synthetic data with zero errors.
 
 Test modes:
     - Default: Sample 100 messages per provider (fast)
@@ -23,6 +23,7 @@ from polylogue.schemas.unified import (
     extract_from_provider_meta,
     is_message_record,
 )
+from polylogue.sources.providers.codex import CodexRecord
 
 # Default to sparse testing; 0 means exhaustive
 DEFAULT_SAMPLES = 100
@@ -60,7 +61,7 @@ def iter_provider_messages(
     provider: str,
     limit: int | None = None,
 ) -> list[tuple[str, dict]]:
-    """Iterate messages for a provider.
+    """Iterate raw message records for a provider.
 
     Args:
         conn: Database connection
@@ -68,25 +69,55 @@ def iter_provider_messages(
         limit: Max messages (None = all)
 
     Returns:
-        List of (message_id, provider_meta) tuples.
+        List of (message_id, {"raw": provider_raw_message}) tuples.
     """
-    cur = conn.cursor()
-    query = """
-        SELECT m.message_id, m.provider_meta
-        FROM messages m
-        JOIN conversations c ON m.conversation_id = c.conversation_id
-        WHERE c.provider_name = ?
-    """
-    if limit:
-        query += f" LIMIT {limit}"
-
-    cur.execute(query, (provider,))
-
     results = []
-    for message_id, pm_json in cur.fetchall():
-        if pm_json:
-            results.append((message_id, json.loads(pm_json)))
+    raw_conversations = iter_raw_conversations(conn, provider)
+
+    for raw_id, raw_content, _source_path in raw_conversations:
+        payload = parse_raw_content(raw_content, provider)
+        raw_messages = _extract_provider_raw_messages(provider, payload)
+        for index, raw_message in enumerate(raw_messages):
+            results.append((f"{raw_id}:{index}", {"raw": raw_message}))
+            if limit is not None and len(results) >= limit:
+                return results
     return results
+
+
+def _extract_provider_raw_messages(provider: str, payload: list | dict) -> list[dict]:
+    """Extract provider-native raw message records from a raw payload."""
+    if provider == "chatgpt":
+        conversations = payload if isinstance(payload, list) else [payload]
+        messages: list[dict] = []
+        for conversation in conversations:
+            if not isinstance(conversation, dict):
+                continue
+            mapping = conversation.get("mapping")
+            if not isinstance(mapping, dict):
+                continue
+            for node in mapping.values():
+                if not isinstance(node, dict):
+                    continue
+                message = node.get("message")
+                if isinstance(message, dict):
+                    messages.append(message)
+        return messages
+
+    records = payload if isinstance(payload, list) else [payload]
+    messages = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if provider == "codex":
+            try:
+                if not CodexRecord.model_validate(record).is_message:
+                    continue
+            except Exception:
+                continue
+        elif not is_message_record(provider, record):
+            continue
+        messages.append(record)
+    return messages
 
 
 # =============================================================================
@@ -100,7 +131,7 @@ class TestExtractionValidation:
 
     @pytest.mark.parametrize("provider", ["claude-code", "chatgpt", "codex"])
     def test_extraction_succeeds(self, seeded_db, provider):
-        """Extraction should succeed on real messages from fixtures.
+        """Extraction should succeed on seeded synthetic messages.
 
         Sample limit controlled by POLYLOGUE_TEST_SAMPLES env var:
         - Default (100): Fast feedback
@@ -212,27 +243,19 @@ class TestViewportValidation:
 
 @pytest.mark.slow
 class TestDataIntegrity:
-    """Validate raw data integrity in seeded database."""
+    """Validate raw conversation integrity in seeded database."""
 
-    def test_provider_meta_has_raw(self, seeded_db):
-        """Non-claude-code messages should have raw data in provider_meta.
-
-        Claude-code intentionally omits 'raw' from provider_meta to avoid
-        duplicating data already stored in raw_conversations.raw_content.
-        """
+    def test_raw_conversations_have_raw_content(self, seeded_db):
+        """Seeded raw conversations should retain non-empty raw payloads."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT c.provider_name, COUNT(*) as total,
-                   SUM(CASE WHEN m.provider_meta IS NULL THEN 1 ELSE 0 END) as null_meta,
-                   SUM(CASE WHEN m.provider_meta IS NOT NULL
-                            AND json_extract(m.provider_meta, '$.raw') IS NULL
-                       THEN 1 ELSE 0 END) as missing_raw
-            FROM messages m
-            JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name != 'claude-code'
-            GROUP BY c.provider_name
+            SELECT provider_name,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN raw_content IS NULL OR length(raw_content) = 0 THEN 1 ELSE 0 END) as missing_raw
+            FROM raw_conversations
+            GROUP BY provider_name
             """
         )
 
@@ -240,14 +263,11 @@ class TestDataIntegrity:
         conn.close()
 
         issues = []
-        for provider, total, null_meta, missing_raw in rows:
-            if null_meta > 0 or missing_raw > 0:
-                issues.append(f"{provider}: {null_meta} null meta, {missing_raw} missing raw (of {total})")
+        for provider, total, missing_raw in rows:
+            if missing_raw > 0:
+                issues.append(f"{provider}: {missing_raw} missing raw payloads (of {total})")
 
-        # This is informational - seeded data may have missing raw
-        if issues:
-            import warnings
-            warnings.warn(f"Data integrity notes: {issues}", stacklevel=2)
+        assert not issues, f"Missing raw payloads in seeded database: {issues}"
 
     def test_provider_coverage(self, seeded_db):
         """Report provider coverage in database."""
@@ -377,7 +397,7 @@ class TestRawConversationParsing:
     """Validate provider parsers against raw_conversations table.
 
     This is the SYSTEMATIC test for parsers - instead of crafting test cases,
-    we run parsers against real stored data to ensure 100% success rate.
+    we run parsers against seeded stored data to ensure 100% success rate.
     """
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "codex"])
@@ -385,9 +405,9 @@ class TestRawConversationParsing:
         """Every raw_conversation for this provider parses without error.
 
         This test replaces many spot checks in test_parsers_unit.py by:
-        1. Testing against REAL provider data (not synthetic)
+        1. Testing against seeded provider-format data through full storage paths
         2. Testing ALL stored conversations (not cherry-picked examples)
-        3. Ensuring parsers work on edge cases naturally in the data
+        3. Ensuring parsers work on naturally varied records from generated corpus
         """
         from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
         from polylogue.sources.parsers.claude import parse_code as claude_code_parse

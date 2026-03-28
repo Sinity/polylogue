@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,9 +20,12 @@ from polylogue.config import Config, Source
 from polylogue.pipeline.services import IndexService
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
+from polylogue.pipeline.services.planning import PlanningService
+from polylogue.pipeline.services.validation import ValidationService
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.store import RawConversationRecord
 
 # ============================================================================
 # IndexService Tests
@@ -98,7 +101,7 @@ class TestAcquisitionServiceAcquireSources:
             (2, 1, 1, b'{"id": "same-conv"}'),
         ],
     )
-    @patch("polylogue.pipeline.services.acquisition.iter_source_conversations_with_raw")
+    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
     async def test_acquire_conversations(
         self,
         mock_iter,
@@ -116,7 +119,7 @@ class TestAcquisitionServiceAcquireSources:
                 source_index=0,
                 provider_hint="chatgpt",
             )
-            mock_iter.return_value = iter([(raw_data, MagicMock())])
+            mock_iter.return_value = iter([raw_data])
         elif num_convos == 3:
             convos = [
                 RawConversationData(
@@ -127,7 +130,7 @@ class TestAcquisitionServiceAcquireSources:
                 )
                 for i in range(3)
             ]
-            mock_iter.return_value = iter([(r, MagicMock()) for r in convos])
+            mock_iter.return_value = iter(convos)
         else:  # num_convos == 2
             raw_data = RawConversationData(
                 raw_bytes=raw_content,
@@ -135,7 +138,7 @@ class TestAcquisitionServiceAcquireSources:
                 source_index=0,
                 provider_hint="chatgpt",
             )
-            mock_iter.return_value = iter([(raw_data, MagicMock()), (raw_data, MagicMock())])
+            mock_iter.return_value = iter([raw_data, raw_data])
 
         service = AcquisitionService(backend=backend)
         source = Source(name="test-source", path=Path("/tmp/inbox"))
@@ -155,7 +158,7 @@ class TestAcquisitionServiceAcquireSources:
         "provider_hint,source_name,expected_provider",
         [("chatgpt", "test-source", "chatgpt"), (None, "my-inbox", "my-inbox")],
     )
-    @patch("polylogue.pipeline.services.acquisition.iter_source_conversations_with_raw")
+    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
     async def test_acquire_provider_fallback(
         self,
         mock_iter,
@@ -171,7 +174,7 @@ class TestAcquisitionServiceAcquireSources:
             source_index=0,
             provider_hint=provider_hint,
         )
-        mock_iter.return_value = iter([(raw_data, MagicMock())])
+        mock_iter.return_value = iter([raw_data])
         service = AcquisitionService(backend=backend)
         source = Source(name=source_name, path=Path("/tmp/inbox"))
         result = await service.acquire_sources([source])
@@ -179,7 +182,7 @@ class TestAcquisitionServiceAcquireSources:
         assert stored is not None
         assert stored.provider_name == expected_provider
 
-    @patch("polylogue.pipeline.services.acquisition.iter_source_conversations_with_raw")
+    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
     async def test_progress_callback_called(self, mock_iter, backend: SQLiteBackend):
         """Progress callback is invoked for each conversation."""
         raw_data = RawConversationData(
@@ -187,21 +190,25 @@ class TestAcquisitionServiceAcquireSources:
             source_path="/tmp/test.json",
             source_index=0,
         )
-        mock_iter.return_value = iter([(raw_data, MagicMock())])
+        mock_iter.return_value = iter([raw_data])
+        backend.get_known_source_mtimes = AsyncMock(return_value={})
         callback = MagicMock()
         service = AcquisitionService(backend=backend)
         source = Source(name="test-source", path=Path("/tmp/inbox"))
         await service.acquire_sources([source], progress_callback=callback)
-        callback.assert_called_with(1, desc="Acquiring [test-source]")
+        callback.assert_any_call(1, desc="Acquiring [test-source]")
+        assert mock_iter.call_args is not None
+        kwargs = mock_iter.call_args.kwargs
+        assert kwargs.get("known_mtimes") is not None
 
     @pytest.mark.parametrize("error_scenario", ["iteration_error", "none_raw_data"])
-    @patch("polylogue.pipeline.services.acquisition.iter_source_conversations_with_raw")
+    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
     async def test_acquire_handles_errors(self, mock_iter, backend: SQLiteBackend, error_scenario: str):
         """Errors during source iteration are counted."""
         if error_scenario == "iteration_error":
             mock_iter.side_effect = ValueError("File not found")
         else:
-            mock_iter.return_value = iter([(None, MagicMock())])
+            mock_iter.return_value = iter([None])
         service = AcquisitionService(backend=backend)
         source = Source(name="test-source", path=Path("/tmp/inbox"))
         result = await service.acquire_sources([source])
@@ -229,17 +236,342 @@ class TestAcquisitionServiceIntegration:
         assert result.counts["acquired"] == 1 and result.counts["errors"] == 0 and len(result.raw_ids) == 1
         stored = await backend.get_raw_conversation(result.raw_ids[0])
         data = json.loads(stored.raw_content)
-        assert stored.provider_name == "chatgpt" and data["id"] == "conv-1" and data["title"] == "Test Chat"
+        assert stored.provider_name == "chatgpt"
+        assert isinstance(data, list)
+        assert data[0]["id"] == "conv-1" and data[0]["title"] == "Test Chat"
 
     async def test_acquire_multiple_json_files(self, tmp_path: Path):
-        """Acquire from multiple JSON files in a directory."""
+        """Acquire stores one raw payload per file (not per conversation in a bundle)."""
         inbox = tmp_path / "inbox"
         inbox.mkdir()
         convs = [self._make_conv("conv-1", "Chat 1", 1700000000, "Hello"),
                  self._make_conv("conv-2", "Chat 2", 1700000200, "World")]
         (inbox / "conversations.json").write_text(json.dumps(convs))
         result = await AcquisitionService(backend=SQLiteBackend(db_path=tmp_path / "test.db")).acquire_sources([Source(name="chatgpt-export", path=inbox)])
-        assert result.counts["acquired"] == 2 and len(result.raw_ids) == 2 and len(set(result.raw_ids)) == 2
+        assert result.counts["acquired"] == 1 and len(result.raw_ids) == 1
+
+
+# ============================================================================
+# ValidationService Tests
+# ============================================================================
+
+
+class TestValidationService:
+    """Tests for raw payload schema validation stage."""
+
+    def test_validation_default_mode_is_strict(self, monkeypatch):
+        """Unset env should default validation mode to strict."""
+        monkeypatch.delenv("POLYLOGUE_SCHEMA_VALIDATION", raising=False)
+        service = ValidationService(backend=MagicMock())
+        assert service._schema_validation_mode() == "strict"
+
+    async def test_validation_off_mode_skips_processing(self, monkeypatch):
+        """off mode should skip schema checks but persist skipped validation state."""
+        backend = MagicMock()
+        backend.get_raw_conversations_batch = AsyncMock()
+        backend.mark_raw_validated = AsyncMock()
+        service = ValidationService(backend=backend)
+        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
+
+        result = await service.validate_raw_ids(raw_ids=["raw-1", "raw-2"])
+
+        assert result.parseable_raw_ids == ["raw-1", "raw-2"]
+        backend.get_raw_conversations_batch.assert_not_called()
+        assert backend.mark_raw_validated.await_count == 2
+
+    async def test_validation_strict_blocks_invalid_payloads(self, monkeypatch):
+        """strict mode should block invalid payloads and persist parse_error."""
+        from polylogue.schemas import ValidationResult
+
+        raw_record = MagicMock(
+            raw_id="raw-1",
+            raw_content=b'{"id": 1}',
+            provider_name="chatgpt",
+            source_path="/tmp/conversations.json",
+        )
+        backend = MagicMock()
+        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        backend.mark_raw_validated = AsyncMock()
+        backend.mark_raw_parsed = AsyncMock()
+
+        class _AlwaysInvalidValidator:
+            provider = "chatgpt"
+
+            def validation_samples(self, payload, max_samples=16):
+                return [payload]
+
+            def validate(self, _sample):
+                return ValidationResult(
+                    is_valid=False,
+                    errors=["id: 1 is not of type 'string'"],
+                )
+
+        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_provider",
+            lambda _provider: _AlwaysInvalidValidator(),
+        )
+
+        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+
+        assert result.counts["invalid"] == 1
+        assert result.parseable_raw_ids == []
+        backend.mark_raw_validated.assert_awaited_once()
+        backend.mark_raw_parsed.assert_called_once()
+
+    async def test_validation_advisory_reports_invalid_but_keeps_parseable(self, monkeypatch):
+        """advisory mode should report invalid payloads without blocking parse."""
+        from polylogue.schemas import ValidationResult
+
+        raw_record = MagicMock(
+            raw_id="raw-1",
+            raw_content=b'{"id": 1}',
+            provider_name="chatgpt",
+            source_path="/tmp/conversations.json",
+        )
+        backend = MagicMock()
+        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        backend.mark_raw_validated = AsyncMock()
+        backend.mark_raw_parsed = AsyncMock()
+
+        class _AlwaysInvalidValidator:
+            provider = "chatgpt"
+
+            def validation_samples(self, payload, max_samples=16):
+                return [payload]
+
+            def validate(self, _sample):
+                return ValidationResult(
+                    is_valid=False,
+                    errors=["id: 1 is not of type 'string'"],
+                )
+
+        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "advisory")
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_provider",
+            lambda _provider: _AlwaysInvalidValidator(),
+        )
+
+        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+
+        assert result.counts["invalid"] == 1
+        assert result.parseable_raw_ids == ["raw-1"]
+        backend.mark_raw_validated.assert_awaited_once()
+        kwargs = backend.mark_raw_validated.await_args.kwargs
+        assert kwargs["status"] == "passed"
+        backend.mark_raw_parsed.assert_not_called()
+
+    async def test_validation_max_samples_all_uses_all_record_samples(self, monkeypatch):
+        """`POLYLOGUE_SCHEMA_VALIDATION_MAX_SAMPLES=all` validates all JSONL dict records."""
+        from polylogue.schemas import ValidationResult
+
+        raw_record = MagicMock(
+            raw_id="raw-1",
+            raw_content=(
+                b'{"type":"session_meta"}\n'
+                b'{"type":"response_item","payload":{"type":"message"}}\n'
+                b'{"record_type":"state"}'
+            ),
+            provider_name="codex",
+            source_path="/tmp/session.jsonl",
+        )
+        backend = MagicMock()
+        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        backend.mark_raw_validated = AsyncMock()
+        backend.mark_raw_parsed = AsyncMock()
+
+        class _CapturingValidator:
+            provider = "codex"
+
+            def __init__(self):
+                self.max_samples_seen = None
+
+            def validation_samples(self, payload, max_samples=16):
+                self.max_samples_seen = max_samples
+                return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else [payload]
+
+            def validate(self, _sample):
+                return ValidationResult(is_valid=True)
+
+        capturing = _CapturingValidator()
+        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION_MAX_SAMPLES", "all")
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_provider",
+            lambda _provider: capturing,
+        )
+
+        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+
+        assert result.parseable_raw_ids == ["raw-1"]
+        assert capturing.max_samples_seen == 3
+
+    async def test_validation_strict_fails_on_malformed_jsonl_lines(self, monkeypatch):
+        """Strict mode should fail payloads that contain malformed JSONL lines."""
+        from polylogue.schemas import ValidationResult
+
+        raw_record = MagicMock(
+            raw_id="raw-1",
+            raw_content=(
+                b'{"type":"session_meta"}\n'
+                b'not json at all\n'
+                b'{"type":"response_item","payload":{"type":"message"}}'
+            ),
+            provider_name="codex",
+            source_path="/tmp/session.jsonl",
+        )
+        backend = MagicMock()
+        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        backend.mark_raw_validated = AsyncMock()
+        backend.mark_raw_parsed = AsyncMock()
+
+        class _AlwaysValidValidator:
+            provider = "codex"
+
+            def validation_samples(self, payload, max_samples=16):
+                return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else [payload]
+
+            def validate(self, _sample):
+                return ValidationResult(is_valid=True)
+
+        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_provider",
+            lambda _provider: _AlwaysValidValidator(),
+        )
+
+        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+
+        assert result.counts["invalid"] == 1
+        assert result.parseable_raw_ids == []
+        kwargs = backend.mark_raw_validated.await_args.kwargs
+        assert kwargs["status"] == "failed"
+        assert "Malformed JSONL lines" in (kwargs.get("error") or "")
+        backend.mark_raw_parsed.assert_awaited_once()
+
+    async def test_validation_strict_detects_malformed_jsonl_beyond_large_prefix(self, monkeypatch):
+        """Strict validation must inspect the full JSONL stream, not a head sample."""
+        from polylogue.schemas import ValidationResult
+
+        raw_record = MagicMock(
+            raw_id="raw-1",
+            raw_content=(b'{"type":"session_meta"}\n' * 1024) + b"not json at all\n",
+            provider_name="codex",
+            source_path="/tmp/session.jsonl",
+        )
+        backend = MagicMock()
+        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        backend.mark_raw_validated = AsyncMock()
+        backend.mark_raw_parsed = AsyncMock()
+
+        class _AlwaysValidValidator:
+            provider = "codex"
+
+            def validation_samples(self, payload, max_samples=16):
+                return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else [payload]
+
+            def validate(self, _sample):
+                return ValidationResult(is_valid=True)
+
+        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_provider",
+            lambda _provider: _AlwaysValidValidator(),
+        )
+
+        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+
+        assert result.counts["invalid"] == 1
+        assert result.parseable_raw_ids == []
+        kwargs = backend.mark_raw_validated.await_args.kwargs
+        assert kwargs["status"] == "failed"
+        assert "Malformed JSONL lines" in (kwargs.get("error") or "")
+
+    async def test_validation_advisory_allows_malformed_jsonl_lines(self, monkeypatch):
+        """Advisory mode should keep malformed JSONL payloads parseable."""
+        from polylogue.schemas import ValidationResult
+
+        raw_record = MagicMock(
+            raw_id="raw-1",
+            raw_content=(
+                b'{"type":"session_meta"}\n'
+                b'not json at all\n'
+                b'{"type":"response_item","payload":{"type":"message"}}'
+            ),
+            provider_name="codex",
+            source_path="/tmp/session.jsonl",
+        )
+        backend = MagicMock()
+        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        backend.mark_raw_validated = AsyncMock()
+        backend.mark_raw_parsed = AsyncMock()
+
+        class _AlwaysValidValidator:
+            provider = "codex"
+
+            def validation_samples(self, payload, max_samples=16):
+                return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else [payload]
+
+            def validate(self, _sample):
+                return ValidationResult(is_valid=True)
+
+        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "advisory")
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_provider",
+            lambda _provider: _AlwaysValidValidator(),
+        )
+
+        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+
+        assert result.parseable_raw_ids == ["raw-1"]
+        kwargs = backend.mark_raw_validated.await_args.kwargs
+        assert kwargs["status"] == "passed"
+        backend.mark_raw_parsed.assert_not_called()
+
+    async def test_validation_progress_callback_reports_counts(self, monkeypatch):
+        """Validation progress descriptions should stay informative after scanning."""
+        from polylogue.schemas import ValidationResult
+
+        raw_records = [
+            MagicMock(
+                raw_id="raw-1",
+                raw_content=b'{"id":"1"}',
+                provider_name="chatgpt",
+                source_path="/tmp/a.json",
+            ),
+            MagicMock(
+                raw_id="raw-2",
+                raw_content=b'{"id":"2"}',
+                provider_name="chatgpt",
+                source_path="/tmp/b.json",
+            ),
+        ]
+        backend = MagicMock()
+        backend.get_raw_conversations_batch = AsyncMock(return_value=raw_records)
+        backend.mark_raw_validated = AsyncMock()
+        callback = MagicMock()
+
+        class _AlwaysValidValidator:
+            provider = "chatgpt"
+
+            def validation_samples(self, payload, max_samples=16):
+                return [payload]
+
+            def validate(self, _sample):
+                return ValidationResult(is_valid=True)
+
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_provider",
+            lambda _provider: _AlwaysValidValidator(),
+        )
+
+        await ValidationService(backend=backend).validate_raw_ids(
+            raw_ids=["raw-1", "raw-2"],
+            progress_callback=callback,
+        )
+
+        callback.assert_any_call(0, desc="Validating: 0/2 raw")
+        callback.assert_any_call(1, desc="Validating: 1/2 raw")
+        callback.assert_any_call(1, desc="Validating: 2/2 raw")
 
 
 # ============================================================================
@@ -378,29 +710,18 @@ class TestParsingServiceParseSources:
 
     parse_sources() orchestrates:
     1. ACQUIRE stage via AcquisitionService.acquire_sources()
-    2. PARSE stage via self.parse_from_raw()
+    2. VALIDATE stage via ValidationService.validate_raw_ids()
+    3. PARSE stage via self.parse_from_raw()
 
     These tests mock the stage boundaries to verify orchestration logic.
     """
 
     async def test_ingest_empty_sources_returns_empty_result(self):
-        """Empty sources list returns empty ParseResult (no acquisition needed)."""
+        """Empty sources list returns empty ParseResult via empty acquisition/backlog."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
-        mock_repo._backend = mock_backend
+        mock_repo.backend = mock_backend
         mock_config = MagicMock(spec=Config)
-
-        # Mock the backend._get_connection to return an async context manager
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[])
-        mock_cursor.fetchmany = AsyncMock(return_value=[])
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_backend._get_connection = MagicMock(return_value=mock_cm)
 
         service = ParsingService(
             repository=mock_repo,
@@ -408,37 +729,42 @@ class TestParsingServiceParseSources:
             config=mock_config,
         )
 
+        acquire_result = AcquireResult()
         with patch(
-            "polylogue.pipeline.services.acquisition.AcquisitionService"
-        ) as mock_acquire_cls:
-            mock_acquire_service = MagicMock()
-            mock_acquire_cls.return_value = mock_acquire_service
-            mock_acquire_service.acquire_sources = AsyncMock(return_value=AcquireResult())
+            "polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources",
+            new=AsyncMock(return_value=acquire_result),
+        ) as mock_acquire:
+            with patch(
+                "polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog",
+                new=AsyncMock(return_value=[]),
+            ) as mock_collect_validate:
+                with patch(
+                    "polylogue.pipeline.services.planning.PlanningService.collect_parse_backlog",
+                    new=AsyncMock(return_value=[]),
+                ) as mock_collect_parse:
+                    with patch.object(service, "parse_from_raw", new_callable=AsyncMock) as mock_parse:
+                        result = await service.parse_sources([])
 
-            result = await service.parse_sources([])
+        mock_acquire.assert_awaited_once_with(
+            [],
+            ui=None,
+            progress_callback=None,
+            drive_config=mock_config.drive_config,
+        )
+        mock_collect_validate.assert_awaited_once_with(source_names=None, exclude_raw_ids=[])
+        mock_collect_parse.assert_awaited_once_with(source_names=None, exclude_raw_ids=[])
+        mock_parse.assert_not_called()
 
         assert result.counts["conversations"] == 0
         assert result.counts["messages"] == 0
         assert len(result.processed_ids) == 0
 
     async def test_ingest_calls_acquire_then_parse(self):
-        """parse_sources calls acquire stage, then parse stage with returned raw_ids."""
+        """parse_sources executes the planner, stores raws, validates, then parses."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
-        mock_repo._backend = mock_backend
+        mock_repo.backend = mock_backend
         mock_config = MagicMock(spec=Config)
-
-        # Mock the backend._get_connection to return an async context manager
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[])
-        mock_cursor.fetchmany = AsyncMock(return_value=[])
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_backend._get_connection = MagicMock(return_value=mock_cm)
 
         service = ParsingService(
             repository=mock_repo,
@@ -446,55 +772,71 @@ class TestParsingServiceParseSources:
             config=mock_config,
         )
 
+        acquire_result = AcquireResult()
+        acquire_result.raw_ids = ["raw-1", "raw-2"]
+        acquire_result.counts["acquired"] = 2
+        validation_result = MagicMock()
+        validation_result.parseable_raw_ids = ["raw-1", "raw-2"]
+
         with patch(
-            "polylogue.pipeline.services.acquisition.AcquisitionService"
-        ) as mock_acquire_cls:
-            mock_acquire_service = MagicMock()
-            mock_acquire_cls.return_value = mock_acquire_service
+            "polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources",
+            new=AsyncMock(return_value=acquire_result),
+        ) as mock_acquire:
+            with patch(
+                "polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog",
+                new=AsyncMock(return_value=[]),
+            ) as mock_collect_validate:
+                with patch(
+                    "polylogue.pipeline.services.planning.PlanningService.collect_parse_backlog",
+                    new=AsyncMock(return_value=[]),
+                ) as mock_collect_parse:
+                    with patch(
+                        "polylogue.pipeline.services.validation.ValidationService.validate_raw_ids",
+                        new=AsyncMock(return_value=validation_result),
+                    ) as mock_validate:
+                        mock_parse_result = ParseResult()
+                        mock_parse_result.counts["conversations"] = 2
+                        mock_parse_result.counts["messages"] = 5
+                        mock_parse_result.processed_ids = {"conv-1", "conv-2"}
+                        with patch.object(
+                            service, "parse_from_raw", new_callable=AsyncMock, return_value=mock_parse_result
+                        ) as mock_parse:
+                            source = Source(name="test-source", path=Path("/tmp/inbox"))
+                            result = await service.parse_sources([source])
 
-            acquire_result = AcquireResult()
-            acquire_result.raw_ids = ["raw-1", "raw-2"]
-            acquire_result.counts["acquired"] = 2
-            mock_acquire_service.acquire_sources = AsyncMock(return_value=acquire_result)
-
-            mock_parse_result = ParseResult()
-            mock_parse_result.counts["conversations"] = 2
-            mock_parse_result.counts["messages"] = 5
-            mock_parse_result.processed_ids = {"conv-1", "conv-2"}
-            with patch.object(
-                service, "parse_from_raw", new_callable=AsyncMock, return_value=mock_parse_result
-            ) as mock_parse:
-                source = Source(name="test-source", path=Path("/tmp/inbox"))
-                result = await service.parse_sources([source])
-
-                mock_acquire_service.acquire_sources.assert_called_once()
-                mock_parse.assert_called_once_with(
-                    raw_ids=["raw-1", "raw-2"],
-                    progress_callback=None,
-                )
+        mock_acquire.assert_awaited_once_with(
+            [Source(name="test-source", path=Path("/tmp/inbox"))],
+            ui=None,
+            progress_callback=None,
+            drive_config=mock_config.drive_config,
+        )
+        mock_collect_validate.assert_awaited_once_with(
+            source_names=["test-source"],
+            exclude_raw_ids=["raw-1", "raw-2"],
+        )
+        mock_collect_parse.assert_awaited_once_with(
+            source_names=["test-source"],
+            exclude_raw_ids=["raw-1", "raw-2"],
+        )
+        mock_validate.assert_awaited_once_with(
+            raw_ids=["raw-1", "raw-2"],
+            progress_callback=None,
+        )
+        mock_parse.assert_awaited_once_with(
+            raw_ids=["raw-1", "raw-2"],
+            progress_callback=None,
+        )
 
         assert result.counts["conversations"] == 2
         assert result.counts["messages"] == 5
         assert result.processed_ids == {"conv-1", "conv-2"}
 
     async def test_ingest_skips_parse_when_nothing_acquired(self):
-        """If acquisition returns no raw_ids, parse stage is skipped."""
+        """If the canonical plan has nothing parseable, parse stage is skipped."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
-        mock_repo._backend = mock_backend
+        mock_repo.backend = mock_backend
         mock_config = MagicMock(spec=Config)
-
-        # Mock the backend._get_connection to return an async context manager
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[])
-        mock_cursor.fetchmany = AsyncMock(return_value=[])
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_backend._get_connection = MagicMock(return_value=mock_cm)
 
         service = ParsingService(
             repository=mock_repo,
@@ -502,42 +844,37 @@ class TestParsingServiceParseSources:
             config=mock_config,
         )
 
+        acquire_result = AcquireResult()
+        acquire_result.counts["skipped"] = 5
         with patch(
-            "polylogue.pipeline.services.acquisition.AcquisitionService"
-        ) as mock_acquire_cls:
-            mock_acquire_service = MagicMock()
-            mock_acquire_cls.return_value = mock_acquire_service
+            "polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources",
+            new=AsyncMock(return_value=acquire_result),
+        ) as mock_acquire:
+            with patch(
+                "polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog",
+                new=AsyncMock(return_value=[]),
+            ) as mock_collect_validate:
+                with patch(
+                    "polylogue.pipeline.services.planning.PlanningService.collect_parse_backlog",
+                    new=AsyncMock(return_value=[]),
+                ) as mock_collect_parse:
+                    with patch.object(service, "parse_from_raw", new_callable=AsyncMock) as mock_parse:
+                        source = Source(name="test-source", path=Path("/tmp/inbox"))
+                        result = await service.parse_sources([source])
 
-            acquire_result = AcquireResult()
-            acquire_result.counts["skipped"] = 5
-            mock_acquire_service.acquire_sources = AsyncMock(return_value=acquire_result)
-
-            with patch.object(service, "parse_from_raw", new_callable=AsyncMock) as mock_parse:
-                source = Source(name="test-source", path=Path("/tmp/inbox"))
-                result = await service.parse_sources([source])
-
-                mock_parse.assert_not_called()
+        mock_acquire.assert_awaited_once()
+        mock_collect_validate.assert_awaited_once_with(source_names=["test-source"], exclude_raw_ids=[])
+        mock_collect_parse.assert_awaited_once_with(source_names=["test-source"], exclude_raw_ids=[])
+        mock_parse.assert_not_called()
 
         assert result.counts["conversations"] == 0
 
     async def test_progress_callback_passed_to_both_stages(self):
-        """Progress callback is forwarded to both acquire and parse stages."""
+        """Progress callback is forwarded to planning, validation, and parse stages."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
-        mock_repo._backend = mock_backend
+        mock_repo.backend = mock_backend
         mock_config = MagicMock(spec=Config)
-
-        # Mock the backend._get_connection to return an async context manager
-        mock_conn = AsyncMock()
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[])
-        mock_cursor.fetchmany = AsyncMock(return_value=[])
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_backend._get_connection = MagicMock(return_value=mock_cm)
 
         service = ParsingService(
             repository=mock_repo,
@@ -546,38 +883,53 @@ class TestParsingServiceParseSources:
         )
 
         callback = MagicMock()
+        acquire_result = AcquireResult()
+        acquire_result.raw_ids = ["raw-1"]
+        validation_result = MagicMock()
+        validation_result.parseable_raw_ids = ["raw-1"]
 
         with patch(
-            "polylogue.pipeline.services.acquisition.AcquisitionService"
-        ) as mock_acquire_cls:
-            mock_acquire_service = MagicMock()
-            mock_acquire_cls.return_value = mock_acquire_service
+            "polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources",
+            new=AsyncMock(return_value=acquire_result),
+        ) as mock_acquire:
+            with patch(
+                "polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog",
+                new=AsyncMock(return_value=[]),
+            ):
+                with patch(
+                    "polylogue.pipeline.services.planning.PlanningService.collect_parse_backlog",
+                    new=AsyncMock(return_value=[]),
+                ):
+                    with patch(
+                        "polylogue.pipeline.services.validation.ValidationService.validate_raw_ids",
+                        new=AsyncMock(return_value=validation_result),
+                    ) as mock_validate:
+                        mock_parse_result = ParseResult()
+                        with patch.object(
+                            service, "parse_from_raw", new_callable=AsyncMock, return_value=mock_parse_result
+                        ) as mock_parse:
+                            source = Source(name="test-source", path=Path("/tmp/inbox"))
+                            await service.parse_sources([source], progress_callback=callback)
 
-            acquire_result = AcquireResult()
-            acquire_result.raw_ids = ["raw-1"]
-            mock_acquire_service.acquire_sources = AsyncMock(return_value=acquire_result)
-
-            mock_parse_result = ParseResult()
-            with patch.object(
-                service, "parse_from_raw", new_callable=AsyncMock, return_value=mock_parse_result
-            ) as mock_parse:
-                source = Source(name="test-source", path=Path("/tmp/inbox"))
-                await service.parse_sources([source], progress_callback=callback)
-
-                mock_acquire_service.acquire_sources.assert_called_once_with(
-                    [source],
-                    progress_callback=callback,
-                )
-
-                mock_parse.assert_called_once_with(
-                    raw_ids=["raw-1"],
-                    progress_callback=callback,
-                )
+        mock_acquire.assert_awaited_once_with(
+            [Source(name="test-source", path=Path("/tmp/inbox"))],
+            ui=None,
+            progress_callback=callback,
+            drive_config=mock_config.drive_config,
+        )
+        mock_validate.assert_awaited_once_with(
+            raw_ids=["raw-1"],
+            progress_callback=callback,
+        )
+        mock_parse.assert_awaited_once_with(
+            raw_ids=["raw-1"],
+            progress_callback=callback,
+        )
 
     async def test_backend_not_initialized_raises(self):
         """RuntimeError raised if repository backend is None."""
         mock_repo = MagicMock()
-        mock_repo._backend = None
+        mock_repo.backend = None
         mock_config = MagicMock(spec=Config)
 
         service = ParsingService(
@@ -590,6 +942,209 @@ class TestParsingServiceParseSources:
 
         with pytest.raises(RuntimeError, match="backend is not initialized"):
             await service.parse_sources([source])
+
+    async def test_planning_includes_scoped_validation_backlog(self, tmp_path: Path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        planner = PlanningService(backend=backend, config=config)
+        source_dir = tmp_path / "inbox-a"
+        source_dir.mkdir()
+
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-scoped",
+                provider_name="chatgpt",
+                source_name="inbox-a",
+                source_path="/tmp/a.json",
+                raw_content=b'{"id":"a"}',
+                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+        )
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-legacy-provider",
+                provider_name="inbox-a",
+                source_name=None,
+                source_path="/tmp/legacy.json",
+                raw_content=b'{"id":"legacy"}',
+                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+        )
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-other",
+                provider_name="chatgpt",
+                source_name="inbox-b",
+                source_path="/tmp/b.json",
+                raw_content=b'{"id":"b"}',
+                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+        )
+
+        plan = await planner.build_plan(
+            sources=[Source(name="inbox-a", path=source_dir)],
+            stage="validate",
+        )
+
+        assert plan.summary.counts["validate"] == 2
+        assert plan.summary.details["backlog_validate"] == 2
+        assert set(plan.validate_raw_ids) == {"raw-scoped", "raw-legacy-provider"}
+
+    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
+    async def test_build_plan_dedupes_duplicate_scanned_raw_ids(self, mock_iter, tmp_path: Path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        planner = PlanningService(backend=backend, config=config)
+        source_dir = tmp_path / "inbox-a"
+        source_dir.mkdir()
+
+        raw_data = RawConversationData(
+            raw_bytes=b'{"id":"duplicate"}',
+            source_path="/tmp/duplicate.json",
+            source_index=0,
+            provider_hint="chatgpt",
+        )
+        mock_iter.return_value = iter([raw_data, raw_data])
+
+        plan = await planner.build_plan(
+            sources=[Source(name="inbox-a", path=source_dir)],
+            stage="acquire",
+            preview=True,
+        )
+
+        assert plan.summary.counts["scan"] == 2
+        assert plan.summary.counts["store_raw"] == 1
+        assert plan.summary.details["new_raw"] == 1
+        assert plan.summary.details["duplicate_raw"] == 1
+
+    async def test_build_plan_execution_does_not_load_backlog_content(self, tmp_path: Path):
+        """Regression: build_plan(preview=False) must not call get_raw_conversations_batch
+        for backlog records — doing so OOMs on large archives (6k+ multi-MB files).
+
+        The execution path must collect IDs only; content loading is delegated to
+        ValidationService which fetches in bounded batches.
+        """
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        planner = PlanningService(backend=backend, config=config)
+        source_dir = tmp_path / "inbox-a"
+        source_dir.mkdir()
+
+        # Seed 5 backlog records (unvalidated, unparsed, not on-disk — pure backlog)
+        for i in range(5):
+            await backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=f"raw-backlog-{i}",
+                    provider_name="chatgpt",
+                    source_name="inbox-a",
+                    source_path=f"/tmp/backlog-{i}.json",
+                    raw_content=b'{"id":"x"}',
+                    acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+                )
+            )
+
+        call_count: list[int] = [0]
+        original = backend.get_raw_conversations_batch
+
+        async def spy_batch(ids, *args, **kwargs):
+            call_count[0] += 1
+            return await original(ids, *args, **kwargs)
+
+        backend.get_raw_conversations_batch = spy_batch  # type: ignore[method-assign]
+
+        plan = await planner.build_plan(
+            sources=[Source(name="inbox-a", path=source_dir)],
+            stage="all",
+            preview=False,
+        )
+
+        # All 5 backlog IDs must appear in validate_raw_ids
+        assert set(plan.validate_raw_ids) == {f"raw-backlog-{i}" for i in range(5)}
+        # get_raw_conversations_batch must NOT have been called (content not loaded)
+        assert call_count[0] == 0, (
+            f"get_raw_conversations_batch called {call_count[0]} time(s) during execution "
+            "build_plan — this OOMs on large archives"
+        )
+
+    async def test_build_plan_preview_validates_backlog_in_batches(self, tmp_path: Path):
+        """preview=True should validate backlog in bounded fetch batches."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        planner = PlanningService(backend=backend, config=config)
+        source_dir = tmp_path / "inbox-a"
+        source_dir.mkdir()
+
+        total_backlog = ValidationService.RAW_BATCH_SIZE + 5
+        for i in range(total_backlog):
+            await backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=f"raw-preview-{i}",
+                    provider_name="chatgpt",
+                    source_name="inbox-a",
+                    source_path=f"/tmp/p-{i}.json",
+                    raw_content=b'{"id":"x"}',
+                    acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+                )
+            )
+
+        call_count: list[int] = [0]
+        batch_sizes: list[int] = []
+        original = backend.get_raw_conversations_batch
+
+        async def spy_batch(ids, *args, **kwargs):
+            call_count[0] += 1
+            batch_sizes.append(len(ids))
+            return await original(ids, *args, **kwargs)
+
+        backend.get_raw_conversations_batch = spy_batch  # type: ignore[method-assign]
+
+        plan = await planner.build_plan(
+            sources=[Source(name="inbox-a", path=source_dir)],
+            stage="all",
+            preview=True,
+        )
+
+        assert len(plan.validate_raw_ids) == total_backlog
+        assert call_count[0] >= 2, "preview=True should validate backlog in batches"
+        assert max(batch_sizes) <= ValidationService.RAW_BATCH_SIZE
+
+    async def test_planning_includes_only_parseable_backlog_statuses(self, tmp_path: Path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        planner = PlanningService(backend=backend, config=config)
+        source_dir = tmp_path / "inbox-a"
+        source_dir.mkdir()
+
+        for raw_id, status in (
+            ("raw-passed", "passed"),
+            ("raw-skipped", "skipped"),
+            ("raw-failed", "failed"),
+        ):
+            await backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name="chatgpt",
+                    source_name="inbox-a",
+                    source_path=f"/tmp/{raw_id}.json",
+                    raw_content=b'{"id":"x"}',
+                    acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+                )
+            )
+            await backend.mark_raw_validated(
+                raw_id,
+                status=status,
+                provider="chatgpt",
+                mode="strict",
+            )
+
+        plan = await planner.build_plan(
+            sources=[Source(name="inbox-a", path=source_dir)],
+            stage="parse",
+        )
+
+        assert plan.summary.counts["parse"] == 2
+        assert plan.summary.details["backlog_parse"] == 2
+        assert set(plan.parse_ready_raw_ids) == {"raw-passed", "raw-skipped"}
 
 
 # ============================================================================
@@ -607,8 +1162,9 @@ class TestParsingServiceIntegration:
                 "content": {"content_type": "text", "parts": [msg]}, "create_time": 1700000050},
                 "parent": "root", "children": []}}}
 
-    async def test_ingest_with_real_database(self, cli_workspace, tmp_path):
+    async def test_ingest_with_real_database(self, cli_workspace, tmp_path, monkeypatch):
         """Full ingestion flow with real database."""
+        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
         inbox = cli_workspace["inbox_dir"]
         (inbox / "conversations.json").write_text(json.dumps([self._conv_json("test-conv-1", "Test Conversation", "Hello, world!")]))
         backend = SQLiteBackend(db_path=cli_workspace["db_path"])
@@ -631,7 +1187,7 @@ class TestParsingServiceIntegration:
         parse_result = await ParsingService(repository=ConversationRepository(backend=backend),
                                        archive_root=cli_workspace["archive_root"], config=config).parse_from_raw(raw_ids=raw_ids)
         assert parse_result.counts["conversations"] >= 1 and len(parse_result.processed_ids) >= 1
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT raw_id FROM conversations WHERE conversation_id = ?",
                              (list(parse_result.processed_ids)[0],))
             row = await cursor.fetchone()

@@ -22,6 +22,7 @@ from polylogue.pipeline.runner import (
     plan_sources,
     run_sources,
 )
+from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import PlanResult
 from tests.infra.helpers import make_conversation, store_records
@@ -31,7 +32,7 @@ class TestRenderFailureTracking:
     """Tests for tracking render failures in async pipeline.
 
     Uses workspace_env fixture so XDG_DATA_HOME points to a temp dir,
-    ensuring run_sources() → get_backend() → create backend
+    ensuring run_sources() uses a temp-backed backend
     all converge on the same database.
     """
 
@@ -209,8 +210,8 @@ class TestSelectSources:
 class TestPlanSources:
     """Tests for plan_sources function."""
 
-    def test_plan_empty_config(self, tmp_path: Path):
-        """Returns zeros for empty config."""
+    def test_plan_empty_config(self, workspace_env, tmp_path: Path):
+        """Empty configs produce no preview actions."""
         config = Config(
             sources=[],
             archive_root=tmp_path / "archive",
@@ -220,12 +221,14 @@ class TestPlanSources:
         result = plan_sources(config)
 
         assert isinstance(result, PlanResult)
-        assert result.counts == {"conversations": 0, "messages": 0, "attachments": 0}
+        assert result.stage == "all"
+        assert result.counts == {}
+        assert result.details == {}
         assert result.sources == []
         assert result.cursors == {}
 
-    def test_plan_single_source(self, tmp_path: Path):
-        """Correct counts for single source."""
+    def test_plan_single_source(self, workspace_env, tmp_path: Path):
+        """Single-source preview reports canonical pipeline actions."""
         # Create test conversations
         inbox = tmp_path / "inbox"
         inbox.mkdir()
@@ -272,9 +275,24 @@ class TestPlanSources:
 
         result = plan_sources(config)
 
-        assert result.counts["conversations"] == 1
-        assert result.counts["messages"] == 2
+        assert result.counts["scan"] == 1
+        assert result.counts["store_raw"] == 1
+        assert result.counts["validate"] == 1
+        assert result.counts["parse"] == 1
         assert result.sources == ["test-source"]
+
+    async def test_plan_inside_running_event_loop(self, workspace_env, tmp_path: Path):
+        """plan_sources remains callable from sync code inside an active event loop."""
+        config = Config(
+            sources=[],
+            archive_root=tmp_path / "archive",
+            render_root=tmp_path / "render",
+        )
+
+        result = plan_sources(config)
+
+        assert result.counts == {}
+        assert result.sources == []
 
 
 class TestAllConversationIds:
@@ -291,10 +309,9 @@ class TestAllConversationIds:
                 conv = make_conversation(f"conv-{i}", title=f"Conversation {i}")
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_backend
-
-        backend = get_backend()
+        backend = create_backend(db_path)
         ids = asyncio.run(_all_conversation_ids(backend))
+        asyncio.run(backend.close())
 
         assert len(ids) == 3
         assert set(ids) == {"conv-0", "conv-1", "conv-2"}
@@ -310,10 +327,9 @@ class TestAllConversationIds:
                 conv = make_conversation(conv_id, provider_name=provider, title=f"Conv {conv_id}")
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_backend
-
-        backend = get_backend()
+        backend = create_backend(db_path)
         ids = asyncio.run(_all_conversation_ids(backend, source_names=["chatgpt"]))
+        asyncio.run(backend.close())
 
         assert len(ids) == 2
         assert set(ids) == {"chatgpt-1", "chatgpt-2"}
@@ -329,10 +345,9 @@ class TestAllConversationIds:
                 conv = make_conversation(conv_id, provider_name="chatgpt", title=f"Conv {conv_id}", provider_meta={"source": source})
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_backend
-
-        backend = get_backend()
+        backend = create_backend(db_path)
         ids = asyncio.run(_all_conversation_ids(backend, source_names=["export-a"]))
+        asyncio.run(backend.close())
 
         assert len(ids) == 2
         assert set(ids) == {"a-1", "a-2"}
@@ -355,11 +370,10 @@ class TestAllConversationIds:
             conv_empty = make_conversation("empty-meta-1", title="Empty Meta", provider_meta={})
             store_records(conversation=conv_empty, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_backend
-
-        backend = get_backend()
+        backend = create_backend(db_path)
         # Should not raise and filter correctly
         ids = asyncio.run(_all_conversation_ids(backend, source_names=["my-source"]))
+        asyncio.run(backend.close())
         assert "valid-1" in ids
         assert "null-meta-1" not in ids  # Skipped due to null meta
         assert "empty-meta-1" not in ids  # Skipped due to no source in meta
@@ -502,14 +516,16 @@ class TestRunSourcesIntegration:
     @pytest.mark.parametrize(
         "stage,with_source_data",
         [
+            ("validate", True),
             ("parse", True),
             ("render", False),
             ("index", False),
             ("all", True),
         ],
     )
-    def test_stage_matrix(self, workspace_env, tmp_path: Path, stage: str, with_source_data: bool):
+    def test_stage_matrix(self, workspace_env, tmp_path: Path, stage: str, with_source_data: bool, monkeypatch):
         """Each stage executes only its expected pipeline responsibilities."""
+        monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
         sources = []
         if with_source_data:
             inbox = tmp_path / f"inbox-{stage}"
@@ -551,7 +567,11 @@ class TestRunSourcesIntegration:
         else:
             result = asyncio.run(run_sources(config=config, stage=stage))
 
-        if stage == "parse":
+        if stage == "validate":
+            assert result.counts.get("validated", 0) >= 1
+            assert result.counts["conversations"] == 0
+            assert result.indexed is False
+        elif stage == "parse":
             assert result.counts["conversations"] >= 1
             assert result.counts.get("rendered", 0) == 0
             assert result.indexed is False
@@ -572,8 +592,8 @@ class TestRunSourcesIntegration:
             else:
                 assert result.index_error is not None
 
-    def test_drift_calculation_with_plan(self, workspace_env, tmp_path: Path):
-        """Drift is calculated comparing actual vs plan."""
+    def test_plan_snapshot_is_persisted_without_affecting_drift(self, workspace_env, tmp_path: Path):
+        """Run drift is derived from actual output, while plan snapshots are recorded separately."""
         config = Config(
             sources=[],
             archive_root=workspace_env["archive_root"],
@@ -590,10 +610,12 @@ class TestRunSourcesIntegration:
 
         result = asyncio.run(run_sources(config=config, stage="parse", plan=plan))
 
-        # With 0 actual, drift should show removed items
-        assert "new" in result.drift
-        assert "removed" in result.drift
-        assert result.drift["removed"]["conversations"] == 10  # All expected are "removed"
+        latest = asyncio.run(latest_run())
+        assert latest is not None
+        assert latest.plan_snapshot is not None
+        assert latest.plan_snapshot["counts"] == plan.counts
+        assert result.drift["new"]["conversations"] == 0
+        assert result.drift["removed"]["conversations"] == 0
 
     def test_drift_calculation_without_plan(self, workspace_env, tmp_path: Path):
         """Without plan, all items counted as 'new'."""
@@ -670,4 +692,62 @@ class TestRunSourcesIntegration:
 
             assert result.indexed is False
             assert result.index_error is not None
-            assert "Index rebuild failed" in result.index_error
+        assert "Index rebuild failed" in result.index_error
+
+    def test_parse_stage_reuses_persisted_validation_status(self, workspace_env, tmp_path: Path):
+        """parse stage should process previously validated-but-unparsed raw records."""
+        from polylogue.storage.store import RawConversationRecord
+
+        backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
+        raw_content = json.dumps([
+            {
+                "id": "conv-prevalidated",
+                "title": "Prevalidated",
+                "create_time": 1704067200,
+                "update_time": 1704067200,
+                "mapping": {
+                    "root": {"id": "root", "message": None, "children": ["m1"]},
+                    "m1": {
+                        "id": "m1",
+                        "message": {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "content": {"parts": ["hello"]},
+                            "create_time": 1704067200,
+                        },
+                        "parent": "root",
+                        "children": [],
+                    },
+                },
+            }
+        ]).encode("utf-8")
+        raw_id = "raw-prevalidated"
+        asyncio.run(
+            backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name="chatgpt",
+                    source_name="seeded",
+                    source_path="/tmp/prevalidated.json",
+                    raw_content=raw_content,
+                    acquired_at="2026-03-05T00:00:00Z",
+                )
+            )
+        )
+        asyncio.run(
+            backend.mark_raw_validated(
+                raw_id,
+                status="passed",
+                provider="chatgpt",
+                mode="strict",
+            )
+        )
+
+        config = Config(
+            sources=[],
+            archive_root=workspace_env["archive_root"],
+            render_root=workspace_env["archive_root"] / "render",
+        )
+        result = asyncio.run(run_sources(config=config, stage="parse"))
+        asyncio.run(backend.close())
+        assert result.counts["conversations"] >= 1
