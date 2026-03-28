@@ -75,6 +75,7 @@ class QueryFirstGroup(click.Group):
                     "-o", "--output", "-f", "--format",
                     "--fields", "--set", "--unset",
                     "--add-tag", "--rm-tag", "--annotate",
+                    "--transform",
                 ):
                     if i + 1 < len(args) and not args[i + 1].startswith("-"):
                         i += 1
@@ -201,7 +202,7 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     "--format",
     "-f",
     "output_format",
-    type=click.Choice(["markdown", "json", "html", "obsidian", "org"]),
+    type=click.Choice(["markdown", "json", "html", "obsidian", "org", "yaml", "plaintext"]),
     help="Output format",
 )
 @click.option("--fields", help="Select fields for list/json output (comma-separated)")
@@ -213,6 +214,11 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option("--by-tag", is_flag=True, help="Aggregate by tag")
 @click.option("--open", "open_result", is_flag=True, help="Open result in browser/editor")
 @click.option("--csv", "csv_path", type=click.Path(path_type=Path), help="Write CSV to file")
+@click.option(
+    "--transform",
+    type=click.Choice(["strip-tools", "strip-thinking", "strip-all"]),
+    help="Transform output: strip-tools, strip-thinking, or strip-all",
+)
 # --- Modifier options (write operations) ---
 @click.option("--set", "set_meta", nargs=2, multiple=True, help="Set metadata key value")
 @click.option("--unset", multiple=True, help="Remove metadata key")
@@ -220,6 +226,8 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option("--rm-tag", multiple=True, help="Remove tags (comma-separated)")
 @click.option("--annotate", help="LLM annotation prompt")
 @click.option("--delete", "delete_matched", is_flag=True, help="Delete matched (requires filter)")
+@click.option("--dry-run", is_flag=True, help="Preview changes without executing")
+@click.option("--force", is_flag=True, help="Skip confirmation for bulk operations")
 # --- Global options ---
 @click.option("--plain", is_flag=True, help="Force non-interactive plain output")
 @click.option("--interactive", is_flag=True, help="Force interactive output")
@@ -263,6 +271,7 @@ def cli(
     by_tag: bool,
     open_result: bool,
     csv_path: Path | None,
+    transform: str | None,
     # Modifiers
     set_meta: tuple[tuple[str, str], ...],
     unset: tuple[str, ...],
@@ -270,6 +279,8 @@ def cli(
     rm_tag: tuple[str, ...],
     annotate: str | None,
     delete_matched: bool,
+    dry_run: bool,
+    force: bool,
     # Global
     plain: bool,
     interactive: bool,

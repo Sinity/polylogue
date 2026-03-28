@@ -37,39 +37,11 @@ def test_counts_lock_prevents_lost_updates():
     assert counts["messages"] == expected
 
 
-def test_counts_without_lock_may_lose_updates():
-    """Demonstrate that without lock, updates can be lost (race condition)."""
-    # This test demonstrates the bug we're fixing - updates CAN be lost
-    # without proper synchronization. We run multiple iterations to increase
-    # the chance of observing the race.
-    counts = {"value": 0}
-    iterations = 10000
-    workers = 4
-
-    def increment_without_lock():
-        for _ in range(iterations):
-            # Non-atomic read-modify-write
-            current = counts["value"]
-            counts["value"] = current + 1
-
-    # Run the test multiple times to increase chance of race
-    race_observed = False
-    for _ in range(5):
-        counts["value"] = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(increment_without_lock) for _ in range(workers)]
-            for f in futures:
-                f.result()
-
-        expected = iterations * workers
-        if counts["value"] < expected:
-            race_observed = True
-            break
-
-    # We expect to observe the race condition at least sometimes
-    # If this test fails (no race observed), the test itself may need adjustment
-    # but it doesn't indicate a bug in our fix
-    assert race_observed or counts["value"] == expected, "Test may need more iterations to observe race"
+# NOTE: A test_counts_without_lock_may_lose_updates test was removed here.
+# Race condition demonstration tests are inherently non-deterministic -
+# they "may or may not" observe the race depending on thread scheduling.
+# This provides no value in CI and can cause flaky failures.
+# The fix is validated by test_counts_lock_prevents_lost_updates above.
 
 
 def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
@@ -113,7 +85,8 @@ def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
 
 def test_store_records_commits_within_lock(tmp_path: Path):
     """Verify store_records commits inside the lock scope."""
-    from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
+    from polylogue.storage.store import store_records
+    from tests.helpers import make_conversation, make_message
 
     # Create a test database
     db_path = tmp_path / "test.db"
@@ -136,23 +109,8 @@ def test_store_records_commits_within_lock(tmp_path: Path):
     from polylogue.storage.backends.sqlite import open_connection
 
     with open_connection(db_path) as conn:
-        record = ConversationRecord(
-            conversation_id="test:1",
-            provider_name="test",
-            provider_conversation_id="1",
-            title="Test",
-            content_hash="abc123",
-        )
-        messages = [
-            MessageRecord(
-                message_id="test:1:msg1",
-                conversation_id="test:1",
-                provider_message_id="msg1",
-                role="user",
-                text="Hello",
-                content_hash="def456",
-            )
-        ]
+        record = make_conversation("test:1", title="Test", content_hash="abc123")
+        messages = [make_message("test:1:msg1", "test:1", text="Hello")]
         result = store_records(
             conversation=record,
             messages=messages,
@@ -165,30 +123,16 @@ def test_store_records_commits_within_lock(tmp_path: Path):
 def test_concurrent_store_records_no_deadlock(workspace_env):
     """Verify concurrent store_records calls don't deadlock."""
     from polylogue.storage.backends.sqlite import open_connection
-    from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
+    from polylogue.storage.store import store_records
+    from tests.helpers import make_conversation, make_message
 
     # Initialize the database using workspace_env fixture (sets up proper env vars)
     with open_connection(None):
         pass
 
     def store_one(idx: int):
-        record = ConversationRecord(
-            conversation_id=f"test:{idx}",
-            provider_name="test",
-            provider_conversation_id=str(idx),
-            title=f"Test {idx}",
-            content_hash=f"hash{idx}",
-        )
-        messages = [
-            MessageRecord(
-                message_id=f"test:{idx}:msg1",
-                conversation_id=f"test:{idx}",
-                provider_message_id="msg1",
-                role="user",
-                text=f"Hello {idx}",
-                content_hash=f"msghash{idx}",
-            )
-        ]
+        record = make_conversation(f"test:{idx}", title=f"Test {idx}", content_hash=f"hash{idx}")
+        messages = [make_message(f"test:{idx}:msg1", f"test:{idx}", text=f"Hello {idx}")]
         return store_records(
             conversation=record,
             messages=messages,

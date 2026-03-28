@@ -58,6 +58,175 @@ class Role(str, Enum):
     UNKNOWN = "unknown"
 
     @classmethod
+    def from_string(cls, role: str) -> Role:
+        """Convert role string to Role enum."""
+        role_lower = role.lower() if role else ""
+        mapping = {
+            "user": cls.USER,
+            "human": cls.USER,
+            "assistant": cls.ASSISTANT,
+            "model": cls.ASSISTANT,
+            "system": cls.SYSTEM,
+            "tool": cls.TOOL,
+        }
+        return mapping.get(role_lower, cls.UNKNOWN)
+
+
+# =============================================================================
+# Claude Code Semantic Models
+# =============================================================================
+
+
+class ThinkingTrace(BaseModel):
+    """Structured thinking block with metadata.
+
+    Represents Claude's internal reasoning as captured in <thinking> blocks.
+    """
+
+    text: str
+    """The thinking/reasoning content."""
+
+    duration_ms: int | None = None
+    """Duration of the thinking phase in milliseconds (if available)."""
+
+    token_count: int | None = None
+    """Approximate token count of the thinking content."""
+
+
+class ToolInvocation(BaseModel):
+    """Structured tool use with parsed semantics.
+
+    Represents a single tool call from Claude Code sessions,
+    with derived semantic properties.
+    """
+
+    tool_name: str
+    """Tool name (e.g., Bash, Read, Write, Edit, Glob, Grep, Task)."""
+
+    tool_id: str
+    """Unique identifier for this tool invocation."""
+
+    input: dict[str, object]
+    """Input parameters passed to the tool."""
+
+    result: str | None = None
+    """Result returned by the tool (if captured)."""
+
+    success: bool | None = None
+    """Whether the tool invocation succeeded."""
+
+    @property
+    def is_file_operation(self) -> bool:
+        """True if this is a file read/write/edit operation."""
+        return self.tool_name in {"Read", "Write", "Edit", "NotebookEdit"}
+
+    @property
+    def is_git_operation(self) -> bool:
+        """True if this is a git command (Bash with git)."""
+        if self.tool_name != "Bash":
+            return False
+        command = self.input.get("command", "")
+        return isinstance(command, str) and command.strip().startswith("git ")
+
+    @property
+    def is_search_operation(self) -> bool:
+        """True if this is a search operation."""
+        return self.tool_name in {"Glob", "Grep", "WebSearch"}
+
+    @property
+    def is_subagent(self) -> bool:
+        """True if this spawns a subagent."""
+        return self.tool_name == "Task"
+
+    @property
+    def affected_paths(self) -> list[str]:
+        """Extract file paths affected by this operation."""
+        paths: list[str] = []
+
+        if self.tool_name in {"Read", "Write", "Edit"}:
+            path = self.input.get("file_path") or self.input.get("path")
+            if isinstance(path, str):
+                paths.append(path)
+
+        elif self.tool_name == "Glob":
+            pattern = self.input.get("pattern")
+            if isinstance(pattern, str):
+                paths.append(pattern)
+
+        elif self.tool_name == "Bash":
+            # Try to extract paths from common commands
+            command = self.input.get("command", "")
+            if isinstance(command, str):
+                # Very basic extraction - could be enhanced
+                for token in command.split():
+                    if "/" in token and not token.startswith("-"):
+                        paths.append(token)
+
+        return paths
+
+
+class GitOperation(BaseModel):
+    """Parsed git operation from Bash tool use."""
+
+    command: str
+    """Git subcommand (commit, push, checkout, etc.)."""
+
+    branch: str | None = None
+    """Branch name if applicable."""
+
+    commit_hash: str | None = None
+    """Commit hash if applicable."""
+
+    files: list[str] = Field(default_factory=list)
+    """Files affected by the operation."""
+
+    message: str | None = None
+    """Commit message if this is a commit operation."""
+
+
+class FileChange(BaseModel):
+    """File modification extracted from Edit/Write tools."""
+
+    path: str
+    """Absolute path to the file."""
+
+    operation: str
+    """Operation type: read, write, edit, delete."""
+
+    old_content: str | None = None
+    """Previous content (for edits)."""
+
+    new_content: str | None = None
+    """New content (for writes/edits)."""
+
+
+class SubagentSpawn(BaseModel):
+    """Subagent spawn extracted from Task tool invocations."""
+
+    agent_type: str
+    """Type of subagent (e.g., Explore, Plan, Bash)."""
+
+    prompt: str
+    """Prompt/task given to the subagent."""
+
+    description: str | None = None
+    """Short description of what the agent will do."""
+
+    run_in_background: bool = False
+    """Whether this agent runs in background."""
+
+
+class ContextCompaction(BaseModel):
+    """Context compaction event."""
+
+    timestamp: datetime | None = None
+    """When the compaction occurred."""
+
+    summary: str
+    """Summary of compacted content."""
+
+    messages_compacted: int | None = None
+    """Number of messages that were compacted."""
     def from_string(cls, value: str | None) -> Role:
         """Normalize various role strings to canonical Role."""
         if not value:

@@ -187,6 +187,11 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         _annotate_conversations(env, results, params)
         return
 
+    # Apply transforms if specified
+    transform = params.get("transform")
+    if transform:
+        results = _apply_transform(results, transform)
+
     # Handle aggregation outputs
     if params.get("by_month"):
         _output_by_month(env, results)
@@ -232,30 +237,91 @@ def _apply_modifiers(
         env.ui.console.print("No conversations matched.")
         return
 
+    dry_run = params.get("dry_run", False)
+    force = params.get("force", False)
+    count = len(results)
+
+    # Build description of what will be modified
+    operations: list[str] = []
+    if params.get("set_meta"):
+        keys = [kv[0] for kv in params["set_meta"]]
+        operations.append(f"set metadata: {', '.join(keys)}")
+    if params.get("unset"):
+        operations.append(f"unset: {', '.join(params['unset'])}")
+    if params.get("add_tag"):
+        operations.append(f"add tags: {', '.join(params['add_tag'])}")
+    if params.get("rm_tag"):
+        operations.append(f"remove tags: {', '.join(params['rm_tag'])}")
+
+    op_desc = "; ".join(operations)
+
+    # Dry-run mode: show preview and exit
+    if dry_run:
+        env.ui.console.print(f"[yellow]DRY-RUN: Would modify {count} conversation(s)[/yellow]")
+        env.ui.console.print(f"Operations: {op_desc}")
+        env.ui.console.print("\nSample of affected conversations:")
+        for conv in results[:5]:
+            title = conv.display_title[:40] if conv.display_title else conv.id[:20]
+            env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {title}")
+        if count > 5:
+            env.ui.console.print(f"  ... and {count - 5} more")
+        return
+
+    # Confirmation for bulk operations (>10 items)
+    if count > 10 and not force:
+        env.ui.console.print(f"[yellow]About to modify {count} conversations[/yellow]")
+        env.ui.console.print(f"Operations: {op_desc}")
+        env.ui.console.print("\nUse --force to skip this prompt, or --dry-run to preview.")
+        raise SystemExit(1)
+
     # Load backend
     config = load_effective_config(env)
     backend = create_repository(config)
+
+    # Track counts for reporting
+    tags_added = 0
+    tags_removed = 0
+    meta_set = 0
+    meta_unset = 0
 
     # Apply modifiers
     for conv in results:
         if params.get("set_meta"):
             for kv in params["set_meta"]:
-                key, value = kv.split("=", 1)
+                key, value = kv[0], kv[1]
                 backend.update_metadata(str(conv.id), key, value)
+                meta_set += 1
 
         if params.get("unset"):
             for key in params["unset"]:
                 backend.delete_metadata(str(conv.id), key)
+                meta_unset += 1
 
         if params.get("add_tag"):
             for tag in params["add_tag"]:
                 backend.add_tag(str(conv.id), tag)
+                tags_added += 1
 
         if params.get("rm_tag"):
             for tag in params["rm_tag"]:
                 backend.remove_tag(str(conv.id), tag)
+                tags_removed += 1
 
-    env.ui.console.print(f"[green]Modified {len(results)} conversation(s)[/green]")
+    # Report results
+    reports: list[str] = []
+    if tags_added:
+        tag_names = ", ".join(params["add_tag"])
+        reports.append(f"Added '{tag_names}' to {count} conversations")
+    if tags_removed:
+        tag_names = ", ".join(params["rm_tag"])
+        reports.append(f"Removed '{tag_names}' from {count} conversations")
+    if meta_set:
+        reports.append(f"Set {meta_set} metadata field(s)")
+    if meta_unset:
+        reports.append(f"Unset {meta_unset} metadata field(s)")
+
+    for report in reports:
+        env.ui.console.print(f"[green]{report}[/green]")
 
 
 def _delete_conversations(
@@ -270,6 +336,34 @@ def _delete_conversations(
     if not results:
         env.ui.console.print("No conversations matched.")
         return
+
+    dry_run = params.get("dry_run", False)
+    force = params.get("force", False)
+    count = len(results)
+
+    # Dry-run mode: show preview and exit
+    if dry_run:
+        env.ui.console.print(f"[yellow]DRY-RUN: Would delete {count} conversation(s)[/yellow]")
+        env.ui.console.print("\nSample of conversations to delete:")
+        for conv in results[:5]:
+            title = conv.display_title[:40] if conv.display_title else conv.id[:20]
+            date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else "unknown"
+            env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {date} {title}")
+        if count > 5:
+            env.ui.console.print(f"  ... and {count - 5} more")
+        return
+
+    # Confirmation for bulk operations (>10 items)
+    if count > 10 and not force:
+        env.ui.console.print(f"[red]About to DELETE {count} conversations[/red]")
+        env.ui.console.print("\nSample of conversations to delete:")
+        for conv in results[:5]:
+            title = conv.display_title[:40] if conv.display_title else conv.id[:20]
+            env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {title}")
+        if count > 5:
+            env.ui.console.print(f"  ... and {count - 5} more")
+        env.ui.console.print("\nUse --force to confirm deletion, or --dry-run to preview.")
+        raise SystemExit(1)
 
     # Load backend
     config = load_effective_config(env)
@@ -302,6 +396,32 @@ def _annotate_conversations(
     prompt = params.get("annotate", "")
     env.ui.console.print("[yellow]LLM annotation not yet implemented.[/yellow]")
     env.ui.console.print(f"Would annotate {count} conversation(s) with prompt: {prompt}")
+
+
+def _apply_transform(results: list[Conversation], transform: str) -> list[Conversation]:
+    """Apply a transform to filter messages from conversations.
+
+    Args:
+        results: List of conversations to transform
+        transform: Transform to apply: 'strip-tools', 'strip-thinking', or 'strip-all'
+
+    Returns:
+        List of transformed conversations with filtered messages
+    """
+    transformed = []
+    for conv in results:
+        proj = conv.project()
+
+        if transform == "strip-tools":
+            proj = proj.strip_tools()
+        elif transform == "strip-thinking":
+            proj = proj.strip_thinking()
+        elif transform == "strip-all":
+            proj = proj.strip_all()
+
+        transformed.append(proj.execute())
+
+    return transformed
 
 
 def _output_by_month(env: AppEnv, results: list[Conversation]) -> None:
@@ -419,12 +539,16 @@ def _format_conversation(
     """Format a single conversation for output."""
     if output_format == "json":
         return json.dumps(_conv_to_dict(conv, fields), indent=2)
+    elif output_format == "yaml":
+        return _conv_to_yaml(conv, fields)
     elif output_format == "html":
         return _conv_to_html(conv)
     elif output_format == "obsidian":
         return _conv_to_obsidian(conv)
     elif output_format == "org":
         return _conv_to_org(conv)
+    elif output_format == "plaintext":
+        return _conv_to_plaintext(conv)
     else:  # markdown
         return _conv_to_markdown(conv)
 
@@ -437,6 +561,9 @@ def _format_list(
     """Format a list of conversations for output."""
     if output_format == "json":
         return json.dumps([_conv_to_dict(c, fields) for c in results], indent=2)
+    elif output_format == "yaml":
+        import yaml
+        return yaml.dump([_conv_to_dict(c, fields) for c in results], default_flow_style=False, allow_unicode=True)
     else:
         lines = []
         for conv in results:
@@ -545,6 +672,57 @@ def _conv_to_org(conv: Conversation) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _conv_to_yaml(conv: Conversation, fields: str | None) -> str:
+    """Convert conversation to YAML format.
+
+    Args:
+        conv: Conversation to format
+        fields: Optional comma-separated field selector
+
+    Returns:
+        YAML-formatted string
+    """
+    import yaml
+
+    data = _conv_to_dict(conv, fields)
+    # For single conversation, also include full message content
+    if fields is None or "messages" in fields:
+        data["messages"] = [
+            {
+                "id": str(msg.id),
+                "role": msg.role,
+                "text": msg.text,
+                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+            }
+            for msg in conv.messages
+        ]
+
+    return yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
+def _conv_to_plaintext(conv: Conversation) -> str:
+    """Convert conversation to plain text (no markdown formatting).
+
+    Strips all formatting, returning just the raw message content.
+    Useful for piping to grep, wc, or other text processing tools.
+
+    Args:
+        conv: Conversation to format
+
+    Returns:
+        Plain text with messages separated by blank lines
+    """
+    lines = []
+
+    for msg in conv.messages:
+        if msg.text:
+            # Just the raw text, no role labels or formatting
+            lines.append(msg.text)
+            lines.append("")
+
+    return "\n".join(lines).strip()
 
 
 def _send_output(
