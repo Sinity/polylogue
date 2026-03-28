@@ -29,6 +29,12 @@ def summarize_import(
     lines = summary.lines()
 
     written = [res for res in results if not res.skipped]
+    if not written:
+        skip_reasons = {res.skip_reason for res in results if res.skipped and res.skip_reason}
+        if skip_reasons and skip_reasons != {"up-to-date"}:
+            lines = [line for line in lines if not line.startswith("No files written (existing files up to date in ")]
+            if not lines or not lines[0].startswith("No files written"):
+                lines.insert(0, "No files written.")
     if written and not ui.plain:
         table = Table(title=title, show_lines=False)
         table.add_column("File")

@@ -221,10 +221,17 @@ def _convert_output_dirs(paths: CoreOutputPaths) -> OutputDirs:
     )
 
 
-def _convert_defaults(core: CoreDefaults, output_paths: CoreOutputPaths) -> Defaults:
+def _convert_defaults(
+    core: CoreDefaults,
+    output_paths: CoreOutputPaths,
+    labeled_roots: Optional[dict[str, OutputDirs]] = None,
+) -> Defaults:
     roots: dict[str, OutputDirs] = {}
-    for label, paths in getattr(core, "roots", {}).items():
-        roots[label] = _convert_output_dirs(paths)
+    if getattr(core, "roots", None):
+        for label, paths in getattr(core, "roots", {}).items():
+            roots[label] = _convert_output_dirs(paths)
+    if labeled_roots:
+        roots.update(labeled_roots)
     return Defaults(
         collapse_threshold=core.collapse_threshold,
         html_previews=core.html_previews,
@@ -266,9 +273,14 @@ def load_config() -> Config:
 
     # Get output paths from app config
     output_paths_config = app_config.get_output_paths()
+    labeled_roots: dict[str, OutputDirs] = {}
+    if getattr(app_config, "paths", None):
+        root_map = getattr(app_config.paths, "roots", {}) or {}
+        for label, paths in root_map.items():
+            labeled_roots[label] = _convert_output_dirs(paths)
 
     return Config(
-        defaults=_convert_defaults(app_config.defaults, output_paths_config),
+        defaults=_convert_defaults(app_config.defaults, output_paths_config, labeled_roots),
         index=_convert_index(app_config.index),
         exports=_convert_exports(exports_config),
         drive=DriveConfig(),

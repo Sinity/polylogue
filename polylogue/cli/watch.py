@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover - fallback for environments without watc
 from ..commands import CommandEnv
 from ..local_sync import get_local_provider
 from .context import resolve_collapse_thresholds, resolve_html_enabled, resolve_output_path
-from .sync import _log_local_sync
+from .sync import _log_local_sync, _resolve_default_output
 
 WatchChange = Tuple[Any, str]
 WatchBatch = Iterable[Set[WatchChange]]
@@ -45,8 +45,10 @@ def run_watch_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             cmd.append("--diff")
         if getattr(args, "prune", False):
             cmd.append("--prune")
-        if getattr(args, "attachment_ocr", False):
+        if getattr(args, "attachment_ocr", True):
             cmd.append("--attachment-ocr")
+        else:
+            cmd.append("--no-attachment-ocr")
         if getattr(args, "sanitize_html", False):
             cmd.append("--sanitize-html")
         env.ui.console.print(" ".join(cmd))
@@ -85,7 +87,7 @@ def _run_watch_sessions(
             if hint:
                 ui.console.print(f"[yellow]{hint}[/yellow]")
             raise SystemExit(1)
-    out_dir = resolve_output_path(args.out, provider.default_output)
+    out_dir = resolve_output_path(args.out, _resolve_default_output(provider.name, env))
     out_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir: Optional[Path] = None
     if getattr(args, "snapshot", False):
@@ -141,7 +143,7 @@ def _run_watch_sessions(
                 sessions=session_override,
                 registrar=env.registrar,
                 ui=ui,
-                attachment_ocr=getattr(args, "attachment_ocr", False),
+                attachment_ocr=getattr(args, "attachment_ocr", True),
                 sanitize_html=getattr(args, "sanitize_html", False),
             )
         except Exception as exc:  # pragma: no cover - defensive
