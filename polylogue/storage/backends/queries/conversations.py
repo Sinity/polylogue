@@ -88,9 +88,6 @@ async def list_conversations(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
-    has_file_ops: bool = False,
-    has_git_ops: bool = False,
-    has_subagent: bool = False,
 ) -> list[ConversationRecord]:
     """List conversations with optional filtering and pagination."""
     use_stats_join = _needs_stats_join(
@@ -116,9 +113,6 @@ async def list_conversations(
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
-        has_file_ops=has_file_ops,
-        has_git_ops=has_git_ops,
-        has_subagent=has_subagent,
     )
 
     if use_stats_join:
@@ -168,9 +162,6 @@ async def count_conversations(
     min_messages: int | None = None,
     max_messages: int | None = None,
     min_words: int | None = None,
-    has_file_ops: bool = False,
-    has_git_ops: bool = False,
-    has_subagent: bool = False,
 ) -> int:
     """Count conversations matching filters."""
     use_stats_join = _needs_stats_join(
@@ -195,9 +186,6 @@ async def count_conversations(
         min_messages=min_messages,
         max_messages=max_messages,
         min_words=min_words,
-        has_file_ops=has_file_ops,
-        has_git_ops=has_git_ops,
-        has_subagent=has_subagent,
     )
     if use_stats_join:
         sql = f"SELECT COUNT(*) as cnt FROM conversations c LEFT JOIN conversation_stats cs ON cs.conversation_id = c.conversation_id {where_sql}"

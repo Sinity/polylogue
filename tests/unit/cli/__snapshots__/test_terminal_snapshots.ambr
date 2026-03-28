@@ -135,7 +135,8 @@
         polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
-        polylogue --path <PATH> --has-file-ops --list
+        polylogue --path <PATH> --action file_read --l
+  ist
         polylogue --action search --action file_edit --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
   
@@ -184,10 +185,6 @@
                                     pushdown)
     --has-thinking                  Only conversations with thinking blocks (SQL
                                     pushdown)
-    --has-file-ops                  Only conversations with file read<PATH>
-                                    ops
-    --has-git-ops                   Only conversations with git operations
-    --has-subagent                  Only conversations that spawned subagents
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
@@ -261,7 +258,7 @@
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
         polylogue --path <PATH> --
-  has-file-ops --list
+  action file_read --list
         polylogue --action search --action file_edit --list
         polylogue --similar "sqlite locking bug in parser" --l
   imit 5
@@ -325,13 +322,6 @@
     --has-thinking                  Only conversations with th
   inking blocks (SQL
                                     pushdown)
-    --has-file-ops                  Only conversations with fi
-  le read<PATH>
-                                    ops
-    --has-git-ops                   Only conversations with gi
-  t operations
-    --has-subagent                  Only conversations that sp
-  awned subagents
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
@@ -431,7 +421,7 @@
         polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
-        polylogue --path <PATH> --has-file-ops --list
+        polylogue --path <PATH> --action file_read --list
         polylogue --action search --action file_edit --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
   
@@ -479,10 +469,6 @@
                                     pushdown)
     --has-thinking                  Only conversations with thinking blocks (SQL
                                     pushdown)
-    --has-file-ops                  Only conversations with file read<PATH>
-                                    ops
-    --has-git-ops                   Only conversations with git operations
-    --has-subagent                  Only conversations that spawned subagents
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count

@@ -6,6 +6,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+<<<<<<< HEAD
+||||||| parent of e9bd2211 (refactor: converge semantic query filters on actions)
+from polylogue.lib.dates import parse_date
+from polylogue.lib.query_execution import ConversationQueryPlan
+=======
+from polylogue.lib.dates import parse_date
+from polylogue.lib.query_execution import ConversationQueryPlan
+from polylogue.lib.viewports import ToolCategory
+>>>>>>> e9bd2211 (refactor: converge semantic query filters on actions)
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
@@ -23,17 +32,7 @@ class QuerySpecError(ValueError):
         self.value = value
 
 
-QUERY_ACTION_TYPES = (
-    "file_read",
-    "file_write",
-    "file_edit",
-    "shell",
-    "git",
-    "search",
-    "web",
-    "agent",
-    "subagent",
-)
+QUERY_ACTION_TYPES = tuple(category.value for category in ToolCategory if category is not ToolCategory.OTHER)
 
 
 def _split_csv(value: object) -> tuple[str, ...]:
@@ -116,10 +115,6 @@ class ConversationQuerySpec:
     max_messages: int | None = None
     min_words: int | None = None
     similar_text: str | None = None
-    # Semantic content filters (EXISTS subquery on content_blocks.semantic_type)
-    filter_has_file_ops: bool = False
-    filter_has_git_ops: bool = False
-    filter_has_subagent: bool = False
 
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> ConversationQuerySpec:
@@ -151,9 +146,6 @@ class ConversationQuerySpec:
             max_messages=int(params["max_messages"]) if params.get("max_messages") else None,
             min_words=int(params["min_words"]) if params.get("min_words") else None,
             similar_text=str(params["similar_text"]) if params.get("similar_text") else None,
-            filter_has_file_ops=bool(params.get("filter_has_file_ops")),
-            filter_has_git_ops=bool(params.get("filter_has_git_ops")),
-            filter_has_subagent=bool(params.get("filter_has_subagent")),
         )
 
     def describe(self) -> list[str]:
@@ -187,12 +179,6 @@ class ConversationQuerySpec:
             parts.append("has: tool_use (sql)")
         if self.filter_has_thinking:
             parts.append("has: thinking (sql)")
-        if self.filter_has_file_ops:
-            parts.append("has: file_ops (sql)")
-        if self.filter_has_git_ops:
-            parts.append("has: git_ops (sql)")
-        if self.filter_has_subagent:
-            parts.append("has: subagent (sql)")
         if self.min_messages is not None:
             parts.append(f"min_messages: {self.min_messages}")
         if self.max_messages is not None:
@@ -231,9 +217,6 @@ class ConversationQuerySpec:
                 self.latest,
                 self.filter_has_tool_use,
                 self.filter_has_thinking,
-                self.filter_has_file_ops,
-                self.filter_has_git_ops,
-                self.filter_has_subagent,
                 self.min_messages is not None,
                 self.max_messages is not None,
                 self.min_words is not None,
@@ -345,9 +328,6 @@ class ConversationQuerySpec:
             max_messages=self.max_messages,
             min_words=self.min_words,
             similar_text=self.similar_text,
-            filter_has_file_ops=self.filter_has_file_ops,
-            filter_has_git_ops=self.filter_has_git_ops,
-            filter_has_subagent=self.filter_has_subagent,
             vector_provider=vector_provider,
         )
         if self.latest:

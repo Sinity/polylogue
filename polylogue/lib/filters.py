@@ -101,12 +101,25 @@ class ConversationFilter:
         self._min_messages: int | None = None
         self._max_messages: int | None = None
         self._min_words: int | None = None
+<<<<<<< HEAD
         # SQL-pushable semantic filters (via EXISTS on content_blocks.semantic_type)
         self._filter_has_file_ops: bool = False
         self._filter_has_git_ops: bool = False
         self._filter_has_subagent: bool = False
 
     # --- Filter methods (return self for chaining) ---
+||||||| parent of e9bd2211 (refactor: converge semantic query filters on actions)
+        # SQL-pushable semantic filters (via EXISTS on content_blocks.semantic_type)
+        self._filter_has_file_ops: bool = False
+        self._filter_has_git_ops: bool = False
+        self._filter_has_subagent: bool = False
+
+        if query_plan is not None:
+            self._load_query_plan(query_plan)
+=======
+        if query_plan is not None:
+            self._load_query_plan(query_plan)
+>>>>>>> e9bd2211 (refactor: converge semantic query filters on actions)
 
     def contains(self, text: str) -> ConversationFilter:
         """Filter to conversations containing text (FTS search)."""
@@ -229,9 +242,6 @@ class ConversationFilter:
         self._min_messages = query_plan.min_messages
         self._max_messages = query_plan.max_messages
         self._min_words = query_plan.min_words
-        self._filter_has_file_ops = query_plan.filter_has_file_ops
-        self._filter_has_git_ops = query_plan.filter_has_git_ops
-        self._filter_has_subagent = query_plan.filter_has_subagent
         self._predicates = list(query_plan.predicates)
         self._vector_provider = query_plan.vector_provider
 
@@ -268,9 +278,6 @@ class ConversationFilter:
             min_messages=self._min_messages,
             max_messages=self._max_messages,
             min_words=self._min_words,
-            filter_has_file_ops=self._filter_has_file_ops,
-            filter_has_git_ops=self._filter_has_git_ops,
-            filter_has_subagent=self._filter_has_subagent,
             vector_provider=self._vector_provider,
 >>>>>>> 2166554a (feat: improve dogfooded query retrieval surfaces)
         )
