@@ -17,6 +17,7 @@ from polylogue.lib.viewports import (
     MessageMeta,
     ReasoningTrace,
     TokenUsage,
+    ToolCall,
 )
 
 
@@ -253,3 +254,7 @@ class GeminiMessage(BaseModel):
                 ))
 
         return blocks
+
+    def extract_tool_calls(self) -> list[ToolCall]:
+        """Extract tool calls (Gemini export message model does not expose them here)."""
+        return []
