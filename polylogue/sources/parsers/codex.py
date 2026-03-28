@@ -1,4 +1,4 @@
-"""Codex JSONL session importer using typed Pydantic models.
+"""Codex JSONL session parser using typed Pydantic models.
 
 Uses CodexRecord from polylogue.sources.providers.codex for type-safe parsing
 with automatic validation and normalization.
@@ -11,9 +11,9 @@ from pydantic import ValidationError
 from polylogue.lib.log import get_logger
 from polylogue.sources.providers.codex import CodexRecord
 
-logger = get_logger(__name__)
-
 from .base import ParsedConversation, ParsedMessage, normalize_role
+
+logger = get_logger(__name__)
 
 
 def looks_like(payload: list[object]) -> bool:

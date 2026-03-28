@@ -7,11 +7,11 @@ factory functions for creating provider instances from configuration.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.lib.env import get_env
+from polylogue.lib.log import get_logger
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.hybrid import (
     HybridSearchProvider,
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.protocols import SearchProvider, VectorProvider
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def create_search_provider(

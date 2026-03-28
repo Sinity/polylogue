@@ -4,7 +4,6 @@ import contextlib
 import importlib
 import io
 import json
-import logging
 import os
 import shutil
 import tempfile
@@ -20,11 +19,14 @@ from tenacity import (
     wait_exponential,
 )
 
-from ..paths import DRIVE_CREDENTIALS_PATH, DRIVE_TOKEN_PATH
+from ..errors import PolylogueError
+from ..lib.log import get_logger
+from ..paths import drive_credentials_path, drive_token_path
+from .token_store import TokenStore, create_token_store
 
 T = TypeVar("T")
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
@@ -35,7 +37,7 @@ ENV_DRIVE_RETRIES = "POLYLOGUE_DRIVE_RETRIES"
 ENV_DRIVE_RETRY_BASE = "POLYLOGUE_DRIVE_RETRY_BASE"
 
 
-class DriveError(RuntimeError):
+class DriveError(PolylogueError):
     pass
 
 
@@ -62,7 +64,7 @@ def default_credentials_path(config: object | None = None) -> Path:
         cred_path = getattr(config, "credentials_path", None)
         if cred_path:
             return Path(cred_path)
-    return DRIVE_CREDENTIALS_PATH
+    return drive_credentials_path()
 
 
 def default_token_path(config: object | None = None) -> Path:
@@ -71,7 +73,7 @@ def default_token_path(config: object | None = None) -> Path:
         token_path = getattr(config, "token_path", None)
         if token_path:
             return Path(token_path)
-    return DRIVE_TOKEN_PATH
+    return drive_token_path()
 
 
 def _import_module(name: str) -> Any:
@@ -221,6 +223,10 @@ class DriveClient:
         self._retries = _resolve_retries(retries, config)
         self._retry_base = _resolve_retry_base(retry_base)
 
+        # Initialize token store
+        resolved_token_path = token_path or _resolve_token_path(config)
+        self._token_store: TokenStore = create_token_store(resolved_token_path.parent)
+
     def _call_with_retry(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         from tenacity import Retrying, retry_if_not_exception_type
 
@@ -239,7 +245,19 @@ class DriveClient:
 
         token_path = self._token_path or _resolve_token_path(self._config)
         creds = None
-        if token_path.exists():
+
+        # Try loading from token store first (keyring or file)
+        token_data = self._token_store.load("drive_token")
+        if token_data:
+            try:
+                creds = credentials_cls.from_authorized_user_info(json.loads(token_data), SCOPES)
+            except (OSError, ValueError, json.JSONDecodeError):
+                # Token data corrupt or invalid
+                creds = None
+
+        # Fall back to legacy file path for backward compatibility
+        # Migration to token store happens in _persist_token after validation
+        if creds is None and token_path.exists():
             try:
                 creds = credentials_cls.from_authorized_user_file(str(token_path), SCOPES)
             except (OSError, ValueError):
@@ -320,6 +338,11 @@ class DriveClient:
         return creds
 
     def _persist_token(self, creds: Any, token_path: Path) -> None:
+        # Save to token store (keyring or file)
+        self._token_store.save("drive_token", creds.to_json())
+
+        # Also save to legacy file path for backward compatibility
+        # This ensures tools that read the file directly still work
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json(), encoding="utf-8")
         token_path.chmod(0o600)
@@ -511,7 +534,7 @@ class DriveClient:
 
         # Return the whole object but use ijson for potentially better memory handling
         # (though for standard json.load it won't matter much unless we refactor
-        # higher up to handle generators, which we will do in source_ingest).
+        # higher up to handle generators, which we will do in source_parsing).
         try:
             return json.load(handle)
         except json.JSONDecodeError:

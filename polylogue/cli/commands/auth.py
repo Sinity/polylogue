@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import click
 
 from polylogue.cli.types import AppEnv
+from polylogue.lib.log import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @click.command("auth")
@@ -26,8 +26,6 @@ def auth_command(env: AppEnv, service: str, refresh: bool, revoke: bool) -> None
         polylogue auth --refresh # Force token refresh
         polylogue auth --revoke  # Revoke stored credentials
     """
-    ui = env.ui
-
     if service != "drive":
         click.echo(f"Unknown auth service: {service}", err=True)
         click.echo("Available services: drive", err=True)
@@ -57,7 +55,7 @@ def _get_drive_paths(env: AppEnv) -> tuple[Path, Path]:
         token_path = default_token_path(drive_config)
         return credentials_path, token_path
     except Exception:
-        logger.debug("Config loading failed for drive paths, using defaults")
+        logger.warning("Config loading failed for drive paths, using defaults")
         return default_credentials_path(), default_token_path()
 
 

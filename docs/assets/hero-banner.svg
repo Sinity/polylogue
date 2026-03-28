@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 200" fill="none">
+  <defs>
+    <linearGradient id="bg-grad" x1="0" y1="0" x2="700" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1e1e2e"/>
+      <stop offset="100%" stop-color="#181825"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="700" height="200" rx="16" fill="url(#bg-grad)"/>
+
+  <!-- Conversation bubble motif (left side) -->
+  <!-- Bubble 1: ChatGPT (green) -->
+  <rect x="40" y="50" width="120" height="32" rx="8" fill="#a6e3a1" opacity="0.15"/>
+  <rect x="40" y="50" width="120" height="32" rx="8" stroke="#a6e3a1" stroke-width="1" opacity="0.4" fill="none"/>
+  <circle cx="54" cy="66" r="4" fill="#a6e3a1" opacity="0.6"/>
+  <rect x="64" y="62" width="80" height="3" rx="1.5" fill="#a6e3a1" opacity="0.3"/>
+  <rect x="64" y="68" width="50" height="3" rx="1.5" fill="#a6e3a1" opacity="0.2"/>
+
+  <!-- Bubble 2: Claude (mauve) -->
+  <rect x="60" y="90" width="130" height="32" rx="8" fill="#cba6f7" opacity="0.15"/>
+  <rect x="60" y="90" width="130" height="32" rx="8" stroke="#cba6f7" stroke-width="1" opacity="0.4" fill="none"/>
+  <circle cx="74" cy="106" r="4" fill="#cba6f7" opacity="0.6"/>
+  <rect x="84" y="102" width="90" height="3" rx="1.5" fill="#cba6f7" opacity="0.3"/>
+  <rect x="84" y="108" width="60" height="3" rx="1.5" fill="#cba6f7" opacity="0.2"/>
+
+  <!-- Bubble 3: Gemini (peach) -->
+  <rect x="45" y="130" width="110" height="28" rx="8" fill="#fab387" opacity="0.15"/>
+  <rect x="45" y="130" width="110" height="28" rx="8" stroke="#fab387" stroke-width="1" opacity="0.4" fill="none"/>
+  <circle cx="59" cy="144" r="4" fill="#fab387" opacity="0.6"/>
+  <rect x="69" y="140" width="70" height="3" rx="1.5" fill="#fab387" opacity="0.3"/>
+  <rect x="69" y="146" width="45" height="3" rx="1.5" fill="#fab387" opacity="0.2"/>
+
+  <!-- Connection lines (archive concept) -->
+  <line x1="165" y1="66" x2="210" y2="100" stroke="#313244" stroke-width="1" opacity="0.5" stroke-dasharray="4 4"/>
+  <line x1="195" y1="106" x2="210" y2="100" stroke="#313244" stroke-width="1" opacity="0.5" stroke-dasharray="4 4"/>
+  <line x1="160" y1="144" x2="210" y2="100" stroke="#313244" stroke-width="1" opacity="0.5" stroke-dasharray="4 4"/>
+
+  <!-- Central archive node -->
+  <circle cx="210" cy="100" r="6" fill="#89b4fa" opacity="0.3"/>
+  <circle cx="210" cy="100" r="3" fill="#89b4fa" opacity="0.7"/>
+
+  <!-- Arrow to wordmark -->
+  <line x1="220" y1="100" x2="250" y2="100" stroke="#89b4fa" stroke-width="1" opacity="0.3"/>
+
+  <!-- Wordmark -->
+  <text x="270" y="92" font-family="'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace" font-size="48" font-weight="700" fill="#cdd6f4" filter="url(#glow)">polylogue</text>
+
+  <!-- Tagline -->
+  <text x="270" y="118" font-family="'Inter', 'SF Pro', -apple-system, system-ui, sans-serif" font-size="14" fill="#a6adc8">preserve &middot; index &middot; expose</text>
+
+  <!-- Provider dots (right side, subtle) -->
+  <g transform="translate(620, 50)" opacity="0.5">
+    <circle cx="0" cy="0" r="5" fill="#a6e3a1"/>
+    <text x="12" y="4" font-family="monospace" font-size="9" fill="#a6adc8">chatgpt</text>
+  </g>
+  <g transform="translate(620, 72)" opacity="0.5">
+    <circle cx="0" cy="0" r="5" fill="#cba6f7"/>
+    <text x="12" y="4" font-family="monospace" font-size="9" fill="#a6adc8">claude</text>
+  </g>
+  <g transform="translate(620, 94)" opacity="0.5">
+    <circle cx="0" cy="0" r="5" fill="#fab387"/>
+    <text x="12" y="4" font-family="monospace" font-size="9" fill="#a6adc8">gemini</text>
+  </g>
+  <g transform="translate(620, 116)" opacity="0.5">
+    <circle cx="0" cy="0" r="5" fill="#89b4fa"/>
+    <text x="12" y="4" font-family="monospace" font-size="9" fill="#a6adc8">codex</text>
+  </g>
+  <g transform="translate(620, 138)" opacity="0.5">
+    <circle cx="0" cy="0" r="5" fill="#f38ba8"/>
+    <text x="12" y="4" font-family="monospace" font-size="9" fill="#a6adc8">cc</text>
+  </g>
+
+  <!-- Version badge -->
+  <rect x="270" y="135" width="55" height="20" rx="4" fill="#313244"/>
+  <text x="298" y="149" font-family="monospace" font-size="10" fill="#a6adc8" text-anchor="middle">v0.1.0</text>
+</svg>

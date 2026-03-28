@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from polylogue.lib.log import get_logger
+
+logger = get_logger(__name__)
 
 
 def sanitize_path(v: str | None) -> str | None:
@@ -35,7 +36,7 @@ def sanitize_path(v: str | None) -> str | None:
                 has_symlink = True
                 break
     except Exception:
-        logger.debug("Error checking symlinks in path: %s", v)
+        logger.warning("Error checking symlinks in path: %s", v)
 
     # If traversal or symlinks were detected, hash to prevent re-assembly
     if has_traversal or has_symlink:
@@ -56,6 +57,6 @@ def sanitize_path(v: str | None) -> str | None:
             else:
                 v = "/".join(parts) if parts else v
         except Exception:
-            logger.debug("Error cleaning path components: %s", v)
+            logger.warning("Error cleaning path components: %s", v)
 
     return v if v else None

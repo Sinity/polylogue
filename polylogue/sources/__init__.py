@@ -1,9 +1,8 @@
-"""Sources package — unified ingestion from all AI providers.
+"""Sources package — unified parsing from all AI providers.
 
-Merges the former importers/, ingestion/, and providers/ packages.
 - sources/parsers/: JSON → ParsedConversation for each provider
 - sources/providers/: Pydantic models for provider export formats
-- sources/source.py: File/Drive reading → IngestBundle
+- sources/source.py: File/Drive reading → RecordBundle
 - sources/drive*.py: Google Drive integration
 """
 
@@ -19,16 +18,16 @@ from .drive_client import (
     DriveNotFoundError,
 )
 
-# Core ingestion
+# Core parsing
 from .source import (
-    IngestBundle,
-    IngestResult,
     ParsedAttachment,
     ParsedConversation,
     ParsedMessage,
-    ingest_bundle,
+    RecordBundle,
+    SaveResult,
     iter_source_conversations,
     parse_drive_payload,
+    save_bundle,
 )
 
 __all__ = [
@@ -37,13 +36,13 @@ __all__ = [
     "DriveError",
     "DriveFile",
     "DriveNotFoundError",
-    "IngestBundle",
-    "IngestResult",
+    "RecordBundle",
+    "SaveResult",
     "ParsedAttachment",
     "ParsedConversation",
     "ParsedMessage",
     "download_drive_files",
-    "ingest_bundle",
+    "save_bundle",
     "iter_drive_conversations",
     "iter_source_conversations",
     "parse_drive_payload",

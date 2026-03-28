@@ -474,7 +474,7 @@ def is_message_record(provider: str, raw: dict[str, Any]) -> bool:
 
 
 # =============================================================================
-# Importer Integration
+# Parser Integration
 # =============================================================================
 
 
@@ -484,8 +484,8 @@ def harmonize_parsed_message(
 ) -> HarmonizedMessage | None:
     """Convert ParsedMessage.provider_meta to HarmonizedMessage.
 
-    This bridges the existing importer infrastructure with the unified
-    extraction layer. Importers produce ParsedMessage with provider_meta
+    This bridges the existing parser infrastructure with the unified
+    extraction layer. Parsers produce ParsedMessage with provider_meta
     containing the raw data; this function extracts rich viewports.
 
     Args:

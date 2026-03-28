@@ -1,0 +1,97 @@
+{
+  "id": "aaa00001-0001-4001-8001-000000000001",
+  "conversation_id": "aaa00001-0001-4001-8001-000000000001",
+  "title": "Debugging Python async race condition",
+  "create_time": 1706000000.0,
+  "update_time": 1706000120.0,
+  "current_node": "aaa00004-0001-4001-8001-000000000001",
+  "default_model_slug": "gpt-4o",
+  "mapping": {
+    "aaa00000-0001-4001-8001-000000000001": {
+      "id": "aaa00000-0001-4001-8001-000000000001",
+      "parent": null,
+      "children": ["aaa00001-0001-4001-8001-000000000002"],
+      "message": null
+    },
+    "aaa00001-0001-4001-8001-000000000002": {
+      "id": "aaa00001-0001-4001-8001-000000000002",
+      "parent": "aaa00000-0001-4001-8001-000000000001",
+      "children": ["aaa00002-0001-4001-8001-000000000001"],
+      "message": {
+        "id": "aaa00001-0001-4001-8001-000000000002",
+        "author": {"role": "user", "name": null},
+        "create_time": 1706000000.0,
+        "update_time": null,
+        "content": {
+          "content_type": "text",
+          "parts": ["I have an async function that manages database connections in a FastAPI application. I'm seeing intermittent failures where two concurrent requests are getting the same connection from the pool, causing data corruption. The race condition appears when I scale to 50+ concurrent users. How should I debug this?"]
+        },
+        "status": "finished_successfully",
+        "end_turn": null,
+        "weight": 1.0,
+        "metadata": {},
+        "recipient": "all"
+      }
+    },
+    "aaa00002-0001-4001-8001-000000000001": {
+      "id": "aaa00002-0001-4001-8001-000000000001",
+      "parent": "aaa00001-0001-4001-8001-000000000002",
+      "children": ["aaa00003-0001-4001-8001-000000000001"],
+      "message": {
+        "id": "aaa00002-0001-4001-8001-000000000001",
+        "author": {"role": "assistant", "name": null},
+        "create_time": 1706000010.0,
+        "update_time": null,
+        "content": {
+          "content_type": "text",
+          "parts": ["This is a classic connection pool race condition in async contexts. The issue likely stems from improper context isolation. Here are the debugging steps:\n\n1. **Add detailed logging** with request IDs to trace which connection is assigned to which request\n2. **Check your pool implementation** - ensure the `acquire()` method is properly async and doesn't have sync context switches\n3. **Verify contextvar usage** - if you're storing connections in contextvars, ensure they're properly isolated per async task\n4. **Test with asyncio.Lock** temporarily around connection acquisition to see if it's truly a concurrent access issue\n\nThe most common cause is mixing asyncio contexts or not properly awaiting the pool acquire. Can you share how you're managing the connection lifecycle?"]
+        },
+        "status": "finished_successfully",
+        "end_turn": true,
+        "weight": 1.0,
+        "metadata": {"model_slug": "gpt-4o"},
+        "recipient": "all"
+      }
+    },
+    "aaa00003-0001-4001-8001-000000000001": {
+      "id": "aaa00003-0001-4001-8001-000000000001",
+      "parent": "aaa00002-0001-4001-8001-000000000001",
+      "children": ["aaa00004-0001-4001-8001-000000000001"],
+      "message": {
+        "id": "aaa00003-0001-4001-8001-000000000001",
+        "author": {"role": "user", "name": null},
+        "create_time": 1706000025.0,
+        "update_time": null,
+        "content": {
+          "content_type": "text",
+          "parts": ["I found the issue! I was using a global pool instance without proper async context. I was calling `pool.acquire()` inside a sync context manager that wasn't awaitable. Fixed it by using `async with pool.acquire() as conn:` instead. Also added asyncio.Event for coordination. Thanks!"]
+        },
+        "status": "finished_successfully",
+        "end_turn": null,
+        "weight": 1.0,
+        "metadata": {},
+        "recipient": "all"
+      }
+    },
+    "aaa00004-0001-4001-8001-000000000001": {
+      "id": "aaa00004-0001-4001-8001-000000000001",
+      "parent": "aaa00003-0001-4001-8001-000000000001",
+      "children": [],
+      "message": {
+        "id": "aaa00004-0001-4001-8001-000000000001",
+        "author": {"role": "assistant", "name": null},
+        "create_time": 1706000040.0,
+        "update_time": null,
+        "content": {
+          "content_type": "text",
+          "parts": ["Excellent catch! That's the classic mistake. Mixing sync context managers with async code breaks the await chain and loses task isolation. The `async with` pattern ensures each coroutine gets proper context separation. To prevent this in the future, consider adding linting rules (like flake8-async) to catch sync-in-async patterns early."]
+        },
+        "status": "finished_successfully",
+        "end_turn": true,
+        "weight": 1.0,
+        "metadata": {"model_slug": "gpt-4o"},
+        "recipient": "all"
+      }
+    }
+  }
+}
