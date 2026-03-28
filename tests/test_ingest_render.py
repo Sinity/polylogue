@@ -6,7 +6,7 @@ from polylogue.export import export_jsonl
 from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.paths import is_within_root
 from polylogue.rendering.renderers import HTMLRenderer
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 

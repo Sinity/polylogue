@@ -37,11 +37,14 @@ def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -
         return
 
     path = Path(db_path) if db_path else default_db_path()
+    # Ensure parent directory exists
+    path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout = 30000")  # 30 seconds for lock contention
         # Ensure schema exists and is at current version
         _ensure_schema(conn)
         yield conn
