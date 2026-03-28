@@ -12,25 +12,9 @@ def _clear_polylogue_env(monkeypatch):
 
     reset_container()
 
-    # Clear thread-local database state to prevent connection leaks between tests
-    # Import db module fresh each time to handle module reloads from other tests
+    # Clear search cache (LRU cache) to prevent cross-test pollution
     import sys
 
-    db_module = sys.modules.get("polylogue.storage.backends.sqlite")
-    if db_module is not None and hasattr(db_module, "_LOCAL"):
-        state = getattr(db_module._LOCAL, "state", None)
-        if state is not None:
-            conn = state.get("conn")
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-            state["conn"] = None
-            state["path"] = None
-            state["depth"] = 0
-
-    # Clear search cache (LRU cache) to prevent cross-test pollution
     search_module = sys.modules.get("polylogue.storage.search")
     if search_module is not None and hasattr(search_module, "_search_messages_cached"):
         search_module._search_messages_cached.cache_clear()
