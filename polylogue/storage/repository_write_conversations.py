@@ -126,12 +126,10 @@ async def save_via_backend(
                 await backend.save_attachments(attachments)
                 counts["attachments"] = len(attachments)
 
-            async with backend.connection() as conn:
-                await refresh_session_products_for_conversation_async(
-                    conn,
-                    str(conversation.conversation_id),
-                    transaction_depth=backend.transaction_depth,
-                )
+            # Session product refresh is deferred to post-batch for performance.
+            # The caller (parsing_batch.py) collects changed conversation IDs
+            # and runs a single bulk refresh after all conversations are saved.
+            # This eliminates 14+ awaits per conversation during batch writes.
 
     invalidate_search_cache()
     return counts
