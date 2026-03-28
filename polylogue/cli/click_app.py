@@ -25,7 +25,7 @@ from polylogue.cli.commands.site import site_command
 from polylogue.cli.commands.tags import tags_command
 from polylogue.cli.formatting import announce_plain_mode, plain_forced_by_env, should_use_plain
 from polylogue.cli.types import AppEnv
-from polylogue.lib.query_spec import QUERY_ACTION_TYPES
+from polylogue.lib.query_spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
 from polylogue.logging import configure_logging
 from polylogue.ui import create_ui
 from polylogue.version import POLYLOGUE_VERSION
@@ -217,6 +217,7 @@ def mcp_command(env: AppEnv, transport: str) -> None:
 @click.option("--id", "-i", "conv_id", help="Conversation ID (exact or prefix match)")
 @click.option("--contains", "-c", multiple=True, help="FTS term (repeatable = AND)")
 @click.option("--exclude-text", multiple=True, help="Exclude FTS term")
+@click.option("--retrieval-lane", type=click.Choice(QUERY_RETRIEVAL_LANES), help="Query lane: dialogue FTS, action text, or hybrid")
 @click.option("--provider", "-p", help="Include providers (comma = OR)")
 @click.option("--exclude-provider", help="Exclude providers")
 @click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)")
@@ -298,6 +299,7 @@ def cli(
     conv_id: str | None,
     contains: tuple[str, ...],
     exclude_text: tuple[str, ...],
+    retrieval_lane: str | None,
     provider: str | None,
     exclude_provider: str | None,
     tag: str | None,
@@ -364,6 +366,7 @@ def cli(
         polylogue --action search --action file_edit --list
         polylogue --action-sequence file_read,file_edit,shell --list
         polylogue --action-text "pytest -q" --list
+        polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
         polylogue --action other --stats-by tool --format json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --limit 5

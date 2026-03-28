@@ -34,6 +34,7 @@ class QuerySpecError(ValueError):
 
 QUERY_ACTION_TYPES = tuple(category.value for category in ToolCategory) + ("none",)
 QUERY_SEQUENCE_ACTION_TYPES = tuple(category.value for category in ToolCategory)
+QUERY_RETRIEVAL_LANES = ("auto", "dialogue", "actions", "hybrid")
 
 
 def _normalize_tool_terms(value: object) -> tuple[str, ...]:
@@ -115,6 +116,7 @@ class ConversationQuerySpec:
     query_terms: tuple[str, ...] = ()
     contains_terms: tuple[str, ...] = ()
     exclude_text_terms: tuple[str, ...] = ()
+    retrieval_lane: str = "auto"
     path_terms: tuple[str, ...] = ()
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
@@ -151,6 +153,7 @@ class ConversationQuerySpec:
             query_terms=_as_tuple(params.get("query")),
             contains_terms=_as_tuple(params.get("contains")),
             exclude_text_terms=_as_tuple(params.get("exclude_text")),
+            retrieval_lane=str(params.get("retrieval_lane") or "auto"),
             path_terms=_as_tuple(params.get("path_terms") or params.get("path")),
             action_terms=_normalize_action_terms("action", params.get("action")),
             excluded_action_terms=_normalize_action_terms("exclude_action", params.get("exclude_action")),
@@ -189,6 +192,8 @@ class ConversationQuerySpec:
             parts.append(f"contains: {', '.join(self.contains_terms)}")
         if self.exclude_text_terms:
             parts.append(f"exclude text: {', '.join(self.exclude_text_terms)}")
+        if self.retrieval_lane != "auto":
+            parts.append(f"retrieval: {self.retrieval_lane}")
         if self.path_terms:
             parts.append(f"path: {', '.join(self.path_terms)}")
         if self.action_terms:
@@ -350,6 +355,7 @@ class ConversationQuerySpec:
             query_terms=self.query_terms,
             contains_terms=self.contains_terms,
             negative_terms=self.exclude_text_terms,
+            retrieval_lane=self.retrieval_lane,
             path_terms=self.path_terms,
             action_terms=self.action_terms,
             excluded_action_terms=self.excluded_action_terms,

@@ -140,6 +140,8 @@
         polylogue --action search --action file_edit --list
         polylogue --action-sequence file_read,file_edit,shell --list
         polylogue --action-text "pytest -q" --list
+        polylogue "pytest -q tests<PATH>" --retrieval-l
+  ane actions --limit 5
         polylogue --action other --stats-by tool --format json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
@@ -166,6 +168,9 @@
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
     --exclude-text TEXT             Exclude FTS term
+    --retrieval-lane [auto|dialogue|actions|hybrid]
+                                    Query lane: dialogue FTS, action text, or
+                                    hybrid
     -p, --provider TEXT             Include providers (comma = OR)
     --exclude-provider TEXT         Exclude providers
     -t, --tag TEXT                  Include tags (comma = OR, supports
@@ -276,6 +281,8 @@
         polylogue --action-sequence file_read,file_edit,shell
   --list
         polylogue --action-text "pytest -q" --list
+        polylogue "pytest -q tests<PATH>
+  ts.py" --retrieval-lane actions --limit 5
         polylogue --action other --stats-by tool --format json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --l
@@ -306,6 +313,10 @@
     -c, --contains TEXT             FTS term (repeatable = AND
   )
     --exclude-text TEXT             Exclude FTS term
+    --retrieval-lane [auto|dialogue|actions|hybrid]
+                                    Query lane: dialogue FTS,
+  action text, or
+                                    hybrid
     -p, --provider TEXT             Include providers (comma =
    OR)
     --exclude-provider TEXT         Exclude providers
@@ -456,6 +467,7 @@
         polylogue --action search --action file_edit --list
         polylogue --action-sequence file_read,file_edit,shell --list
         polylogue --action-text "pytest -q" --list
+        polylogue "pytest -q tests<PATH>" --retrieval-lane actions --limit 5
         polylogue --action other --stats-by tool --format json
         polylogue --tool bash --exclude-tool read --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
@@ -482,6 +494,9 @@
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
     --exclude-text TEXT             Exclude FTS term
+    --retrieval-lane [auto|dialogue|actions|hybrid]
+                                    Query lane: dialogue FTS, action text, or
+                                    hybrid
     -p, --provider TEXT             Include providers (comma = OR)
     --exclude-provider TEXT         Exclude providers
     -t, --tag TEXT                  Include tags (comma = OR, supports
