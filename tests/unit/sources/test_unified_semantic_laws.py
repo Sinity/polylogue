@@ -473,3 +473,97 @@ def test_extract_chatgpt_text_prefers_direct_text_contract() -> None:
     }
 
     assert extract_chatgpt_text(content) == "print('ok')"
+
+
+def test_extract_harmonized_message_claude_code_fallback_preserves_semantic_fields_contract() -> None:
+    raw = {
+        "uuid": "claude-fallback",
+        "type": "assistant",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "durationMs": 99,
+        "costUSD": 0.25,
+        "message": {
+            "role": "assistant",
+            "model": "claude-sonnet-4",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 12,
+                "cache_read_input_tokens": 2,
+                "cache_creation_input_tokens": 3,
+            },
+            "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "thinking", "thinking": "reason"},
+                {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"path": "README.md"}},
+                {"type": "tool_result", "content": [{"type": "text", "text": "done"}]},
+                {"type": "code", "code": "print('ok')", "language": "python"},
+            ],
+        },
+    }
+
+    msg = extract_harmonized_message("claude-code", raw)
+
+    assert msg.id == "claude-fallback"
+    assert msg.role == "assistant"
+    assert msg.text == "hello"
+    assert msg.timestamp is not None
+    assert msg.duration_ms == 99
+    assert msg.model == "claude-sonnet-4"
+    assert msg.cost is not None and msg.cost.total_usd == 0.25
+    assert msg.tokens is not None
+    assert msg.tokens.input_tokens == 10
+    assert msg.tokens.output_tokens == 12
+    assert msg.tokens.cache_read_tokens == 2
+    assert msg.tokens.cache_write_tokens == 3
+    assert [block.type for block in msg.content_blocks] == [
+        ContentType.TEXT,
+        ContentType.THINKING,
+        ContentType.TOOL_USE,
+        ContentType.TOOL_RESULT,
+        ContentType.CODE,
+    ]
+    assert msg.reasoning_traces and msg.reasoning_traces[0].text == "reason"
+    assert msg.tool_calls and msg.tool_calls[0].name == "Read"
+    assert msg.tool_calls[0].input == {"path": "README.md"}
+
+
+def test_extract_from_provider_meta_structured_blocks_preserve_overlay_and_tools_contract() -> None:
+    provider_meta = {
+        "content_blocks": [
+            {"type": "text", "text": "plain text"},
+            {"type": "tool_use", "tool_call": {"name": "Read", "id": "tool-1", "input": {"path": "README.md"}}},
+            {"type": "tool_result", "text": "tool output"},
+            {"type": "code", "text": "print('x')", "language": "python"},
+        ],
+        "reasoning_traces": [{"text": "reason", "provider": "claude-code"}],
+        "tool_calls": [{"name": "Read", "id": "tool-1", "input": {"path": "README.md"}, "provider": "claude-code"}],
+        "tokens": {"output_tokens": 5},
+        "cost": {"total_usd": 0.25},
+        "duration_ms": 12,
+    }
+
+    harmonized = extract_from_provider_meta(
+        "claude-code",
+        provider_meta,
+        message_id="msg-1",
+        role="assistant",
+        timestamp="2025-01-01T00:00:00Z",
+    )
+
+    assert harmonized.id == "msg-1"
+    assert harmonized.role.value == "assistant"
+    assert harmonized.text == "plain text\ntool output\nprint('x')"
+    assert [block.type for block in harmonized.content_blocks] == [
+        ContentType.TEXT,
+        ContentType.TOOL_USE,
+        ContentType.TOOL_RESULT,
+        ContentType.CODE,
+    ]
+    assert harmonized.content_blocks[1].tool_call is not None
+    assert harmonized.content_blocks[1].tool_call.name == "Read"
+    assert harmonized.content_blocks[3].language == "python"
+    assert harmonized.reasoning_traces and harmonized.reasoning_traces[0].text == "reason"
+    assert harmonized.tool_calls and harmonized.tool_calls[0].name == "Read"
+    assert harmonized.tokens is not None and harmonized.tokens.output_tokens == 5
+    assert harmonized.cost is not None and harmonized.cost.total_usd == 0.25
+    assert harmonized.duration_ms == 12
