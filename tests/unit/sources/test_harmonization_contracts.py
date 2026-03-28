@@ -9,9 +9,9 @@ from __future__ import annotations
 from hypothesis import given
 from hypothesis import strategies as st
 
+from polylogue.lib.provider_semantics import extract_codex_text
 from polylogue.schemas.unified import (
     HarmonizedMessage,
-    extract_codex_text,
     extract_content_blocks,
     extract_harmonized_message,
     extract_reasoning_traces,
