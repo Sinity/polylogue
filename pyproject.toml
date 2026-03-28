@@ -54,11 +54,15 @@ dev = [
   "pytest-cov>=4",
   "pytest-asyncio>=0.23.0",  # Async test support
   "pytest-xdist>=3.5.0",  # Parallel test execution
+  "pytest-randomly>=3.0",  # Detect order-dependent tests; adds --randomly-seed
+  "pytest-benchmark>=5.0",  # Microbenchmark suite (run with --benchmark-enable -p no:xdist)
   "coverage[toml]>=7.6",
   "hypothesis>=6.100",
   "hypothesis-jsonschema>=0.23.0",  # Generate test data from JSON schemas
   "genson>=1.2.0",  # Infer JSON schemas from samples
   "jsonschema>=4.0.0",  # Validate JSON against schemas
+  "syrupy>=4.0",  # Snapshot testing — pytest plugin, .ambr files
+  "mutmut>=3.0.0",  # Mutation testing for coverage verification
   "mypy>=1.11",
   "ruff>=0.1.0",
   "pre-commit>=3.5.0",
@@ -101,16 +105,18 @@ polylogue = "polylogue.cli:main"
 packages = ["polylogue"]
 
 [tool.pytest.ini_options]
-addopts = "-ra"
+addopts = "-ra -n auto --benchmark-disable"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests (pipeline, CLI end-to-end)",
+    "benchmark: marks benchmark tests (run with --benchmark-enable -p no:xdist -p no:randomly)",
 ]
 filterwarnings = [
     "ignore::ResourceWarning",           # Unclosed sqlite3 connections in thread-local backend
     "ignore::DeprecationWarning:dateparser",  # dateparser strptime deprecation (external)
+    "ignore::pytest.PytestUnhandledThreadExceptionWarning",  # aiosqlite cleanup in xdist workers
 ]
 
 
@@ -187,3 +193,48 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["polylogue"]
+
+[tool.mutmut]
+paths_to_mutate = [
+    # Core domain models — most battle-tested
+    "polylogue/lib/models.py",
+    # Filtering logic — ConversationFilter predicate composition
+    "polylogue/lib/filters.py",
+    # Role normalization and enum coercion
+    "polylogue/lib/roles.py",
+    # Timestamp parsing (never-raises contract)
+    "polylogue/lib/timestamps.py",
+    # Hashing (determinism, collision resistance)
+    "polylogue/lib/hashing.py",
+    # JSON encode/decode with Decimal/datetime support
+    "polylogue/lib/json.py",
+    # FTS5 query escaping (correctness, no-crash contract)
+    "polylogue/storage/search_providers/fts5.py",
+    # RRF hybrid fusion (score monotonicity)
+    "polylogue/storage/search_providers/hybrid.py",
+]
+tests_dir = [
+    # models.py coverage
+    "tests/unit/core/test_models.py",
+    "tests/unit/core/test_message_laws.py",
+    "tests/unit/core/test_properties.py",
+    "tests/unit/core/test_json.py",
+    # filters.py coverage — DB-backed test_filters.py / test_filters_adv.py excluded
+    # (7.79s/run causes 259 false timeouts); test_filters_props.py is pure-logic Hypothesis
+    "tests/unit/core/test_filters_props.py",
+    # roles.py, timestamps.py, json.py coverage
+    "tests/unit/core/test_json_laws.py",
+    "tests/unit/core/test_timestamp_guards.py",
+    # hashing.py coverage
+    "tests/unit/core/test_hashing.py",
+    # fts5.py coverage
+    "tests/unit/storage/test_fts5.py",
+    "tests/unit/storage/test_fts5_laws.py",
+    # hybrid.py coverage
+    "tests/unit/storage/test_hybrid.py",
+    "tests/unit/storage/test_hybrid_laws.py",
+]
+also_copy = ["polylogue", "README.md"]
+# Mutmut runs inside one process; inheriting repo-wide `pytest -n auto`
+# breaks trampoline bookkeeping inside xdist workers.
+pytest_add_cli_args = ["-n", "0", "-p", "no:randomly", "-p", "no:random-order", "--benchmark-disable"]

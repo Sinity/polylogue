@@ -3,6 +3,7 @@
 > Dense implementation reference for developers working on the codebase.
 > For architecture overview, see [architecture.md](architecture.md).
 > For user-facing API docs, see [library-api.md](library-api.md).
+> For the current lint/test/mutation ledger, see [quality-baselines.md](quality-baselines.md).
 
 **Mission**: Local-first AI chat archive (ChatGPT, Claude, Codex, Gemini → SQLite + FTS5 + sqlite-vec)
 
@@ -26,7 +27,7 @@ uv run polylogue check --repair               # Integrity check
 uv run polylogue mcp                          # MCP server (stdio)
 ```
 
-**Env vars**: `POLYLOGUE_ARCHIVE_ROOT`, `POLYLOGUE_RENDER_ROOT`
+**Env vars**: `XDG_DATA_HOME`, `XDG_STATE_HOME`, `POLYLOGUE_ARCHIVE_ROOT`, `POLYLOGUE_RENDER_ROOT`, `POLYLOGUE_CREDENTIAL_PATH`, `POLYLOGUE_TOKEN_PATH`
 
 **Library API**:
 ```python
@@ -34,6 +35,8 @@ async with Polylogue() as archive:
     stats = await archive.stats()  # Returns ArchiveStats
     convs = await archive.get_conversations(["id1", "id2"])
     results = await archive.search("error handling")
+    for hit in results.hits:
+        print(hit.title)
     filtered = await archive.filter().contains("python").provider("claude").list()
     await archive.rebuild_index()
 ```
@@ -61,7 +64,7 @@ async with Polylogue() as archive:
 | `lib/projections.py` | Fluent API: `conv.project().substantive().min_words(50).execute()` |
 | `lib/filters.py` | Conversation filter chain: `await p.filter().provider("claude").list()` |
 | `facade.py` | `Polylogue` — async-first library API |
-| `services.py` | Singleton factories: `get_backend()`, `get_repository()` |
+| `services.py` | Invocation-scoped runtime services: config, backend, repository |
 | `protocols.py` | SearchProvider, VectorProvider (storage protocol deleted) |
 | `types.py` | NewType IDs: ConversationId, MessageId, AttachmentId |
 
@@ -325,7 +328,7 @@ Vector search uses sqlite-vec (self-contained, no external services).
 | Modify hash logic | Maintain compatibility (breaks idempotency) |
 | String matching for thinking/tools | Use `message.is_tool_use`, `is_thinking` |
 | Mutate shared state in parallel | Use locks or keep pure |
-| Create repository without backend | Use `polylogue.services.get_repository()` |
+| Create repository without runtime context | Use `build_runtime_services(...).get_repository()` or pass a backend explicitly |
 
 ---
 
@@ -339,5 +342,3 @@ Vector search uses sqlite-vec (self-contained, no external services).
 | "FTS syntax error" | Unescaped query — use `escape_fts5_query()` |
 | "Thinking not detected" | Missing content_blocks — check parser in `sources/parsers/` |
 | "Config not reflected" | Env vars override — check `polylogue run --preview` |
-
-
