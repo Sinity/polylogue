@@ -523,6 +523,11 @@ class Conversation(BaseModel):
         return str(title) if title is not None else None
 
     @property
+    def display_date(self) -> datetime | None:
+        """Best available date: updated_at > created_at > None."""
+        return self.updated_at or self.created_at
+
+    @property
     def display_title(self) -> str:
         """Display title with precedence: user_title > title > truncated ID."""
         if self.user_title:

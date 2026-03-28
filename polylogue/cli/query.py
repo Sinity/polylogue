@@ -347,7 +347,7 @@ def _delete_conversations(
         env.ui.console.print("\nSample of conversations to delete:")
         for conv in results[:5]:
             title = conv.display_title[:40] if conv.display_title else conv.id[:20]
-            date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else "unknown"
+            date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else "unknown"
             env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {date} {title}")
         if count > 5:
             env.ui.console.print(f"  ... and {count - 5} more")
@@ -428,8 +428,8 @@ def _output_by_month(env: AppEnv, results: list[Conversation]) -> None:
     """Output aggregation by month."""
     by_month: Counter[str] = Counter()
     for conv in results:
-        if conv.updated_at:
-            month_key = conv.updated_at.strftime("%Y-%m")
+        if conv.display_date:
+            month_key = conv.display_date.strftime("%Y-%m")
             by_month[month_key] += 1
         else:
             by_month["unknown"] += 1
@@ -484,7 +484,7 @@ def _output_stats(env: AppEnv, results: list[Conversation]) -> None:
     tool_calls = sum(1 for c in results for m in c.messages if m.is_tool_use)
     attachments = sum(len(m.attachments) for c in results for m in c.messages)
 
-    dates = [c.updated_at for c in results if c.updated_at]
+    dates = [c.display_date for c in results if c.display_date]
     date_range = ""
     if dates:
         min_date = min(dates).strftime("%Y-%m-%d")
@@ -567,7 +567,7 @@ def _format_list(
     else:
         lines = []
         for conv in results:
-            date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else "unknown"
+            date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else "unknown"
             title = conv.display_title[:50] if conv.display_title else conv.id[:20]
             msg_count = len(conv.messages)
             lines.append(f"{conv.id[:24]:24s}  {date:10s}  [{conv.provider:12s}]  {title} ({msg_count} msgs)")
@@ -580,7 +580,7 @@ def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
         "id": str(conv.id),
         "provider": conv.provider,
         "title": conv.display_title,
-        "date": conv.updated_at.isoformat() if conv.updated_at else None,
+        "date": conv.display_date.isoformat() if conv.display_date else None,
         "messages": len(conv.messages),
         "words": sum(m.word_count for m in conv.messages),
         "tags": conv.tags,
@@ -595,8 +595,8 @@ def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
 def _conv_to_markdown(conv: Conversation) -> str:
     """Convert conversation to markdown."""
     lines = [f"# {conv.display_title or conv.id}", ""]
-    if conv.updated_at:
-        lines.append(f"**Date**: {conv.updated_at.strftime('%Y-%m-%d %H:%M')}")
+    if conv.display_date:
+        lines.append(f"**Date**: {conv.display_date.strftime('%Y-%m-%d %H:%M')}")
     lines.append(f"**Provider**: {conv.provider}")
     lines.append("")
 
@@ -646,7 +646,7 @@ def _conv_to_obsidian(conv: Conversation) -> str:
         "---",
         f"id: {conv.id}",
         f"provider: {conv.provider}",
-        f"date: {conv.updated_at.isoformat() if conv.updated_at else 'unknown'}",
+        f"date: {conv.display_date.isoformat() if conv.display_date else 'unknown'}",
         f"tags: [{', '.join(conv.tags)}]" if conv.tags else "tags: []",
         "---",
         "",
@@ -659,7 +659,7 @@ def _conv_to_org(conv: Conversation) -> str:
     """Convert conversation to Org-mode format."""
     lines = [
         f"#+TITLE: {conv.display_title or conv.id}",
-        f"#+DATE: {conv.updated_at.strftime('%Y-%m-%d') if conv.updated_at else 'unknown'}",
+        f"#+DATE: {conv.display_date.strftime('%Y-%m-%d') if conv.display_date else 'unknown'}",
         f"#+PROPERTY: provider {conv.provider}",
         "",
     ]
