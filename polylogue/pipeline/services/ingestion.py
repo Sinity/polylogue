@@ -363,9 +363,65 @@ class IngestionService:
                 raise
             payload = lines
 
+        # Schema validation: non-blocking, logs drift and errors
+        self._validate_payload(raw_record.provider_name, payload, raw_record.raw_id)
+
         # Use the existing parser dispatcher
         return _parse_json_payload(
             raw_record.provider_name,
             payload,
             raw_record.raw_id,  # Use raw_id as fallback conversation ID
         )
+
+    def _validate_payload(
+        self,
+        provider_name: str,
+        payload: Any,
+        raw_id: str,
+    ) -> None:
+        """Run schema validation on a parsed payload, logging drift and errors.
+
+        Never raises — validation is advisory, not blocking.
+        For list payloads (JSONL), validates the first item as a sample.
+        """
+        from polylogue.schemas.validator import SchemaValidator
+
+        try:
+            validator = SchemaValidator.for_provider(provider_name)
+        except (FileNotFoundError, ImportError):
+            return
+
+        # For JSONL payloads, sample-validate the first dict item
+        sample: Any
+        if isinstance(payload, list):
+            dicts = [item for item in payload if isinstance(item, dict)]
+            if not dicts:
+                return
+            sample = dicts[0]
+        elif isinstance(payload, dict):
+            sample = payload
+        else:
+            return
+
+        try:
+            result = validator.validate(sample)
+            if not result.is_valid:
+                logger.warning(
+                    "Schema validation errors for %s",
+                    provider_name,
+                    raw_id=raw_id,
+                    errors=result.errors[:5],
+                )
+            if result.has_drift:
+                logger.info(
+                    "Schema drift detected for %s",
+                    provider_name,
+                    raw_id=raw_id,
+                    drift=result.drift_warnings[:10],
+                )
+        except Exception as exc:
+            logger.debug(
+                "Schema validation skipped for %s: %s",
+                provider_name,
+                exc,
+            )
