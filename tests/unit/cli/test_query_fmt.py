@@ -20,8 +20,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from polylogue.cli.query_output import (
+    format_summary_list,
+    render_stream_transcript,
+)
 from polylogue.lib.messages import MessageCollection
-from polylogue.lib.models import Conversation, Message
+from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_conversation
 
 # =============================================================================
 # Test Helpers for Building Test Data
@@ -806,6 +811,157 @@ class TestOutputStatsBy:
     ) -> None:
         from polylogue.cli.query import _output_stats_by
 
+
+class TestConversationFormatting:
+    @pytest.mark.parametrize("case", CONVERSATION_FORMAT_CASES, ids=lambda case: case.name)
+    def test_format_conversation_matrix(self, sample_conversation: Conversation, case: ConversationFormatCase) -> None:
+        conversation = sample_conversation
+        if case.output_format == "html":
+            conversation = conversation.model_copy(update={"title": '<script>alert("xss")</script>'})
+        rendered = format_conversation(conversation, case.output_format, case.fields)
+        for token in case.expected:
+            assert token in rendered, (case.name, token)
+        for token in case.excluded:
+            assert token not in rendered, (case.name, token)
+
+    def test_conv_to_dict_field_selection_contract(self, sample_conversation: Conversation) -> None:
+        selected = _conv_to_dict(sample_conversation, "id,title")
+        assert selected == {
+            "id": "conv-1234567890abcdef",
+            "title": "Example Conversation",
+        }
+
+    def test_json_and_yaml_roundtrip_contract(self, sample_conversation: Conversation) -> None:
+        json_data = json.loads(format_conversation(sample_conversation, "json", None))
+        yaml_data = yaml.safe_load(format_conversation(sample_conversation, "yaml", None))
+        assert json_data["id"] == yaml_data["id"] == "conv-1234567890abcdef"
+        assert len(json_data["messages"]) == len(yaml_data["messages"]) == 2
+        assert json_data["messages"][1]["text"] == yaml_data["messages"][1]["text"] == "Response"
+
+    def test_csv_messages_skips_empty_text(self) -> None:
+        conv = _make_conv(messages=[_make_msg("user", None, id="empty"), _make_msg("assistant", "Reply", id="reply")])
+        rendered = format_conversation(conv, "csv", None)
+        assert "empty" not in rendered
+        assert "reply" in rendered
+
+
+class TestListFormatting:
+    @pytest.mark.parametrize("case", LIST_FORMAT_CASES, ids=lambda case: case.name)
+    def test_format_list_contract_matrix(self, sample_conversation: Conversation, case: ListFormatCase) -> None:
+        other = _make_conv(
+            id="conv-bbbbbbbbbbbbbbbb",
+            provider="chatgpt",
+            title="Second Conversation",
+            messages=[_make_msg("user", "Question"), _make_msg("assistant", "Answer")],
+            updated_at=datetime(2025, 6, 16, 12, 30, tzinfo=timezone.utc),
+            summary="Second summary",
+            tags=["second"],
+        )
+        rendered = _format_list([sample_conversation, other], case.output_format, case.fields)
+        for token in case.expected:
+            assert token in rendered, (case.name, token)
+        if case.name == "json_selected":
+            payload = json.loads(rendered)
+            assert payload[0] == {"id": "conv-1234567890abcdef", "title": "Example Conversation"}
+        if case.name == "yaml":
+            payload = yaml.safe_load(rendered)
+            assert payload[0]["id"] == "conv-1234567890abcdef"
+            assert payload[0]["provider"] == "claude-ai"
+
+    @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
+    def test_format_summary_list_contract(self, output_format: str) -> None:
+        summary = ConversationSummary(
+            id="conv-summary-1",
+            provider="claude-ai",
+            title="Summary Conversation",
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
+            metadata={"tags": ["alpha", "beta"], "summary": "Summary text"},
+        )
+
+        rendered = format_summary_list(
+            [summary],
+            output_format,
+            None,
+            message_counts={"conv-summary-1": 7},
+        )
+
+        if output_format == "json":
+            payload = json.loads(rendered)
+            assert payload[0]["id"] == "conv-summary-1"
+            assert payload[0]["messages"] == 7
+            assert payload[0]["tags"] == ["alpha", "beta"]
+        elif output_format == "yaml":
+            payload = yaml.safe_load(rendered)
+            assert payload[0]["provider"] == "claude-ai"
+            assert payload[0]["summary"] == "Summary text"
+        elif output_format == "csv":
+            assert "id,date,provider,title,messages,tags,summary" in rendered
+            assert "conv-summary-1" in rendered
+            assert "alpha,beta" in rendered
+        else:
+            assert "conv-summary-1" in rendered
+            assert "claude-ai" in rendered
+            assert "(7 msgs)" in rendered
+
+
+class TestStreamingOutput:
+    @pytest.mark.parametrize("output_format,expected_role,expected_text", STREAM_CASES)
+    def test_write_message_streaming_matrix(self, output_format: str, expected_role: str, expected_text: str) -> None:
+        message = _make_msg(
+            role="assistant",
+            text="Hello from assistant",
+            id="stream-1",
+            timestamp=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        )
+        buffer = io.StringIO()
+        with patch("sys.stdout", buffer):
+            _write_message_streaming(message, output_format)
+        output = buffer.getvalue()
+        assert expected_role in output
+        assert expected_text in output
+        if output_format == "json-lines":
+            payload = json.loads(output)
+            assert payload["id"] == "stream-1"
+            assert payload["word_count"] == message.word_count
+
+    @pytest.mark.parametrize(
+        ("output_format", "expected_tokens"),
+        [
+            ("markdown", ("# Example Conversation", "**Provider**: claude-ai", "**Date**: 2025-06-15 12:30", "_Streamed 2 messages_")),
+            ("json-lines", ('"type": "header"', '"provider": "claude-ai"', '"date": "2025-06-15T12:30:00+00:00"', '"type": "footer"')),
+            ("plaintext", ("[USER]", "[ASSISTANT]")),
+        ],
+    )
+    def test_render_stream_transcript_contract(self, sample_conversation: Conversation, output_format: str, expected_tokens: tuple[str, ...]) -> None:
+        rendered, emitted = render_stream_transcript(
+            conversation_id=str(sample_conversation.id),
+            title=sample_conversation.display_title,
+            provider=str(sample_conversation.provider),
+            display_date=sample_conversation.display_date,
+            messages=list(sample_conversation.messages),
+            output_format=output_format,
+            stats={"total_messages": len(sample_conversation.messages), "dialogue_messages": len(list(sample_conversation.iter_dialogue()))},
+        )
+
+        assert emitted == 2
+        for token in expected_tokens:
+            assert token in rendered
+
+
+class TestGroupedStatsOutput:
+    @pytest.mark.parametrize("dimension,raw_cases,expected_tokens", STATS_CASES, ids=[case[0] for case in STATS_CASES])
+    def test_output_stats_by_contract_matrix(self, dimension: str, raw_cases, expected_tokens) -> None:
+        conversations = [
+            _make_conv(
+                id=conv_id,
+                provider=provider,
+                updated_at=updated_at,
+                messages=[_make_msg("assistant", text, id=f"{conv_id}-{index}") for index, text in enumerate(texts)],
+            )
+            for conv_id, provider, updated_at, texts in raw_cases
+        ]
+        console_buffer = io.StringIO()
         env = MagicMock()
         _output_stats_by(env, convs_setup, groupby)
         env.ui.console.print.assert_called()

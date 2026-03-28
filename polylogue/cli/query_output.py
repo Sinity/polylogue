@@ -22,6 +22,191 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 
+def format_summary_list(
+    summaries: list[ConversationSummary],
+    output_format: str,
+    fields: str | None,
+    *,
+    message_counts: dict[str, int] | None = None,
+) -> str:
+    """Format summary-list output for deterministic machine/plain surfaces."""
+    message_counts = message_counts or {}
+
+    selected: set[str] | None = None
+    if fields:
+        selected = {f.strip() for f in fields.split(",")}
+
+    if output_format == "json":
+        data = [summary_to_dict(s, message_counts.get(str(s.id), 0)) for s in summaries]
+        if selected:
+            data = [{k: v for k, v in d.items() if k in selected} for d in data]
+        return json.dumps(data, indent=2)
+
+    if output_format == "yaml":
+        import yaml
+
+        data = [summary_to_dict(s, message_counts.get(str(s.id), 0)) for s in summaries]
+        if selected:
+            data = [{k: v for k, v in d.items() if k in selected} for d in data]
+        return yaml.dump(data, default_flow_style=False, allow_unicode=True)
+
+    if output_format == "csv":
+        import csv
+        import io
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["id", "date", "provider", "title", "messages", "tags", "summary"])
+        for s in summaries:
+            date = s.display_date.strftime("%Y-%m-%d") if s.display_date else ""
+            tags_str = ",".join(s.tags) if s.tags else ""
+            writer.writerow([
+                str(s.id),
+                date,
+                s.provider,
+                s.display_title or "",
+                message_counts.get(str(s.id), 0),
+                tags_str,
+                s.summary or "",
+            ])
+        return buf.getvalue().rstrip("\r\n")
+
+    lines = []
+    for s in summaries:
+        date = s.display_date.strftime("%Y-%m-%d") if s.display_date else ""
+        raw_title = s.display_title or str(s.id)[:20]
+        title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
+        count = message_counts.get(str(s.id), 0)
+        lines.append(f"{str(s.id)[:24]:24s}  {date:10s}  {s.provider:12s}  {title} ({count} msgs)")
+    return "\n".join(lines)
+
+
+def render_stream_message(message: Message, output_format: str) -> str:
+    """Render a single streamed message chunk."""
+    if output_format == "plaintext":
+        if not message.text:
+            return ""
+        role_label = (message.role or "unknown").upper().replace("[", "").replace("]", "")
+        return f"[{role_label}]\n{message.text}\n\n"
+
+    if output_format == "markdown":
+        if not message.text:
+            return ""
+        role_label = (message.role or "unknown").capitalize()
+        return f"## {role_label}\n\n{message.text}\n\n"
+
+    if output_format == "json-lines":
+        record = {
+            "type": "message",
+            "id": message.id,
+            "role": message.role,
+            "timestamp": message.timestamp.isoformat() if message.timestamp else None,
+            "text": message.text,
+            "word_count": message.word_count,
+        }
+        return json.dumps(record, ensure_ascii=False) + "\n"
+
+    return ""
+
+
+def render_stream_header(
+    *,
+    conversation_id: str,
+    title: str | None,
+    provider: str | None,
+    display_date: object | None,
+    output_format: str,
+    dialogue_only: bool,
+    message_limit: int | None,
+    stats: dict[str, Any] | None,
+) -> str:
+    """Render any stream prelude/header for the selected output format."""
+    if hasattr(display_date, "strftime"):
+        display_date_text = display_date.strftime("%Y-%m-%d %H:%M")
+        display_date_value = display_date.isoformat() if hasattr(display_date, "isoformat") else str(display_date)
+    elif display_date:
+        display_date_text = str(display_date)
+        display_date_value = str(display_date)
+    else:
+        display_date_text = None
+        display_date_value = None
+
+    if output_format == "markdown":
+        lines = [f"# {title or conversation_id[:24]}", ""]
+        if display_date_text is not None:
+            lines.append(f"**Date**: {display_date_text}")
+        if provider:
+            lines.append(f"**Provider**: {provider}")
+        if display_date_text is not None or provider:
+            lines.append("")
+        if dialogue_only and stats:
+            line = f"_Showing {stats['dialogue_messages']} dialogue messages"
+            if message_limit:
+                line += f" (limit: {message_limit})"
+            line += f" of {stats['total_messages']} total_"
+            lines.extend([line, ""])
+        return "\n".join(lines)
+
+    if output_format == "json-lines":
+        header = {
+            "type": "header",
+            "conversation_id": conversation_id,
+            "title": title,
+            "provider": provider,
+            "date": display_date_value,
+            "dialogue_only": dialogue_only,
+            "message_limit": message_limit,
+            "stats": stats,
+        }
+        return json.dumps(header) + "\n"
+
+    return ""
+
+
+def render_stream_footer(*, output_format: str, emitted_messages: int) -> str:
+    """Render any stream closing/footer fragment."""
+    if output_format == "markdown":
+        return f"\n---\n_Streamed {emitted_messages} messages_\n"
+    if output_format == "json-lines":
+        return json.dumps({"type": "footer", "message_count": emitted_messages}) + "\n"
+    return ""
+
+
+def render_stream_transcript(
+    *,
+    conversation_id: str,
+    title: str | None,
+    provider: str | None,
+    display_date: object | None,
+    messages: list[Message],
+    output_format: str,
+    dialogue_only: bool = False,
+    message_limit: int | None = None,
+    stats: dict[str, Any] | None = None,
+) -> tuple[str, int]:
+    """Render the full stream transcript deterministically for proof/tests."""
+    parts = [
+        render_stream_header(
+            conversation_id=conversation_id,
+            title=title,
+            provider=provider,
+            display_date=display_date,
+            output_format=output_format,
+            dialogue_only=dialogue_only,
+            message_limit=message_limit,
+            stats=stats,
+        )
+    ]
+    emitted = 0
+    for message in messages[: message_limit if message_limit is not None else None]:
+        chunk = render_stream_message(message, output_format)
+        if chunk:
+            parts.append(chunk)
+            emitted += 1
+    parts.append(render_stream_footer(output_format=output_format, emitted_messages=emitted))
+    return "".join(parts), emitted
+
+
 async def _output_stats_sql(
     env: AppEnv,
     filter_chain: ConversationFilter,
@@ -275,55 +460,15 @@ async def _output_summary_list(
         msg_counts = await repo.get_message_counts_batch(ids)
 
     fields = params.get("fields")
-    selected: set[str] | None = None
-    if fields:
-        selected = {f.strip() for f in fields.split(",")}
-
-    if output_format == "json":
-        data = [summary_to_dict(s, msg_counts.get(str(s.id), 0)) for s in summaries]
-        if selected:
-            data = [{k: v for k, v in d.items() if k in selected} for d in data]
-        click.echo(json.dumps(data, indent=2))
-        return
-
-    if output_format == "yaml":
-        import yaml
-
-        data = [summary_to_dict(s, msg_counts.get(str(s.id), 0)) for s in summaries]
-        if selected:
-            data = [{k: v for k, v in d.items() if k in selected} for d in data]
-        click.echo(yaml.dump(data, default_flow_style=False, allow_unicode=True))
-        return
-
-    if output_format == "csv":
-        import csv
-        import io
-
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(["id", "date", "provider", "title", "messages", "tags", "summary"])
-        for s in summaries:
-            date = s.display_date.strftime("%Y-%m-%d") if s.display_date else ""
-            tags_str = ",".join(s.tags) if s.tags else ""
-            writer.writerow([
-                str(s.id),
-                date,
-                s.provider,
-                s.display_title or "",
-                msg_counts.get(str(s.id), 0),
-                tags_str,
-                s.summary or "",
-            ])
-        click.echo(buf.getvalue().rstrip())
-        return
-
-    if env.ui.plain:
-        for s in summaries:
-            date = s.display_date.strftime("%Y-%m-%d") if s.display_date else ""
-            raw_title = s.display_title or str(s.id)[:20]
-            title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
-            count = msg_counts.get(str(s.id), 0)
-            click.echo(f"{str(s.id)[:24]:24s}  {date:10s}  {s.provider:12s}  {title} ({count} msgs)")
+    if output_format in {"json", "yaml", "csv"} or env.ui.plain:
+        click.echo(
+            format_summary_list(
+                summaries,
+                "text" if env.ui.plain and output_format not in {"json", "yaml", "csv"} else output_format,
+                fields,
+                message_counts=msg_counts,
+            )
+        )
         return
 
     from rich.table import Table
@@ -448,27 +593,19 @@ async def stream_conversation(
         raise SystemExit(1)
 
     stats = await repo.get_conversation_stats(conversation_id)
-
-    if output_format == "markdown":
-        title = conv_record.title or conversation_id[:24]
-        sys.stdout.write(f"# {title}\n\n")
-        if dialogue_only and stats:
-            sys.stdout.write(f"_Showing {stats['dialogue_messages']} dialogue messages")
-            if message_limit:
-                sys.stdout.write(f" (limit: {message_limit})")
-            sys.stdout.write(f" of {stats['total_messages']} total_\n\n")
-        sys.stdout.flush()
-    elif output_format == "json-lines":
-        header = {
-            "type": "header",
-            "conversation_id": conversation_id,
-            "title": conv_record.title,
-            "dialogue_only": dialogue_only,
-            "message_limit": message_limit,
-            "stats": stats,
-        }
-        sys.stdout.write(json.dumps(header) + "\n")
-        sys.stdout.flush()
+    sys.stdout.write(
+        render_stream_header(
+            conversation_id=conversation_id,
+            title=conv_record.title,
+            provider=getattr(conv_record, "provider_name", None),
+            display_date=(getattr(conv_record, "updated_at", None) or getattr(conv_record, "created_at", None)),
+            output_format=output_format,
+            dialogue_only=dialogue_only,
+            message_limit=message_limit,
+            stats=stats,
+        )
+    )
+    sys.stdout.flush()
 
     count = 0
     async for msg in repo.iter_messages(
@@ -476,46 +613,23 @@ async def stream_conversation(
         dialogue_only=dialogue_only,
         limit=message_limit,
     ):
-        _write_message_streaming(msg, output_format)
-        count += 1
+        chunk = render_stream_message(msg, output_format)
+        if chunk:
+            sys.stdout.write(chunk)
+            count += 1
+        sys.stdout.flush()
 
-    if output_format == "markdown":
-        sys.stdout.write(f"\n---\n_Streamed {count} messages_\n")
-        sys.stdout.flush()
-    elif output_format == "json-lines":
-        footer = {"type": "footer", "message_count": count}
-        sys.stdout.write(json.dumps(footer) + "\n")
-        sys.stdout.flush()
+    sys.stdout.write(render_stream_footer(output_format=output_format, emitted_messages=count))
+    sys.stdout.flush()
 
     return count
 
 
 def _write_message_streaming(msg: Message, output_format: str) -> None:
     """Write a single message to stdout in streaming mode."""
-    if output_format == "plaintext":
-        role_label = (msg.role or "unknown").upper().replace("[", "").replace("]", "")
-        if msg.text:
-            sys.stdout.write(f"[{role_label}]\n{msg.text}\n\n")
-        sys.stdout.flush()
-        return
-
-    if output_format == "markdown":
-        if msg.text:
-            role_label = (msg.role or "unknown").capitalize()
-            sys.stdout.write(f"## {role_label}\n\n{msg.text}\n\n")
-            sys.stdout.flush()
-        return
-
-    if output_format == "json-lines":
-        record = {
-            "type": "message",
-            "id": msg.id,
-            "role": msg.role,
-            "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
-            "text": msg.text,
-            "word_count": msg.word_count,
-        }
-        sys.stdout.write(json.dumps(record, ensure_ascii=False) + "\n")
+    chunk = render_stream_message(msg, output_format)
+    if chunk:
+        sys.stdout.write(chunk)
         sys.stdout.flush()
 
 
