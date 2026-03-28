@@ -523,8 +523,8 @@ class ConversationRepository:
         # Get database size
         db_size = 0
         try:
-            import os
-            db_size = os.path.getsize(self._db_path) if self._db_path else 0
+            from pathlib import Path
+            db_size = Path(self._db_path).stat().st_size if self._db_path else 0
         except Exception as exc:
             logger.debug("DB size check failed: %s", exc)
 

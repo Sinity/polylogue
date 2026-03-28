@@ -82,8 +82,8 @@ def normalize_role(raw: str) -> str:
              Must be non-empty. Missing roles should be handled at parse time.
 
     Returns:
-        Canonical role string: "user", "assistant", "system", "tool", or the
-        lowercased original if not recognized.
+        Canonical role string: "user", "assistant", "system", "tool", or
+        "unknown" if not recognized.
 
     Raises:
         ValueError: If raw is empty or whitespace-only.
@@ -92,7 +92,7 @@ def normalize_role(raw: str) -> str:
     if not lowered:
         raise ValueError("Role cannot be empty. Handle missing roles at parse time.")
 
-    return ROLE_MAP.get(lowered, lowered)
+    return ROLE_MAP.get(lowered, "unknown")
 
 
 __all__ = ["Role", "ROLE_MAP", "normalize_role"]
