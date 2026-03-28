@@ -331,7 +331,7 @@ class TestConversationFilterCustom:
         assert all(len(c.messages) >= 2 for c in result)
 
 
-class TestDateParsing:
+class TestFilterDateParsing:
     """Tests for date parsing in ConversationFilter.since() and until()."""
 
     def test_since_invalid_date_raises_value_error(self, filter_repo):

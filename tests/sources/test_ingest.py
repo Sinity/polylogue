@@ -350,7 +350,7 @@ def test_iter_source_conversations_jsonl_with_null_bytes(tmp_path):
     assert conversations[0].provider_conversation_id == "null-test"
 
 
-class TestIterSourceConversations:
+class TestIngestIterConversations:
     """Tests for iter_source_conversations function."""
 
     def test_tracks_file_count_in_cursor_state(self, tmp_path):

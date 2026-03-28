@@ -216,7 +216,7 @@ class TestRealDataIntegration:
 
 
 @pytest.mark.slow
-class TestEdgeCases:
+class TestRealDataEdgeCases:
     """Test edge cases found in real data."""
 
     def test_large_zip_file_parsing(self):
