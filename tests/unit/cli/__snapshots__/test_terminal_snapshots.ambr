@@ -170,11 +170,12 @@
     --title TEXT                    Title contains
     --path TEXT                     Touched path contains substring (repeatable
                                     = AND)
-    --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent]
+    --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|o
+  ther|none]
                                     Require semantic action category (repeatable
                                     = AND)
     --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|su
-  bagent]
+  bagent|other|none]
                                     Exclude semantic action category (repeatable
                                     = AND)
     --similar TEXT                  Semantic similarity query (requires
@@ -205,7 +206,7 @@
     --list                          Force list format
     --stats                         Only statistics, no content
     --count                         Print matched count and exit
-    --stats-by [provider|month|year|day]
+    --stats-by [provider|month|year|day|action]
                                     Aggregate statistics by dimension
     --open                          Open result in browser<PATH>
     --transform [strip-tools|strip-thinking|strip-all]
@@ -300,12 +301,12 @@
   tring (repeatable
                                     = AND)
     --action [file_read|file_write|file_edit|shell|git|search|
-  web|agent|subagent]
+  web|agent|subagent|other|none]
                                     Require semantic action ca
   tegory (repeatable
                                     = AND)
     --exclude-action [file_read|file_write|file_edit|shell|git
-  |search|web|agent|subagent]
+  |search|web|agent|subagent|other|none]
                                     Exclude semantic action ca
   tegory (repeatable
                                     = AND)
@@ -351,7 +352,7 @@
   t
     --count                         Print matched count and ex
   it
-    --stats-by [provider|month|year|day]
+    --stats-by [provider|month|year|day|action]
                                     Aggregate statistics by di
   mension
     --open                          Open result in browser<PATH>
@@ -455,10 +456,10 @@
     --title TEXT                    Title contains
     --path TEXT                     Touched path contains substring (repeatable
                                     = AND)
-    --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent]
+    --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
                                     Require semantic action category (repeatable
                                     = AND)
-    --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent]
+    --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
                                     Exclude semantic action category (repeatable
                                     = AND)
     --similar TEXT                  Semantic similarity query (requires
@@ -489,7 +490,7 @@
     --list                          Force list format
     --stats                         Only statistics, no content
     --count                         Print matched count and exit
-    --stats-by [provider|month|year|day]
+    --stats-by [provider|month|year|day|action]
                                     Aggregate statistics by dimension
     --open                          Open result in browser<PATH>
     --transform [strip-tools|strip-thinking|strip-all]

@@ -263,7 +263,7 @@ def mcp_command(env: AppEnv, transport: str) -> None:
 @click.option(
     "--stats-by",
     "stats_by",
-    type=click.Choice(["provider", "month", "year", "day"]),
+    type=click.Choice(["provider", "month", "year", "day", "action"]),
     help="Aggregate statistics by dimension",
 )
 @click.option("--open", "open_result", is_flag=True, help="Open result in browser/editor")

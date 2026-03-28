@@ -407,6 +407,7 @@ class TestBuildQueryExecutionPlan:
             ({"stream": True, "query": ("abc",)}, QueryAction.STREAM),
             ({"stats_only": True, "query": ()}, QueryAction.STATS),
             ({"stats_by": "provider", "query": ()}, QueryAction.STATS_BY),
+            ({"stats_by": "action", "query": ()}, QueryAction.STATS_BY),
             ({"add_tag": ["x"], "query": ()}, QueryAction.MODIFY),
             ({"delete_matched": True, "provider": "claude-ai", "query": ()}, QueryAction.DELETE),
             ({"open_result": True, "query": ("abc",)}, QueryAction.OPEN),
@@ -458,6 +459,8 @@ class TestBuildQueryExecutionPlan:
             ({"stats_only": True, "query": ()}, True, QueryRoute.STATS_SQL),
             ({"stats_by": "provider", "query": ()}, True, QueryRoute.SUMMARY_STATS),
             ({"stats_by": "provider", "query": ()}, False, QueryRoute.STATS_BY),
+            ({"stats_by": "action", "query": ()}, True, QueryRoute.STATS_BY),
+            ({"stats_by": "action", "query": ()}, False, QueryRoute.STATS_BY),
             (
                 {"set_meta": [("priority", "1")], "query": ("abc",)},
                 True,

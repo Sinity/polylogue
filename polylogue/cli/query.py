@@ -149,7 +149,13 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if route == QueryRoute.SUMMARY_STATS:
         summaries = await filter_chain.list_summaries()
         msg_counts = await repo.queries.get_message_counts_batch([str(summary.id) for summary in summaries])
-        _query_output.output_stats_by_summaries(env, summaries, msg_counts, plan.stats_dimension or "all")
+        _query_output.output_stats_by_summaries(
+            env,
+            summaries,
+            msg_counts,
+            plan.stats_dimension or "all",
+            output_format=plan.output.output_format,
+        )
         return
 
     if route in {QueryRoute.SUMMARY_MODIFY, QueryRoute.SUMMARY_DELETE}:
@@ -168,7 +174,12 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     results = project_query_results(results, plan)
 
     if route == QueryRoute.STATS_BY:
-        _query_output._output_stats_by(env, results, plan.stats_dimension or "all")
+        _query_output._output_stats_by(
+            env,
+            results,
+            plan.stats_dimension or "all",
+            output_format=plan.output.output_format,
+        )
         return
 
     if route == QueryRoute.OPEN:

@@ -97,6 +97,14 @@ QUERY_TOOL_CASES = [
             "limit": (2,),
         },
     ),
+    (
+        "list_conversations",
+        {"action": "none", "limit": 2},
+        {
+            "action": ("none",),
+            "limit": (2,),
+        },
+    ),
 ]
 
 
