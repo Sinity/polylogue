@@ -1,23 +1,22 @@
-"""Tests for polylogue.cli.query module.
+"""Focused entrypoint tests for CLI query execution.
 
-Coverage targets:
-- execute_query: query execution with various parameters
-- Filter chain building from params
-- Aggregation outputs (by_month, by_provider, by_tag, stats)
-- Format outputs (json, markdown, html, obsidian, org)
-- Modifiers (set_meta, add_tag, rm_tag, delete)
-- Output destinations (stdout, file, browser, clipboard)
+Formatting, output, routing, and mutation contracts live in:
+- test_query_fmt.py
+- test_query_exec.py
+- test_query_exec_laws.py
+- test_query_plan.py
+
+This file keeps only the direct entrypoint and error-handling seams that
+are not worth expressing through the broader contract suites.
 """
 
 from __future__ import annotations
 
-import csv
-import io
-import json
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+<<<<<<< ours
 import yaml
 
 from polylogue.cli import query
@@ -41,56 +40,62 @@ def sample_conversations():
         updated_at=now,
         metadata={"tags": ["work", "important"]},  # tags via metadata
     )
+||||||| base
+import yaml
 
-    conv2 = Conversation(
-        id="conv2-def456",
-        provider="claude",
-        messages=[
-            Message(id="m1", role="user", text="What is Python?", timestamp=now),
-            Message(id="m2", role="assistant", text="Python is a programming language.", timestamp=now),
-            Message(id="m3", role="assistant", text="It's great for scripting.", timestamp=now, is_tool_use=True),
-        ],
-        title="Python Discussion",
-        updated_at=now,
-        metadata={"tags": ["programming"]},  # tags via metadata
-    )
-
-    conv3 = Conversation(
-        id="conv3-ghi789",
-        provider="chatgpt",
-        messages=[
-            Message(id="m1", role="user", text="Explain thinking", timestamp=now),
-            Message(id="m2", role="assistant", text="Thinking...", timestamp=now, is_thinking=True),
-            Message(id="m3", role="assistant", text="Here's my answer.", timestamp=now),
-        ],
-        title="Thinking Demo",
-        updated_at=datetime(2024, 7, 20, 10, 0),
-        metadata={},  # no tags
-    )
-
-    return [conv1, conv2, conv3]
+from polylogue.cli.query_output import _format_list
+from polylogue.lib import formatting
+from polylogue.lib.models import Conversation, Message
 
 
 @pytest.fixture
-def mock_env():
-    """Create mock environment for query tests."""
-    mock_ui = MagicMock()
-    mock_ui.plain = True
-    mock_ui.console = MagicMock()
+def sample_conversations():
+    """Create sample conversations for testing."""
+    now = datetime(2024, 6, 15, 10, 0)
 
+    conv1 = Conversation(
+        id="conv1-abc123",
+        provider="chatgpt",
+        messages=[
+            Message(id="m1", role="user", text="Hello world", timestamp=now),
+            Message(id="m2", role="assistant", text="Hi there!", timestamp=now),
+        ],
+        title="First Conversation",
+        updated_at=now,
+        metadata={"tags": ["work", "important"]},  # tags via metadata
+    )
+=======
+>>>>>>> theirs
+
+from polylogue.config import ConfigError
+
+
+def _make_env() -> MagicMock:
     env = MagicMock()
-    env.ui = mock_ui
     env.repository = MagicMock()
-    env.repository.update_metadata = AsyncMock()
-    env.repository.add_tag = AsyncMock()
-    env.repository.delete_conversation = AsyncMock(return_value=True)
-
     return env
 
 
-class TestQueryConvToDict:
-    """Tests for _conv_to_dict helper."""
+def test_execute_query_runs_async_core() -> None:
+    from polylogue.cli.query import execute_query
 
+    env = _make_env()
+    params = {"query": ("hello",)}
+
+    with (
+        patch("polylogue.cli.query._async_execute_query", new_callable=AsyncMock) as mock_async_execute,
+        patch("asyncio.run") as mock_asyncio_run,
+    ):
+        execute_query(env, params)
+
+    mock_async_execute.assert_called_once_with(env, params)
+    mock_asyncio_run.assert_called_once()
+    dispatched = mock_asyncio_run.call_args.args[0]
+    assert asyncio.iscoroutine(dispatched)
+    dispatched.close()
+
+
+<<<<<<< ours
     @pytest.mark.parametrize(
         "fields,should_include,should_exclude",
         [
@@ -430,245 +435,300 @@ class TestQueryConvToJson:
             (None, True),
         ],
         ids=["message_with_text", "message_with_none_text"],
+||||||| base
+    @pytest.mark.parametrize(
+        "fields,should_include,should_exclude",
+        [
+            (None, ["id", "provider", "title", "messages", "tags"], []),
+            ("id,provider", ["id", "provider"], ["title", "messages"]),
+            ("id, title, tags", ["id", "title", "tags"], ["provider"]),
+        ],
+        ids=["full_dict", "selected_fields", "fields_with_spaces"],
     )
-    def test_messages_with_text_handling(self, message_text, is_none):
-        """Tests JSON handling of message text including None."""
-        now = datetime(2024, 6, 15, 10, 0)
+    def test_field_selection(self, sample_conversations, fields, should_include, should_exclude):
+        """Tests _conv_to_dict field selection."""
+        conv = sample_conversations[0]
+        result = formatting._conv_to_dict(conv, fields)
+
+        for field in should_include:
+            assert field in result, f"Expected field '{field}' to be in result"
+        for field in should_exclude:
+            assert field not in result, f"Expected field '{field}' to NOT be in result"
+
+        if fields is None:
+            assert result["id"] == "conv1-abc123"
+            assert result["provider"] == "chatgpt"
+            assert result["title"] == "First Conversation"
+            assert result["messages"] == 2
+            assert result["tags"] == ["work", "important"]
+
+
+class TestFormatHelpers:
+    """Consolidated tests for format conversion helpers."""
+
+    @pytest.mark.parametrize(
+        "formatter,assertion",
+        [
+            (formatting._conv_to_markdown, lambda r: "# First Conversation" in r),
+            (formatting._conv_to_html, lambda r: "<!DOCTYPE html>" in r and "<html" in r),
+            (formatting._conv_to_obsidian, lambda r: r.startswith("---")),
+            (formatting._conv_to_org, lambda r: "#+TITLE:" in r),
+        ],
+        ids=["markdown", "html", "obsidian", "org"],
+    )
+    def test_format_structure(self, sample_conversations, formatter, assertion):
+        """Tests format conversion helpers produce expected structure."""
+        conv = sample_conversations[0]
+        result = formatter(conv)
+        assert assertion(result), f"Failed for {formatter.__name__}"
+
+    def test_markdown_includes_messages(self, sample_conversations):
+        """Markdown includes all message content."""
+        conv = sample_conversations[0]
+        result = formatting._conv_to_markdown(conv)
+        assert "Hello world" in result and "Hi there!" in result
+
+    def test_markdown_includes_provider(self, sample_conversations):
+        """Markdown includes provider info."""
+        conv = sample_conversations[0]
+        result = formatting._conv_to_markdown(conv)
+        assert "chatgpt" in result.lower()
+
+    def test_html_escapes_special_chars(self, sample_conversations):
+        """HTML properly escapes special characters."""
         conv = Conversation(
-            id="conv-with-text",
+            id="test",
             provider="test",
-            messages=[
-                Message(id="m1", role="user", text="Hello", timestamp=now),
-                Message(id="m2", role="assistant", text=message_text, timestamp=now),
-            ],
-            title="Test",
+            messages=[Message(id="m1", role="user", text="<script>alert('xss')</script>")],
         )
-        result = formatting._conv_to_json(conv, None)
+        result = formatting._conv_to_html(conv)
+        assert "<script>" not in result and "&lt;script&gt;" in result
+
+    def test_html_includes_css(self, sample_conversations):
+        """HTML includes CSS styles."""
+        conv = sample_conversations[0]
+        result = formatting._conv_to_html(conv)
+        assert "<style>" in result and "message-user" in result
+
+    def test_obsidian_includes_tags(self, sample_conversations):
+        """Obsidian format includes tags in frontmatter."""
+        conv = sample_conversations[0]
+        result = formatting._conv_to_obsidian(conv)
+        assert "tags:" in result
+
+    def test_org_uses_headings(self, sample_conversations):
+        """Org-mode uses * for headings."""
+        conv = sample_conversations[0]
+        result = formatting._conv_to_org(conv)
+        assert "* USER" in result and "* ASSISTANT" in result
+
+
+class TestQueryFormatList:
+    """Tests for _format_list helper."""
+
+    @pytest.mark.parametrize(
+        "format_type,parser,expected_type,first_id",
+        [
+            ("json", json.loads, list, "conv1-abc123"),
+            ("yaml", yaml.safe_load, list, "conv1-abc123"),
+        ],
+        ids=["json_format", "yaml_list_format"],
+    )
+    def test_format_list(self, sample_conversations, format_type, parser, expected_type, first_id):
+        """Tests _format_list with various formats."""
+        result = _format_list(sample_conversations, format_type, None)
+        parsed = parser(result)
+
+        assert isinstance(parsed, expected_type)
+        assert len(parsed) == 3
+        assert parsed[0]["id"] == first_id
+
+    def test_default_format(self, sample_conversations):
+        """Default format returns text list."""
+        result = _format_list(sample_conversations, "markdown", None)
+
+        assert "conv1-abc123" in result
+        assert "conv2-def456" in result
+        assert "First Conversation" in result
+
+
+class TestQueryFormatConversation:
+    """Tests for _format_conversation helper."""
+
+    @pytest.mark.parametrize(
+        "format_type,assertion",
+        [
+            ("json", lambda r: json.loads(r)["id"] == "conv1-abc123"),
+            ("html", lambda r: "<!DOCTYPE html>" in r),
+            ("obsidian", lambda r: r.startswith("---")),
+            ("org", lambda r: "#+TITLE:" in r),
+            ("yaml", lambda r: yaml.safe_load(r)["id"] == "conv1-abc123"),
+            ("plaintext", lambda r: "Hello world" in r and "##" not in r),
+        ],
+        ids=[
+            "json_format",
+            "html_format",
+            "obsidian_format",
+            "org_format",
+            "yaml_format",
+            "plaintext_format",
+        ],
+    )
+    def test_format_conversation(self, sample_conversations, format_type, assertion):
+        """Tests _format_conversation with various formats."""
+        conv = sample_conversations[0]
+        result = formatting.format_conversation(conv, format_type, None)
+
+        assert assertion(result), f"Failed assertion for format {format_type}"
+
+
+class TestQueryConvToJson:
+    """Tests for _conv_to_json helper."""
+
+    @pytest.mark.parametrize(
+        "fields,has_messages,expected_id",
+        [
+            (None, True, "conv1-abc123"),
+            ("id,title", False, "conv1-abc123"),
+            ("id,messages", True, "conv1-abc123"),
+        ],
+        ids=[
+            "full_json_includes_message_content",
+            "field_selection_excludes_messages",
+            "field_selection_includes_messages_when_selected",
+        ],
+    )
+    def test_json_field_selection(self, sample_conversations, fields, has_messages, expected_id):
+        """Tests _conv_to_json field selection."""
+        conv = sample_conversations[0]
+        result = formatting._conv_to_json(conv, fields)
         parsed = json.loads(result)
 
-        assert len(parsed["messages"]) == 2
-        assert parsed["messages"][0]["text"] == "Hello"
-        if is_none:
-            assert parsed["messages"][1]["text"] is None
+        assert parsed["id"] == expected_id
+        if has_messages:
+            assert isinstance(parsed["messages"], list)
+            assert len(parsed["messages"]) == 2
+            if fields is None:
+                assert parsed["messages"][0]["id"] == "m1"
+                assert parsed["messages"][0]["role"] == "user"
+                assert parsed["messages"][0]["text"] == "Hello world"
         else:
-            assert parsed["messages"][1]["text"] == message_text
+            assert "messages" not in parsed
+            assert "provider" not in parsed
 
-    def test_timestamps_are_iso_formatted(self, sample_conversations):
-        """Timestamps are ISO formatted in JSON."""
-        conv = sample_conversations[0]
-        result = formatting._conv_to_json(conv, None)
-        parsed = json.loads(result)
-
-        ts = parsed["messages"][0]["timestamp"]
-        assert ts == "2024-06-15T10:00:00"
-        assert "T" in ts  # ISO format marker
-
-    def test_messages_with_none_timestamp(self):
-        """Messages with None timestamp are handled correctly."""
-        conv = Conversation(
-            id="conv-no-timestamp",
-            provider="test",
-            messages=[
-                Message(id="m1", role="user", text="Hello", timestamp=None),
-            ],
-            title="Test",
-        )
-        result = formatting._conv_to_json(conv, None)
-        parsed = json.loads(result)
-
-        assert parsed["messages"][0]["timestamp"] is None
-
-    def test_multiple_messages_with_full_content(self, sample_conversations):
-        """Multiple messages all included with full content."""
-        conv = sample_conversations[1]  # Has 3 messages
-        result = formatting._conv_to_json(conv, None)
-        parsed = json.loads(result)
-
-        assert len(parsed["messages"]) == 3
-        assert parsed["messages"][0]["text"] == "What is Python?"
-        assert parsed["messages"][1]["text"] == "Python is a programming language."
-        assert parsed["messages"][2]["text"] == "It's great for scripting."
-
-    def test_field_selection_with_spaces(self, sample_conversations):
-        """Field selection handles spaces in field list."""
-        conv = sample_conversations[0]
-        result = formatting._conv_to_json(conv, "id, title, messages")
-        parsed = json.loads(result)
-
-        assert "id" in parsed
-        assert "title" in parsed
-        assert "messages" in parsed
-        assert "provider" not in parsed
-
-    def test_json_is_valid_and_parseable(self, sample_conversations):
-        """Generated JSON is valid and parseable."""
-        conv = sample_conversations[0]
-        result = formatting._conv_to_json(conv, None)
-
-        # Should not raise
-        parsed = json.loads(result)
-        assert isinstance(parsed, dict)
-        assert "id" in parsed
-
-
-class TestQueryConvToCsv:
-    """Tests for _conv_to_csv_messages helper."""
-
-    def test_csv_header_row_is_correct(self, sample_conversations):
-        """CSV header row contains correct columns."""
-        conv = sample_conversations[0]
-        result = formatting._conv_to_csv_messages(conv)
-        lines = result.strip().split("\n")
-
-        assert lines[0].rstrip() == "conversation_id,message_id,role,timestamp,text"
-
-    def test_messages_with_text_produce_csv_rows(self, sample_conversations):
-        """Messages with text produce CSV rows."""
-        conv = sample_conversations[0]
-        result = formatting._conv_to_csv_messages(conv)
-        lines = result.strip().split("\n")
-
-        # Header + 2 messages
-        assert len(lines) == 3
-        assert "Hello world" in lines[1]
-        assert "Hi there!" in lines[2]
-
-    def test_messages_with_none_text_are_skipped(self):
-        """Messages with None/empty text are skipped."""
-        now = datetime(2024, 6, 15, 10, 0)
-        conv = Conversation(
-            id="conv-with-none",
-            provider="test",
-            messages=[
-                Message(id="m1", role="user", text="Hello", timestamp=now),
-                Message(id="m2", role="assistant", text=None, timestamp=now),
-                Message(id="m3", role="user", text="", timestamp=now),
-                Message(id="m4", role="assistant", text="Final", timestamp=now),
-            ],
-            title="Test",
-        )
-        result = formatting._conv_to_csv_messages(conv)
-        lines = result.strip().split("\n")
-
-        # Header + 2 messages (m1 and m4)
-        assert len(lines) == 3
-        assert "Hello" in lines[1]
-        assert "Final" in lines[2]
-
-    def test_special_chars_escaped_in_csv(self):
-        """Special characters (commas, quotes, newlines) are properly escaped."""
-        now = datetime(2024, 6, 15, 10, 0)
-        conv = Conversation(
-            id="conv-special",
-            provider="test",
-            messages=[
-                Message(
-                    id="m1",
-                    role="user",
-                    text='He said "hello, world"',
-                    timestamp=now,
-                ),
-                Message(
-                    id="m2",
-                    role="assistant",
-                    text="Line 1\nLine 2",
-                    timestamp=now,
-                ),
-            ],
-            title="Test",
-        )
-        result = formatting._conv_to_csv_messages(conv)
-        lines = result.split("\n")
-
-        # CSV writer should escape quotes and handle special chars
-        assert len(lines) >= 2
-        # Check that quotes are properly escaped (CSV format)
-        assert '"hello' in result or 'hello' in result
-
-    def test_empty_conversation_produces_header_only(self):
-        """Empty conversation produces just the header."""
+    def test_empty_conversation_produces_valid_json(self):
+        """Empty conversation produces valid JSON with empty messages array."""
         conv = Conversation(
             id="empty-conv",
             provider="test",
             messages=[],
             title="Empty",
         )
-        result = formatting._conv_to_csv_messages(conv)
-        lines = result.split("\n")
+        result = formatting._conv_to_json(conv, None)
+        parsed = json.loads(result)
 
-        # Should have exactly 1 line (header)
-        assert len(lines) == 1
-        assert lines[0] == "conversation_id,message_id,role,timestamp,text"
+        assert parsed["id"] == "empty-conv"
+        assert parsed["messages"] == []
 
-    def test_csv_has_correct_column_order(self, sample_conversations):
-        """CSV columns appear in correct order."""
-        conv = sample_conversations[0]
-        result = formatting._conv_to_csv_messages(conv)
-        lines = result.strip().split("\n")
+    @pytest.mark.parametrize(
+        "message_text,is_none",
+        [
+            ("Hello", False),
+            (None, True),
+        ],
+        ids=["message_with_text", "message_with_none_text"],
+=======
+@pytest.mark.parametrize("exc_type", [ValueError, ImportError])
+def test_create_query_vector_provider_swallows_expected_setup_errors(exc_type: type[Exception]) -> None:
+    from polylogue.cli.query import _create_query_vector_provider
 
-        # Parse first data row
-        reader = csv.reader([lines[1]])
-        parts = next(iter(reader))
+    with patch(
+        "polylogue.storage.search_providers.create_vector_provider",
+        side_effect=exc_type("vector unavailable"),
+    ):
+        assert _create_query_vector_provider(MagicMock()) is None
 
-        assert parts[0] == "conv1-abc123"  # conversation_id
-        assert parts[1] == "m1"  # message_id
-        assert parts[2] == "user"  # role
-        assert "2024-06-15" in parts[3]  # timestamp
-        assert parts[4] == "Hello world"  # text
 
-    def test_timestamps_iso_formatted_in_csv(self, sample_conversations):
-        """Timestamps are ISO formatted in CSV."""
-        conv = sample_conversations[0]
-        result = formatting._conv_to_csv_messages(conv)
+def test_create_query_vector_provider_logs_unexpected_failure() -> None:
+    from polylogue.cli.query import _create_query_vector_provider
 
-        reader = csv.reader(io.StringIO(result))
-        next(reader)  # Skip header
-        row = next(reader)
-        timestamp = row[3]
+    with (
+        patch(
+            "polylogue.storage.search_providers.create_vector_provider",
+            side_effect=RuntimeError("boom"),
+        ),
+        patch("polylogue.cli.query.logger.warning") as mock_warning,
+    ):
+        assert _create_query_vector_provider(MagicMock()) is None
 
-        assert timestamp == "2024-06-15T10:00:00"
+    mock_warning.assert_called_once()
+    assert mock_warning.call_args.args[0] == "Vector search setup failed: %s"
 
-    def test_messages_without_timestamp(self):
-        """Messages without timestamp show empty string."""
-        conv = Conversation(
-            id="conv-no-ts",
-            provider="test",
-            messages=[
-                Message(id="m1", role="user", text="Hello", timestamp=None),
-            ],
-            title="Test",
-        )
-        result = formatting._conv_to_csv_messages(conv)
 
-        reader = csv.reader(io.StringIO(result))
-        next(reader)  # Skip header
-        row = next(reader)
-        timestamp = row[3]
+def test_async_execute_query_fails_on_config_error() -> None:
+    from polylogue.cli.query import _async_execute_query
 
-        assert timestamp == ""
+    env = _make_env()
 
-    def test_multiple_messages_all_in_csv(self, sample_conversations):
-        """Multiple messages all appear in CSV output."""
-        conv = sample_conversations[1]  # Has 3 messages
-        result = formatting._conv_to_csv_messages(conv)
-        lines = result.strip().split("\n")
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", side_effect=ConfigError("bad config")),
+        patch("polylogue.cli.helpers.fail", side_effect=SystemExit("query: bad config")) as mock_fail,
+        pytest.raises(SystemExit, match="query: bad config"),
+    ):
+        asyncio.run(_async_execute_query(env, {}))
 
-        # Header + 3 messages
-        assert len(lines) == 4
-        assert "What is Python?" in lines[1]
-        assert "Python is a programming language." in lines[2]
-        assert "It's great for scripting." in lines[3]
+    mock_fail.assert_called_once_with("query", "bad config")
 
-    def test_output_is_valid_csv(self, sample_conversations):
-        """Output is valid CSV that can be parsed."""
-        conv = sample_conversations[0]
-        result = formatting._conv_to_csv_messages(conv)
 
-        # Should not raise
-        reader = csv.reader(io.StringIO(result))
-        rows = list(reader)
+def test_async_execute_query_reports_query_plan_error() -> None:
+    from polylogue.cli.query import _async_execute_query
+    from polylogue.cli.query_plan import QueryPlanError
 
-        assert len(rows) == 3  # Header + 2 messages
-        assert rows[0] == ["conversation_id", "message_id", "role", "timestamp", "text"]
-        assert len(rows[1]) == 5  # 5 columns
-        assert len(rows[2]) == 5
+    env = _make_env()
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.query._create_query_vector_provider", return_value=None),
+        patch(
+            "polylogue.cli.query.build_query_execution_plan",
+            side_effect=QueryPlanError("bad query plan"),
+        ),
+        patch("click.echo") as mock_echo,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        asyncio.run(_async_execute_query(env, {}))
+
+    assert exc_info.value.code == 1
+    mock_echo.assert_called_once_with("Error: bad query plan", err=True)
+
+
+def test_async_execute_query_passes_vector_provider_into_filter_build() -> None:
+    from polylogue.cli.query import _async_execute_query
+    from polylogue.cli.query_plan import QueryAction, QueryExecutionPlan, QueryMutationSpec, QueryOutputSpec
+    from polylogue.lib.query_spec import ConversationQuerySpec
+
+    env = _make_env()
+    filter_chain = MagicMock()
+    filter_chain.can_use_summaries.return_value = False
+    filter_chain.list = AsyncMock(return_value=[])
+    selection = MagicMock(spec=ConversationQuerySpec)
+    selection.build_filter.return_value = filter_chain
+    vector_provider = object()
+    plan = QueryExecutionPlan(
+        selection=selection,
+        action=QueryAction.SHOW,
+        output=QueryOutputSpec("markdown", ("stdout",), None, False, None, False),
+        mutation=QueryMutationSpec((), (), False, False, False),
+>>>>>>> theirs
+    )
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.cli.query._create_query_vector_provider", return_value=vector_provider),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("polylogue.cli.query_output._output_results") as mock_output_results,
+    ):
+        asyncio.run(_async_execute_query(env, {}))
+
+    selection.build_filter.assert_called_once_with(env.repository, vector_provider=vector_provider)
+    mock_output_results.assert_called_once_with(env, [], {})
