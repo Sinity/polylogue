@@ -1,9 +1,19 @@
+"""Claude importer using typed Pydantic models.
+
+Uses ClaudeCodeRecord from polylogue.sources.providers.claude_code for type-safe parsing
+with automatic validation and normalized property access.
+"""
+
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from pydantic import ValidationError
+
+from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
 from .base import ParsedAttachment, ParsedConversation, ParsedMessage, attachment_from_meta, normalize_role
 
@@ -25,7 +35,7 @@ class SessionIndexEntry:
     file_mtime: int | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SessionIndexEntry":
+    def from_dict(cls, data: dict[str, Any]) -> SessionIndexEntry:
         return cls(
             session_id=data.get("sessionId", ""),
             full_path=data.get("fullPath", ""),
@@ -182,7 +192,11 @@ def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[li
         if not isinstance(item, dict):
             continue
         message_id = str(item.get("uuid") or item.get("id") or item.get("message_id") or f"msg-{idx}")
-        role = normalize_role(item.get("sender") or item.get("role"))
+        # Role is required - skip messages without one
+        raw_role = item.get("sender") or item.get("role")
+        if not raw_role:
+            continue
+        role = normalize_role(raw_role)
 
         raw_ts = item.get("created_at") or item.get("create_time") or item.get("timestamp")
         timestamp = normalize_timestamp(raw_ts)
@@ -503,15 +517,20 @@ def extract_git_operations(tool_invocations: list[dict[str, Any]]) -> list[dict[
 
 
 def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
-    """Parse claude-code JSONL format (list of message objects).
+    """Parse claude-code JSONL format using typed ClaudeCodeRecord model.
 
     Extracts semantic data including:
-    - Thinking traces (with token counts)
-    - Tool invocations (with derived semantics)
+    - Thinking traces (via ClaudeCodeRecord.extract_reasoning_traces())
+    - Tool invocations (via ClaudeCodeRecord.extract_tool_calls())
     - Git operations (from Bash commands)
     - File changes (from Read/Write/Edit)
     - Subagent spawns (from Task tool)
     - Context compaction events
+
+    The ClaudeCodeRecord model handles format normalization via properties:
+    - role: Normalized role (user/assistant/system/unknown)
+    - text_content: Extracted plain text from message
+    - content_blocks_raw: Raw content blocks for semantic extraction
     """
     messages: list[ParsedMessage] = []
     timestamps: list[str] = []
@@ -522,67 +541,58 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         if not isinstance(item, dict):
             continue
 
-        msg_type = item.get("type")
-
-        # Detect context compaction events
+        # Detect context compaction events first (before validation)
         compaction = detect_context_compaction(item)
         if compaction:
             context_compactions.append(compaction)
             continue
 
+        # Parse using typed model
+        try:
+            record = ClaudeCodeRecord.model_validate(item)
+        except ValidationError:
+            # Skip invalid records
+            continue
+
         # Skip init messages
-        if msg_type == "init":
+        if record.type == "init":
             continue
 
         # Extract session ID for conversation grouping
         if not session_id:
-            session_id = item.get("sessionId") or item.get("session_id")
+            session_id = record.sessionId
 
-        # Get message UUID
-        msg_id = str(item.get("uuid") or item.get("id") or f"msg-{idx}")
-
-        # Map type to role
-        if msg_type in ("user", "human"):
-            role = "user"
-        elif msg_type == "assistant":
-            role = "assistant"
-        else:
-            role = msg_type or "unknown"
+        # Get message UUID and role from typed model
+        msg_id = str(record.uuid or f"msg-{idx}")
+        role = record.role  # Uses typed property: user/assistant/system/unknown
 
         # Get timestamp
-        raw_ts = item.get("timestamp")
-        timestamp = normalize_timestamp(raw_ts)
+        timestamp = normalize_timestamp(record.timestamp)
         if timestamp:
             timestamps.append(timestamp)
 
-        # Extract text from nested message.content structure
-        msg_obj = item.get("message", {})
-        text = None
-        content_list = None
-        if isinstance(msg_obj, dict):
-            content_raw = msg_obj.get("content")
-            text = _extract_message_text(content_raw)
-            # Preserve content list for structured block extraction
-            if isinstance(content_raw, list):
-                content_list = content_raw
-        elif isinstance(msg_obj, str):
-            text = msg_obj
+        # Extract text using typed property
+        text = record.text_content or _extract_message_text(
+            record.message.get("content") if isinstance(record.message, dict) else None
+        )
 
-        # Build provider_meta with useful fields
+        # Build provider_meta with useful fields from typed record
         meta: dict[str, object] = {"raw": item}
-        if item.get("costUSD"):
-            meta["costUSD"] = item.get("costUSD")
-        if item.get("durationMs"):
-            meta["durationMs"] = item.get("durationMs")
-        if item.get("isSidechain"):
+        if record.costUSD:
+            meta["costUSD"] = record.costUSD
+        if record.durationMs:
+            meta["durationMs"] = record.durationMs
+        if record.isSidechain:
             meta["isSidechain"] = True
-        if item.get("isMeta"):
+        if record.isMeta:
             meta["isMeta"] = True
 
-        # Extract structured content blocks for semantic detection
-        if content_list:
+        # Extract content blocks using typed model
+        content_blocks_raw = record.content_blocks_raw
+        if content_blocks_raw:
+            # Build serializable content blocks for storage
             content_blocks = []
-            for seg in content_list:
+            for seg in content_blocks_raw:
                 if isinstance(seg, dict):
                     block_type = seg.get("type")
                     if block_type == "thinking":
@@ -608,7 +618,6 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
                             "text": seg.get("text"),
                         })
                     else:
-                        # For text field without explicit type
                         text_content = seg.get("text") or seg.get("content")
                         if text_content:
                             content_blocks.append({
@@ -620,6 +629,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
                         "type": "text",
                         "text": seg,
                     })
+
             if content_blocks:
                 meta["content_blocks"] = content_blocks
 
@@ -652,6 +662,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
                 text=text,
                 timestamp=timestamp,
                 provider_meta=meta,
+                parent_message_provider_id=record.parentUuid,
             )
         )
 
@@ -684,6 +695,13 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     if total_duration > 0:
         conv_meta["total_duration_ms"] = total_duration
 
+    # Detect if any message has isSidechain flag
+    has_sidechain = any(
+        m.provider_meta and m.provider_meta.get("isSidechain")
+        for m in messages
+    )
+    branch_type = "sidechain" if has_sidechain else None
+
     return ParsedConversation(
         provider_name="claude-code",
         provider_conversation_id=str(conv_id),
@@ -692,6 +710,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         updated_at=updated_at,
         messages=messages,
         provider_meta=conv_meta if conv_meta else None,
+        branch_type=branch_type,
     )
 
 

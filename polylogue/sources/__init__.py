@@ -1,9 +1,10 @@
-"""Ingestion package for Polylogue.
+"""Sources package — unified ingestion from all AI providers.
 
-This package handles all data ingestion operations including:
-- Local file ingestion (JSON, JSONL, ZIP)
-- Google Drive integration
-- Provider detection and parsing
+Merges the former importers/, ingestion/, and providers/ packages.
+- sources/parsers/: JSON → ParsedConversation for each provider
+- sources/providers/: Pydantic models for provider export formats
+- sources/source.py: File/Drive reading → IngestBundle
+- sources/drive*.py: Google Drive integration
 """
 
 from __future__ import annotations
@@ -27,8 +28,10 @@ from .source import (
     ParsedAttachment,
     ParsedConversation,
     ParsedMessage,
+    RawConversationData,
     ingest_bundle,
     iter_source_conversations,
+    iter_source_conversations_with_raw,
     parse_drive_payload,
 )
 
@@ -41,7 +44,9 @@ __all__ = [
     "ParsedAttachment",
     "ParsedConversation",
     "ParsedMessage",
+    "RawConversationData",
     "iter_source_conversations",
+    "iter_source_conversations_with_raw",
     "parse_drive_payload",
     # Drive integration
     "DriveDownloadResult",
