@@ -293,7 +293,6 @@ def extract_messages_from_list(items: list[object]) -> list[ParsedMessage]:
                     role=role,
                     text=text,
                     timestamp=str(timestamp) if timestamp is not None else None,
-                    provider_meta={"raw": item},
                 )
             )
     return messages

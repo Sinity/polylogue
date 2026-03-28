@@ -124,10 +124,11 @@ class TestMessageNoneGuardProperties:
     @given(msg=sparse_message())
     @settings(max_examples=200)
     def test_word_count_never_crashes(self, msg: Message):
-        """word_count must return int >= 0, even with None text."""
+        """word_count must return int matching len(text.split()), even with None text."""
         result = msg.word_count
         assert isinstance(result, int)
-        assert result >= 0
+        expected = len(msg.text.split()) if msg.text else 0
+        assert result == expected
 
     @given(msg=sparse_message())
     @settings(max_examples=200)
@@ -206,10 +207,10 @@ class TestConversationNoneGuardProperties:
     @given(conv=sparse_conversation())
     @settings(max_examples=100, suppress_health_check=[HealthCheck.filter_too_much, HealthCheck.too_slow])
     def test_len_messages_never_crashes(self, conv: Conversation):
-        """len(messages) must not crash even with sparse messages."""
+        """len(messages) matches the count of message objects in the conversation."""
         result = len(conv.messages)
         assert isinstance(result, int)
-        assert result >= 0
+        assert result == sum(1 for _ in conv.messages)
 
     @given(conv=sparse_conversation())
     @settings(max_examples=100, suppress_health_check=[HealthCheck.filter_too_much, HealthCheck.too_slow])
