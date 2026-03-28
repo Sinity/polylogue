@@ -16,8 +16,9 @@ from polylogue.storage.store import (
     MAX_ATTACHMENT_SIZE,
     AttachmentRecord,
     ConversationRecord,
+    _json_or_none,
 )
-from tests.infra.helpers import (
+from tests.infra.storage_records import (
     _make_ref_id,
     _prune_attachment_refs,
     make_attachment,
@@ -276,6 +277,45 @@ def test_upsert_attachment_duplicate_ref_skipped(test_conn):
     assert row["ref_count"] == 1
 
 
+@pytest.mark.parametrize(
+    ("input_val", "expected"),
+    [
+        ({"key": "value"}, {"key": "value"}),
+        ({"nested": {"key": "value"}, "list": [1, 2, 3]}, {"nested": {"key": "value"}, "list": [1, 2, 3]}),
+        (None, None),
+    ],
+    ids=["dict", "nested", "none"],
+)
+def test_json_or_none_contract(input_val, expected):
+    """_json_or_none() must return JSON text for mappings and None for absent values."""
+    result = _json_or_none(input_val)
+    if expected is None:
+        assert result is None
+    else:
+        assert isinstance(result, str)
+        import json
+
+        assert json.loads(result) == expected
+
+
+def test_make_ref_id_contract():
+    """_make_ref_id() must be deterministic, distinct across inputs, and stable for None message IDs."""
+    same_1 = _make_ref_id("att1", "conv1", "msg1")
+    same_2 = _make_ref_id("att1", "conv1", "msg1")
+    different_attachment = _make_ref_id("att2", "conv1", "msg1")
+    different_conversation = _make_ref_id("att1", "conv2", "msg1")
+    none_message_1 = _make_ref_id("att1", "conv1", None)
+    none_message_2 = _make_ref_id("att1", "conv1", None)
+
+    assert same_1 == same_2
+    assert same_1 != different_attachment
+    assert same_1 != different_conversation
+    assert none_message_1 == none_message_2
+    assert none_message_1 != same_1
+    assert same_1.startswith("ref-")
+    assert len(same_1) == len("ref-") + 16
+
+
 @pytest.mark.slow
 def test_write_lock_prevents_concurrent_writes(test_db):
     """_WRITE_LOCK prevents concurrent store_records() calls from corrupting data."""
@@ -353,6 +393,34 @@ def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeyp
     with open_connection(default_path) as conn:
         row = conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
         assert row is not None
+
+
+def test_store_records_handles_empty_messages_and_attachments(test_conn):
+    """store_records() must support conversation-only inserts without synthetic child rows."""
+    conv = make_conversation("conv-empty", title="Empty Conversation")
+
+    counts = store_records(conversation=conv, messages=[], attachments=[], conn=test_conn)
+
+    assert counts["conversations"] == 1
+    assert counts["messages"] == 0
+    assert counts["attachments"] == 0
+
+    row = test_conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv-empty",)).fetchone()
+    assert row is not None
+
+
+def test_store_records_supports_attachment_without_message_id(test_conn):
+    """Attachments without message IDs must still be persisted with a single ref."""
+    conv = make_conversation("conv-attachment", title="Attachment Only")
+    att = make_attachment("att-1", "conv-attachment", message_id=None, mime_type="application/pdf", size_bytes=5000)
+
+    counts = store_records(conversation=conv, messages=[], attachments=[att], conn=test_conn)
+
+    assert counts["attachments"] == 1
+
+    row = test_conn.execute("SELECT * FROM attachments WHERE attachment_id = ?", ("att-1",)).fetchone()
+    assert row is not None
+    assert row["ref_count"] == 1
 
 
 def test_upsert_attachment_updates_existing_metadata(test_conn):
