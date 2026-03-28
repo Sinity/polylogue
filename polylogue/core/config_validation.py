@@ -23,6 +23,46 @@ class OutputDirsModel(BaseModel):
         return data
 
 
+class DriveModel(BaseModel):
+    credentials_path: Optional[str] = None
+    token_path: Optional[str] = None
+    retries: Optional[int] = Field(default=None, ge=1)
+    retry_base: Optional[float] = Field(default=None, ge=0)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class QdrantModel(BaseModel):
+    url: Optional[str] = None
+    api_key: Optional[str] = None
+    collection: Optional[str] = None
+    vector_size: Optional[int] = Field(default=None, ge=1)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class IndexModel(BaseModel):
+    backend: Optional[str] = None
+    qdrant: Optional[QdrantModel] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def ensure_backend(cls, values: "IndexModel") -> "IndexModel":
+        backend = (values.backend or "sqlite").strip().lower()
+        if backend not in {"sqlite", "qdrant", "none"}:
+            raise ValueError("index.backend must be sqlite, qdrant, or none")
+        values.backend = backend
+        return values
+
+
+class ExportsModel(BaseModel):
+    chatgpt: Optional[str] = None
+    claude: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class DefaultsModel(BaseModel):
     collapse_threshold: Optional[int] = Field(default=None, ge=1)
     html_previews: Optional[bool] = None
@@ -33,6 +73,9 @@ class DefaultsModel(BaseModel):
 
 
 class ConfigModel(BaseModel):
+    drive: Optional[DriveModel] = None
+    index: Optional[IndexModel] = None
+    exports: Optional[ExportsModel] = None
     defaults: Optional[DefaultsModel] = None
 
     model_config = ConfigDict(extra="forbid")

@@ -22,14 +22,31 @@ from .paths import DATA_HOME
 from .persistence.state import ConversationStateRepository
 
 
-CODEX_SESSIONS_ROOT = Path(
-    os.environ.get("POLYLOGUE_CODEX_SESSIONS", str(DATA_HOME / "codex" / "sessions"))
-).expanduser()
+def _resolve_path(env_var: str, home_default: Path, xdg_default: Path) -> Path:
+    env_value = os.environ.get(env_var)
+    if env_value:
+        return Path(env_value).expanduser()
+    if home_default.exists():
+        return home_default
+    return xdg_default
 
 
-CLAUDE_CODE_PROJECT_ROOT = Path(
-    os.environ.get("POLYLOGUE_CLAUDE_CODE_PROJECTS", str(DATA_HOME / "claude" / "projects"))
-).expanduser()
+DEFAULT_CODEX_HOME = Path.home() / ".codex" / "sessions"
+DEFAULT_CLAUDE_CODE_HOME = Path.home() / ".claude" / "projects"
+
+
+CODEX_SESSIONS_ROOT = _resolve_path(
+    "POLYLOGUE_CODEX_SESSIONS",
+    DEFAULT_CODEX_HOME,
+    DATA_HOME / "codex" / "sessions",
+)
+
+
+CLAUDE_CODE_PROJECT_ROOT = _resolve_path(
+    "POLYLOGUE_CLAUDE_CODE_PROJECTS",
+    DEFAULT_CLAUDE_CODE_HOME,
+    DATA_HOME / "claude" / "projects",
+)
 
 
 def colorize(text: str, color: str) -> str:
