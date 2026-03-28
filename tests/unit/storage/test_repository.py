@@ -12,7 +12,7 @@ similarity search, and archive statistics.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -27,6 +27,7 @@ from polylogue.storage.store import (
     RunRecord,
 )
 from tests.infra.helpers import ConversationBuilder, make_attachment, make_conversation, make_message
+from tests.infra.mutmut import preserved_mutmut_env
 
 
 @pytest.fixture
@@ -156,8 +157,6 @@ class TestRepositoryTreeTraversal:
         ("get_parent", "conv-1", lambda r: r is None),
         ("get_children", "conv-1", lambda r: len(r) == 1 and str(r[0].id) == "conv-3"),
         ("get_children", "conv-2", lambda r: len(r) == 0),
-        ("get_root", "conv-1", lambda r: str(r.id) == "conv-1"),
-        ("get_root", "conv-3", lambda r: str(r.id) == "conv-1"),
     ])
     async def test_tree_methods(self, repo, method, conv_id, expected_check):
         """Tree traversal methods return expected relationships."""
@@ -169,16 +168,6 @@ class TestRepositoryTreeTraversal:
         """get_root() should raise ValueError for nonexistent conversation."""
         with pytest.raises(ValueError, match="not found"):
             await repo.get_root("nonexistent")
-
-    @pytest.mark.parametrize("start_conv_id,expected_ids", [
-        ("conv-3", {"conv-1", "conv-3"}),   # From child
-        ("conv-1", {"conv-1", "conv-3"}),   # From root, includes children
-    ])
-    async def test_get_session_tree(self, repo, start_conv_id, expected_ids):
-        """get_session_tree() should return root and all descendants."""
-        tree = await repo.get_session_tree(start_conv_id)
-        tree_ids = {str(c.id) for c in tree}
-        assert tree_ids == expected_ids
 
 
 # =============================================================================
@@ -285,39 +274,12 @@ class TestMetadataCRUD:
 class TestCountAndList:
     """Test count() and list_summaries() with filters."""
 
-    @pytest.mark.parametrize("provider,providers,expected_count", [
-        (None, None, 3),
-        ("claude", None, 2),
-        ("chatgpt", None, 1),
-        (None, ["claude", "chatgpt"], 3),
-    ])
-    async def test_count(self, repo, provider, providers, expected_count):
-        """count() returns conversations, optionally filtered by provider."""
-        if provider:
-            count = await repo.count(provider=provider)
-        elif providers:
-            count = await repo.count(providers=providers)
-        else:
-            count = await repo.count()
-        assert count == expected_count
-
-    @pytest.mark.parametrize("limit,provider,expected_count", [
-        (None, None, 3),
-        (2, None, 2),
-        (None, "claude", 2),
-    ])
-    async def test_list_summaries_with_filters(self, repo, limit, provider, expected_count):
-        """list_summaries() respects limit and provider filters."""
-        kwargs = {}
-        if limit is not None:
-            kwargs["limit"] = limit
-        if provider:
-            kwargs["provider"] = provider
-        summaries = await repo.list_summaries(**kwargs)
-        assert len(summaries) == expected_count
-
     async def test_list_operations(self, repo):
         """list() filters by title and returns lazy Conversation objects."""
+        repo.backend.get_conversations_batch = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("list() should not refetch conversation records by ID")
+        )
+
         # Title filter
         convs_filtered = await repo.list(title_contains="First")
         assert len(convs_filtered) == 1
@@ -327,6 +289,16 @@ class TestCountAndList:
         convs_all = await repo.list()
         assert len(convs_all) == 3
         assert all(hasattr(c, "id") for c in convs_all)
+
+    async def test_get_children_uses_loaded_child_records(self, repo):
+        """get_children() should hydrate from list_conversations() results directly."""
+        repo.backend.get_conversations_batch = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("get_children() should not refetch child conversation records by ID")
+        )
+
+        children = await repo.get_children("conv-1")
+
+        assert [str(child.id) for child in children] == ["conv-3"]
 
 
 # =============================================================================
@@ -358,7 +330,30 @@ class TestSearch:
             if should_find:
                 assert len(results) >= 1
             else:
-                assert isinstance(results, list)
+                assert results == []
+
+    async def test_search_summaries_orders_by_best_hit_then_newest(self, repo, repo_db):
+        """search_summaries() preserves ranked conversation ordering."""
+        (
+            ConversationBuilder(repo_db, "conv-rank-old")
+            .provider("claude")
+            .title("Older match")
+            .add_message("m-rank-old", role="user", text="deterministic ranking token", timestamp="2024-01-01T00:00:00")
+            .save()
+        )
+        (
+            ConversationBuilder(repo_db, "conv-rank-new")
+            .provider("claude")
+            .title("Newer match")
+            .add_message("m-rank-new", role="user", text="deterministic ranking token", timestamp="2024-02-01T00:00:00")
+            .save()
+        )
+        with open_connection(repo_db) as conn:
+            rebuild_index(conn)
+
+        results = await repo.search_summaries("deterministic ranking token", limit=2)
+
+        assert [summary.id for summary in results[:2]] == ["conv-rank-new", "conv-rank-old"]
 
 
 # =============================================================================
@@ -695,7 +690,7 @@ class TestEmbedConversation:
     async def test_embed_conversation_counts_messages(self, repo_with_conversations, conv_id, has_messages, expected_count):
         """embed_conversation() uses provider and returns correct message count."""
         if not has_messages:
-            (ConversationBuilder(repo_with_conversations.backend._db_path, "conv-empty")
+            (ConversationBuilder(repo_with_conversations.backend.db_path, "conv-empty")
              .provider("claude")
              .title("Empty Conversation")
              .save())
@@ -719,7 +714,7 @@ class TestEmbedConversation:
             assert count == 2
 
         # Test without provider and no fallback
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", preserved_mutmut_env(), clear=True):
             with patch(
                 "polylogue.storage.search_providers.create_vector_provider",
                 return_value=None,

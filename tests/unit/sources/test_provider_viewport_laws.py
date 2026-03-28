@@ -1,0 +1,125 @@
+"""Law-based contracts for provider viewport adapters."""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from hypothesis import assume, given, settings
+
+from polylogue.lib.viewports import ContentType
+from polylogue.schemas.unified import (
+    extract_content_blocks,
+    extract_reasoning_traces,
+    extract_tool_calls,
+)
+from polylogue.sources.providers.chatgpt import ChatGPTMessage
+from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage
+from polylogue.sources.providers.claude_code import ClaudeCodeRecord
+from polylogue.sources.providers.codex import CodexRecord
+from polylogue.sources.providers.gemini import GeminiMessage
+from tests.infra.strategies import (
+    chatgpt_message_node_strategy,
+    claude_ai_message_strategy,
+    claude_code_message_strategy,
+    codex_message_strategy,
+    gemini_message_strategy,
+)
+
+_CANONICAL_ROLES = {"user", "assistant", "system", "tool", "unknown"}
+
+
+@given(claude_ai_message_strategy())
+@settings(max_examples=40, deadline=None)
+def test_claude_ai_message_viewports_preserve_text_and_role(raw: dict[str, object]) -> None:
+    message = ClaudeAIChatMessage.model_validate(raw)
+    meta = message.to_meta()
+    blocks = message.to_content_blocks()
+
+    assert message.role_normalized in _CANONICAL_ROLES
+    assert meta.role == message.role_normalized
+    assert meta.provider == "claude-ai"
+    assert len(blocks) == 1
+    assert blocks[0].type == ContentType.TEXT
+    assert blocks[0].text == message.text
+    assert message.parsed_timestamp is None or isinstance(message.parsed_timestamp, datetime)
+
+
+@given(chatgpt_message_node_strategy())
+@settings(max_examples=40, deadline=None)
+def test_chatgpt_message_viewports_are_self_consistent(node: dict[str, object]) -> None:
+    raw_message = node.get("message")
+    assume(isinstance(raw_message, dict))
+    message = ChatGPTMessage.model_validate(raw_message)
+
+    meta = message.to_meta()
+    blocks = message.extract_content_blocks()
+
+    assert meta.role == message.role_normalized
+    assert meta.provider == "chatgpt"
+    assert message.role_normalized in _CANONICAL_ROLES
+    assert blocks == message.to_content_blocks()
+    assert all(block.raw for block in blocks)
+
+
+@given(claude_code_message_strategy())
+@settings(max_examples=40, deadline=None)
+def test_claude_code_record_viewports_match_unified_extractors(raw: dict[str, object]) -> None:
+    record = ClaudeCodeRecord.model_validate(raw)
+    meta = record.to_meta()
+
+    assert meta.provider == "claude-code"
+    assert meta.role == record.role
+    assert record.parsed_timestamp is None or isinstance(record.parsed_timestamp, datetime)
+    assert record.extract_content_blocks() == extract_content_blocks(record.content_blocks_raw)
+    assert record.extract_reasoning_traces() == extract_reasoning_traces(record.content_blocks_raw, "claude-code")
+    assert record.extract_tool_calls() == extract_tool_calls(record.content_blocks_raw, "claude-code")
+
+
+@given(codex_message_strategy())
+@settings(max_examples=40, deadline=None)
+def test_codex_record_meta_and_block_classification_are_consistent(raw: dict[str, object]) -> None:
+    record = CodexRecord.model_validate(raw)
+    meta = record.to_meta()
+    blocks = record.extract_content_blocks()
+
+    assert meta.provider == "codex"
+    assert meta.role == record.role_normalized
+    assert record.role_normalized in _CANONICAL_ROLES
+    assert len(blocks) == len(record.effective_content)
+
+    expected_types = []
+    for block in record.effective_content:
+        block_type = block.get("type", "")
+        if block_type in {"input_text", "output_text", "text"}:
+            expected_types.append(ContentType.TEXT)
+        elif "code" in block_type:
+            expected_types.append(ContentType.CODE)
+        else:
+            expected_types.append(ContentType.UNKNOWN)
+    assert [block.type for block in blocks] == expected_types
+
+
+@given(gemini_message_strategy())
+@settings(max_examples=40, deadline=None)
+def test_gemini_message_viewports_are_consistent(raw: dict[str, object]) -> None:
+    message = GeminiMessage.model_validate(raw)
+    meta = message.to_meta()
+    blocks = message.extract_content_blocks()
+    traces = message.extract_reasoning_traces()
+
+    assert meta.provider == "gemini"
+    assert meta.role == message.role_normalized
+    assert message.role_normalized in _CANONICAL_ROLES
+    if message.tokenCount is None:
+        assert meta.tokens is None
+    else:
+        assert meta.tokens is not None
+        assert meta.tokens.output_tokens == message.tokenCount
+
+    if message.isThought and message.text:
+        assert traces
+        assert blocks
+        assert blocks[0].type == ContentType.THINKING
+        assert traces[0].text == message.text
+    else:
+        assert not traces

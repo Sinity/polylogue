@@ -1355,15 +1355,28 @@ class SQLiteBackend:
             True if deleted, False if not found
         """
         async with self.transaction(), self._get_connection() as conn:
-            # Check if exists
+            # Check if exists and capture parent for child reparenting.
             cursor = await conn.execute(
-                "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
                 (conversation_id,),
             )
-            exists = (await cursor.fetchone()) is not None
+            row = await cursor.fetchone()
+            exists = row is not None
 
             if not exists:
                 return False
+
+            parent_conversation_id = row[0]
+
+            # Preserve the remaining session tree when deleting a parent node.
+            await conn.execute(
+                """
+                UPDATE conversations
+                SET parent_conversation_id = ?
+                WHERE parent_conversation_id = ?
+                """,
+                (parent_conversation_id, conversation_id),
+            )
 
             # Collect attachment IDs that may become orphaned after CASCADE
             cursor = await conn.execute(

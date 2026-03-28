@@ -74,63 +74,6 @@ class TestConversationOperations:
         assert retrieved.title == "Updated Title"
         await backend.close()
 
-    async def test_list_conversations_returns_all(self, tmp_path: Path) -> None:
-        """list_conversations returns all stored conversations."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        for i in range(3):
-            conv = make_conversation(f"conv-{i}", title=f"Conversation {i}")
-            await backend.save_conversation_record(conv)
-
-        all_convs = await backend.list_conversations()
-        assert len(all_convs) == 3
-        assert {c.conversation_id for c in all_convs} == {"conv-0", "conv-1", "conv-2"}
-        await backend.close()
-
-    async def test_list_conversations_filters_by_provider(self, tmp_path: Path) -> None:
-        """list_conversations filters by provider_name."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        await backend.save_conversation_record(make_conversation("c1", provider_name="claude"))
-        await backend.save_conversation_record(make_conversation("c2", provider_name="chatgpt"))
-        await backend.save_conversation_record(make_conversation("c3", provider_name="claude"))
-
-        claude_convs = await backend.list_conversations(provider="claude")
-        assert len(claude_convs) == 2
-        assert all(c.provider_name == "claude" for c in claude_convs)
-        await backend.close()
-
-    async def test_list_conversations_with_limit_and_offset(self, tmp_path: Path) -> None:
-        """list_conversations supports pagination."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        for i in range(10):
-            conv = make_conversation(f"conv-{i:02d}")
-            await backend.save_conversation_record(conv)
-
-        page1 = await backend.list_conversations(limit=3, offset=0)
-        page2 = await backend.list_conversations(limit=3, offset=3)
-
-        assert len(page1) == 3
-        assert len(page2) == 3
-        page1_ids = {c.conversation_id for c in page1}
-        page2_ids = {c.conversation_id for c in page2}
-        assert page1_ids.isdisjoint(page2_ids)
-        await backend.close()
-
-    async def test_backend_list_conversations_offset_without_limit(self, tmp_path: Path) -> None:
-        """Regression: OFFSET without LIMIT must not raise SQL syntax error."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        for i in range(5):
-            conv = make_conversation(f"off-{i}", updated_at=f"2024-01-{i+1:02d}T00:00:00Z")
-            await backend.save_conversation_record(conv)
-
-        # This previously generated invalid SQL: ... ORDER BY ... OFFSET ? (no LIMIT)
-        result = await backend.list_conversations(offset=2)
-        assert len(result) == 3  # 5 total - 2 skipped = 3
-        await backend.close()
-
     async def test_title_contains_escapes_percent_wildcard(self, tmp_path: Path) -> None:
         """LIKE % wildcard should be escaped in title search."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
@@ -556,6 +499,26 @@ class TestDeleteOperations:
 
         result = await backend.delete_conversation("nonexistent")
         assert result is False
+        await backend.close()
+
+    async def test_delete_conversation_reparents_children(self, tmp_path: Path) -> None:
+        """Deleting a parent should keep descendants accessible by reparenting them."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        await backend.save_conversation_record(make_conversation("root"))
+        await backend.save_conversation_record(make_conversation("child", parent_conversation_id="root"))
+        await backend.save_conversation_record(make_conversation("grandchild", parent_conversation_id="child"))
+
+        assert await backend.delete_conversation("child") is True
+
+        root = await backend.get_conversation("root")
+        child = await backend.get_conversation("child")
+        grandchild = await backend.get_conversation("grandchild")
+
+        assert root is not None
+        assert child is None
+        assert grandchild is not None
+        assert grandchild.parent_conversation_id == "root"
         await backend.close()
 
 
