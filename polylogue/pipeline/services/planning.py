@@ -53,16 +53,15 @@ class PlanningService:
     ) -> list[str]:
         """Collect unvalidated/unparsed raw IDs for the scoped sources."""
         exclude = set(exclude_raw_ids or [])
-        backlog_validate_ids = await self.backend.list_raw_ids(
+        backlog_validate_ids: list[str] = []
+        async for raw_id in self.backend.iter_raw_ids(
             source_names=source_names,
             require_unparsed=True,
             require_unvalidated=True,
-        )
-        return [
-            raw_id
-            for raw_id in backlog_validate_ids
-            if raw_id not in exclude
-        ]
+        ):
+            if raw_id not in exclude:
+                backlog_validate_ids.append(raw_id)
+        return backlog_validate_ids
 
     async def collect_parse_backlog(
         self,
@@ -72,16 +71,15 @@ class PlanningService:
     ) -> list[str]:
         """Collect parsed-ready raw IDs for the scoped sources."""
         exclude = set(exclude_raw_ids or [])
-        backlog_parse_ids = await self.backend.list_raw_ids(
+        backlog_parse_ids: list[str] = []
+        async for raw_id in self.backend.iter_raw_ids(
             source_names=source_names,
             require_unparsed=True,
             validation_statuses=["passed", "skipped"],
-        )
-        return _dedupe_ids([
-            raw_id
-            for raw_id in backlog_parse_ids
-            if raw_id not in exclude
-        ])
+        ):
+            if raw_id not in exclude:
+                backlog_parse_ids.append(raw_id)
+        return _dedupe_ids(backlog_parse_ids)
 
     async def build_plan(
         self,
@@ -96,12 +94,12 @@ class PlanningService:
         db_scope_names = source_names or None
 
         if stage == "render":
-            render_ids = await self.backend.list_conversation_ids(source_names=db_scope_names)
+            render_count = await self.backend.count_conversation_ids(source_names=db_scope_names)
             return IngestPlan(
                 summary=PlanResult(
                     timestamp=int(time.time()),
                     stage=stage,
-                    counts={"render": len(render_ids)} if render_ids else {},
+                    counts={"render": render_count} if render_count else {},
                     sources=source_names,
                     cursors={},
                 ),
@@ -110,12 +108,12 @@ class PlanningService:
             )
 
         if stage == "index":
-            index_ids = await self.backend.list_conversation_ids(source_names=db_scope_names)
+            index_count = await self.backend.count_conversation_ids(source_names=db_scope_names)
             return IngestPlan(
                 summary=PlanResult(
                     timestamp=int(time.time()),
                     stage=stage,
-                    counts={"index": len(index_ids)} if index_ids else {},
+                    counts={"index": index_count} if index_count else {},
                     sources=source_names,
                     cursors={},
                 ),

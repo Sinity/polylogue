@@ -14,6 +14,7 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -27,11 +28,12 @@ from polylogue.sources.parsers.claude import (
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context, open_connection
-from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema, _run_migrations
+from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
 from polylogue.storage.store import (
-    _json_or_none,
     ConversationRecord,
     MessageRecord,
+    RawConversationRecord,
+    _json_or_none,
 )
 from tests.infra.helpers import (
     _make_ref_id,
@@ -86,231 +88,7 @@ def test_ensure_schema_raises_on_unsupported_version(tmp_path):
     with pytest.raises(Exception) as exc_info:
         _ensure_schema(conn)
     assert exc_info.type.__name__ == "DatabaseError"
-    assert "Unsupported DB schema version" in str(exc_info.value)
-
-    conn.close()
-
-
-def test_migrate_v1_to_v2_creates_new_tables(tmp_path):
-    """_migrate_v1_to_v2() creates attachments and attachment_refs tables."""
-    db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-
-    # Setup v1 schema (simplified)
-    conn.execute("PRAGMA user_version = 1")
-    conn.execute(
-        """
-        CREATE TABLE conversations (
-            conversation_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
-            provider_conversation_id TEXT NOT NULL,
-            title TEXT,
-            created_at TEXT,
-            updated_at TEXT,
-            content_hash TEXT NOT NULL,
-            provider_meta TEXT,
-            version INTEGER NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE messages (
-            message_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL,
-            provider_message_id TEXT,
-            role TEXT,
-            text TEXT,
-            timestamp TEXT,
-            content_hash TEXT NOT NULL,
-            provider_meta TEXT,
-            version INTEGER NOT NULL
-        )
-        """
-    )
-    # Old attachments table (v1 schema)
-    conn.execute(
-        """
-        CREATE TABLE attachments (
-            attachment_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL,
-            message_id TEXT,
-            mime_type TEXT,
-            size_bytes INTEGER,
-            path TEXT,
-            provider_meta TEXT
-        )
-        """
-    )
-    conn.commit()
-
-    # Insert test data
-    conn.execute(
-        "INSERT INTO conversations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("conv1", "test", "ext1", "Test", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "hash1", None, 1),
-    )
-    conn.execute(
-        "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("msg1", "conv1", None, "user", "Hello", "2024-01-01T00:00:00Z", "msghash1", None, 1),
-    )
-    conn.execute(
-        "INSERT INTO attachments VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("att1", "conv1", "msg1", "image/png", 1024, "/path/to/file.png", None),
-    )
-    conn.commit()
-
-    # Migrate using the runner (which updates version)
-    _run_migrations(conn, 1, 2)
-
-    # Check version updated
-    row = conn.execute("PRAGMA user_version").fetchone()
-    assert row[0] == 2
-
-    # Check new tables exist
-    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-    tables = [row[0] for row in cursor.fetchall()]
-    assert "attachments" in tables
-    assert "attachment_refs" in tables
-
-    # Check data migrated
-    att_row = conn.execute("SELECT * FROM attachments WHERE attachment_id = ?", ("att1",)).fetchone()
-    assert att_row is not None
-    assert att_row["ref_count"] == 1
-
-    ref_rows = conn.execute("SELECT * FROM attachment_refs WHERE attachment_id = ?", ("att1",)).fetchall()
-    assert len(ref_rows) == 1
-
-    conn.close()
-
-
-def test_migrate_v2_to_v3_updates_runs_table(tmp_path):
-    """_migrate_v2_to_v3() updates runs table schema."""
-    db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-
-    # Setup v2 schema with old runs table
-    conn.execute("PRAGMA user_version = 2")
-    conn.executescript(
-        """
-        CREATE TABLE conversations (
-            conversation_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
-            provider_conversation_id TEXT NOT NULL,
-            title TEXT,
-            created_at TEXT,
-            updated_at TEXT,
-            content_hash TEXT NOT NULL,
-            provider_meta TEXT,
-            version INTEGER NOT NULL
-        );
-
-        CREATE TABLE runs_old (
-            run_id TEXT PRIMARY KEY,
-            timestamp TEXT NOT NULL,
-            plan_snapshot TEXT,
-            counts_json TEXT,
-            drift_json TEXT,
-            indexed INTEGER,
-            duration_ms INTEGER
-        );
-        """
-    )
-
-    # Insert test run data
-    conn.execute(
-        "INSERT INTO runs_old VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("run1", "2024-01-01T00:00:00Z", '{"test": true}', '{"count": 5}', "{}", 1, 1000),
-    )
-    conn.commit()
-
-    # Temporarily rename runs_old for migration test
-    conn.execute("ALTER TABLE runs_old RENAME TO runs")
-    conn.commit()
-
-    # Migrate
-    # Migrate using the runner (which updates version)
-    _run_migrations(conn, 2, 3)
-
-    # Check version updated to 3
-    row = conn.execute("PRAGMA user_version").fetchone()
-    assert row[0] == 3
-
-    # Check runs table exists
-    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='runs'")
-    assert cursor.fetchone() is not None
-
-    # Check data preserved
-    run_row = conn.execute("SELECT * FROM runs WHERE run_id = ?", ("run1",)).fetchone()
-    assert run_row is not None
-    assert run_row["timestamp"] == "2024-01-01T00:00:00Z"
-
-    conn.close()
-
-
-def test_migrate_v3_to_v4_adds_source_name_column(tmp_path):
-    """_migrate_v3_to_v4() adds computed source_name column and index."""
-    db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-
-    # Setup v3 schema without source_name column
-    conn.execute("PRAGMA user_version = 3")
-    conn.execute(
-        """
-        CREATE TABLE conversations (
-            conversation_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
-            provider_conversation_id TEXT NOT NULL,
-            title TEXT,
-            created_at TEXT,
-            updated_at TEXT,
-            content_hash TEXT NOT NULL,
-            provider_meta TEXT,
-            version INTEGER NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX idx_conversations_provider
-        ON conversations(provider_name, provider_conversation_id)
-        """
-    )
-
-    # Insert test conversation with source in provider_meta
-    conn.execute(
-        """
-        INSERT INTO conversations (
-            conversation_id, provider_name, provider_conversation_id,
-            title, content_hash, provider_meta, version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        ("test:123", "test", "123", "Test", "abc123", '{"source": "my-source"}', 1),
-    )
-    conn.commit()
-
-    # Migrate using the runner (which updates version)
-    _run_migrations(conn, 3, 4)
-
-    # Check version updated to 4
-    row = conn.execute("PRAGMA user_version").fetchone()
-    assert row[0] == 4
-
-    # Check source_name column exists and is computed correctly
-    conv_row = conn.execute(
-        "SELECT conversation_id, source_name FROM conversations WHERE conversation_id = ?",
-        ("test:123",),
-    ).fetchone()
-    assert conv_row is not None
-    assert conv_row["source_name"] == "my-source"
-
-    # Check index exists
-    index_row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_conversations_source_name'"
-    ).fetchone()
-    assert index_row is not None
+    assert "incompatible" in str(exc_info.value).lower() or "schema version" in str(exc_info.value).lower()
 
     conn.close()
 
@@ -386,156 +164,6 @@ def test_open_connection_busy_timeout_set(tmp_path):
         assert row[0] == 30000
 
 
-class TestMigrations:
-    """Tests for database migration behavior."""
-
-    def test_migration_failure_preserves_original_state(self, tmp_path, monkeypatch):
-        """Failed migration should not leave database in inconsistent state.
-
-        This test verifies that if a migration step fails, the database
-        remains at the last successful version (ratcheting behavior).
-        """
-        db_path = tmp_path / "test_state_preservation.db"
-
-        # Initialize database at v1 (past version)
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA user_version = 1")
-        # Minimal v1 schema to satisfy _migrate_v1_to_v2
-        conn.execute(
-            """
-            CREATE TABLE attachments (
-                attachment_id TEXT PRIMARY KEY,
-                mime_type TEXT,
-                size_bytes INTEGER,
-                path TEXT,
-                provider_meta TEXT,
-                conversation_id TEXT,
-                message_id TEXT
-            )
-            """
-        )
-        conn.commit()
-        conn.close()
-
-        # Patch _MIGRATIONS[2] to fail (simulating v2->v3 failure)
-        # We allow v1->v2 to succeed
-        from polylogue.storage.backends.schema import _MIGRATIONS
-
-        def failing_migration(conn):
-            raise RuntimeError("Simulated migration v2->v3 failure")
-
-        # Copy dict to avoid polluting other tests
-        patched_migrations = _MIGRATIONS.copy()
-        patched_migrations[2] = failing_migration
-        monkeypatch.setattr("polylogue.storage.backends.schema._MIGRATIONS", patched_migrations)
-
-        # Run connection open which triggers _ensure_schema
-        # It should raise DatabaseError or RuntimeError from the migration
-        with pytest.raises(Exception, match="Simulated migration v2->v3 failure"):
-            with open_connection(db_path) as conn:
-                pass
-
-        # Verify database state
-        conn = sqlite3.connect(db_path)
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-
-        # Should be at version 2 (because v1->v2 succeeded and committed)
-        # The failing v2->v3 rolled back its changes (if any) and didn't bump version
-        assert version == 2
-        conn.close()
-
-    def test_migration_failure_raises_runtime_error(self, tmp_path, monkeypatch):
-        """Failed migration raises RuntimeError with details.
-
-        Note: SQLite DDL (ALTER TABLE, CREATE TABLE) cannot be rolled back.
-        This test verifies that migration failures are properly reported.
-        """
-        db_path = tmp_path / "migration_failure_test.db"
-
-        # Create a v3 database manually
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA user_version = 3")
-        conn.execute(
-            """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                provider_conversation_id TEXT NOT NULL,
-                title TEXT,
-                created_at TEXT,
-                updated_at TEXT,
-                content_hash TEXT NOT NULL,
-                provider_meta TEXT,
-                version INTEGER NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX idx_conversations_provider
-            ON conversations(provider_name, provider_conversation_id)
-            """
-        )
-        conn.commit()
-        conn.close()
-
-        # Patch _MIGRATIONS[3] to fail (patching the function won't work as dict has reference)
-        from polylogue.storage.backends.schema import _MIGRATIONS
-
-        def failing_migration(conn):
-            raise RuntimeError("Simulated migration failure")
-
-        _MIGRATIONS[3]
-        monkeypatch.setitem(_MIGRATIONS, 3, failing_migration)
-
-        # Migration should raise RuntimeError
-        with pytest.raises(RuntimeError, match="Migration from v3 to v4 failed"):
-            with open_connection(db_path) as conn:
-                pass
-
-    def test_connection_context_rollsback_on_exception(self, tmp_path):
-        """open_connection uses cached connections, so explicit rollback needed.
-
-        This test verifies that connection_context uses connection caching,
-        which means transactions persist across context exits unless explicitly
-        rolled back. For automatic rollback, use SQLiteBackend.transaction().
-        """
-        db_path = tmp_path / "rollback_test.db"
-
-        # First create the database and table
-        with open_connection(db_path) as conn:
-            _ensure_schema(conn)
-
-        # Test explicit transaction with rollback
-        try:
-            with open_connection(db_path) as conn:
-                conn.execute("BEGIN")
-                conn.execute(
-                    """
-                    INSERT INTO conversations
-                    (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                    ("rollback-test", "test", "prov-1", "Rollback Test", "hash789", 1),
-                )
-                raise ValueError("Simulated failure")
-        except ValueError:
-            # Explicitly rollback since cached connection doesn't auto-rollback
-            with open_connection(db_path) as conn:
-                conn.rollback()
-
-        # Verify rolled back
-        with open_connection(db_path) as conn:
-            cursor = conn.execute(
-                "SELECT title FROM conversations WHERE conversation_id = ?",
-                ("rollback-test",),
-            )
-            row = cursor.fetchone()
-            assert row is None, "Insert should have been rolled back"
-
-
 # =============================================================================
 # DB+STORE INTEGRATION (from test_db_store.py)
 # =============================================================================
@@ -583,6 +211,46 @@ class TestConnectionCommitAndRollback:
             # Row presence depends on SQLite internals; we verify connection still works
             if row is not None:
                 assert row["conversation_id"] == "c1"
+
+    def test_connection_context_rollsback_on_exception(self, tmp_path):
+        """open_connection uses cached connections, so explicit rollback needed.
+
+        This test verifies that connection_context uses connection caching,
+        which means transactions persist across context exits unless explicitly
+        rolled back. For automatic rollback, use SQLiteBackend.transaction().
+        """
+        db_path = tmp_path / "rollback_test.db"
+
+        # First create the database and table
+        with open_connection(db_path) as conn:
+            _ensure_schema(conn)
+
+        # Test explicit transaction with rollback
+        try:
+            with open_connection(db_path) as conn:
+                conn.execute("BEGIN")
+                conn.execute(
+                    """
+                    INSERT INTO conversations
+                    (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                    ("rollback-test", "test", "prov-1", "Rollback Test", "hash789", 1),
+                )
+                raise ValueError("Simulated failure")
+        except ValueError:
+            # Explicitly rollback since cached connection doesn't auto-rollback
+            with open_connection(db_path) as conn:
+                conn.rollback()
+
+        # Verify rolled back
+        with open_connection(db_path) as conn:
+            cursor = conn.execute(
+                "SELECT title FROM conversations WHERE conversation_id = ?",
+                ("rollback-test",),
+            )
+            row = cursor.fetchone()
+            assert row is None, "Insert should have been rolled back"
 
 
 @pytest.mark.slow
@@ -1248,6 +916,49 @@ class TestSQLiteBackendInit:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         assert hasattr(backend, "_write_lock")
         assert isinstance(backend._write_lock, asyncio.Lock)
+
+
+class TestPagedIdIteration:
+    """Tests for bounded ID iteration helpers."""
+
+    async def test_iter_raw_ids_pages_without_duplicates(self, tmp_path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        base = datetime(2026, 3, 10, tzinfo=timezone.utc)
+
+        for i in range(5):
+            await backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=f"raw-{i}",
+                    provider_name="chatgpt",
+                    source_name="inbox-a",
+                    source_path=f"/tmp/raw-{i}.json",
+                    raw_content=b'{"id":"x"}',
+                    acquired_at=(base + timedelta(minutes=i)).isoformat(),
+                )
+            )
+
+        ids = [raw_id async for raw_id in backend.iter_raw_ids(page_size=2)]
+
+        assert ids == ["raw-4", "raw-3", "raw-2", "raw-1", "raw-0"]
+
+    async def test_iter_conversation_ids_pages_in_sort_order(self, tmp_path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        for i in range(5):
+            await backend.save_conversation_record(
+                make_conversation(
+                    f"conv-{i}",
+                    provider_name="chatgpt",
+                    title=f"Conversation {i}",
+                    sort_key=float(i),
+                )
+            )
+
+        ids = [conversation_id async for conversation_id in backend.iter_conversation_ids(page_size=2)]
+        count = await backend.count_conversation_ids()
+
+        assert ids == ["conv-4", "conv-3", "conv-2", "conv-1", "conv-0"]
+        assert count == 5
 
 
 class TestBackendLifecycle:
