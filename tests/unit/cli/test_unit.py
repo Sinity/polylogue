@@ -910,9 +910,7 @@ def test_lazy_import_conversation_repository_root():
     """ConversationRepository should be importable via lazy __getattr__."""
     import polylogue
 
-    repo_cls = polylogue.ConversationRepository
-    assert repo_cls is not None
-    assert repo_cls.__name__ == "ConversationRepository"
+    assert polylogue.ConversationRepository.__name__ == "ConversationRepository"
 
 
 def test_lazy_import_unknown_raises_root():

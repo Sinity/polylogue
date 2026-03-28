@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 from polylogue.showcase.exercises import GROUPS
 from polylogue.showcase.runner import ShowcaseResult
@@ -134,6 +136,54 @@ def generate_cookbook(result: ShowcaseResult) -> str:
             lines.append("")
 
     return "\n".join(lines)
+
+
+def generate_qa_session(result: ShowcaseResult) -> dict:
+    """Generate a structured QA session record from a showcase result.
+
+    Returns a dict suitable for writing to an audit trail directory.
+    Fields are stable across runs so diffs are meaningful.
+    """
+    exercises: list[dict] = []
+    for r in result.results:
+        entry: dict = {
+            "name": r.exercise.name,
+            "group": r.exercise.group,
+            "tier": r.exercise.tier,
+            "passed": r.passed,
+            "exit_code": r.exit_code,
+            "duration_ms": round(r.duration_ms, 1),
+        }
+        if r.skipped:
+            entry["skipped"] = True
+            entry["skip_reason"] = r.skip_reason
+        if r.error:
+            entry["error"] = r.error
+        exercises.append(entry)
+
+    return {
+        "schema_version": 1,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "total": len(result.results),
+            "passed": result.passed,
+            "failed": result.failed,
+            "skipped": result.skipped,
+            "total_duration_ms": round(result.total_duration_ms, 1),
+        },
+        "group_counts": result.group_counts(),
+        "exercises": exercises,
+    }
+
+
+def write_qa_session(result: ShowcaseResult, audit_dir: Path) -> Path:
+    """Write a QA session record to audit_dir and return the written path."""
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_path = audit_dir / f"showcase-{ts}.json"
+    session = generate_qa_session(result)
+    out_path.write_text(json.dumps(session, indent=2))
+    return out_path
 
 
 def save_reports(result: ShowcaseResult) -> None:

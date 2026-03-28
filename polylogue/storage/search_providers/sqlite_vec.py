@@ -334,12 +334,14 @@ class SqliteVecProvider:
 
         conn = self._get_connection()
         try:
-            # Get provider name from first message metadata
+            # Get provider name from the conversations table
             provider_name = "unknown"
-            if embeddable[0].provider_meta:
-                pname = embeddable[0].provider_meta.get("provider_name")
-                if isinstance(pname, str):
-                    provider_name = pname
+            row = conn.execute(
+                "SELECT provider_name FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row:
+                provider_name = row[0] or "unknown"
 
             for msg, embedding in zip(embeddable, embeddings, strict=True):
                 # Serialize embedding to binary format for vec0

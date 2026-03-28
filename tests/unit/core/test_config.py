@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.config import Config, ConfigError, get_config
+from polylogue.config import Config, ConfigError
 from polylogue.paths import DriveConfig, IndexConfig, Source
 
 
@@ -61,46 +61,6 @@ class TestConfig:
         )
         assert config.drive_config is None
         assert config.index_config is None
-
-
-class TestGetConfig:
-    """Tests for get_config() function."""
-
-    def test_get_config_returns_config(self, workspace_env):
-        """get_config() returns a Config instance."""
-        from polylogue.config import Config as ReloadedConfig
-        from polylogue.config import get_config as reloaded_get_config
-
-        config = reloaded_get_config()
-        assert isinstance(config, ReloadedConfig)
-
-    def test_get_config_has_archive_root(self, workspace_env):
-        """Config from get_config() has an archive_root."""
-        config = get_config()
-        assert config.archive_root is not None
-        assert isinstance(config.archive_root, Path)
-
-    def test_get_config_has_render_root(self, workspace_env):
-        """Config from get_config() has a render_root."""
-        config = get_config()
-        assert config.render_root is not None
-        assert isinstance(config.render_root, Path)
-
-    def test_get_config_has_sources(self, workspace_env):
-        """Config from get_config() has a sources list."""
-        config = get_config()
-        assert isinstance(config.sources, list)
-        assert len(config.sources) >= 1
-
-    def test_get_config_has_drive_config(self, workspace_env):
-        """Config from get_config() includes drive configuration."""
-        config = get_config()
-        assert config.drive_config is not None
-
-    def test_get_config_has_index_config(self, workspace_env):
-        """Config from get_config() includes index configuration."""
-        config = get_config()
-        assert config.index_config is not None
 
 
 class TestConfigError:

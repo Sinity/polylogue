@@ -89,7 +89,7 @@ class FTS5Provider:
                 if insert_data:
                     conn.executemany(
                         """
-                        INSERT INTO messages_fts (message_id, conversation_id, content)
+                        INSERT INTO messages_fts (message_id, conversation_id, text)
                         VALUES (?, ?, ?)
                         """,
                         insert_data,
