@@ -2534,7 +2534,7 @@ def prove_semantic_surface_suite(
             surface_filters=list(resolved_surfaces),
         )
 
-    return asyncio.run(
+    return run_coroutine_sync(
         _prove_semantic_surface_suite_async(
             db_path=effective_db_path,
             archive_root=archive_root or default_archive_root(),

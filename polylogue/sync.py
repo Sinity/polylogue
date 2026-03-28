@@ -16,10 +16,11 @@ Example::
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
     from polylogue.facade import ArchiveStats
@@ -27,26 +28,10 @@ if TYPE_CHECKING:
     from polylogue.storage.search import SearchResult
 
 
-def _run(coro):
-    """Run an async coroutine synchronously."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop is not None and loop.is_running():
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
-    return asyncio.run(coro)
-
-
 class SyncPolylogue:
     """Synchronous wrapper around the async ``Polylogue`` facade.
 
-    All methods delegate to ``Polylogue`` via ``asyncio.run()``.
-    Thread-safe: if already inside a running event loop, execution
-    is dispatched to a background thread.
+    All methods delegate to ``Polylogue`` through the shared sync bridge.
     """
 
     def __init__(
@@ -60,7 +45,7 @@ class SyncPolylogue:
 
     def close(self) -> None:
         """Release database connections."""
-        _run(self._facade.close())
+        run_coroutine_sync(self._facade.close())
 
     def __enter__(self) -> SyncPolylogue:
         return self
@@ -72,11 +57,11 @@ class SyncPolylogue:
 
     def get_conversation(self, conversation_id: str) -> Conversation | None:
         """Fetch a single conversation by full or prefix ID."""
-        return _run(self._facade.get_conversation(conversation_id))
+        return run_coroutine_sync(self._facade.get_conversation(conversation_id))
 
     def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
         """Batch fetch conversations."""
-        return _run(self._facade.get_conversations(conversation_ids))
+        return run_coroutine_sync(self._facade.get_conversations(conversation_ids))
 
     def list_conversations(
         self,
@@ -84,7 +69,7 @@ class SyncPolylogue:
         limit: int | None = None,
     ) -> list[Conversation]:
         """List conversations with optional filtering."""
-        return _run(self._facade.list_conversations(provider=provider, limit=limit))
+        return run_coroutine_sync(self._facade.list_conversations(provider=provider, limit=limit))
 
     def list_summaries(
         self,
@@ -104,7 +89,7 @@ class SyncPolylogue:
             filt = filt.until(until)
         if limit:
             filt = filt.limit(limit)
-        return _run(filt.list_summaries())
+        return run_coroutine_sync(filt.list_summaries())
 
     def search(
         self,
@@ -115,11 +100,11 @@ class SyncPolylogue:
         since: str | None = None,
     ) -> SearchResult:
         """Search conversations."""
-        return _run(self._facade.search(query, limit=limit, source=source, since=since))
+        return run_coroutine_sync(self._facade.search(query, limit=limit, source=source, since=since))
 
     def stats(self) -> ArchiveStats:
         """Get archive statistics."""
-        return _run(self._facade.stats())
+        return run_coroutine_sync(self._facade.stats())
 
     def filter(self):
         """Create a fluent filter builder (terminal methods are still async)."""

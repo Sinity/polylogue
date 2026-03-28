@@ -161,7 +161,7 @@ def _embed_single(
     conversation_id: str,
 ) -> None:
     """Embed a single conversation."""
-    import asyncio
+    from polylogue.sync_bridge import run_coroutine_sync
 
     async def _fetch() -> tuple[object, list] | None:
         conv = await repo.view(conversation_id)  # view() resolves partial IDs
@@ -170,7 +170,7 @@ def _embed_single(
         messages = await repo.queries.get_messages(str(conv.id))
         return conv, messages
 
-    result = asyncio.run(_fetch())
+    result = run_coroutine_sync(_fetch())
     if result is None:
         click.echo(f"Error: Conversation {conversation_id} not found", err=True)
         raise click.Abort()
@@ -200,9 +200,8 @@ def _embed_batch(
     limit: int | None = None,
 ) -> None:
     """Embed multiple conversations."""
-    import asyncio
-
     from polylogue.storage.backends.connection import open_connection
+    from polylogue.sync_bridge import run_coroutine_sync
 
     backend = repo.backend
 
@@ -243,33 +242,27 @@ def _embed_batch(
     embedded_count = 0
     error_count = 0
 
-    # Single event loop for all async backend calls, avoids per-call overhead.
-    loop = asyncio.new_event_loop()
-
     def _embed_one(conversation_id: str) -> bool:
         """Embed a single conversation. Returns True on success."""
-        messages = loop.run_until_complete(backend.queries.get_messages(conversation_id))
+        messages = run_coroutine_sync(backend.queries.get_messages(conversation_id))
 
         if messages:
             vec_provider.upsert(conversation_id, messages)  # type: ignore
             return True
         return False
 
-    try:
-        with env.ui.progress("Embedding conversations", total=len(conv_ids)) as progress:
-            for i, (conv_id, title) in enumerate(conv_ids, 1):
-                if not env.ui.plain:
-                    progress.update(description=f"Embedding {title or conv_id[:12]}...")
-                try:
-                    if _embed_one(conv_id):
-                        embedded_count += 1
-                except Exception as exc:
-                    error_count += 1
-                    label = title or conv_id[:12]
-                    env.ui.console.print(f"Warning: [{i}/{len(conv_ids)}] {label}: {exc}")
-                progress.advance()
-    finally:
-        loop.close()
+    with env.ui.progress("Embedding conversations", total=len(conv_ids)) as progress:
+        for i, (conv_id, title) in enumerate(conv_ids, 1):
+            if not env.ui.plain:
+                progress.update(description=f"Embedding {title or conv_id[:12]}...")
+            try:
+                if _embed_one(conv_id):
+                    embedded_count += 1
+            except Exception as exc:
+                error_count += 1
+                label = title or conv_id[:12]
+                env.ui.console.print(f"Warning: [{i}/{len(conv_ids)}] {label}: {exc}")
+            progress.advance()
 
     click.echo(
         f"\n✓ Embedded {embedded_count} conversations"

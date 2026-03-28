@@ -87,7 +87,7 @@ class SiteBuilder:
 
     def build(self, incremental: bool = True) -> SitePublicationManifest:
         """Build the complete static site and return the typed manifest."""
-        return asyncio.run(self._build_async(incremental))
+        return run_coroutine_sync(self._build_async(incremental))
 
     async def _build_async(self, incremental: bool = True) -> SitePublicationManifest:
         """Async implementation of the site build."""

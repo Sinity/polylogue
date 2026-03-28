@@ -66,6 +66,8 @@ class ConversationFilter:
         self,
         repository: ConversationRepository,
         vector_provider: VectorProvider | None = None,
+        *,
+        query_plan: ConversationQueryPlan | None = None,
     ) -> None:
         """Initialize filter with repository.
 
@@ -87,11 +89,16 @@ class ConversationFilter:
         self._until_date: datetime | None = None
         self._title_pattern: str | None = None
         self._id_prefix: str | None = None
+        self._parent_id: str | None = None
         self._sort_field: SortField = "date"
         self._sort_reverse: bool = False
         self._limit_count: int | None = None
         self._sample_count: int | None = None
         self._similar_text: str | None = None
+        self._continuation: bool | None = None
+        self._sidechain: bool | None = None
+        self._root: bool | None = None
+        self._has_branches: bool | None = None
         # SQL-pushable stats filters (via conversation_stats JOIN)
         self._filter_has_tool_use: bool = False
         self._filter_has_thinking: bool = False
