@@ -28,16 +28,11 @@ uv run polylogue mcp                          # MCP server (stdio)
 
 **Library API**:
 ```python
-# Sync
-with Polylogue() as archive:
-    convs = archive.get_conversations(["id1", "id2", "id3"])
-    results = archive.filter().contains("python").provider("claude").list()
-
-# Async (full parity)
 async with Polylogue() as archive:
     stats = await archive.stats()  # Returns ArchiveStats
     convs = await archive.get_conversations(["id1", "id2"])
     results = await archive.search("error handling")
+    filtered = await archive.filter().contains("python").provider("claude").list()
     await archive.rebuild_index()
 ```
 
@@ -47,7 +42,7 @@ async with Polylogue() as archive:
 
 | Aspect | Implementation | Behavior |
 |--------|----------------|----------|
-| **Storage** | `SQLiteBackend` + `SQLiteBackend` | Thread-local (sync), aiosqlite (async) |
+| **Storage** | `SQLiteBackend` (async-first) | aiosqlite with sync connection helpers |
 | **Search** | `SearchProvider` protocol | FTS5 (local), sqlite-vec (vector), LRU cache |
 | **Rendering** | Markdown/HTML renderers | Via `--format` flag |
 | **Services** | `polylogue.services` module | Singleton factories for backend + repository |
@@ -83,8 +78,7 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 | `lib/models.py` | Message/Conversation with `is_thinking`, `is_tool_use`, `is_substantive` |
 | `lib/projections.py` | Fluent API: `conv.project().substantive().min_words(50).execute()` |
 | `lib/filters.py` | Conversation filter chain: `p.filter().provider("claude").list()` |
-| `facade.py` | `Polylogue` — sync library API |
-| `async_facade.py` | `Polylogue` — async library API (full parity) |
+| `facade.py` | `Polylogue` — async-first library API |
 | `services.py` | Singleton factories: `get_backend()`, `get_repository()` |
 | `protocols.py` | SearchProvider, VectorProvider (storage protocol deleted) |
 | `types.py` | NewType IDs: ConversationId, MessageId, AttachmentId |
@@ -93,8 +87,9 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 | File | Purpose |
 |------|---------|
 | `storage/store.py` | Record definitions, `_WRITE_LOCK` |
-| `storage/repository.py` | StorageRepository (write coordination) |
-| `storage/backends/sqlite.py` | SQLiteBackend (schema v5, migrations) |
+| `storage/repository.py` | ConversationRepository (write coordination) |
+| `storage/backends/async_sqlite.py` | SQLiteBackend (async-first, aiosqlite) |
+| `storage/backends/sqlite.py` | Sync utilities, row mappers, connection helpers |
 | `storage/search_providers/fts5.py` | FTS5 search (incremental, query escaping) |
 | `storage/search_providers/sqlite_vec.py` | sqlite-vec vector search |
 | `storage/backends/connection.py` | Thread-local connections, `connection_context()` |
@@ -111,14 +106,12 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 ### Pipeline
 | File | Purpose |
 |------|---------|
-| `pipeline/async_runner.py` | Orchestrates acquire → parse → render → index (async-first) |
-| `pipeline/async_prepare.py` | Async record preparation and dedup |
-| `pipeline/services/async_acquisition.py` | AcquisitionService (raw data storage) |
-| `pipeline/services/async_parsing.py` | ParsingService (raw → typed records) |
-| `pipeline/services/async_indexing.py` | IndexService (FTS5 management) |
-| `pipeline/services/async_rendering.py` | RenderService (concurrent render) |
-| `pipeline/services/indexing.py` | IndexService (sync, used by facade) |
-| `pipeline/services/rendering.py` | RenderService (sync fallback) |
+| `pipeline/runner.py` | Orchestrates acquire → parse → render → index (async-first) |
+| `pipeline/prepare.py` | Record preparation and dedup |
+| `pipeline/services/acquisition.py` | AcquisitionService (raw data storage) |
+| `pipeline/services/parsing.py` | ParsingService (raw → typed records) |
+| `pipeline/services/indexing.py` | IndexService (FTS5 management) |
+| `pipeline/services/rendering.py` | RenderService (concurrent render) |
 
 ### CLI
 | File | Purpose |
@@ -151,7 +144,7 @@ convs = p.filter().provider("claude").since("2024-01-01").contains("error").limi
 | `reverse()` / `limit(n)` / `sample(n)` | Order/limit |
 | `where(predicate)` | Custom filter function |
 
-**Terminals**: `list()` → `list[Conversation]`, `first()` → `Conversation|None`, `count()` → `int`, `pick()` → interactive
+**Terminals** (all async): `await list()` → `list[Conversation]`, `await first()` → `Conversation|None`, `await count()` → `int`, `await pick()` → interactive
 
 ---
 
