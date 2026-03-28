@@ -594,25 +594,44 @@ def _conv_to_markdown(conv: Conversation) -> str:
 
 
 def _conv_to_html(conv: Conversation) -> str:
-    """Convert conversation to HTML."""
-    # Simple HTML template
+    """Convert conversation to HTML with Pygments syntax highlighting.
+
+    Uses the rendering subsystem's MarkdownRenderer for proper code highlighting
+    and the HTMLRenderer's styled template for polished output.
+    """
+    from polylogue.rendering.renderers.html import MarkdownRenderer as HtmlMarkdownRenderer
+    from polylogue.rendering.renderers.html import PygmentsHighlighter
+
+    highlighter = PygmentsHighlighter(style="monokai")
+    md_renderer = HtmlMarkdownRenderer(highlighter)
+
     title = conv.display_title or conv.id
     messages_html = []
     for msg in conv.messages:
-        role_class = f"message-{msg.role}"
-        text = (msg.text or "").replace("<", "&lt;").replace(">", "&gt;")
-        messages_html.append(f'<div class="{role_class}"><strong>{msg.role}:</strong><p>{text}</p></div>')
+        role = msg.role or "message"
+        role_class = f"message-{role}"
+        html_content = md_renderer.render(msg.text or "")
+        messages_html.append(
+            f'<div class="{role_class}"><strong>{role}:</strong>{html_content}</div>'
+        )
 
+    highlight_css = highlighter.get_css()
     return f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
-    <title>{title}</title>
+    <title>{title} | Polylogue</title>
     <style>
-        body {{ font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
-        .message-user {{ background: #e3f2fd; padding: 10px; margin: 10px 0; border-radius: 8px; }}
-        .message-assistant {{ background: #f5f5f5; padding: 10px; margin: 10px 0; border-radius: 8px; }}
-        .message-system {{ background: #fff3e0; padding: 10px; margin: 10px 0; border-radius: 8px; }}
+        body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #0a0a0c; color: #f8f9fa; }}
+        h1 {{ border-bottom: 1px solid #2d2d35; padding-bottom: 12px; }}
+        .message-user {{ background: rgba(99, 102, 241, 0.1); border-left: 3px solid rgba(99, 102, 241, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
+        .message-assistant {{ background: rgba(16, 185, 129, 0.1); border-left: 3px solid rgba(16, 185, 129, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
+        .message-system {{ background: rgba(245, 158, 11, 0.1); border-left: 3px solid rgba(245, 158, 11, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
+        .message-tool {{ background: rgba(139, 92, 246, 0.1); border-left: 3px solid rgba(139, 92, 246, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
+        pre {{ background: #282c34; padding: 12px; border-radius: 6px; overflow-x: auto; }}
+        code {{ font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }}
+        strong {{ color: #94a3b8; text-transform: capitalize; }}
+        {highlight_css}
     </style>
 </head>
 <body>

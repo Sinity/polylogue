@@ -221,13 +221,23 @@ class ClaudeCodeRecord(BaseModel):
 
     @property
     def role(self) -> str:
-        """Extract role from record."""
+        """Extract role from record.
+
+        Claude Code JSONL record types map to roles:
+        - user → user
+        - assistant → assistant
+        - summary → system (context compaction)
+        - progress → tool (tool execution progress)
+        - result → tool (tool execution result)
+        """
         if self.type == "user":
             return "user"
         if self.type == "assistant":
             return "assistant"
         if self.type == "summary":
             return "system"
+        if self.type in {"progress", "result"}:
+            return "tool"
         return "unknown"
 
     @property
