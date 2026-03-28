@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
     CostInfo,
@@ -204,20 +205,10 @@ class ClaudeCodeRecord(BaseModel):
         """Parse timestamp to datetime."""
         if self.timestamp is None:
             return None
-        try:
-            # Handle numeric timestamps (Unix milliseconds)
-            if isinstance(self.timestamp, (int, float)):
-                # If > 1e11, assume milliseconds and convert to seconds
-                ts_val = float(self.timestamp)
-                if ts_val > 1e11:
-                    ts_val = ts_val / 1000.0
-                return datetime.fromtimestamp(ts_val)
-
-            # Handle ISO format with Z suffix
-            ts = str(self.timestamp).replace("Z", "+00:00")
-            return datetime.fromisoformat(ts)
-        except (ValueError, OSError):
-            return None
+        # Handle millisecond timestamps (Claude Code uses Unix ms)
+        if isinstance(self.timestamp, (int, float)) and float(self.timestamp) > 1e11:
+            return parse_timestamp(float(self.timestamp) / 1000.0)
+        return parse_timestamp(self.timestamp)
 
     @property
     def role(self) -> str:
@@ -239,6 +230,19 @@ class ClaudeCodeRecord(BaseModel):
             return "tool"
         return "unknown"
 
+    @staticmethod
+    def _text_from_blocks(content: list[Any]) -> str:
+        """Extract text from a list of content block dicts.
+
+        Only extracts ``type: "text"`` blocks.  Thinking/reasoning traces are
+        intentionally excluded — they are surfaced via Message.extract_thinking().
+        """
+        return "\n".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+
     @property
     def text_content(self) -> str:
         """Extract plain text content.
@@ -250,37 +254,16 @@ class ClaudeCodeRecord(BaseModel):
         if not self.message:
             # Fall back to top-level content field (system records)
             top_content = getattr(self, "content", None)
-            if isinstance(top_content, str):
-                return top_content
-            return ""
+            return top_content if isinstance(top_content, str) else ""
 
-        if isinstance(self.message, dict):
-            content = self.message.get("content", "")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                texts = []
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            texts.append(block.get("text", ""))
-                        elif block.get("type") == "thinking":
-                            texts.append(f"[Thinking: {block.get('thinking', '')[:100]}...]")
-                return "\n".join(texts)
-            return ""
+        # Extract content from dict or typed message
+        msg = self.message
+        content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", None)
 
-        # Typed message content
-        if hasattr(self.message, "content"):
-            content = self.message.content
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                texts = []
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        texts.append(block.get("text", ""))
-                return "\n".join(texts)
-
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return self._text_from_blocks(content)
         return ""
 
     @property

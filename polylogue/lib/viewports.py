@@ -40,11 +40,14 @@ Example:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+_PATH_PATTERN = re.compile(r'(?:^|[\s"\'])(/[^\s"\']+|[./][^\s"\']+)')
 
 # =============================================================================
 # Enums for harmonized classification
@@ -176,10 +179,7 @@ class ToolCall(BaseModel):
                     # For commands, try to extract paths
                     if field == "command":
                         # Simple heuristic: look for path-like strings
-                        import re
-                        path_pattern = r'(?:^|[\s"\'])(/[^\s"\']+|[./][^\s"\']+)'
-                        matches = re.findall(path_pattern, val)
-                        paths.extend(matches[:5])  # Limit to first 5
+                        paths.extend(_PATH_PATTERN.findall(val)[:5])
                     else:
                         paths.append(val)
 
@@ -233,14 +233,6 @@ class TokenUsage(BaseModel):
     total_tokens: int | None = None
     """Total tokens (computed if not provided)."""
 
-    @property
-    def computed_total(self) -> int:
-        """Compute total from parts if not explicitly set."""
-        if self.total_tokens is not None:
-            return self.total_tokens
-        return (self.input_tokens or 0) + (self.output_tokens or 0)
-
-
 class CostInfo(BaseModel):
     """Harmonized cost information across providers."""
 
@@ -283,63 +275,6 @@ class MessageMeta(BaseModel):
 
     provider: str | None = None
     """Source provider."""
-
-
-class ConversationMeta(BaseModel):
-    """Harmonized conversation metadata across providers."""
-
-    id: str | None = None
-    """Provider conversation ID."""
-
-    title: str | None = None
-    """Conversation title."""
-
-    created_at: datetime | None = None
-    """Creation timestamp."""
-
-    updated_at: datetime | None = None
-    """Last update timestamp."""
-
-    message_count: int = 0
-    """Number of messages."""
-
-    provider: str | None = None
-    """Source provider."""
-
-    # Provider-specific but commonly useful
-    project_path: str | None = None
-    """Project directory (Claude Code)."""
-
-    git_branch: str | None = None
-    """Git branch (Claude Code)."""
-
-    model: str | None = None
-    """Primary model used."""
-
-
-# =============================================================================
-# Protocol for viewport extraction
-# =============================================================================
-
-
-@runtime_checkable
-class SupportsViewports(Protocol):
-    """Protocol for objects that can provide viewport extractions."""
-
-    @property
-    def reasoning_traces(self) -> list[ReasoningTrace]:
-        """Extract all reasoning/thinking traces."""
-        ...
-
-    @property
-    def tool_calls(self) -> list[ToolCall]:
-        """Extract all tool invocations."""
-        ...
-
-    @property
-    def content_blocks(self) -> list[ContentBlock]:
-        """Extract all content blocks."""
-        ...
 
 
 # =============================================================================
