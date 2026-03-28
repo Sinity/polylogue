@@ -286,11 +286,7 @@ class ConversationQueryPlan:
         from polylogue.lib.semantic_facts import build_conversation_semantic_facts
 
         facts = build_conversation_semantic_facts(conversation)
-        affected_paths = tuple(
-            path.lower()
-            for message_facts in facts.message_facts
-            for path in message_facts.affected_paths
-        )
+        affected_paths = tuple(path.lower() for action in facts.action_facts for path in action.affected_paths)
         if not affected_paths:
             return False
         return all(
@@ -304,11 +300,7 @@ class ConversationQueryPlan:
         from polylogue.lib.semantic_facts import build_conversation_semantic_facts
 
         facts = build_conversation_semantic_facts(conversation)
-        categories = {
-            call.category.value
-            for message_facts in facts.message_facts
-            for call in message_facts.tool_calls
-        }
+        categories = {action.kind.value for action in facts.action_facts}
         if self.action_terms and not all(term in categories for term in self.action_terms):
             return False
         return not (

@@ -82,10 +82,18 @@ def _classify_message_range(
         msg = messages[i]
         if msg.is_user and msg.text and not msg.is_context_dump:
             user_text += " " + msg.text.lower()
+<<<<<<< HEAD
         for tc in _get_tool_calls(msg):
             cat = tc.category.value
+||||||| parent of dfd3d155 (refactor: add canonical action facts layer)
+        for tc in msg.tool_calls:
+            cat = tc.category.value
+=======
+        for action in msg.action_facts:
+            cat = action.kind.value
+>>>>>>> dfd3d155 (refactor: add canonical action facts layer)
             category_counts[cat] = category_counts.get(cat, 0) + 1
-            all_tools.append(tc.name)
+            all_tools.append(action.tool_name)
 
     # Check user text patterns first (strongest signal)
     text_lower = user_text.strip()
@@ -172,11 +180,19 @@ def _compute_phase_ranges(conversation: Conversation) -> list[tuple[int, int]]:
         sub_start = start
         prev_dominant = None
         for i in range(start, end):
+<<<<<<< HEAD
             calls = _get_tool_calls(messages[i])
             if calls:
                 dominant = calls[0].category.value
             else:
                 dominant = None
+||||||| parent of dfd3d155 (refactor: add canonical action facts layer)
+            calls = messages[i].tool_calls
+            dominant = calls[0].category.value if calls else None
+=======
+            actions = messages[i].action_facts
+            dominant = actions[0].kind.value if actions else None
+>>>>>>> dfd3d155 (refactor: add canonical action facts layer)
             if (
                 prev_dominant is not None
                 and dominant is not None
@@ -213,9 +229,19 @@ def extract_work_events(conversation: Conversation) -> list[WorkEvent]:
         file_paths: list[str] = []
         tools_used: list[str] = []
         for j in range(chunk_start, chunk_end):
+<<<<<<< HEAD
             for tc in _get_tool_calls(messages[j]):
                 tools_used.append(tc.name)
                 file_paths.extend(tc.affected_paths)
+||||||| parent of dfd3d155 (refactor: add canonical action facts layer)
+            for tc in messages[j].tool_calls:
+                tools_used.append(tc.name)
+                file_paths.extend(tc.affected_paths)
+=======
+            for action in messages[j].action_facts:
+                tools_used.append(action.tool_name)
+                file_paths.extend(action.affected_paths)
+>>>>>>> dfd3d155 (refactor: add canonical action facts layer)
 
         # Build summary from user messages in range
         user_texts = [
