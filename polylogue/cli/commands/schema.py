@@ -154,6 +154,7 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
         manifest = registry.load_cluster_manifest(provider)
 
         if json_output:
+<<<<<<< HEAD
             out: dict[str, Any] = {
                 "provider": provider,
                 "versions": versions,
@@ -167,6 +168,24 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
             if not versions and catalog is None:
                 click.echo(f"No schemas found for provider: {provider}")
                 return
+||||||| parent of 578f2ba1 (refactor: converge schema operator workflow surfaces)
+            if selected is None:
+                click.echo(json.dumps({"provider": provider, "versions": []}, indent=2))
+                return
+            payload: dict[str, Any] = {
+                "provider": selected.provider,
+                "versions": selected.versions,
+            }
+            if selected.catalog is not None:
+                payload["catalog"] = selected.catalog.to_dict()
+            if selected.manifest is not None:
+                payload["manifest"] = selected.manifest.to_dict()
+            click.echo(json.dumps(payload, indent=2))
+            return
+=======
+            click.echo(json.dumps(result.to_dict(), indent=2))
+            return
+>>>>>>> 578f2ba1 (refactor: converge schema operator workflow surfaces)
 
             click.echo(f"Provider: {provider}")
             click.echo(f"Versions: {', '.join(versions)}")
@@ -208,6 +227,7 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
                         if sample_count:
                             click.echo(f"Sample count: {sample_count:,}")
 
+<<<<<<< HEAD
             if manifest:
                 click.echo(f"\nEvidence manifest ({len(manifest.clusters)} clusters):")
                 for c in manifest.clusters:
@@ -219,6 +239,30 @@ def schema_list(env: AppEnv, provider: str | None, json_output: bool) -> None:
                     click.echo(f"  {c.cluster_id}: {c.sample_count:,} samples, confidence={c.confidence}{status}")
     else:
         providers = registry.list_providers()
+||||||| parent of 578f2ba1 (refactor: converge schema operator workflow surfaces)
+    if json_output:
+        click.echo(
+            json.dumps(
+                [
+                    {
+                        "provider": snapshot.provider,
+                        "versions": snapshot.versions,
+                        "package_count": len(snapshot.catalog.packages) if snapshot.catalog else 0,
+                        "default_version": snapshot.catalog.default_version if snapshot.catalog else None,
+                        "latest_version": snapshot.catalog.latest_version if snapshot.catalog else None,
+                        "cluster_count": len(snapshot.manifest.clusters) if snapshot.manifest else 0,
+                    }
+                    for snapshot in result.providers
+                ],
+                indent=2,
+            )
+        )
+        return
+=======
+    if json_output:
+        click.echo(json.dumps(result.to_dict(), indent=2))
+        return
+>>>>>>> 578f2ba1 (refactor: converge schema operator workflow surfaces)
 
         if json_output:
             result = []
@@ -279,7 +323,13 @@ def schema_compare(
         fail("schema compare", str(exc))
 
     if json_output:
+<<<<<<< HEAD
         click.echo(json.dumps(diff.to_dict(), indent=2))
+||||||| parent of 578f2ba1 (refactor: converge schema operator workflow surfaces)
+        click.echo(json.dumps(result.diff.to_dict(), indent=2))
+=======
+        click.echo(json.dumps(result.to_dict(), indent=2))
+>>>>>>> 578f2ba1 (refactor: converge schema operator workflow surfaces)
     elif md_output:
         click.echo(diff.to_markdown())
     else:
@@ -340,6 +390,7 @@ def schema_promote(
         fail("schema promote", str(exc))
 
     if json_output:
+<<<<<<< HEAD
         package = registry.get_package(provider, version=new_version)
         schema = registry.get_element_schema(provider, version=new_version)
         click.echo(json.dumps({
@@ -352,6 +403,24 @@ def schema_promote(
     else:
         click.echo(f"Promoted cluster {cluster_id} -> package {new_version}")
         click.echo(f"Schema package registered for {provider} as {new_version}")
+||||||| parent of 578f2ba1 (refactor: converge schema operator workflow surfaces)
+        click.echo(
+            json.dumps(
+                {
+                    "provider": result.provider,
+                    "cluster_id": result.cluster_id,
+                    "package_version": result.package_version,
+                    "package": result.package.to_dict() if result.package else None,
+                    "schema": result.schema,
+                },
+                indent=2,
+            )
+        )
+        return
+=======
+        click.echo(json.dumps(result.to_dict(), indent=2))
+        return
+>>>>>>> 578f2ba1 (refactor: converge schema operator workflow surfaces)
 
         # Show what's now available
         versions = registry.list_versions(provider)
@@ -388,10 +457,40 @@ def schema_explain(
         )
 
     if json_output:
+<<<<<<< HEAD
         payload: dict[str, Any] = {"schema": schema}
         if package is not None:
             payload["package"] = package.to_dict()
         click.echo(json.dumps(payload, indent=2))
+||||||| parent of 578f2ba1 (refactor: converge schema operator workflow surfaces)
+        payload: dict[str, Any] = {"schema": result.schema}
+        if result.package is not None:
+            payload["package"] = result.package.to_dict()
+        payload["annotations"] = {
+            "semantic_count": result.annotations.semantic_count,
+            "format_count": result.annotations.format_count,
+            "values_count": result.annotations.values_count,
+            "total_enum_values": result.annotations.total_enum_values,
+            "roles": [
+                {
+                    "path": role.path,
+                    "role": role.role,
+                    "confidence": role.confidence,
+                    "evidence": role.evidence,
+                }
+                for role in result.annotations.roles
+            ],
+            "coverage": {
+                "total_fields": result.annotations.coverage.total_fields,
+                "with_format": result.annotations.coverage.with_format,
+                "with_values": result.annotations.coverage.with_values,
+                "with_role": result.annotations.coverage.with_role,
+            },
+        }
+        click.echo(json.dumps(payload, indent=2))
+=======
+        click.echo(json.dumps(result.to_dict(), indent=2))
+>>>>>>> 578f2ba1 (refactor: converge schema operator workflow surfaces)
         return
 
     # Count annotations for summary line
