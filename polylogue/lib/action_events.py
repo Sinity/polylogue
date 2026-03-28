@@ -8,14 +8,16 @@ search/web targets, and message-scoped event identity.
 
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from polylogue.lib.hashing import hash_text_short
 from polylogue.lib.models import Message
-from polylogue.lib.viewports import ToolCall, ToolCategory
+from polylogue.lib.viewports import ToolCall, ToolCategory, classify_tool
 from polylogue.types import Provider
 
 _GIT_BRANCH_PATTERN = re.compile(r"git\s+(?:checkout|switch)\s+(?:-[bc]\s+)?(\S+)")
@@ -38,6 +40,86 @@ def _extract_first_string(mapping: dict[str, Any], fields: tuple[str, ...]) -> s
         if value is not None:
             return value
     return None
+
+
+def _normalized_mapping(value: object) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+    return {}
+
+
+def build_tool_calls_from_content_blocks(
+    *,
+    provider: Provider | str | None,
+    content_blocks: Sequence[Mapping[str, Any]],
+) -> tuple[ToolCall, ...]:
+    """Normalize canonical ToolCall viewports from content blocks.
+
+    This is the shared bridge for semantic facts and any future persisted
+    action indexing: one tool-use block becomes one ToolCall with the best
+    available paired tool_result output from the same message block stream.
+    """
+
+    normalized_provider = Provider.from_string(provider) if provider is not None else None
+    tool_result_outputs: dict[str, str] = {}
+    for block in content_blocks:
+        if str(block.get("type")) != "tool_result":
+            continue
+        tool_id = block.get("tool_id")
+        text = block.get("text")
+        if isinstance(tool_id, str) and tool_id and isinstance(text, str) and text:
+            tool_result_outputs.setdefault(tool_id, text)
+
+    calls: list[ToolCall] = []
+    for block in content_blocks:
+        if str(block.get("type")) != "tool_use":
+            continue
+        name = block.get("tool_name")
+        if not isinstance(name, str) or not name:
+            continue
+        tool_id = block.get("tool_id")
+        normalized_input = _normalized_mapping(block.get("tool_input"))
+        semantic_category = _tool_category_from_semantic(block.get("semantic_type"))
+        classified_category = classify_tool(name, normalized_input)
+        category = classified_category if semantic_category in (None, ToolCategory.OTHER) else semantic_category
+        raw = {
+            "type": block.get("type"),
+            "tool_name": name,
+            "tool_id": tool_id,
+            "tool_input": normalized_input,
+            "media_type": block.get("media_type"),
+            "metadata": _normalized_mapping(block.get("metadata")),
+            "semantic_type": block.get("semantic_type"),
+            "text": block.get("text"),
+        }
+        calls.append(
+            ToolCall(
+                name=name,
+                id=tool_id if isinstance(tool_id, str) and tool_id else None,
+                input=normalized_input,
+                output=tool_result_outputs.get(tool_id) if isinstance(tool_id, str) else None,
+                category=category,
+                provider=normalized_provider,
+                raw=raw,
+            )
+        )
+    return tuple(calls)
+
+
+def _tool_category_from_semantic(value: object) -> ToolCategory | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return ToolCategory(value)
+    except ValueError:
+        return None
 
 
 def _extract_search_query(call: ToolCall) -> str | None:
@@ -197,4 +279,9 @@ def build_action_events(message: Message, calls: tuple[ToolCall, ...]) -> tuple[
     )
 
 
-__all__ = ["ActionEvent", "build_action_event", "build_action_events"]
+__all__ = [
+    "ActionEvent",
+    "build_action_event",
+    "build_action_events",
+    "build_tool_calls_from_content_blocks",
+]
