@@ -9,8 +9,8 @@ from typing import Any
 
 from polylogue.lib.artifact_taxonomy import ArtifactKind, classify_artifact_path
 from polylogue.lib.raw_payload import build_raw_payload_envelope
+from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.runtime_registry import SchemaRegistry
-from polylogue.schemas.sampling import derive_bundle_scope, schema_cluster_id
 from polylogue.storage.backends.queries.mappers import _row_to_artifact_observation, _row_to_raw_conversation
 from polylogue.storage.store import (
     ArtifactCohortSummary,

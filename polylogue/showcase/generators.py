@@ -189,7 +189,7 @@ def generate_format_exercises() -> list[Exercise]:
 
 def generate_schema_exercises() -> list[Exercise]:
     """Generate schema verification exercises."""
-    from polylogue.schemas.sampling import PROVIDERS
+    from polylogue.schemas.observation import PROVIDERS
 
     exercises: list[Exercise] = []
 

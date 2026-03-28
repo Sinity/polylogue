@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
-from polylogue.schemas.sampling import SchemaUnit
 from polylogue.schemas.schema_generation import _build_provider_bundle, _collect_cluster_accumulators
 from polylogue.schemas.schema_inference import (
     PROVIDERS,

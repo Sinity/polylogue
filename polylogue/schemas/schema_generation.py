@@ -27,6 +27,14 @@ from polylogue.schemas.field_stats import (
     _collect_field_stats,
     is_dynamic_key,
 )
+from polylogue.schemas.observation import (
+    PROVIDERS,
+    ProviderConfig,
+    SchemaUnit,
+    profile_cluster_id,
+    profile_similarity,
+    resolve_provider_config,
+)
 from polylogue.schemas.packages import (
     SchemaElementManifest,
     SchemaPackageCatalog,
@@ -46,15 +54,7 @@ from polylogue.schemas.registry import ClusterManifest, SchemaCluster, SchemaReg
 from polylogue.schemas.relational_inference import (
     infer_relations,
 )
-from polylogue.schemas.sampling import (
-    PROVIDERS,
-    ProviderConfig,
-    SchemaUnit,
-    _resolve_provider_config,
-    iter_schema_units,
-    profile_cluster_id,
-    profile_similarity,
-)
+from polylogue.schemas.sampling import iter_schema_units
 from polylogue.schemas.semantic_inference import (
     infer_semantic_roles,
     select_best_roles,
@@ -1271,7 +1271,7 @@ def _build_provider_bundle(
             ),
         )
 
-    config = _resolve_provider_config(provider_token)
+    config = resolve_provider_config(provider_token)
 
     try:
         clusters, memberships, sample_count, artifact_counts = _collect_cluster_accumulators(
