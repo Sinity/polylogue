@@ -112,6 +112,12 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests (pipeline, CLI end-to-end)",
     "benchmark: marks benchmark tests (run with --benchmark-enable -p no:xdist -p no:randomly)",
+    "scale(level): parametric scale marker (small/medium/large/stretch)",
+    "machine_contract: marks root CLI JSON success/failure contract tests",
+    "query_routing: marks query-first CLI routing and read-surface tests",
+    "tui: marks Textual Mission Control interaction tests",
+    "chaos: marks ingestion hostility, interruption, and chronology tests",
+    "live: marks operator-run live archive validation lanes",
 ]
 filterwarnings = [
     "ignore::ResourceWarning",           # Unclosed sqlite3 connections in thread-local backend

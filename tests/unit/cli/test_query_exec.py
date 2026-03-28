@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.cli.query_plan import QueryAction, QueryRoute
 from polylogue.cli.types import AppEnv
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
@@ -34,6 +35,8 @@ from tests.infra.mutmut import preserved_mutmut_env
 # =============================================================================
 # Test Helpers for Building Test Data
 # =============================================================================
+
+pytestmark = pytest.mark.query_routing
 
 
 def _make_msg(
