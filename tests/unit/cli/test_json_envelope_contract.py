@@ -19,10 +19,11 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.cli.machine_errors import (
     MachineError,
-    MachineSuccess,
     emit_success,
     success,
 )
+
+pytestmark = pytest.mark.machine_contract
 
 
 # ---------------------------------------------------------------------------

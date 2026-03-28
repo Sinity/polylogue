@@ -16,7 +16,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass
@@ -39,6 +39,7 @@ def run_cli(
     env: dict[str, str] | None = None,
     cwd: Path | None = None,
     timeout: float = 60.0,
+    entrypoint: Literal["script", "module"] = "script",
 ) -> CliResult:
     """Run polylogue CLI as subprocess with isolated environment.
 
@@ -47,6 +48,8 @@ def run_cli(
         env: Environment variables to set (merged with minimal clean env)
         cwd: Working directory for the command
         timeout: Maximum execution time in seconds
+        entrypoint: ``script`` for the installed ``polylogue`` entrypoint,
+            ``module`` for ``python -m polylogue`` semantics
 
     Returns:
         CliResult with exit_code, stdout, stderr, and combined output
@@ -80,25 +83,47 @@ def run_cli(
     # arbitrary working directories via `cwd`.
     project_root = Path(__file__).parent.parent.parent
 
-    command = ["uv", "run", "--project", str(project_root), "polylogue"] + args
+    if entrypoint == "script":
+        command = ["uv", "run", "--project", str(project_root), "polylogue"] + args
+    elif entrypoint == "module":
+        command = [sys.executable, "-m", "polylogue"] + args
+    else:  # pragma: no cover - Literal keeps callers honest
+        raise ValueError(f"Unsupported entrypoint: {entrypoint}")
+
     if "MUTANT_UNDER_TEST" in clean_env:
         # Mutated subprocess code imports mutmut's trampoline helpers and
         # expects mutmut.config to be initialized before any mutated imports.
         project_root_literal = repr(str(project_root))
-        command = [
-            sys.executable,
-            "-c",
-            (
-                "import os, runpy, sys; "
-                "import mutmut.__main__ as _mutmut_main; "
-                "_mutmut_cwd = os.getcwd(); "
-                f"os.chdir({project_root_literal}); "
-                "_mutmut_main.ensure_config_loaded(); "
-                "os.chdir(_mutmut_cwd); "
-                "sys.argv = ['polylogue', *sys.argv[1:]]; "
-                "runpy.run_module('polylogue', run_name='__main__')"
-            ),
-        ] + args
+        if entrypoint == "script":
+            command = [
+                sys.executable,
+                "-c",
+                (
+                    "import os, runpy, sys; "
+                    "import mutmut.__main__ as _mutmut_main; "
+                    "_mutmut_cwd = os.getcwd(); "
+                    f"os.chdir({project_root_literal}); "
+                    "_mutmut_main.ensure_config_loaded(); "
+                    "os.chdir(_mutmut_cwd); "
+                    "sys.argv = ['polylogue', *sys.argv[1:]]; "
+                    "runpy.run_module('polylogue', run_name='__main__')"
+                ),
+            ] + args
+        else:
+            command = [
+                sys.executable,
+                "-c",
+                (
+                    "import os, runpy, sys; "
+                    "import mutmut.__main__ as _mutmut_main; "
+                    "_mutmut_cwd = os.getcwd(); "
+                    f"os.chdir({project_root_literal}); "
+                    "_mutmut_main.ensure_config_loaded(); "
+                    "os.chdir(_mutmut_cwd); "
+                    "sys.argv = ['polylogue', *sys.argv[1:]]; "
+                    "runpy.run_module('polylogue', run_name='__main__')"
+                ),
+            ] + args
 
     result = subprocess.run(
         command,

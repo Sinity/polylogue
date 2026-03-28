@@ -97,6 +97,36 @@ class ArtifactProofSummary(BaseModel):
     clean: bool
 
 
+class SemanticProofSummary(BaseModel):
+    """Per-surface semantic-preservation proof summary embedded in publication manifests."""
+
+    surface: str
+    total_conversations: int
+    provider_count: int
+    clean_conversations: int
+    critical_conversations: int
+    preserved_checks: int
+    declared_loss_checks: int
+    critical_loss_checks: int
+    metric_summary: dict[str, dict[str, int]] = Field(default_factory=dict)
+    clean: bool
+
+
+class SemanticProofSuiteSummary(BaseModel):
+    """Compact multi-surface semantic-proof summary embedded in publication manifests."""
+
+    surface_count: int
+    clean_surfaces: int
+    critical_surfaces: int
+    total_conversations: int
+    preserved_checks: int
+    declared_loss_checks: int
+    critical_loss_checks: int
+    metric_summary: dict[str, dict[str, int]] = Field(default_factory=dict)
+    surfaces: dict[str, SemanticProofSummary] = Field(default_factory=dict)
+    clean: bool
+
+
 class ArchivePublicationSummary(BaseModel):
     """Archive-scale summary embedded in publication manifests."""
 
@@ -139,4 +169,5 @@ class SitePublicationManifest(BaseModel):
     outputs: SiteOutputSummary
     latest_run: PublicationRunSummary | None = None
     artifact_proof: ArtifactProofSummary | None = None
+    semantic_proof: SemanticProofSuiteSummary | None = None
     artifacts: OutputManifest

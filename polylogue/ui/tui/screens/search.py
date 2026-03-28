@@ -1,37 +1,18 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import DataTable, Input
 from textual.widgets import Markdown as MarkdownWidget
 
-from polylogue.config import Config
 from polylogue.errors import DatabaseError
-
-if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
+from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 
 
-class Search(Container):
+class Search(RepositoryBoundContainer):
     """Search widget for finding conversations."""
-
-    def __init__(
-        self,
-        config: Config | None = None,
-        repository: ConversationRepository | None = None,
-    ) -> None:
-        super().__init__()
-        self.config = config
-        self._repository = repository
-
-    def _get_repo(self) -> ConversationRepository:
-        """Get the injected repository."""
-        if self._repository is None:
-            raise RuntimeError("Search widget requires an injected repository")
-        return self._repository
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -52,7 +33,7 @@ class Search(Container):
         if not query:
             return
 
-        repo = self._get_repo()
+        repo = self._get_repo("Search")
 
         # Perform search
         table = self.query_one("#search-results", DataTable)
@@ -85,20 +66,5 @@ class Search(Container):
         await self.load_conversation(conv_id)
 
     async def load_conversation(self, conversation_id: str) -> None:
-        """Load and display conversation content (duplicate logic from Browser)."""
-        repo = self._get_repo()
-
-        conv = await repo.get_eager(conversation_id)
-        if not conv:
-            self.query_one("#search-viewer", MarkdownWidget).update(f"Error: Could not load {conversation_id}")
-            return
-
-        md_lines = [f"# {conv.title or 'Untitled'}", f"*{conv.created_at}*", ""]
-
-        for msg in conv.messages:
-            role_icon = "👤" if msg.role == "user" else "🤖"
-            md_lines.append(f"### {role_icon} {(msg.role or 'unknown').upper()}")
-            md_lines.append(msg.text or "*[No content]*")
-            md_lines.append("")
-
-        self.query_one("#search-viewer", MarkdownWidget).update("\n".join(md_lines))
+        """Load and display conversation content."""
+        await self._load_conversation_markdown(conversation_id, viewer_selector="#search-viewer")

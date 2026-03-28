@@ -1,36 +1,15 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from textual.app import ComposeResult
-from textual.containers import Container, Horizontal, VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Markdown as MarkdownWidget
 from textual.widgets import Tree
 
-from polylogue.config import Config
-from polylogue.rendering.core import format_conversation_markdown
-
-if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
+from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 
 
-class Browser(Container):
+class Browser(RepositoryBoundContainer):
     """Browser widget for navigating conversations."""
-
-    def __init__(
-        self,
-        config: Config | None = None,
-        repository: ConversationRepository | None = None,
-    ) -> None:
-        super().__init__()
-        self.config = config
-        self._repository = repository
-
-    def _get_repo(self) -> ConversationRepository:
-        """Get the injected repository."""
-        if self._repository is None:
-            raise RuntimeError("Browser widget requires an injected repository")
-        return self._repository
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -44,7 +23,7 @@ class Browser(Container):
     async def _fetch_tree(self) -> None:
         """Fetch tree data asynchronously, then update DOM."""
         try:
-            repo = self._get_repo()
+            repo = self._get_repo("Browser")
 
             stats = await repo.get_archive_stats()
             providers = sorted(stats.providers.keys()) if stats.providers else []
@@ -83,12 +62,4 @@ class Browser(Container):
 
     async def load_conversation(self, conversation_id: str) -> None:
         """Load and display conversation content."""
-        repo = self._get_repo()
-
-        conv = await repo.get_eager(conversation_id)
-        if not conv:
-            self.query_one("#markdown-viewer", MarkdownWidget).update(f"Error: Could not load {conversation_id}")
-            return
-
-        md_text = format_conversation_markdown(conv)
-        self.query_one("#markdown-viewer", MarkdownWidget).update(md_text)
+        await self._load_conversation_markdown(conversation_id, viewer_selector="#markdown-viewer")

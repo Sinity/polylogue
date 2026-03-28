@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from textual.app import ComposeResult
 from textual.containers import Container, Grid
 from textual.widgets import Static
 
-from polylogue.config import Config
 from polylogue.logging import get_logger
+from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 from polylogue.ui.tui.widgets.stats import StatCard
-
-if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 
@@ -49,7 +44,7 @@ class ProviderBar(Static):
         return f"{self.provider[:16]:<16} {bar} {self.count:>6}"
 
 
-class Dashboard(Container):
+class Dashboard(RepositoryBoundContainer):
     """Enhanced dashboard widget with embedding stats and provider breakdown."""
 
     DEFAULT_CSS = """
@@ -79,21 +74,6 @@ class Dashboard(Container):
     }
     """
 
-    def __init__(
-        self,
-        config: Config | None = None,
-        repository: ConversationRepository | None = None,
-    ) -> None:
-        super().__init__()
-        self.config = config
-        self._repository = repository
-
-    def _get_repo(self) -> ConversationRepository:
-        """Get the injected repository."""
-        if self._repository is None:
-            raise RuntimeError("Dashboard widget requires an injected repository")
-        return self._repository
-
     def compose(self) -> ComposeResult:
         # Grid for stats
         with Grid(id="stats-grid"):
@@ -115,7 +95,7 @@ class Dashboard(Container):
     async def _fetch_stats(self) -> None:
         """Fetch stats asynchronously, then update DOM."""
         try:
-            repo = self._get_repo()
+            repo = self._get_repo("Dashboard")
             stats = await repo.get_archive_stats()
         except Exception as e:
             self.notify(f"Failed to load stats: {e}", severity="error")

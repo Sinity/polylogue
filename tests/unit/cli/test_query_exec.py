@@ -7,24 +7,21 @@ clearest specification.
 
 from __future__ import annotations
 
-import subprocess
-import tempfile
-import webbrowser
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import click
 import pytest
 
-from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.query_plan import QueryAction, QueryRoute
 from polylogue.cli.types import AppEnv
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.services import build_runtime_services
+
+pytestmark = pytest.mark.query_routing
 
 
 def _make_msg(id: str, role: str, text: str, *, timestamp=None, provider_meta=None) -> Message:

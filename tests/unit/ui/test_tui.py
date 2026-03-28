@@ -3,12 +3,14 @@ from textual.widgets import DataTable, Input, TabbedContent, Tree
 
 try:
     from polylogue.ui.tui.app import PolylogueApp
+    from polylogue.ui.tui.screens.base import RepositoryBoundContainer
     from polylogue.ui.tui.screens.dashboard import Dashboard, ProviderBar
     from polylogue.ui.tui.widgets.stats import StatCard
 except ImportError:
     # Textual might not be installed in some envs
     PolylogueApp = None
 
+pytestmark = pytest.mark.tui
 _skip = pytest.mark.skipif(PolylogueApp is None, reason="Textual not installed")
 
 
@@ -167,9 +169,9 @@ async def test_browser_node_selection(storage_repository, conversation_builder):
             from textual.widgets import Markdown as MarkdownWidget
 
             viewer = pilot.app.query_one("#markdown-viewer", MarkdownWidget)
-            # The viewer should have been updated (not the default empty)
-            # We can't easily read Markdown widget content, but we can check it mounted
             assert viewer is not None
+            assert "Test Chat" in viewer.source
+            assert "Hello World" in viewer.source
 
 
 @_skip
@@ -233,6 +235,15 @@ async def test_search_flow(storage_repository, conversation_builder):
         # Verify the found row key matches our conversation
         row_key = next(iter(table.rows))
         assert row_key.value == "c1"
+
+        from textual.widgets import Markdown as MarkdownWidget
+
+        table.move_cursor(row=0)
+        table.action_select_cursor()
+        await pilot.pause()
+
+        viewer = pilot.app.query_one("#search-viewer", MarkdownWidget)
+        assert "UniqueSearchTerm123" in viewer.source
 
 
 @_skip
@@ -316,14 +327,53 @@ async def test_dark_mode_toggle(storage_repository):
     """Press 'd' → assert dark mode toggles without crashing."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
-        # The 'd' key is bound to action_toggle_dark
-        # Just verify it doesn't crash — dark mode is a Textual theme feature
         await pilot.press("d")
         await pilot.pause()
+        assert pilot.app.theme == "textual-light"
         await pilot.press("d")
         await pilot.pause()
-        # If we reach here, the toggle didn't crash
+        assert pilot.app.theme == "textual-dark"
         assert pilot.app.query_one(Dashboard)
+
+
+@_skip
+@pytest.mark.asyncio
+async def test_search_missing_index_shows_rebuild_hint(storage_repository, conversation_builder):
+    """Dropping FTS tables yields a direct rebuild hint instead of a crash."""
+    from polylogue.storage.backends.connection import open_connection
+
+    conversation_builder("c1").add_message("m1", text="Reindex me").save()
+
+    with open_connection(storage_repository.backend.db_path) as conn:
+        conn.execute("DROP TABLE IF EXISTS messages_fts")
+        conn.commit()
+
+    app = _make_app(storage_repository)
+    async with app.run_test() as pilot:
+        tabs = pilot.app.query_one(TabbedContent)
+        tabs.active = "search"
+        await pilot.pause()
+
+        inp = pilot.app.query_one("#search-input", Input)
+        inp.focus()
+        inp.value = "Reindex"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        table = pilot.app.query_one("#search-results", DataTable)
+        assert table.row_count == 1
+        row = table.get_row_at(0)
+        assert "Search index not built" in str(row[2])
+
+
+def test_repository_bound_container_requires_injected_repo():
+    class DummyScreen(RepositoryBoundContainer):
+        pass
+
+    screen = DummyScreen()
+
+    with pytest.raises(RuntimeError, match="DummyScreen widget requires an injected repository"):
+        screen._get_repo("DummyScreen")
 
 
 @_skip
