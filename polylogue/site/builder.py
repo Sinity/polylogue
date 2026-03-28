@@ -12,12 +12,17 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jinja2 import DictLoader, Environment, select_autoescape
 
 from polylogue.lib.log import get_logger
 from polylogue.paths import safe_path_component
 from polylogue.rendering.renderers.html import MarkdownRenderer, PygmentsHighlighter
+
+if TYPE_CHECKING:
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 
@@ -242,14 +247,7 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
             </div>
         </header>
 
-        <div id="search" style="margin-bottom: 2rem;"></div>
-        <link href="/_pagefind/pagefind-ui.css" rel="stylesheet">
-        <script src="/_pagefind/pagefind-ui.js"></script>
-        <script>
-            window.addEventListener('DOMContentLoaded', function() {
-                new PagefindUI({ element: "#search", showSubResults: true });
-            });
-        </script>
+        {{ search_markup | safe }}
 
         {% if providers %}
         <div class="sidebar">
@@ -712,6 +710,9 @@ class SiteBuilder:
         self,
         output_dir: Path,
         config: SiteConfig | None = None,
+        *,
+        backend: SQLiteBackend | None = None,
+        repository: ConversationRepository | None = None,
     ) -> None:
         """Initialize site builder.
 
@@ -721,6 +722,11 @@ class SiteBuilder:
         """
         self.output_dir = Path(output_dir)
         self.config = config or SiteConfig()
+        if repository is not None and backend is None:
+            backend = repository.backend
+        self._backend = backend
+        self._repository = repository
+        self._owns_storage = backend is None and repository is None
 
         # Set up markdown rendering with syntax highlighting
         self._highlighter = PygmentsHighlighter()
@@ -747,14 +753,17 @@ class SiteBuilder:
             enable_async=True,
         )
 
-    @staticmethod
-    def _open_storage():
-        """Create the canonical storage pair used by site generation."""
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
-        from polylogue.storage.repository import ConversationRepository
+    def _open_storage(self) -> tuple[SQLiteBackend, ConversationRepository]:
+        """Return the canonical storage pair used by site generation."""
+        if self._backend is None:
+            from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
-        backend = SQLiteBackend()
-        return backend, ConversationRepository(backend=backend)
+            self._backend = SQLiteBackend()
+        if self._repository is None:
+            from polylogue.storage.repository import ConversationRepository
+
+            self._repository = ConversationRepository(backend=self._backend)
+        return self._backend, self._repository
 
     def build(self, incremental: bool = True) -> dict[str, int]:
         """Build complete static site (sync entry point).
@@ -771,27 +780,32 @@ class SiteBuilder:
     async def _build_async(self, incremental: bool = True) -> dict[str, int]:
         """Async implementation of the site build."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # Build conversation index
+            conversations = await self._build_index()
 
-        # Build conversation index
-        conversations = await self._build_index()
+            # Generate pages (index pages always rebuilt; conversation pages respect incremental)
+            self._generate_root_index(conversations)
+            provider_count = self._generate_provider_indexes(conversations)
+            conv_pages = await self._generate_conversation_pages(conversations, incremental=incremental)
 
-        # Generate pages (index pages always rebuilt; conversation pages respect incremental)
-        self._generate_root_index(conversations)
-        provider_count = self._generate_provider_indexes(conversations)
-        conv_pages = await self._generate_conversation_pages(conversations, incremental=incremental)
+            if self.config.include_dashboard:
+                self._generate_dashboard(conversations)
 
-        if self.config.include_dashboard:
-            self._generate_dashboard(conversations)
+            # Generate search index
+            if self.config.enable_search:
+                self._generate_search_index(conversations)
 
-        # Generate search index
-        if self.config.enable_search:
-            self._generate_search_index(conversations)
-
-        return {
-            "conversations": len(conversations),
-            "conversation_pages": conv_pages,
-            "index_pages": 1 + provider_count + (1 if self.config.include_dashboard else 0),
-        }
+            return {
+                "conversations": len(conversations),
+                "conversation_pages": conv_pages,
+                "index_pages": 1 + provider_count + (1 if self.config.include_dashboard else 0),
+            }
+        finally:
+            if self._owns_storage and self._backend is not None:
+                await self._backend.close()
+                self._backend = None
+                self._repository = None
 
     async def _build_index(self) -> list[ConversationIndex]:
         """Build index of all conversations.
@@ -950,6 +964,7 @@ class SiteBuilder:
         html = template.render(
             title=self.config.title,
             description=self.config.description,
+            search_markup=self._search_markup(),
             conversations=conversations[:self.config.conversations_per_page],
             total_conversations=len(conversations),
             total_messages=total_messages,
@@ -983,6 +998,7 @@ class SiteBuilder:
             html = template.render(
                 title=f"{provider} | {self.config.title}",
                 description=f"Conversations from {provider}",
+                search_markup=self._search_markup(),
                 conversations=convs,
                 total_conversations=len(convs),
                 total_messages=total_messages,
@@ -1023,6 +1039,83 @@ class SiteBuilder:
             self._generate_pagefind_config()
         else:
             self._generate_lunr_index(conversations)
+
+    def _search_markup(self) -> str:
+        """Render the search UI snippet for index pages."""
+        if not self.config.enable_search:
+            return ""
+        if self.config.search_provider == "pagefind":
+            return """
+        <div id="search" style="margin-bottom: 2rem;"></div>
+        <link href="/_pagefind/pagefind-ui.css" rel="stylesheet">
+        <script src="/_pagefind/pagefind-ui.js"></script>
+        <script>
+            window.addEventListener('DOMContentLoaded', function() {
+                new PagefindUI({ element: "#search", showSubResults: true });
+            });
+        </script>
+"""
+        return """
+        <div class="search-panel" style="margin-bottom: 2rem;">
+            <input id="search-input" type="search" placeholder="Search conversations..." style="width: 100%; padding: 0.85rem 1rem; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary);" />
+            <p id="search-status" style="margin-top: 0.75rem; color: var(--text-secondary);"></p>
+            <ul id="search-results" class="conversation-list" style="margin-top: 1rem; display: none;"></ul>
+        </div>
+        <script>
+            window.addEventListener('DOMContentLoaded', async function() {
+                const input = document.getElementById('search-input');
+                const status = document.getElementById('search-status');
+                const results = document.getElementById('search-results');
+                const archiveList = document.querySelector('.conversation-list');
+                let docs = [];
+                try {
+                    const response = await fetch('/search-index.json');
+                    docs = response.ok ? await response.json() : [];
+                } catch (error) {
+                    status.textContent = 'Search index unavailable.';
+                    return;
+                }
+
+                function renderResults(query) {
+                    const term = query.trim().toLowerCase();
+                    if (!term) {
+                        results.style.display = 'none';
+                        results.innerHTML = '';
+                        archiveList.style.display = '';
+                        status.textContent = '';
+                        return;
+                    }
+
+                    archiveList.style.display = 'none';
+                    const matches = docs.filter((doc) => {
+                        return [doc.title, doc.provider, doc.preview]
+                            .filter(Boolean)
+                            .join(' ')
+                            .toLowerCase()
+                            .includes(term);
+                    }).slice(0, 50);
+
+                    results.innerHTML = matches.map((doc) => `
+                        <li class="conversation-card">
+                            <a href="${doc.path}" class="conversation-link">
+                                <h2 class="conversation-title">${doc.title}</h2>
+                                <div class="conversation-meta">
+                                    <span class="badge">${doc.provider}</span>
+                                    <span>${doc.preview || ''}</span>
+                                </div>
+                            </a>
+                        </li>
+                    `).join('');
+                    results.style.display = matches.length ? '' : 'none';
+                    status.textContent = matches.length
+                        ? `${matches.length} result(s)`
+                        : 'No conversations matched.';
+                }
+
+                input.addEventListener('input', (event) => renderResults(event.target.value));
+            });
+        </script>
+"""
 
     def _generate_pagefind_config(self) -> None:
         """Generate pagefind index.

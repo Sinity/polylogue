@@ -360,7 +360,7 @@ async def run_sources(
                 )
                 render_service = RenderService(
                     renderer=renderer,
-                    render_root=config.archive_root / "render",
+                    render_root=config.render_root,
                     backend=active_backend,
                 )
                 render_result = await render_service.render_conversations(

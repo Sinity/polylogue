@@ -71,8 +71,6 @@ def embed_command(
     """
     import os
 
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
-    from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_providers import create_vector_provider
 
     # Check for API key
@@ -98,8 +96,7 @@ def embed_command(
     if model != "voyage-4":
         vec_provider.model = model
 
-    backend = SQLiteBackend()
-    repo = ConversationRepository(backend=backend)
+    repo = env.repository
 
     # Embed specific conversation
     if conversation:
@@ -114,7 +111,7 @@ def _show_embedding_stats(env: AppEnv) -> None:
     """Display embedding statistics."""
     from polylogue.storage.backends.connection import open_connection
 
-    with open_connection(None) as conn:
+    with open_connection(env.config.db_path) as conn:
         # Total conversations
         total_convs = conn.execute(
             "SELECT COUNT(*) FROM conversations"
