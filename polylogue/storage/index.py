@@ -4,7 +4,6 @@ import sqlite3
 from collections.abc import Iterable, Sequence
 
 from .backends.sqlite import connection_context, open_connection
-from .search_providers import create_vector_provider
 
 
 def ensure_index(conn: sqlite3.Connection) -> None:
@@ -18,7 +17,6 @@ def ensure_index(conn: sqlite3.Connection) -> None:
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
             message_id UNINDEXED,
             conversation_id UNINDEXED,
-            provider_name UNINDEXED,
             content
         );
         """
@@ -39,24 +37,24 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
         db_conn.execute("DELETE FROM messages_fts")
         db_conn.execute(
             """
-            INSERT INTO messages_fts (message_id, conversation_id, provider_name, content)
-            SELECT messages.message_id, messages.conversation_id, conversations.provider_name, messages.text
+            INSERT INTO messages_fts (message_id, conversation_id, content)
+            SELECT messages.message_id, messages.conversation_id, messages.text
             FROM messages
-            JOIN conversations ON conversations.conversation_id = messages.conversation_id
             WHERE messages.text IS NOT NULL
             """
         )
 
         # Optional Qdrant support via vector provider
-        vector_provider = create_vector_provider()
-        if vector_provider:
-            from .index_qdrant import update_qdrant_for_conversations
-
-            rows = db_conn.execute("SELECT conversation_id FROM conversations").fetchall()
-            ids = [row["conversation_id"] for row in rows]
-            update_qdrant_for_conversations(ids, db_conn)
-
         db_conn.commit()
+
+        # Optional Qdrant support via vector provider
+        # vector_provider = create_vector_provider()
+        # if vector_provider:
+        #     from .index_qdrant import update_qdrant_for_conversations
+        #
+        #     rows = db_conn.execute("SELECT conversation_id FROM conversations").fetchall()
+        #     ids = [row["conversation_id"] for row in rows]
+        #     update_qdrant_for_conversations(ids, db_conn)
 
     with connection_context(conn) as db_conn:
         _do(db_conn)
@@ -78,14 +76,8 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
     def _do(db_conn: sqlite3.Connection) -> None:
         ensure_index(db_conn)
 
-        # Build provider_map in a single query for all conversation IDs
         all_ids = list(conversation_ids)
         placeholders = ", ".join("?" for _ in all_ids)
-        provider_map_rows = db_conn.execute(
-            f"SELECT conversation_id, provider_name FROM conversations WHERE conversation_id IN ({placeholders})",
-            tuple(all_ids),
-        ).fetchall()
-        provider_map = {row["conversation_id"]: row["provider_name"] for row in provider_map_rows}
 
         # SQLite FTS Update - single delete then batch insert
         db_conn.execute(
@@ -104,24 +96,21 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
         ).fetchall()
 
         # Build batch for executemany
-        fts_batch = [
-            (row["message_id"], row["conversation_id"], provider_map.get(row["conversation_id"], ""), row["text"])
-            for row in message_rows
-            if row["conversation_id"] in provider_map
-        ]
+        fts_batch = [(row["message_id"], row["conversation_id"], row["text"]) for row in message_rows]
 
         if fts_batch:
             db_conn.executemany(
-                "INSERT INTO messages_fts (message_id, conversation_id, provider_name, content) VALUES (?, ?, ?, ?)",
+                "INSERT INTO messages_fts (message_id, conversation_id, content) VALUES (?, ?, ?)",
                 fts_batch,
             )
 
         # Optional Qdrant support via vector provider
-        vector_provider = create_vector_provider()
-        if vector_provider:
-            from .index_qdrant import update_qdrant_for_conversations
-
-            update_qdrant_for_conversations(all_ids, db_conn)
+        # Optional Qdrant support via vector provider
+        # vector_provider = create_vector_provider()
+        # if vector_provider:
+        #     from .index_qdrant import update_qdrant_for_conversations
+        #
+        #     update_qdrant_for_conversations(all_ids, db_conn)
 
         db_conn.commit()
 

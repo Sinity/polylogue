@@ -18,16 +18,28 @@ Strategies are organized by domain:
 - adversarial: Malformed/attack data for security testing
 """
 
+from tests.strategies.adversarial import (
+    malformed_json_strategy,
+    path_traversal_strategy,
+    sql_injection_strategy,
+)
+from tests.strategies.filters import (
+    filter_arg_strategy,
+    filter_chain_strategy,
+    filter_type_strategy,
+)
 from tests.strategies.messages import (
     content_block_strategy,
     conversation_strategy,
     message_strategy,
+    parsed_attachment_model_strategy,
+    parsed_conversation_model_strategy,
+    parsed_message_model_strategy,
     parsed_message_strategy,
     text_content_strategy,
     thinking_block_strategy,
     tool_use_block_strategy,
 )
-
 from tests.strategies.providers import (
     chatgpt_export_strategy,
     chatgpt_message_node_strategy,
@@ -36,23 +48,14 @@ from tests.strategies.providers import (
     codex_message_strategy,
 )
 
-from tests.strategies.filters import (
-    filter_arg_strategy,
-    filter_chain_strategy,
-    filter_type_strategy,
-)
-
-from tests.strategies.adversarial import (
-    malformed_json_strategy,
-    path_traversal_strategy,
-    sql_injection_strategy,
-)
-
 __all__ = [
     # Messages
     "content_block_strategy",
     "conversation_strategy",
     "message_strategy",
+    "parsed_attachment_model_strategy",
+    "parsed_conversation_model_strategy",
+    "parsed_message_model_strategy",
     "parsed_message_strategy",
     "text_content_strategy",
     "thinking_block_strategy",

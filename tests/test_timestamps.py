@@ -10,8 +10,7 @@ from datetime import datetime
 
 import pytest
 
-from polylogue.core.timestamps import format_timestamp, parse_timestamp
-
+from polylogue.lib.timestamps import format_timestamp, parse_timestamp
 
 # =============================================================================
 # PARSE TIMESTAMP - PARAMETRIZED (1 test replacing 11 parsing tests)

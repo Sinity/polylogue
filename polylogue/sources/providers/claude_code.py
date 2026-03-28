@@ -259,9 +259,8 @@ class ClaudeCodeRecord(BaseModel):
             if isinstance(content, list):
                 texts = []
                 for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            texts.append(block.get("text", ""))
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        texts.append(block.get("text", ""))
                 return "\n".join(texts)
 
         return ""

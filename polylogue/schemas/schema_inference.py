@@ -15,8 +15,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +27,8 @@ except ImportError:
 
 
 # Default database path - use same location as main storage backend
+import contextlib
+
 from polylogue.storage.backends.sqlite import default_db_path
 
 DEFAULT_DB_PATH = default_db_path()
@@ -106,9 +107,7 @@ def is_dynamic_key(key: str) -> bool:
         return True
     if re.match(r"^[0-9a-f]{24,}$", key, re.IGNORECASE):
         return True
-    if re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE):
-        return True
-    return False
+    return bool(re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE))
 
 
 def collapse_dynamic_keys(schema: dict[str, Any]) -> dict[str, Any]:
@@ -191,24 +190,33 @@ def load_samples_from_db(
 
     try:
         limit_clause = f"LIMIT {max_samples}" if max_samples else ""
+
+        # Load from raw_conversations table (new approach)
         rows = conn.execute(f"""
-            SELECT m.provider_meta
-            FROM messages m
-            JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name = ?
-            AND m.provider_meta IS NOT NULL
+            SELECT raw_content, provider_name
+            FROM raw_conversations
+            WHERE provider_name = ?
             {limit_clause}
         """, (provider_name,)).fetchall()
 
         for row in rows:
             try:
-                meta = json.loads(row[0])
-                # Extract 'raw' field if present
-                if "raw" in meta and isinstance(meta["raw"], dict):
-                    samples.append(meta["raw"])
+                content = row[0]
+                if isinstance(content, bytes):
+                    content = content.decode("utf-8")
+
+                provider = row[1]
+
+                # JSONL providers: parse first line
+                if provider in ("claude-code", "codex", "gemini"):
+                    for line in content.strip().split("\n"):
+                        if line.strip():
+                            samples.append(json.loads(line))
+                            break
                 else:
-                    samples.append(meta)
-            except json.JSONDecodeError:
+                    # JSON providers: parse whole content
+                    samples.append(json.loads(content))
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 pass
     finally:
         conn.close()
@@ -248,10 +256,8 @@ def load_samples_from_sessions(
             with open(path, encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
-                        try:
+                        with contextlib.suppress(json.JSONDecodeError):
                             samples.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            pass
         except OSError:
             pass
 
@@ -284,6 +290,44 @@ def get_sample_count_from_db(
 # =============================================================================
 
 
+def _remove_nested_required(schema: dict, depth: int = 0) -> dict:
+    """Remove 'required' arrays from nested objects.
+
+    Genson marks fields as required if they appear in all samples, but this
+    is too strict for real data where fields can be optional. We keep top-level
+    required (depth=0) but remove from nested objects.
+
+    Args:
+        schema: JSON schema dict
+        depth: Current nesting depth (0 = root)
+
+    Returns:
+        Modified schema with nested required arrays removed
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    # Remove 'required' from nested objects (depth > 0)
+    if depth > 0 and "required" in schema:
+        del schema["required"]
+
+    # Recurse into properties
+    if "properties" in schema:
+        for key, prop in schema["properties"].items():
+            schema["properties"][key] = _remove_nested_required(prop, depth + 1)
+
+    # Recurse into items (arrays)
+    if "items" in schema:
+        schema["items"] = _remove_nested_required(schema["items"], depth + 1)
+
+    # Handle anyOf/oneOf/allOf
+    for key in ("anyOf", "oneOf", "allOf"):
+        if key in schema:
+            schema[key] = [_remove_nested_required(s, depth + 1) for s in schema[key]]
+
+    return schema
+
+
 def generate_schema_from_samples(samples: list[dict]) -> dict[str, Any]:
     """Generate JSON schema from samples using genson.
 
@@ -305,6 +349,10 @@ def generate_schema_from_samples(samples: list[dict]) -> dict[str, Any]:
 
     schema = builder.to_schema()
     schema = collapse_dynamic_keys(schema)
+
+    # Remove required arrays from nested objects - genson is too strict
+    schema = _remove_nested_required(schema)
+
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
 
     return schema

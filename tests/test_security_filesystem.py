@@ -10,15 +10,13 @@ Tests cover:
 - Attachment path validation
 """
 
-import os
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from polylogue.importers.base import ParsedAttachment
+from polylogue.sources.parsers.base import ParsedAttachment
 from polylogue.storage.store import AttachmentRecord
-
 
 # =============================================================================
 # PATH TRAVERSAL TESTS (6 tests)
@@ -249,8 +247,9 @@ def test_symlink_circular_reference():
 def test_zip_bomb_compression_ratio_blocked(tmp_path):
     """ZIP entries with suspicious compression ratios are skipped."""
     import zipfile
-    from polylogue.ingestion.source import MAX_COMPRESSION_RATIO, iter_source_conversations
+
     from polylogue.paths import Source
+    from polylogue.sources.source import iter_source_conversations
 
     # Create a ZIP with a file that has high compression ratio
     # A file of zeros compresses extremely well (ratio > 100x)
@@ -268,7 +267,7 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path):
     cursor_state: dict = {}
 
     # Collect all payloads - the bomb.json should be skipped due to ratio
-    payloads = list(iter_source_conversations(source, cursor_state=cursor_state))
+    list(iter_source_conversations(source, cursor_state=cursor_state))
 
     # Check that failed_files mentions the suspicious ratio if present
     failed = cursor_state.get("failed_files", [])
@@ -288,7 +287,7 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path):
 
 def test_zip_oversized_file_limit_constant(tmp_path):
     """ZIP max size limit constant is reasonable."""
-    from polylogue.ingestion.source import MAX_UNCOMPRESSED_SIZE
+    from polylogue.sources.source import MAX_UNCOMPRESSED_SIZE
 
     # Verify the constant exists and is reasonable (500MB)
     assert MAX_UNCOMPRESSED_SIZE == 500 * 1024 * 1024  # 500MB
@@ -306,8 +305,9 @@ def test_zip_path_traversal_filenames_handled(tmp_path):
     with suspicious names are either processed safely or skipped.
     """
     import zipfile
-    from polylogue.ingestion.source import iter_source_conversations
+
     from polylogue.paths import Source
+    from polylogue.sources.source import iter_source_conversations
 
     zip_path = tmp_path / "traversal.zip"
     json_content = b'{"id": "traversal-test", "messages": [{"role": "user", "content": "test"}]}'
@@ -483,3 +483,70 @@ def test_attachment_record_empty_ids_rejected():
             mime_type="text/plain",
             size_bytes=1024,
         )
+
+
+# =============================================================================
+# PROPERTY-BASED SECURITY TESTS (using adversarial strategies)
+# =============================================================================
+
+
+from hypothesis import given, settings
+
+from tests.strategies.adversarial import (
+    control_char_strategy,
+    path_traversal_strategy,
+    symlink_path_strategy,
+)
+
+
+@given(path_traversal_strategy())
+@settings(max_examples=100)
+def test_path_traversal_creates_valid_attachment(malicious_path: str):
+    """Property: Path traversal inputs don't crash ParsedAttachment creation.
+
+    NOTE: This test verifies that attachment creation doesn't crash.
+    Path sanitization happens at a different layer (storage/file operations).
+    """
+    att = ParsedAttachment(
+        provider_attachment_id="att-traversal",
+        path=malicious_path,
+        name=malicious_path,
+    )
+
+    # Should create without crashing
+    assert att is not None
+    # Name should be set (may not be sanitized at this layer)
+    assert att.name is not None or att.path is not None
+
+
+@given(symlink_path_strategy())
+@settings(max_examples=50)
+def test_symlink_paths_create_valid_attachment(symlink_path: str):
+    """Property: Symlink path inputs don't crash attachment creation."""
+    att = ParsedAttachment(
+        provider_attachment_id="att-symlink",
+        path=symlink_path,
+        name=symlink_path,
+    )
+
+    # Should create without crashing
+    assert att is not None
+
+
+@given(control_char_strategy())
+@settings(max_examples=100)
+def test_control_characters_stripped(text_with_control: str):
+    """Property: Control characters are stripped from filenames."""
+    att = ParsedAttachment(
+        provider_attachment_id="att-control",
+        path=text_with_control,
+        name=text_with_control,
+    )
+
+    sanitized = att.name or ""
+
+    # Control characters (0x00-0x1f, 0x7f) should be removed
+    for char in sanitized:
+        ord_char = ord(char)
+        assert ord_char >= 0x20 and ord_char != 0x7f, \
+            f"Control char not stripped: {repr(char)} (0x{ord_char:02x})"

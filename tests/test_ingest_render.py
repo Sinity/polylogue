@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 
 from polylogue.export import export_jsonl
-from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.paths import is_within_root
 from polylogue.rendering.renderers import HTMLRenderer
+from polylogue.sources import IngestBundle, ingest_bundle
 from polylogue.storage.backends.sqlite import open_connection
 from tests.helpers import make_attachment, make_conversation, make_message
 

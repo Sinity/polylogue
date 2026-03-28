@@ -43,7 +43,7 @@ class TestReciprocalRankFusion:
         fused = reciprocal_rank_fusion(list1, list2, k=60)
 
         # Each item appears in both lists, so scores are doubled
-        scores = {item_id: score for item_id, score in fused}
+        scores = dict(fused)
 
         # Score for rank 1: 1/(60+1) = 0.0164, doubled = 0.0328
         expected_msg1_score = 2 * (1.0 / 61)
@@ -69,7 +69,7 @@ class TestReciprocalRankFusion:
         fused = reciprocal_rank_fusion(fts_results, vec_results, k=60)
 
         # msg2 should rank highest (appears in both, good ranks in both)
-        scores = {item_id: score for item_id, score in fused}
+        scores = dict(fused)
 
         # msg2: rank 2 in fts (1/62) + rank 1 in vec (1/61) = higher than msg1
         # msg1: rank 1 in fts (1/61) + rank 2 in vec (1/62) = same as msg2 actually

@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+from pathlib import Path
 
 import pytest
+
+from polylogue.lib.messages import MessageCollection
 
 
 @pytest.fixture(autouse=True)
 def _clear_polylogue_env(monkeypatch):
     # Reset the container singleton to ensure clean state between tests
-    from polylogue.cli.container import reset_container
+    from polylogue.services import reset
 
-    reset_container()
+    reset()
 
     # Clear thread-local database state to prevent connection leaks between tests
     # Import db module fresh each time to handle module reloads from other tests
@@ -22,10 +27,8 @@ def _clear_polylogue_env(monkeypatch):
         if state is not None:
             conn = state.get("conn")
             if conn is not None:
-                try:
+                with contextlib.suppress(Exception):
                     conn.close()
-                except Exception:
-                    pass
             state["conn"] = None
             state["path"] = None
             state["depth"] = 0
@@ -73,24 +76,22 @@ def workspace_env(tmp_path, monkeypatch):
     # Order matters: paths first, then modules that import from paths
     import importlib
 
-    import polylogue.paths
     import polylogue.config
-    import polylogue.container
-    import polylogue.cli.container
+    import polylogue.paths
+    import polylogue.services
     import polylogue.storage.backends.sqlite
     import polylogue.storage.search
 
     importlib.reload(polylogue.paths)
     importlib.reload(polylogue.config)  # Depends on paths
-    importlib.reload(polylogue.container)  # Depends on config
-    importlib.reload(polylogue.cli.container)  # Depends on container
+    importlib.reload(polylogue.services)  # Depends on config
     importlib.reload(polylogue.storage.backends.sqlite)
     importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
 
-    # Reset container singleton to use fresh config
-    from polylogue.cli.container import reset_container
+    # Reset services singleton to use fresh config
+    from polylogue.services import reset
 
-    reset_container()
+    reset()
 
     return {
         "config_path": config_dir / "config.json",
@@ -107,7 +108,8 @@ def db_without_fts(tmp_path):
 
     db_path = tmp_path / "no_fts.db"
     with open_connection(db_path) as conn:
-        # Drop the FTS table to simulate fresh install state
+        # Drop the FTS table and triggers to simulate fresh install state
+        conn.execute("DROP TRIGGER IF EXISTS messages_fts_insert")
         conn.execute("DROP TABLE IF EXISTS messages_fts")
         conn.commit()
     return db_path
@@ -146,10 +148,10 @@ def storage_repository(workspace_env):
     creating the default backend.
     """
     from polylogue.storage.backends.sqlite import create_default_backend
-    from polylogue.storage.repository import StorageRepository
+    from polylogue.storage.repository import ConversationRepository
 
     backend = create_default_backend()
-    return StorageRepository(backend=backend)
+    return ConversationRepository(backend=backend)
 
 
 @pytest.fixture
@@ -207,17 +209,15 @@ def cli_workspace(tmp_path, monkeypatch):
     # Order matters: paths first, then modules that import from paths
     import importlib
 
-    import polylogue.paths
     import polylogue.config
-    import polylogue.container
-    import polylogue.cli.container
+    import polylogue.paths
+    import polylogue.services
     import polylogue.storage.backends.sqlite
     import polylogue.storage.search
 
     importlib.reload(polylogue.paths)
     importlib.reload(polylogue.config)  # Depends on paths
-    importlib.reload(polylogue.container)  # Depends on config
-    importlib.reload(polylogue.cli.container)  # Depends on container
+    importlib.reload(polylogue.services)  # Depends on config
     importlib.reload(polylogue.storage.backends.sqlite)
     importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
 
@@ -225,10 +225,9 @@ def cli_workspace(tmp_path, monkeypatch):
     with polylogue.storage.backends.sqlite.connection_context(db_path) as conn:
         polylogue.storage.backends.sqlite._ensure_schema(conn)
 
-    # Reset container singleton to use fresh config
-    from polylogue.cli.container import reset_container
+    from polylogue.services import reset
 
-    reset_container()
+    reset()
 
     return {
         "config_path": config_path,
@@ -358,7 +357,6 @@ def mock_media_downloader(monkeypatch):
     from tests.mocks.drive_mocks import MockMediaIoBaseDownload
 
     # Patch the _import_module function to return mock for MediaIoBaseDownload
-    original_import_module = None
 
     def mock_import_module(name: str):
         if name == "googleapiclient.http":
@@ -372,9 +370,8 @@ def mock_media_downloader(monkeypatch):
 
         return importlib.import_module(name)
 
-    import polylogue.ingestion.drive_client as drive_client
+    import polylogue.sources.drive_client as drive_client
 
-    original_import_module = drive_client._import_module
 
     monkeypatch.setattr(drive_client, "_import_module", mock_import_module)
 
@@ -455,7 +452,6 @@ def sqlite_backend(tmp_path):
 
     Replaces duplicate fixtures in: test_backend_sqlite.py, test_repository_backend.py
     """
-    from pathlib import Path
 
     from polylogue.storage.backends import SQLiteBackend
 
@@ -487,11 +483,15 @@ def sample_conversation():
         Message(id="m2", role="assistant", text="Assistant response", timestamp=datetime(2024, 1, 1, 10, 1)),
         Message(id="m3", role="system", text="System prompt", timestamp=datetime(2024, 1, 1, 10, 2)),
         Message(id="m4", role="tool", text="Tool output", timestamp=datetime(2024, 1, 1, 10, 3)),
-        Message(id="m5", role="user", text="Another question with searchterm here", timestamp=datetime(2024, 1, 1, 10, 4)),
+        Message(
+            id="m5", role="user", text="Another question with searchterm here", timestamp=datetime(2024, 1, 1, 10, 4)
+        ),
         Message(id="m6", role="assistant", text="ok", timestamp=datetime(2024, 1, 1, 10, 5)),  # Short (noise)
-        Message(id="m7", role="assistant", text="Substantial answer with details", timestamp=datetime(2024, 1, 1, 10, 6)),
+        Message(
+            id="m7", role="assistant", text="Substantial answer with details", timestamp=datetime(2024, 1, 1, 10, 6)
+        ),
     ]
-    return Conversation(id="conv1", provider="test", messages=messages)
+    return Conversation(id="conv1", provider="test", messages=MessageCollection(messages=messages))
 
 
 @pytest.fixture
@@ -503,3 +503,153 @@ def cli_runner():
     from click.testing import CliRunner
 
     return CliRunner()
+
+
+# =============================================================================
+# SEEDED DATABASE FIXTURE (for tests that need real provider data)
+# =============================================================================
+
+
+@pytest.fixture(scope="session")
+def seeded_db(tmp_path_factory):
+    """Create a database seeded with real fixture data from all providers.
+
+    This fixture ingests actual provider data (ChatGPT, Claude Code, Codex, Gemini)
+    from tests/fixtures/real/ through the full pipeline. Use this instead of
+    hardcoding production database paths.
+
+    Scope is 'session' for efficiency - the seeded DB is created once and reused.
+
+    Returns:
+        Path to the seeded database file
+    """
+    from pathlib import Path
+
+    from polylogue.config import Source
+    from polylogue.pipeline.ingest import prepare_ingest
+    from polylogue.sources import iter_source_conversations
+    from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+    from polylogue.storage.repository import ConversationRepository
+
+    # Create session-scoped temp directory
+    tmp_dir = tmp_path_factory.mktemp("seeded_db")
+    db_path = tmp_dir / "polylogue.db"
+
+    # Initialize schema by opening connection
+    with open_connection(db_path):
+        pass
+
+    # Create a repository that uses our temp database
+    backend = SQLiteBackend(db_path=db_path)
+    repository = ConversationRepository(backend=backend)
+
+    # Find fixtures directory
+    fixtures_dir = Path(__file__).parent / "fixtures" / "real"
+
+    # Provider -> fixture paths mapping
+    fixture_files = {
+        "chatgpt": list(fixtures_dir.glob("chatgpt/*.json")),
+        "claude-code": list(fixtures_dir.glob("claude-code/*.jsonl")),
+        "codex": list(fixtures_dir.glob("codex/*.jsonl")),
+        "gemini": list(fixtures_dir.glob("gemini/*.jsonl")),
+    }
+
+    # Ingest each fixture through the full pipeline
+    with open_connection(db_path) as conn:
+        for provider, files in fixture_files.items():
+            for fixture_path in files:
+                if not fixture_path.exists():
+                    continue
+
+                try:
+                    source = Source(name=provider, path=fixture_path)
+                    for convo in iter_source_conversations(source):
+                        archive_root = tmp_dir / "archive"
+                        archive_root.mkdir(exist_ok=True)
+                        prepare_ingest(
+                            convo,
+                            source_name=provider,
+                            archive_root=archive_root,
+                            conn=conn,
+                            repository=repository,  # Pass our repository!
+                        )
+                except Exception as e:
+                    # Log but don't fail - some fixtures may have format issues
+                    import warnings
+
+                    warnings.warn(f"Failed to ingest {fixture_path}: {e}", stacklevel=2)
+
+    return db_path
+
+
+@pytest.fixture
+def seeded_repository(seeded_db):
+    """Repository backed by the seeded database.
+
+    Use this when tests need a ConversationRepository with real provider data.
+    """
+    from polylogue.storage.backends.sqlite import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
+
+    backend = SQLiteBackend(db_path=seeded_db)
+    return ConversationRepository(backend=backend)
+
+
+# =============================================================================
+# RAW CONVERSATION FIXTURES (for database-driven testing)
+# =============================================================================
+
+
+# Pre-compute the REAL database path at module load time, before any test
+# fixtures can modify environment variables. This ensures database-driven
+# tests always use the user's actual database, not a temp test database.
+_REAL_DB_PATH = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "polylogue" / "polylogue.db"
+
+
+@pytest.fixture(scope="session")
+def raw_db_samples():
+    """Load samples from user's actual raw_conversations table.
+
+    This enables honest, database-driven testing by using REAL data
+    that was acquired via `polylogue run --stage acquire`.
+
+    Control sample count via POLYLOGUE_TEST_SAMPLES environment variable:
+    - POLYLOGUE_TEST_SAMPLES=100 (default) - Fast CI, limited samples
+    - POLYLOGUE_TEST_SAMPLES=0 - Exhaustive mode, ALL raw conversations
+
+    Returns:
+        List of RawConversationRecord objects from the user's database
+    """
+    import os
+
+    from polylogue.storage.backends.sqlite import SQLiteBackend
+
+    # Get sample limit from environment (use original env, not test-modified)
+    limit_str = os.environ.get("POLYLOGUE_TEST_SAMPLES", "100")
+    limit = int(limit_str) if limit_str != "0" else None
+
+    # Use pre-computed path that bypasses test env modifications
+    if not _REAL_DB_PATH.exists():
+        return []  # No database = no samples (skip in tests)
+
+    backend = SQLiteBackend(db_path=_REAL_DB_PATH)
+
+    # Load samples from raw_conversations table
+    samples = list(backend.iter_raw_conversations(limit=limit))
+
+    return samples
+
+
+@pytest.fixture
+def raw_backend(tmp_path):
+    """SQLite backend for raw conversation testing.
+
+    Use this for tests that need to save/read raw conversation records.
+    """
+    from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+
+    db_path = tmp_path / "raw.db"
+    with open_connection(db_path):
+        pass
+
+    return SQLiteBackend(db_path=db_path)

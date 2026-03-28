@@ -252,10 +252,7 @@ def run_sources(
             if stage == "index":
                 if source_names:
                     ids = _all_conversation_ids(source_names)
-                    if ids:
-                        indexed = index_service.update_index(ids)
-                    else:
-                        indexed = index_service.ensure_index_exists()
+                    indexed = index_service.update_index(ids) if ids else index_service.ensure_index_exists()
                 else:
                     indexed = index_service.rebuild_index()
             elif stage == "all":

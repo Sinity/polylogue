@@ -11,11 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from polylogue.rendering.core import ConversationFormatter
 from polylogue.rendering.renderers.markdown import MarkdownRenderer
-from polylogue.storage.backends.sqlite import default_db_path, open_connection
 from tests.factories import DbFactory
 
 # Golden files directory
@@ -35,9 +32,8 @@ def normalize_markdown(text: str) -> str:
 class TestGoldenMarkdownRendering:
     """Test markdown rendering against golden reference files."""
 
-    def test_chatgpt_simple_conversation(self, tmp_path, workspace_env):
+    def test_chatgpt_simple_conversation(self, tmp_path, workspace_env, db_path):
         """Simple ChatGPT conversation should match golden markdown."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create test conversation
@@ -89,9 +85,8 @@ class TestGoldenMarkdownRendering:
         # Check timestamps are formatted
         assert "_Timestamp: 2024-01-01T12:00:00Z_" in formatted.markdown_text
 
-    def test_claude_with_thinking_blocks(self, tmp_path, workspace_env):
+    def test_claude_with_thinking_blocks(self, tmp_path, workspace_env, db_path):
         """Claude conversation with thinking blocks should preserve XML tags."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create conversation with thinking blocks
@@ -124,9 +119,8 @@ class TestGoldenMarkdownRendering:
         assert "This is a simple arithmetic question" in formatted.markdown_text
         assert "The answer is 4" in formatted.markdown_text
 
-    def test_json_tool_use_formatted(self, tmp_path, workspace_env):
+    def test_json_tool_use_formatted(self, tmp_path, workspace_env, db_path):
         """JSON tool use should be formatted as code blocks."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create conversation with JSON tool use
@@ -158,9 +152,8 @@ class TestGoldenMarkdownRendering:
         assert '"tool": "bash"' in formatted.markdown_text
         assert "```" in formatted.markdown_text
 
-    def test_empty_messages_skipped(self, tmp_path, workspace_env):
+    def test_empty_messages_skipped(self, tmp_path, workspace_env, db_path):
         """Empty messages without attachments should be skipped."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create conversation with empty message
@@ -202,9 +195,8 @@ class TestGoldenMarkdownRendering:
         assistant_count = formatted.markdown_text.count("## assistant")
         assert assistant_count == 1, f"Expected 1 assistant section, got {assistant_count}"
 
-    def test_unicode_content_preserved(self, tmp_path, workspace_env):
+    def test_unicode_content_preserved(self, tmp_path, workspace_env, db_path):
         """Unicode characters should be preserved in output."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create conversation with Unicode
@@ -242,9 +234,8 @@ class TestGoldenMarkdownRendering:
         assert "🇨🇳" in formatted.markdown_text
         assert "∑, ∫, √, π, ∞" in formatted.markdown_text
 
-    def test_attachments_formatted_as_links(self, tmp_path, workspace_env):
+    def test_attachments_formatted_as_links(self, tmp_path, workspace_env, db_path):
         """Attachments should be formatted as markdown list items."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create conversation with attachments (embedded in message)
@@ -278,11 +269,10 @@ class TestGoldenMarkdownRendering:
         assert "- Attachment:" in formatted.markdown_text
         # Should contain either the name or the attachment ID
         has_name_or_id = "screenshot.png" in formatted.markdown_text or "att1" in formatted.markdown_text
-        assert has_name_or_id, f"Attachment reference not found in output"
+        assert has_name_or_id, "Attachment reference not found in output"
 
-    def test_message_ordering_by_timestamp(self, tmp_path, workspace_env):
+    def test_message_ordering_by_timestamp(self, tmp_path, workspace_env, db_path):
         """Messages should be ordered by timestamp."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create conversation with out-of-order insertion but ordered timestamps
@@ -329,9 +319,8 @@ class TestGoldenMarkdownRendering:
 class TestGoldenFileStructure:
     """Test file structure and naming conventions."""
 
-    def test_markdown_renderer_output_path(self, tmp_path, workspace_env):
+    def test_markdown_renderer_output_path(self, tmp_path, workspace_env, db_path):
         """MarkdownRenderer should create correct file structure."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create test conversation
@@ -354,9 +343,8 @@ class TestGoldenFileStructure:
         assert output_path.name == "conversation.md", "File should be named conversation.md"
         assert "chatgpt" in str(output_path.parent), "Parent directory should contain provider name"
 
-    def test_multiple_conversations_isolated(self, tmp_path, workspace_env):
+    def test_multiple_conversations_isolated(self, tmp_path, workspace_env, db_path):
         """Multiple conversations should be isolated in separate directories."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create two conversations
@@ -390,9 +378,8 @@ class TestGoldenFileStructure:
 class TestGoldenEdgeCases:
     """Test edge cases in rendering."""
 
-    def test_very_long_text_not_truncated(self, tmp_path, workspace_env):
+    def test_very_long_text_not_truncated(self, tmp_path, workspace_env, db_path):
         """Very long messages should not be truncated."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create conversation with very long message
@@ -422,9 +409,8 @@ class TestGoldenEdgeCases:
         occurrences = formatted.markdown_text.count("This is a very long message.")
         assert occurrences >= 999, f"Text appears truncated, found {occurrences}/1000 occurrences"
 
-    def test_special_markdown_chars_not_double_escaped(self, tmp_path, workspace_env):
+    def test_special_markdown_chars_not_double_escaped(self, tmp_path, workspace_env, db_path):
         """Markdown special characters should be preserved as-is (not escaped)."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create conversation with markdown special chars
@@ -451,9 +437,8 @@ class TestGoldenEdgeCases:
         assert "[links](url)" in formatted.markdown_text
         assert "# headers" in formatted.markdown_text
 
-    def test_messages_with_timestamps_rendered(self, tmp_path, workspace_env):
+    def test_messages_with_timestamps_rendered(self, tmp_path, workspace_env, db_path):
         """Messages with timestamps should render timestamp line."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create conversation with explicit timestamp

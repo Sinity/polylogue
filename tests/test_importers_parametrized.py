@@ -14,11 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.importers.chatgpt import looks_like as chatgpt_looks_like, parse as chatgpt_parse
-from polylogue.importers.claude import looks_like_ai, looks_like_code, parse_ai, parse_code
-from polylogue.importers.codex import looks_like as codex_looks_like, parse as codex_parse
-from polylogue.importers.drive import parse_chunked_prompt
-
+from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
+from polylogue.sources.parsers.claude import looks_like_ai, looks_like_code, parse_ai, parse_code
+from polylogue.sources.parsers.codex import parse as codex_parse
+from polylogue.sources.parsers.drive import parse_chunked_prompt
 
 # =============================================================================
 # REAL EXPORT FILE DISCOVERY
@@ -87,7 +86,7 @@ def test_parse_real_export_produces_valid_conversation(provider, export_file):
     parsed_conversations = []
 
     # Special handling for JSONL formats that require all lines at once
-    if is_jsonl_format and provider == "gemini":
+    if is_jsonl_format:
         # Check if this is Claude Code format (has message/uuid/isSidechain structure)
         is_claude_code = (
             conversations and
@@ -96,18 +95,35 @@ def test_parse_real_export_produces_valid_conversation(provider, export_file):
             "uuid" in conversations[0]
         )
 
+        # Check if this is Codex envelope format
+        # First line is session metadata (id, timestamp, instructions, git)
+        # Subsequent lines have type/record_type
+        is_codex = (
+            provider == "codex" and
+            conversations and
+            isinstance(conversations[0], dict) and
+            ("id" in conversations[0] or "record_type" in conversations[0] or "type" in conversations[0])
+        )
+
         if is_claude_code:
-            # This is Claude Code JSONL, parse as a batch
+            # Claude Code JSONL - parse as a batch
             parsed = parse_code(conversations, export_file.stem)
             parsed_conversations.append(parsed)
-        else:
+        elif provider == "codex" and is_codex:
+            # Codex envelope JSONL - parse all lines as a batch
+            parsed = codex_parse(conversations, export_file.stem)
+            parsed_conversations.append(parsed)
+        elif provider == "gemini":
             # True Gemini format - parse each line individually
             for i, conv_data in enumerate(conversations):
                 conv_id = f"{export_file.stem}-{i}"
                 parsed = parse_chunked_prompt("gemini", conv_data, conv_id)
                 parsed_conversations.append(parsed)
+        else:
+            # Unknown JSONL format
+            pytest.skip(f"Unknown JSONL format for provider {provider}")
     else:
-        # Standard per-item parsing
+        # Standard per-item parsing (JSON arrays)
         for i, conv_data in enumerate(conversations):
             conv_id = f"{export_file.stem}-{i}"
 
@@ -346,7 +362,7 @@ def test_consolidation_statistics():
     )
 
     print(f"\n{'='*60}")
-    print(f"CONSOLIDATION IMPACT")
+    print("CONSOLIDATION IMPACT")
     print(f"{'='*60}")
     print(f"Real export files discovered: {num_real_exports}")
     print(f"Tests generated from parametrization: {parametrized_tests}")
