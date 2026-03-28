@@ -69,10 +69,10 @@ async def compute_provider_comparison(db_path: Path | None = None) -> list[Provi
                 COUNT(m.message_id) AS message_count,
                 SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) AS user_message_count,
                 SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) AS assistant_message_count,
-                SUM(CASE WHEN m.role = 'user' AND m.text IS NOT NULL AND m.text != ''
+                SUM(CASE WHEN m.role = 'user' AND m.text IS NOT NULL AND TRIM(m.text) != ''
                     THEN LENGTH(TRIM(m.text)) - LENGTH(REPLACE(TRIM(m.text), ' ', '')) + 1
                     ELSE 0 END) AS user_word_sum,
-                SUM(CASE WHEN m.role = 'assistant' AND m.text IS NOT NULL AND m.text != ''
+                SUM(CASE WHEN m.role = 'assistant' AND m.text IS NOT NULL AND TRIM(m.text) != ''
                     THEN LENGTH(TRIM(m.text)) - LENGTH(REPLACE(TRIM(m.text), ' ', '')) + 1
                     ELSE 0 END) AS assistant_word_sum,
                 SUM(CASE WHEN m.provider_meta LIKE '%"type":"tool_use"%'
