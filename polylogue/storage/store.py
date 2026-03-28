@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+<<<<<<< HEAD
 import hashlib
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,69 @@ from polylogue.types import (
     SemanticBlockType,
     ValidationMode,
     ValidationStatus,
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+from polylogue.storage.store_core import (
+    ACTION_EVENT_MATERIALIZER_VERSION,
+    MAINTENANCE_RUN_SCHEMA_VERSION,
+    MAX_ATTACHMENT_SIZE,
+    MAX_RAW_CONTENT_SIZE,
+    SESSION_ENRICHMENT_FAMILY,
+    SESSION_ENRICHMENT_VERSION,
+    SESSION_INFERENCE_FAMILY,
+    SESSION_INFERENCE_VERSION,
+    SESSION_PRODUCT_MATERIALIZER_VERSION,
+    ActionEventRecord,
+    ArtifactObservationRecord,
+    AttachmentRecord,
+    ContentBlockRecord,
+    ConversationRecord,
+    MessageRecord,
+    PublicationRecord,
+    RawConversationRecord,
+    RunRecord,
+    _json_array_or_none,
+    _json_or_none,
+    _make_ref_id,
+)
+from polylogue.storage.store_products import (
+    DaySessionSummaryRecord,
+    MaintenanceRunRecord,
+    SessionPhaseRecord,
+    SessionProfileRecord,
+    SessionTagRollupRecord,
+    SessionWorkEventRecord,
+    WorkThreadRecord,
+=======
+from polylogue.storage.store_core import (
+    ACTION_EVENT_MATERIALIZER_VERSION,
+    MAX_ATTACHMENT_SIZE,
+    MAX_RAW_CONTENT_SIZE,
+    SESSION_ENRICHMENT_FAMILY,
+    SESSION_ENRICHMENT_VERSION,
+    SESSION_INFERENCE_FAMILY,
+    SESSION_INFERENCE_VERSION,
+    SESSION_PRODUCT_MATERIALIZER_VERSION,
+    ActionEventRecord,
+    ArtifactObservationRecord,
+    AttachmentRecord,
+    ContentBlockRecord,
+    ConversationRecord,
+    MessageRecord,
+    PublicationRecord,
+    RawConversationRecord,
+    RunRecord,
+    _json_array_or_none,
+    _json_or_none,
+    _make_ref_id,
+)
+from polylogue.storage.store_products import (
+    DaySessionSummaryRecord,
+    SessionPhaseRecord,
+    SessionProfileRecord,
+    SessionTagRollupRecord,
+    SessionWorkEventRecord,
+    WorkThreadRecord,
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
 )
 
 # Maximum reasonable file size (1TB)
@@ -468,7 +532,21 @@ __all__ = [
     "ArtifactObservationRecord",
     "ContentBlockRecord",
     "ConversationRecord",
+<<<<<<< HEAD
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+    "DaySessionSummaryRecord",
+    "MAINTENANCE_RUN_SCHEMA_VERSION",
+=======
+    "DaySessionSummaryRecord",
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
     "MAX_ATTACHMENT_SIZE",
+<<<<<<< HEAD
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+    "MAX_RAW_CONTENT_SIZE",
+    "MaintenanceRunRecord",
+=======
+    "MAX_RAW_CONTENT_SIZE",
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
     "MessageRecord",
     "PublicationRecord",
     "RawConversationRecord",

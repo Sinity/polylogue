@@ -22,8 +22,7 @@ from polylogue.cli.helper_source_selection import maybe_prompt_sources, resolve_
 from polylogue.cli.helper_source_state import load_last_source, save_last_source, source_state_path
 from polylogue.cli.helper_summary import print_summary_impl
 from polylogue.cli.helper_support import fail, load_effective_config
-from polylogue.health_archive import get_health
-from polylogue.health_cache import cached_health_summary
+from polylogue.health import cached_health_summary, get_health
 from polylogue.operations import get_provider_counts, list_provider_analytics_products
 >>>>>>> f5cb862b (refactor: close codebase-wide cleanup hotspots)
 from polylogue.pipeline.runner import latest_run

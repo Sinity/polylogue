@@ -9,8 +9,6 @@ from polylogue.archive_products import (
     ArchiveDebtProductQuery,
     DaySessionSummaryProduct,
     DaySessionSummaryProductQuery,
-    MaintenanceRunProduct,
-    MaintenanceRunProductQuery,
     ProviderAnalyticsProduct,
     ProviderAnalyticsProductQuery,
     SessionEnrichmentProduct,
@@ -107,12 +105,6 @@ class SyncProductQueriesMixin:
         query: WeekSessionSummaryProductQuery | None = None,
     ) -> list[WeekSessionSummaryProduct]:
         return run_coroutine_sync(self._facade.list_week_session_summary_products(query))
-
-    def list_maintenance_run_products(
-        self,
-        query: MaintenanceRunProductQuery | None = None,
-    ) -> list[MaintenanceRunProduct]:
-        return run_coroutine_sync(self._facade.list_maintenance_run_products(query))
 
     def list_provider_analytics_products(
         self,

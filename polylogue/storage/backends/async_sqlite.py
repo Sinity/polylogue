@@ -47,11 +47,22 @@ from polylogue.storage.backends.async_sqlite_derived_actions import (
     SQLiteDerivedActionsMixin,
 >>>>>>> 91024994 (refactor: split async sqlite and check plain roots)
 )
+<<<<<<< HEAD
 from polylogue.storage.backends.queries import (
     artifacts as artifacts_q,
 )
 from polylogue.storage.backends.queries import (
     attachments as attachments_q,
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+from polylogue.storage.backends.async_sqlite_derived_maintenance import (
+    SQLiteDerivedMaintenanceMixin,
+)
+from polylogue.storage.backends.async_sqlite_derived_products import (
+    SQLiteDerivedProductsMixin,
+=======
+from polylogue.storage.backends.async_sqlite_derived_products import (
+    SQLiteDerivedProductsMixin,
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
 )
 <<<<<<< HEAD
 from polylogue.storage.backends.queries import (
@@ -129,6 +140,7 @@ from polylogue.storage.backends.schema import SCHEMA_DDL
 >>>>>>> 91024994 (refactor: split async sqlite and check plain roots)
 
 
+<<<<<<< HEAD
 def default_db_path() -> Path:
     """Return the default database path (same as sync backend).
 
@@ -138,6 +150,24 @@ def default_db_path() -> Path:
 
 
 class SQLiteBackend:
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+class SQLiteBackend(
+    SQLiteArchiveMixin,
+    SQLiteDerivedActionsMixin,
+    SQLiteDerivedProductsMixin,
+    SQLiteDerivedMaintenanceMixin,
+    SQLiteDerivedStatsMixin,
+    SQLiteRawMixin,
+):
+=======
+class SQLiteBackend(
+    SQLiteArchiveMixin,
+    SQLiteDerivedActionsMixin,
+    SQLiteDerivedProductsMixin,
+    SQLiteDerivedStatsMixin,
+    SQLiteRawMixin,
+):
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
     """Async SQLite storage backend implementation.
 
     This backend provides async/await API for database operations, enabling

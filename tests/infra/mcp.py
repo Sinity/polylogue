@@ -27,6 +27,29 @@ EXPECTED_TOOL_NAMES = {
     "rebuild_index",
     "update_index",
     "export_conversation",
+<<<<<<< HEAD
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+    "session_profile",
+    "session_profiles",
+    "session_enrichments",
+    "session_work_events",
+    "session_phases",
+    "session_tag_rollups",
+    "work_threads",
+    "day_session_summaries",
+    "week_session_summaries",
+    "maintenance_runs",
+=======
+    "session_profile",
+    "session_profiles",
+    "session_enrichments",
+    "session_work_events",
+    "session_phases",
+    "session_tag_rollups",
+    "work_threads",
+    "day_session_summaries",
+    "week_session_summaries",
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
 }
 
 EXPECTED_RESOURCE_URIS = {

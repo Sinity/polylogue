@@ -2,10 +2,50 @@
 
 from __future__ import annotations
 
+<<<<<<< HEAD
 import json
 import sqlite3
 from typing import Any
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+from polylogue.storage.backends.queries.mappers_archive import (
+    _row_to_action_event,
+    _row_to_artifact_observation,
+    _row_to_content_block,
+    _row_to_conversation,
+    _row_to_message,
+    _row_to_raw_conversation,
+)
+from polylogue.storage.backends.queries.mappers_products import (
+    _row_to_day_session_summary_record,
+    _row_to_maintenance_run_record,
+    _row_to_session_phase_record,
+    _row_to_session_profile_record,
+    _row_to_session_tag_rollup_record,
+    _row_to_session_work_event_record,
+    _row_to_work_thread_record,
+)
+from polylogue.storage.backends.queries.mappers_support import _parse_json, _row_get
+=======
+from polylogue.storage.backends.queries.mappers_archive import (
+    _row_to_action_event,
+    _row_to_artifact_observation,
+    _row_to_content_block,
+    _row_to_conversation,
+    _row_to_message,
+    _row_to_raw_conversation,
+)
+from polylogue.storage.backends.queries.mappers_products import (
+    _row_to_day_session_summary_record,
+    _row_to_session_phase_record,
+    _row_to_session_profile_record,
+    _row_to_session_tag_rollup_record,
+    _row_to_session_work_event_record,
+    _row_to_work_thread_record,
+)
+from polylogue.storage.backends.queries.mappers_support import _parse_json, _row_get
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
 
+<<<<<<< HEAD
 from polylogue.errors import DatabaseError
 from polylogue.storage.store import (
     ArtifactObservationRecord,
@@ -183,3 +223,39 @@ def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
         first_observed_at=row["first_observed_at"],
         last_observed_at=row["last_observed_at"],
     )
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+__all__ = [
+    "_parse_json",
+    "_row_get",
+    "_row_to_action_event",
+    "_row_to_artifact_observation",
+    "_row_to_content_block",
+    "_row_to_conversation",
+    "_row_to_day_session_summary_record",
+    "_row_to_maintenance_run_record",
+    "_row_to_message",
+    "_row_to_raw_conversation",
+    "_row_to_session_phase_record",
+    "_row_to_session_profile_record",
+    "_row_to_session_tag_rollup_record",
+    "_row_to_session_work_event_record",
+    "_row_to_work_thread_record",
+]
+=======
+__all__ = [
+    "_parse_json",
+    "_row_get",
+    "_row_to_action_event",
+    "_row_to_artifact_observation",
+    "_row_to_content_block",
+    "_row_to_conversation",
+    "_row_to_day_session_summary_record",
+    "_row_to_message",
+    "_row_to_raw_conversation",
+    "_row_to_session_phase_record",
+    "_row_to_session_profile_record",
+    "_row_to_session_tag_rollup_record",
+    "_row_to_session_work_event_record",
+    "_row_to_work_thread_record",
+]
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))

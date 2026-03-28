@@ -22,9 +22,24 @@
     --proof                         Run durable artifact support proof
     --artifacts                     List durable artifact observations
     --cohorts                       Summarize durable artifact cohorts
+<<<<<<< HEAD
     --semantic-proof                Run semantic preservation proof across
                                     canonical, export, query, stream, and MCP
                                     read surfaces
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+    --semantic-proof                Run semantic preservation proof across
+                                    canonical, export, query, stream, and MCP
+                                    read surfaces
+    --semantic-contracts            List declared semantic-proof surface
+                                    contracts and aliases
+    --roundtrip-proof               Run the synthetic schema-and-evidence
+                                    roundtrip proof lane in an isolated
+                                    workspace
+=======
+    --roundtrip-proof               Run the synthetic schema-and-evidence
+                                    roundtrip proof lane in an isolated
+                                    workspace
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
     --schema-provider TEXT          Limit schema verification to DB provider
                                     name (repeatable)
     --artifact-provider TEXT        Limit artifact proof<PATH> to
@@ -37,6 +52,7 @@
                                     observation rows
     --artifact-offset INTEGER       Start offset for artifact
                                     proof<PATH>  [default: 0]
+<<<<<<< HEAD
     --semantic-provider TEXT        Limit semantic proof to conversation
                                     providers (repeatable)
     --semantic-surface TEXT         Limit semantic proof to
@@ -46,6 +62,26 @@
     --semantic-limit INTEGER        Limit semantic proof to N conversations
     --semantic-offset INTEGER       Start offset for semantic proof  [default:
                                     0]
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+    --semantic-provider TEXT        Limit semantic proof to conversation
+                                    providers (repeatable)
+    --semantic-surface TEXT         Limit semantic proof to
+                                    canonical<PATH> surfaces
+                                    such as canonical, export_all, query_all,
+                                    stream_all, mcp_all, read_all, or all
+    --semantic-limit INTEGER        Limit semantic proof to N conversations
+    --semantic-offset INTEGER       Start offset for semantic proof  [default:
+                                    0]
+    --roundtrip-provider TEXT       Limit roundtrip proof to specific providers
+                                    (repeatable)
+    --roundtrip-count INTEGER       Synthetic artifacts per provider for
+                                    roundtrip proof  [default: 1]
+=======
+    --roundtrip-provider TEXT       Limit roundtrip proof to specific providers
+                                    (repeatable)
+    --roundtrip-count INTEGER       Synthetic artifacts per provider for
+                                    roundtrip proof  [default: 1]
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
     --schema-samples TEXT           Validation samples per raw payload: positive
                                     integer or 'all'  [default: all]
     --schema-record-limit INTEGER   Limit schema verification to N raw records

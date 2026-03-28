@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from polylogue.cli import cli
 <<<<<<< HEAD
+<<<<<<< HEAD
 from polylogue.health import HealthCheck, HealthReport, VerifyStatus
 from polylogue.rendering.semantic_proof import (
     ProviderSemanticProof,
@@ -46,6 +47,11 @@ from polylogue.schemas.verification_models import (
 )
 =======
 from polylogue.health_models import HealthCheck, HealthReport, VerifyStatus
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+from polylogue.health_models import HealthCheck, HealthReport, VerifyStatus
+=======
+from polylogue.health import HealthCheck, HealthReport, VerifyStatus
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
 from polylogue.schemas.operator_models import (
     ArtifactCohortListResult,
     ArtifactObservationListResult,
@@ -455,6 +461,184 @@ class TestHealthReportConstruction:
         assert report.summary == {"ok": 0, "warning": 0, "error": 0}
 
 
+<<<<<<< HEAD
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products")
+        .provider("claude-code")
+        .title("Scoped Check Repair")
+        .add_message("u1", role="user", text="Plan the cleanup")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "check",
+            "--json",
+            "--repair",
+            "--preview",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["maintenance"]["targets"] == ["session_products"]
+    assert payload["maintenance"]["items"][0]["name"] == "session_products"
+    assert payload["maintenance"]["items"][0]["repaired_count"] > 0
+
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT preview, target_names_json, manifest_json
+            FROM maintenance_runs
+            ORDER BY executed_at DESC, maintenance_run_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert row["preview"] == 1
+    assert json.loads(row["target_names_json"]) == ["session_products"]
+    manifest = json.loads(row["manifest_json"])
+    assert manifest["targets"] == ["session_products"]
+
+
+def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products-apply")
+        .provider("claude-code")
+        .title("Scoped Check Repair Apply")
+        .add_message("u1", role="user", text="Repair the durable products")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "check",
+            "--json",
+            "--repair",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["maintenance"]["targets"] == ["session_products"]
+    assert payload["maintenance"]["items"][0]["name"] == "session_products"
+    assert payload["maintenance"]["items"][0]["success"] is True
+
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT preview, target_names_json, manifest_json
+            FROM maintenance_runs
+            ORDER BY executed_at DESC, maintenance_run_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert row["preview"] == 0
+    assert json.loads(row["target_names_json"]) == ["session_products"]
+    manifest = json.loads(row["manifest_json"])
+    assert manifest["targets"] == ["session_products"]
+
+
+=======
+def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products")
+        .provider("claude-code")
+        .title("Scoped Check Repair")
+        .add_message("u1", role="user", text="Plan the cleanup")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "check",
+            "--json",
+            "--repair",
+            "--preview",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["maintenance"]["targets"] == ["session_products"]
+    assert payload["maintenance"]["items"][0]["name"] == "session_products"
+    assert payload["maintenance"]["items"][0]["repaired_count"] > 0
+
+
+def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_lifecycle import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products-apply")
+        .provider("claude-code")
+        .title("Scoped Check Repair Apply")
+        .add_message("u1", role="user", text="Repair the durable products")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "check",
+            "--json",
+            "--repair",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["maintenance"]["targets"] == ["session_products"]
+    assert payload["maintenance"]["items"][0]["name"] == "session_products"
+    assert payload["maintenance"]["items"][0]["success"] is True
+
+
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
 class TestCheckCommand:
     """Tests for polylogue check command."""
 

@@ -42,12 +42,84 @@ if TYPE_CHECKING:
     from polylogue.lib.stats import ArchiveStats
     from polylogue.storage.backends.query_store import SQLiteQueryStore
 
+<<<<<<< HEAD
 from polylogue.protocols import ConversationReader, SearchStore, TagStore, VectorProvider
 
 logger = get_logger(__name__)
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+from polylogue.storage.repository_action_reads import RepositoryActionReadMixin
+from polylogue.storage.repository_archive_reads import RepositoryArchiveReadMixin
+from polylogue.storage.repository_maintenance_reads import RepositoryMaintenanceReadMixin
+from polylogue.storage.repository_product_profile_reads import (
+    RepositoryProductProfileReadMixin,
+)
+from polylogue.storage.repository_product_summary_reads import (
+    RepositoryProductSummaryReadMixin,
+)
+from polylogue.storage.repository_product_thread_reads import (
+    RepositoryProductThreadReadMixin,
+)
+from polylogue.storage.repository_product_timeline_reads import (
+    RepositoryProductTimelineReadMixin,
+)
+from polylogue.storage.repository_raw import RepositoryRawMixin
+from polylogue.storage.repository_vectors import RepositoryVectorMixin
+from polylogue.storage.repository_writes import RepositoryWriteMixin
+=======
+from polylogue.storage.repository_action_reads import RepositoryActionReadMixin
+from polylogue.storage.repository_archive_reads import RepositoryArchiveReadMixin
+from polylogue.storage.repository_product_profile_reads import (
+    RepositoryProductProfileReadMixin,
+)
+from polylogue.storage.repository_product_summary_reads import (
+    RepositoryProductSummaryReadMixin,
+)
+from polylogue.storage.repository_product_thread_reads import (
+    RepositoryProductThreadReadMixin,
+)
+from polylogue.storage.repository_product_timeline_reads import (
+    RepositoryProductTimelineReadMixin,
+)
+from polylogue.storage.repository_raw import RepositoryRawMixin
+from polylogue.storage.repository_vectors import RepositoryVectorMixin
+from polylogue.storage.repository_writes import RepositoryWriteMixin
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
 
 
+<<<<<<< HEAD
 class ConversationRepository(ConversationReader, SearchStore, TagStore):
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+class ConversationRepository(
+    RepositoryArchiveReadMixin,
+    RepositoryActionReadMixin,
+    RepositoryMaintenanceReadMixin,
+    RepositoryProductProfileReadMixin,
+    RepositoryProductTimelineReadMixin,
+    RepositoryProductThreadReadMixin,
+    RepositoryProductSummaryReadMixin,
+    RepositoryRawMixin,
+    RepositoryWriteMixin,
+    RepositoryVectorMixin,
+    ConversationReader,
+    SearchStore,
+    TagStore,
+):
+=======
+class ConversationRepository(
+    RepositoryArchiveReadMixin,
+    RepositoryActionReadMixin,
+    RepositoryProductProfileReadMixin,
+    RepositoryProductTimelineReadMixin,
+    RepositoryProductThreadReadMixin,
+    RepositoryProductSummaryReadMixin,
+    RepositoryRawMixin,
+    RepositoryWriteMixin,
+    RepositoryVectorMixin,
+    ConversationReader,
+    SearchStore,
+    TagStore,
+):
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
     """Async repository for conversation storage operations.
 
     Wraps SQLiteBackend to provide high-level async storage interface with

@@ -295,8 +295,26 @@ def _make_env(config: Config, *, plain: bool) -> tuple[AppEnv, StringIO]:
     return env, buffer
 
 
+<<<<<<< HEAD
 def _health_report(*, cached=None, age_seconds=None, checks=None):
     return SimpleNamespace(cached=cached, age_seconds=age_seconds, checks=checks or [])
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+def _health_report(*, source="live", cache_age_seconds=None, cache_ttl_seconds=None, checks=None):
+    return SimpleNamespace(
+        provenance=ReportProvenance(
+            source=TruthSource(source),
+            cache_age_seconds=cache_age_seconds,
+            cache_ttl_seconds=cache_ttl_seconds,
+        ),
+        checks=checks or [],
+    )
+=======
+def _health_report(*, source="live", cache_age_seconds=None, cache_ttl_seconds=None, checks=None):
+    return SimpleNamespace(
+        provenance=SimpleNamespace(source=source),
+        checks=checks or [],
+    )
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
 
 
 def _check(name: str, status: str, detail: str):
@@ -418,8 +436,18 @@ def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status
         "Sources: inbox",
         "Last run: none",
     ]
+<<<<<<< HEAD
     assert result["lines"][4] == "Health (cached=True, age=30s)"
     assert result["lines"][5] == f"  {expected_indicator} database: detail"
+||||||| parent of c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
+    assert result["lines"][4] == "Embeddings: 0/0 convs, 0 msgs (0.0%)"
+    assert result["lines"][5] == "Health (source=cache, age=30s, ttl=600s)"
+    assert result["lines"][6] == f"  {expected_indicator} database: detail"
+=======
+    assert result["lines"][4] == "Embeddings: 0/0 convs, 0 msgs (0.0%)"
+    assert result["lines"][5] == "Health (source=cache)"
+    assert result["lines"][6] == f"  {expected_indicator} database: detail"
+>>>>>>> c5d6c6a9 (refactor: narrow governance/health/repair (27 files deleted))
     result["mock_get_health"].assert_called_once()
     result["mock_cached"].assert_not_called()
 

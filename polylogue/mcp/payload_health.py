@@ -23,12 +23,20 @@ class MCPHealthCheckPayload(MCPPayload):
         )
 
 
+def _extract_source(report: Any) -> str | None:
+    provenance = getattr(report, "provenance", None)
+    if provenance is None:
+        return None
+    source = getattr(provenance, "source", None)
+    if source is None:
+        return None
+    return getattr(source, "value", str(source))
+
+
 class MCPHealthReportPayload(MCPPayload):
     checks: list[MCPHealthCheckPayload]
     summary: str
     source: str | None = None
-    cache_age_seconds: int | None = None
-    cache_ttl_seconds: int | None = None
 
     @classmethod
     def from_report(
@@ -49,21 +57,7 @@ class MCPHealthReportPayload(MCPPayload):
                 for check in report.checks
             ],
             summary=report.summary,
-            source=(
-                getattr(getattr(report, "provenance", None), "source", None).value
-                if include_cached and getattr(report, "provenance", None) is not None
-                else None
-            ),
-            cache_age_seconds=(
-                getattr(getattr(report, "provenance", None), "cache_age_seconds", None)
-                if include_cached
-                else None
-            ),
-            cache_ttl_seconds=(
-                getattr(getattr(report, "provenance", None), "cache_ttl_seconds", None)
-                if include_cached
-                else None
-            ),
+            source=_extract_source(report) if include_cached else None,
         )
 
 
