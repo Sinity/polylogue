@@ -11,7 +11,6 @@ Screen {
 
 /* Dashboard Styles */
 #stats-grid {
-    grid-size: 2;
     grid-gutter: 1;
     padding: 1;
     height: auto;
