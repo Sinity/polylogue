@@ -29,6 +29,7 @@ Read in this order:
 <<<<<<< ours
 <<<<<<< ours
 <<<<<<< ours
+<<<<<<< ours
 ||||||| base
 | [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Current planned execution program for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Planned; canonical next implementation campaign |
 =======
@@ -48,9 +49,19 @@ Read in this order:
 ||||||| base
 | [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md) | Current planned execution program for harmonization, canonical semantic facts, downstream semantic products, and semantic proof/export contract convergence | Planned; canonical next implementation campaign |
 =======
+||||||| base
+=======
+| [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md) | Current planned execution program for runtime state-model normalization, async backend narrowing, raw/validation/prepare convergence, and schema operator/tooling collapse | Planned; canonical next implementation campaign |
+>>>>>>> theirs
 | [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md) | Most recent executed convergence program for harmonization, canonical semantic facts, downstream semantic products, and semantic proof/export contract convergence | Executed; current canonical record of the semantic-stack convergence campaign |
+<<<<<<< ours
 >>>>>>> theirs
 | [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md) | Executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path around the canonical package model | Executed; most recent evidence-pipeline convergence campaign |
+>>>>>>> theirs
+||||||| base
+| [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md) | Executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path around the canonical package model | Executed; most recent evidence-pipeline convergence campaign |
+=======
+| [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md) | Executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path around the canonical package model | Executed; predecessor evidence-pipeline convergence campaign |
 >>>>>>> theirs
 | [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Executed convergence campaign for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Executed; canonical record of the convergence campaign |
 >>>>>>> theirs
@@ -143,6 +154,7 @@ As of this map:
 <<<<<<< ours
 <<<<<<< ours
 <<<<<<< ours
+<<<<<<< ours
 ||||||| base
 - the next live implementation campaign is now [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md)
 - that program specifically targets remaining architectural drag inside main code rather than a missing product surface:
@@ -174,6 +186,16 @@ As of this map:
 - the current live implementation queue is now [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md)
 - that program targets the strongest remaining main-code cluster after the evidence-pipeline wave:
 =======
+||||||| base
+=======
+- the current live implementation queue is now [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md)
+- it targets the strongest remaining internal platform mass after semantic-stack convergence:
+  - runtime state models still split across raw envelopes, validation outcomes, prepare bundles, and durable storage records
+  - `async_sqlite.py` still remains one of the largest infrastructure/business boundary files in the repo
+  - the raw -> validate -> parse -> prepare -> persist path is better than before but still not yet one fully typed staged contract
+  - schema tooling still behaves like a mini-platform spread across generation analysis, workflow assembly, tooling registry, roundtrip proof, and the schema CLI
+  - schema CLI and roundtrip proof still know more about internal workflow shaping than they should
+>>>>>>> theirs
 - the semantic-stack convergence program is now executed via [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md)
 - it closed the strongest remaining semantic-cluster drag around:
 >>>>>>> theirs
@@ -182,8 +204,6 @@ As of this map:
   - downstream semantic products that still composed several separate extraction passes
   - a large semantic proof stack that mixed facts, surface policy, and suite orchestration
   - semantic preservation/loss contracts that were not previously declared once in one registry
-- there is no newer live implementation queue selected yet
-- later work should now be chosen intentionally from the strategic-reference programs or from a fresh code-outward review rather than assuming an unresolved semantic-stack backlog
 - the schema-and-evidence pipeline campaign is now executed via [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md)
 - it closed the remaining evidence-pipeline drag around:
   - runtime-safe schema observation helpers living too close to tooling
