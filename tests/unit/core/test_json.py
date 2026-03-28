@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
+import orjson
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -122,6 +123,57 @@ def test_dumps_custom_fallback_to_encoder():
     output = core_json.dumps(payload, default=custom_handler)
     data = core_json.loads(output)
     assert data["decimal"] == 1.5
+
+
+def test_dumps_custom_handler_takes_precedence_for_decimal():
+    """Custom handlers can override Decimal serialization instead of falling through."""
+
+    def custom_handler(obj: Any) -> Any:
+        if isinstance(obj, Decimal):
+            return f"decimal:{obj}"
+        raise TypeError("Not handled")
+
+    output = core_json.dumps({"decimal": Decimal("1.5")}, default=custom_handler)
+    data = core_json.loads(output)
+    assert data["decimal"] == "decimal:1.5"
+
+
+def test_dumps_preserves_non_type_errors_from_custom_handler():
+    """Only TypeError falls through to built-in encoding."""
+
+    def custom_handler(obj: Any) -> Any:
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        core_json.dumps({"decimal": Decimal("1.5")}, default=custom_handler)
+
+
+def test_dumps_forwards_orjson_options():
+    """Options are forwarded to orjson when the fast path succeeds."""
+    payload = {"b": 1, "a": 2}
+    output = core_json.dumps(payload, option=orjson.OPT_SORT_KEYS)
+    assert output == '{"a":2,"b":1}'
+
+
+def test_dumps_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object():
+    """The stdlib fallback still uses the combined encoder contract."""
+
+    class CustomType:
+        def __init__(self, value: int):
+            self.value = value
+
+    def custom_handler(obj: Any) -> Any:
+        if isinstance(obj, CustomType):
+            return {"custom": obj.value}
+        raise TypeError("Not handled")
+
+    output = core_json.dumps(
+        {"payload": CustomType(7)},
+        default=custom_handler,
+        option=orjson.OPT_NON_STR_KEYS,
+    )
+    data = core_json.loads(output)
+    assert data == {"payload": {"custom": 7}}
 
 
 # =============================================================================
