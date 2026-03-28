@@ -8,6 +8,7 @@ import io
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,29 +17,34 @@ from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
 from rich.console import Console
 
-from polylogue.cli.query import async_execute_query, project_query_results
-from polylogue.cli.query_actions import apply_modifiers, apply_transform, delete_conversations
-from polylogue.cli.query_helpers import no_results, summary_to_dict
-from polylogue.cli.query_output import (
-    _output_summary_list,
-    _render_conversation_rich,
-    _send_output,
-    output_results,
-    output_stats_by_summaries,
-    output_stats_sql,
-)
-from polylogue.cli.query_plan import (
+from polylogue.cli.query import (
     QueryAction,
     QueryExecutionPlan,
     QueryMutationSpec,
     QueryOutputSpec,
     QueryRoute,
+    async_execute_query,
+    no_results,
+    project_query_results,
     resolve_query_route,
+    summary_to_dict,
+)
+from polylogue.cli.query_actions import apply_modifiers, apply_transform, delete_conversations
+from polylogue.cli.query_output import (
+    _output_summary_list,
+    _render_conversation_rich,
+    _send_output,
+    output_results,
+    output_stats_by_conversations,
+    output_stats_by_semantic_summaries,
+    output_stats_by_summaries,
+    output_stats_sql,
 )
 from polylogue.cli.types import AppEnv
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 from polylogue.services import build_runtime_services
+from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 from tests.infra.strategies import (
     ConversationSummarySpec,
     build_conversation_summary,
@@ -119,6 +125,7 @@ def _sample_summary_spec() -> ConversationSummarySpec:
 
 def _build_plan(case: str) -> QueryExecutionPlan:
     selection = MagicMock()
+    selection.similar_text = None
     action = QueryAction.SHOW
     output = QueryOutputSpec("markdown", ("stdout",), None, False, None, False)
     mutation = QueryMutationSpec((), (), False, False, False)
@@ -131,6 +138,9 @@ def _build_plan(case: str) -> QueryExecutionPlan:
     elif case == "stats_by_summaries":
         action = QueryAction.STATS_BY
         stats_dimension = "provider"
+    elif case == "stats_by_semantic_summaries":
+        action = QueryAction.STATS_BY
+        stats_dimension = "action"
     elif case == "stream":
         action = QueryAction.STREAM
         output = QueryOutputSpec("json", ("stdout", "browser"), None, True, "strip-tools", False)
@@ -181,6 +191,56 @@ def _sample_output_conversation(conversation_id: str = "conv-output") -> Convers
         messages=[
             Message(id=f"{conversation_id}-user", role="user", text="hello"),
             Message(id=f"{conversation_id}-assistant", role="assistant", text="world"),
+        ],
+    )
+
+
+def _sample_semantic_conversation() -> Conversation:
+    return Conversation(
+        id="conv-semantic",
+        provider="claude-code",
+        title="Semantic Slice Contract",
+        messages=[
+            Message(id="m-user", role="user", text="inspect the repo"),
+            Message(
+                id="m-other",
+                role="assistant",
+                text="mystery tool",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Mystery",
+                        "tool_id": "tool-other",
+                        "tool_input": {"path": "/realm/project/polylogue/README.md"},
+                    }
+                ],
+            ),
+            Message(
+                id="m-edit",
+                role="assistant",
+                text="edit models",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-edit",
+                        "tool_input": {"file_path": "/realm/project/polylogue/polylogue/lib/models.py"},
+                    }
+                ],
+            ),
+            Message(
+                id="m-search",
+                role="assistant",
+                text="search docs",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Grep",
+                        "tool_id": "tool-search",
+                        "tool_input": {"pattern": "polylogue"},
+                    }
+                ],
+            ),
         ],
     )
 
@@ -388,6 +448,30 @@ def test_resolve_query_route_contract(case: str, can_use_summaries: bool, expect
     assert resolve_query_route(plan, can_use_summaries=can_use_summaries) == expected_route
 
 
+def test_resolve_query_route_uses_full_stats_for_action_dimension() -> None:
+    plan = QueryExecutionPlan(
+        selection=ConversationQuerySpec(),
+        action=QueryAction.STATS_BY,
+        output=QueryOutputSpec("markdown", ("stdout",), None, False, None, False),
+        mutation=QueryMutationSpec((), (), False, False, False),
+        stats_dimension="action",
+    )
+
+    assert resolve_query_route(plan, can_use_summaries=True) == QueryRoute.STATS_BY
+
+
+def test_resolve_query_route_uses_full_stats_for_tool_dimension() -> None:
+    plan = QueryExecutionPlan(
+        selection=ConversationQuerySpec(),
+        action=QueryAction.STATS_BY,
+        output=QueryOutputSpec("markdown", ("stdout",), None, False, None, False),
+        mutation=QueryMutationSpec((), (), False, False, False),
+        stats_dimension="tool",
+    )
+
+    assert resolve_query_route(plan, can_use_summaries=True) == QueryRoute.STATS_BY
+
+
 @settings(max_examples=40, deadline=None)
 @given(case=summary_stats_case_strategy())
 def test_output_stats_by_summaries_contract(case) -> None:
@@ -414,6 +498,257 @@ def test_output_stats_by_summaries_contract(case) -> None:
     assert "TOTAL" in rendered
     assert f"{len(case.summaries):,}" in rendered
     assert f"{sum(spec.message_count for spec in case.summaries):,}" in rendered
+
+
+def test_output_stats_by_summaries_json_contract() -> None:
+    env = _make_env()
+    summaries = [
+        build_conversation_summary(
+            ConversationSummarySpec(
+                conversation_id="conv-a",
+                provider="claude-ai",
+                title="A",
+                summary="sa",
+                tags=("x",),
+                created_at=None,
+                updated_at=None,
+                message_count=3,
+            )
+        ),
+        build_conversation_summary(
+            ConversationSummarySpec(
+                conversation_id="conv-b",
+                provider="chatgpt",
+                title="B",
+                summary="sb",
+                tags=("y",),
+                created_at=None,
+                updated_at=None,
+                message_count=4,
+            )
+        ),
+    ]
+    msg_counts = {"conv-a": 3, "conv-b": 4}
+
+    with patch("click.echo") as mock_echo:
+        output_stats_by_summaries(env, summaries, msg_counts, "provider", output_format="json")
+
+    payload = json.loads(mock_echo.call_args.args[0])
+    env.ui.console.print.assert_not_called()
+    assert payload == {
+        "dimension": "provider",
+        "multi_membership": False,
+        "rows": [
+            {"group": "chatgpt", "conversations": 1, "messages": 4},
+            {"group": "claude-ai", "conversations": 1, "messages": 3},
+        ],
+        "summary": {"group": "TOTAL", "conversations": 2, "messages": 7},
+    }
+
+
+@pytest.mark.asyncio
+async def test_output_stats_by_semantic_summaries_json_contract() -> None:
+    env = _make_env()
+    repo = MagicMock()
+    repo.queries.get_conversations_batch = AsyncMock(
+        side_effect=[
+            [
+                ConversationRecord(
+                    conversation_id="conv-law-1",
+                    provider_name="claude-code",
+                    provider_conversation_id="ext-conv-law-1",
+                    title="Read contract",
+                    created_at="2025-01-01T00:00:00Z",
+                    updated_at="2025-01-01T00:00:00Z",
+                    sort_key=1735689600,
+                    content_hash="hash-read",
+                )
+            ],
+            [
+                ConversationRecord(
+                    conversation_id="conv-b",
+                    provider_name="claude-code",
+                    provider_conversation_id="ext-conv-b",
+                    title="Shell contract",
+                    created_at="2025-01-01T00:00:00Z",
+                    updated_at="2025-01-01T00:00:00Z",
+                    sort_key=1735689600,
+                    content_hash="hash-shell",
+                )
+            ],
+        ]
+    )
+    repo.queries.get_messages_batch = AsyncMock(
+        side_effect=[
+            {
+                "conv-law-1": [
+                    MessageRecord(
+                        message_id="m-read",
+                        conversation_id="conv-law-1",
+                        role="assistant",
+                        text="read file",
+                        sort_key=1735689600,
+                        content_hash="msg-hash-read",
+                        content_blocks=[
+                            ContentBlockRecord(
+                                block_id="blk-read",
+                                message_id="m-read",
+                                conversation_id="conv-law-1",
+                                block_index=0,
+                                type="tool_use",
+                                text=None,
+                                tool_name="Read",
+                                tool_id=None,
+                                tool_input=json.dumps({"file_path": "/tmp/a.py"}),
+                                semantic_type="file_read",
+                            )
+                        ],
+                    )
+                ]
+            },
+            {
+                "conv-b": [
+                    MessageRecord(
+                        message_id="m-shell",
+                        conversation_id="conv-b",
+                        role="assistant",
+                        text="run tests",
+                        sort_key=1735689600,
+                        content_hash="msg-hash-shell",
+                        content_blocks=[
+                            ContentBlockRecord(
+                                block_id="blk-shell",
+                                message_id="m-shell",
+                                conversation_id="conv-b",
+                                block_index=0,
+                                type="tool_use",
+                                text=None,
+                                tool_name="Bash",
+                                tool_id=None,
+                                tool_input=json.dumps({"command": "pytest -q"}),
+                                semantic_type="shell",
+                            )
+                        ],
+                    )
+                ]
+            },
+        ]
+    )
+    summaries = [
+        build_conversation_summary(_sample_summary_spec()),
+        build_conversation_summary(
+            ConversationSummarySpec(
+                conversation_id="conv-b",
+                provider="claude-code",
+                title="Shell contract",
+                summary="summary",
+                tags=("law",),
+                created_at=None,
+                updated_at=None,
+                message_count=1,
+            )
+        ),
+    ]
+
+    with patch("click.echo") as mock_echo:
+        await output_stats_by_semantic_summaries(
+            env,
+            summaries,
+            repo,
+            "action",
+            selection=ConversationQuerySpec(),
+            output_format="json",
+            batch_size=1,
+        )
+
+    payload = json.loads(mock_echo.call_args.args[0])
+    env.ui.console.print.assert_not_called()
+    assert payload == {
+        "dimension": "action",
+        "multi_membership": True,
+        "rows": [
+            {"group": "file_read", "conversations": 1, "facts": 1, "messages": 1},
+            {"group": "shell", "conversations": 1, "facts": 1, "messages": 1},
+        ],
+        "summary": {"group": "MATCHED", "conversations": 2, "facts": 2, "messages": 2},
+    }
+    assert repo.queries.get_conversations_batch.await_count == 2
+    assert repo.queries.get_messages_batch.await_count == 2
+
+
+def test_output_stats_by_conversations_action_slice_respects_selected_action() -> None:
+    env = _make_env()
+    conversation = _sample_semantic_conversation()
+    selection = ConversationQuerySpec(action_terms=("other",))
+
+    with patch("click.echo") as mock_echo:
+        output_stats_by_conversations(
+            env,
+            [conversation],
+            "tool",
+            selection=selection,
+            output_format="json",
+        )
+
+    payload = json.loads(mock_echo.call_args.args[0])
+    assert payload == {
+        "dimension": "tool",
+        "multi_membership": True,
+        "rows": [
+            {"group": "mystery", "conversations": 1, "facts": 1, "messages": 1},
+        ],
+        "summary": {"group": "MATCHED", "conversations": 1, "facts": 1, "messages": 1},
+    }
+
+
+def test_output_stats_by_conversations_action_slice_respects_selected_tool() -> None:
+    env = _make_env()
+    conversation = _sample_semantic_conversation()
+    selection = ConversationQuerySpec(tool_terms=("edit",))
+
+    with patch("click.echo") as mock_echo:
+        output_stats_by_conversations(
+            env,
+            [conversation],
+            "action",
+            selection=selection,
+            output_format="json",
+        )
+
+    payload = json.loads(mock_echo.call_args.args[0])
+    assert payload == {
+        "dimension": "action",
+        "multi_membership": True,
+        "rows": [
+            {"group": "file_edit", "conversations": 1, "facts": 1, "messages": 1},
+        ],
+        "summary": {"group": "MATCHED", "conversations": 1, "facts": 1, "messages": 1},
+    }
+
+
+def test_output_stats_by_conversations_action_slice_respects_selected_path() -> None:
+    env = _make_env()
+    conversation = _sample_semantic_conversation()
+    selection = ConversationQuerySpec(path_terms=("/realm/project/polylogue/README.md",))
+
+    with patch("click.echo") as mock_echo:
+        output_stats_by_conversations(
+            env,
+            [conversation],
+            "action",
+            selection=selection,
+            output_format="json",
+        )
+
+    payload = json.loads(mock_echo.call_args.args[0])
+    assert payload == {
+        "dimension": "action",
+        "multi_membership": True,
+        "rows": [
+            {"group": "other", "conversations": 1, "facts": 1, "messages": 1},
+        ],
+        "summary": {"group": "MATCHED", "conversations": 1, "facts": 1, "messages": 1},
+    }
 
 
 def test_output_results_no_results_contract() -> None:
@@ -545,6 +880,7 @@ def test_project_query_results_contract() -> None:
         ("count", "count"),
         ("stats_sql", "stats_sql"),
         ("stats_by_summaries", "stats_by_summaries"),
+        ("stats_by_semantic_summaries", "stats_by_semantic_summaries"),
         ("stream", "stream"),
         ("modify", "modify"),
         ("delete", "delete"),
@@ -573,6 +909,7 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         patch("polylogue.cli.query_output._output_summary_list", new_callable=AsyncMock) as mock_output_summary_list,
         patch("polylogue.cli.query_output.output_stats_sql", new_callable=AsyncMock) as mock_output_stats_sql,
         patch("polylogue.cli.query_output.output_stats_by_summaries") as mock_output_stats_by_summaries,
+        patch("polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock) as mock_output_stats_by_semantic_summaries,
         patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
         patch("polylogue.cli.query_actions.apply_modifiers", new_callable=AsyncMock) as mock_apply_modifiers,
         patch("polylogue.cli.query_actions.delete_conversations", new_callable=AsyncMock) as mock_delete_conversations,
@@ -600,6 +937,12 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         filter_chain.list_summaries.assert_awaited_once()
         repo.queries.get_message_counts_batch.assert_awaited_once_with([str(summary.id)])
         mock_output_stats_by_summaries.assert_called_once()
+        mock_output_stats_by_semantic_summaries.assert_not_called()
+        mock_output_stats_by.assert_not_called()
+    elif expected_helper == "stats_by_semantic_summaries":
+        filter_chain.list.assert_not_called()
+        filter_chain.list_summaries.assert_awaited_once()
+        mock_output_stats_by_semantic_summaries.assert_awaited_once()
         mock_output_stats_by.assert_not_called()
     elif expected_helper == "modify":
         filter_chain.list.assert_not_called()
@@ -660,6 +1003,55 @@ def test_async_execute_query_stats_by_falls_back_to_full_results_without_summari
     filter_chain.list_summaries.assert_not_called()
     mock_output_stats_by.assert_called_once()
     mock_output_stats_by_summaries.assert_not_called()
+    assert mock_output_stats_by.call_args.kwargs["selection"] is plan.selection
+
+
+def test_async_execute_query_semantic_stats_by_uses_summary_batches_contract() -> None:
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    plan = _build_plan("stats_by_semantic_summaries")
+    filter_chain = MagicMock()
+    filter_chain.can_use_summaries.return_value = True
+    filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
+    filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
+    plan.selection.build_filter.return_value = filter_chain
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock) as mock_output_stats_by_semantic_summaries,
+        patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
+    ):
+        asyncio.run(async_execute_query(env, {}))
+
+    filter_chain.list.assert_not_called()
+    filter_chain.list_summaries.assert_awaited_once()
+    mock_output_stats_by_semantic_summaries.assert_awaited_once()
+    mock_output_stats_by.assert_not_called()
+
+
+def test_async_execute_query_semantic_stats_by_falls_back_without_summaries_contract() -> None:
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    plan = _build_plan("stats_by_semantic_summaries")
+    filter_chain = MagicMock()
+    filter_chain.can_use_summaries.return_value = False
+    filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
+    filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
+    plan.selection.build_filter.return_value = filter_chain
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock) as mock_output_stats_by_semantic_summaries,
+        patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
+    ):
+        asyncio.run(async_execute_query(env, {}))
+
+    filter_chain.list.assert_awaited_once()
+    filter_chain.list_summaries.assert_not_called()
+    mock_output_stats_by_semantic_summaries.assert_not_called()
+    mock_output_stats_by.assert_called_once()
 
 
 def test_async_execute_query_summary_list_no_results_contract() -> None:
@@ -708,6 +1100,7 @@ def test_async_execute_query_query_spec_error_contract() -> None:
 def test_async_execute_query_show_projects_results_before_output_contract() -> None:
     env = _make_env(repo=MagicMock(), config=MagicMock())
     selection = MagicMock()
+    selection.similar_text = None
     plan = QueryExecutionPlan(
         selection=selection,
         action=QueryAction.SHOW,
@@ -864,7 +1257,53 @@ async def test_output_stats_sql_empty_paths_contract(described: list[str], can_u
     await output_stats_sql(env, filter_chain, repo)
 
     env.ui.console.print.assert_called_once_with(expected_message)
-    repo.queries.aggregate_message_stats.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None:
+    env = _make_env()
+    repo = MagicMock()
+    repo.queries.aggregate_message_stats = AsyncMock(
+        return_value={
+            "total": 9,
+            "user": 4,
+            "assistant": 5,
+            "words_approx": 42,
+            "providers": {"claude-ai": 2, "chatgpt": 1},
+            "attachments": 2,
+            "min_sort_key": 1704067200,
+            "max_sort_key": 1704153600,
+        }
+    )
+    repo.get_archive_stats = AsyncMock(
+        return_value=SimpleNamespace(
+            total_conversations=2,
+            embedded_conversations=1,
+            embedded_messages=5,
+            pending_embedding_conversations=1,
+            embedding_coverage=50.0,
+        )
+    )
+
+    filter_chain = MagicMock()
+    filter_chain.describe.return_value = []
+    filter_chain.can_use_summaries.return_value = False
+    filter_chain.count = AsyncMock(return_value=2)
+
+    await output_stats_sql(env, filter_chain, repo)
+
+    repo.get_archive_stats.assert_awaited_once()
+    printed = [call.args[0] for call in env.ui.console.print.call_args_list if call.args]
+    assert printed == [
+        "\nConversations: 2\n",
+        "Messages: 9 total (4 user, 5 assistant)",
+        "Words: ~42",
+        "Providers: claude-ai (2), chatgpt (1)",
+        "Attachments: 2",
+        "Embeddings: 1/2 convs, 5 msgs (50.0%), pending 1",
+        "Date range: 2024-01-01 to 2024-01-02",
+    ]
+    repo.queries.aggregate_message_stats.assert_awaited_once_with(None)
 
 
 # ---------------------------------------------------------------------------

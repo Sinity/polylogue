@@ -24,7 +24,7 @@ import pytest
 import yaml
 from rich.console import Console
 
-from polylogue.cli.query_helpers import describe_query_filters
+from polylogue.cli.query import describe_query_filters
 from polylogue.cli.query_output import (
     _format_list,
     _output_stats_by,
@@ -219,6 +219,54 @@ STATS_CASES = (
         ],
         ("Matched: 2 conversations (by month)", "2025-03", "2025-01", "TOTAL"),
     ),
+    (
+        "action",
+        [
+            (
+                "conv-1",
+                "claude-ai",
+                datetime(2025, 3, 5, tzinfo=timezone.utc),
+                [{"text": "read one", "semantic_type": "file_read"}, {"text": "search one", "semantic_type": "search"}],
+            ),
+            (
+                "conv-2",
+                "claude-ai",
+                datetime(2025, 3, 6, tzinfo=timezone.utc),
+                [{"text": "read two", "semantic_type": "file_read"}],
+            ),
+            (
+                "conv-3",
+                "chatgpt",
+                datetime(2025, 3, 7, tzinfo=timezone.utc),
+                [{"text": "plain"}],
+            ),
+        ],
+        ("Matched: 3 conversations (by action)", "file_read", "search", "none", "MATCHED", "Facts", "Note: conversations may appear in multiple action groups."),
+    ),
+    (
+        "tool",
+        [
+            (
+                "conv-1",
+                "claude-ai",
+                datetime(2025, 3, 5, tzinfo=timezone.utc),
+                [{"text": "read one", "semantic_type": "file_read", "tool_name": "Read"}],
+            ),
+            (
+                "conv-2",
+                "claude-ai",
+                datetime(2025, 3, 6, tzinfo=timezone.utc),
+                [{"text": "grep one", "semantic_type": "search", "tool_name": "Grep"}],
+            ),
+            (
+                "conv-3",
+                "chatgpt",
+                datetime(2025, 3, 7, tzinfo=timezone.utc),
+                [{"text": "plain"}],
+            ),
+        ],
+        ("Matched: 3 conversations (by tool)", "read", "grep", "none", "MATCHED", "Facts", "Note: conversations may appear in multiple tool groups."),
+    ),
 )
 
 
@@ -233,6 +281,7 @@ def _make_msg(
         text=text,
         timestamp=kwargs.get("timestamp"),
         attachments=kwargs.get("attachments", []),
+        content_blocks=kwargs.get("content_blocks", []),
         provider_meta=kwargs.get("provider_meta"),
     )
 
@@ -450,15 +499,38 @@ class TestStreamingOutput:
 class TestGroupedStatsOutput:
     @pytest.mark.parametrize("dimension,raw_cases,expected_tokens", STATS_CASES, ids=[case[0] for case in STATS_CASES])
     def test_output_stats_by_contract_matrix(self, dimension: str, raw_cases, expected_tokens) -> None:
-        conversations = [
-            _make_conv(
-                id=conv_id,
-                provider=provider,
-                updated_at=updated_at,
-                messages=[_make_msg("assistant", text, id=f"{conv_id}-{index}") for index, text in enumerate(texts)],
+        conversations = []
+        for conv_id, provider, updated_at, texts in raw_cases:
+            messages = []
+            for index, item in enumerate(texts):
+                if isinstance(item, str):
+                    messages.append(_make_msg("assistant", item, id=f"{conv_id}-{index}"))
+                    continue
+                messages.append(
+                    _make_msg(
+                        "assistant",
+                        str(item.get("text", "")),
+                        id=f"{conv_id}-{index}",
+                        content_blocks=[
+                            {
+                                "type": "tool_use",
+                                "tool_name": item.get("tool_name", item.get("semantic_type", "unknown")),
+                                "tool_input": item.get("tool_input", {}),
+                                "semantic_type": item.get("semantic_type"),
+                            }
+                        ]
+                        if item.get("semantic_type")
+                        else [],
+                    )
+                )
+            conversations.append(
+                _make_conv(
+                    id=conv_id,
+                    provider=provider,
+                    updated_at=updated_at,
+                    messages=messages,
+                )
             )
-            for conv_id, provider, updated_at, texts in raw_cases
-        ]
         console_buffer = io.StringIO()
         env = MagicMock()
         env.ui.console = Console(file=console_buffer, force_terminal=False, color_system=None, width=120)
@@ -474,3 +546,99 @@ class TestGroupedStatsOutput:
         env.ui.console = MagicMock()
         _output_stats_by(env, [], "provider")
         env.ui.console.print.assert_called_once_with("No conversations matched.")
+
+    def test_output_stats_by_action_json_contract(self) -> None:
+        conversations = [
+            _make_conv(
+                id="conv-1",
+                provider="claude-ai",
+                updated_at=datetime(2025, 3, 5, tzinfo=timezone.utc),
+                messages=[
+                    _make_msg(
+                        "assistant",
+                        "read one",
+                        id="conv-1-0",
+                        content_blocks=[{
+                            "type": "tool_use",
+                            "tool_name": "Read",
+                            "tool_input": {"path": "/tmp/a"},
+                            "semantic_type": "file_read",
+                        }],
+                    ),
+                ],
+            ),
+            _make_conv(
+                id="conv-2",
+                provider="claude-ai",
+                updated_at=datetime(2025, 3, 6, tzinfo=timezone.utc),
+                messages=[_make_msg("assistant", "plain", id="conv-2-0")],
+            ),
+        ]
+        env = MagicMock()
+        env.ui.console = MagicMock()
+
+        with patch("click.echo") as mock_echo:
+            _output_stats_by(env, conversations, "action", output_format="json")
+
+        payload = json.loads(mock_echo.call_args.args[0])
+        assert payload["dimension"] == "action"
+        assert payload["multi_membership"] is True
+        env.ui.console.print.assert_not_called()
+        assert payload["summary"] == {
+            "group": "MATCHED",
+            "conversations": 2,
+            "facts": 1,
+            "messages": 1,
+        }
+        assert payload["rows"] == [
+            {"group": "file_read", "conversations": 1, "facts": 1, "messages": 1},
+            {"group": "none", "conversations": 1, "facts": 0, "messages": 0},
+        ]
+
+    def test_output_stats_by_tool_json_contract(self) -> None:
+        conversations = [
+            _make_conv(
+                id="conv-1",
+                provider="claude-ai",
+                updated_at=datetime(2025, 3, 5, tzinfo=timezone.utc),
+                messages=[
+                    _make_msg(
+                        "assistant",
+                        "grep one",
+                        id="conv-1-0",
+                        content_blocks=[{
+                            "type": "tool_use",
+                            "tool_name": "Grep",
+                            "tool_input": {"pattern": "needle"},
+                            "semantic_type": "search",
+                        }],
+                    ),
+                ],
+            ),
+            _make_conv(
+                id="conv-2",
+                provider="claude-ai",
+                updated_at=datetime(2025, 3, 6, tzinfo=timezone.utc),
+                messages=[_make_msg("assistant", "plain", id="conv-2-0")],
+            ),
+        ]
+        env = MagicMock()
+        env.ui.console = MagicMock()
+
+        with patch("click.echo") as mock_echo:
+            _output_stats_by(env, conversations, "tool", output_format="json")
+
+        payload = json.loads(mock_echo.call_args.args[0])
+        assert payload["dimension"] == "tool"
+        assert payload["multi_membership"] is True
+        env.ui.console.print.assert_not_called()
+        assert payload["summary"] == {
+            "group": "MATCHED",
+            "conversations": 2,
+            "facts": 1,
+            "messages": 1,
+        }
+        assert payload["rows"] == [
+            {"group": "grep", "conversations": 1, "facts": 1, "messages": 1},
+            {"group": "none", "conversations": 1, "facts": 0, "messages": 0},
+        ]
