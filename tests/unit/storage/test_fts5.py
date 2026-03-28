@@ -163,6 +163,57 @@ def test_rebuild_index_with_empty_database(test_conn):
     assert action_count == 0
 
 
+def test_action_event_status_ignores_orphan_tool_sources(test_conn):
+    """Action-event readiness should ignore orphaned tool-use blocks outside reachable conversations."""
+    from polylogue.storage.action_event_lifecycle import (
+        action_event_read_model_status_sync,
+        rebuild_action_event_read_model_sync,
+    )
+
+    conv = make_conversation("conv1", title="Action ready")
+    msg = make_message(
+        "msg1",
+        "conv1",
+        text="Read config",
+        content_blocks=[
+            ContentBlockRecord(
+                block_id="blk1",
+                message_id="msg1",
+                conversation_id="conv1",
+                block_index=0,
+                type="tool_use",
+                tool_name="Read",
+                semantic_type="file_read",
+            )
+        ],
+    )
+    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
+    rebuild_action_event_read_model_sync(test_conn)
+    test_conn.commit()
+
+    test_conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        test_conn.execute(
+            """
+            INSERT INTO content_blocks (
+                block_id, message_id, conversation_id, block_index, type, tool_name
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("blk-orphan", "missing-msg", "missing-conv", 0, "tool_use", "Read"),
+        )
+        test_conn.commit()
+    finally:
+        test_conn.execute("PRAGMA foreign_keys = ON")
+
+    status = action_event_read_model_status_sync(test_conn)
+
+    assert status["source_conversation_count"] == 2
+    assert status["valid_source_conversation_count"] == 1
+    assert status["orphan_source_conversation_count"] == 1
+    assert status["rows_ready"] is True
+    assert status["ready"] is True
+
+
 async def test_search_returns_searchresult_object(workspace_env, storage_repository):
     """search_messages() returns SearchResult with hits list."""
     conv = make_conversation("conv1")

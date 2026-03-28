@@ -157,17 +157,32 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         )
         return
 
-    if route == QueryRoute.STATS_BY and plan.stats_dimension in {"action", "tool"} and filter_chain.can_use_summaries():
-        summaries = await filter_chain.list_summaries()
-        await _query_output.output_stats_by_semantic_summaries(
-            env,
-            summaries,
-            repo,
-            plan.stats_dimension or "all",
-            selection=plan.selection,
-            output_format=plan.output.output_format,
-        )
-        return
+    if route == QueryRoute.STATS_BY and plan.stats_dimension in {"action", "tool"}:
+        query_plan = filter_chain.build_query_plan()
+        if filter_chain.can_use_summaries():
+            summaries = await filter_chain.list_summaries()
+            await _query_output.output_stats_by_semantic_summaries(
+                env,
+                summaries,
+                repo,
+                plan.stats_dimension or "all",
+                selection=plan.selection,
+                output_format=plan.output.output_format,
+            )
+            return
+        if await query_plan.can_use_action_event_stats_with(repo):
+            records = await repo.queries.list_conversations(
+                query_plan.record_query.with_limit(query_plan.limit)
+            )
+            await _query_output.output_stats_by_semantic_query(
+                env,
+                [record.conversation_id for record in records],
+                repo,
+                plan.stats_dimension or "all",
+                selection=plan.selection,
+                output_format=plan.output.output_format,
+            )
+            return
 
     if route in {QueryRoute.SUMMARY_MODIFY, QueryRoute.SUMMARY_DELETE}:
         results = await filter_chain.list_summaries()

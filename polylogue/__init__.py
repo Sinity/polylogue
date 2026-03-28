@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from polylogue.errors import PolylogueError
     from polylogue.facade import ArchiveStats, Polylogue
-    from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation, Message
     from polylogue.storage.search import SearchResult
     from polylogue.sync import SyncPolylogue
@@ -29,7 +28,6 @@ def __getattr__(name: str) -> object:
     lazy_exports = {
         "ArchiveStats": ("polylogue.facade", "ArchiveStats"),
         "Conversation": ("polylogue.lib.models", "Conversation"),
-        "ConversationFilter": ("polylogue.lib.filters", "ConversationFilter"),
         "Message": ("polylogue.lib.models", "Message"),
         "Polylogue": ("polylogue.facade", "Polylogue"),
         "PolylogueError": ("polylogue.errors", "PolylogueError"),
@@ -46,7 +44,6 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "ArchiveStats",
     "Conversation",
-    "ConversationFilter",
     "Message",
     "Polylogue",
     "PolylogueError",
