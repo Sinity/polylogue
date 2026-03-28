@@ -1,8 +1,22 @@
 # Semantic Stack Convergence Program
 
 Date: 2026-03-23
-Status: planned execution program
-Role: canonical next implementation campaign after the schema-and-evidence pipeline convergence wave
+Status: executed implementation program
+Role: canonical execution record for the semantic-stack convergence campaign
+
+## Execution Outcome
+
+This program is executed.
+
+It landed:
+
+1. a split harmonization boundary for typed adapters, fallback extraction, and provider-meta hydration
+2. a canonical semantic facts layer shared by semantic proof and higher-order semantic products
+3. session-analysis products converged onto those shared semantic facts instead of recomputing overlapping signals
+4. semantic proof surfaces switched to the canonical semantic facts layer
+5. a declared semantic surface-contract registry with reusable contract evaluation
+6. operator exposure for semantic contract inventory through `polylogue check --semantic-contracts`
+7. a named `semantic-stack` validation lane covering harmonization, facts, proof, QA, and contract inventory
 
 See also:
 

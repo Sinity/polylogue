@@ -48,6 +48,28 @@ def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -
     is_flag=True,
     help="Run semantic preservation proof across canonical, export, query, stream, and MCP read surfaces",
 )
+<<<<<<< ours
+||||||| base
+@click.option(
+    "--roundtrip-proof",
+    "check_roundtrip_proof",
+    is_flag=True,
+    help="Run the synthetic schema-and-evidence roundtrip proof lane in an isolated workspace",
+)
+=======
+@click.option(
+    "--semantic-contracts",
+    "check_semantic_contracts",
+    is_flag=True,
+    help="List declared semantic-proof surface contracts and aliases",
+)
+@click.option(
+    "--roundtrip-proof",
+    "check_roundtrip_proof",
+    is_flag=True,
+    help="Run the synthetic schema-and-evidence roundtrip proof lane in an isolated workspace",
+)
+>>>>>>> theirs
 @click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)")
 @click.option(
     "--artifact-provider",
@@ -144,6 +166,13 @@ def check_command(
     check_artifacts: bool,
     check_cohorts: bool,
     check_semantic_proof: bool,
+<<<<<<< ours
+||||||| base
+    check_roundtrip_proof: bool,
+=======
+    check_semantic_contracts: bool,
+    check_roundtrip_proof: bool,
+>>>>>>> theirs
     schema_providers: tuple[str, ...],
     artifact_providers: tuple[str, ...],
     artifact_statuses: tuple[str, ...],
@@ -160,6 +189,7 @@ def check_command(
     schema_quarantine_malformed: bool,
 ) -> None:
     """Health check with optional repair."""
+<<<<<<< ours
     if vacuum and not repair:
         fail("check", "--vacuum requires --repair")
     if preview and not repair:
@@ -314,6 +344,80 @@ def check_command(
         if vacuum_result is not None:
             out["vacuum"] = vacuum_result
         emit_success(out)
+||||||| base
+    options = CheckCommandOptions(
+        json_output=json_output,
+        verbose=verbose,
+        repair=repair,
+        preview=preview,
+        vacuum=vacuum,
+        deep=deep,
+        runtime=runtime,
+        check_schemas=check_schemas,
+        check_proof=check_proof,
+        check_artifacts=check_artifacts,
+        check_cohorts=check_cohorts,
+        check_semantic_proof=check_semantic_proof,
+        check_roundtrip_proof=check_roundtrip_proof,
+        schema_providers=schema_providers,
+        artifact_providers=artifact_providers,
+        artifact_statuses=artifact_statuses,
+        artifact_kinds=artifact_kinds,
+        artifact_limit=artifact_limit,
+        artifact_offset=artifact_offset,
+        semantic_providers=semantic_providers,
+        semantic_surfaces=semantic_surfaces,
+        semantic_limit=semantic_limit,
+        semantic_offset=semantic_offset,
+        roundtrip_providers=roundtrip_providers,
+        roundtrip_count=roundtrip_count,
+        schema_samples=schema_samples,
+        schema_record_limit=schema_record_limit,
+        schema_record_offset=schema_record_offset,
+        schema_quarantine_malformed=schema_quarantine_malformed,
+    )
+    validate_check_options(options)
+    result = run_check_workflow(env, options)
+    if options.json_output:
+        emit_json_output(result, options)
+=======
+    options = CheckCommandOptions(
+        json_output=json_output,
+        verbose=verbose,
+        repair=repair,
+        preview=preview,
+        vacuum=vacuum,
+        deep=deep,
+        runtime=runtime,
+        check_schemas=check_schemas,
+        check_proof=check_proof,
+        check_artifacts=check_artifacts,
+        check_cohorts=check_cohorts,
+        check_semantic_proof=check_semantic_proof,
+        check_semantic_contracts=check_semantic_contracts,
+        check_roundtrip_proof=check_roundtrip_proof,
+        schema_providers=schema_providers,
+        artifact_providers=artifact_providers,
+        artifact_statuses=artifact_statuses,
+        artifact_kinds=artifact_kinds,
+        artifact_limit=artifact_limit,
+        artifact_offset=artifact_offset,
+        semantic_providers=semantic_providers,
+        semantic_surfaces=semantic_surfaces,
+        semantic_limit=semantic_limit,
+        semantic_offset=semantic_offset,
+        roundtrip_providers=roundtrip_providers,
+        roundtrip_count=roundtrip_count,
+        schema_samples=schema_samples,
+        schema_record_limit=schema_record_limit,
+        schema_record_offset=schema_record_offset,
+        schema_quarantine_malformed=schema_quarantine_malformed,
+    )
+    validate_check_options(options)
+    result = run_check_workflow(env, options)
+    if options.json_output:
+        emit_json_output(result, options)
+>>>>>>> theirs
         return
 
     lines = []

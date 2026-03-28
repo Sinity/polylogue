@@ -25,6 +25,57 @@ from polylogue.paths import archive_root as default_archive_root
 from polylogue.paths import db_path as default_db_path
 from polylogue.rendering.core import ConversationFormatter
 from polylogue.rendering.formatting import format_conversation
+<<<<<<< ours
+||||||| base
+from polylogue.rendering.semantic_proof_models import (
+    ProviderSemanticProof,
+    SemanticConversationProof,
+    SemanticMetricCheck,
+    SemanticProofReport,
+    SemanticProofSuiteReport,
+    _build_provider_reports,
+)
+from polylogue.rendering.semantic_proof_surfaces import (
+    _prove_mcp_detail_surface,
+    _prove_mcp_summary_surface,
+    _prove_query_stream_json_lines_surface,
+    _prove_query_stream_markdown_surface,
+    _prove_query_stream_plaintext_surface,
+    _prove_query_summary_csv_surface,
+    _prove_query_summary_json_like_surface,
+    _prove_query_summary_text_surface,
+    prove_export_surface_semantics,
+    prove_markdown_projection_semantics,
+)
+=======
+from polylogue.rendering.semantic_proof_models import (
+    ProviderSemanticProof,
+    SemanticConversationProof,
+    SemanticMetricCheck,
+    SemanticProofReport,
+    SemanticProofSuiteReport,
+    _build_provider_reports,
+)
+from polylogue.rendering.semantic_proof_surfaces import (
+    _prove_mcp_detail_surface,
+    _prove_mcp_summary_surface,
+    _prove_query_stream_json_lines_surface,
+    _prove_query_stream_markdown_surface,
+    _prove_query_stream_plaintext_surface,
+    _prove_query_summary_csv_surface,
+    _prove_query_summary_json_like_surface,
+    _prove_query_summary_text_surface,
+    prove_export_surface_semantics,
+    prove_markdown_projection_semantics,
+)
+from polylogue.rendering.semantic_surface_registry import (
+    DEFAULT_SEMANTIC_SURFACES,
+    EXPORT_SURFACE_FORMATS,
+    STREAM_SURFACE_FORMATS,
+    list_semantic_surface_specs,
+    resolve_semantic_surfaces,
+)
+>>>>>>> theirs
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import ConversationRenderProjection, MessageRecord
@@ -32,6 +83,7 @@ from polylogue.storage.store import ConversationRenderProjection, MessageRecord
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, Message
 
+<<<<<<< ours
 
 DEFAULT_SEMANTIC_SURFACES: tuple[str, ...] = (
     "canonical_markdown_v1",
@@ -2260,6 +2312,127 @@ def _prove_mcp_detail_surface(
     )
 
 
+||||||| base
+
+DEFAULT_SEMANTIC_SURFACES: tuple[str, ...] = (
+    "canonical_markdown_v1",
+    "export_json_v1",
+    "export_yaml_v1",
+    "export_csv_v1",
+    "export_markdown_v1",
+    "export_html_v1",
+    "export_obsidian_v1",
+    "export_org_v1",
+    "query_summary_json_v1",
+    "query_summary_yaml_v1",
+    "query_summary_csv_v1",
+    "query_summary_text_v1",
+    "query_stream_plaintext_v1",
+    "query_stream_markdown_v1",
+    "query_stream_json_lines_v1",
+    "mcp_summary_json_v1",
+    "mcp_detail_json_v1",
+)
+
+_SURFACE_ALIASES: dict[str, tuple[str, ...]] = {
+    "all": DEFAULT_SEMANTIC_SURFACES,
+    "canonical": ("canonical_markdown_v1",),
+    "canonical_markdown": ("canonical_markdown_v1",),
+    "canonical_markdown_v1": ("canonical_markdown_v1",),
+    "json": ("export_json_v1",),
+    "yaml": ("export_yaml_v1",),
+    "csv": ("export_csv_v1",),
+    "markdown": ("export_markdown_v1",),
+    "html": ("export_html_v1",),
+    "obsidian": ("export_obsidian_v1",),
+    "org": ("export_org_v1",),
+    "query_summary_json": ("query_summary_json_v1",),
+    "query_summary_yaml": ("query_summary_yaml_v1",),
+    "query_summary_csv": ("query_summary_csv_v1",),
+    "query_summary_text": ("query_summary_text_v1",),
+    "query_summary_all": (
+        "query_summary_json_v1",
+        "query_summary_yaml_v1",
+        "query_summary_csv_v1",
+        "query_summary_text_v1",
+    ),
+    "stream_plaintext": ("query_stream_plaintext_v1",),
+    "stream_markdown": ("query_stream_markdown_v1",),
+    "stream_json_lines": ("query_stream_json_lines_v1",),
+    "stream_all": (
+        "query_stream_plaintext_v1",
+        "query_stream_markdown_v1",
+        "query_stream_json_lines_v1",
+    ),
+    "query_all": (
+        "query_summary_json_v1",
+        "query_summary_yaml_v1",
+        "query_summary_csv_v1",
+        "query_summary_text_v1",
+        "query_stream_plaintext_v1",
+        "query_stream_markdown_v1",
+        "query_stream_json_lines_v1",
+    ),
+    "mcp_summary": ("mcp_summary_json_v1",),
+    "mcp_detail": ("mcp_detail_json_v1",),
+    "mcp_all": ("mcp_summary_json_v1", "mcp_detail_json_v1"),
+    "read_all": (
+        "query_summary_json_v1",
+        "query_summary_yaml_v1",
+        "query_summary_csv_v1",
+        "query_summary_text_v1",
+        "query_stream_plaintext_v1",
+        "query_stream_markdown_v1",
+        "query_stream_json_lines_v1",
+        "mcp_summary_json_v1",
+        "mcp_detail_json_v1",
+    ),
+    "export_all": (
+        "export_json_v1",
+        "export_yaml_v1",
+        "export_csv_v1",
+        "export_markdown_v1",
+        "export_html_v1",
+        "export_obsidian_v1",
+        "export_org_v1",
+    ),
+}
+
+_EXPORT_SURFACE_FORMATS: dict[str, str] = {
+    "export_json_v1": "json",
+    "export_yaml_v1": "yaml",
+    "export_csv_v1": "csv",
+    "export_markdown_v1": "markdown",
+    "export_html_v1": "html",
+    "export_obsidian_v1": "obsidian",
+    "export_org_v1": "org",
+}
+
+
+def resolve_semantic_surfaces(surfaces: list[str] | tuple[str, ...] | None) -> list[str]:
+    """Normalize semantic-proof surface filters to canonical surface names."""
+    if not surfaces:
+        return list(DEFAULT_SEMANTIC_SURFACES)
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for surface in surfaces:
+        token = str(surface).strip().lower().replace("-", "_")
+        aliases = _SURFACE_ALIASES.get(token)
+        if aliases is None:
+            raise ValueError(
+                "Unknown semantic surface "
+                f"{surface!r}. Valid values: {', '.join(sorted(_SURFACE_ALIASES))}"
+            )
+        for alias in aliases:
+            if alias not in seen:
+                seen.add(alias)
+                resolved.append(alias)
+    return resolved
+
+
+=======
+>>>>>>> theirs
 def _empty_surface_report(
     surface: str,
     *,
@@ -2307,7 +2480,7 @@ async def _prove_semantic_surface_suite_async(
             "query_stream_markdown_v1",
             "query_stream_json_lines_v1",
         }
-        export_surfaces = set(_EXPORT_SURFACE_FORMATS)
+        export_surfaces = set(EXPORT_SURFACE_FORMATS)
         summary_json_surfaces = {
             "query_summary_json_v1",
             "query_summary_yaml_v1",
@@ -2418,7 +2591,7 @@ async def _prove_semantic_surface_suite_async(
                 if surface in export_surfaces:
                     if conversation is None:
                         continue
-                    rendered_text = format_conversation(conversation, _EXPORT_SURFACE_FORMATS[surface], None)
+                    rendered_text = format_conversation(conversation, EXPORT_SURFACE_FORMATS[surface], None)
                     proofs_by_surface[surface].append(
                         prove_export_surface_semantics(conversation, surface, rendered_text)
                     )
@@ -2433,11 +2606,7 @@ async def _prove_semantic_surface_suite_async(
                         provider=str(conversation.provider),
                         display_date=conversation.display_date,
                         messages=list(conversation.messages),
-                        output_format={
-                            "query_stream_plaintext_v1": "plaintext",
-                            "query_stream_markdown_v1": "markdown",
-                            "query_stream_json_lines_v1": "json-lines",
-                        }[surface],
+                        output_format=STREAM_SURFACE_FORMATS[surface],
                         dialogue_only=False,
                         message_limit=None,
                         stats={
@@ -2573,6 +2742,7 @@ __all__ = [
     "SemanticMetricCheck",
     "SemanticProofReport",
     "SemanticProofSuiteReport",
+    "list_semantic_surface_specs",
     "prove_export_surface_semantics",
     "prove_markdown_projection_semantics",
     "prove_markdown_render_semantics",

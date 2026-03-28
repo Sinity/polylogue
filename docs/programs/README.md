@@ -3,6 +3,9 @@
 This directory holds planning and execution-program documents rather than
 operator reference docs.
 
+There is no newer live execution program yet. Start with the most recent
+executed convergence record, then choose the next queue intentionally.
+
 Use them in this order:
 
 <<<<<<< ours
@@ -36,7 +39,7 @@ Use them in this order:
 2. [core-architecture-convergence-program-2026-03-23.md](./core-architecture-convergence-program-2026-03-23.md)
 =======
 1. [semantic-stack-convergence-program-2026-03-23.md](./semantic-stack-convergence-program-2026-03-23.md)
-   Current planned execution program for harmonization, semantic facts, downstream semantic products, and semantic proof/export contracts.
+   Most recent executed convergence program for harmonization, semantic facts, downstream semantic products, and semantic proof/export contracts.
 2. [schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./schema-and-evidence-pipeline-convergence-program-2026-03-23.md)
    Most recent executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path.
 3. [core-architecture-convergence-program-2026-03-23.md](./core-architecture-convergence-program-2026-03-23.md)
