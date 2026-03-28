@@ -8,58 +8,31 @@ import click
 
 from polylogue.cli import query_actions as _query_actions
 from polylogue.cli import query_output as _query_output
-from polylogue.cli.query_plan import QueryAction, QueryPlanError, build_query_execution_plan
+from polylogue.cli.query_helpers import no_results
+from polylogue.cli.query_plan import (
+    QueryPlanError,
+    QueryRoute,
+    build_query_execution_plan,
+    resolve_query_route,
+)
 from polylogue.lib.log import get_logger
-from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
+from polylogue.lib.query_spec import QuerySpecError
 
 logger = get_logger(__name__)
 
-_apply_modifiers = _query_actions._apply_modifiers
-_apply_transform = _query_actions._apply_transform
-_delete_conversations = _query_actions._delete_conversations
-resolve_stream_target = _query_actions.resolve_stream_target
-
-_conv_to_csv = _query_output._conv_to_csv
-_copy_to_clipboard = _query_output._copy_to_clipboard
-_format_list = _query_output._format_list
-_open_in_browser = _query_output._open_in_browser
-_open_result = _query_output._open_result
-_output_results = _query_output._output_results
-_output_stats_by = _query_output._output_stats_by
-_output_stats_by_summaries = _query_output._output_stats_by_summaries
-_output_stats_sql = _query_output._output_stats_sql
-_output_summary_list = _query_output._output_summary_list
-_render_conversation_rich = _query_output._render_conversation_rich
-_send_output = _query_output._send_output
-_write_message_streaming = _query_output._write_message_streaming
-stream_conversation = _query_output.stream_conversation
-
 if TYPE_CHECKING:
+    from polylogue.cli.query_plan import QueryExecutionPlan
     from polylogue.cli.types import AppEnv
 
 
-def _coerce_query_spec(params: dict[str, Any] | ConversationQuerySpec) -> ConversationQuerySpec:
-    if isinstance(params, ConversationQuerySpec):
-        return params
-    return ConversationQuerySpec.from_params(params)
-
-
-def _describe_filters(params: dict[str, Any] | ConversationQuerySpec) -> list[str]:
-    """Build a human-readable list of active filters from params or spec."""
-    return _coerce_query_spec(params).describe()
-
-
-def _no_results(env: AppEnv, params: dict[str, Any] | ConversationQuerySpec, *, exit_code: int = 2) -> None:
-    """Print a helpful no-results message and exit."""
-    filters = _describe_filters(params)
-    if filters:
-        click.echo("No conversations matched filters:", err=True)
-        for item in filters:
-            click.echo(f"  {item}", err=True)
-        click.echo("Hint: try broadening your filters or use --list to browse", err=True)
-    else:
-        click.echo("No conversations matched.", err=True)
-    raise SystemExit(exit_code)
+def _project_query_results(results: list[Any], plan: QueryExecutionPlan) -> list[Any]:
+    """Apply post-selection transforms consistently before final output."""
+    projected = results
+    if plan.output.transform is not None:
+        projected = _query_actions._apply_transform(projected, plan.output.transform)
+    if plan.output.dialogue_only:
+        projected = [conversation.dialogue_only() for conversation in projected]
+    return projected
 
 
 def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
@@ -109,19 +82,21 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         )
         raise SystemExit(1) from exc
 
-    if plan.action == QueryAction.COUNT:
+    route = resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries())
+
+    if route == QueryRoute.COUNT:
         click.echo(await filter_chain.count())
         return
 
-    if plan.prefers_summary_list() and filter_chain.can_use_summaries():
+    if route == QueryRoute.SUMMARY_LIST:
         summary_results = await filter_chain.list_summaries()
         if not summary_results:
-            _no_results(env, plan.selection)
-        await _output_summary_list(env, summary_results, params, repo)
+            no_results(env, plan.selection)
+        await _query_output._output_summary_list(env, summary_results, params, repo)
         return
 
-    if plan.action == QueryAction.STREAM:
-        full_id = await resolve_stream_target(repo, filter_chain, plan.selection)
+    if route == QueryRoute.STREAM:
+        full_id = await _query_actions.resolve_stream_target(repo, filter_chain, plan.selection)
         if plan.output.transform is not None:
             click.echo(
                 "Warning: --transform is ignored in --stream mode (messages are streamed individually).",
@@ -133,7 +108,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
                 err=True,
             )
 
-        await stream_conversation(
+        await _query_output.stream_conversation(
             env,
             repo,
             full_id,
@@ -143,41 +118,37 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         )
         return
 
-    if plan.action == QueryAction.STATS:
-        await _output_stats_sql(env, filter_chain, repo)
+    if route == QueryRoute.STATS_SQL:
+        await _query_output._output_stats_sql(env, filter_chain, repo)
         return
 
-    if plan.prefers_summary_stats() and filter_chain.can_use_summaries():
+    if route == QueryRoute.SUMMARY_STATS:
         summaries = await filter_chain.list_summaries()
         msg_counts = await repo.get_message_counts_batch([str(summary.id) for summary in summaries])
-        _output_stats_by_summaries(env, summaries, msg_counts, plan.stats_dimension or "all")
+        _query_output._output_stats_by_summaries(env, summaries, msg_counts, plan.stats_dimension or "all")
         return
 
-    if plan.prefers_summary_mutation() and filter_chain.can_use_summaries():
+    if route in {QueryRoute.SUMMARY_MODIFY, QueryRoute.SUMMARY_DELETE}:
         results = await filter_chain.list_summaries()
     else:
         results = await filter_chain.list()
 
-    if plan.action == QueryAction.MODIFY:
-        await _apply_modifiers(env, results, params, repo)
+    if route in {QueryRoute.MODIFY, QueryRoute.SUMMARY_MODIFY}:
+        await _query_actions._apply_modifiers(env, results, params, repo)
         return
 
-    if plan.action == QueryAction.DELETE:
-        await _delete_conversations(env, results, params, repo)
+    if route in {QueryRoute.DELETE, QueryRoute.SUMMARY_DELETE}:
+        await _query_actions._delete_conversations(env, results, params, repo)
         return
 
-    if plan.output.transform is not None:
-        results = _apply_transform(results, plan.output.transform)
+    results = _project_query_results(results, plan)
 
-    if plan.output.dialogue_only:
-        results = [conversation.dialogue_only() for conversation in results]
-
-    if plan.action == QueryAction.STATS_BY:
-        _output_stats_by(env, results, plan.stats_dimension or "all")
+    if route == QueryRoute.STATS_BY:
+        _query_output._output_stats_by(env, results, plan.stats_dimension or "all")
         return
 
-    if plan.action == QueryAction.OPEN:
-        _open_result(env, results, params)
+    if route == QueryRoute.OPEN:
+        _query_output._open_result(env, results, params)
         return
 
-    _output_results(env, results, params)
+    _query_output._output_results(env, results, params)

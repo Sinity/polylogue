@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
-from polylogue.cli.query_helpers import summary_to_dict
+from polylogue.cli.query_helpers import no_results, summary_to_dict
 from polylogue.lib.formatting import format_conversation
 from polylogue.lib.log import get_logger
 
@@ -210,10 +210,8 @@ def _output_results(
     params: dict[str, Any],
 ) -> None:
     """Output query results."""
-    from polylogue.cli.query import _no_results
-
     if not results:
-        _no_results(env, params)
+        no_results(env, params)
 
     output_format = params.get("output_format", "markdown")
     output_dest = params.get("output", "stdout")
