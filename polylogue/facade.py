@@ -158,21 +158,27 @@ class Polylogue:
     async def get_conversation(self, conversation_id: str) -> Conversation | None:
         """Get a conversation by ID.
 
+        Supports both full IDs and unambiguous prefixes (e.g. the first 8
+        characters of a UUID). If the prefix matches multiple conversations,
+        returns None.
+
         Args:
-            conversation_id: Full conversation ID
+            conversation_id: Full or partial conversation ID
 
         Returns:
             Conversation object or None if not found
 
         Example:
             conv = await archive.get_conversation("claude:abc123")
+            conv = await archive.get_conversation("abc12345")  # prefix match
         """
-        conv_record = await self._backend.get_conversation(conversation_id)
+        full_id = await self._backend.resolve_id(conversation_id) or conversation_id
+        conv_record = await self._backend.get_conversation(full_id)
         if not conv_record:
             return None
 
         # Get messages and attachments
-        msg_records = await self._backend.get_messages(conversation_id)
+        msg_records = await self._backend.get_messages(full_id)
 
         # Convert to Conversation model
         from polylogue.storage.repository import _records_to_conversation
