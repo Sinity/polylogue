@@ -65,7 +65,7 @@ polylogue demo --corpus -p chatgpt -n 5 -o /tmp/corpus
 
 ## How It Works
 
-Both modes use `SyntheticCorpus` from `polylogue.sources.synthetic`, which generates realistic conversation structures for each supported provider:
+Both modes use `SyntheticCorpus` from `polylogue.schemas.synthetic`, which generates realistic conversation structures for each supported provider:
 
 - **ChatGPT**: `conversations.json` with UUID-based message graphs
 - **Claude**: JSONL files with `chat_messages` arrays
