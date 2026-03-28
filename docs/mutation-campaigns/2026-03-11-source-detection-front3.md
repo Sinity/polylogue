@@ -1,10 +1,10 @@
 # Mutmut Campaign: `source-detection`
 
-- Recorded on `2026-03-11T19:20:42.417653+00:00`
-- Commit: `e759af23458dfdc67e1a820513f09f3828460458`
+- Recorded on `2026-03-11T20:28:01.139536+00:00`
+- Commit: `e058c8240959fc530a1d97cc2d47f15840189cf1`
 - Worktree dirty: `no`
 - Description: Source detection, sniffing, and parser dispatch
-- Workspace: `/tmp/nix-shell.T6XIEy/mutmut-source-detection-dr3zvnfk/repo`
+- Workspace: `/tmp/nix-shell.tdwI27/mutmut-source-detection-eup4wkek/repo`
 - Command: `mutmut run`
 
 ## Scope
@@ -16,21 +16,21 @@
 
 | Status | Count |
 | --- | ---: |
-| Killed | 713 |
-| Survived | 435 |
-| Timeout | 3 |
+| Killed | 702 |
+| Survived | 445 |
+| Timeout | 4 |
 | Not checked | 0 |
 | Suspicious | 0 |
 | Skipped | 0 |
 
-- Runtime: `70.76s`
+- Runtime: `121.54s`
 - Exit code: `0`
 
 ## Dominant Survivors
 
 | Function | Count |
 | --- | ---: |
-| `filter_entries` | 35 |
+| `filter_entries` | 36 |
 | `_emit_individual` | 16 |
 | `emit` | 7 |
 | `_maybe_enrich` | 7 |
@@ -46,8 +46,9 @@
 | Function | Count |
 | --- | ---: |
 | `polylogue.sources.source.x_parse_payload__mutmut_40` | 1 |
-| `polylogue.sources.source.x_parse_payload__mutmut_42` | 1 |
-| `polylogue.sources.source.x_parse_payload__mutmut_44` | 1 |
+| `polylogue.sources.source.x_parse_payload__mutmut_43` | 1 |
+| `polylogue.sources.source.x_parse_payload__mutmut_45` | 1 |
+| `_emit_grouped` | 1 |
 
 ## Dominant Not-Checked Clusters
 
@@ -82,10 +83,11 @@
 - `polylogue.sources.source.x_detect_provider__mutmut_18`
 - `polylogue.sources.source.x_detect_provider__mutmut_19`
 - `polylogue.sources.source.x_detect_provider__mutmut_20`
-- ... 410 more
+- ... 420 more
 
 ## Timeout Keys
 
 - `polylogue.sources.source.x_parse_payload__mutmut_40`
-- `polylogue.sources.source.x_parse_payload__mutmut_42`
-- `polylogue.sources.source.x_parse_payload__mutmut_44`
+- `polylogue.sources.source.x_parse_payload__mutmut_43`
+- `polylogue.sources.source.x_parse_payload__mutmut_45`
+- `polylogue.sources.source.xǁ_ConversationEmitterǁ_emit_grouped__mutmut_7`

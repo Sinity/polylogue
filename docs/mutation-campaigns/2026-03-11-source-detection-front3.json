@@ -1,11 +1,11 @@
 {
   "campaign": "source-detection",
   "description": "Source detection, sniffing, and parser dispatch",
-  "commit": "e759af23458dfdc67e1a820513f09f3828460458",
+  "commit": "e058c8240959fc530a1d97cc2d47f15840189cf1",
   "worktree_dirty": false,
   "status_summary": [],
-  "created_at": "2026-03-11T19:20:42.417653+00:00",
-  "workspace": "/tmp/nix-shell.T6XIEy/mutmut-source-detection-dr3zvnfk/repo",
+  "created_at": "2026-03-11T20:28:01.139536+00:00",
+  "workspace": "/tmp/nix-shell.tdwI27/mutmut-source-detection-eup4wkek/repo",
   "command": [
     "mutmut",
     "run"
@@ -26,9 +26,9 @@
     "tests/unit/sources/test_raw_capture.py"
   ],
   "counts": {
-    "killed": 713,
-    "survived": 435,
-    "timeout": 3,
+    "killed": 702,
+    "survived": 445,
+    "timeout": 4,
     "not_checked": 0,
     "suspicious": 0,
     "skipped": 0
@@ -36,7 +36,7 @@
   "dominant_survivors": [
     [
       "filter_entries",
-      35
+      36
     ],
     [
       "_emit_individual",
@@ -81,11 +81,15 @@
       1
     ],
     [
-      "polylogue.sources.source.x_parse_payload__mutmut_42",
+      "polylogue.sources.source.x_parse_payload__mutmut_43",
       1
     ],
     [
-      "polylogue.sources.source.x_parse_payload__mutmut_44",
+      "polylogue.sources.source.x_parse_payload__mutmut_45",
+      1
+    ],
+    [
+      "_emit_grouped",
       1
     ]
   ],
@@ -360,6 +364,7 @@
     "polylogue.sources.source.x\u01c1_ConversationEmitter\u01c1_maybe_enrich__mutmut_8",
     "polylogue.sources.source.x\u01c1_ConversationEmitter\u01c1_maybe_enrich__mutmut_9",
     "polylogue.sources.source.x\u01c1_ConversationEmitter\u01c1_maybe_enrich__mutmut_10",
+    "polylogue.sources.source.x\u01c1_ZipEntryValidator\u01c1filter_entries__mutmut_1",
     "polylogue.sources.source.x\u01c1_ZipEntryValidator\u01c1filter_entries__mutmut_8",
     "polylogue.sources.source.x\u01c1_ZipEntryValidator\u01c1filter_entries__mutmut_9",
     "polylogue.sources.source.x\u01c1_ZipEntryValidator\u01c1filter_entries__mutmut_13",
@@ -442,12 +447,21 @@
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_119",
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_120",
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_121",
+    "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_122",
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_123",
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_124",
+    "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_125",
+    "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_126",
+    "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_127",
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_128",
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_129",
+    "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_130",
+    "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_131",
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_132",
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_133",
+    "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_134",
+    "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_135",
+    "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_136",
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_137",
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_138",
     "polylogue.sources.source.x_iter_source_conversations_with_raw__mutmut_139",
@@ -529,11 +543,12 @@
   ],
   "timeout_keys": [
     "polylogue.sources.source.x_parse_payload__mutmut_40",
-    "polylogue.sources.source.x_parse_payload__mutmut_42",
-    "polylogue.sources.source.x_parse_payload__mutmut_44"
+    "polylogue.sources.source.x_parse_payload__mutmut_43",
+    "polylogue.sources.source.x_parse_payload__mutmut_45",
+    "polylogue.sources.source.x\u01c1_ConversationEmitter\u01c1_emit_grouped__mutmut_7"
   ],
   "not_checked_keys": [],
-  "runtime_seconds": 70.758812,
+  "runtime_seconds": 121.538071,
   "exit_code": 0,
   "notes": []
 }

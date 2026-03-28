@@ -1,10 +1,10 @@
 # Mutmut Campaign: `cli-query`
 
-- Recorded on `2026-03-11T19:26:25.486497+00:00`
-- Commit: `e759af23458dfdc67e1a820513f09f3828460458`
+- Recorded on `2026-03-11T20:28:01.134608+00:00`
+- Commit: `e058c8240959fc530a1d97cc2d47f15840189cf1`
 - Worktree dirty: `no`
 - Description: Query command planning, action routing, and summary output contracts
-- Workspace: `/tmp/nix-shell.FVaDjB/mutmut-cli-query-_i3ag02m/repo`
+- Workspace: `/tmp/nix-shell.KNu3Le/mutmut-cli-query-u7dwl8v7/repo`
 - Command: `mutmut run`
 
 ## Scope
@@ -16,14 +16,14 @@
 
 | Status | Count |
 | --- | ---: |
-| Killed | 963 |
-| Survived | 1018 |
-| Timeout | 16 |
+| Killed | 935 |
+| Survived | 1007 |
+| Timeout | 20 |
 | Not checked | 0 |
 | Suspicious | 0 |
 | Skipped | 0 |
 
-- Runtime: `72.88s`
+- Runtime: `90.02s`
 - Exit code: `0`
 
 ## Dominant Survivors
@@ -45,16 +45,16 @@
 
 | Function | Count |
 | --- | ---: |
-| `polylogue.cli.query_actions.x__apply_modifiers__mutmut_9` | 1 |
+| `polylogue.cli.query_actions.x__apply_modifiers__mutmut_8` | 1 |
 | `polylogue.cli.query_actions.x__apply_modifiers__mutmut_16` | 1 |
-| `polylogue.cli.query_actions.x__apply_modifiers__mutmut_64` | 1 |
+| `polylogue.cli.query_actions.x__apply_modifiers__mutmut_17` | 1 |
+| `polylogue.cli.query_actions.x__apply_modifiers__mutmut_19` | 1 |
+| `polylogue.cli.query_actions.x__apply_modifiers__mutmut_21` | 1 |
 | `polylogue.cli.query_actions.x__apply_modifiers__mutmut_67` | 1 |
+| `polylogue.cli.query_actions.x__apply_modifiers__mutmut_68` | 1 |
+| `polylogue.cli.query_actions.x__apply_modifiers__mutmut_69` | 1 |
 | `polylogue.cli.query_actions.x__apply_modifiers__mutmut_70` | 1 |
 | `polylogue.cli.query_actions.x__apply_modifiers__mutmut_71` | 1 |
-| `polylogue.cli.query_actions.x__apply_modifiers__mutmut_72` | 1 |
-| `polylogue.cli.query_actions.x__apply_modifiers__mutmut_73` | 1 |
-| `polylogue.cli.query_actions.x__delete_conversations__mutmut_3` | 1 |
-| `polylogue.cli.query_actions.x__delete_conversations__mutmut_69` | 1 |
 
 ## Dominant Not-Checked Clusters
 
@@ -89,23 +89,27 @@
 - `polylogue.cli.query.x__async_execute_query__mutmut_26`
 - `polylogue.cli.query.x__async_execute_query__mutmut_27`
 - `polylogue.cli.query.x__async_execute_query__mutmut_28`
-- ... 993 more
+- ... 982 more
 
 ## Timeout Keys
 
-- `polylogue.cli.query_actions.x__apply_modifiers__mutmut_9`
+- `polylogue.cli.query_actions.x__apply_modifiers__mutmut_8`
 - `polylogue.cli.query_actions.x__apply_modifiers__mutmut_16`
-- `polylogue.cli.query_actions.x__apply_modifiers__mutmut_64`
+- `polylogue.cli.query_actions.x__apply_modifiers__mutmut_17`
+- `polylogue.cli.query_actions.x__apply_modifiers__mutmut_19`
+- `polylogue.cli.query_actions.x__apply_modifiers__mutmut_21`
 - `polylogue.cli.query_actions.x__apply_modifiers__mutmut_67`
+- `polylogue.cli.query_actions.x__apply_modifiers__mutmut_68`
+- `polylogue.cli.query_actions.x__apply_modifiers__mutmut_69`
 - `polylogue.cli.query_actions.x__apply_modifiers__mutmut_70`
 - `polylogue.cli.query_actions.x__apply_modifiers__mutmut_71`
 - `polylogue.cli.query_actions.x__apply_modifiers__mutmut_72`
 - `polylogue.cli.query_actions.x__apply_modifiers__mutmut_73`
-- `polylogue.cli.query_actions.x__delete_conversations__mutmut_3`
 - `polylogue.cli.query_actions.x__delete_conversations__mutmut_69`
 - `polylogue.cli.query_actions.x__delete_conversations__mutmut_72`
-- `polylogue.cli.query_actions.x__delete_conversations__mutmut_80`
+- `polylogue.cli.query_actions.x__delete_conversations__mutmut_73`
+- `polylogue.cli.query_actions.x__delete_conversations__mutmut_81`
+- `polylogue.cli.query_actions.x__delete_conversations__mutmut_82`
+- `polylogue.cli.query_actions.x__delete_conversations__mutmut_83`
 - `polylogue.cli.query_actions.x__delete_conversations__mutmut_84`
-- `polylogue.cli.query_actions.x__delete_conversations__mutmut_85`
-- `polylogue.cli.query_actions.x__delete_conversations__mutmut_86`
-- `polylogue.cli.query_output.x__output_stats_by_summaries__mutmut_30`
+- `polylogue.cli.query_actions.x__delete_conversations__mutmut_110`
