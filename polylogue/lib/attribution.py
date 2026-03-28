@@ -122,6 +122,7 @@ def extract_attribution(conversation: Conversation) -> ConversationAttribution:
 
     for message in semantic_facts.message_facts:
 <<<<<<< HEAD
+<<<<<<< HEAD
         for tc in message.tool_calls:
 >>>>>>> 171d6b0a (report: clarify SQLite source material design was always intended)
             # Collect affected paths
@@ -132,6 +133,11 @@ def extract_attribution(conversation: Conversation) -> ConversationAttribution:
             for path in message.affected_paths:
 =======
         for action in message.action_facts:
+||||||| parent of 04e6b477 (feat: add action event query intelligence)
+        for action in message.action_facts:
+=======
+        for action in message.action_events:
+>>>>>>> 04e6b477 (feat: add action event query intelligence)
             if action.cwd_path:
                 cwd_paths.add(action.cwd_path)
                 repo = _repo_root_from_path(action.cwd_path)

@@ -33,6 +33,7 @@ class QuerySpecError(ValueError):
 
 
 QUERY_ACTION_TYPES = tuple(category.value for category in ToolCategory) + ("none",)
+QUERY_SEQUENCE_ACTION_TYPES = tuple(category.value for category in ToolCategory)
 
 
 def _normalize_tool_terms(value: object) -> tuple[str, ...]:
@@ -92,7 +93,21 @@ def _normalize_action_terms(field: str, value: object) -> tuple[str, ...]:
     return tuple(normalized)
 
 
+<<<<<<< HEAD
 >>>>>>> 87fc33ae (feat: add semantic action query filters)
+||||||| parent of 04e6b477 (feat: add action event query intelligence)
+=======
+def _normalize_action_sequence(field: str, value: object) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for term in _split_csv(value):
+        candidate = str(term).strip().lower()
+        if candidate not in QUERY_SEQUENCE_ACTION_TYPES:
+            raise QuerySpecError(field, term)
+        normalized.append(candidate)
+    return tuple(normalized)
+
+
+>>>>>>> 04e6b477 (feat: add action event query intelligence)
 @dataclass(frozen=True)
 class ConversationQuerySpec:
     """Canonical selection intent for conversation queries."""
@@ -103,6 +118,8 @@ class ConversationQuerySpec:
     path_terms: tuple[str, ...] = ()
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
+    action_sequence: tuple[str, ...] = ()
+    action_text_terms: tuple[str, ...] = ()
     tool_terms: tuple[str, ...] = ()
     excluded_tool_terms: tuple[str, ...] = ()
     providers: tuple[Provider, ...] = ()
@@ -137,6 +154,8 @@ class ConversationQuerySpec:
             path_terms=_as_tuple(params.get("path_terms") or params.get("path")),
             action_terms=_normalize_action_terms("action", params.get("action")),
             excluded_action_terms=_normalize_action_terms("exclude_action", params.get("exclude_action")),
+            action_sequence=_normalize_action_sequence("action_sequence", params.get("action_sequence")),
+            action_text_terms=_as_tuple(params.get("action_text")),
             tool_terms=_normalize_tool_terms(params.get("tool")),
             excluded_tool_terms=_normalize_tool_terms(params.get("exclude_tool")),
             providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("provider"))),
@@ -176,6 +195,10 @@ class ConversationQuerySpec:
             parts.append(f"action: {', '.join(self.action_terms)}")
         if self.excluded_action_terms:
             parts.append(f"exclude action: {', '.join(self.excluded_action_terms)}")
+        if self.action_sequence:
+            parts.append(f"action sequence: {' -> '.join(self.action_sequence)}")
+        if self.action_text_terms:
+            parts.append(f"action text: {', '.join(self.action_text_terms)}")
         if self.tool_terms:
             parts.append(f"tool: {', '.join(self.tool_terms)}")
         if self.excluded_tool_terms:
@@ -222,6 +245,8 @@ class ConversationQuerySpec:
                 self.path_terms,
                 self.action_terms,
                 self.excluded_action_terms,
+                self.action_sequence,
+                self.action_text_terms,
                 self.tool_terms,
                 self.excluded_tool_terms,
                 self.providers,
@@ -328,6 +353,8 @@ class ConversationQuerySpec:
             path_terms=self.path_terms,
             action_terms=self.action_terms,
             excluded_action_terms=self.excluded_action_terms,
+            action_sequence=self.action_sequence,
+            action_text_terms=self.action_text_terms,
             tool_terms=self.tool_terms,
             excluded_tool_terms=self.excluded_tool_terms,
             providers=self.providers,

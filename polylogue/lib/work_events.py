@@ -83,6 +83,7 @@ def _classify_message_range(
         if msg.is_user and msg.text and not msg.is_context_dump:
             user_text += " " + msg.text.lower()
 <<<<<<< HEAD
+<<<<<<< HEAD
         for tc in _get_tool_calls(msg):
             cat = tc.category.value
 ||||||| parent of dfd3d155 (refactor: add canonical action facts layer)
@@ -90,6 +91,11 @@ def _classify_message_range(
             cat = tc.category.value
 =======
         for action in msg.action_facts:
+||||||| parent of 04e6b477 (feat: add action event query intelligence)
+        for action in msg.action_facts:
+=======
+        for action in msg.action_events:
+>>>>>>> 04e6b477 (feat: add action event query intelligence)
             cat = action.kind.value
 >>>>>>> dfd3d155 (refactor: add canonical action facts layer)
             category_counts[cat] = category_counts.get(cat, 0) + 1
@@ -181,6 +187,7 @@ def _compute_phase_ranges(conversation: Conversation) -> list[tuple[int, int]]:
         prev_dominant = None
         for i in range(start, end):
 <<<<<<< HEAD
+<<<<<<< HEAD
             calls = _get_tool_calls(messages[i])
             if calls:
                 dominant = calls[0].category.value
@@ -191,6 +198,11 @@ def _compute_phase_ranges(conversation: Conversation) -> list[tuple[int, int]]:
             dominant = calls[0].category.value if calls else None
 =======
             actions = messages[i].action_facts
+||||||| parent of 04e6b477 (feat: add action event query intelligence)
+            actions = messages[i].action_facts
+=======
+            actions = messages[i].action_events
+>>>>>>> 04e6b477 (feat: add action event query intelligence)
             dominant = actions[0].kind.value if actions else None
 >>>>>>> dfd3d155 (refactor: add canonical action facts layer)
             if (
@@ -230,6 +242,7 @@ def extract_work_events(conversation: Conversation) -> list[WorkEvent]:
         tools_used: list[str] = []
         for j in range(chunk_start, chunk_end):
 <<<<<<< HEAD
+<<<<<<< HEAD
             for tc in _get_tool_calls(messages[j]):
                 tools_used.append(tc.name)
                 file_paths.extend(tc.affected_paths)
@@ -239,6 +252,11 @@ def extract_work_events(conversation: Conversation) -> list[WorkEvent]:
                 file_paths.extend(tc.affected_paths)
 =======
             for action in messages[j].action_facts:
+||||||| parent of 04e6b477 (feat: add action event query intelligence)
+            for action in messages[j].action_facts:
+=======
+            for action in messages[j].action_events:
+>>>>>>> 04e6b477 (feat: add action event query intelligence)
                 tools_used.append(action.tool_name)
                 file_paths.extend(action.affected_paths)
 >>>>>>> dfd3d155 (refactor: add canonical action facts layer)

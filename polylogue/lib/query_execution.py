@@ -43,6 +43,8 @@ class ConversationQueryPlan:
     path_terms: tuple[str, ...] = ()
     action_terms: tuple[str, ...] = ()
     excluded_action_terms: tuple[str, ...] = ()
+    action_sequence: tuple[str, ...] = ()
+    action_text_terms: tuple[str, ...] = ()
     tool_terms: tuple[str, ...] = ()
     excluded_tool_terms: tuple[str, ...] = ()
     providers: tuple[Provider | str, ...] = ()
@@ -125,6 +127,10 @@ class ConversationQueryPlan:
             params["action_terms"] = list(self.action_terms)
         if self.excluded_action_terms:
             params["excluded_action_terms"] = list(self.excluded_action_terms)
+        if self.action_sequence:
+            params["action_sequence"] = list(self.action_sequence)
+        if self.action_text_terms:
+            params["action_text_terms"] = list(self.action_text_terms)
         if self.tool_terms:
             params["tool_terms"] = list(self.tool_terms)
         if self.excluded_tool_terms:
@@ -153,6 +159,10 @@ class ConversationQueryPlan:
             parts.append(f"action: {', '.join(self.action_terms)}")
         if self.excluded_action_terms:
             parts.append(f"exclude action: {', '.join(self.excluded_action_terms)}")
+        if self.action_sequence:
+            parts.append(f"action sequence: {' -> '.join(self.action_sequence)}")
+        if self.action_text_terms:
+            parts.append(f"action text: {', '.join(self.action_text_terms)}")
         if self.tool_terms:
             parts.append(f"tool: {', '.join(self.tool_terms)}")
         if self.excluded_tool_terms:
@@ -217,6 +227,8 @@ class ConversationQueryPlan:
                 self.path_terms,
                 self.action_terms,
                 self.excluded_action_terms,
+                self.action_sequence,
+                self.action_text_terms,
                 self.tool_terms,
                 self.excluded_tool_terms,
                 self.providers,
@@ -254,6 +266,8 @@ class ConversationQueryPlan:
             or self.path_terms
             or self.action_terms
             or self.excluded_action_terms
+            or self.action_sequence
+            or self.action_text_terms
             or self.tool_terms
             or self.excluded_tool_terms
             or self.continuation is not None
@@ -270,6 +284,10 @@ class ConversationQueryPlan:
         if self.path_terms:
             return True
         if self.action_terms or self.excluded_action_terms:
+            return True
+        if self.action_sequence:
+            return True
+        if self.action_text_terms:
             return True
         if self.tool_terms or self.excluded_tool_terms:
             return True
@@ -288,6 +306,8 @@ class ConversationQueryPlan:
             or self.path_terms
             or self.action_terms
             or self.excluded_action_terms
+            or self.action_sequence
+            or self.action_text_terms
             or self.tool_terms
             or self.excluded_tool_terms
             or self.predicates
@@ -308,7 +328,7 @@ class ConversationQueryPlan:
         from polylogue.lib.semantic_facts import build_conversation_semantic_facts
 
         facts = build_conversation_semantic_facts(conversation)
-        affected_paths = tuple(path.lower() for action in facts.action_facts for path in action.affected_paths)
+        affected_paths = tuple(path.lower() for action in facts.action_events for path in action.affected_paths)
         if not affected_paths:
             return False
         return all(
@@ -322,7 +342,7 @@ class ConversationQueryPlan:
         from polylogue.lib.semantic_facts import build_conversation_semantic_facts
 
         facts = build_conversation_semantic_facts(conversation)
-        categories = {action.kind.value for action in facts.action_facts}
+        categories = {action.kind.value for action in facts.action_events}
         required_terms = {term for term in self.action_terms if term != "none"}
         if "none" in self.action_terms and categories:
             return False
@@ -342,7 +362,7 @@ class ConversationQueryPlan:
         facts = build_conversation_semantic_facts(conversation)
         tool_names = {
             (action.tool_name or "unknown").strip().lower()
-            for action in facts.action_facts
+            for action in facts.action_events
         }
         required_terms = {term for term in self.tool_terms if term != "none"}
         if "none" in self.tool_terms and tool_names:
@@ -353,6 +373,39 @@ class ConversationQueryPlan:
             return False
         return not (
             {term for term in self.excluded_tool_terms if term != "none"} & tool_names
+        )
+
+    def _matches_action_sequence(self, conversation: Conversation) -> bool:
+        if not self.action_sequence:
+            return True
+        from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+        facts = build_conversation_semantic_facts(conversation)
+        if not facts.action_events:
+            return False
+
+        index = 0
+        target_count = len(self.action_sequence)
+        for action in facts.action_events:
+            if action.kind.value != self.action_sequence[index]:
+                continue
+            index += 1
+            if index >= target_count:
+                return True
+        return False
+
+    def _matches_action_text_terms(self, conversation: Conversation) -> bool:
+        if not self.action_text_terms:
+            return True
+        from polylogue.lib.semantic_facts import build_conversation_semantic_facts
+
+        facts = build_conversation_semantic_facts(conversation)
+        searchable_events = [action.search_text.lower() for action in facts.action_events if action.search_text]
+        if not searchable_events:
+            return False
+        return all(
+            any(term.lower() in event_text for event_text in searchable_events)
+            for term in self.action_text_terms
         )
 
     def effective_fetch_limit(self) -> int | None:
@@ -367,11 +420,33 @@ class ConversationQueryPlan:
     def with_limit(self, limit: int | None) -> ConversationQueryPlan:
         return replace(self, limit=limit)
 
-    def fetch_record_query(self) -> ConversationRecordQuery:
+    def _candidate_record_query(self) -> tuple[ConversationRecordQuery, bool]:
         record_query = self.record_query
         if self.path_terms or self.action_terms or self.excluded_action_terms:
             record_query = record_query.without_unstable_semantic_filters()
+            return record_query, False
+        return record_query, self.sql_pushed
+
+    def fetch_record_query(self) -> ConversationRecordQuery:
+        record_query, _ = self._candidate_record_query()
         return record_query.with_limit(self.effective_fetch_limit())
+
+    def _should_batch_post_filter_fetch(self) -> bool:
+        return bool(
+            self.limit is not None
+            and self.limit > 0
+            and self.has_post_filters()
+            and not self.fts_terms
+            and self.conversation_id is None
+            and self.sample is None
+            and self.sort == "date"
+            and not self.reverse
+        )
+
+    def _candidate_batch_limit(self) -> int:
+        if self.limit is None:
+            return 100
+        return min(max(self.limit * 2, 100), 200)
 
     def _search_limit(self) -> int:
         fetch_limit = self.effective_fetch_limit()
@@ -432,6 +507,37 @@ class ConversationQueryPlan:
         if summaries:
             return await repository.list_summaries_by_query(request)
         return await repository.list_by_query(request)
+
+    async def _fetch_batched_filtered_conversations(
+        self,
+        repository: ConversationRepository,
+    ) -> builtins.list[Conversation]:
+        request, sql_pushed = self._candidate_record_query()
+        batch_limit = self._candidate_batch_limit()
+        offset = 0
+        matched: builtins.list[Conversation] = []
+        seen_ids: set[str] = set()
+
+        while True:
+            batch = await repository.list_by_query(
+                request.with_limit(batch_limit).with_offset(offset)
+            )
+            if not batch:
+                break
+            filtered_batch = self._apply_full_filters(batch, sql_pushed=sql_pushed)
+            for conversation in filtered_batch:
+                conversation_id = str(conversation.id)
+                if conversation_id in seen_ids:
+                    continue
+                seen_ids.add(conversation_id)
+                matched.append(conversation)
+            if self.limit is not None and len(matched) >= self.limit:
+                break
+            if len(batch) < batch_limit:
+                break
+            offset += batch_limit
+
+        return matched
 
     def _apply_common_filters(
         self,
@@ -531,6 +637,10 @@ class ConversationQueryPlan:
             results = [conversation for conversation in results if self._matches_path_terms(conversation)]
         if self.action_terms or self.excluded_action_terms:
             results = [conversation for conversation in results if self._matches_action_terms(conversation)]
+        if self.action_sequence:
+            results = [conversation for conversation in results if self._matches_action_sequence(conversation)]
+        if self.action_text_terms:
+            results = [conversation for conversation in results if self._matches_action_text_terms(conversation)]
         if self.tool_terms or self.excluded_tool_terms:
             results = [conversation for conversation in results if self._matches_tool_terms(conversation)]
 
@@ -591,6 +701,10 @@ class ConversationQueryPlan:
                 vector_provider=self.vector_provider,
             )
             return self._finalize(self._apply_full_filters(candidates, sql_pushed=False))
+
+        if self._should_batch_post_filter_fetch():
+            batched = await self._fetch_batched_filtered_conversations(repository)
+            return self._finalize(self._sort_conversations(batched))
 
         candidates = await self._fetch_candidates(repository, summaries=False)
         filtered = self._apply_full_filters(candidates, sql_pushed=self.sql_pushed)
