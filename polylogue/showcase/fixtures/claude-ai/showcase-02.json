@@ -1,0 +1,80 @@
+{
+  "uuid": "bbb00002-0002-4002-8002-000000000002",
+  "name": "Data Pipeline Design Patterns",
+  "created_at": "2024-02-10T14:15:00Z",
+  "updated_at": "2024-02-10T14:50:00Z",
+  "chat_messages": [
+    {
+      "uuid": "msg00001-0002-4002-8002-000000000001",
+      "text": "We're building a data pipeline that ingests logs from multiple sources, transforms them, and writes to a data warehouse. What's a good architecture?",
+      "sender": "human",
+      "created_at": "2024-02-10T14:15:00Z",
+      "updated_at": "2024-02-10T14:15:00Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00002-0002-4002-8002-000000000001",
+      "text": "A common pattern is the **three-stage pipeline**:\n\n```\nSource → Ingestion → Transform → Load → Warehouse\n```\n\n**Stage 1: Ingestion** — Pull from logs (APIs, files, message queues)\n**Stage 2: Transform** — Normalize, deduplicate, enrich\n**Stage 3: Load** — Batch write to warehouse\n\nKey considerations:\n- Use a **message queue** (Kafka, RabbitMQ) to decouple stages\n- Implement **idempotency** for safe retries\n- Add **monitoring** at each stage\n\nDo you need real-time processing or batch is acceptable?",
+      "sender": "assistant",
+      "created_at": "2024-02-10T14:15:30Z",
+      "updated_at": "2024-02-10T14:15:30Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00003-0002-4002-8002-000000000002",
+      "text": "Batch is fine, but we process daily. Volume is ~50GB per day. We're on AWS.",
+      "sender": "human",
+      "created_at": "2024-02-10T14:16:00Z",
+      "updated_at": "2024-02-10T14:16:00Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00004-0002-4002-8002-000000000002",
+      "text": "For batch at 50GB/day on AWS, consider **Airflow + S3 + Glue**:\n\n```\nS3 (raw logs) → Glue (ETL) → S3 (processed) → Redshift\n```\n\n**Benefits:**\n- Glue handles scaling automatically\n- S3 is cheap for intermediates\n- Redshift excels at analytics queries\n- Airflow orchestrates the DAG\n\n**Schema strategy:**\n- Use **Glue Data Catalog** for schema versioning\n- Store schemas as Parquet (columnar, compresses well)\n- Partition by date: `s3://bucket/logs/year=2024/month=02/day=10/`\n\nCost estimate: ~$10-20/day for compute. Would you add a data lake layer?",
+      "sender": "assistant",
+      "created_at": "2024-02-10T14:16:45Z",
+      "updated_at": "2024-02-10T14:16:45Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00005-0002-4002-8002-000000000003",
+      "text": "What about error handling? If a day's job fails, how do we resume?",
+      "sender": "human",
+      "created_at": "2024-02-10T14:17:30Z",
+      "updated_at": "2024-02-10T14:17:30Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00006-0002-4002-8002-000000000003",
+      "text": "**Idempotent design** is critical:\n\n1. **Write with `_temp` suffix first**, then atomic rename:\n   ```\n   s3://bucket/logs/2024-02-10_temp/ → s3://bucket/logs/2024-02-10/\n   ```\n\n2. **Airflow sensors** check for completion before downstream tasks\n\n3. **Dead Letter Queue** for unparseable records (don't block the pipeline)\n\n4. **Audit table**: Track which days processed successfully\n\nIf day 10 fails:\n- Airflow retries (3x by default)\n- If manual fix needed, clear the day's marker and re-run\n- Already-loaded data to Redshift can be overwritten (upsert by date)\n\nLog failures to CloudWatch for alerting.",
+      "sender": "assistant",
+      "created_at": "2024-02-10T14:18:00Z",
+      "updated_at": "2024-02-10T14:18:00Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00007-0002-4002-8002-000000000004",
+      "text": "Makes sense. Any recommendations for monitoring data quality?",
+      "sender": "human",
+      "created_at": "2024-02-10T14:18:45Z",
+      "updated_at": "2024-02-10T14:18:45Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00008-0002-4002-8002-000000000004",
+      "text": "Implement **Great Expectations** or **dbt tests** in your transform stage:\n\n```python\n# Examples:\n- Row counts: yesterday's count ± 10%\n- Null checks: critical fields must be non-null\n- Uniqueness: no duplicate IDs\n- Freshness: latest record < 24h old\n```\n\nFail the pipeline if these break. This catches upstream issues fast. Also consider adding a **data profiling** step (Collibra, Atlas) to understand distributions over time.\n\nCombine with CloudWatch dashboards to track pipeline health at a glance.",
+      "sender": "assistant",
+      "created_at": "2024-02-10T14:19:00Z",
+      "updated_at": "2024-02-10T14:19:00Z",
+      "attachments": [],
+      "files": []
+    }
+  ]
+}

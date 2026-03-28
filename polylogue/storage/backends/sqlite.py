@@ -138,6 +138,20 @@ def _update_ref_counts(conn: sqlite3.Connection, attachment_ids: set[str]) -> No
         )
 
 
+def _iso_to_epoch(iso_str: str) -> float:
+    """Convert an ISO date string to epoch seconds for SQL comparison."""
+    from datetime import datetime, timezone
+
+    try:
+        return datetime.fromisoformat(iso_str).timestamp()
+    except (ValueError, TypeError):
+        # Fallback: try parsing as epoch directly
+        try:
+            return float(iso_str)
+        except (ValueError, TypeError):
+            return 0.0
+
+
 def _build_conversation_filters(
     *,
     source: str | None = None,
@@ -147,10 +161,10 @@ def _build_conversation_filters(
     since: str | None = None,
     until: str | None = None,
     title_contains: str | None = None,
-) -> tuple[str, list[str | int]]:
+) -> tuple[str, list[str | int | float]]:
     """Build WHERE clause and params for conversation queries."""
     where_clauses: list[str] = []
-    params: list[str | int] = []
+    params: list[str | int | float] = []
 
     if source is not None:
         where_clauses.append("source_name = ?")
@@ -169,10 +183,21 @@ def _build_conversation_filters(
         where_clauses.append("parent_conversation_id = ?")
         params.append(parent_id)
     if since is not None:
-        where_clauses.append("updated_at >= ?")
+        # Handle mixed updated_at formats: some providers store epoch seconds
+        # (e.g. "1706000120.0"), others store ISO strings (e.g. "2024-01-23T10:45:00Z").
+        # Use GLOB to detect numeric values and compare accordingly.
+        where_clauses.append(
+            "((updated_at GLOB '[0-9]*' AND CAST(updated_at AS REAL) >= ?)"
+            " OR (updated_at NOT GLOB '[0-9]*' AND updated_at >= ?))"
+        )
+        params.append(_iso_to_epoch(since))
         params.append(since)
     if until is not None:
-        where_clauses.append("updated_at <= ?")
+        where_clauses.append(
+            "((updated_at GLOB '[0-9]*' AND CAST(updated_at AS REAL) <= ?)"
+            " OR (updated_at NOT GLOB '[0-9]*' AND updated_at <= ?))"
+        )
+        params.append(_iso_to_epoch(until))
         params.append(until)
     if title_contains is not None:
         escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

@@ -14,6 +14,7 @@ from polylogue.cli.types import AppEnv
 @click.command("demo")
 @click.option("--seed", "mode", flag_value="seed", help="Seed a demo database with synthetic data")
 @click.option("--corpus", "mode", flag_value="corpus", help="Generate raw fixture files for inspection")
+@click.option("--showcase", "mode", flag_value="showcase", help="Exercise all CLI commands and save outputs")
 @click.option(
     "--provider", "-p", "providers", multiple=True,
     help="Providers to include (default: all). Can be repeated.",
@@ -21,6 +22,10 @@ from polylogue.cli.types import AppEnv
 @click.option("--count", "-n", default=3, show_default=True, help="Conversations per provider")
 @click.option("--output-dir", "-o", type=click.Path(path_type=Path), default=None, help="Output directory")
 @click.option("--env-only", is_flag=True, help="Print export statements only (for eval)")
+@click.option("--live", is_flag=True, help="Run showcase against real data (read-only)")
+@click.option("--fail-fast", is_flag=True, help="Stop showcase on first failure")
+@click.option("--json", "json_output", is_flag=True, help="Output showcase results as JSON")
+@click.option("--verbose", "showcase_verbose", is_flag=True, help="Print each exercise output")
 @click.pass_obj
 def demo_command(
     env: AppEnv,
@@ -29,13 +34,18 @@ def demo_command(
     count: int,
     output_dir: Path | None,
     env_only: bool,
+    live: bool,
+    fail_fast: bool,
+    json_output: bool,
+    showcase_verbose: bool,
 ) -> None:
     """Generate synthetic conversations for demos, testing, and inspection.
 
     \b
-    Two modes:
-      --seed     Create a full demo environment (database + rendered files)
-      --corpus   Write raw provider-format files to disk for inspection
+    Three modes:
+      --seed       Create a full demo environment (database + rendered files)
+      --corpus     Write raw provider-format files to disk for inspection
+      --showcase   Exercise all CLI commands and generate a cookbook
 
     \b
     Examples:
@@ -43,7 +53,17 @@ def demo_command(
       polylogue demo --seed --env-only | eval   # Shell-friendly
       polylogue demo --corpus -o /tmp/corpus    # Inspect raw wire formats
       polylogue demo --corpus -p chatgpt -n 5   # ChatGPT only, 5 conversations
+      polylogue demo --showcase                 # Full surface-area validation
+      polylogue demo --showcase --live          # Exercise read-only against real data
+      polylogue demo --showcase --json          # Machine-readable report
     """
+    if live and mode != "showcase":
+        raise click.UsageError("--live requires --showcase")
+
+    if mode == "showcase":
+        _do_showcase(env, output_dir, live, fail_fast, json_output, showcase_verbose)
+        return
+
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     if not mode:
@@ -66,6 +86,35 @@ def demo_command(
         _do_corpus(env, selected, count, output_dir)
     elif mode == "seed":
         _do_seed(env, selected, count, output_dir, env_only)
+
+
+def _do_showcase(
+    env: AppEnv,
+    output_dir: Path | None,
+    live: bool,
+    fail_fast: bool,
+    json_output: bool,
+    verbose: bool,
+) -> None:
+    """Exercise all CLI commands and generate reports."""
+    from polylogue.showcase.report import generate_json_report, generate_summary, save_reports
+    from polylogue.showcase.runner import ShowcaseRunner
+
+    runner = ShowcaseRunner(
+        live=live,
+        output_dir=output_dir,
+        fail_fast=fail_fast,
+        verbose=verbose,
+    )
+
+    result = runner.run()
+    save_reports(result)
+
+    if json_output:
+        click.echo(generate_json_report(result))
+    else:
+        summary = generate_summary(result)
+        env.ui.console.print(summary)
 
 
 def _do_corpus(

@@ -871,16 +871,11 @@ class TestOutputSummaryList:
         self._fn(env, summaries, params)
 
         if output_format == "text":
-            # Text format uses console.print with a Rich Table
-            env.ui.console.print.assert_called_once()
-            output = env.ui.console.print.call_args[0][0]
-            # Rich Table: render to string for content assertions
-            from io import StringIO
-
-            from rich.console import Console as _RichConsole
-            buf = StringIO()
-            _RichConsole(file=buf, no_color=True, width=200).print(output)
-            rendered = buf.getvalue()
+            # Plain text mode: uses click.echo per row (env.ui.plain=True)
+            assert mock_echo.call_count == len(expected_ids)
+            rendered = "\n".join(
+                call.args[0] for call in mock_echo.call_args_list
+            )
             for id in expected_ids:
                 assert id in rendered
         elif output_format == "json":
