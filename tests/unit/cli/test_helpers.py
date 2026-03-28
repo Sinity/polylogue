@@ -10,6 +10,7 @@ import pytest
 from polylogue.cli.helpers import print_summary
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
+from polylogue.services import build_runtime_services
 
 # ============================================================================
 # FIXTURES
@@ -26,9 +27,12 @@ def mock_ui():
 
 
 @pytest.fixture
-def mock_env(mock_ui):
+def mock_env(mock_ui, mock_config):
     """Create a mocked AppEnv."""
-    env = AppEnv(ui=mock_ui)
+    env = AppEnv(
+        ui=mock_ui,
+        services=build_runtime_services(config=mock_config, backend=MagicMock()),
+    )
     return env
 
 
@@ -52,13 +56,12 @@ def mock_run_data():
 
 
 @pytest.fixture
-def patch_deps(mock_config):
+def patch_deps():
     """Fixture that patches all required dependencies."""
-    with patch("polylogue.config.get_config", return_value=mock_config), \
-         patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+    with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
          patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
          patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-         patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+         patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
         yield
 
 
@@ -124,11 +127,10 @@ class TestPrintSummaryBasic:
 
     def test_print_summary_with_last_run(self, mock_env, mock_config, mock_run_data):
         """Test summary with last run data."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=mock_run_data), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=mock_run_data), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=False)
 
@@ -139,12 +141,11 @@ class TestPrintSummaryBasic:
 
     def test_print_summary_calls_cached_health_in_normal_mode(self, mock_env, mock_config):
         """Test that non-verbose mode calls cached_health_summary, not get_health."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK") as mock_cached, \
              patch("polylogue.cli.helpers.get_health") as mock_get_health, \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=False)
 
@@ -174,13 +175,11 @@ class TestPrintSummaryVerbose:
         mock_health.cached = True
         mock_health.age_seconds = 30
         mock_health.checks = []
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary") as mock_cached, \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health) as mock_get_health, \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=True)
 
@@ -193,12 +192,10 @@ class TestPrintSummaryVerbose:
         mock_health.cached = True
         mock_health.age_seconds = 30
         mock_health.checks = []
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=True)
 
@@ -212,12 +209,10 @@ class TestPrintSummaryVerbose:
         mock_health.cached = None
         mock_health.age_seconds = None
         mock_health.checks = []
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=True)
 
@@ -239,12 +234,10 @@ class TestPrintSummaryVerbose:
         mock_health.cached = True
         mock_health.age_seconds = 30
         mock_health.checks = [check1]
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             mock_env.ui.plain = is_plain
             print_summary(mock_env, verbose=True)
@@ -274,12 +267,10 @@ class TestPrintSummaryVerbose:
         mock_health.cached = True
         mock_health.age_seconds = 30
         mock_health.checks = [check1, check2, check3]
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             mock_env.ui.plain = False
             print_summary(mock_env, verbose=True)
@@ -296,12 +287,10 @@ class TestPrintSummaryVerbose:
         mock_health.cached = True
         mock_health.age_seconds = 30
         mock_health.checks = []
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             mock_env.ui.plain = False
             print_summary(mock_env, verbose=True)
@@ -350,12 +339,11 @@ class TestPrintSummaryAnalyticsBasic:
         return metric
 
     def test_print_summary_no_analytics(self, mock_env, mock_config):
-        """Test summary when analytics returns None."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        """Test summary when analytics returns empty list (no providers)."""
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[]):
 
             print_summary(mock_env, verbose=False)
 
@@ -367,11 +355,10 @@ class TestPrintSummaryAnalyticsBasic:
 
     def test_print_summary_empty_analytics(self, mock_env, mock_config):
         """Test summary when analytics returns empty list."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[]):
 
             print_summary(mock_env, verbose=False)
 
@@ -382,13 +369,10 @@ class TestPrintSummaryAnalyticsBasic:
 
     def test_print_summary_single_provider_analytics(self, mock_env, mock_config):
         """Test analytics visualization with single provider."""
-        metric = self._create_metric(provider_name="claude", conversation_count=100)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[("claude", 100)]):
 
             print_summary(mock_env, verbose=False)
 
@@ -397,14 +381,10 @@ class TestPrintSummaryAnalyticsBasic:
 
     def test_print_summary_multiple_providers_analytics(self, mock_env, mock_config):
         """Test analytics with multiple providers."""
-        metric1 = self._create_metric(provider_name="claude", conversation_count=100)
-        metric2 = self._create_metric(provider_name="chatgpt", conversation_count=50)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric1, metric2]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[("claude", 100), ("chatgpt", 50)]):
 
             print_summary(mock_env, verbose=False)
 
@@ -416,13 +396,10 @@ class TestPrintSummaryAnalyticsBasic:
         self, mock_env, mock_config, provider_name, expected_color
     ):
         """Test that providers use correct colors in analytics (parametrized)."""
-        metric = self._create_metric(provider_name=provider_name, conversation_count=100)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[(provider_name, 100)]):
 
             print_summary(mock_env, verbose=False)
 
@@ -431,14 +408,10 @@ class TestPrintSummaryAnalyticsBasic:
 
     def test_print_summary_analytics_bar_chart_rendering(self, mock_env, mock_config):
         """Test that bar chart is rendered with correct proportions."""
-        metric1 = self._create_metric(provider_name="claude", conversation_count=100)
-        metric2 = self._create_metric(provider_name="chatgpt", conversation_count=50)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric1, metric2]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[("claude", 100), ("chatgpt", 50)]):
 
             print_summary(mock_env, verbose=False)
 
@@ -448,13 +421,10 @@ class TestPrintSummaryAnalyticsBasic:
 
     def test_print_summary_analytics_percentage_calculation(self, mock_env, mock_config):
         """Test that percentages are calculated correctly."""
-        metric = self._create_metric(provider_name="claude", conversation_count=33)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[("claude", 33)]):
 
             print_summary(mock_env, verbose=False)
 
@@ -462,14 +432,11 @@ class TestPrintSummaryAnalyticsBasic:
             assert any("(100%)" in str(c) for c in console_calls)
 
     def test_print_summary_analytics_zero_conversations(self, mock_env, mock_config):
-        """Test analytics with zero total conversations."""
-        metric = self._create_metric(provider_name="claude", conversation_count=0)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        """Test analytics with zero total conversations (single provider, 0 count)."""
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.get_provider_counts", new_callable=AsyncMock, return_value=[("claude", 0)]):
 
             print_summary(mock_env, verbose=False)
 
@@ -532,12 +499,12 @@ class TestPrintSummaryAnalyticsVerbose:
             metric_kwargs = {"avg_user_words": 20.0, "avg_assistant_words": 100.0}
 
         metric = self._create_metric(provider_name="claude", **metric_kwargs)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        mock_report = MagicMock(cached=False, age_seconds=0, checks=[])
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
+             patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             print_summary(mock_env, verbose=True)
 
@@ -554,12 +521,12 @@ class TestPrintSummaryAnalyticsVerbose:
             tool_use_count=tool_use_count,
             tool_use_percentage=tool_use_percentage,
         )
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        mock_report = MagicMock(cached=False, age_seconds=0, checks=[])
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
+             patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             print_summary(mock_env, verbose=True)
 
@@ -577,12 +544,12 @@ class TestPrintSummaryAnalyticsVerbose:
             thinking_count=thinking_count,
             thinking_percentage=thinking_percentage,
         )
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        mock_report = MagicMock(cached=False, age_seconds=0, checks=[])
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
+             patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             print_summary(mock_env, verbose=True)
 
@@ -594,12 +561,12 @@ class TestPrintSummaryAnalyticsVerbose:
         """Test deep dive with multiple providers."""
         metric1 = self._create_metric(provider_name="claude", conversation_count=100)
         metric2 = self._create_metric(provider_name="chatgpt", conversation_count=50)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        mock_report = MagicMock(cached=False, age_seconds=0, checks=[])
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
+             patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric1, metric2]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric1, metric2]):
 
             print_summary(mock_env, verbose=True)
 
@@ -612,12 +579,10 @@ class TestPrintSummaryAnalyticsVerbose:
     def test_print_summary_normal_no_deep_dive(self, mock_env, mock_config):
         """Test that non-verbose mode does not show deep dive."""
         metric = self._create_metric(provider_name="claude")
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             print_summary(mock_env, verbose=False)
 
@@ -635,22 +600,22 @@ class TestPrintSummaryAnalyticsError:
 
     def test_print_summary_analytics_exception_verbose(self, mock_env, mock_config):
         """Test that analytics exception is logged at debug level."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        mock_report = MagicMock(cached=False, age_seconds=0, checks=[])
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
+             patch("polylogue.cli.helpers.get_health", return_value=mock_report), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", side_effect=RuntimeError("DB error")):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, side_effect=RuntimeError("DB error")):
 
             # Should not raise — analytics errors are logged, not displayed
             print_summary(mock_env, verbose=True)
 
     def test_print_summary_analytics_exception_silent_in_normal_mode(self, mock_env, mock_config):
         """Test that analytics exception is silent in non-verbose mode."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", side_effect=RuntimeError("DB error")):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, side_effect=RuntimeError("DB error")):
 
             print_summary(mock_env, verbose=False)
 
@@ -659,11 +624,10 @@ class TestPrintSummaryAnalyticsError:
 
     def test_print_summary_analytics_import_error(self, mock_env, mock_config):
         """Test handling when analytics module import fails."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", side_effect=ImportError("No module")):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, side_effect=ImportError("No module")):
 
             print_summary(mock_env, verbose=False)
             mock_env.ui.summary.assert_called_once()
@@ -695,12 +659,10 @@ class TestPrintSummaryIntegration:
     def test_print_summary_complete_scenario_normal_mode(self, mock_env, mock_config, mock_run_data):
         """Test complete summary output in normal mode."""
         metric = self._create_metric("claude", 100)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=mock_run_data), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=mock_run_data), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             print_summary(mock_env, verbose=False)
 
@@ -722,12 +684,10 @@ class TestPrintSummaryIntegration:
         mock_health.cached = True
         mock_health.age_seconds = 30
         mock_health.checks = [check1]
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=mock_run_data), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=mock_run_data), \
              patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=[metric]):
 
             mock_env.ui.plain = False
             print_summary(mock_env, verbose=True)
@@ -738,12 +698,10 @@ class TestPrintSummaryIntegration:
     def test_print_summary_empty_sources_list(self, mock_env, mock_config):
         """Test summary with no configured sources."""
         mock_config.sources = []
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="none"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=False)
 
@@ -755,12 +713,10 @@ class TestPrintSummaryIntegration:
         """Test summary with special characters in paths."""
         mock_config.archive_root = Path("/data/archive with spaces/stuff")
         mock_config.render_root = Path("/data/archive with spaces/stuff/rendered")
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
+        with patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=None), \
              patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+             patch("polylogue.cli.analytics.compute_provider_comparison", new_callable=AsyncMock, return_value=None):
 
             print_summary(mock_env, verbose=False)
 

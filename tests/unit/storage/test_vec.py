@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue.storage.store import MessageRecord
+from tests.infra.mutmut import preserved_mutmut_env
 
 
 def make_message(
@@ -144,7 +145,7 @@ class TestGetEmbeddings:
             error_msg, request=MagicMock(), response=mock_response
         )
 
-        with patch("httpx.Client") as MockClient:
+        with patch("httpx.Client") as MockClient, patch("time.sleep"):
             mock_client = MagicMock()
             mock_client.post.side_effect = error
             mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -162,7 +163,7 @@ class TestGetEmbeddings:
 
         error = httpx.TimeoutException("Connection timed out")
 
-        with patch("httpx.Client") as MockClient:
+        with patch("httpx.Client") as MockClient, patch("time.sleep"):
             mock_client = MagicMock()
             mock_client.post.side_effect = error
             mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -186,7 +187,7 @@ class TestGetEmbeddings:
             response=mock_response,
         )
 
-        with patch("httpx.Client") as MockClient:
+        with patch("httpx.Client") as MockClient, patch("time.sleep"):
             mock_client = MagicMock()
             mock_client.post.side_effect = error
             mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -459,9 +460,15 @@ class TestUpsertFlow:
         insert_calls = []
 
         def capture_execute(sql, params=None):
+            mock_cursor = MagicMock()
+            if "SELECT provider_name FROM conversations" in sql:
+                if provider_name is not None:
+                    mock_cursor.fetchone.return_value = (provider_name,)
+                else:
+                    mock_cursor.fetchone.return_value = None
             if "INSERT INTO message_embeddings" in sql:
                 insert_calls.append(params)
-            return MagicMock()
+            return mock_cursor
 
         mock_conn.execute = capture_execute
         mock_conn.commit = MagicMock()
@@ -912,7 +919,7 @@ class TestVecProviderFactory:
         """Returns None when VOYAGE_API_KEY is not configured."""
         from polylogue.storage.search_providers import create_vector_provider
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", preserved_mutmut_env(), clear=True):
             provider = create_vector_provider()
             assert provider is None
 

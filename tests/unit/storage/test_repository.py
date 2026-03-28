@@ -27,6 +27,7 @@ from polylogue.storage.store import (
     RunRecord,
 )
 from tests.infra.helpers import ConversationBuilder, make_attachment, make_conversation, make_message
+from tests.infra.mutmut import preserved_mutmut_env
 
 
 @pytest.fixture
@@ -767,7 +768,7 @@ class TestEmbedConversation:
             assert count == 2
 
         # Test without provider and no fallback
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", preserved_mutmut_env(), clear=True):
             with patch(
                 "polylogue.storage.search_providers.create_vector_provider",
                 return_value=None,
