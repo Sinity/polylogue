@@ -153,6 +153,7 @@ class TestAcquisitionServiceAcquireSources:
             assert stored is not None
             assert stored.raw_content == (raw_content if num_convos != 3 else b'{"id": "conv-0"}')
             assert stored.provider_name == "chatgpt"
+            assert stored.payload_provider is None
 
     @pytest.mark.parametrize(
         "provider_hint,source_name,expected_provider",
@@ -181,6 +182,7 @@ class TestAcquisitionServiceAcquireSources:
         stored = await backend.get_raw_conversation(result.raw_ids[0])
         assert stored is not None
         assert stored.provider_name == expected_provider
+        assert stored.payload_provider is None
 
     @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
     async def test_progress_callback_called(self, mock_iter, backend: SQLiteBackend):
@@ -572,6 +574,43 @@ class TestValidationService:
         callback.assert_any_call(0, desc="Validating: 0/2 raw")
         callback.assert_any_call(1, desc="Validating: 1/2 raw")
         callback.assert_any_call(1, desc="Validating: 2/2 raw")
+
+    async def test_validation_persists_payload_provider_from_decoded_payload(self, monkeypatch):
+        """Validation should persist durable payload classification separately from provenance."""
+        from polylogue.schemas import ValidationResult
+
+        raw_record = MagicMock(
+            raw_id="raw-1",
+            raw_content=b'[{"id":"conv-1","mapping":{}}]',
+            provider_name="inbox-source",
+            source_path="/tmp/conversations.json",
+            payload_provider=None,
+        )
+        backend = MagicMock()
+        backend.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        backend.mark_raw_validated = AsyncMock()
+        backend.mark_raw_parsed = AsyncMock()
+
+        class _AlwaysValidValidator:
+            provider = "chatgpt"
+
+            def validation_samples(self, payload, max_samples=16):
+                return [payload]
+
+            def validate(self, _sample):
+                return ValidationResult(is_valid=True)
+
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_provider",
+            lambda _provider: _AlwaysValidValidator(),
+        )
+
+        result = await ValidationService(backend=backend).validate_raw_ids(raw_ids=["raw-1"])
+
+        assert result.parseable_raw_ids == ["raw-1"]
+        kwargs = backend.mark_raw_validated.await_args.kwargs
+        assert kwargs["provider"] == "chatgpt"
+        assert kwargs["payload_provider"] == "chatgpt"
 
 
 # ============================================================================

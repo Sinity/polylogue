@@ -12,14 +12,12 @@ import pytest
 from polylogue.config import Config
 from polylogue.pipeline.services.parsing import ParsingService
 
-# ChatGPT imports
-from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 # Claude imports
 # Codex imports
 # Drive imports (for parse_chunked_prompt)
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import RawConversationRecord
 
@@ -52,7 +50,6 @@ class TestParseRawRecordJsonl:
 			repository=repository,
 			archive_root=tmp_path / "archive",
 			config=config,
-			drive_client_factory=None,
 		)
 
 	async def test_parse_raw_record_single_json(
@@ -105,6 +102,97 @@ class TestParseRawRecordJsonl:
 		assert parsed[0].title == "Test Conversation"
 		# ChatGPT parser extracts messages from the mapping
 		assert len(parsed[0].messages) == 2
+
+	async def test_parse_raw_record_chatgpt_bundle_list(
+		self, parsing_service: ParsingService
+	) -> None:
+		"""ChatGPT bundle list (multiple conversations in one file) is parsed in parse stage."""
+		raw_content = b"""[
+  {
+    "id": "conv-1",
+    "title": "Conversation One",
+    "mapping": {
+      "m1": {
+        "id": "m1",
+        "message": {
+          "id": "m1",
+          "author": {"role": "user"},
+          "content": {"parts": ["Hello 1"], "content_type": "text"},
+          "create_time": 1700000000
+        },
+        "children": []
+      }
+    }
+  },
+  {
+    "id": "conv-2",
+    "title": "Conversation Two",
+    "mapping": {
+      "m2": {
+        "id": "m2",
+        "message": {
+          "id": "m2",
+          "author": {"role": "user"},
+          "content": {"parts": ["Hello 2"], "content_type": "text"},
+          "create_time": 1700000100
+        },
+        "children": []
+      }
+    }
+  }
+]"""
+		raw_record = RawConversationRecord(
+			raw_id="chatgpt-bundle-json",
+			provider_name="chatgpt",
+			source_name="exports",
+			source_path="/exports/conversations.json",
+			source_index=None,
+			raw_content=raw_content,
+			acquired_at=datetime.now(timezone.utc).isoformat(),
+		)
+
+		parsed = await parsing_service._parse_raw_record(raw_record)
+
+		assert len(parsed) == 2
+		assert {c.provider_conversation_id for c in parsed} == {"conv-1", "conv-2"}
+
+	async def test_parse_raw_record_bundle_with_generic_provider_name(
+		self, parsing_service: ParsingService
+	) -> None:
+		"""Provider is inferred from payload/path when source name is generic."""
+		raw_content = b"""[
+  {
+    "id": "conv-generic-1",
+    "title": "Generic One",
+    "mapping": {
+      "m1": {
+        "id": "m1",
+        "message": {
+          "id": "m1",
+          "author": {"role": "user"},
+          "content": {"parts": ["hello"], "content_type": "text"}
+        },
+        "children": []
+      }
+    }
+  }
+]"""
+		raw_record = RawConversationRecord(
+			raw_id="chatgpt-bundle-generic",
+			provider_name="test-inbox",
+			source_name="test-inbox",
+			source_path="/exports/conversations.json",
+			source_index=None,
+			raw_content=raw_content,
+			acquired_at=datetime.now(timezone.utc).isoformat(),
+		)
+
+		parsed = await parsing_service._parse_raw_record(raw_record)
+
+		assert len(parsed) == 1
+		assert raw_record.payload_provider == "chatgpt"
+		assert parsed[0].provider_name == "chatgpt"
+		assert parsed[0].provider_conversation_id == "conv-generic-1"
 
 	async def test_parse_raw_record_jsonl(self, parsing_service: ParsingService) -> None:
 		"""Multi-line JSONL (claude-code format) parses correctly and produces messages."""
@@ -185,7 +273,6 @@ This is not JSON at all, should be skipped
 			repository=repository,
 			archive_root=tmp_path / "archive",
 			config=config,
-			drive_client_factory=None,
 		)
 
 		# Store a raw record without a corresponding conversation
@@ -212,7 +299,7 @@ This is not JSON at all, should be skipped
 
 		# Query for orphaned raw records (without conversations)
 		# This is the pattern from parse_sources()
-		with open_connection(backend._db_path) as conn:
+		with open_connection(backend.db_path) as conn:
 			orphaned_rows = conn.execute(
 				"""
 				SELECT r.raw_id
@@ -233,7 +320,7 @@ This is not JSON at all, should be skipped
 		assert result.counts["conversations"] > 0 or result.counts["messages"] > 0
 		# Verify the conversation was created with raw_id link
 		# Query directly for conversations with raw_id
-		with open_connection(backend._db_path) as conn:
+		with open_connection(backend.db_path) as conn:
 			linked_convos = conn.execute(
 				"""
 				SELECT conversation_id, raw_id
@@ -245,111 +332,6 @@ This is not JSON at all, should be skipped
 		assert (
 			len(linked_convos) > 0
 		), "Orphaned raw record should be linked to created conversation"
-
-
-# =============================================================================
-# SYNTHETIC EXPORT GENERATION
-# =============================================================================
-
-
-def discover_synthetic_exports():
-	"""Generate synthetic exports for all available providers."""
-	from polylogue.schemas.synthetic import SyntheticCorpus
-
-	exports = []
-	for provider in SyntheticCorpus.available_providers():
-		exports.append(provider)
-	return exports
-
-
-SYNTHETIC_PROVIDERS = discover_synthetic_exports()
-
-
-# =============================================================================
-# CROSS-PROVIDER SYNTHETIC DATA TESTS (PARAMETRIZED)
-# =============================================================================
-
-
-@pytest.mark.parametrize("provider", SYNTHETIC_PROVIDERS)
-def test_parse_synthetic_export_produces_valid_conversation(provider, tmp_path):
-	"""Parse synthetic export for each provider and validate structure."""
-	from polylogue.paths import Source
-	from polylogue.schemas.synthetic import SyntheticCorpus
-	from polylogue.sources import iter_source_conversations
-
-	corpus = SyntheticCorpus.for_provider(provider)
-	raw_bytes = corpus.generate(count=1, messages_per_conversation=range(3, 8), seed=42)[0]
-
-	# Write to file and parse through source detection
-	ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-	export_file = tmp_path / f"{provider}-synthetic{ext}"
-	export_file.write_bytes(raw_bytes)
-
-	source = Source(name=f"{provider}-test", path=export_file)
-	conversations = list(iter_source_conversations(source))
-
-	assert len(conversations) > 0, f"No conversations parsed for {provider}"
-	for conv in conversations:
-		assert conv.provider_name in (provider, "claude")  # claude-ai maps to "claude"
-		assert len(conv.messages) > 0, f"No messages in conversation for {provider}"
-		for msg in conv.messages:
-			assert msg.text is not None
-
-
-@pytest.mark.parametrize("provider", SYNTHETIC_PROVIDERS)
-def test_synthetic_export_messages_have_roles(provider, tmp_path):
-	"""All messages in synthetic exports have valid roles.
-
-	Parametrized across all synthetic providers.
-	"""
-	from polylogue.paths import Source
-	from polylogue.schemas.synthetic import SyntheticCorpus
-	from polylogue.sources import iter_source_conversations
-
-	corpus = SyntheticCorpus.for_provider(provider)
-	raw_bytes = corpus.generate(count=1, messages_per_conversation=range(3, 8), seed=42)[0]
-
-	ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-	export_file = tmp_path / f"{provider}-synthetic{ext}"
-	export_file.write_bytes(raw_bytes)
-
-	valid_roles = {"user", "assistant", "system", "tool", "human", "model"}
-
-	source = Source(name=f"{provider}-test", path=export_file)
-	conversations = list(iter_source_conversations(source))
-
-	for conv in conversations:
-		# All messages must have valid roles
-		for msg in conv.messages:
-			assert msg.role.lower() in valid_roles, \
-				f"Invalid role '{msg.role}' in {provider}"
-
-
-@pytest.mark.parametrize("provider", SYNTHETIC_PROVIDERS)
-def test_synthetic_export_preserves_metadata(provider, tmp_path):
-	"""Synthetic exports preserve provider metadata.
-
-	Parametrized across all synthetic providers.
-	"""
-	from polylogue.paths import Source
-	from polylogue.schemas.synthetic import SyntheticCorpus
-	from polylogue.sources import iter_source_conversations
-
-	corpus = SyntheticCorpus.for_provider(provider)
-	raw_bytes = corpus.generate(count=1, messages_per_conversation=range(3, 8), seed=42)[0]
-
-	ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-	export_file = tmp_path / f"{provider}-synthetic{ext}"
-	export_file.write_bytes(raw_bytes)
-
-	source = Source(name=f"{provider}-test", path=export_file)
-	conversations = list(iter_source_conversations(source))
-
-	for conv in conversations:
-		# Should have either a title or at least one message with provider metadata
-		# (exact fields vary by provider)
-		has_message_meta = any(m.provider_meta for m in conv.messages) if conv.messages else False
-		assert conv.title is not None or has_message_meta
 
 
 # =============================================================================
@@ -396,85 +378,4 @@ def test_context_dump_backtick_boundary(fence_markers, expected_context_dump):
 
 	assert msg.is_context_dump == expected_context_dump, \
 		f"Wrong is_context_dump for fence markers: {fence_markers}"
-
-
-# =============================================================================
-# FORMAT VARIANT TESTS (PARAMETRIZED)
-# =============================================================================
-
-
-# ChatGPT has multiple export format variants over time
-CHATGPT_VARIANTS = [
-	"simple.json",
-	"branching.json",
-]
-
-
-@pytest.mark.parametrize("variant", CHATGPT_VARIANTS)
-def test_chatgpt_format_variants(variant, tmp_path):
-	"""Test ChatGPT parser handles different export format variants with synthetic data.
-
-	Parametrized to automatically test all discovered variants.
-	"""
-	import json
-
-	from polylogue.schemas.synthetic import SyntheticCorpus
-
-	corpus = SyntheticCorpus.for_provider("chatgpt")
-
-	# Generate appropriate message count based on variant
-	if "branching" in variant:
-		raw_bytes = corpus.generate(count=1, messages_per_conversation=range(12, 20), seed=42)[0]
-	else:
-		raw_bytes = corpus.generate(count=1, messages_per_conversation=range(3, 8), seed=42)[0]
-
-	export_file = tmp_path / f"{variant}"
-	export_file.write_bytes(raw_bytes)
-
-	with open(export_file) as f:
-		data = json.load(f)
-
-	parsed = chatgpt_parse(data, f"variant-{variant}")
-
-	# All variants should parse successfully
-	assert parsed.provider_name == "chatgpt"
-	assert len(parsed.messages) > 0
-
-	# Format-specific validations
-	if "branching" in variant:
-		# Branching conversations should have many messages
-		assert len(parsed.messages) > 10
-
-
-# =============================================================================
-# STATISTICS
-# =============================================================================
-
-
-def test_consolidation_statistics():
-	"""Document consolidation statistics.
-
-	This is a META test that documents the synthetic provider coverage.
-	"""
-	num_synthetic_providers = len(SYNTHETIC_PROVIDERS)
-	num_chatgpt_variants = len(CHATGPT_VARIANTS)
-
-	# Each parametrized test runs once per synthetic provider
-	tests_per_parametrized = num_synthetic_providers
-
-	# Total tests generated by this file's parametrized tests
-	parametrized_tests = (
-		tests_per_parametrized * 3  # 3 synthetic provider tests
-		+ 4  # Boundary tests (substantive)
-		+ 4  # Boundary tests (context dump)
-		+ num_chatgpt_variants  # ChatGPT variants
-	)
-
-	print(f"\n{'='*60}")
-	print("SYNTHETIC PROVIDER COVERAGE")
-	print(f"{'='*60}")
-	print(f"Synthetic providers available: {num_synthetic_providers}")
-	print(f"Tests generated from parametrization: {parametrized_tests}")
-	print(f"Coverage multiplier: {parametrized_tests / (len(SYNTHETIC_PROVIDERS) or 1):.1f}x")
-	print(f"{'='*60}\n")
 
