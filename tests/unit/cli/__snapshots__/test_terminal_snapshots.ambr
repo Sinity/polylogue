@@ -136,6 +136,7 @@
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
         polylogue --path <PATH> --has-file-ops --list
+        polylogue --action search --action file_edit --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
   
     Modifiers (write operations):
@@ -167,6 +168,13 @@
     --exclude-tag TEXT              Exclude tags
     --title TEXT                    Title contains
     --path TEXT                     Touched path contains substring (repeatable
+                                    = AND)
+    --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent]
+                                    Require semantic action category (repeatable
+                                    = AND)
+    --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|su
+  bagent]
+                                    Exclude semantic action category (repeatable
                                     = AND)
     --similar TEXT                  Semantic similarity query (requires
                                     embeddings)
@@ -254,6 +262,7 @@
         polylogue -t important --stats-by provider
         polylogue --path <PATH> --
   has-file-ops --list
+        polylogue --action search --action file_edit --list
         polylogue --similar "sqlite locking bug in parser" --l
   imit 5
   
@@ -292,6 +301,16 @@
     --title TEXT                    Title contains
     --path TEXT                     Touched path contains subs
   tring (repeatable
+                                    = AND)
+    --action [file_read|file_write|file_edit|shell|git|search|
+  web|agent|subagent]
+                                    Require semantic action ca
+  tegory (repeatable
+                                    = AND)
+    --exclude-action [file_read|file_write|file_edit|shell|git
+  |search|web|agent|subagent]
+                                    Exclude semantic action ca
+  tegory (repeatable
                                     = AND)
     --similar TEXT                  Semantic similarity query
   (requires
@@ -413,6 +432,7 @@
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
         polylogue --path <PATH> --has-file-ops --list
+        polylogue --action search --action file_edit --list
         polylogue --similar "sqlite locking bug in parser" --limit 5
   
     Modifiers (write operations):
@@ -444,6 +464,12 @@
     --exclude-tag TEXT              Exclude tags
     --title TEXT                    Title contains
     --path TEXT                     Touched path contains substring (repeatable
+                                    = AND)
+    --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent]
+                                    Require semantic action category (repeatable
+                                    = AND)
+    --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent]
+                                    Exclude semantic action category (repeatable
                                     = AND)
     --similar TEXT                  Semantic similarity query (requires
                                     embeddings)

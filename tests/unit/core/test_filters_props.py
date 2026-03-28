@@ -498,6 +498,8 @@ class TestConversationFilterChaining:
             lambda f: f.contains("hello"),
             lambda f: f.title("test"),
             lambda f: f.path("/realm/project/polylogue/README.md"),
+            lambda f: f.action("search"),
+            lambda f: f.exclude_action("git"),
             lambda f: f.similar("query"),
         ]
         for method_fn in CHAINABLE_METHODS:

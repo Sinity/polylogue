@@ -23,6 +23,19 @@ class QuerySpecError(ValueError):
         self.value = value
 
 
+QUERY_ACTION_TYPES = (
+    "file_read",
+    "file_write",
+    "file_edit",
+    "shell",
+    "git",
+    "search",
+    "web",
+    "agent",
+    "subagent",
+)
+
+
 def _split_csv(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -39,6 +52,39 @@ def _as_tuple(value: object) -> tuple[str, ...]:
     return tuple(str(item) for item in value)
 
 
+<<<<<<< HEAD
+||||||| parent of 87fc33ae (feat: add semantic action query filters)
+def _parse_query_date(field: str, value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = parse_date(value)
+    if parsed is None:
+        raise QuerySpecError(field, value)
+    return parsed
+
+
+=======
+def _parse_query_date(field: str, value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = parse_date(value)
+    if parsed is None:
+        raise QuerySpecError(field, value)
+    return parsed
+
+
+def _normalize_action_terms(field: str, value: object) -> tuple[str, ...]:
+    terms = _as_tuple(value)
+    normalized: list[str] = []
+    for term in terms:
+        candidate = str(term).strip().lower()
+        if candidate not in QUERY_ACTION_TYPES:
+            raise QuerySpecError(field, term)
+        normalized.append(candidate)
+    return tuple(normalized)
+
+
+>>>>>>> 87fc33ae (feat: add semantic action query filters)
 @dataclass(frozen=True)
 class ConversationQuerySpec:
     """Canonical selection intent for conversation queries."""
@@ -47,6 +93,8 @@ class ConversationQuerySpec:
     contains_terms: tuple[str, ...] = ()
     exclude_text_terms: tuple[str, ...] = ()
     path_terms: tuple[str, ...] = ()
+    action_terms: tuple[str, ...] = ()
+    excluded_action_terms: tuple[str, ...] = ()
     providers: tuple[Provider, ...] = ()
     excluded_providers: tuple[Provider, ...] = ()
     tags: tuple[str, ...] = ()
@@ -81,6 +129,8 @@ class ConversationQuerySpec:
             contains_terms=_as_tuple(params.get("contains")),
             exclude_text_terms=_as_tuple(params.get("exclude_text")),
             path_terms=_as_tuple(params.get("path_terms") or params.get("path")),
+            action_terms=_normalize_action_terms("action", params.get("action")),
+            excluded_action_terms=_normalize_action_terms("exclude_action", params.get("exclude_action")),
             providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("provider"))),
             excluded_providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("exclude_provider"))),
             tags=_split_csv(params.get("tag")),
@@ -117,6 +167,10 @@ class ConversationQuerySpec:
             parts.append(f"exclude text: {', '.join(self.exclude_text_terms)}")
         if self.path_terms:
             parts.append(f"path: {', '.join(self.path_terms)}")
+        if self.action_terms:
+            parts.append(f"action: {', '.join(self.action_terms)}")
+        if self.excluded_action_terms:
+            parts.append(f"exclude action: {', '.join(self.excluded_action_terms)}")
         if self.providers:
             parts.append(f"provider: {', '.join(p.value for p in self.providers)}")
         if self.excluded_providers:
@@ -163,6 +217,8 @@ class ConversationQuerySpec:
                 self.contains_terms,
                 self.exclude_text_terms,
                 self.path_terms,
+                self.action_terms,
+                self.excluded_action_terms,
                 self.providers,
                 self.excluded_providers,
                 self.tags,
@@ -268,6 +324,8 @@ class ConversationQuerySpec:
             contains_terms=self.contains_terms,
             negative_terms=self.exclude_text_terms,
             path_terms=self.path_terms,
+            action_terms=self.action_terms,
+            excluded_action_terms=self.excluded_action_terms,
             providers=self.providers,
             excluded_providers=self.excluded_providers,
             tags=self.tags,

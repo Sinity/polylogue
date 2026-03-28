@@ -53,6 +53,16 @@ QUERY_TOOL_CASES = [
         },
     ),
     (
+        "search",
+        {"query": "hello", "action": "search", "exclude_action": "git", "limit": 5},
+        {
+            "contains": ("hello",),
+            "action": ("search",),
+            "exclude_action": ("git",),
+            "limit": (5,),
+        },
+    ),
+    (
         "list_conversations",
         {"limit": 10},
         {
@@ -75,6 +85,15 @@ QUERY_TOOL_CASES = [
         {"path": "/realm/project/polylogue/README.md", "limit": 2},
         {
             "path": ("/realm/project/polylogue/README.md",),
+            "limit": (2,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"action": "file_edit", "exclude_action": "web", "limit": 2},
+        {
+            "action": ("file_edit",),
+            "exclude_action": ("web",),
             "limit": (2,),
         },
     ),
@@ -133,6 +152,10 @@ class TestQueryTools:
                 assert spec.since == expected_value
             elif method_name == "path":
                 assert spec.path_terms == (expected_value,)
+            elif method_name == "action":
+                assert spec.action_terms == (expected_value,)
+            elif method_name == "exclude_action":
+                assert spec.excluded_action_terms == (expected_value,)
             elif method_name == "tag":
                 assert spec.tags == (expected_value,)
             elif method_name == "title":

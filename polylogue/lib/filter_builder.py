@@ -89,6 +89,16 @@ class ConversationFilterBuilderMixin:
         self._path_terms.append(pattern)
         return self
 
+    def action(self, *types: str) -> ConversationFilter:
+        """Filter to conversations containing semantic action categories."""
+        self._action_terms.extend(types)
+        return self
+
+    def exclude_action(self, *types: str) -> ConversationFilter:
+        """Exclude conversations containing semantic action categories."""
+        self._excluded_action_terms.extend(types)
+        return self
+
     def id(self, prefix: str) -> ConversationFilter:
         """Filter to conversations with ID starting with prefix."""
         self._id_prefix = prefix
