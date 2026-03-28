@@ -1,104 +1,82 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-from typing import Any, Dict, Optional, Protocol
+from typing import Iterable, Sequence
 
-from .render import MarkdownDocument
+from .db import open_connection
 
 
-class IndexBackend(Protocol):
-    def update(
-        self,
-        *,
-        provider: str,
-        conversation_id: str,
-        slug: str,
-        path: Path,
-        document: MarkdownDocument,
-        metadata: Dict[str, Any],
-    ) -> None:
-        ...
-
-
-class SqliteBackend:
-    """Legacy shim: SQLite indexing now happens inside conversation_registrar."""
-
-    def update(self, **_: Any) -> None:
-        return
-
-
-class NullBackend:
-    def update(self, **_: Any) -> None:  # pragma: no cover - intentionally no-op
-        return
-
-
-class QdrantBackend:
-    def __init__(self) -> None:
-        try:
-            from .index_qdrant import update_qdrant_index
-        except ImportError as exc:  # pragma: no cover
-            raise RuntimeError(
-                "POLYLOGUE_INDEX_BACKEND=qdrant requires the 'qdrant-client' package. "
-                "Install it with: pip install 'polylogue[vector]'"
-            ) from exc
-        self._update = update_qdrant_index
-
-    def update(
-        self,
-        *,
-        provider: str,
-        conversation_id: str,
-        slug: str,
-        path: Path,
-        document: MarkdownDocument,
-        metadata: Dict[str, Any],
-    ) -> None:
-        self._update(
-            provider=provider,
-            conversation_id=conversation_id,
-            slug=slug,
-            path=path,
-            document=document,
-            metadata=metadata,
-        )
-
-
-_BACKEND_CACHE: Optional[IndexBackend] = None
-
-
-def _resolve_backend() -> IndexBackend:
-    global _BACKEND_CACHE
-    if _BACKEND_CACHE is not None:
-        return _BACKEND_CACHE
-
-    backend_name = os.environ.get("POLYLOGUE_INDEX_BACKEND", "sqlite").strip().lower()
-    if backend_name in ("", "sqlite"):
-        _BACKEND_CACHE = SqliteBackend()
-    elif backend_name in ("none", "disabled"):
-        _BACKEND_CACHE = NullBackend()
-    elif backend_name == "qdrant":
-        _BACKEND_CACHE = QdrantBackend()
-    else:
-        raise ValueError(f"Unknown POLYLOGUE_INDEX_BACKEND '{backend_name}'")
-    return _BACKEND_CACHE
-
-
-def update_index(
-    *,
-    provider: str,
-    conversation_id: str,
-    slug: str,
-    path: Path,
-    document: MarkdownDocument,
-    metadata: Dict[str, Any],
-) -> None:
-    backend = _resolve_backend()
-    backend.update(
-        provider=provider,
-        conversation_id=conversation_id,
-        slug=slug,
-        path=path,
-        document=document,
-        metadata=metadata,
+def ensure_index(conn) -> None:
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            message_id UNINDEXED,
+            conversation_id UNINDEXED,
+            provider_name UNINDEXED,
+            content
+        );
+        """
     )
+
+
+def rebuild_index() -> None:
+    with open_connection(None) as conn:
+        ensure_index(conn)
+        conn.execute("DELETE FROM messages_fts")
+        conn.execute(
+            """
+            INSERT INTO messages_fts (message_id, conversation_id, provider_name, content)
+            SELECT messages.message_id, messages.conversation_id, conversations.provider_name, messages.text
+            FROM messages
+            JOIN conversations ON conversations.conversation_id = messages.conversation_id
+            WHERE messages.text IS NOT NULL
+            """
+        )
+        conn.commit()
+
+
+def update_index_for_conversations(conversation_ids: Sequence[str]) -> None:
+    if not conversation_ids:
+        return
+    with open_connection(None) as conn:
+        ensure_index(conn)
+        for chunk in _chunked(conversation_ids, size=200):
+            placeholders = ", ".join("?" for _ in chunk)
+            conn.execute(
+                f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
+                tuple(chunk),
+            )
+            conn.execute(
+                f"""
+                INSERT INTO messages_fts (message_id, conversation_id, provider_name, content)
+                SELECT messages.message_id, messages.conversation_id, conversations.provider_name, messages.text
+                FROM messages
+                JOIN conversations ON conversations.conversation_id = messages.conversation_id
+                WHERE messages.text IS NOT NULL AND messages.conversation_id IN ({placeholders})
+                """,
+                tuple(chunk),
+            )
+        conn.commit()
+
+
+def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
+    for idx in range(0, len(items), size):
+        yield items[idx : idx + size]
+
+
+def index_status() -> dict:
+    with open_connection(None) as conn:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+        ).fetchone()
+        exists = bool(row)
+        count = 0
+        if exists:
+            count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+        return {"exists": exists, "count": int(count)}
+
+__all__ = [
+    "rebuild_index",
+    "update_index_for_conversations",
+    "index_status",
+    "ensure_index",
+]

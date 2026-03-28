@@ -1,867 +1,835 @@
-"""Click-based CLI entrypoint.
-
-This preserves existing behaviours by converting Click parameters into
-simple attribute namespaces and deferring to existing `run_*_cli` helpers.
-"""
+"""CLI entrypoint (clean surface, adaptive UI)."""
 from __future__ import annotations
 
+import json
 import os
 import sys
+from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
-import shutil
-from types import SimpleNamespace
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
-import importlib
 import click
-from click.core import ParameterSource
-from rich.table import Table
 
-from ..commands import CommandEnv
 from ..ui import create_ui
-from .click_introspect import click_command_entries
-from .completions_cli import run_complete_cli, run_completions_cli
-from . import (
-    attachments,
-    browse as browse_cmd,
-    imports,
-    maintain as maintain_cli,
-    open_helper,
-    prefs as prefs_cmd,
-    reprocess,
+from ..config import (
+    Config,
+    ConfigError,
+    Source,
+    DEFAULT_INBOX_ROOT,
+    default_config,
+    load_config,
+    update_config,
+    write_config,
 )
-from .config_cli import run_config_show
-from .search_cli import run_search_cli, run_search_preview
-from .compare_cli import run_compare_cli
-from .click_options import OptionalValueChoiceOption
-from .examples import COMMAND_EXAMPLES
-from .env_cli import run_env_cli
+from ..export import export_jsonl
+from ..health import cached_health_summary, get_health
+from ..db import default_db_path, open_connection
+from ..drive_client import DriveError
+from ..index import rebuild_index
+from ..run import latest_run, plan_sources, run_sources
+from ..search import search_messages
+from .editor import open_in_browser, open_in_editor
 
 
-def _build_env(plain: bool) -> CommandEnv:
-    env = CommandEnv(ui=create_ui(plain))
-    env.prefs = prefs_cmd.load_prefs()
-    return env
-
-_FORCE_PLAIN_VALUES = {"1", "true", "yes", "on"}
-_PLAIN_REASON_FLAG = "requested via --plain"
-_REQUIRED_EXTERNAL_TOOLS = ("sk", "bat", "glow")
-_REQUIRED_PY_MODULES = ("pypdf",)
-_TOOLS_VERIFIED = False
-_MODULES_VERIFIED = False
+@dataclass
+class AppEnv:
+    ui: object
+    config_path: Optional[Path] = None
 
 
-def _ensure_required_tools() -> None:
-    global _TOOLS_VERIFIED
-    if _TOOLS_VERIFIED:
-        return
-    missing = [tool for tool in _REQUIRED_EXTERNAL_TOOLS if shutil.which(tool) is None]
-    if missing:
-        listed = ", ".join(missing)
-        raise SystemExit(
-            f"Missing required command(s): {listed}. Install them (they are required for Polylogue's interactive workflows)."
-        )
-    _TOOLS_VERIFIED = True
-
-
-def _ensure_required_modules() -> None:
-    global _MODULES_VERIFIED
-    if _MODULES_VERIFIED:
-        return
-    missing: List[str] = []
-    for name in _REQUIRED_PY_MODULES:
-        try:
-            importlib.import_module(name)
-        except ImportError:
-            missing.append(name)
-    if missing:
-        listed = ", ".join(sorted(set(missing)))
-        raise SystemExit(
-            f"Missing required Python module(s): {listed}. Reinstall Polylogue "
-            "or run `pip install 'polylogue[ocr]'` inside the dev shell."
-        )
-    _MODULES_VERIFIED = True
-
-
-def _should_use_plain(*, plain: bool, interactive: bool) -> Tuple[bool, Optional[str]]:
+def _should_use_plain(*, plain: bool, interactive: bool) -> bool:
+    if plain:
+        return True
     if interactive:
-        return False, None
-    if plain:
-        return True, _PLAIN_REASON_FLAG
-    forced = os.environ.get("POLYLOGUE_FORCE_PLAIN")
-    if forced and forced.strip().lower() in _FORCE_PLAIN_VALUES:
-        return True, "POLYLOGUE_FORCE_PLAIN is set"
-    if not (sys.stdout.isatty() and sys.stderr.isatty()):
-        return True, "stdout/stderr are not TTYs"
-    return False, None
+        return False
+    env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
+    if env_force and env_force.lower() not in {"0", "false", "no"}:
+        return True
+    return not (sys.stdout.isatty() and sys.stderr.isatty())
 
 
-def _print_command_listing(console, plain: bool, entries: Sequence[Tuple[str, str]]) -> None:
-    if not entries:
+def _announce_plain_mode() -> None:
+    sys.stderr.write("Plain output active (non-TTY). Use --interactive from a TTY to re-enable prompts.\n")
+
+
+def _format_timestamp(ts: int) -> str:
+    return datetime.fromtimestamp(ts).isoformat(timespec="seconds")
+
+
+def _format_cursors(cursors: dict) -> Optional[str]:
+    if not cursors:
+        return None
+    parts: List[str] = []
+    for name, cursor in cursors.items():
+        detail_bits: List[str] = []
+        file_count = cursor.get("file_count")
+        if isinstance(file_count, int):
+            detail_bits.append(f"{file_count} files")
+        error_count = cursor.get("error_count")
+        if isinstance(error_count, int) and error_count:
+            detail_bits.append(f"{error_count} errors")
+        latest_mtime = cursor.get("latest_mtime")
+        latest_label = None
+        if isinstance(latest_mtime, (int, float)):
+            latest_label = _format_timestamp(int(latest_mtime))
+        else:
+            latest_name = cursor.get("latest_file_name")
+            latest_path = cursor.get("latest_path")
+            if isinstance(latest_name, str):
+                latest_label = latest_name
+            elif isinstance(latest_path, str):
+                latest_label = Path(latest_path).name
+        if latest_label:
+            detail_bits.append(f"latest {latest_label}")
+        detail = ", ".join(detail_bits) if detail_bits else "unknown"
+        parts.append(f"{name} ({detail})")
+    return "; ".join(parts)
+
+
+def _format_counts(counts: dict) -> str:
+    return (
+        f"{counts.get('conversations', 0)} conv, "
+        f"{counts.get('messages', 0)} msg"
+    )
+
+
+def _format_index_status(stage: str, indexed: bool, index_error: Optional[str]) -> str:
+    if stage in {"ingest", "render"}:
+        return "Index: skipped"
+    if index_error:
+        return "Index: error"
+    if indexed:
+        return "Index: ok"
+    return "Index: up-to-date"
+
+
+def _format_source_label(source_name: Optional[str], provider_name: str) -> str:
+    if source_name and source_name != provider_name:
+        return f"{source_name}/{provider_name}"
+    return source_name or provider_name
+
+
+
+def _fail(command: str, message: str) -> None:
+    raise SystemExit(f"{command}: {message}")
+
+
+def _is_declarative() -> bool:
+    value = os.environ.get("POLYLOGUE_DECLARATIVE")
+    if not value:
+        return False
+    return value.lower() not in {"0", "false", "no"}
+
+
+def _source_state_path() -> Path:
+    raw_state_root = os.environ.get("XDG_STATE_HOME")
+    state_root = Path(raw_state_root).expanduser() if raw_state_root else Path.home() / ".local/state"
+    return state_root / "polylogue" / "last-source.json"
+
+
+def _load_last_source() -> Optional[str]:
+    path = _source_state_path()
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict) and isinstance(payload.get("source"), str):
+        return payload["source"]
+    return None
+
+
+def _save_last_source(source_name: str) -> None:
+    path = _source_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"source": source_name}), encoding="utf-8")
+
+
+def _maybe_prompt_sources(
+    env: AppEnv,
+    config: Config,
+    selected_sources: Optional[List[str]],
+    command: str,
+) -> Optional[List[str]]:
+    if selected_sources is not None or env.ui.plain:
+        return selected_sources
+    names = [source.name for source in config.sources]
+    if len(names) <= 1:
+        return selected_sources
+    options = ["all"] + names
+    last_choice = _load_last_source()
+    if last_choice in options:
+        options.remove(last_choice)
+        options.insert(0, last_choice)
+    choice = env.ui.choose(f"Select source for {command}", options)
+    if not choice:
+        return selected_sources
+    _save_last_source(choice)
+    if choice == "all":
+        return None
+    return [choice]
+
+
+def _load_effective_config(env: AppEnv) -> Config:
+    return load_config(env.config_path)
+
+
+def _resolve_sources(config: Config, sources: Tuple[str, ...], command: str) -> Optional[List[str]]:
+    if not sources:
+        return None
+    requested = list(dict.fromkeys(sources))
+    if "last" in requested:
+        if len(requested) > 1:
+            _fail(command, "--source last cannot be combined with other sources")
+        last = _load_last_source()
+        if not last:
+            _fail(command, "No previously selected source found for --source last")
+        requested = [last]
+    defined = {source.name for source in config.sources}
+    missing = sorted(set(requested) - defined)
+    if missing:
+        _fail(command, f"Unknown source(s): {', '.join(missing)}")
+    return requested
+
+
+def _print_summary(env: AppEnv) -> None:
+    ui = env.ui
+    try:
+        config = _load_effective_config(env)
+    except ConfigError as exc:
+        ui.console.print(f"[yellow]{exc}[/yellow]")
+        ui.console.print("Run `polylogue config init` to create a config.")
         return
-    console.print("\nCommands:")
-    if plain:
-        width = max(len(name) for name, _ in entries) + 2
-        for name, description in entries:
-            if description:
-                console.print(f"  {name.ljust(width)}{description}")
-            else:
-                console.print(f"  {name}")
-        return
-    table = Table(show_header=True, header_style="bold cyan")
-    table.add_column("Command", style="cyan")
-    table.add_column("Description")
-    for name, description in entries:
-        table.add_row(name, description)
-    console.print(table)
+    last_run = latest_run()
+    last_line = "Last run: none"
+    if last_run:
+        last_line = f"Last run: {last_run.get('run_id')} ({last_run.get('timestamp')})"
+    health_line = f"Health: {cached_health_summary(config.archive_root)}"
+    ui.summary(
+        "Polylogue",
+        [
+            f"Config: {config.path}",
+            f"Archive root: {config.archive_root}",
+            last_line,
+            health_line,
+        ],
+    )
 
 
-def _print_examples(console) -> None:
-    console.print("[bold cyan]EXAMPLES[/bold cyan]\n")
-    for name in sorted(COMMAND_EXAMPLES):
-        examples = COMMAND_EXAMPLES[name]
-        if not examples:
-            continue
-        console.print(f"[green]{name}[/green]")
-        for desc, cmdline in examples:
-            console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
-        console.print("")
+def _latest_render_path(archive_root: Path) -> Optional[Path]:
+    render_root = archive_root / "render"
+    if not render_root.exists():
+        return None
+    candidates = list(render_root.rglob("conversation.md")) + list(render_root.rglob("conversation.html"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def _print_quick_examples(console) -> None:
-    console.print("\n[bold cyan]QUICK EXAMPLES[/bold cyan]")
-    console.print("[dim]Run 'polylogue help <command>' for full examples and details.[/dim]\n")
-    for cmd in ["render", "sync", "import", "search", "browse", "verify", "doctor"]:
-        examples = COMMAND_EXAMPLES.get(cmd)
-        if not examples:
-            continue
-        desc, cmdline = examples[0]
-        console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
-
-
-def _run_click_help(env: CommandEnv, ctx: click.Context, topic: Optional[str], examples: bool) -> None:
-    console = env.ui.console
-    root_ctx = ctx.find_root()
-    group: click.Group = root_ctx.command  # type: ignore[assignment]
-    entries = click_command_entries(group)
-    show_examples_only = examples and not topic
-
-    if topic:
-        command = group.get_command(root_ctx, topic)
-        if command is None or command.hidden:
-            available = ", ".join(name for name, _ in entries) or "<none>"
-            console.print(f"[red]Unknown command: {topic}")
-            console.print(f"Available commands: {available}")
-            raise SystemExit(1)
-        sub_ctx = click.Context(command, info_name=topic, parent=root_ctx)
-        console.print(f"[cyan]polylogue {topic}[/cyan]")
-        console.print(command.get_help(sub_ctx))
-        return
-
-    if show_examples_only:
-        _print_examples(console)
-        return
-
-    console.print(group.get_help(root_ctx))
-    _print_command_listing(console, getattr(env.ui, "plain", False), entries)
-    _print_quick_examples(console)
-
-
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
-@click.option("--plain", is_flag=True, help="Force plain/CI-safe output even when running in a TTY")
-@click.option("--interactive", is_flag=True, help="Force interactive UI even when stdout/stderr are not TTYs")
+@click.group(context_settings={"help_option_names": ["-h", "--help"]}, invoke_without_command=True)
+@click.option("--plain", is_flag=True, help="Force non-interactive plain output")
+@click.option("--interactive", is_flag=True, help="Force interactive output")
+@click.option("--config", "config_path", type=click.Path(path_type=Path), help="Path to config.json")
 @click.pass_context
-def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
-    """Polylogue CLI (Click)."""
-    _ensure_required_tools()
-    _ensure_required_modules()
-    use_plain, plain_reason = _should_use_plain(plain=plain, interactive=interactive)
-    env = _build_env(use_plain)
+def cli(ctx: click.Context, plain: bool, interactive: bool, config_path: Optional[Path]) -> None:
+    """Polylogue CLI."""
+    use_plain = _should_use_plain(plain=plain, interactive=interactive)
+    env = AppEnv(ui=create_ui(use_plain), config_path=config_path)
     ctx.obj = env
-    if use_plain and plain_reason and plain_reason != _PLAIN_REASON_FLAG:
-        _announce_plain_mode(env, plain_reason)
- 
- 
-def _announce_plain_mode(env: CommandEnv, reason: str) -> None:
-    if reason == "stdout/stderr are not TTYs":
+    env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
+    forced_plain = bool(env_force and env_force.lower() not in {"0", "false", "no"})
+    if use_plain and not plain and not interactive and not forced_plain:
+        _announce_plain_mode()
+    if ctx.invoked_subcommand is None:
+        _print_summary(env)
+
+
+@cli.command()
+@click.option("--preview", is_flag=True, help="Preview work without writing")
+@click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all", show_default=True)
+@click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable, or 'last')")
+@click.pass_obj
+def run(
+    env: AppEnv,
+    preview: bool,
+    stage: str,
+    sources: Tuple[str, ...],
+) -> None:
+    try:
+        config = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("run", str(exc))
+    selected_sources = _resolve_sources(config, sources, "run")
+    selected_sources = _maybe_prompt_sources(env, config, selected_sources, "run")
+    if preview:
+        try:
+            plan_result = plan_sources(config, ui=env.ui, source_names=selected_sources)
+        except DriveError as exc:
+            _fail("run", str(exc))
+        plan_lines = []
+        if selected_sources:
+            plan_lines.append(f"Sources: {', '.join(selected_sources)}")
+        plan_lines.append(f"Counts: {_format_counts(plan_result.counts)}")
+        cursor_line = _format_cursors(plan_result.cursors)
+        if cursor_line:
+            plan_lines.append(f"Cursors: {cursor_line}")
+        plan_lines.append(f"Snapshot: {_format_timestamp(plan_result.timestamp)}")
+        env.ui.summary("Preview", plan_lines)
         return
-    message = f"Plain output active ({reason}). Pass --interactive from a TTY to re-enable prompts."
-    sys.stderr.write(f"{message}\n")
-
-
-# ---------------------------- sync ----------------------------
+    if not env.ui.plain:
+        if not env.ui.confirm("Proceed with run?", default=True):
+            env.ui.console.print("Run cancelled.")
+            return
+    try:
+        result = run_sources(
+            config=config,
+            stage=stage,
+            plan=None,
+            ui=env.ui,
+            source_names=selected_sources,
+        )
+    except DriveError as exc:
+        _fail("run", str(exc))
+    run_lines = [
+        f"Counts: {_format_counts(result.counts)}",
+        f"Duration: {result.duration_ms}ms",
+    ]
+    title_parts: List[str] = []
+    if stage != "all":
+        title_parts.append(stage)
+    if selected_sources:
+        title_parts.append(", ".join(selected_sources))
+    title = f"Run ({'; '.join(title_parts)})" if title_parts else "Run"
+    if stage == "index":
+        run_lines = [
+            _format_index_status(stage, result.indexed, result.index_error),
+            f"Duration: {result.duration_ms}ms",
+        ]
+    elif result.index_error:
+        run_lines.insert(1, _format_index_status(stage, result.indexed, result.index_error))
+    env.ui.summary(
+        title,
+        run_lines,
+    )
+    if stage in {"render", "all"}:
+        latest = _latest_render_path(config.archive_root)
+        if latest:
+            env.ui.console.print(f"Latest render: {latest}")
+    if result.index_error:
+        error_line = f"Index error: {result.index_error}"
+        hint_line = "Hint: run `polylogue run --stage index` to rebuild the index."
+        if env.ui.plain:
+            env.ui.console.print(error_line)
+            env.ui.console.print(hint_line)
+        else:
+            env.ui.console.print(f"[yellow]{error_line}[/yellow]")
+            env.ui.console.print(f"[yellow]{hint_line}[/yellow]")
 
 
 @cli.command()
-@click.argument("provider", type=click.Choice(["drive", "codex", "claude-code", "chatgpt", "claude"]))
-@click.option("--out", type=click.Path(path_type=Path), help="Override output directory")
-@click.option("--links-only", is_flag=True, help="Link attachments instead of downloading (Drive only)")
-@click.option("--attachments-only", is_flag=True, help="Retry/download Drive attachments only (requires --resume-from; no re-render)")
-@click.option(
-    "--attachment-ocr/--no-attachment-ocr",
-    default=None,
-    help="Attempt OCR on image attachments when indexing attachment text (enabled by default)",
-)
-@click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in synced Markdown/HTML outputs")
-@click.option("--dry-run", is_flag=True, help="Report actions without writing files")
-@click.option("--force", is_flag=True, help="Re-render even if conversations are up-to-date")
-@click.option("--prune", is_flag=True, help="Remove outputs for conversations that vanished upstream")
-@click.option("--prune-snapshot", is_flag=True, help="Snapshot outputs before pruning (STATE_HOME/rollback)")
-@click.option("--collapse-threshold", type=int, default=None, help="Collapse threshold override")
-@click.option(
-    "--html",
-    "html_mode",
-    cls=OptionalValueChoiceOption,
-    is_flag=False,
-    flag_value="on",
-    type=click.Choice(["on", "off", "auto"]),
-    default="auto",
-    show_default=True,
-    help="HTML preview mode: on/off/auto (default auto)",
-)
-@click.option("--diff", is_flag=True, help="Write delta diff alongside updated Markdown")
-@click.option("--json", is_flag=True, help="Emit machine-readable summary")
-@click.option("--print-paths", is_flag=True, help="List written files after sync")
-@click.option("--chat-id", "chat_ids", multiple=True, help="Drive chat/file ID to sync (repeatable)")
-@click.option("--session", "sessions", multiple=True, type=click.Path(path_type=Path), help="Local session/export path to sync (repeatable)")
-@click.option("--all", is_flag=True, help="Process all available items without interactive selection")
-@click.option("--base-dir", type=click.Path(path_type=Path), help="Override local session/export directory")
-@click.option("--folder-name", type=str, help="Drive folder name (drive provider)")
-@click.option("--folder-id", type=str, help="Drive folder ID override")
-@click.option("--since", type=str, help="Only include Drive chats updated on/after this timestamp")
-@click.option("--until", type=str, help="Only include Drive chats updated on/before this timestamp")
-@click.option("--name-filter", type=str, help="Regex filter for Drive chat names")
-@click.option("--list-only", is_flag=True, help="List Drive chats without syncing")
-@click.option("--offline", is_flag=True, help="Skip network-dependent steps (Drive disallowed)")
-@click.option("--watch", is_flag=True, help="Watch for changes and sync continuously (local providers only)")
-@click.option("--jobs", type=int, default=1, show_default=True, help="Parallelism for local providers (codex/claude-code)")
-@click.option("--debounce", type=float, default=2.0, show_default=True, help="Minimal seconds between sync runs in watch mode")
-@click.option("--stall-seconds", type=float, default=60.0, show_default=True, help="Warn when watch makes no progress for this many seconds")
-@click.option("--fail-on-stall", is_flag=True, help="Exit with non-zero status when watch detects a stall")
-@click.option("--tail", is_flag=True, help="Log changed paths as they are detected in watch mode")
-@click.option("--once", is_flag=True, help="In watch mode, run a single sync pass and exit")
-@click.option("--snapshot", is_flag=True, help="Create a rollback snapshot of the output directory before watching")
-@click.option("--watch-plan", is_flag=True, help="Print the assembled watch command and exit (no watch run)")
-@click.option("--drive-retries", type=int, help="Override Drive retry attempts (default: config or 3)")
-@click.option("--drive-retry-base", type=float, help="Override Drive retry base delay seconds (default: config or 0.5)")
-@click.option("--resume-from", type=int, help="Resume a previous run by run ID (reprocess failed items only)")
-@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
-@click.option("--root", type=str, help="Named root label to use when configs support multi-root archives")
-@click.option("--disk-estimate", is_flag=True, help="Print projected disk usage before running")
-@click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.pass_obj
-def sync(env: CommandEnv, **kwargs) -> None:
-    """Synchronize provider archives (use --watch for continuous mode)."""
-    from .sync import run_sync_cli
-
-    ctx = click.get_current_context()
-    namespace_kwargs = dict(kwargs)
-    namespace_kwargs["_attachment_ocr_explicit"] = (
-        ctx.get_parameter_source("attachment_ocr") != ParameterSource.DEFAULT
+def index(env: AppEnv) -> None:
+    try:
+        config = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("index", str(exc))
+    try:
+        result = run_sources(
+            config=config,
+            stage="index",
+            plan=None,
+            ui=env.ui,
+            source_names=None,
+        )
+    except DriveError as exc:
+        _fail("index", str(exc))
+    env.ui.summary(
+        "Index",
+        [
+            _format_index_status("index", result.indexed, result.index_error),
+            f"Duration: {result.duration_ms}ms",
+        ],
     )
-    if namespace_kwargs.get("attachment_ocr") is None:
-        namespace_kwargs["attachment_ocr"] = True
-    run_sync_cli(SimpleNamespace(**namespace_kwargs), env)
-
-
-# ---------------------------- import ----------------------------
-
-
-@cli.group(name="import")
-def import_group() -> None:
-    """Import provider exports."""
-
-
-@import_group.command(name="run")
-@click.argument("provider", type=click.Choice(["chatgpt", "claude", "claude-code", "codex"]))
-@click.argument("source", nargs=-1, type=click.Path(path_type=Path))
-@click.option("--out", type=click.Path(path_type=Path), help="Output directory")
-@click.option("--collapse-threshold", type=int, default=None, help="Collapse threshold override")
-@click.option(
-    "--html",
-    "html_mode",
-    cls=OptionalValueChoiceOption,
-    is_flag=False,
-    flag_value="on",
-    type=click.Choice(["on", "off", "auto"]),
-    default="auto",
-    show_default=True,
-    help="HTML preview mode: on/off/auto (default auto)",
-)
-@click.option("--force", is_flag=True, help="Regenerate markdown from database instead of reading source files")
-@click.option("--all", is_flag=True, help="Process all conversations/sessions without selection")
-@click.option("--conversation-id", "conversation_ids", multiple=True, help="Conversation ID filter (repeatable)")
-@click.option("--json", is_flag=True, help="Emit machine-readable summary")
-@click.option("--print-paths", is_flag=True, help="List written files after import")
-@click.option("--to-clipboard", is_flag=True, help="Copy single imported Markdown file to the clipboard")
-@click.option("--base-dir", type=click.Path(path_type=Path), help="Base directory for local providers")
-@click.option(
-    "--attachment-ocr/--no-attachment-ocr",
-    default=None,
-    help="Attempt OCR on image attachments when indexing attachment text (enabled by default)",
-)
-@click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in imported Markdown/HTML outputs")
-@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
-@click.pass_obj
-def import_run(env: CommandEnv, **kwargs) -> None:
-    ctx = click.get_current_context()
-    params = dict(kwargs)
-    params["_attachment_ocr_explicit"] = (
-        ctx.get_parameter_source("attachment_ocr") != ParameterSource.DEFAULT
-    )
-    if params.get("attachment_ocr") is None:
-        params["attachment_ocr"] = True
-    args = SimpleNamespace(**params)
-    imports.run_import_cli(args, env)
-
-
-@import_group.command(name="reprocess")
-@click.option("--provider", type=str, help="Provider filter for reprocess")
-@click.option("--fallback", is_flag=True, help="Use fallback parser")
-@click.pass_obj
-def import_reprocess(env: CommandEnv, **kwargs) -> None:
-    """Reprocess failed imports."""
-    args = SimpleNamespace(**kwargs)
-    reprocess.run_reprocess_cli(args, env)
-
-
-# ---------------------------- render ----------------------------
-
-
-@cli.command()
-@click.argument("input", type=click.Path(path_type=Path))
-@click.option("--out", type=click.Path(path_type=Path), help="Output directory")
-@click.option("--collapse-threshold", type=int, default=None, help="Collapse threshold override")
-@click.option(
-    "--html",
-    "html_mode",
-    cls=OptionalValueChoiceOption,
-    is_flag=False,
-    flag_value="on",
-    type=click.Choice(["on", "off", "auto"]),
-    default="auto",
-    show_default=True,
-    help="HTML preview mode: on/off/auto (default auto)",
-)
-@click.option("--force", is_flag=True, help="Overwrite outputs even when up-to-date")
-@click.option("--allow-dirty", is_flag=True, help="Allow overwriting files with local edits (requires --force)")
-@click.option("--links-only", is_flag=True, help="Link attachments instead of downloading")
-@click.option("--diff", is_flag=True, help="Write delta diff alongside updated Markdown")
-@click.option("--json", is_flag=True, help="Emit machine-readable summary")
-@click.option("--print-paths", is_flag=True, help="List written files after rendering")
-@click.option("--to-clipboard", is_flag=True, help="Copy a single rendered file to the clipboard")
-@click.option("--dry-run", is_flag=True, help="Report actions without writing files")
-@click.option(
-    "--attachment-ocr/--no-attachment-ocr",
-    default=None,
-    help="Attempt OCR on image attachments when indexing attachment text (enabled by default)",
-)
-@click.option("--disk-estimate", is_flag=True, help="Print projected disk usage before running")
-@click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
-@click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in rendered Markdown/HTML outputs")
-@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
-@click.pass_obj
-def render(env: CommandEnv, **kwargs) -> None:
-    """Render JSON exports to Markdown/HTML."""
-    if kwargs.get("allow_dirty") and not kwargs.get("force"):
-        env.ui.console.print("--allow-dirty requires --force")
-        raise SystemExit(1)
-    from .render import run_render_cli
-
-    ctx = click.get_current_context()
-    params = dict(kwargs)
-    params["_attachment_ocr_explicit"] = (
-        ctx.get_parameter_source("attachment_ocr") != ParameterSource.DEFAULT
-    )
-    if params.get("attachment_ocr") is None:
-        params["attachment_ocr"] = True
-    args = SimpleNamespace(**params)
-    run_render_cli(args, env, json_output=getattr(args, "json", False))
-
-
-# ---------------------------- verify ----------------------------
-
-
-@cli.group()
-def verify() -> None:
-    """Verify and compare archives."""
-
-
-@verify.command(name="check")
-@click.option("--provider", type=str, help="Comma-separated provider filter")
-@click.option("--slug", type=str, help="Filter to a single slug")
-@click.option("--conversation-id", "conversation_ids", multiple=True, help="Filter to a conversation ID (repeatable)")
-@click.option("--limit", type=int, help="Limit number of conversations verified")
-@click.option("--fix", is_flag=True, help="Rewrite conversation.md front matter into canonical form when possible")
-@click.option(
-    "--unknown",
-    "unknown_policy",
-    type=click.Choice(["ignore", "warn", "error"]),
-    default="warn",
-    show_default=True,
-    help="How to handle unknown polylogue front-matter keys",
-)
-@click.option("--allow-polylogue-key", "allow_polylogue_keys", multiple=True, help="Allow additional polylogue metadata key (repeatable)")
-@click.option("--strict", is_flag=True, help="Treat warnings as errors")
-@click.option("--json", is_flag=True, help="Emit machine-readable report")
-@click.pass_obj
-def verify_check(env: CommandEnv, **kwargs) -> None:
-    """Verify rendered outputs against the database and state store."""
-    from .verify import run_verify_cli
-
-    run_verify_cli(SimpleNamespace(**kwargs), env)
-
-
-@verify.command(name="compare")
-@click.argument("query", type=str)
-@click.option("--provider-a", required=True, help="First provider slug")
-@click.option("--provider-b", required=True, help="Second provider slug")
-@click.option("--limit", type=int, default=20, show_default=True, help="Maximum hits per provider")
-@click.option("--json", is_flag=True, help="Emit machine-readable comparison summary")
-@click.option(
-    "--fields",
-    type=str,
-    default="provider,slug,branchId,messageId,score,snippet,model,path",
-    show_default=True,
-    help="Fields for JSON export",
-)
-@click.pass_obj
-def verify_compare(env: CommandEnv, **kwargs) -> None:
-    """Compare coverage between two providers for a query."""
-    args = SimpleNamespace(**kwargs)
-    run_compare_cli(args, env)
-
-
-# ---------------------------- search ----------------------------
+    if result.index_error:
+        error_line = f"Index error: {result.index_error}"
+        hint_line = "Hint: run `polylogue index` to rebuild the index."
+        if env.ui.plain:
+            env.ui.console.print(error_line)
+            env.ui.console.print(hint_line)
+        else:
+            env.ui.console.print(f"[yellow]{error_line}[/yellow]")
+            env.ui.console.print(f"[yellow]{hint_line}[/yellow]")
 
 
 @cli.command()
 @click.argument("query", required=False)
-@click.option("--limit", type=int, default=20, show_default=True, help="Maximum number of hits to return")
-@click.option("--provider", type=str, help="Filter by provider slug")
-@click.option("--slug", type=str, help="Filter by conversation slug")
-@click.option("--conversation-id", type=str, help="Filter by provider conversation id")
-@click.option("--branch", type=str, help="Restrict to a single branch ID")
-@click.option("--model", type=str, help="Filter by source model when recorded")
-@click.option("--since", type=str, help="Only include messages on/after this timestamp")
-@click.option("--until", type=str, help="Only include messages on/before this timestamp")
-@click.option("--with-attachments", is_flag=True, help="Limit to messages with extracted attachments")
-@click.option("--without-attachments", is_flag=True, help="Limit to messages without attachments")
-@click.option("--in-attachments", is_flag=True, help="Search within attachment text when indexed")
-@click.option("--attachment-name", type=str, help="Filter by attachment filename substring")
-@click.option("--no-picker", is_flag=True, help="Skip skim picker preview even when interactive")
-@click.option("--json", is_flag=True, help="Emit machine-readable search results")
-@click.option("--json-lines", is_flag=True, help="Emit newline-delimited JSON hits (implies --json and disables tables)")
-@click.option("--csv", type=str, help="Write search hits to CSV ('-' for stdout)")
-@click.option("--fields", type=str, default="provider,conversationId,slug,branchId,messageId,position,timestamp,score,model,attachments,snippet,conversationPath,branchPath", show_default=True)
-@click.option("--from-stdin", is_flag=True, help="Read the search query from stdin (ignores positional query if present)")
-@click.option("--open", "open_result", is_flag=True, help="Open result file in $EDITOR after search")
+@click.option("--limit", type=int, default=20, show_default=True)
+@click.option("--latest", is_flag=True, help="Open the latest render instead of searching")
+@click.option("--list", "list_mode", is_flag=True, help="Print all hits (skip interactive picker)")
+@click.option("--verbose", is_flag=True, help="Show snippets alongside hits")
+@click.option("--json", "json_output", is_flag=True, help="Output JSON")
+@click.option("--json-lines", is_flag=True, help="Output JSON Lines")
+@click.option("--csv", type=click.Path(path_type=Path), help="Write CSV to file")
+@click.option("--open", "open_result", is_flag=True, help="Open result path after selection")
 @click.pass_obj
-def search(env: CommandEnv, **kwargs) -> None:
-    """Search rendered transcripts."""
-    kwargs["open"] = kwargs.pop("open_result")
-    args = SimpleNamespace(**kwargs)
-    run_search_cli(args, env)
+def search(
+    env: AppEnv,
+    query: Optional[str],
+    limit: int,
+    latest: bool,
+    list_mode: bool,
+    verbose: bool,
+    json_output: bool,
+    json_lines: bool,
+    csv: Optional[Path],
+    open_result: bool,
+) -> None:
+    try:
+        config = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("search", str(exc))
+    if query is None and not latest:
+        latest = True
+    if latest:
+        if query:
+            _fail("search", "--latest cannot be combined with a query")
+        if json_output or json_lines or csv:
+            _fail("search", "--latest cannot be combined with JSON/CSV output")
+        target = _latest_render_path(config.archive_root)
+        if not target:
+            _fail("search", "no rendered outputs found")
+        if not env.ui.plain and not open_result:
+            open_result = True
+        if not open_result:
+            env.ui.console.print(str(target))
+            return
+        if target.suffix.lower() == ".html":
+            if open_in_browser(target):
+                env.ui.console.print(f"Opened {target} in browser")
+                return
+        if open_in_editor(target):
+            env.ui.console.print(f"Opened {target} in editor")
+        else:
+            env.ui.console.print(f"[yellow]Could not open {target}[/yellow]")
+        return
+    if not query:
+        _fail("search", "Query required.")
+    try:
+        result = search_messages(query, archive_root=config.archive_root, limit=limit)
+    except RuntimeError as exc:
+        message = str(exc)
+        if "Search index not built" in message:
+            env.ui.console.print("Index missing; rebuilding...")
+            try:
+                rebuild_index()
+            except Exception as build_exc:
+                _fail("search", f"Index rebuild failed: {build_exc}")
+            result = search_messages(query, archive_root=config.archive_root, limit=limit)
+        else:
+            _fail("search", message)
+    hits = result.hits
 
-# ---------------------------- browse ----------------------------
+    if json_output:
+        payload = []
+        for hit in hits:
+            row = {**hit.__dict__, "conversation_path": str(hit.conversation_path)}
+            row["source"] = row.pop("source_name")
+            payload.append(row)
+        env.ui.console.print(json.dumps(payload, indent=2))
+        return
+    if json_lines:
+        for hit in hits:
+            row = {**hit.__dict__, "conversation_path": str(hit.conversation_path)}
+            row["source"] = row.pop("source_name")
+            env.ui.console.print(json.dumps(row))
+        return
+    if csv:
+        rows = [
+            {
+                "source": hit.source_name or "",
+                "provider": hit.provider_name,
+                "conversation_id": hit.conversation_id,
+                "message_id": hit.message_id,
+                "title": hit.title or "",
+                "timestamp": hit.timestamp or "",
+                "snippet": hit.snippet,
+                "path": str(hit.conversation_path),
+            }
+            for hit in hits
+        ]
+        csv.parent.mkdir(parents=True, exist_ok=True)
+        with csv.open("w", encoding="utf-8", newline="") as handle:
+            import csv as csv_module
 
+            fieldnames = list(rows[0].keys()) if rows else [
+                "source",
+                "provider",
+                "conversation_id",
+                "message_id",
+                "title",
+                "timestamp",
+                "snippet",
+                "path",
+            ]
+            writer = csv_module.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            if rows:
+                writer.writerows(rows)
+        env.ui.console.print(f"Wrote {len(rows)} rows to {csv}")
+        return
 
-@cli.group(name="browse")
-def browse_group() -> None:
-    """Browse commands (branches/stats/runs/metrics/timeline/analytics/inbox/open)."""
+    env.ui.summary("Search", [f"Results: {len(hits)}", f"Query: {query}"])
+    if not hits:
+        return
 
+    selected = hits
+    show_snippet = list_mode or verbose
+    interactive_pick = not env.ui.plain and not list_mode and len(hits) > 1
+    if interactive_pick:
+        options = [
+            f"{idx}: {hit.title or hit.conversation_id}"
+            for idx, hit in enumerate(hits, start=1)
+        ]
+        choice = env.ui.choose("Select result", options)
+        if not choice:
+            env.ui.console.print("Search cancelled.")
+            return
+        try:
+            index = int(choice.split(":", 1)[0]) - 1
+            selected = [hits[index]]
+        except Exception:
+            selected = [hits[0]]
 
-@browse_group.command(name="branches")
-@click.option("--provider", type=str, help="Filter by provider slug")
-@click.option("--slug", type=str, help="Filter by conversation slug")
-@click.option("--conversation-id", type=str, help="Filter by provider conversation id")
-@click.option("--min-branches", type=int, default=1, show_default=True, help="Only include conversations with at least this many branches")
-@click.option("--branch", type=str, help="Branch ID to inspect or diff against the canonical path")
-@click.option("--diff", is_flag=True, help="Display a unified diff between a branch and canonical transcript")
-@click.option("--out", type=click.Path(path_type=Path), help="Write the branch explorer HTML to this path")
-@click.option("--theme", type=click.Choice(["light", "dark"]), help="Override HTML explorer theme")
-@click.option("--no-picker", is_flag=True, help="Skip interactive selection even when prompts are available")
-@click.option(
-    "--open/--no-open",
-    "open_result",
-    default=True,
-    show_default=True,
-    help="Open the rendered explorer (HTML or Markdown) after completion",
-)
-@click.pass_obj
-def browse_branches(env: CommandEnv, **kwargs) -> None:
-    kwargs["open"] = kwargs.pop("open_result")
-    args = SimpleNamespace(browse_cmd="branches", **kwargs)
-    browse_cmd.run_browse_cli(args, env)
+    if env.ui.plain or list_mode:
+        for idx, hit in enumerate(hits, start=1):
+            title = hit.title or hit.conversation_id
+            source_label = _format_source_label(hit.source_name, hit.provider_name)
+            env.ui.console.print(f"{idx}. {title} ({source_label})")
+            if show_snippet:
+                env.ui.console.print(f"   {hit.snippet}")
+            env.ui.console.print(f"   {hit.conversation_path}")
 
+    if not env.ui.plain and not list_mode:
+        open_result = True
 
-@browse_group.command(name="stats")
-@click.option("--dir", type=click.Path(path_type=Path), help="Directory containing Markdown exports")
-@click.option("--provider", type=str, help="Provider filter")
-@click.option("--ignore-legacy", is_flag=True, help="Ignore legacy *.md files alongside conversation.md")
-@click.option("--sort", type=click.Choice(["tokens", "attachments", "attachment-bytes", "words", "recent"]), default="tokens")
-@click.option("--limit", type=int, default=0)
-@click.option("--csv", type=str, help="Write per-file rows to CSV ('-' for stdout)")
-@click.option("--json", is_flag=True)
-@click.option("--json-lines", is_flag=True)
-@click.option("--json-verbose", is_flag=True)
-@click.option("--since", type=str, help="Only include files on/after this timestamp")
-@click.option("--until", type=str, help="Only include files on/before this timestamp")
-@click.pass_obj
-def browse_stats(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(browse_cmd="stats", **kwargs)
-    browse_cmd.run_browse_cli(args, env)
-
-
-@browse_group.command(name="open")
-@click.argument("provider", required=False)
-@click.option("--command", "cmd", type=str, help="Filter by command (e.g., sync codex)")
-@click.option("--print", "print_only", is_flag=True, help="Only print the path without opening")
-@click.option("--json", is_flag=True, help="Emit JSON with the last run info")
-@click.option("--fallback", type=click.Path(path_type=Path), help="Fallback path if no run is found")
-@click.pass_obj
-def browse_open(env: CommandEnv, **kwargs) -> None:  # type: ignore[func-returns-value]
-    """Open or print paths from the latest run."""
-    args = SimpleNamespace(**kwargs)
-    open_helper.run_open_cli(args, env)
-
-
-@browse_group.command(name="runs")
-@click.option("--limit", type=int, default=50, show_default=True)
-@click.option("--providers", type=str, help="Comma-separated provider filter")
-@click.option("--commands", type=str, help="Comma-separated command filter")
-@click.option("--since", type=str, help="Only include runs on/after this timestamp")
-@click.option("--until", type=str, help="Only include runs on/before this timestamp")
-@click.option("--json", is_flag=True)
-@click.option("--json-lines", is_flag=True, help="Emit newline-delimited JSON records (implies --json)")
-@click.option("--json-verbose", is_flag=True)
-@click.pass_obj
-def browse_runs(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(browse_cmd="runs", **kwargs)
-    browse_cmd.run_browse_cli(args, env)
-
-
-@browse_group.command(name="metrics")
-@click.option("--providers", type=str, help="Comma-separated provider filter")
-@click.option("--runs-limit", type=int, default=0, show_default=True, help="Limit historical runs considered (0 = all)")
-@click.option("--json", is_flag=True, help="Emit JSON instead of Prometheus text format")
-@click.option("--serve", is_flag=True, help="Serve metrics over HTTP at /metrics (Prometheus format)")
-@click.option("--host", type=str, default="127.0.0.1", show_default=True, help="Host to bind when serving metrics")
-@click.option("--port", type=int, default=8000, show_default=True, help="Port to bind when serving metrics")
-@click.pass_obj
-def browse_metrics(env: CommandEnv, **kwargs) -> None:
-    """Export Prometheus-friendly metrics from Polylogue state/run history."""
-    args = SimpleNamespace(browse_cmd="metrics", **kwargs)
-    browse_cmd.run_browse_cli(args, env)
-
-
-@browse_group.command(name="timeline")
-@click.option("--providers", type=str, help="Comma-separated provider filter")
-@click.option("--limit", type=int, default=500, show_default=True, help="Maximum rows to include")
-@click.option("--out", type=click.Path(path_type=Path), help="Write HTML timeline to this path (default: ./timeline.html)")
-@click.option("--theme", type=click.Choice(["light", "dark"]), default="light", show_default=True, help="HTML theme")
-@click.option("--open", "open_result", is_flag=True, help="Open result in $EDITOR after command completes")
-@click.option("--json", is_flag=True, help="Emit machine-readable rows instead of writing HTML")
-@click.pass_obj
-def browse_timeline(env: CommandEnv, **kwargs) -> None:
-    """Render a global conversation timeline (HTML) from the SQLite state DB."""
-    kwargs["open"] = kwargs.pop("open_result")
-    args = SimpleNamespace(browse_cmd="timeline", **kwargs)
-    browse_cmd.run_browse_cli(args, env)
-
-
-@browse_group.command(name="analytics")
-@click.option("--providers", type=str, help="Comma-separated provider filter")
-@click.option("--model-limit", type=int, default=25, show_default=True, help="Top-N models to include")
-@click.option("--hotspot-limit", type=int, default=25, show_default=True, help="Top-N branch hotspots to include")
-@click.option("--out", type=click.Path(path_type=Path), help="Write HTML analytics to this path (default: ./analytics.html)")
-@click.option("--theme", type=click.Choice(["light", "dark"]), default="light", show_default=True, help="HTML theme")
-@click.option("--open", "open_result", is_flag=True, help="Open result in $EDITOR after command completes")
-@click.option("--json", is_flag=True, help="Emit machine-readable summary instead of writing HTML")
-@click.pass_obj
-def browse_analytics(env: CommandEnv, **kwargs) -> None:
-    """Role/model/branch analytics from the SQLite state DB."""
-    kwargs["open"] = kwargs.pop("open_result")
-    args = SimpleNamespace(browse_cmd="analytics", **kwargs)
-    browse_cmd.run_browse_cli(args, env)
-
-
-@browse_group.command(name="inbox")
-@click.option("--providers", type=str, default="chatgpt,claude", show_default=True, help="Comma-separated provider filter")
-@click.option("--dir", type=click.Path(path_type=Path), help="Override inbox root for a generic scan")
-@click.option("--quarantine", is_flag=True, help="Move unknown/malformed inbox items into a quarantine folder")
-@click.option("--quarantine-dir", type=click.Path(path_type=Path), help="Target directory for quarantined items")
-@click.option("--json", is_flag=True)
-@click.pass_obj
-def browse_inbox(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(browse_cmd="inbox", **kwargs)
-    browse_cmd.run_browse_cli(args, env)
-
-
-# ---------------------------- doctor ----------------------------
-
-
-@cli.group()
-def doctor() -> None:
-    """Diagnostics, status, and maintenance tools."""
-
-
-@doctor.command(name="check")
-@click.option("--codex-dir", type=click.Path(path_type=Path), help="Override Codex sessions directory")
-@click.option("--claude-code-dir", type=click.Path(path_type=Path), help="Override Claude Code projects directory")
-@click.option("--limit", type=int, help="Limit number of files inspected per provider")
-@click.option("--skip-index", is_flag=True, help="Skip SQLite index validation (can speed up large archives)")
-@click.option("--skip-qdrant", is_flag=True, help="Skip Qdrant validation even when configured")
-@click.option("--json", is_flag=True, help="Emit machine-readable report")
-@click.option("--json-verbose", is_flag=True, help="Emit JSON with verbose details")
-@click.pass_obj
-def doctor_check(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(maintain_cmd="doctor", **kwargs)
-    maintain_cli.run_maintain_cli(args, env)
-
-
-@doctor.command(name="env")
-@click.option("--json", is_flag=True, help="Emit environment info as JSON")
-@click.pass_obj
-def doctor_env(env: CommandEnv, **kwargs) -> None:
-    """Check environment and config paths."""
-    run_env_cli(SimpleNamespace(**kwargs), env)
-
-
-@doctor.command(name="status")
-@click.option("--json", is_flag=True, help="Emit machine-readable summary")
-@click.option("--json-lines", is_flag=True, help="Stream newline-delimited JSON records (auto-enables --json, useful with --watch)")
-@click.option("--json-verbose", is_flag=True, help="Allow status to print tables/logs alongside JSON/JSONL output")
-@click.option("--watch", is_flag=True, help="Continuously refresh the status output")
-@click.option("--dump-only", is_flag=True, help="Only perform the dump action without printing summaries")
-@click.option("--interval", type=float, default=5.0, show_default=True, help="Seconds between refresh while watching")
-@click.option("--dump", type=str, help="Write recent runs to a file ('-' for stdout)")
-@click.option("--dump-limit", type=int, default=100, show_default=True, help="Number of runs to include when dumping")
-@click.option("--runs-limit", type=int, default=200, show_default=True, help="Number of historical runs to include in summaries")
-@click.option("--top", type=int, default=0, show_default=True, help="Show top runs by attachments/tokens")
-@click.option("--inbox", is_flag=True, help="Include inbox coverage counts in summaries")
-@click.option("--providers", type=str, help="Comma-separated provider filter")
-@click.option("--quiet", is_flag=True, help="Suppress table output (useful with --json-lines)")
-@click.option("--summary", type=str, help="Write aggregated provider/run summary JSON to a file ('-' for stdout)")
-@click.option("--summary-only", is_flag=True, help="Only emit the summary JSON without printing tables")
-@click.pass_obj
-def doctor_status(env: CommandEnv, **kwargs) -> None:
-    """Show cached Drive info and recent runs."""
-    from .status import run_status_cli
-
-    run_status_cli(SimpleNamespace(**kwargs), env)
-
-
-@doctor.command(name="prune")
-@click.option("--dir", "dirs", multiple=True, type=click.Path(path_type=Path), help="Root directory to prune")
-@click.option("--dry-run", is_flag=True, help="Print planned actions without deleting files")
-@click.option("--max-disk", type=float, help="Abort if projected snapshot size exceeds this many GiB")
-@click.pass_obj
-def doctor_prune(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(maintain_cmd="prune", **kwargs)
-    maintain_cli.run_maintain_cli(args, env)
-
-
-@doctor.group(name="index")
-def doctor_index() -> None:
-    """Index validation/repair."""
-
-
-@doctor_index.command(name="check")
-@click.option("--repair", is_flag=True, help="Attempt to rebuild missing SQLite FTS data")
-@click.option("--skip-qdrant", is_flag=True, help="Skip Qdrant validation even when configured")
-@click.option("--json", is_flag=True, help="Emit validation results as JSON")
-@click.option("--json-verbose", is_flag=True, help="Emit JSON with verbose details")
-@click.pass_obj
-def doctor_index_check(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(maintain_cmd="index", subcmd="check", **kwargs)
-    maintain_cli.run_maintain_cli(args, env)
-
-
-@doctor.command(name="restore")
-@click.option("--from", "src", type=click.Path(path_type=Path), required=True, help="Snapshot directory to restore from")
-@click.option("--to", "dest", type=click.Path(path_type=Path), required=True, help="Destination output directory")
-@click.option("--force", is_flag=True, help="Overwrite destination if it exists")
-@click.option("--json", is_flag=True, help="Emit restoration summary as JSON")
-@click.option("--max-disk", type=float, help="Abort if projected snapshot size exceeds this many GiB")
-@click.pass_obj
-def doctor_restore(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(maintain_cmd="restore", **kwargs)
-    maintain_cli.run_maintain_cli(args, env)
-
-
-@doctor.group(name="attachments")
-def doctor_attachments() -> None:
-    """Attachment utilities."""
-
-
-@doctor_attachments.command(name="stats")
-@click.option("--dir", type=click.Path(path_type=Path), help="Root directory containing archives")
-@click.option("--provider", type=str, help="Filter by provider (comma-separated)")
-@click.option("--since", type=str, help="Only include attachments on/after this timestamp (index only)")
-@click.option("--until", type=str, help="Only include attachments on/before this timestamp (index only)")
-@click.option("--ext", type=str, help="Filter by file extension")
-@click.option("--hash", "hash", is_flag=True, help="Hash attachments to compute deduped totals")
-@click.option("--sort", type=click.Choice(["size", "name"]), default="size")
-@click.option("--limit", type=int, default=10)
-@click.option("--csv", type=str, help="Write attachment rows to CSV")
-@click.option("--json", is_flag=True)
-@click.option("--json-lines", is_flag=True)
-@click.option("--from-index", is_flag=True, help="Read attachment metadata from the index DB")
-@click.option("--clean-orphans", is_flag=True, help="Remove on-disk attachments not referenced by the index DB (requires --from-index)")
-@click.option("--dry-run", is_flag=True, help="Preview actions without deleting files (used with --clean-orphans)")
-@click.pass_obj
-def doctor_attachments_stats(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(attachments_cmd="stats", **kwargs)
-    attachments.run_attachments_cli(args, env)
-
-
-@doctor_attachments.command(name="extract")
-@click.option("--dir", type=click.Path(path_type=Path), help="Root directory containing archives")
-@click.option("--ext", type=str, required=True, help="File extension to extract (e.g., .pdf)")
-@click.option("--out", type=click.Path(path_type=Path), required=True, help="Destination directory")
-@click.option("--limit", type=int, default=0, help="Limit number of files extracted (0 for all)")
-@click.option("--overwrite", is_flag=True, help="Allow overwriting existing files in destination")
-@click.option("--json", is_flag=True, help="Emit extraction summary as JSON")
-@click.option("--json-lines", is_flag=True, help="Emit per-file JSONL")
-@click.pass_obj
-def doctor_attachments_extract(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(attachments_cmd="extract", **kwargs)
-    attachments.run_attachments_cli(args, env)
-
-
-@cli.command(name="help")
-@click.argument("topic", required=False)
-@click.option(
-    "--examples",
-    is_flag=True,
-    help="Show all examples for the topic (or all commands if none specified)",
-)
-@click.pass_context
-def help_cmd(ctx: click.Context, topic: Optional[str], examples: bool) -> None:  # type: ignore[func-returns-value]
-    env = ctx.ensure_object(CommandEnv)
-    _run_click_help(env, ctx, topic, examples)
+    if open_result:
+        if len(selected) != 1:
+            env.ui.console.print("[yellow]--open requires a single result. Use --limit 1 or --list.[/yellow]")
+            return
+        target = selected[0].conversation_path
+        html_target = target.with_suffix(".html")
+        if html_target.exists():
+            target = html_target
+        if target.suffix.lower() == ".html":
+            if open_in_browser(target):
+                env.ui.console.print(f"Opened {target} in browser")
+                return
+        if open_in_editor(target):
+            env.ui.console.print(f"Opened {target} in editor")
+        else:
+            env.ui.console.print(f"[yellow]Could not open {target}[/yellow]")
 
 
 @cli.command()
-@click.option(
-    "--shell",
-    type=click.Choice(["bash", "zsh", "fish"]),
-    default=None,
-    help="Shell to emit completions for (auto-detected from $SHELL when omitted)",
-)
+@click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
+def completions(shell: str) -> None:
+    """Generate shell completion scripts."""
+    from click.shell_completion import get_completion_script
+
+    script = get_completion_script("polylogue", "_POLYLOGUE_COMPLETE", shell)
+    click.echo(script)
+
+
+
+
+@cli.command()
 @click.pass_obj
-def completions(env: CommandEnv, **kwargs) -> None:
-    """Emit shell completion script."""
-    args = SimpleNamespace(**kwargs)
-    run_completions_cli(args, env, cli)
+def health(env: AppEnv) -> None:
+    try:
+        config = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("health", str(exc))
+    payload = get_health(config)
+    cached = payload.get("cached")
+    age = payload.get("age_seconds")
+    header = f"Health (cached={cached}, age={age}s)" if cached is not None else "Health"
+    checks = payload.get("checks", [])
+    lines = []
+    for check in checks:
+        name = check.get("name")
+        status = check.get("status")
+        detail = check.get("detail")
+        lines.append(f"{name}: {status} - {detail}")
+    env.ui.summary(header, lines)
 
 
-@cli.command(name="_complete", hidden=True)
-@click.option("--shell", required=True)
-@click.option("--cword", type=int, required=True)
-@click.argument("words", nargs=-1)
+@cli.command()
+@click.option("--out", type=click.Path(path_type=Path), help="Write JSONL export to path")
 @click.pass_obj
-def _complete(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(**kwargs)
-    run_complete_cli(args, env, cli)
+def export(env: AppEnv, out: Optional[Path]) -> None:
+    try:
+        config = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("export", str(exc))
+    target = export_jsonl(archive_root=config.archive_root, output_path=out)
+    env.ui.console.print(f"Exported {target}")
 
 
-@cli.command(name="_search-preview", hidden=True)
-@click.option("--data-file", type=click.Path(path_type=Path), required=True)
-@click.option("--index", type=int, required=True)
+@cli.group()
+def state() -> None:
+    """State management commands."""
+
+
+@state.command("reset")
+@click.option("--db/--no-db", "reset_db", default=True, show_default=True, help="Reset the local SQLite DB")
+@click.option("--last-source", is_flag=True, help="Clear the stored last-source selection")
+@click.option("--all", "reset_all", is_flag=True, help="Reset DB and last-source state")
+@click.option("--force", is_flag=True, help="Skip confirmation prompts")
 @click.pass_obj
-def _search_preview(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(**kwargs)
-    run_search_preview(args)
+def state_reset(
+    env: AppEnv,
+    reset_db: bool,
+    last_source: bool,
+    reset_all: bool,
+    force: bool,
+) -> None:
+    if reset_all:
+        reset_db = True
+        last_source = True
+    if not reset_db and not last_source:
+        _fail("state reset", "Nothing to reset; use --db, --last-source, or --all.")
+    if env.ui.plain and not force:
+        _fail("state reset", "--force is required in plain mode.")
+    if not force and not env.ui.plain:
+        prompt = "Reset local state? This removes the SQLite DB and/or last-source selection."
+        if not env.ui.confirm(prompt, default=False):
+            env.ui.console.print("Reset cancelled.")
+            return
+
+    if reset_db:
+        db_path = default_db_path()
+        if db_path.exists():
+            db_path.unlink()
+        with open_connection(db_path):
+            pass
+        env.ui.console.print(f"Reset DB: {db_path}")
+    if last_source:
+        state_path = _source_state_path()
+        if state_path.exists():
+            state_path.unlink()
+        env.ui.console.print("Cleared last-source selection.")
 
 
 @cli.group()
 def config() -> None:
-    """Configuration (init/set/show/edit/prefs)."""
+    """Configuration commands."""
 
 
-@config.command(name="show")
-@click.option("--json", is_flag=True, help="Emit environment info as JSON")
+@config.command("init")
+@click.option("--interactive", "interactive", is_flag=True, help="Run interactive config init")
+@click.option("--with-drive", is_flag=True, help="Include a Drive source without prompting")
+@click.option("--drive-name", default="gemini", show_default=True, help="Drive source name")
+@click.option("--drive-folder", default="Google AI Studio", show_default=True, help="Drive folder name")
 @click.pass_obj
-def config_show(env: CommandEnv, **kwargs) -> None:
-    run_config_show(SimpleNamespace(**kwargs), env)
+def config_init(
+    env: AppEnv,
+    interactive: bool,
+    with_drive: bool,
+    drive_name: str,
+    drive_folder: str,
+) -> None:
+    target = env.config_path
+    config = default_config(target)
+    if config.path.exists():
+        _fail("config init", f"config already exists at {config.path}")
+    add_drive = with_drive
+    if interactive and not env.ui.plain:
+        prompt = (
+            f"Add Drive source '{drive_name}' (folder '{drive_folder}') "
+            f"when writing {config.path}?"
+        )
+        add_drive = env.ui.confirm(prompt, default=True)
+    if add_drive:
+        source_name = drive_name.strip() or "gemini"
+        folder_name = drive_folder.strip() or "Google AI Studio"
+        if any(source.name == source_name for source in config.sources):
+            env.ui.console.print(f"Source '{source_name}' already exists; skipping.")
+        else:
+            config.sources.append(Source(name=source_name, folder=folder_name))
+    write_config(config)
+    env.ui.console.print(f"Config written to {config.path}")
 
 
-@config.command(name="set")
-@click.option("--html", type=click.Choice(["on", "off"]), help="Enable or disable default HTML previews")
-@click.option("--theme", type=click.Choice(["light", "dark"]), help="Set the default HTML theme")
-@click.option("--collapse-threshold", type=int, help="Set the default collapse threshold")
-@click.option("--output-root", type=click.Path(path_type=Path), help="Set the output root for archives")
-@click.option("--input-root", type=click.Path(path_type=Path), help="Set the inbox/input root for provider exports")
-@click.option("--reset", is_flag=True, help="Reset to config defaults")
-@click.option("--json", is_flag=True, help="Emit settings as JSON")
+@config.command("show")
+@click.option("--json", "json_output", is_flag=True, help="Output JSON")
 @click.pass_obj
-def config_set(env: CommandEnv, **kwargs) -> None:
-    from .settings_cli import run_settings_cli
-
-    run_settings_cli(SimpleNamespace(**kwargs), env)
-
-
-@config.command(name="init")
-@click.option("--force", is_flag=True, help="Overwrite existing configuration")
-@click.pass_obj
-def config_init(env: CommandEnv, **kwargs) -> None:
-    from .init import run_init_cli
-
-    run_init_cli(SimpleNamespace(**kwargs), env)
-
-
-@config.command(name="edit")
-@click.pass_obj
-def config_edit(env: CommandEnv, **kwargs) -> None:
-    """Interactively edit configuration."""
-    from .config_editor import run_config_edit_cli
-
-    run_config_edit_cli(SimpleNamespace(**kwargs), env)
-
-
-@config.group(name="prefs")
-def config_prefs() -> None:
-    """Manage per-command preference defaults."""
-
-
-@config_prefs.command(name="list")
-@click.option("--json", "json_mode", is_flag=True, help="Emit JSON output")
-@click.pass_obj
-def config_prefs_list(env: CommandEnv, json_mode: bool) -> None:
-    args = SimpleNamespace(prefs_cmd="list", json=json_mode)
-    prefs_cmd.run_prefs_cli(args, env)
-
-
-@config_prefs.command(name="set")
-@click.option("--command", "command_name", required=True, type=str, help="Command name (e.g., search, sync)")
-@click.option("--flag", required=True, type=str, help="Flag name, e.g., --limit")
-@click.option("--value", required=True, type=str, help="Value for the flag")
-@click.option("--json", "json_mode", is_flag=True, help="Emit JSON output")
-@click.pass_obj
-def config_prefs_set(env: CommandEnv, command_name: str, flag: str, value: str, json_mode: bool) -> None:
-    args = SimpleNamespace(prefs_cmd="set", command=command_name, flag=flag, value=value, json=json_mode)
-    prefs_cmd.run_prefs_cli(args, env)
-
-
-@config_prefs.command(name="clear")
-@click.option("--command", "command_name", type=str, help="Command name to clear (default: all)")
-@click.option("--json", "json_mode", is_flag=True, help="Emit JSON output")
-@click.pass_obj
-def config_prefs_clear(env: CommandEnv, command_name: Optional[str], json_mode: bool) -> None:
-    args = SimpleNamespace(prefs_cmd="clear", command=command_name, json=json_mode)
-    prefs_cmd.run_prefs_cli(args, env)
-
-
-def main() -> None:  # pragma: no cover
+def config_show(env: AppEnv, json_output: bool) -> None:
     try:
-        cli.main(prog_name="polylogue", standalone_mode=False)
-    except click.ClickException as exc:
-        exc.show()
-        raise SystemExit(exc.exit_code) from exc
-    except click.Abort as exc:
-        raise SystemExit(1) from exc
+        config = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("config show", str(exc))
+    if json_output:
+        payload = config.as_dict()
+        raw_root = None
+        try:
+            raw = json.loads(config.path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                raw_root = raw.get("archive_root")
+        except Exception:
+            raw_root = None
+        payload["resolved_archive_root"] = str(config.archive_root)
+        payload["configured_archive_root"] = raw_root
+        payload["env_overrides"] = {
+            "POLYLOGUE_CONFIG": os.environ.get("POLYLOGUE_CONFIG"),
+            "POLYLOGUE_ARCHIVE_ROOT": os.environ.get("POLYLOGUE_ARCHIVE_ROOT"),
+        }
+        env.ui.console.print(json.dumps(payload, indent=2))
+        return
+    sources = []
+    for source in config.sources:
+        if source.folder:
+            sources.append(f"{source.name}: drive folder '{source.folder}'")
+        elif source.path:
+            sources.append(f"{source.name}: {source.path}")
+        else:
+            sources.append(f"{source.name}: (missing path)")
+    env.ui.summary(
+        "Config",
+        [
+            f"Path: {config.path}",
+            f"Archive root: {config.archive_root}",
+            f"Sources: {', '.join(sources) if sources else 'none'}",
+        ],
+    )
+
+
+@config.command("set")
+@click.argument("key")
+@click.argument("value")
+@click.pass_obj
+def config_set(env: AppEnv, key: str, value: str) -> None:
+    try:
+        config = load_config(env.config_path)
+    except ConfigError as exc:
+        _fail("config set", str(exc))
+    if _is_declarative():
+        _fail("config set", "config set is disabled in declarative mode")
+    try:
+        if key == "archive_root":
+            config = update_config(config, archive_root=Path(value))
+        elif key.startswith("source."):
+            raise ConfigError("Use `polylogue config edit` to manage sources.")
+        else:
+            raise ConfigError(f"Unknown config key '{key}'")
+    except ConfigError as exc:
+        _fail("config set", str(exc))
+    write_config(config)
+    env.ui.console.print(f"Config updated: {config.path}")
+
+
+@config.command("edit")
+@click.pass_obj
+def config_edit(env: AppEnv) -> None:
+    if env.ui.plain:
+        _fail("config edit", "interactive mode required")
+    if _is_declarative():
+        _fail("config edit", "config edit is disabled in declarative mode")
+    try:
+        config = load_config(env.config_path)
+    except ConfigError as exc:
+        _fail("config edit", str(exc))
+
+    changed = False
+    while True:
+        choice = env.ui.choose(
+            "Config edit",
+            ["Add source", "Edit source", "Remove source", "Set archive root", "Done"],
+        )
+        if not choice or choice == "Done":
+            break
+        if choice == "Add source":
+            name = env.ui.input("Source name", default="inbox")
+            if not name:
+                continue
+            name = name.strip()
+            existing = [source for source in config.sources if source.name == name]
+            if existing:
+                if not env.ui.confirm(f"Replace existing source '{name}'?", default=False):
+                    continue
+                config.sources = [source for source in config.sources if source.name != name]
+            kind = env.ui.choose("Source type", ["local path", "drive folder"])
+            if not kind:
+                continue
+            if kind == "drive folder":
+                folder = env.ui.input("Drive folder name", default="Google AI Studio")
+                if not folder:
+                    continue
+                config.sources.append(Source(name=name, folder=folder.strip()))
+            else:
+                default_path = None
+                if name == "inbox":
+                    default_path = str(DEFAULT_INBOX_ROOT)
+                path_value = env.ui.input("Local path", default=default_path)
+                if not path_value:
+                    continue
+                config.sources.append(Source(name=name, path=Path(path_value).expanduser()))
+            changed = True
+        elif choice == "Edit source":
+            names = [source.name for source in config.sources]
+            if not names:
+                env.ui.console.print("[yellow]No sources configured.[/yellow]")
+                continue
+            selected = env.ui.choose("Select source", names)
+            if not selected:
+                continue
+            source = next((s for s in config.sources if s.name == selected), None)
+            if source is None:
+                continue
+            kind = env.ui.choose("Source type", ["local path", "drive folder"])
+            if not kind:
+                continue
+            if kind == "drive folder":
+                folder = env.ui.input("Drive folder name", default=source.folder or "Google AI Studio")
+                if not folder:
+                    continue
+                source.folder = folder.strip()
+                source.path = None
+            else:
+                path_value = env.ui.input("Local path", default=str(source.path) if source.path else "")
+                if not path_value:
+                    continue
+                source.path = Path(path_value).expanduser()
+                source.folder = None
+            changed = True
+        elif choice == "Remove source":
+            names = [source.name for source in config.sources]
+            if not names:
+                env.ui.console.print("[yellow]No sources configured.[/yellow]")
+                continue
+            selected = env.ui.choose("Remove which source?", names)
+            if not selected:
+                continue
+            if env.ui.confirm(f"Remove source '{selected}'?", default=False):
+                config.sources = [source for source in config.sources if source.name != selected]
+                changed = True
+        elif choice == "Set archive root":
+            new_root = env.ui.input("Archive root", default=str(config.archive_root))
+            if not new_root:
+                continue
+            config.archive_root = Path(new_root).expanduser()
+            changed = True
+
+    if changed:
+        write_config(config)
+        env.ui.console.print(f"Config updated: {config.path}")
+    else:
+        env.ui.console.print("No changes made.")
+
+
+def main() -> None:
+    cli()
 
 
 __all__ = ["cli", "main"]

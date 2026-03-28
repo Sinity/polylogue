@@ -31,6 +31,5 @@ def _resolve_version() -> str:
 
 
 POLYLOGUE_VERSION = _resolve_version()
-SCHEMA_VERSION = "1"
 
-__all__ = ["POLYLOGUE_VERSION", "SCHEMA_VERSION", "_resolve_version"]
+__all__ = ["POLYLOGUE_VERSION", "_resolve_version"]
