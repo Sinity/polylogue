@@ -1,8 +1,8 @@
 """Test performance fix for _prune_attachment_refs N+1 query issue."""
 
-from polylogue.db import open_connection
-from polylogue.ingest import IngestBundle, ingest_bundle
-from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.ingestion import IngestBundle, ingest_bundle
+from polylogue.storage.db import open_connection
+from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 
 def _conversation_record():
@@ -18,7 +18,7 @@ def _conversation_record():
     )
 
 
-def test_prune_multiple_attachments_correctly(workspace_env):
+def test_prune_multiple_attachments_correctly(workspace_env, storage_repository):
     """Verify that pruning multiple attachments works correctly.
 
     This exercises the N+1 query fix in _prune_attachment_refs which now
@@ -54,7 +54,7 @@ def test_prune_multiple_attachments_correctly(workspace_env):
         ],
         attachments=attachments,
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     # Verify all 10 attachments were created
     with open_connection(None) as conn:
@@ -108,7 +108,8 @@ def test_prune_multiple_attachments_correctly(workspace_env):
                 )
             ],
             attachments=new_attachments,
-        )
+        ),
+        repository=storage_repository,
     )
 
     # Verify only 2 attachments remain (the 8 others should have been pruned)

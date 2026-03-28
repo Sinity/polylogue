@@ -259,7 +259,8 @@ class TestOpenInBrowserSecurity:
 
     def test_open_in_browser_allows_safe_browser(self, tmp_path: Path, monkeypatch):
         """open_in_browser should allow safe POLYLOGUE_BROWSER without throwing."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from polylogue.cli.editor import open_in_browser
 
         monkeypatch.setenv("POLYLOGUE_BROWSER", "firefox")
