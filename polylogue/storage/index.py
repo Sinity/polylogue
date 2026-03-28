@@ -140,7 +140,9 @@ def index_status() -> dict[str, object]:
         exists = bool(row)
         count = 0
         if exists:
-            count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+            # COUNT(*) on FTS virtual table is O(N) and extremely slow (minutes on large DBs).
+            # The backing docsize table has one row per indexed document and counts instantly.
+            count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
         return {"exists": exists, "count": int(count)}
 
 

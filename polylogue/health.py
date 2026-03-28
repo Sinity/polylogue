@@ -137,13 +137,23 @@ def run_health(config: Config) -> HealthReport:
 
     # 4. Data Quality (from former verify.py)
     with connection_context(None) as conn:
-        # Orphaned messages
-        orphan_count = conn.execute(
+        # Orphaned messages — two-step approach for performance.
+        # Step 1: find distinct orphan conversation_ids (fast via index on small conversations table).
+        # Step 2: count messages only for those IDs (skipped entirely when no orphans exist).
+        orphan_cids = conn.execute(
             """
-            SELECT COUNT(*) FROM messages m
+            SELECT DISTINCT m.conversation_id FROM messages m
             WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = m.conversation_id)
         """
-        ).fetchone()[0]
+        ).fetchall()
+        if orphan_cids:
+            placeholders = ",".join("?" for _ in orphan_cids)
+            orphan_count = conn.execute(
+                f"SELECT COUNT(*) FROM messages WHERE conversation_id IN ({placeholders})",
+                [row[0] for row in orphan_cids],
+            ).fetchone()[0]
+        else:
+            orphan_count = 0
         checks.append(
             HealthCheck(
                 "orphaned_messages",
@@ -195,8 +205,10 @@ def run_health(config: Config) -> HealthReport:
 
             if fts_exists:
                 # Count messages in both tables
+                # Note: COUNT(*) on the FTS virtual table is extremely slow (15s+ on large DBs).
+                # Use the backing docsize table instead, which has one row per indexed document.
                 msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-                fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+                fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
 
                 if msg_count == fts_count:
                     checks.append(
@@ -344,7 +356,7 @@ def repair_orphaned_messages(config: Config) -> RepairResult:
             result = conn.execute(
                 """
                 DELETE FROM messages
-                WHERE conversation_id NOT IN (SELECT conversation_id FROM conversations)
+                WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = messages.conversation_id)
                 """
             )
             conn.commit()
