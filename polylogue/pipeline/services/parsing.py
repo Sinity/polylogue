@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
 from polylogue.lib.raw_payload import decode_raw_payload, infer_payload_provider
+from polylogue.pipeline.services.ingest_state import IngestState
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
 from polylogue.sources.source import _parse_json_payload
@@ -183,12 +184,18 @@ class ParsingService:
             progress_callback=progress_callback,
         )
         source_names = [source.name for source in sources]
+        ingest_state = IngestState(
+            source_names=tuple(source_names),
+            parse_requested=parse_records,
+        )
+        ingest_state.record_acquired(acquire_result.raw_ids)
 
         validation_ids = await self._collect_pending_validation_raw_ids(
             backend=backend,
             source_names=source_names,
             acquired_raw_ids=acquire_result.raw_ids,
         )
+        ingest_state.record_validation_candidates(validation_ids)
 
         validation_result = None
         if validation_ids:
@@ -197,6 +204,9 @@ class ParsingService:
                 raw_ids=validation_ids,
                 progress_callback=progress_callback,
             )
+        ingest_state.record_validation_result(
+            validation_result.parseable_raw_ids if validation_result else [],
+        )
 
         parse_raw_ids: list[str] = []
         parse_result = ParseResult()
@@ -206,11 +216,23 @@ class ParsingService:
                 source_names=source_names,
                 parseable_raw_ids=(validation_result.parseable_raw_ids if validation_result else None),
             )
+            current_validation_ids = set(ingest_state.validation_raw_ids)
+            persisted_validated_ids = [
+                raw_id
+                for raw_id in parse_raw_ids
+                if raw_id not in current_validation_ids
+            ]
+            ingest_state.record_parse_candidates(
+                parse_raw_ids,
+                persisted_validated_raw_ids=persisted_validated_ids,
+            )
             if parse_raw_ids:
                 parse_result = await self.parse_from_raw(
                     raw_ids=parse_raw_ids,
                     progress_callback=progress_callback,
                 )
+            ingest_state.record_parse_completed()
+            parse_raw_ids = ingest_state.parse_raw_ids
 
         return IngestResult(
             acquire_result=acquire_result,
