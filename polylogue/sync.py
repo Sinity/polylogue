@@ -16,15 +16,33 @@ Example::
 
 from __future__ import annotations
 
+<<<<<<< HEAD
 import asyncio
+||||||| parent of 7ad35a40 (fix: restore sync _run for downstream integrations)
+=======
+from collections.abc import Awaitable
+>>>>>>> 7ad35a40 (fix: restore sync _run for downstream integrations)
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from polylogue.facade import ArchiveStats
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.storage.search import SearchResult
+
+T = TypeVar("T")
+
+
+def _run(coro: Awaitable[T]) -> T:
+    """Run a Polylogue coroutine from synchronous callers.
+
+    This remains the canonical sync execution seam for module-local sync helpers
+    and external consumers that build async filter pipelines before forcing the
+    terminal awaitable.
+    """
+
+    return run_coroutine_sync(coro)
 
 
 def _run(coro):
@@ -127,3 +145,6 @@ class SyncPolylogue:
 
     def __repr__(self) -> str:
         return f"SyncPolylogue(facade={self._facade!r})"
+
+
+__all__ = ["SyncPolylogue", "_run"]
