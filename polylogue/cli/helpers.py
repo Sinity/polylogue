@@ -103,12 +103,22 @@ def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> l
 def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     ui = env.ui
     config = load_effective_config(env)
+<<<<<<< HEAD
     import asyncio
+||||||| parent of fa76f866 (refactor: expose retrieval readiness and batch semantic stats)
+=======
+    archive_stats = None
+>>>>>>> fa76f866 (refactor: expose retrieval readiness and batch semantic stats)
 
     last_run_data = asyncio.run(latest_run(env.backend))
     last_line = "Last run: none"
     if last_run_data:
         last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"
+
+    try:
+        archive_stats = run_coroutine_sync(env.repository.get_archive_stats())
+    except Exception:
+        logger.debug("Archive stats computation failed", exc_info=True)
 
     lines = [
         f"Archive: {config.archive_root}",
@@ -116,6 +126,14 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         f"Sources: {format_sources_summary(config.sources)}",
         last_line,
     ]
+    if archive_stats is not None:
+        embedding_line = (
+            f"Embeddings: {archive_stats.embedded_conversations:,}/{archive_stats.total_conversations:,} convs, "
+            f"{archive_stats.embedded_messages:,} msgs ({archive_stats.embedding_coverage:.1f}%)"
+        )
+        if archive_stats.pending_embedding_conversations:
+            embedding_line += f", pending {archive_stats.pending_embedding_conversations:,}"
+        lines.append(embedding_line)
 
     if verbose:
         # Show detailed health checks

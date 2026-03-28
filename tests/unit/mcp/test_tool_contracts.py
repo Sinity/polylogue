@@ -19,9 +19,9 @@ from tests.infra.mcp import (
 )
 
 STATS_CONFIGS = [
-    (100, 5000, {"claude-ai": 50, "chatgpt": 30, "claude-code": 20}, 10, 200, 1048576, 1.0),
-    (0, 0, {}, 0, 0, 0, 0),
-    (5, 20, {"test": 5}, 0, 0, None, 0),
+    (100, 5000, {"claude-ai": 50, "chatgpt": 30, "claude-code": 20}, 10, 200, 90, 1048576, 10.0, 1.0),
+    (0, 0, {}, 0, 0, 0, 0, 0.0, 0),
+    (5, 20, {"test": 5}, 0, 0, 5, None, 0.0, 0),
 ]
 
 QUERY_TOOL_CASES = [
@@ -316,7 +316,9 @@ class TestStatsTool:
             "providers",
             "embedded_convs",
             "embedded_msgs",
+            "pending_convs",
             "db_size",
+            "expected_coverage",
             "expected_mb",
         ),
         STATS_CONFIGS,
@@ -328,7 +330,9 @@ class TestStatsTool:
         providers,
         embedded_convs,
         embedded_msgs,
+        pending_convs,
         db_size,
+        expected_coverage,
         expected_mb,
         mcp_server,
     ):
@@ -340,6 +344,7 @@ class TestStatsTool:
                 providers=providers,
                 embedded_conversations=embedded_convs,
                 embedded_messages=embedded_msgs,
+                pending_embedding_conversations=pending_convs,
                 db_size_bytes=db_size,
             )
             mock_get_repo.return_value = mock_repo
@@ -349,6 +354,8 @@ class TestStatsTool:
         data = json.loads(result)
         assert data["total_conversations"] == total_conversations
         assert data["total_messages"] == total_messages
+        assert data["pending_embedding_conversations"] == pending_convs
+        assert data["embedding_coverage_percent"] == expected_coverage
         assert data["db_size_mb"] == expected_mb
 
 

@@ -9,7 +9,88 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
+<<<<<<< HEAD
 from polylogue.cli.query_helpers import no_results, summary_to_dict
+||||||| parent of fa76f866 (refactor: expose retrieval readiness and batch semantic stats)
+from polylogue.cli.query_helpers import no_results
+from polylogue.cli.query_stream_output import (
+    render_stream_footer as _render_stream_footer,
+)
+from polylogue.cli.query_stream_output import (
+    render_stream_header as _render_stream_header,
+)
+from polylogue.cli.query_stream_output import (
+    render_stream_message as _render_stream_message,
+)
+from polylogue.cli.query_stream_output import (
+    render_stream_transcript as _render_stream_transcript,
+)
+from polylogue.cli.query_stream_output import (
+    stream_conversation as _stream_conversation,
+)
+from polylogue.cli.query_stream_output import (
+    write_message_streaming as _write_message_streaming_impl,
+)
+from polylogue.cli.query_summary_output import (
+    conversations_to_csv as _conversations_to_csv,
+)
+from polylogue.cli.query_summary_output import (
+    format_summary_list as _format_summary_list,
+)
+from polylogue.cli.query_summary_output import (
+    output_stats_by_conversations as _output_stats_by_conversations,
+)
+from polylogue.cli.query_summary_output import (
+    output_stats_by_summaries as _output_stats_by_summaries,
+)
+from polylogue.cli.query_summary_output import (
+    output_stats_sql as _output_stats_sql,
+)
+from polylogue.cli.query_summary_output import (
+    output_summary_list as _output_summary_list_impl,
+)
+=======
+from polylogue.cli.query_helpers import no_results
+from polylogue.cli.query_stream_output import (
+    render_stream_footer as _render_stream_footer,
+)
+from polylogue.cli.query_stream_output import (
+    render_stream_header as _render_stream_header,
+)
+from polylogue.cli.query_stream_output import (
+    render_stream_message as _render_stream_message,
+)
+from polylogue.cli.query_stream_output import (
+    render_stream_transcript as _render_stream_transcript,
+)
+from polylogue.cli.query_stream_output import (
+    stream_conversation as _stream_conversation,
+)
+from polylogue.cli.query_stream_output import (
+    write_message_streaming as _write_message_streaming_impl,
+)
+from polylogue.cli.query_summary_output import (
+    conversations_to_csv as _conversations_to_csv,
+)
+from polylogue.cli.query_summary_output import (
+    format_summary_list as _format_summary_list,
+)
+from polylogue.cli.query_summary_output import (
+    output_stats_by_conversations as _output_stats_by_conversations,
+)
+from polylogue.cli.query_summary_output import (
+    output_stats_by_semantic_summaries as _output_stats_by_semantic_summaries,
+)
+from polylogue.cli.query_summary_output import (
+    output_stats_by_summaries as _output_stats_by_summaries,
+)
+from polylogue.cli.query_summary_output import (
+    output_stats_sql as _output_stats_sql,
+)
+from polylogue.cli.query_summary_output import (
+    output_summary_list as _output_summary_list_impl,
+)
+>>>>>>> fa76f866 (refactor: expose retrieval readiness and batch semantic stats)
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_conversation
 
@@ -22,6 +103,7 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 
+<<<<<<< HEAD
 def format_summary_list(
     summaries: list[ConversationSummary],
     output_format: str,
@@ -387,6 +469,26 @@ def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -
     table.add_row("[bold]TOTAL[/]", f"[bold]{total_convs:,}[/]", f"[bold]{total_msgs:,}[/]", f"[bold]{total_words:,}[/]")
 
     env.ui.console.print(table)
+||||||| parent of fa76f866 (refactor: expose retrieval readiness and batch semantic stats)
+render_stream_footer = _render_stream_footer
+render_stream_header = _render_stream_header
+render_stream_message = _render_stream_message
+render_stream_transcript = _render_stream_transcript
+stream_conversation = _stream_conversation
+format_summary_list = _format_summary_list
+output_stats_by_summaries = _output_stats_by_summaries
+output_stats_sql = _output_stats_sql
+=======
+render_stream_footer = _render_stream_footer
+render_stream_header = _render_stream_header
+render_stream_message = _render_stream_message
+render_stream_transcript = _render_stream_transcript
+stream_conversation = _stream_conversation
+format_summary_list = _format_summary_list
+output_stats_by_summaries = _output_stats_by_summaries
+output_stats_by_semantic_summaries = _output_stats_by_semantic_summaries
+output_stats_sql = _output_stats_sql
+>>>>>>> fa76f866 (refactor: expose retrieval readiness and batch semantic stats)
 
 
 def output_results(
