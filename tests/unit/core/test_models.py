@@ -27,7 +27,7 @@ from polylogue.storage.hydrators import (
     message_from_record,
 )
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
-from polylogue.types import Provider
+from polylogue.types import Provider, SemanticBlockType
 
 TOOL_FILE_OPS = [
     ("Read", True),
@@ -384,6 +384,10 @@ def test_provider_enum_from_string_uses_shared_runtime_identity() -> None:
     assert Provider.from_string("claude") is Provider.UNKNOWN
     assert Provider.from_string("openai") is Provider.UNKNOWN
     assert Provider.from_string("nonexistent-provider") is Provider.UNKNOWN
+
+
+def test_semantic_block_type_accepts_other() -> None:
+    assert SemanticBlockType.from_string("other") is SemanticBlockType.OTHER
 
 
 def test_build_raw_payload_envelope_normalizes_fallback_identity() -> None:

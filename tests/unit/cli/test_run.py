@@ -13,7 +13,15 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.sources import DriveError
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+<<<<<<< HEAD
 from polylogue.storage.store import PlanResult, RunResult
+||||||| parent of e0f4c2ca (fix: restore typed pipeline state contracts)
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.store import PlanResult, RunResult
+=======
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.state_views import PlanResult, RunResult
+>>>>>>> e0f4c2ca (fix: restore typed pipeline state contracts)
 from tests.infra.storage_records import DbFactory
 
 

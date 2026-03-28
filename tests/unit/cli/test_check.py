@@ -19,7 +19,8 @@ from polylogue.rendering.semantic_proof import (
 )
 from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.store import ArtifactCohortSummary, ArtifactObservationRecord
+from polylogue.storage.state_views import ArtifactCohortSummary
+from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 from tests.infra.storage_records import DbFactory
 

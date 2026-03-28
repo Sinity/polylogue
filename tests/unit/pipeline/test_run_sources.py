@@ -15,7 +15,7 @@ from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.store import PlanResult
+from polylogue.storage.state_views import PlanResult
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
 
@@ -61,7 +61,7 @@ def _write_chatgpt_export(path: Path, conversation_id: str, *, text: str = "Test
 
 class TestRunSourcesRenderFailures:
     def test_render_failure_tracked_in_result(self, workspace_env):
-        from polylogue.storage.store import RunResult
+        from polylogue.storage.state_views import RunResult
 
         archive_root = workspace_env["archive_root"]
         archive_root.mkdir(parents=True, exist_ok=True)

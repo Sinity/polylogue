@@ -48,6 +48,13 @@ from polylogue.storage.backends.queries import (
     stats as stats_q,
 )
 from polylogue.storage.backends.query_store import SQLiteQueryStore
+<<<<<<< HEAD
+||||||| parent of e0f4c2ca (fix: restore typed pipeline state contracts)
+from polylogue.storage.query_models import ConversationRecordQuery
+=======
+from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.state_views import RawConversationState
+>>>>>>> e0f4c2ca (fix: restore typed pipeline state contracts)
 from polylogue.storage.store import (
     ArtifactObservationRecord,
     AttachmentRecord,
@@ -56,7 +63,6 @@ from polylogue.storage.store import (
     MessageRecord,
     PublicationRecord,
     RawConversationRecord,
-    RawConversationState,
     RunRecord,
 )
 from polylogue.types import Provider, ValidationMode, ValidationStatus

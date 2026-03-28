@@ -23,7 +23,8 @@ from polylogue.logging import get_logger
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.backends import SQLiteBackend, create_backend
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import PlanResult, RunRecord, RunResult
+from polylogue.storage.state_views import PlanResult, RunResult
+from polylogue.storage.store import RunRecord
 
 if TYPE_CHECKING:
     from polylogue.pipeline.services.indexing import IndexService

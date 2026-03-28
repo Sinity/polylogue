@@ -38,7 +38,15 @@ from polylogue.pipeline.observers import (
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, plan_sources, run_sources
 from polylogue.protocols import ProgressCallback
 from polylogue.sources import DriveError
+<<<<<<< HEAD
 from polylogue.storage.store import PlanResult, RunResult
+||||||| parent of e0f4c2ca (fix: restore typed pipeline state contracts)
+from polylogue.storage.store import PlanResult, RunResult
+from polylogue.sync_bridge import run_coroutine_sync
+=======
+from polylogue.storage.state_views import PlanResult, RunResult
+from polylogue.sync_bridge import run_coroutine_sync
+>>>>>>> e0f4c2ca (fix: restore typed pipeline state contracts)
 
 
 def _execute_sync_once(
