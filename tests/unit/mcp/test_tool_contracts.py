@@ -315,7 +315,7 @@ class TestProductTools:
                 "inference_version": 1,
                 "inference_family": "heuristic_session_semantics",
             },
-            inference={"engaged_duration_ms": 120000},
+            inference={"primary_work_kind": "implementation", "engaged_duration_ms": 120000},
         )
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
@@ -349,7 +349,7 @@ class TestProductTools:
                 "inference_version": 1,
                 "inference_family": "heuristic_session_semantics",
             },
-            inference={"engaged_duration_ms": 120000},
+            inference={"primary_work_kind": "implementation", "engaged_duration_ms": 120000},
         )
         enrichment = SessionEnrichmentProduct(
             conversation_id="conv-1",
@@ -368,6 +368,7 @@ class TestProductTools:
             enrichment={
                 "intent_summary": "Plan the refactor",
                 "outcome_summary": "Ran tests",
+                "refined_work_kind": "planning",
                 "confidence": 0.72,
                 "support_level": "moderate",
             },
@@ -406,7 +407,7 @@ class TestProductTools:
                 "inference_family": "heuristic_session_semantics",
             },
             evidence={"message_range": [0, 2], "tool_counts": {"edit": 1}},
-            inference={"confidence": 0.8},
+            inference={"kind": "implementation", "confidence": 0.8},
         )
         thread = WorkThreadProduct(
             thread_id="conv-1",

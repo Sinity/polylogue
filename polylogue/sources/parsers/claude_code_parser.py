@@ -2,35 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from pydantic import ValidationError
 
 from polylogue.lib.branch_type import BranchType
 from polylogue.logging import get_logger
-
-_TAG_RE = re.compile(r"<[^>]+>")
-_WHITESPACE_RE = re.compile(r"\s+")
-
-
-def _clean_title_text(text: str) -> str:
-    """Strip protocol artifacts from user message text for title extraction."""
-    if not text:
-        return ""
-    cleaned = re.sub(r"<system-reminder>.*?</system-reminder>", "", text, flags=re.DOTALL)
-    cleaned = re.sub(r"<task-notification>.*?</task-notification>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<local-command-caveat>.*?</local-command-caveat>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<local-command-stdout>.*?</local-command-stdout>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<command-name>.*?</command-name>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<command-message>.*?</command-message>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<command-args>.*?</command-args>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"\[Request interrupted by user\]", "", cleaned)
-    cleaned = _TAG_RE.sub("", cleaned)
-    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
-    # Take first line of remaining text
-    first_line = cleaned.split("\n")[0].strip()
-    return first_line
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.types import Provider
 
@@ -171,13 +148,11 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     title = str(conversation_id)
     for message in messages:
         if message.role == "user" and message.text and len(message.text.strip()) > 3:
-            # Strip protocol artifacts before extracting title
-            cleaned = _clean_title_text(message.text)
-            if cleaned and len(cleaned) > 3:
-                title = cleaned[:80]
-                if len(cleaned) > 80:
-                    title += "..."
-                break
+            first_line = message.text.strip().split("\n")[0]
+            title = first_line[:80]
+            if len(first_line) > 80:
+                title += "..."
+            break
 
     return ParsedConversation(
         provider_name=Provider.CLAUDE_CODE,

@@ -14,6 +14,7 @@ SESSION_PRODUCT_PROFILE_DDL = """
             first_message_at TEXT,
             last_message_at TEXT,
             canonical_session_date TEXT,
+            primary_work_kind TEXT,
             repo_paths_json TEXT,
             canonical_projects_json TEXT,
             tags_json TEXT,
@@ -55,6 +56,10 @@ SESSION_PRODUCT_PROFILE_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_session_profiles_canonical_date
         ON session_profiles(canonical_session_date DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_session_profiles_work_kind
+        ON session_profiles(primary_work_kind)
+        WHERE primary_work_kind IS NOT NULL;
 
         CREATE VIRTUAL TABLE IF NOT EXISTS session_profiles_fts USING fts5(
             conversation_id UNINDEXED,

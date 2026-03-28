@@ -48,13 +48,6 @@ class SchemaRegistry:
 
     def __init__(self, storage_root: Path | None = None):
         self._storage_root = storage_root
-        self._catalog_cache: dict[str, SchemaPackageCatalog | None] = {}
-        self._schema_cache: dict[tuple[str, str, str | None], dict[str, Any] | None] = {}
-
-    def clear_cache(self) -> None:
-        """Clear internal caches. Call after modifying schema packages."""
-        self._catalog_cache.clear()
-        self._schema_cache.clear()
 
     @property
     def storage_root(self) -> Path:
@@ -102,24 +95,18 @@ class SchemaRegistry:
         return None
 
     def load_package_catalog(self, provider: str) -> SchemaPackageCatalog | None:
-        if provider in self._catalog_cache:
-            return self._catalog_cache[provider]
         provider_dir = self._provider_dir_for_catalog(provider)
         if provider_dir is None:
-            self._catalog_cache[provider] = None
             return None
-        catalog = SchemaPackageCatalog.from_dict(
+        return SchemaPackageCatalog.from_dict(
             json.loads((provider_dir / "catalog.json").read_text(encoding="utf-8"))
         )
-        self._catalog_cache[provider] = catalog
-        return catalog
 
     def save_package_catalog(self, catalog: SchemaPackageCatalog):
         provider_dir = self._provider_dir(catalog.provider)
         provider_dir.mkdir(parents=True, exist_ok=True)
         path = self._catalog_path(catalog.provider)
         path.write_text(json.dumps(catalog.to_dict(), indent=2), encoding="utf-8")
-        self.clear_cache()
         return path
 
     def _resolve_catalog_version(self, catalog: SchemaPackageCatalog, version: str) -> str | None:
@@ -146,29 +133,20 @@ class SchemaRegistry:
         version: str = "default",
         element_kind: str | None = None,
     ) -> dict[str, Any] | None:
-        cache_key = (provider, version, element_kind)
-        if cache_key in self._schema_cache:
-            return self._schema_cache[cache_key]
         provider_token = str(canonical_schema_provider(provider))
         package = self.get_package(provider_token, version=version)
         if package is None:
-            self._schema_cache[cache_key] = None
             return None
         element = package.element(element_kind)
         if element is None or element.schema_file is None:
-            self._schema_cache[cache_key] = None
             return None
         provider_dir = self._provider_dir_for_package(provider_token, package.version)
         if provider_dir is None:
-            self._schema_cache[cache_key] = None
             return None
         path = provider_dir / "versions" / package.version / "elements" / element.schema_file
         if not path.exists():
-            self._schema_cache[cache_key] = None
             return None
-        schema = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
-        self._schema_cache[cache_key] = schema
-        return schema
+        return json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
 
     def get_schema(self, provider: str, version: str = "default") -> dict[str, Any] | None:
         return self.get_element_schema(provider, version=version)
@@ -227,7 +205,6 @@ class SchemaRegistry:
 
         manifest_path = self._package_manifest_path(provider_token, package.version)
         manifest_path.write_text(json.dumps(package.to_dict(), indent=2), encoding="utf-8")
-        self.clear_cache()
         return manifest_path
 
     def replace_provider_packages(

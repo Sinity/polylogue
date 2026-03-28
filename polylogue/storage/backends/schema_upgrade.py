@@ -41,12 +41,6 @@ def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
 
 
 def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
-    # Covering index for mtime-skip queries (avoids full table scan of 22 GB raw_content)
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime
-        ON raw_conversations(source_path, file_mtime)
-        WHERE file_mtime IS NOT NULL
-    """)
     conn.executescript(_ARTIFACT_OBSERVATION_DDL)
     conn.executescript(_PUBLICATION_DDL)
     conn.executescript(_ACTION_EVENT_DDL)

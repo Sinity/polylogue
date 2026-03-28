@@ -16,9 +16,6 @@ from polylogue.pipeline.services.parsing_models import (
 )
 from polylogue.pipeline.services.parsing_workflow import ingest_sources, parse_from_raw
 from polylogue.schemas.runtime_registry import SchemaRegistry
-
-# Module-level singleton — avoids re-reading catalog.json from disk per record
-_SCHEMA_REGISTRY = SchemaRegistry()
 from polylogue.sources.dispatch import parse_payload
 
 if TYPE_CHECKING:
@@ -161,7 +158,7 @@ class ParsingService:
         if not envelope.artifact.parse_as_conversation:
             return []
 
-        schema_resolution = _SCHEMA_REGISTRY.resolve_payload(
+        schema_resolution = SchemaRegistry().resolve_payload(
             envelope.provider,
             envelope.payload,
             source_path=raw_record.source_path,

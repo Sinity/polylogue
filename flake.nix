@@ -105,10 +105,6 @@
             ruff
             mypy
 
-            # Profiling
-            py-spy
-            python.pkgs.pyinstrument
-
             # Runtime dependencies (CLI helpers)
             bat
             glow

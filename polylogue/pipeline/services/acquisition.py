@@ -64,14 +64,8 @@ class AcquisitionService:
         drive_config: DriveConfig | None = None,
         progress_label: str = "Scanning",
         on_record: Callable[[RawConversationRecord], Awaitable[None]] | None = None,
-        lightweight: bool = False,
     ) -> ScanResult:
-        """Visit source raw payloads incrementally without forcing list materialization.
-
-        Args:
-            lightweight: Strip raw bytes from most records after hashing.
-                Use for preview/planning to prevent OOM on large archives.
-        """
+        """Visit source raw payloads incrementally without forcing list materialization."""
         result = ScanResult()
         known_mtimes = await self.repository.get_known_source_mtimes()
 
@@ -90,7 +84,6 @@ class AcquisitionService:
                     ui=ui,
                     cursor_state=cursor_state,
                     drive_config=drive_config,
-                    lightweight=lightweight,
                 ):
                     await _consume(record)
                     if progress_callback:
@@ -130,13 +123,8 @@ class AcquisitionService:
         Returns:
             AcquireResult with counts and list of acquired raw_ids
         """
-        import gc as _gc
-
         result = AcquireResult()
-        # Flush every 50 records to prevent memory spikes from raw_content
-        # bytes accumulating in the SQLite WAL. With ~627 KB avg per record,
-        # 50 records ≈ 31 MB in WAL vs 500 records ≈ 313 MB.
-        flush_interval = 50
+        flush_interval = 500
         items_since_flush = 0
 
         async def _store(record: RawConversationRecord) -> None:
@@ -146,7 +134,6 @@ class AcquisitionService:
             if items_since_flush >= flush_interval:
                 await self.backend.bulk_flush()
                 items_since_flush = 0
-                _gc.collect()  # Help Python release flushed record bytes
 
         async with self.backend.bulk_connection():
             visit_result = await self.visit_sources(

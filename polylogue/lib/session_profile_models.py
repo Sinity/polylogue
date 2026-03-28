@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from polylogue.lib.attribution import ConversationAttribution
+from polylogue.lib.decision_extraction import Decision
 from polylogue.lib.phase_extraction import SessionPhase
 from polylogue.lib.project_normalization import normalize_project_names, normalize_repo_paths
 from polylogue.lib.semantic_facts import ConversationSemanticFacts
@@ -38,6 +39,7 @@ class SessionProfile:
     canonical_projects: tuple[str, ...]
     work_events: tuple[WorkEvent, ...]
     phases: tuple[SessionPhase, ...]
+    decisions: tuple[Decision, ...] = ()
     first_message_at: datetime | None = None
     last_message_at: datetime | None = None
     canonical_session_date: date | None = None
@@ -76,6 +78,7 @@ class SessionProfile:
             "work_events": [event.to_dict() for event in self.work_events],
             "phases": [
                 {
+                    "kind": phase.kind,
                     "start_time": phase.start_time.isoformat() if phase.start_time else None,
                     "end_time": phase.end_time.isoformat() if phase.end_time else None,
                     "canonical_session_date": (
@@ -91,6 +94,15 @@ class SessionProfile:
                     "evidence": list(phase.evidence),
                 }
                 for phase in self.phases
+            ],
+            "decisions": [
+                {
+                    "index": decision.index,
+                    "summary": decision.summary,
+                    "confidence": decision.confidence,
+                    "context": decision.context,
+                }
+                for decision in self.decisions
             ],
             "first_message_at": self.first_message_at.isoformat() if self.first_message_at else None,
             "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
@@ -149,6 +161,7 @@ class SessionProfile:
             ),
             phases=tuple(
                 SessionPhase(
+                    kind=str(item["kind"]),
                     start_time=datetime.fromisoformat(str(item["start_time"])) if item.get("start_time") else None,
                     end_time=datetime.fromisoformat(str(item["end_time"])) if item.get("end_time") else None,
                     canonical_session_date=(
@@ -164,6 +177,16 @@ class SessionProfile:
                     evidence=tuple(str(value) for value in item.get("evidence", []) or []),
                 )
                 for item in payload.get("phases", []) or []
+                if isinstance(item, dict)
+            ),
+            decisions=tuple(
+                Decision(
+                    index=int(item.get("index", 0) or 0),
+                    summary=str(item.get("summary", "") or ""),
+                    confidence=float(item.get("confidence", 0.0) or 0.0),
+                    context=str(item.get("context", "") or ""),
+                )
+                for item in payload.get("decisions", []) or []
                 if isinstance(item, dict)
             ),
             first_message_at=(
@@ -199,6 +222,7 @@ class SessionAnalysis:
     attribution: ConversationAttribution
     work_events: tuple[WorkEvent, ...]
     phases: tuple[SessionPhase, ...]
+    decisions: tuple[Decision, ...]
 
 
 __all__ = ["SessionAnalysis", "SessionProfile"]

@@ -114,6 +114,7 @@ def _row_to_session_phase_record(row: sqlite3.Row) -> SessionPhaseRecord:
     )
     if not inference_payload:
         inference_payload = {
+            "kind": row["kind"],
             "confidence": float(_row_get(row, "confidence", 0.0) or legacy_payload.get("confidence") or 0.0),
             "evidence": tuple(_parse_json(_row_get(row, "evidence_reasons_json")) or legacy_payload.get("evidence") or []),
         }

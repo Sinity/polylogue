@@ -460,7 +460,7 @@ async def test_parse_raw_record_contract_updates_payload_provider_and_dispatches
     )
 
     with patch("polylogue.pipeline.services.parsing.build_raw_payload_envelope", return_value=envelope) as mock_envelope:
-        with patch("polylogue.pipeline.services.parsing._SCHEMA_REGISTRY", schema_registry):
+        with patch("polylogue.pipeline.services.parsing.SchemaRegistry", return_value=schema_registry):
             with patch("polylogue.pipeline.services.parsing.parse_payload", return_value=[parsed_conversation]) as mock_parse:
                 result = await service._parse_raw_record(raw_record)
 

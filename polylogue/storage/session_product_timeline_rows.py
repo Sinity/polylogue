@@ -139,7 +139,7 @@ def hydrate_work_event(record: SessionWorkEventRecord) -> WorkEvent:
 
 def phase_id(conversation_id: str, phase_index: int, phase: SessionPhase) -> str:
     seed = (
-        f"{conversation_id}:{phase_index}:{phase.message_range[0]}:"
+        f"{conversation_id}:{phase_index}:{phase.kind}:{phase.message_range[0]}:"
         f"{phase.message_range[1]}:{phase.start_time.isoformat() if phase.start_time else ''}:"
         f"{phase.end_time.isoformat() if phase.end_time else ''}"
     )
@@ -150,12 +150,13 @@ def phase_search_text(profile: SessionProfile, phase: SessionPhase) -> str:
     parts = [
         profile.provider,
         profile.title or "",
+        phase.kind,
         *profile.canonical_projects,
         *profile.repo_paths,
         *phase.tool_counts.keys(),
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
-    return search_text or profile.conversation_id
+    return search_text or f"{profile.conversation_id}:{phase.kind}"
 
 
 def phase_evidence_payload(phase: SessionPhase) -> dict[str, object]:
@@ -178,6 +179,7 @@ def phase_inference_payload(phase: SessionPhase) -> dict[str, object]:
     signals = phase_support_signals(phase)
     fallback = phase_fallback(phase)
     return {
+        "kind": phase.kind,
         "confidence": phase.confidence,
         "evidence": list(phase.evidence),
         "support_level": support_level(
@@ -206,7 +208,7 @@ def build_session_phase_records(
             source_sort_key=profile.updated_at.timestamp() if profile.updated_at else None,
             provider_name=profile.provider,
             phase_index=index,
-            kind="phase",
+            kind=phase.kind,
             start_index=phase.message_range[0],
             end_index=phase.message_range[1],
             start_time=phase.start_time.isoformat() if phase.start_time else None,

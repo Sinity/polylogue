@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from polylogue.lib.attribution import extract_attribution
+from polylogue.lib.decision_extraction import extract_decisions
 from polylogue.lib.phase_extraction import extract_phases
 from polylogue.lib.semantic_facts import build_conversation_semantic_facts
 from polylogue.lib.session_profile_models import SessionAnalysis, SessionProfile
@@ -27,6 +29,7 @@ def build_session_analysis(
         attribution=extract_attribution(conversation, facts=semantic_facts),
         work_events=tuple(extract_work_events(conversation, facts=semantic_facts)),
         phases=tuple(extract_phases(conversation, facts=semantic_facts)),
+        decisions=tuple(extract_decisions(conversation, facts=semantic_facts)),
     )
 
 
@@ -34,6 +37,11 @@ def infer_auto_tags(profile: SessionProfile) -> tuple[str, ...]:
     tags: list[str] = [f"provider:{profile.provider}"]
     for project in list(profile.canonical_projects)[:3]:
         tags.append(f"project:{project}")
+    if profile.work_events:
+        kind_counter: Counter[str] = Counter()
+        for event in profile.work_events:
+            kind_counter[event.kind.value if hasattr(event.kind, "value") else str(event.kind)] += 1
+        tags.append(f"kind:{kind_counter.most_common(1)[0][0]}")
     if profile.is_continuation:
         tags.append("continuation")
     if profile.continuation_depth >= 3:
@@ -88,6 +96,7 @@ def build_session_profile(
         canonical_projects=attribution.canonical_projects,
         work_events=session_analysis.work_events,
         phases=session_analysis.phases,
+        decisions=session_analysis.decisions,
         first_message_at=facts.first_message_at,
         last_message_at=facts.last_message_at,
         canonical_session_date=canonical_session_at.date() if canonical_session_at else None,

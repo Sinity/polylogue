@@ -136,23 +136,15 @@ async def process_raw_batch(
     del work_items
 
     # Phase 3: Refresh session products for changed conversations (post-batch)
-    # Uses the incremental per-conversation refresh, not the full rebuild.
-    # The full rebuild does DELETE + re-INSERT for ALL threads/tags/day-summaries
-    # which is O(total_conversations). Incremental refresh only touches the
-    # affected conversations.
     if changed_conversation_ids:
         try:
-            from polylogue.storage.session_product_refresh_updates import (
-                refresh_session_products_for_conversation_async,
-            )
+            from polylogue.storage.session_product_rebuild import rebuild_session_products_async
 
             async with backend.connection() as conn:
-                for cid in changed_conversation_ids:
-                    await refresh_session_products_for_conversation_async(
-                        conn,
-                        cid,
-                        transaction_depth=1,
-                    )
+                await rebuild_session_products_async(
+                    conn,
+                    conversation_ids=changed_conversation_ids,
+                )
                 await conn.commit()
         except Exception as exc:
             logger.warning(

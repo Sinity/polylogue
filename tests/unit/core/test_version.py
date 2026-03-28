@@ -44,6 +44,7 @@ def test_lazy_import_unknown_raises_root() -> None:
         "ConversationAttribution",
         "ConversationRepository",
         "DaySessionSummary",
+        "Decision",
         "ModelPricing",
         "SessionProfile",
         "WeekSessionSummary",

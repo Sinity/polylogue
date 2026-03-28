@@ -64,6 +64,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
     )
     if not inference_payload:
         inference_payload = {
+            "primary_work_kind": _row_get(row, "primary_work_kind") or legacy_payload.get("primary_work_kind"),
             "canonical_projects": tuple(_parse_json(_row_get(row, "canonical_projects_json")) or legacy_payload.get("canonical_projects") or []),
             "work_event_count": int(_row_get(row, "work_event_count", 0) or legacy_payload.get("work_event_count") or 0),
             "phase_count": int(_row_get(row, "phase_count", 0) or legacy_payload.get("phase_count") or 0),
@@ -73,9 +74,11 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
             "support_signals": tuple(legacy_payload.get("support_signals") or ()),
             "engaged_duration_source": str(legacy_payload.get("engaged_duration_source") or "session_total_fallback"),
             "project_inference_strength": str(legacy_payload.get("project_inference_strength") or "weak"),
+            "decision_signal_strength": str(legacy_payload.get("decision_signal_strength") or "weak"),
             "auto_tags": tuple(_parse_json(_row_get(row, "auto_tags_json")) or legacy_payload.get("auto_tags") or []),
             "work_events": tuple(legacy_payload.get("work_events") or ()),
             "phases": tuple(legacy_payload.get("phases") or ()),
+            "decisions": tuple(legacy_payload.get("decisions") or ()),
         }
     enrichment_payload = (
         _parse_json(
@@ -86,11 +89,13 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         or {}
     )
     if not enrichment_payload:
+        decisions = tuple(inference_payload.get("decisions") or ())
         enrichment_payload = {
             "intent_summary": row["title"] or legacy_payload.get("title"),
-            "outcome_summary": None,
+            "outcome_summary": decisions[-1].get("summary") if decisions else None,
             "blockers": (),
-            "confidence": 0.0,
+            "refined_work_kind": inference_payload.get("primary_work_kind") or _row_get(row, "primary_work_kind"),
+            "confidence": 0.35 if (inference_payload.get("primary_work_kind") or _row_get(row, "primary_work_kind")) else 0.0,
             "support_level": "weak",
             "support_signals": tuple(inference_payload.get("support_signals") or ()),
             "input_band_summary": {
@@ -99,6 +104,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
                 "action_events": 0,
                 "touched_paths": len(_parse_json(_row_get(row, "repo_paths_json")) or []),
                 "canonical_projects": len(_parse_json(_row_get(row, "canonical_projects_json")) or []),
+                "decisions": len(decisions),
             },
         }
     return SessionProfileRecord(
@@ -112,6 +118,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         first_message_at=_row_get(row, "first_message_at"),
         last_message_at=_row_get(row, "last_message_at"),
         canonical_session_date=_row_get(row, "canonical_session_date"),
+        primary_work_kind=_row_get(row, "primary_work_kind"),
         repo_paths=tuple(_parse_json(_row_get(row, "repo_paths_json")) or []),
         canonical_projects=tuple(_parse_json(_row_get(row, "canonical_projects_json")) or []),
         tags=tuple(_parse_json(_row_get(row, "tags_json")) or []),

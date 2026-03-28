@@ -107,7 +107,7 @@ async def list_session_profiles(
         params.append(session_date_until)
     if refined_work_kind:
         where.append(
-            "NULLIF(json_extract(sp.enrichment_payload_json, '$.refined_work_kind'), '') = ?"
+            "COALESCE(NULLIF(json_extract(sp.enrichment_payload_json, '$.refined_work_kind'), ''), sp.primary_work_kind) = ?"
         )
         params.append(refined_work_kind)
 
