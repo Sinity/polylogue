@@ -375,7 +375,8 @@ class TestPolylogueArchiveProducts:
 
         assert any(item.conversation_id == "conv-root" for item in profiles)
         assert any(item.conversation_id == "conv-root" for item in enrichments)
-        assert enrichments[0].enrichment.refined_work_kind is not None
+        # refined_work_kind removed (was sloppy heuristic)
+        assert enrichments[0].enrichment is not None
         assert any(item.conversation_id == "conv-root" for item in phases)
         assert len(threads) == 1
         assert threads[0].thread["session_count"] == 2
