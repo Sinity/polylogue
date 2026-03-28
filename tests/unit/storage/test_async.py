@@ -103,7 +103,7 @@ async def test_async_context_manager():
 async def test_concurrent_schema_initialization():
     """Multiple concurrent operations should not race on schema init.
 
-    Tests the double-check lock pattern at async_sqlite.py:92-101
+    Tests the double-check lock pattern in SQLiteBackend._ensure_schema.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test_concurrent.db"

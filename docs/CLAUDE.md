@@ -89,10 +89,10 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 | `storage/store.py` | Record definitions, `_WRITE_LOCK` |
 | `storage/repository.py` | ConversationRepository (write coordination) |
 | `storage/backends/async_sqlite.py` | SQLiteBackend (async-first, aiosqlite) |
-| `storage/backends/sqlite.py` | Sync utilities, row mappers, connection helpers |
+| `storage/backends/connection.py` | Sync connection pool, open_connection, query builders |
+| `storage/store.py` | Row mappers, record storage functions |
 | `storage/search_providers/fts5.py` | FTS5 search (incremental, query escaping) |
 | `storage/search_providers/sqlite_vec.py` | sqlite-vec vector search |
-| `storage/backends/connection.py` | Thread-local connections, `connection_context()` |
 
 ### Sources (ingestion + parsing)
 | File | Purpose |

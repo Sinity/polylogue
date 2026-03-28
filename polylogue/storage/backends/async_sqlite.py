@@ -141,9 +141,9 @@ class SQLiteBackend:
         """Ensure database schema exists and is at current version.
 
         For fresh databases (version 0), creates the schema directly.
-        For existing databases, runs migrations via the sync backend's
-        migration logic (wrapped in asyncio.to_thread since migrations
-        are synchronous and run once).
+        For existing databases, runs migrations via the schema module's
+        synchronous DDL functions (wrapped in asyncio.to_thread since
+        DDL changes run once and cannot use async connections).
         """
         import sqlite3
 
