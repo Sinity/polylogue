@@ -264,10 +264,9 @@ class Message(BaseModel):
         if self.role.lower() == "tool":
             return not self._is_chatgpt_thinking()
 
-        # Claude-code sidechain/meta markers (from raw data)
+        # Claude-code sidechain/meta markers
         if self.provider_meta:
-            raw = self.provider_meta.get("raw", {})
-            if isinstance(raw, dict) and (raw.get("isSidechain") or raw.get("isMeta")):
+            if self.provider_meta.get("isSidechain") or self.provider_meta.get("isMeta"):
                 return True
 
         return False

@@ -28,16 +28,14 @@ from pydantic import BaseModel, Field
 
 try:
     from glom import glom
-
-    GLOM_AVAILABLE = True
 except ImportError:
-    GLOM_AVAILABLE = False
 
     def glom(target: Any, spec: Any) -> Any: ...
 
 
 from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
+from polylogue.types import Provider
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -324,15 +322,16 @@ def extract_harmonized_message(provider: str, raw: dict[str, Any]) -> Harmonized
     Returns:
         HarmonizedMessage with core fields and viewport extractions
     """
-    if provider in ("claude-code", "claude_code"):
+    p = Provider.from_string(provider)
+    if p == Provider.CLAUDE_CODE:
         return _extract_claude_code(raw)
-    elif provider in ("claude", "claude-ai"):
+    elif p == Provider.CLAUDE:
         return _extract_claude_ai(raw)
-    elif provider == "chatgpt":
+    elif p == Provider.CHATGPT:
         return _extract_chatgpt(raw)
-    elif provider == "gemini":
+    elif p == Provider.GEMINI:
         return _extract_gemini(raw)
-    elif provider == "codex":
+    elif p == Provider.CODEX:
         return _extract_codex(raw)
     else:
         raise ValueError(f"Unknown provider: {provider}")
@@ -448,10 +447,77 @@ def _extract_codex(raw: dict[str, Any]) -> HarmonizedMessage:
 # =============================================================================
 
 
+def _harmonize_from_extracted_meta(provider_meta: dict[str, Any]) -> HarmonizedMessage:
+    """Build HarmonizedMessage from claude-code's extracted provider_meta.
+
+    When ``raw`` is absent (the original record lives in ``raw_conversations``),
+    we reconstruct from the fields the parser already extracted into
+    provider_meta: content_blocks, thinking_traces, tool_invocations, model,
+    token_usage, costUSD, durationMs, etc.
+    """
+    content_blocks = provider_meta.get("content_blocks", [])
+    thinking = provider_meta.get("thinking_traces", [])
+    tools = provider_meta.get("tool_invocations", [])
+
+    reasoning_traces = [
+        ReasoningTrace(text=t.get("text", ""), provider="claude-code")
+        for t in thinking
+    ] if thinking else []
+
+    tool_calls = [
+        ToolCall(
+            name=t.get("tool_name") or t.get("name", "unknown"),
+            tool_id=t.get("tool_id") or t.get("id"),
+            input_data=t.get("input") or t.get("input_data"),
+            provider="claude-code",
+        )
+        for t in tools
+    ] if tools else []
+
+    token_info = provider_meta.get("token_usage")
+    tokens = TokenUsage(
+        input_tokens=token_info.get("input_tokens"),
+        output_tokens=token_info.get("output_tokens"),
+        cache_creation_tokens=token_info.get("cache_creation_input_tokens"),
+        cache_read_tokens=token_info.get("cache_read_input_tokens"),
+    ) if isinstance(token_info, dict) else None
+
+    cost_usd = provider_meta.get("costUSD")
+    cost = CostInfo(total_usd=cost_usd) if cost_usd else None
+
+    blocks = []
+    for b in content_blocks:
+        btype = b.get("type", "text")
+        try:
+            ct = ContentType(btype)
+        except ValueError:
+            ct = ContentType.UNKNOWN
+        blocks.append(ContentBlock(type=ct, text=b.get("text"), name=b.get("name")))
+
+    return HarmonizedMessage(
+        id=None,
+        role="unknown",  # Role is in the Message model, not provider_meta
+        text="",  # Text is in the Message model, not provider_meta
+        timestamp=None,
+        reasoning_traces=reasoning_traces,
+        tool_calls=tool_calls,
+        content_blocks=blocks,
+        model=provider_meta.get("model"),
+        tokens=tokens,
+        cost=cost,
+        duration_ms=provider_meta.get("durationMs"),
+        provider="claude-code",
+        raw=provider_meta,
+    )
+
+
 def extract_from_provider_meta(provider: str, provider_meta: dict[str, Any]) -> HarmonizedMessage:
     """Extract HarmonizedMessage from polylogue database format.
 
-    The database stores pre-processed data with original format in 'raw' key.
+    Providers that store a ``raw`` key in provider_meta will use that for
+    full re-extraction.  Claude-code no longer stores ``raw`` (the original
+    record lives in ``raw_conversations``), so we build a HarmonizedMessage
+    from the already-extracted fields.
 
     Args:
         provider: Provider name
@@ -460,24 +526,36 @@ def extract_from_provider_meta(provider: str, provider_meta: dict[str, Any]) -> 
     Returns:
         HarmonizedMessage with full viewport extractions
     """
-    raw = provider_meta.get("raw", provider_meta)
-    return extract_harmonized_message(provider, raw)
+    raw = provider_meta.get("raw")
+    if raw is not None:
+        return extract_harmonized_message(provider, raw)
+    # No raw key — claude-code stores extracted fields directly
+    if provider in ("claude-code", "claude_code"):
+        return _harmonize_from_extracted_meta(provider_meta)
+    # Other providers: try extraction from provider_meta as fallback
+    return extract_harmonized_message(provider, provider_meta)
 
 
 def is_message_record(provider: str, raw: dict[str, Any]) -> bool:
     """Check if a record is an actual message (vs metadata).
 
     Some providers (like Claude Code) include metadata records
-    mixed with messages.
+    mixed with messages.  When the ``raw`` original record is not
+    available (claude-code stores extracted fields instead), we
+    assume it's a message record since non-messages are filtered
+    during parsing.
     """
     if provider in ("claude-code", "claude_code"):
         record_type = raw.get("type")
+        if record_type is None:
+            # No type field → extracted provider_meta, already filtered
+            return True
         return record_type in ("user", "assistant", "system")
     return True  # Other providers only have message records
 
 
 # =============================================================================
-# Importer Integration
+# Parser Integration
 # =============================================================================
 
 
@@ -487,8 +565,8 @@ def harmonize_parsed_message(
 ) -> HarmonizedMessage | None:
     """Convert ParsedMessage.provider_meta to HarmonizedMessage.
 
-    This bridges the existing importer infrastructure with the unified
-    extraction layer. Importers produce ParsedMessage with provider_meta
+    This bridges the existing parser infrastructure with the unified
+    extraction layer. Parsers produce ParsedMessage with provider_meta
     containing the raw data; this function extracts rich viewports.
 
     Args:
