@@ -8,7 +8,6 @@ Extracted from monolithic test_search_index.py.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,12 +20,7 @@ from polylogue.storage.index import ensure_index, rebuild_index, update_index_fo
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
-from tests.infra.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
-
-
-def make_hash(s: str) -> str:
-    """Create a 16-char content hash."""
-    return hashlib.sha256(s.encode()).hexdigest()[:16]
+from tests.infra.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records, make_hash
 
 
 # ============================================================================

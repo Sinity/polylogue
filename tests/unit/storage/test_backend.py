@@ -1272,9 +1272,8 @@ class TestBackendLifecycle:
         await backend.close()
 
         # After close, operations should fail or create new connection
-        # depending on lazy connection semantics
-        # Just verify it doesn't raise
-        assert True
+        # depending on lazy connection semantics.
+        # Reaching here without raising verifies the contract.
 
     async def test_close_and_reopen(self, tmp_path):
         """Test that connection can be re-established after close."""
