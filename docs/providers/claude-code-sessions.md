@@ -89,22 +89,19 @@ Polylogue's generic JSONL parser can ingest Claude Code sessions:
 polylogue run --source claude-code
 ```
 
-Current limitations (from `docs/providers/claude-code.md`):
+Current limitations (from [claude-code.md](claude-code.md)):
 - Full tool pairing and workspace metadata are not implemented yet
 - Tool use/result segments are serialized as JSON text
 
 ### Recommended Configuration
 
-Add to `$XDG_CONFIG_HOME/polylogue/config.toml` (or set via `POLYLOGUE_*` env vars):
+Configure via `POLYLOGUE_*` environment variables:
 
-```toml
-[sources.claude-code]
-type = "jsonl"
-path = "~/.claude/projects/*/*.jsonl"
-role_field = "type"
-content_field = "content"
-timestamp_field = "timestamp"
+```bash
+export POLYLOGUE_CLAUDE_CODE_SOURCE="~/.claude/projects/*/*.jsonl"
 ```
+
+Or configure the source directly in your archive setup.
 
 ### Future Improvements Needed
 
