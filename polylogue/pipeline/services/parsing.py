@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -261,7 +262,7 @@ class ParsingService:
         # Batch-load raw records in one query instead of N sequential round-trips
         raw_records = await backend.get_raw_conversations_batch(batch_ids)
 
-        worker_count = 16
+        worker_count = min(os.cpu_count() or 4, 16)
         queue: asyncio.Queue[tuple[ParsedConversation, str, str] | None] = asyncio.Queue(
             maxsize=worker_count * 2
         )
