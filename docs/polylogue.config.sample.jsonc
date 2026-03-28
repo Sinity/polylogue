@@ -1,0 +1,16 @@
+{
+  // Copy this file to ~/.polylogueconfig or $XDG_CONFIG_HOME/polylogue/config.json and adjust as needed.
+  "defaults": {
+    "collapse_threshold": 30,
+    "html_previews": true,
+    "html_theme": "dark",
+    "output_dirs": {
+      "render": "/realm/data/chatlog/markdown/gemini-render",
+      "sync_drive": "/realm/data/chatlog/markdown/gemini-sync",
+      "sync_codex": "/realm/data/chatlog/markdown/codex",
+      "sync_claude_code": "/realm/data/chatlog/markdown/claude-code",
+      "import_chatgpt": "/realm/data/chatlog/markdown/chatgpt",
+      "import_claude": "/realm/data/chatlog/markdown/claude"
+    }
+  }
+}

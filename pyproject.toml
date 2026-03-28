@@ -10,13 +10,11 @@ readme = "README.md"
 authors = [{ name = "Polylogue Maintainers" }]
 requires-python = ">=3.10"
 dependencies = [
-  "google-api-python-client",
   "google-auth-oauthlib",
-  "google-auth-httplib2",
+  "requests",
   "pathvalidate",
   "aiohttp",
   "aiofiles",
-  "google-generativeai",
   "rich",
   "pydantic",
   "python-frontmatter",
@@ -31,7 +29,7 @@ polylogue = "polylogue.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["polylogue"]
+include = ["polylogue", "polylogue.*"]
 
 [tool.setuptools.package-data]
 polylogue = ["automation_targets.json"]
