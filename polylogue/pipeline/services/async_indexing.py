@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+__all__ = ["AsyncIndexService"]
+
 
 class AsyncIndexService:
     """Service for managing full-text and vector search indices (async version)."""
