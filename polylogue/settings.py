@@ -13,7 +13,8 @@ from .paths import CONFIG_HOME
 class Settings:
     html_previews: bool = False
     html_theme: str = "light"
-    collapse_threshold: Optional[int] = None
+    collapse_threshold: int = 25
+    preferred_providers: list[str] = None  # type: ignore[assignment]
 
 
 SETTINGS = Settings()
@@ -24,7 +25,8 @@ def reset_settings(settings: Optional[Settings] = None) -> Settings:
     target = settings or SETTINGS
     target.html_previews = False
     target.html_theme = "light"
-    target.collapse_threshold = None
+    target.collapse_threshold = 25
+    target.preferred_providers = []
     return target
 
 
@@ -39,10 +41,15 @@ def _load_settings_file(path: Path) -> Optional[Settings]:
     theme = data.get("html_theme") or data.get("theme") or "light"
     if theme not in {"light", "dark"}:
         theme = "light"
-    collapse = data.get("collapse_threshold")
-    if collapse is not None:
-        collapse = int(collapse) if isinstance(collapse, (int, float, str)) and int(collapse) > 0 else None
-    return Settings(html_previews=html, html_theme=theme, collapse_threshold=collapse)
+    collapse = data.get("collapse_threshold") or 25
+    try:
+        collapse_int = int(collapse)
+    except Exception:
+        collapse_int = 25
+    providers = data.get("preferred_providers") or []
+    if not isinstance(providers, list):
+        providers = []
+    return Settings(html_previews=html, html_theme=theme, collapse_threshold=collapse_int, preferred_providers=providers)
 
 
 def load_persisted_settings() -> Optional[Settings]:
@@ -54,10 +61,21 @@ def persist_settings(settings: Settings) -> None:
     payload = {
         "html_previews": settings.html_previews,
         "html_theme": settings.html_theme,
+        "collapse_threshold": settings.collapse_threshold,
+        "preferred_providers": settings.preferred_providers or [],
     }
-    if settings.collapse_threshold is not None:
-        payload["collapse_threshold"] = settings.collapse_threshold
     SETTINGS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def persist_settings_to(path: Path, settings: Settings) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "html_previews": settings.html_previews,
+        "html_theme": settings.html_theme,
+        "collapse_threshold": settings.collapse_threshold,
+        "preferred_providers": settings.preferred_providers or [],
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def clear_persisted_settings() -> None:
@@ -72,10 +90,11 @@ def ensure_settings_defaults(settings: Optional[Settings] = None) -> Settings:
     target.html_previews = CONFIG.defaults.html_previews
     target.html_theme = CONFIG.defaults.html_theme
     target.collapse_threshold = CONFIG.defaults.collapse_threshold
+    target.preferred_providers = []
     stored = load_persisted_settings()
     if stored:
         target.html_previews = stored.html_previews
         target.html_theme = stored.html_theme
-        if stored.collapse_threshold is not None:
-            target.collapse_threshold = stored.collapse_threshold
+        target.collapse_threshold = stored.collapse_threshold
+        target.preferred_providers = stored.preferred_providers
     return target

@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import frontmatter
+
 
 @dataclass
 class DocumentMetadata:
@@ -31,12 +33,6 @@ class PersistenceOptions:
     attachment_policy: Optional[Dict[str, Any]] = field(default_factory=lambda: None)
     force: bool = False
     allow_dirty: bool = False
-
-
-try:
-    import frontmatter  # type: ignore
-except ImportError:
-    from ._vendor import frontmatter  # type: ignore
 
 from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from .services.attachments import AttachmentManager
@@ -204,10 +200,42 @@ def persist_document(
     output_dir: Path,
     attachments: List[AttachmentInfo],
     registrar: ConversationRegistrar,
-    metadata: DocumentMetadata,
-    options: PersistenceOptions,
+    metadata: Optional[DocumentMetadata] = None,
+    options: Optional[PersistenceOptions] = None,
+    provider: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    title: Optional[str] = None,
+    updated_at: Optional[str] = None,
+    created_at: Optional[str] = None,
+    slug_hint: Optional[str] = None,
+    id_hint: Optional[str] = None,
+    extra_state: Optional[Dict[str, Any]] = None,
+    collapse_threshold: Optional[int] = None,
+    html: Optional[bool] = None,
+    html_theme: Optional[str] = None,
+    attachment_policy: Optional[Dict[str, Any]] = None,
+    force: Optional[bool] = None,
+    allow_dirty: Optional[bool] = None,
 ) -> DocumentPersistenceResult:
     # registrar is a required parameter (not Optional), so no None check needed
+    metadata = metadata or DocumentMetadata(
+        provider=provider,
+        conversation_id=conversation_id,
+        title=title or "",
+        updated_at=updated_at,
+        created_at=created_at,
+        slug_hint=slug_hint,
+        id_hint=id_hint,
+        extra_state=extra_state,
+    )
+    options = options or PersistenceOptions(
+        collapse_threshold=collapse_threshold or PersistenceOptions().collapse_threshold,
+        html=bool(html) if html is not None else False,
+        html_theme=html_theme,
+        attachment_policy=attachment_policy,
+        force=bool(force),
+        allow_dirty=bool(allow_dirty),
+    )
     # Extract metadata fields for readability
     provider = metadata.provider
     conversation_id = metadata.conversation_id
@@ -335,8 +363,8 @@ def persist_document(
                     }
                 )
                 polylogue = _prune_empty_values(polylogue)
-                dirty_meta["polylogue"] = polylogue
-                _write_markdown(markdown_path, dirty_meta, existing.body)
+                dirty_doc_metadata["polylogue"] = polylogue
+                _write_markdown(markdown_path, dirty_doc_metadata, existing.body)
                 html_state_path = state_entry.get("htmlPath")
                 html_existing_path = Path(html_state_path) if isinstance(html_state_path, str) else None
                 attach_state_path = state_entry.get("attachmentsDir")

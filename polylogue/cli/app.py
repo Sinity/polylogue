@@ -30,7 +30,6 @@ from ..ui import create_ui
 from .completion_engine import CompletionEngine, Completion
 from .registry import CommandRegistry
 from .arg_helpers import (
-    add_allow_dirty_option,
     add_collapse_option,
     add_diff_option,
     add_dry_run_option,
@@ -39,15 +38,19 @@ from .arg_helpers import (
     add_out_option,
     create_output_parent,
     create_filter_parent,
+    create_render_parent,
+    create_write_parent,
 )
 from .editor import open_in_editor, get_editor
 from .context import (
     DEFAULT_OUTPUT_ROOTS,
     DEFAULT_SYNC_OUT,
+    DEFAULT_RENDER_OUT,
     default_import_namespace,
     default_sync_namespace,
     resolve_html_settings,
 )
+from .render import run_render_cli
 from ..settings import ensure_settings_defaults, persist_settings, clear_persisted_settings
 from ..config import CONFIG, CONFIG_PATH
 from ..local_sync import LOCAL_SYNC_PROVIDER_NAMES, WATCHABLE_LOCAL_PROVIDER_NAMES
@@ -58,7 +61,6 @@ from .imports import (
     run_import_claude_code,
     run_import_codex,
 )
-from .dashboards import run_dashboards_cli
 from .runs import run_runs_cli
 from .index_cli import run_index_cli
 from .watch import run_watch_cli
@@ -102,6 +104,8 @@ COMMAND_EXAMPLES = {
         ("Sync Codex sessions with preview", "polylogue sync codex --dry-run"),
         ("Sync Claude Code with diff tracking", "polylogue sync claude-code --diff"),
         ("Sync and prune deleted chats", "polylogue sync drive --all --prune"),
+        ("Watch Codex and auto-sync", "polylogue sync codex --watch"),
+        ("Watch Claude Code with HTML", "polylogue sync claude-code --watch --html on"),
     ],
     "import": [
         ("Import ChatGPT export", "polylogue import chatgpt export.zip --html on"),
@@ -123,13 +127,7 @@ COMMAND_EXAMPLES = {
         ("Get stats with time filter", "polylogue browse stats --since 2024-01-01 --until 2024-12-31"),
         ("Show status overview", "polylogue browse status"),
         ("Watch status continuously", "polylogue browse status --watch"),
-        ("Show provider dashboards", "polylogue browse dashboards"),
         ("List recent runs", "polylogue browse runs --limit 20"),
-    ],
-    "watch": [
-        ("Watch Codex sessions", "polylogue watch codex"),
-        ("Watch Claude Code with HTML", "polylogue watch claude-code --html on"),
-        ("One-shot watch run", "polylogue watch chatgpt --once"),
     ],
     "maintain": [
         ("Preview prune operation", "polylogue maintain prune --dry-run"),
@@ -250,34 +248,71 @@ def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
 
 
+def _bash_dynamic_script() -> str:
+    return textwrap.dedent(
+        """
+        _polylogue_complete() {
+            local IFS=$'\\n'
+            local completions
+            completions=$(polylogue _complete --shell bash --cword $COMP_CWORD -- "${COMP_WORDS[@]}" 2>/dev/null)
+            if [[ $? -ne 0 ]]; then
+                return
+            fi
+            local first=$(echo "$completions" | head -1)
+            if [[ $first == "__PATH__" ]]; then
+                COMPREPLY=( $(compgen -f -- "${COMP_WORDS[COMP_CWORD]}") )
+                return
+            fi
+            COMPREPLY=( $(compgen -W "$completions" -- "${COMP_WORDS[COMP_CWORD]}") )
+        }
+        complete -F _polylogue_complete polylogue
+        """
+    ).strip()
+
+
+def _fish_dynamic_script() -> str:
+    return textwrap.dedent(
+        """
+        function __polylogue_complete
+            set -l cmd (commandline -opc)
+            set -l cword (count $cmd)
+            polylogue _complete --shell fish --cword $cword -- $cmd 2>/dev/null | while read -l line
+                if string match -q "__PATH__*" -- $line
+                    __fish_complete_path
+                    continue
+                end
+                if string match -q "*:*" -- $line
+                    set -l parts (string split -m 1 ":" -- $line)
+                    echo $parts[1]\\t$parts[2]
+                else
+                    echo $line
+                end
+            end
+        end
+        complete -c polylogue -f -a "(__polylogue_complete)"
+        """
+    ).strip()
+
+
 def _completion_script(shell: str, commands: List[str], descriptions: Optional[Dict[str, str]] = None) -> str:
+    # Deprecated fallback for bash/fish - all shells now use dynamic completions
     joined = " ".join(commands)
     if shell == "bash":
-        return textwrap.dedent(
-            f"""
-            _polylogue_complete() {{
-                local cur prev
-                COMPREPLY=()
-                cur="${{COMP_WORDS[COMP_CWORD]}}"
-                if [[ $COMP_CWORD -eq 1 ]]; then
-                    COMPREPLY=( $(compgen -W \"{joined}\" -- \"$cur\") )
-                    return
-                fi
-            }}
-            complete -F _polylogue_complete polylogue
-            """
-        ).strip()
+        return _bash_dynamic_script()
     # fish
-    entries: List[str] = []
-    for cmd in commands:
-        desc = (descriptions or {}).get(cmd, "")
+    desc_map = descriptions or {}
+    static_lines: List[str] = []
+    for name in commands:
+        if name.startswith("_"):
+            continue
+        desc = desc_map.get(name, "")
         if desc:
-            desc_literal = desc.replace('"', '\\"')
-            entries.append(f'complete -c polylogue -f -a "{cmd}" -d "{desc_literal}"')
+            escaped_desc = desc.replace('"', '\"')
+            static_lines.append(f"complete -c polylogue -n '__fish_use_subcommand' -a '{name}' -d \"{escaped_desc}\"")
         else:
-            entries.append(f'complete -c polylogue -f -a "{cmd}"')
-    entries = "\n".join(entries)
-    return entries.strip()
+            static_lines.append(f"complete -c polylogue -n '__fish_use_subcommand' -a '{name}'")
+    static_block = "\n".join(static_lines)
+    return _fish_dynamic_script() + ("\n" + static_block if static_block else "")
 
 
 def _zsh_dynamic_script() -> str:
@@ -857,7 +892,15 @@ def run_search_preview(args: argparse.Namespace) -> None:
 
 
 def _dispatch_sync(args: argparse.Namespace, env: CommandEnv) -> None:
-    run_sync_cli(args, env)
+    if getattr(args, "watch", False):
+        # Validate provider supports watch mode
+        from ..local_sync import get_local_provider
+        provider = get_local_provider(args.provider)
+        if not provider.supports_watch:
+            raise SystemExit(f"{provider.title} does not support watch mode (use --watch with codex, claude-code, or chatgpt)")
+        run_watch_cli(args, env)
+    else:
+        run_sync_cli(args, env)
 
 
 def _dispatch_import(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -869,22 +912,23 @@ def _dispatch_search(args: argparse.Namespace, env: CommandEnv) -> None:
     run_inspect_search(args, env)
 
 
-def _dispatch_watch(args: argparse.Namespace, env: CommandEnv) -> None:
-    run_watch_cli(args, env)
+def _dispatch_render(args: argparse.Namespace, env: CommandEnv) -> None:
+    run_render_cli(args, env, json_output=getattr(args, "json", False))
 
 
 def _dispatch_config(args: argparse.Namespace, env: CommandEnv) -> None:
     config_cmd = getattr(args, "config_cmd", None)
+    if not config_cmd:
+        env.ui.console.print("[red]config requires a sub-command (init/set/show)")
+        raise SystemExit(1)
     if config_cmd == "init":
         from .init import run_init_cli
         run_init_cli(args, env)
     elif config_cmd == "set":
         from .settings_cli import run_settings_cli
         run_settings_cli(args, env)
-    elif config_cmd == "show":
+    else:  # show
         _run_config_show(args, env)
-    else:
-        raise SystemExit("config requires a subcommand: init, set, show")
 
 
 def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -944,6 +988,29 @@ def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
     ui.summary("Configuration", summary_lines)
 
 
+def _dispatch_inspect(args: argparse.Namespace, env: CommandEnv) -> None:
+    """Legacy inspect dispatcher retained for compatibility.
+
+    The modern entrypoints live under `browse` (branches/status/stats) and
+    `search`. This helper keeps older code paths and tests working while
+    steering callers toward the consolidated commands.
+    """
+    subcmd = getattr(args, "inspect_cmd", None)
+    if not subcmd:
+        env.ui.console.print("[red]inspect requires a sub-command (branches/search). Use 'polylogue browse' instead.")
+        raise SystemExit(1)
+
+    if subcmd == "branches":
+        run_inspect_branches(args, env)
+        return
+    if subcmd == "search":
+        run_inspect_search(args, env)
+        return
+
+    env.ui.console.print(f"[red]Unknown inspect sub-command: {subcmd}")
+    raise SystemExit(1)
+
+
 def _dispatch_browse(args: argparse.Namespace, env: CommandEnv) -> None:
     from .browse import run_browse_cli
     run_browse_cli(args, env)
@@ -952,6 +1019,10 @@ def _dispatch_browse(args: argparse.Namespace, env: CommandEnv) -> None:
 def _dispatch_maintain(args: argparse.Namespace, env: CommandEnv) -> None:
     from .maintain import run_maintain_cli
     run_maintain_cli(args, env)
+
+
+def _dispatch_status(args: argparse.Namespace, env: CommandEnv) -> None:
+    run_status_cli(args, env)
 
 
 def _dispatch_search_preview(args: argparse.Namespace, _env: CommandEnv) -> None:
@@ -988,13 +1059,14 @@ def _register_default_commands() -> None:
             COMMAND_REGISTRY.register(name, handler, help_text=help_text, aliases=aliases or [])
 
     # Core workflow commands (data ingestion & exploration)
+    _ensure("render", _dispatch_render, "Render JSON exports to Markdown/HTML", ["r"])
     _ensure("search", _dispatch_search, "Search rendered transcripts", ["find", "f"])
     _ensure("import", _dispatch_import, "Import provider exports", ["i"])
-    _ensure("sync", _dispatch_sync, "Sync provider archives", ["s"])
-    _ensure("watch", _dispatch_watch, "Watch and auto-sync", ["w"])
+    _ensure("sync", _dispatch_sync, "Synchronize provider archives (use --watch for continuous mode)", ["s"])
+    _ensure("status", _dispatch_status, "Show cached Drive info and recent runs")
 
     # Exploration
-    _ensure("browse", _dispatch_browse, "Browse data (branches/stats/status/dashboards/runs)", ["b"])
+    _ensure("browse", _dispatch_browse, "Browse data (branches/stats/status/runs)", ["b"])
 
     # Maintenance
     _ensure("maintain", _dispatch_maintain, "System maintenance (prune/doctor/index)", ["m"])
@@ -1013,19 +1085,73 @@ def _register_default_commands() -> None:
     _REGISTRATION_COMPLETE = True
 
 
+def _configure_status_parser(parser: argparse.ArgumentParser, *, require_provider: bool = False) -> None:
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable summary")
+    parser.add_argument(
+        "--json-lines",
+        action="store_true",
+        help="Stream newline-delimited JSON records (auto-enables --json, useful with --watch)",
+    )
+    status_mode_group = parser.add_mutually_exclusive_group()
+    status_mode_group.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
+    status_mode_group.add_argument("--dump-only", action="store_true", help="Only perform the dump action without printing summaries")
+    parser.add_argument("--interval", type=float, default=5.0, help="Seconds between refresh while watching")
+    parser.add_argument("--dump", type=str, default=None, help="Write recent runs to a file ('-' for stdout)")
+    parser.add_argument("--dump-limit", type=int, default=100, help="Number of runs to include when dumping")
+    parser.add_argument("--runs-limit", type=int, default=200, help="Number of historical runs to include in summaries")
+    parser.add_argument(
+        "--providers",
+        type=str,
+        default=None,
+        required=require_provider,
+        help="Comma-separated provider filter (limits summaries, dumps, and JSON output)",
+    )
+    parser.add_argument(
+        "--summary",
+        type=str,
+        default=None,
+        help="Write aggregated provider/run summary JSON to a file ('-' for stdout)",
+    )
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Only emit the summary JSON without printing tables",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     _register_default_commands()
     parser = argparse.ArgumentParser(description="Polylogue CLI", formatter_class=PARSER_FORMATTER)
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Force interactive UI even when stdout/stderr are not TTYs",
-    )
+    parser.add_argument("--version", action="version", version="polylogue 0.1.0")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose debug output")
     sub = parser.add_subparsers(dest="cmd")
 
+    render_parents = [create_render_parent(), create_write_parent()]
+    p_render = _add_command_parser(
+        sub,
+        "render",
+        parents=render_parents,
+        help="Render JSON exports to Markdown/HTML",
+        description="Render provider exports to Markdown/HTML",
+    )
+    p_render.add_argument("input", type=Path, help="Input JSON file or directory containing exports")
+    add_out_option(
+        p_render,
+        default_path=DEFAULT_RENDER_OUT,
+        help_text="Output directory for rendered Markdown/HTML",
+    )
+    p_render.add_argument("--links-only", action="store_true", help="Link attachments without downloading")
+    add_diff_option(p_render)
+    p_render.add_argument("--json", action="store_true", help="Emit machine-readable summary")
+    p_render.add_argument("--to-clipboard", action="store_true", help="Copy single rendered file to clipboard")
+
     # Core workflow: sync
-    p_sync = _add_command_parser(sub, "sync", help="Sync provider archives", description="Sync provider archives")
+    p_sync = _add_command_parser(
+        sub,
+        "sync",
+        help="Synchronize provider archives",
+        description="Synchronize provider archives",
+    )
     p_sync.add_argument(
         "provider",
         choices=["drive", *LOCAL_SYNC_PROVIDER_NAMES],
@@ -1039,7 +1165,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading (Drive only)")
     add_dry_run_option(p_sync)
     add_force_option(p_sync, help_text="Re-render even if conversations are up-to-date")
-    add_allow_dirty_option(p_sync)
     p_sync.add_argument("--prune", action="store_true", help="Remove outputs for conversations that vanished upstream")
     add_collapse_option(p_sync)
     add_html_option(p_sync)
@@ -1072,6 +1197,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--until", type=str, default=None, help="Only include Drive chats updated on/before this timestamp")
     p_sync.add_argument("--name-filter", type=str, default=None, help="Regex filter for Drive chat names")
     p_sync.add_argument("--list-only", action="store_true", help="List Drive chats without syncing")
+    # Watch mode flags (local providers only)
+    p_sync.add_argument("--watch", action="store_true", help="Watch for changes and sync continuously (local providers only)")
+    p_sync.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs in watch mode (default: 2.0)")
+    p_sync.add_argument("--once", action="store_true", help="In watch mode, run a single sync pass and exit")
 
     # Core workflow: import
     p_import = _add_command_parser(sub, "import", help="Import provider exports", description="Import provider exports")
@@ -1082,7 +1211,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_html_option(p_import)
     add_dry_run_option(p_import)
     add_force_option(p_import, help_text="Rewrite even if conversations appear up-to-date")
-    add_allow_dirty_option(p_import)
     import_selection_group = p_import.add_mutually_exclusive_group()
     import_selection_group.add_argument("--all", action="store_true", help="Process all available items without interactive selection")
     import_selection_group.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Specific conversation ID to import (repeatable)")
@@ -1090,7 +1218,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_import.add_argument("--to-clipboard", action="store_true", help="Copy a single imported Markdown file to the clipboard")
 
-    p_browse = _add_command_parser(sub, "browse", help="Browse data (branches/stats/status/dashboards/runs)", description="Explore rendered data and system status")
+    p_browse = _add_command_parser(sub, "browse", help="Browse data (branches/stats/status/runs)", description="Explore rendered data and system status")
     browse_sub = p_browse.add_subparsers(dest="browse_cmd", required=True)
 
     p_browse_branches = _add_command_parser(browse_sub, "branches", help="Explore branch graphs for conversations", description="Explore branch graphs for conversations")
@@ -1127,41 +1255,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_browse_stats.add_argument("--dir", type=Path, default=None, help="Directory containing Markdown exports")
 
-    p_browse_status = _add_command_parser(browse_sub, "status", help="Show cached Drive info and recent runs", description="Show cached Drive info and recent runs")
-    p_browse_status.add_argument("--json", action="store_true", help="Emit machine-readable summary")
-    p_browse_status.add_argument(
-        "--json-lines",
-        action="store_true",
-        help="Stream newline-delimited JSON records (auto-enables --json, useful with --watch)",
+    p_browse_status = _add_command_parser(
+        browse_sub,
+        "status",
+        help="Show cached Drive info and recent runs",
+        description="Show cached Drive info and recent runs",
     )
-    status_mode_group = p_browse_status.add_mutually_exclusive_group()
-    status_mode_group.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
-    status_mode_group.add_argument("--dump-only", action="store_true", help="Only perform the dump action without printing summaries")
-    p_browse_status.add_argument("--interval", type=float, default=5.0, help="Seconds between refresh while watching")
-    p_browse_status.add_argument("--dump", type=str, default=None, help="Write recent runs to a file ('-' for stdout)")
-    p_browse_status.add_argument("--dump-limit", type=int, default=100, help="Number of runs to include when dumping")
-    p_browse_status.add_argument("--runs-limit", type=int, default=200, help="Number of historical runs to include in summaries")
-    p_browse_status.add_argument(
-        "--providers",
-        type=str,
-        default=None,
-        help="Comma-separated provider filter (limits summaries, dumps, and JSON output)",
-    )
-    p_browse_status.add_argument(
-        "--summary",
-        type=str,
-        default=None,
-        help="Write aggregated provider/run summary JSON to a file ('-' for stdout)",
-    )
-    p_browse_status.add_argument(
-        "--summary-only",
-        action="store_true",
-        help="Only emit the summary JSON without printing tables",
-    )
-
-    p_browse_dashboards = _add_command_parser(browse_sub, "dashboards", help="Show provider dashboards", description="Rich dashboard of provider stats and recent runs")
-    p_browse_dashboards.add_argument("--runs-limit", type=int, default=10, help="Number of recent runs to show")
-    p_browse_dashboards.add_argument("--json", action="store_true", help="Emit dashboard data as JSON")
+    _configure_status_parser(p_browse_status)
 
     p_browse_runs = _add_command_parser(browse_sub, "runs", help="List recent runs", description="List run history with filters")
     p_browse_runs.add_argument("--limit", type=int, default=50, help="Number of runs to display")
@@ -1170,16 +1270,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_browse_runs.add_argument("--since", type=str, default=None, help="Only include runs on/after this timestamp (YYYY-MM-DD or ISO)")
     p_browse_runs.add_argument("--until", type=str, default=None, help="Only include runs on/before this timestamp")
     p_browse_runs.add_argument("--json", action="store_true", help="Emit runs as JSON")
-
-    p_watch = _add_command_parser(sub, "watch", help="Watch local session stores and sync on changes", description="Watch local session stores and sync on changes")
-    p_watch.add_argument("provider", choices=list(WATCHABLE_LOCAL_PROVIDER_NAMES), help="Local provider to watch")
-    p_watch.add_argument("--base-dir", type=Path, default=None, help="Override source directory")
-    add_out_option(p_watch, default_path=Path("(provider-specific)"), help_text="Override output directory")
-    add_collapse_option(p_watch)
-    add_html_option(p_watch, description="HTML preview mode while watching: on/off/auto (default auto)")
-    add_dry_run_option(p_watch)
-    p_watch.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
-    p_watch.add_argument("--once", action="store_true", help="Run a single sync pass and exit")
 
     p_search = _add_command_parser(sub, "search", help="Search rendered transcripts", description="Search rendered transcripts")
     p_search.add_argument("query", type=str, help="FTS search query (SQLite syntax)")
@@ -1255,26 +1345,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_search_preview.add_argument("--data-file", type=Path, required=True)
     p_search_preview.add_argument("--index", type=int, required=True)
 
+    p_status = _add_command_parser(
+        sub,
+        "status",
+        help="Show cached Drive info and recent runs",
+        description="Show cached Drive info and recent runs",
+    )
+    _configure_status_parser(p_status, require_provider=True)
+
     return parser
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    interactive = bool(getattr(args, "interactive", False))
-    plain_mode = _should_use_plain(force_interactive=interactive)
+    plain_mode = _should_use_plain(force_interactive=False)
     ui = create_ui(plain_mode)
     env = CommandEnv(ui=ui)
     ensure_settings_defaults(env.settings)
 
+    if getattr(args, "allow_dirty", False) and not getattr(args, "force", False):
+        ui.console.print("--allow-dirty requires --force")
+        raise SystemExit(1)
+
     # Enable verbose output if requested
     if getattr(args, "verbose", False):
         ui.console.print("[dim]Verbose mode enabled[/dim]")
-
-    # Validate --allow-dirty requires --force
-    if getattr(args, "allow_dirty", False) and not getattr(args, "force", False):
-        ui.console.print("[red]Error: --allow-dirty requires --force")
-        raise SystemExit(1)
 
     if args.cmd is None:
         parser.print_help()
