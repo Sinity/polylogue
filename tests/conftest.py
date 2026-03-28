@@ -41,6 +41,12 @@ def _clear_polylogue_env(monkeypatch):
     if search_module is not None and hasattr(search_module, "_search_messages_cached"):
         search_module._search_messages_cached.cache_clear()
 
+    # Clear schema-validator cache so monkeypatched registry/schema tests
+    # cannot leak compiled validators into later integration runs.
+    from polylogue.schemas.validator import SchemaValidator
+
+    SchemaValidator._cache.clear()
+
     for key in (
         "POLYLOGUE_CONFIG",
         "POLYLOGUE_ARCHIVE_ROOT",
@@ -72,6 +78,9 @@ def workspace_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str(archive_root / "render"))
+    # Most tests using this fixture assert pipeline/query behavior, not schema
+    # contract strictness. Keep validation deterministic and opt-in per test.
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
     # No importlib.reload() needed — paths.py uses lazy evaluation (functions, not constants).
     # Just reset the service singletons so they pick up fresh env vars.
@@ -170,6 +179,7 @@ def cli_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str(render_root))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")  # Plain output for tests
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
     # No importlib.reload() needed — paths.py uses lazy evaluation (functions, not constants).
     # Just reset the service singletons so they pick up fresh env vars.
@@ -668,5 +678,3 @@ def synthetic_source(tmp_path):
         return Source(name=f"{provider}-test", path=provider_dir / f"synth-00{ext}")
 
     return _factory
-
-

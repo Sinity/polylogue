@@ -18,8 +18,9 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
+from polylogue.lib.provider_identity import canonical_runtime_provider
 from polylogue.sources.parsers.base import RawConversationData
-from polylogue.sources.source import iter_source_conversations_with_raw
+from polylogue.sources.source import iter_source_raw_data
 from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
 
 if TYPE_CHECKING:
@@ -101,9 +102,12 @@ class AcquisitionService:
                 try:
                     # Stream source items from a dedicated worker thread to avoid
                     # event-loop blocking and full-list materialization.
-                    async for raw_data, _parsed in self._iter_source_conversations_stream(source, known_mtimes=known_mtimes):
+                    async for raw_data in self._iter_source_raw_stream(
+                        source,
+                        known_mtimes=known_mtimes,
+                    ):
                         if raw_data is None:
-                            # This shouldn't happen with capture_raw=True, but handle it
+                            # Defensive handling for malformed iterators/mocks
                             logger.warning("No raw data captured for conversation")
                             result.counts["errors"] += 1
                             continue
@@ -149,27 +153,27 @@ class AcquisitionService:
 
         return result
 
-    async def _iter_source_conversations_stream(
+    async def _iter_source_raw_stream(
         self,
         source: Source,
         *,
         known_mtimes: dict[str, str] | None = None,
-    ) -> AsyncIterator[tuple[RawConversationData | None, Any]]:
-        """Stream source conversations without materializing the full iterator.
+    ) -> AsyncIterator[RawConversationData]:
+        """Stream raw source payloads without materializing the full iterator.
 
         Args:
             source: Source to iterate
             known_mtimes: Optional {source_path: file_mtime} for skipping unchanged files
 
         Yields:
-            Tuples of (raw_data, parsed)
+            RawConversationData entries
         """
-        iterator = iter_source_conversations_with_raw(source, capture_raw=True, known_mtimes=known_mtimes)
+        iterator = iter_source_raw_data(source, known_mtimes=known_mtimes)
         sentinel = object()
         batch_size = 128
 
-        def _next_batch() -> list[tuple[RawConversationData | None, Any]]:
-            batch: list[tuple[RawConversationData | None, Any]] = []
+        def _next_batch() -> list[RawConversationData]:
+            batch: list[RawConversationData] = []
             for _ in range(batch_size):
                 item = next(iterator, sentinel)
                 if item is sentinel:
@@ -212,7 +216,11 @@ class AcquisitionService:
 
         record = RawConversationRecord(
             raw_id=raw_id,
-            provider_name=raw_data.provider_hint or source_name,
+            provider_name=canonical_runtime_provider(
+                raw_data.provider_hint or source_name,
+                preserve_unknown=True,
+                default=source_name,
+            ),
             source_name=source_name,  # Config source name, distinct from provider
             source_path=raw_data.source_path,
             source_index=raw_data.source_index,

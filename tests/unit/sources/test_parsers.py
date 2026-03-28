@@ -106,6 +106,96 @@ class TestParseRawRecordJsonl:
 		# ChatGPT parser extracts messages from the mapping
 		assert len(parsed[0].messages) == 2
 
+	async def test_parse_raw_record_chatgpt_bundle_list(
+		self, parsing_service: ParsingService
+	) -> None:
+		"""ChatGPT bundle list (multiple conversations in one file) is parsed in parse stage."""
+		raw_content = b"""[
+  {
+    "id": "conv-1",
+    "title": "Conversation One",
+    "mapping": {
+      "m1": {
+        "id": "m1",
+        "message": {
+          "id": "m1",
+          "author": {"role": "user"},
+          "content": {"parts": ["Hello 1"], "content_type": "text"},
+          "create_time": 1700000000
+        },
+        "children": []
+      }
+    }
+  },
+  {
+    "id": "conv-2",
+    "title": "Conversation Two",
+    "mapping": {
+      "m2": {
+        "id": "m2",
+        "message": {
+          "id": "m2",
+          "author": {"role": "user"},
+          "content": {"parts": ["Hello 2"], "content_type": "text"},
+          "create_time": 1700000100
+        },
+        "children": []
+      }
+    }
+  }
+]"""
+		raw_record = RawConversationRecord(
+			raw_id="chatgpt-bundle-json",
+			provider_name="chatgpt",
+			source_name="exports",
+			source_path="/exports/conversations.json",
+			source_index=None,
+			raw_content=raw_content,
+			acquired_at=datetime.now(timezone.utc).isoformat(),
+		)
+
+		parsed = await parsing_service._parse_raw_record(raw_record)
+
+		assert len(parsed) == 2
+		assert {c.provider_conversation_id for c in parsed} == {"conv-1", "conv-2"}
+
+	async def test_parse_raw_record_bundle_with_generic_provider_name(
+		self, parsing_service: ParsingService
+	) -> None:
+		"""Provider is inferred from payload/path when source name is generic."""
+		raw_content = b"""[
+  {
+    "id": "conv-generic-1",
+    "title": "Generic One",
+    "mapping": {
+      "m1": {
+        "id": "m1",
+        "message": {
+          "id": "m1",
+          "author": {"role": "user"},
+          "content": {"parts": ["hello"], "content_type": "text"}
+        },
+        "children": []
+      }
+    }
+  }
+]"""
+		raw_record = RawConversationRecord(
+			raw_id="chatgpt-bundle-generic",
+			provider_name="test-inbox",
+			source_name="test-inbox",
+			source_path="/exports/conversations.json",
+			source_index=None,
+			raw_content=raw_content,
+			acquired_at=datetime.now(timezone.utc).isoformat(),
+		)
+
+		parsed = await parsing_service._parse_raw_record(raw_record)
+
+		assert len(parsed) == 1
+		assert parsed[0].provider_name == "chatgpt"
+		assert parsed[0].provider_conversation_id == "conv-generic-1"
+
 	async def test_parse_raw_record_jsonl(self, parsing_service: ParsingService) -> None:
 		"""Multi-line JSONL (claude-code format) parses correctly and produces messages."""
 		# Claude Code format: JSONL with messages as separate lines
@@ -477,4 +567,3 @@ def test_consolidation_statistics():
 	print(f"Tests generated from parametrization: {parametrized_tests}")
 	print(f"Coverage multiplier: {parametrized_tests / (len(SYNTHETIC_PROVIDERS) or 1):.1f}x")
 	print(f"{'='*60}\n")
-

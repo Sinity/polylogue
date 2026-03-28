@@ -22,10 +22,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from polylogue.lib.provider_identity import (
+    canonical_schema_provider as _canonical_schema_provider,
+)
 from polylogue.paths import data_home
 
 # In-package baseline schemas (canonical definition — imported by validator, synthetic)
 SCHEMA_DIR = Path(__file__).parent / "providers"
+
+
+def canonical_schema_provider(provider: str) -> str:
+    """Normalize provider names to canonical schema identifiers."""
+    return _canonical_schema_provider(provider, preserve_unknown=True, default=provider)
 
 
 @dataclass
@@ -84,22 +92,23 @@ class SchemaRegistry:
         Returns:
             Schema dict, or None if not found.
         """
+        canonical_provider = canonical_schema_provider(provider)
         if version == "latest":
-            versions = self.list_versions(provider)
+            versions = self.list_versions(canonical_provider)
             if versions:
                 version = versions[-1]  # sorted, last is latest
             else:
                 # Fall back to baseline
-                return self._load_baseline(provider)
+                return self._load_baseline(canonical_provider)
 
         # Try versioned storage first
-        schema = self._load_versioned(provider, version)
+        schema = self._load_versioned(canonical_provider, version)
         if schema is not None:
             return schema
 
         # Fall back to baseline for v1 (or if only baseline exists)
         if version == "v1":
-            return self._load_baseline(provider)
+            return self._load_baseline(canonical_provider)
 
         return None
 
@@ -109,10 +118,11 @@ class SchemaRegistry:
         Returns:
             Sorted list of version strings like ["v1", "v2", "v3"].
         """
-        provider_dir = self.storage_root / provider
+        canonical_provider = canonical_schema_provider(provider)
+        provider_dir = self.storage_root / canonical_provider
         if not provider_dir.exists():
             # Check if baseline exists
-            if self._baseline_path(provider).exists():
+            if self._baseline_exists(canonical_provider):
                 return ["v1"]
             return []
 
@@ -122,7 +132,7 @@ class SchemaRegistry:
             versions.append(v)
 
         # Always include v1 if baseline exists
-        if "v1" not in versions and self._baseline_path(provider).exists():
+        if "v1" not in versions and self._baseline_exists(canonical_provider):
             versions.append("v1")
 
         return sorted(versions, key=lambda v: int(v[1:]))
@@ -132,8 +142,9 @@ class SchemaRegistry:
         providers: set[str] = set()
 
         # Baseline providers
-        for p in SCHEMA_DIR.glob("*.schema.json.gz"):
-            providers.add(p.name.replace(".schema.json.gz", ""))
+        for pattern in ("*.schema.json.gz", "*.schema.json"):
+            for p in SCHEMA_DIR.glob(pattern):
+                providers.add(p.name.replace(".schema.json.gz", "").replace(".schema.json", ""))
 
         # Versioned providers
         if self.storage_root.exists():
@@ -158,7 +169,8 @@ class SchemaRegistry:
         Returns:
             Version string assigned (e.g., "v3")
         """
-        versions = self.list_versions(provider)
+        canonical_provider = canonical_schema_provider(provider)
+        versions = self.list_versions(canonical_provider)
         if versions:
             last_num = int(versions[-1][1:])
             new_version = f"v{last_num + 1}"
@@ -166,12 +178,12 @@ class SchemaRegistry:
             new_version = "v1"
 
         # Inject metadata
-        schema["$id"] = f"polylogue://schemas/{provider}/{new_version}"
+        schema["$id"] = f"polylogue://schemas/{canonical_provider}/{new_version}"
         schema["x-polylogue-version"] = int(new_version[1:])
         schema["x-polylogue-registered-at"] = datetime.now(tz=timezone.utc).isoformat()
 
         # Write to storage
-        provider_dir = self.storage_root / provider
+        provider_dir = self.storage_root / canonical_provider
         provider_dir.mkdir(parents=True, exist_ok=True)
         path = provider_dir / f"{new_version}.schema.json.gz"
         path.write_bytes(gzip.compress(json.dumps(schema, indent=2).encode("utf-8")))
@@ -194,15 +206,16 @@ class SchemaRegistry:
         Raises:
             ValueError: If either version doesn't exist.
         """
-        schema_a = self.get_schema(provider, version=v1)
-        schema_b = self.get_schema(provider, version=v2)
+        canonical_provider = canonical_schema_provider(provider)
+        schema_a = self.get_schema(canonical_provider, version=v1)
+        schema_b = self.get_schema(canonical_provider, version=v2)
 
         if schema_a is None:
-            raise ValueError(f"Schema not found: {provider} {v1}")
+            raise ValueError(f"Schema not found: {canonical_provider} {v1}")
         if schema_b is None:
-            raise ValueError(f"Schema not found: {provider} {v2}")
+            raise ValueError(f"Schema not found: {canonical_provider} {v2}")
 
-        return self._diff_schemas(provider, v1, v2, schema_a, schema_b)
+        return self._diff_schemas(canonical_provider, v1, v2, schema_a, schema_b)
 
     # --- Schema metadata ---
 
@@ -232,11 +245,22 @@ class SchemaRegistry:
     def _baseline_path(self, provider: str) -> Path:
         return SCHEMA_DIR / f"{provider}.schema.json.gz"
 
+    def _baseline_path_plain(self, provider: str) -> Path:
+        return SCHEMA_DIR / f"{provider}.schema.json"
+
+    def _baseline_exists(self, provider: str) -> bool:
+        return self._baseline_path(provider).exists() or self._baseline_path_plain(provider).exists()
+
     def _load_baseline(self, provider: str) -> dict[str, Any] | None:
-        path = self._baseline_path(provider)
-        if not path.exists():
-            return None
-        return json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+        gz_path = self._baseline_path(provider)
+        if gz_path.exists():
+            return json.loads(gzip.decompress(gz_path.read_bytes()).decode("utf-8"))
+
+        plain_path = self._baseline_path_plain(provider)
+        if plain_path.exists():
+            return json.loads(plain_path.read_text(encoding="utf-8"))
+
+        return None
 
     def _load_versioned(self, provider: str, version: str) -> dict[str, Any] | None:
         path = self.storage_root / provider / f"{version}.schema.json.gz"

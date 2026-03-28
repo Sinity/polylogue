@@ -358,7 +358,7 @@ class TestSearch:
             if should_find:
                 assert len(results) >= 1
             else:
-                assert isinstance(results, list)
+                assert results == []
 
 
 # =============================================================================

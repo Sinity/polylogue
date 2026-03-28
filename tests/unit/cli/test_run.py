@@ -70,6 +70,7 @@ NON_PREVIEW_ERROR_CASES = [
 ]
 
 STAGE_OPTION_CASES = [
+    ("validate", "validate"),
     ("parse", "parse"),
     ("render", "render"),
     ("index", "index"),
@@ -220,6 +221,7 @@ class TestRunCommandStageOption:
     @pytest.mark.parametrize(
         "stage,expected_stage,extra_args",
         [
+            ("validate", "validate", ["--stage", "validate"]),
             ("parse", "parse", ["--stage", "parse"]),
             ("render", "render", ["--stage", "render"]),
             ("index", "index", ["--stage", "index"]),

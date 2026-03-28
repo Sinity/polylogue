@@ -21,7 +21,7 @@ from polylogue.cli.helpers import (
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
-from polylogue.pipeline.runner import run_sources, plan_sources
+from polylogue.pipeline.runner import RUN_STAGE_CHOICES, plan_sources, run_sources
 from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
 
@@ -201,10 +201,14 @@ def _display_result(
 @click.option("--preview", is_flag=True, help="Preview work without writing")
 @click.option(
     "--stage",
-    type=click.Choice(["acquire", "parse", "render", "index", "generate-schemas", "all"]),
+    type=click.Choice(list(RUN_STAGE_CHOICES)),
     default="all",
     show_default=True,
-    help="Pipeline stage: acquire (store raw), parse (extract conversations), render (output), index (search), generate-schemas, or all",
+    help=(
+        "Pipeline stage: acquire (store raw), validate (schema check raw payloads), "
+        "parse (extract conversations), render (output), index (search), "
+        "generate-schemas, or all"
+    ),
 )
 @click.option(
     "--source",

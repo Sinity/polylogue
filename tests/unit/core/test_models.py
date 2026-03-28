@@ -845,6 +845,41 @@ def test_is_tool_use_detection(role, provider_meta, expected, desc):
     assert msg.is_tool_use == expected, f"Wrong is_tool_use for {desc}"
 
 
+def test_is_tool_use_detection_harmonized_no_raw_claude_code():
+    """Claude Code no-raw provider_meta still marks tool usage via harmonized path."""
+    msg = Message(
+        id="m-tool",
+        role="assistant",
+        text="I will inspect the file",
+        provider="claude-code",
+        provider_meta={
+            "content_blocks": [{"type": "text", "text": "I will inspect the file"}],
+            "tool_invocations": [{"tool_name": "Read", "id": "tool-1", "input": {"file_path": "README.md"}}],
+        },
+    )
+    assert msg.is_tool_use is True
+    assert msg.harmonized is not None
+    assert msg.harmonized.tool_calls[0].id == "tool-1"
+    assert msg.harmonized.tool_calls[0].input == {"file_path": "README.md"}
+
+
+def test_is_thinking_detection_harmonized_no_raw_claude_code():
+    """Claude Code no-raw provider_meta still marks thinking via harmonized path."""
+    msg = Message(
+        id="m-think",
+        role="assistant",
+        text="Let me think",
+        provider="claude-code",
+        provider_meta={
+            "content_blocks": [{"type": "thinking", "text": "step by step"}],
+            "thinking_traces": [{"text": "step by step"}],
+        },
+    )
+    assert msg.is_thinking is True
+    assert msg.harmonized is not None
+    assert msg.harmonized.reasoning_traces[0].text == "step by step"
+
+
 CONTEXT_DUMP_TEST_CASES = [
     # (text, expected_is_context_dump, description)
     ("```\n```\n```\n```\n```\n```\nCode", True, "6+ backticks (3+ code blocks)"),

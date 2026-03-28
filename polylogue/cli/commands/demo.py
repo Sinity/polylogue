@@ -16,6 +16,13 @@ from polylogue.cli.types import AppEnv
 @click.option("--corpus", "mode", flag_value="corpus", help="Generate raw fixture files for inspection")
 @click.option("--showcase", "mode", flag_value="showcase", help="Exercise all CLI commands and save outputs")
 @click.option(
+    "--showcase-data",
+    type=click.Choice(["fixtures", "synthetic"], case_sensitive=False),
+    default="fixtures",
+    show_default=True,
+    help="Showcase seed source (only with --showcase)",
+)
+@click.option(
     "--provider", "-p", "providers", multiple=True,
     help="Providers to include (default: all). Can be repeated.",
 )
@@ -30,6 +37,7 @@ from polylogue.cli.types import AppEnv
 def demo_command(
     env: AppEnv,
     mode: str | None,
+    showcase_data: str,
     providers: tuple[str, ...],
     count: int,
     output_dir: Path | None,
@@ -54,14 +62,26 @@ def demo_command(
       polylogue demo --corpus -o /tmp/corpus    # Inspect raw wire formats
       polylogue demo --corpus -p chatgpt -n 5   # ChatGPT only, 5 conversations
       polylogue demo --showcase                 # Full surface-area validation
+      polylogue demo --showcase --showcase-data synthetic -n 5
       polylogue demo --showcase --live          # Exercise read-only against real data
       polylogue demo --showcase --json          # Machine-readable report
     """
     if live and mode != "showcase":
         raise click.UsageError("--live requires --showcase")
+    if showcase_data != "fixtures" and mode != "showcase":
+        raise click.UsageError("--showcase-data requires --showcase")
 
     if mode == "showcase":
-        _do_showcase(env, output_dir, live, fail_fast, json_output, showcase_verbose)
+        _do_showcase(
+            env,
+            output_dir,
+            live,
+            fail_fast,
+            json_output,
+            showcase_verbose,
+            showcase_data.lower(),
+            count,
+        )
         return
 
     from polylogue.schemas.synthetic import SyntheticCorpus
@@ -95,6 +115,8 @@ def _do_showcase(
     fail_fast: bool,
     json_output: bool,
     verbose: bool,
+    showcase_data: str,
+    synthetic_count: int,
 ) -> None:
     """Exercise all CLI commands and generate reports."""
     from polylogue.showcase.report import generate_json_report, generate_summary, save_reports
@@ -105,6 +127,8 @@ def _do_showcase(
         output_dir=output_dir,
         fail_fast=fail_fast,
         verbose=verbose,
+        showcase_data=showcase_data,
+        synthetic_count=synthetic_count,
     )
 
     result = runner.run()

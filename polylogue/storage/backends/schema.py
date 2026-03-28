@@ -8,7 +8,7 @@ from polylogue.lib.log import get_logger
 from polylogue.storage.store import _make_ref_id
 
 logger = get_logger(__name__)
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 18
 
 
 _VEC0_DDL = """
@@ -33,7 +33,13 @@ SCHEMA_DDL = """
             acquired_at TEXT NOT NULL,
             file_mtime TEXT,
             parsed_at TEXT,
-            parse_error TEXT
+            parse_error TEXT,
+            validated_at TEXT,
+            validation_status TEXT CHECK (validation_status IN ('passed', 'failed', 'skipped') OR validation_status IS NULL),
+            validation_error TEXT,
+            validation_drift_count INTEGER DEFAULT 0,
+            validation_provider TEXT,
+            validation_mode TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
@@ -47,6 +53,15 @@ SCHEMA_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_unparsed
         ON raw_conversations(raw_id) WHERE parsed_at IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_pending_validation
+        ON raw_conversations(raw_id) WHERE parsed_at IS NULL AND validated_at IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_parse_ready
+        ON raw_conversations(raw_id)
+        WHERE parsed_at IS NULL
+          AND validated_at IS NOT NULL
+          AND (validation_status IS NULL OR validation_status != 'failed');
 
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
@@ -224,6 +239,38 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _rename_table_preserving_fk_targets(
+    conn: sqlite3.Connection,
+    source_name: str,
+    target_name: str,
+) -> None:
+    """Rename a table without rewriting child-table FK targets.
+
+    SQLite may rewrite REFERENCES clauses in child tables when a parent table
+    is renamed. Copy/recreate migrations that temporarily rename a parent table
+    can then strand child tables pointing at the temporary name.
+
+    Setting legacy_alter_table=ON avoids this FK target rewrite while the
+    temporary rename is performed.
+    """
+    row = conn.execute("PRAGMA legacy_alter_table").fetchone()
+    previous_value = int(row[0]) if row else 0
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.execute(f"ALTER TABLE {source_name} RENAME TO {target_name}")
+    finally:
+        conn.execute(f"PRAGMA legacy_alter_table = {previous_value}")
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    """Return whether a table exists in sqlite_master."""
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
 def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     """Migrate from v1 to v2: add attachment reference counting."""
     conn.execute("ALTER TABLE attachments RENAME TO attachment_refs_old")
@@ -352,7 +399,7 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     """Migrate from v3 to v4: add computed source_name column."""
     # Drop existing index before renaming table to avoid conflicts
     conn.execute("DROP INDEX IF EXISTS idx_conversations_provider")
-    conn.execute("ALTER TABLE conversations RENAME TO conversations_old")
+    _rename_table_preserving_fk_targets(conn, "conversations", "conversations_old")
     conn.execute("""
         CREATE TABLE conversations (
             conversation_id TEXT PRIMARY KEY,
@@ -681,9 +728,10 @@ def _migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
     """Migrate from v15 to v16: add 'subagent' to branch_type CHECK constraint.
 
     SQLite has no ALTER COLUMN — must recreate the conversations table with
-    the updated CHECK constraint.  FK enforcement is already disabled by the
-    migration runner, so child tables (messages, attachment_refs,
-    embedding_status) remain intact throughout.
+    the updated CHECK constraint.
+
+    We use legacy_alter_table=ON for the temporary rename step so child-table
+    FK targets are not rewritten to the temporary table name.
     """
     # 1. Drop indexes that reference conversations (will be recreated)
     conn.execute("DROP INDEX IF EXISTS idx_conversations_provider")
@@ -694,7 +742,7 @@ def _migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
     conn.execute("DROP INDEX IF EXISTS idx_conversations_raw_id")
 
     # 2. Rename existing table
-    conn.execute("ALTER TABLE conversations RENAME TO conversations_old")
+    _rename_table_preserving_fk_targets(conn, "conversations", "conversations_old")
 
     # 3. Create new table with updated CHECK constraint
     conn.execute("""
@@ -763,6 +811,224 @@ def _migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v16_to_v17(conn: sqlite3.Connection) -> None:
+    """Repair v16 databases whose child-table FKs were rewritten to conversations_old.
+
+    Some environments rewrite child-table REFERENCES targets during
+    ALTER TABLE ... RENAME even when foreign keys are disabled. If v15->v16
+    used a temporary rename of conversations, child tables could be left
+    referencing the dropped conversations_old table. This migration rebuilds
+    affected child tables with correct FK targets.
+    """
+    broken_fk = False
+    for table_name in ("messages", "attachment_refs", "embedding_status"):
+        if not _table_exists(conn, table_name):
+            continue
+        row = conn.execute(
+            "SELECT COALESCE(sql, '') FROM sqlite_master WHERE type='table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        sql = row[0] if row else ""
+        if "conversations_old" in sql:
+            broken_fk = True
+            break
+
+    has_old_tables = any(
+        _table_exists(conn, table_name) for table_name in ("messages_old", "attachment_refs_old", "embedding_status_old")
+    )
+
+    if not broken_fk and not has_old_tables:
+        return
+
+    if broken_fk:
+        logger.warning(
+            "Detected child tables referencing conversations_old; rebuilding tables to repair FK targets"
+        )
+    elif has_old_tables:
+        logger.warning(
+            "Detected partial v16->v17 migration state; resuming child table rebuild"
+        )
+
+    # Drop dependent triggers/indexes before table rebuild.
+    conn.execute("DROP TRIGGER IF EXISTS messages_fts_insert")
+    conn.execute("DROP TRIGGER IF EXISTS messages_fts_update")
+    conn.execute("DROP TRIGGER IF EXISTS messages_fts_delete")
+    conn.execute("DROP INDEX IF EXISTS idx_messages_conversation")
+    conn.execute("DROP INDEX IF EXISTS idx_messages_conversation_sortkey")
+    conn.execute("DROP INDEX IF EXISTS idx_messages_parent")
+    conn.execute("DROP INDEX IF EXISTS idx_attachment_refs_conversation")
+    conn.execute("DROP INDEX IF EXISTS idx_attachment_refs_message")
+    conn.execute("DROP INDEX IF EXISTS idx_attachment_refs_attachment")
+    conn.execute("DROP INDEX IF EXISTS idx_embedding_status_needs")
+
+    # Rename old child tables.
+    if _table_exists(conn, "messages") and not _table_exists(conn, "messages_old"):
+        _rename_table_preserving_fk_targets(conn, "messages", "messages_old")
+    if _table_exists(conn, "attachment_refs") and not _table_exists(conn, "attachment_refs_old"):
+        _rename_table_preserving_fk_targets(conn, "attachment_refs", "attachment_refs_old")
+    if _table_exists(conn, "embedding_status") and not _table_exists(conn, "embedding_status_old"):
+        _rename_table_preserving_fk_targets(conn, "embedding_status", "embedding_status_old")
+
+    # Recreate child tables with correct FK targets.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            message_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            provider_message_id TEXT,
+            role TEXT,
+            text TEXT,
+            timestamp TEXT,
+            sort_key REAL,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            version INTEGER NOT NULL,
+            parent_message_id TEXT,
+            branch_index INTEGER DEFAULT 0,
+            FOREIGN KEY (conversation_id)
+                REFERENCES conversations(conversation_id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS attachment_refs (
+            ref_id TEXT PRIMARY KEY,
+            attachment_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            message_id TEXT,
+            provider_meta TEXT,
+            FOREIGN KEY (attachment_id)
+                REFERENCES attachments(attachment_id) ON DELETE CASCADE,
+            FOREIGN KEY (conversation_id)
+                REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            FOREIGN KEY (message_id)
+                REFERENCES messages(message_id) ON DELETE SET NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS embedding_status (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_count_embedded INTEGER DEFAULT 0,
+            last_embedded_at TEXT,
+            needs_reindex INTEGER DEFAULT 1,
+            error_message TEXT
+        )
+    """)
+
+    # Restore table contents.
+    if _table_exists(conn, "messages_old"):
+        conn.execute("""
+            INSERT OR IGNORE INTO messages (
+                message_id, conversation_id, provider_message_id, role, text, timestamp,
+                sort_key, content_hash, provider_meta, version, parent_message_id, branch_index
+            )
+            SELECT
+                message_id, conversation_id, provider_message_id, role, text, timestamp,
+                sort_key, content_hash, provider_meta, version, parent_message_id, branch_index
+            FROM messages_old
+        """)
+    if _table_exists(conn, "attachment_refs_old"):
+        conn.execute("""
+            INSERT OR IGNORE INTO attachment_refs (
+                ref_id, attachment_id, conversation_id, message_id, provider_meta
+            )
+            SELECT
+                ref_id, attachment_id, conversation_id, message_id, provider_meta
+            FROM attachment_refs_old
+        """)
+    if _table_exists(conn, "embedding_status_old"):
+        conn.execute("""
+            INSERT OR IGNORE INTO embedding_status (
+                conversation_id, message_count_embedded, last_embedded_at, needs_reindex, error_message
+            )
+            SELECT
+                conversation_id, message_count_embedded, last_embedded_at, needs_reindex, error_message
+            FROM embedding_status_old
+        """)
+
+    # Drop old child tables.
+    conn.execute("DROP TABLE IF EXISTS messages_old")
+    conn.execute("DROP TABLE IF EXISTS attachment_refs_old")
+    conn.execute("DROP TABLE IF EXISTS embedding_status_old")
+
+    # Recreate indexes and FTS artifacts.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_conversation_sortkey ON messages(conversation_id, sort_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_parent "
+        "ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attachment_refs_conversation ON attachment_refs(conversation_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attachment_refs_message ON attachment_refs(message_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attachment_refs_attachment ON attachment_refs(attachment_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_embedding_status_needs "
+        "ON embedding_status(needs_reindex) WHERE needs_reindex = 1"
+    )
+
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            message_id UNINDEXED,
+            conversation_id UNINDEXED,
+            content
+        )
+    """)
+    conn.execute("DELETE FROM messages_fts")
+    conn.execute("""
+        INSERT OR IGNORE INTO messages_fts(rowid, message_id, conversation_id, content)
+        SELECT rowid, message_id, conversation_id, text FROM messages
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages
+        BEGIN
+            INSERT OR IGNORE INTO messages_fts(rowid, message_id, conversation_id, content)
+            VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF text ON messages
+        BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+            INSERT INTO messages_fts(rowid, message_id, conversation_id, content)
+            VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages
+        BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+        END;
+    """)
+
+
+def _migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
+    """Migrate from v17 to v18: add persisted schema-validation tracking.
+
+    Adds validation metadata to raw_conversations so validation can be staged,
+    persisted, and incrementally reused without re-validating unchanged data.
+    """
+    conn.execute("ALTER TABLE raw_conversations ADD COLUMN validated_at TEXT")
+    conn.execute(
+        "ALTER TABLE raw_conversations ADD COLUMN validation_status TEXT "
+        "CHECK (validation_status IN ('passed', 'failed', 'skipped') OR validation_status IS NULL)"
+    )
+    conn.execute("ALTER TABLE raw_conversations ADD COLUMN validation_error TEXT")
+    conn.execute("ALTER TABLE raw_conversations ADD COLUMN validation_drift_count INTEGER DEFAULT 0")
+    conn.execute("ALTER TABLE raw_conversations ADD COLUMN validation_provider TEXT")
+    conn.execute("ALTER TABLE raw_conversations ADD COLUMN validation_mode TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_conv_pending_validation "
+        "ON raw_conversations(raw_id) WHERE parsed_at IS NULL AND validated_at IS NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_conv_parse_ready "
+        "ON raw_conversations(raw_id) "
+        "WHERE parsed_at IS NULL "
+        "AND validated_at IS NOT NULL "
+        "AND (validation_status IS NULL OR validation_status != 'failed')"
+    )
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
@@ -780,6 +1046,8 @@ _MIGRATIONS = {
     13: _migrate_v13_to_v14,
     14: _migrate_v14_to_v15,
     15: _migrate_v15_to_v16,
+    16: _migrate_v16_to_v17,
+    17: _migrate_v17_to_v18,
 }
 
 
