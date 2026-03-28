@@ -57,8 +57,6 @@ class ValidationService:
     SCHEMA_VALIDATION_MODE_ENV = "POLYLOGUE_SCHEMA_VALIDATION"
     SCHEMA_VALIDATION_DEFAULT = "strict"
     SCHEMA_VALIDATION_MODES = frozenset({"off", "advisory", "strict"})
-    SCHEMA_VALIDATION_MAX_SAMPLES_ENV = "POLYLOGUE_SCHEMA_VALIDATION_MAX_SAMPLES"
-    SCHEMA_VALIDATION_MAX_SAMPLES_DEFAULT = 16
 
     # Keep batches aligned with parse batching.
     RAW_BATCH_SIZE = 50
@@ -79,33 +77,6 @@ class ValidationService:
             self.SCHEMA_VALIDATION_DEFAULT,
         )
         return self.SCHEMA_VALIDATION_DEFAULT
-
-    def _schema_validation_max_samples(self, payload: object) -> int:
-        """Return sample count for record-style payload validation."""
-        raw = os.environ.get(self.SCHEMA_VALIDATION_MAX_SAMPLES_ENV)
-        if raw is None:
-            return self.SCHEMA_VALIDATION_MAX_SAMPLES_DEFAULT
-
-        value = raw.strip().lower()
-        if value in {"all", "0"}:
-            if isinstance(payload, list):
-                return max(1, sum(1 for item in payload if isinstance(item, dict)))
-            return 1
-
-        try:
-            parsed = int(value)
-            if parsed > 0:
-                return parsed
-        except ValueError:
-            pass
-
-        logger.warning(
-            "Invalid %s=%r, falling back to %d",
-            self.SCHEMA_VALIDATION_MAX_SAMPLES_ENV,
-            raw,
-            self.SCHEMA_VALIDATION_MAX_SAMPLES_DEFAULT,
-        )
-        return self.SCHEMA_VALIDATION_MAX_SAMPLES_DEFAULT
 
     def _validation_progress_desc(self, processed: int, total: int) -> str:
         """Return a stable validation progress description."""
@@ -265,8 +236,7 @@ class ValidationService:
                     result.counts["skipped_no_schema"] += 1
 
             if parseable and validator is not None and payload is not None:
-                max_samples = self._schema_validation_max_samples(payload)
-                samples = validator.validation_samples(payload, max_samples=max_samples)
+                samples = validator.validation_samples(payload)
 
                 if samples:
                     for sample in samples:

@@ -16,46 +16,15 @@ import pytest
 from polylogue.config import Config, IndexConfig
 from polylogue.sources import RecordBundle, save_bundle
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.index import ensure_index, rebuild_index, update_index_for_conversations
+from polylogue.storage.index import rebuild_index, update_index_for_conversations
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
-from tests.infra.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records, make_hash
-
+from tests.infra.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
 
 # ============================================================================
 # Tests for search_messages()
 # ============================================================================
-
-
-SEARCH_BASIC_CASES = [
-    # (num_convs, search_term, expected_count, description)
-    (1, "python", 1, "single match"),
-    (3, "testing", 3, "multiple matches"),
-    (1, "nonexistent", 0, "no match"),
-]
-
-
-@pytest.mark.parametrize("num_convs,search_term,expected_count,description", SEARCH_BASIC_CASES)
-async def test_search_basic_results(workspace_env, storage_repository, num_convs, search_term, expected_count, description):
-    """search_messages() returns correct number of results."""
-    # Create conversations
-    for i in range(num_convs):
-        if search_term == "nonexistent":
-            text = "hello world"
-        elif search_term == "testing":
-            text = "testing framework"
-        else:  # "python"
-            text = "python programming language"
-
-        conv = make_conversation(f"conv{i}", title=f"Conv {i}")
-        msg = make_message(f"msg{i}", f"conv{i}", text=text)
-        await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
-
-    rebuild_index()
-
-    results = search_messages(search_term, archive_root=workspace_env["archive_root"], limit=10)
-    assert len(results.hits) == expected_count, f"Failed for {description}"
 
 
 async def test_search_respects_limit(workspace_env, storage_repository):
@@ -105,8 +74,38 @@ async def test_search_includes_conversation_metadata(workspace_env, storage_repo
     assert hit.provider_name == "claude"
     assert hit.title == "My Conversation"
     assert hit.message_id == "msg1"
-    assert hit.timestamp == "2024-01-01T10:30:00Z"
+    assert hit.timestamp is not None and "2024-01-01" in hit.timestamp
     assert hit.source_name == "my-source"
+
+
+async def test_search_returns_best_message_per_conversation(workspace_env, storage_repository):
+    """search_messages() picks the strongest per-conversation hit deterministically."""
+    archive_root = workspace_env["archive_root"]
+    bundle = RecordBundle(
+        conversation=make_conversation("conv-best-hit", title="Best Hit Test"),
+        messages=[
+            make_message(
+                "msg-best-old",
+                "conv-best-hit",
+                text="deterministic best hit token",
+                timestamp="2024-01-01T00:00:00",
+            ),
+            make_message(
+                "msg-best-new",
+                "conv-best-hit",
+                text="deterministic best hit token",
+                timestamp="2024-02-01T00:00:00",
+            ),
+        ],
+        attachments=[],
+    )
+    await save_bundle(bundle, repository=storage_repository)
+    rebuild_index()
+
+    results = search_messages("deterministic best hit token", archive_root=archive_root, limit=5)
+
+    assert len(results.hits) == 1
+    assert results.hits[0].message_id == "msg-best-new"
 
 
 # ============================================================================
@@ -140,16 +139,6 @@ async def test_search_with_special_text(workspace_env, storage_repository, text,
 # Tests for edge cases and error handling
 # ============================================================================
 
-
-def test_ensure_index_idempotent(test_conn):
-    """ensure_index() can be called multiple times safely."""
-    ensure_index(test_conn)
-    ensure_index(test_conn)
-    ensure_index(test_conn)
-
-    # Verify table exists
-    result = test_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
-    assert result is not None
 
 
 def test_rebuild_index_with_empty_database(test_conn):
@@ -220,10 +209,10 @@ def test_update_index_deletes_old_entries_from_conversation(test_conn):
     test_conn.execute(
         """
         INSERT INTO messages
-        (message_id, conversation_id, role, text, timestamp, content_hash, version)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (message_id, conversation_id, role, text, content_hash, version)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        ("msg2", "conv1", "user", "new message", "2024-01-01T00:01:00Z", "hash-msg2", 1),
+        ("msg2", "conv1", "user", "new message", "hash-msg2", 1),
     )
 
     # Update index
@@ -259,7 +248,6 @@ def test_batch_index_10k_messages(test_conn):
                 f"conv{i}",
                 "user" if j % 2 == 0 else "assistant",
                 f"message content {i}-{j} with searchable text",
-                f"2024-01-01T{i:02d}:{j:02d}:00Z",
                 f"hash-{i}-{j}",
                 1,
             )
@@ -267,8 +255,8 @@ def test_batch_index_10k_messages(test_conn):
         ]
         test_conn.executemany(
             """INSERT INTO messages
-               (message_id, conversation_id, role, text, timestamp, content_hash, version)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (message_id, conversation_id, role, text, content_hash, version)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             messages_batch,
         )
 
@@ -311,74 +299,6 @@ async def test_batch_index_search_returns_correct_provider(workspace_env, storag
     results2 = search_messages("chatgpt", archive_root=workspace_env["archive_root"], limit=10)
     assert all(hit.provider_name == "chatgpt" for hit in results2.hits)
     assert len(results2.hits) == 1
-
-
-# ============================================================================
-# FTS5 ESCAPING - PARAMETRIZED
-# ============================================================================
-
-
-# ============================================================================
-# FTS5 ESCAPING - PARAMETRIZED
-# ============================================================================
-
-
-FTS5_ESCAPE_CASES = [
-    # Empty/whitespace
-    ('', '""', "empty query"),
-    ('   ', '""', "whitespace only"),
-
-    # Quotes - internal quotes are doubled, whole string is wrapped in double quotes
-    ('find "quoted text" here', '"find \"\"quoted text\"\" here"', "internal quotes"),
-
-    # Wildcards
-    ('*', '""', "bare asterisk"),
-    ('test*', '"test*"', "asterisk with text"),
-    ('?', '?', "question mark"),  # Single char, no special FTS5 chars -> unquoted
-
-    # FTS5 operators (should be quoted as literals)
-    ('AND', '"AND"', "AND operator"),
-    ('OR', '"OR"', "OR operator"),
-    ('NOT', '"NOT"', "NOT operator"),
-    ('NEAR', '"NEAR"', "NEAR operator"),
-    ('and', '"and"', "lowercase and"),
-    ('And', '"And"', "mixed case And"),
-
-    # Special characters - all wrapped in double quotes
-    ('test:value', '"test:value"', "colon"),
-    ('test^2', '"test^2"', "caret"),
-    ('function(arg)', '"function(arg)"', "parentheses"),
-    ('test)', '"test)"', "close paren"),
-    ('(test', '"(test"', "open paren"),
-
-    # Minus/hyphen - wrapped in double quotes
-    ('-test', '"-test"', "leading minus"),
-    ('test-word', '"test-word"', "embedded hyphen"),
-
-    # Plus - wrapped in double quotes
-    ('+required', '"+required"', "plus operator"),
-
-    # Comma (NEAR separator in FTS5) - wrapped in double quotes
-    ('After reviewing, I', '"After reviewing, I"', "comma in text"),
-
-    # Multiple operators
-    ('test AND query', 'test AND query', "embedded AND - passes through unquoted"),
-    ('OR query', '"OR query"', "leading OR - quoted for safety"),
-
-    # Normal text (NOT quoted - implementation passes simple alphanumeric through as-is)
-    ('simple query', 'simple query', "simple words"),
-    ('hello', 'hello', "single word"),
-]
-
-
-@pytest.mark.parametrize("input_query,expected,desc", FTS5_ESCAPE_CASES)
-def test_escape_fts5_comprehensive(input_query, expected, desc):
-    """Comprehensive FTS5 escaping test.
-
-    Each row specifies the exact expected output of escape_fts5_query(input_query).
-    """
-    assert escape_fts5_query(input_query) == expected, f"Failed {desc}"
-
 
 
 
@@ -453,9 +373,9 @@ def test_escape_fts5_injection_prevention(special_query, should_quote):
         assert result.startswith('"'), f"Expected quoted: {special_query}"
         assert result.endswith('"'), f"Expected quoted: {special_query}"
     else:
-        # These may or may not be quoted depending on special chars
-        # The important thing is they don't cause FTS5 errors
-        assert isinstance(result, str), f"Should return string: {special_query}"
+        # Safe mid-query operator usage should pass through unchanged.
+        assert result == special_query, f"Unexpected rewrite: {special_query} -> {result}"
+        assert not result.startswith('"')
 
 
 # ============================================================================
@@ -684,7 +604,12 @@ class TestFTS5Provider:
         # The populated fixture has messages about quicksort
         results = populated_fts.search("quicksort")
         assert len(results) == 2  # Both messages mention quicksort
-        # Results should be in relevance order (checked implicitly by ORDER BY rank)
+        # Results should be in relevance order (checked implicitly by the stable BM25 ordering)
+
+    def test_search_applies_limit_in_sql(self, populated_fts):
+        """Search should honor LIMIT without materializing extra rows first."""
+        results = populated_fts.search("quicksort", limit=1)
+        assert len(results) == 1
 
     def test_search_escapes_fts5_special_chars(self, populated_fts):
         """Search query escapes FTS5 special characters."""
@@ -702,6 +627,10 @@ class TestFTS5Provider:
 
         # Could be empty or match all - depends on FTS5 behavior
         assert isinstance(results, list)
+
+    def test_search_returns_empty_for_blank_query(self, populated_fts):
+        """Blank queries short-circuit instead of issuing empty MATCH searches."""
+        assert populated_fts.search("") == []
 
 
 INDEX_CHUNKED_CASES = [

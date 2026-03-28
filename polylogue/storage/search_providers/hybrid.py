@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.storage.backends.connection import _build_source_scope_filter
+
 if TYPE_CHECKING:
     from polylogue.protocols import VectorProvider
     from polylogue.storage.search_providers.fts5 import FTS5Provider
@@ -49,7 +51,12 @@ def reciprocal_rank_fusion(
     scores: dict[str, float] = {}
 
     for result_list in result_lists:
+        seen_in_list: set[str] = set()
         for rank, (item_id, _original_score) in enumerate(result_list, start=1):
+            if item_id in seen_in_list:
+                # Duplicate within same list — score only the best (first) occurrence
+                continue
+            seen_in_list.add(item_id)
             rrf_score = 1.0 / (k + rank)
             scores[item_id] = scores.get(item_id, 0.0) + rrf_score
 
@@ -133,7 +140,7 @@ class HybridSearchProvider:
         # Get FTS5 results (returns message IDs)
         # Fetch more than limit to ensure good fusion
         fts_limit = limit * 3
-        fts_message_ids = self.fts_provider.search(query)[:fts_limit]
+        fts_message_ids = self.fts_provider.search(query, limit=fts_limit)
 
         # Convert to (id, rank_score) format - higher rank = higher score
         fts_results = [
@@ -167,6 +174,9 @@ class HybridSearchProvider:
         """
         from polylogue.storage.backends.connection import open_connection
 
+        if limit <= 0:
+            return []
+
         # Get message-level results (scored for ranking)
         message_results = self.search_scored(query, limit=limit * 3)
 
@@ -189,12 +199,14 @@ class HybridSearchProvider:
         allowed_convs: set[str] | None = None
         if providers:
             with open_connection(self.fts_provider.db_path) as conn:
-                p_placeholders = ",".join("?" for _ in providers)
+                scope_sql, scope_params = _build_source_scope_filter(
+                    providers,
+                    provider_column="provider_name",
+                    source_column="source_name",
+                )
                 p_rows = conn.execute(
-                    f"""SELECT conversation_id FROM conversations
-                        WHERE provider_name IN ({p_placeholders})
-                           OR source_name IN ({p_placeholders})""",
-                    (*providers, *providers),
+                    f"SELECT conversation_id FROM conversations WHERE {scope_sql}",
+                    scope_params,
                 ).fetchall()
                 allowed_convs = {row["conversation_id"] for row in p_rows}
 

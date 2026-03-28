@@ -12,7 +12,7 @@ similarity search, and archive statistics.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -318,6 +318,10 @@ class TestCountAndList:
 
     async def test_list_operations(self, repo):
         """list() filters by title and returns lazy Conversation objects."""
+        repo.backend.get_conversations_batch = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("list() should not refetch conversation records by ID")
+        )
+
         # Title filter
         convs_filtered = await repo.list(title_contains="First")
         assert len(convs_filtered) == 1
@@ -327,6 +331,16 @@ class TestCountAndList:
         convs_all = await repo.list()
         assert len(convs_all) == 3
         assert all(hasattr(c, "id") for c in convs_all)
+
+    async def test_get_children_uses_loaded_child_records(self, repo):
+        """get_children() should hydrate from list_conversations() results directly."""
+        repo.backend.get_conversations_batch = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("get_children() should not refetch child conversation records by ID")
+        )
+
+        children = await repo.get_children("conv-1")
+
+        assert [str(child.id) for child in children] == ["conv-3"]
 
 
 # =============================================================================
@@ -358,7 +372,30 @@ class TestSearch:
             if should_find:
                 assert len(results) >= 1
             else:
-                assert isinstance(results, list)
+                assert results == []
+
+    async def test_search_summaries_orders_by_best_hit_then_newest(self, repo, repo_db):
+        """search_summaries() preserves ranked conversation ordering."""
+        (
+            ConversationBuilder(repo_db, "conv-rank-old")
+            .provider("claude")
+            .title("Older match")
+            .add_message("m-rank-old", role="user", text="deterministic ranking token", timestamp="2024-01-01T00:00:00")
+            .save()
+        )
+        (
+            ConversationBuilder(repo_db, "conv-rank-new")
+            .provider("claude")
+            .title("Newer match")
+            .add_message("m-rank-new", role="user", text="deterministic ranking token", timestamp="2024-02-01T00:00:00")
+            .save()
+        )
+        with open_connection(repo_db) as conn:
+            rebuild_index(conn)
+
+        results = await repo.search_summaries("deterministic ranking token", limit=2)
+
+        assert [summary.id for summary in results[:2]] == ["conv-rank-new", "conv-rank-old"]
 
 
 # =============================================================================
@@ -695,7 +732,7 @@ class TestEmbedConversation:
     async def test_embed_conversation_counts_messages(self, repo_with_conversations, conv_id, has_messages, expected_count):
         """embed_conversation() uses provider and returns correct message count."""
         if not has_messages:
-            (ConversationBuilder(repo_with_conversations.backend._db_path, "conv-empty")
+            (ConversationBuilder(repo_with_conversations.backend.db_path, "conv-empty")
              .provider("claude")
              .title("Empty Conversation")
              .save())

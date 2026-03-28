@@ -18,16 +18,82 @@ from polylogue.health import VerifyStatus, get_health, run_all_repairs
 @click.option("--preview", is_flag=True, help="Preview repairs without executing (requires --repair)")
 @click.option("--vacuum", is_flag=True, help="Reclaim unused space after repair (requires --repair)")
 @click.option("--deep", is_flag=True, help="Run SQLite integrity check (slow on large databases)")
+@click.option("--schemas", "check_schemas", is_flag=True, help="Run raw-corpus schema verification (non-mutating)")
+@click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)")
+@click.option(
+    "--schema-samples",
+    default="all",
+    show_default=True,
+    help="Validation samples per raw payload: positive integer or 'all'",
+)
+@click.option(
+    "--schema-record-limit",
+    type=int,
+    default=None,
+    help="Limit schema verification to N raw records (for chunked runs)",
+)
+@click.option(
+    "--schema-record-offset",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Start offset for chunked schema verification",
+)
+@click.option(
+    "--schema-quarantine-malformed",
+    is_flag=True,
+    help="Mark malformed raw payloads as failed validation during schema verification (mutates DB)",
+)
 @click.pass_obj
-def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, preview: bool, vacuum: bool, deep: bool) -> None:
+def check_command(
+    env: AppEnv,
+    json_output: bool,
+    verbose: bool,
+    repair: bool,
+    preview: bool,
+    vacuum: bool,
+    deep: bool,
+    check_schemas: bool,
+    schema_providers: tuple[str, ...],
+    schema_samples: str,
+    schema_record_limit: int | None,
+    schema_record_offset: int,
+    schema_quarantine_malformed: bool,
+) -> None:
     """Health check with optional repair."""
     if vacuum and not repair:
         fail("check", "--vacuum requires --repair")
     if preview and not repair:
         fail("check", "--preview requires --repair")
+    if schema_providers and not check_schemas:
+        fail("check", "--schema-provider requires --schemas")
+    if schema_samples != "all" and not check_schemas:
+        fail("check", "--schema-samples requires --schemas")
+    if schema_record_limit is not None and not check_schemas:
+        fail("check", "--schema-record-limit requires --schemas")
+    if schema_record_offset != 0 and not check_schemas:
+        fail("check", "--schema-record-offset requires --schemas")
+    if schema_quarantine_malformed and not check_schemas:
+        fail("check", "--schema-quarantine-malformed requires --schemas")
+    if schema_record_limit is not None and schema_record_limit <= 0:
+        fail("check", "--schema-record-limit must be a positive integer")
+    if schema_record_offset < 0:
+        fail("check", "--schema-record-offset must be >= 0")
 
     config = load_effective_config(env)
     report = get_health(config, deep=deep)
+    schema_report = None
+    if check_schemas:
+        from polylogue.schemas.verification import verify_raw_corpus
+
+        parsed_max_samples = _parse_schema_samples(schema_samples)
+        schema_report = verify_raw_corpus(
+            providers=list(schema_providers) if schema_providers else None,
+            max_samples=parsed_max_samples,
+            record_limit=schema_record_limit,
+            record_offset=schema_record_offset,
+            quarantine_malformed=schema_quarantine_malformed,
+        )
 
     # Run repairs before output so JSON mode includes repair results
     repair_results: list | None = None
@@ -36,6 +102,8 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, p
 
     if json_output:
         out = report.to_dict()
+        if schema_report is not None:
+            out["schema_verification"] = schema_report.to_dict()
         if repair_results is not None:
             out["repairs"] = [r.to_dict() for r in repair_results]
         click.echo(json.dumps(out, indent=2))
@@ -70,6 +138,21 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, p
     )
     lines.append("")
     lines.append(summary_line)
+
+    if schema_report is not None:
+        lines.append("")
+        lines.append(
+            f"Schema verification: {schema_report.total_records:,} raw records "
+            f"(samples={schema_report.max_samples if schema_report.max_samples is not None else 'all'}, "
+            f"records={schema_report.record_limit if schema_report.record_limit is not None else 'all'}, "
+            f"offset={schema_report.record_offset})"
+        )
+        for provider, stats in sorted(schema_report.providers.items()):
+                lines.append(
+                    f"  {provider}: valid={stats.valid_records:,} invalid={stats.invalid_records:,} "
+                    f"drift={stats.drift_records:,} skipped={stats.skipped_no_schema:,} "
+                    f"decode_errors={stats.decode_errors:,} quarantined={stats.quarantined_records:,}"
+                )
 
     env.ui.summary("Health Check", lines)
 
@@ -112,6 +195,19 @@ def _run_vacuum(env: AppEnv) -> None:
         env.ui.console.print("  VACUUM complete.")
     except Exception as exc:
         env.ui.console.print(f"  VACUUM failed: {exc}")
+
+
+def _parse_schema_samples(raw: str) -> int | None:
+    value = raw.strip().lower()
+    if value == "all":
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        fail("check", "--schema-samples must be a positive integer or 'all'")
+    if parsed <= 0:
+        fail("check", "--schema-samples must be a positive integer or 'all'")
+    return parsed
 
 
 __all__ = ["check_command"]

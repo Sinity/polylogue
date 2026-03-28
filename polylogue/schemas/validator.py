@@ -15,8 +15,7 @@ Usage:
 
 from __future__ import annotations
 
-import gzip
-import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,8 +27,15 @@ except ImportError:
     Draft202012Validator = None
     ValidationError = Exception
 
-from polylogue.schemas.registry import SCHEMA_DIR
+from polylogue.lib.raw_payload import extract_payload_samples
+from polylogue.schemas.registry import SchemaRegistry, canonical_schema_provider
 
+_RECORD_VALIDATION_PROVIDERS = {"claude-code", "codex"}
+
+_UUID_KEY_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 @dataclass
 class ValidationResult:
@@ -69,7 +75,7 @@ class SchemaValidator:
     # validators for the same provider during a pipeline run.
     _cache: dict[tuple[str, bool], SchemaValidator] = {}
 
-    def __init__(self, schema: dict[str, Any], strict: bool = True):
+    def __init__(self, schema: dict[str, Any], strict: bool = True, provider: str | None = None):
         """Initialize validator with a schema.
 
         Args:
@@ -81,7 +87,13 @@ class SchemaValidator:
 
         self.schema = schema
         self.strict = strict
+        self.provider = provider
         self._validator = Draft202012Validator(schema)
+
+    @classmethod
+    def canonical_provider(cls, provider: str) -> str:
+        """Map runtime provider aliases to canonical schema provider names."""
+        return canonical_schema_provider(provider)
 
     @classmethod
     def for_provider(cls, provider: str, strict: bool = True) -> SchemaValidator:
@@ -97,34 +109,23 @@ class SchemaValidator:
         Raises:
             FileNotFoundError: If no schema exists for the provider
         """
-        key = (provider, strict)
+        canonical_provider = cls.canonical_provider(provider)
+        key = (canonical_provider, strict)
         cached = cls._cache.get(key)
         if cached is not None:
             return cached
 
-        gz_path = SCHEMA_DIR / f"{provider}.schema.json.gz"
-        plain_path = SCHEMA_DIR / f"{provider}.schema.json"
-        if gz_path.exists():
-            schema = json.loads(gzip.decompress(gz_path.read_bytes()).decode("utf-8"))
-        elif plain_path.exists():
-            schema = json.loads(plain_path.read_text(encoding="utf-8"))
-        else:
-            raise FileNotFoundError(f"No schema found for provider: {provider}")
-        instance = cls(schema, strict=strict)
+        schema = SchemaRegistry().get_schema(canonical_provider, version="latest")
+        if schema is None:
+            raise FileNotFoundError(f"No schema found for provider: {provider} (canonical: {canonical_provider})")
+        instance = cls(schema, strict=strict, provider=canonical_provider)
         cls._cache[key] = instance
         return instance
 
     @classmethod
     def available_providers(cls) -> list[str]:
         """List providers with available schemas."""
-        if not SCHEMA_DIR.exists():
-            return []
-        names: set[str] = set()
-        for pattern in ("*.schema.json.gz", "*.schema.json"):
-            for p in SCHEMA_DIR.glob(pattern):
-                name = p.name.replace(".schema.json.gz", "").replace(".schema.json", "")
-                names.add(name)
-        return sorted(names)
+        return SchemaRegistry().list_providers()
 
     def validate(self, data: Any) -> ValidationResult:
         """Validate data against the schema with drift detection.
@@ -150,6 +151,23 @@ class SchemaValidator:
             is_valid=len(errors) == 0,
             errors=errors,
             drift_warnings=drift_warnings,
+        )
+
+    def validation_samples(self, payload: Any, *, max_samples: int | None = None) -> list[dict[str, Any]]:
+        """Extract representative objects from a payload for validation.
+
+        For record-oriented providers (JSONL), this returns a stratified subset of
+        record dicts when explicitly bounded. By default it validates all record
+        dicts. For document-oriented providers, this returns the top-level payload
+        object or all dict documents in a list payload.
+        """
+        granularity = self.schema.get("x-polylogue-sample-granularity")
+        if not isinstance(granularity, str):
+            granularity = "record" if self.provider in _RECORD_VALIDATION_PROVIDERS else "document"
+        return extract_payload_samples(
+            payload,
+            sample_granularity=granularity,
+            max_samples=max_samples,
         )
 
     def _format_error(self, error: ValidationError) -> str:
@@ -183,7 +201,9 @@ class SchemaValidator:
                     pass
                 elif isinstance(has_additional, dict):
                     # Field is allowed by additionalProperties schema but not named -> Drift
-                    warnings.append(f"Unexpected field: {current_path}")
+                    dynamic_container = bool(schema.get("x-polylogue-dynamic-keys"))
+                    if not dynamic_container and not self._looks_dynamic_key(key):
+                        warnings.append(f"Unexpected field: {current_path}")
                     # Recurse if value is dict to find nested drift
                     if isinstance(value, dict):
                         warnings.extend(self._detect_drift(value, has_additional, current_path))
@@ -200,6 +220,14 @@ class SchemaValidator:
                                 warnings.extend(self._detect_drift(item, items_schema, f"{current_path}[{i}]"))
 
         return warnings
+
+    def _looks_dynamic_key(self, key: str) -> bool:
+        """Detect dynamic identifier keys (UUIDs, hashes, generated IDs)."""
+        if _UUID_KEY_RE.match(key):
+            return True
+        if re.match(r"^[0-9a-f]{24,}$", key, re.IGNORECASE):
+            return True
+        return bool(re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE))
 
 def validate_provider_export(
     data: Any,

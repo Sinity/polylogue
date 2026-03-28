@@ -89,7 +89,7 @@ class FTS5Provider:
                 if insert_data:
                     conn.executemany(
                         """
-                        INSERT INTO messages_fts (message_id, conversation_id, content)
+                        INSERT INTO messages_fts (message_id, conversation_id, text)
                         VALUES (?, ?, ?)
                         """,
                         insert_data,
@@ -97,7 +97,7 @@ class FTS5Provider:
 
             conn.commit()
 
-    def search(self, query: str) -> list[str]:
+    def search(self, query: str, limit: int | None = None) -> list[str]:
         """Execute a full-text search query.
 
         Uses FTS5's MATCH syntax with relevance ranking. Results are ordered
@@ -105,6 +105,7 @@ class FTS5Provider:
 
         Args:
             query: Search query string (FTS5 syntax)
+            limit: Optional maximum number of message IDs to return
 
         Returns:
             List of message IDs matching the query, ordered by relevance
@@ -112,10 +113,12 @@ class FTS5Provider:
         Raises:
             DatabaseError: If query is malformed or search fails
         """
-        from polylogue.storage.search import escape_fts5_query
+        from polylogue.storage.search import normalize_fts5_query
 
         # Escape the query to prevent syntax errors
-        fts_query = escape_fts5_query(query)
+        fts_query = normalize_fts5_query(query)
+        if fts_query is None:
+            return []
 
         with open_connection(self.db_path) as conn:
             # Check if index exists
@@ -125,15 +128,17 @@ class FTS5Provider:
                 return []
 
             # Search with relevance ranking
-            rows = conn.execute(
-                """
+            sql = """
                 SELECT message_id
                 FROM messages_fts
                 WHERE messages_fts MATCH ?
-                ORDER BY rank
-                """,
-                (fts_query,),
-            ).fetchall()
+                ORDER BY bm25(messages_fts), message_id
+            """
+            params: list[object] = [fts_query]
+            if limit is not None:
+                sql += "\nLIMIT ?"
+                params.append(limit)
+            rows = conn.execute(sql, tuple(params)).fetchall()
 
             return [row["message_id"] for row in rows]
 

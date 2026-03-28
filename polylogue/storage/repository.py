@@ -18,7 +18,14 @@ from typing import TYPE_CHECKING
 from polylogue.lib.log import get_logger
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord
+from polylogue.storage.store import (
+    AttachmentRecord,
+    ContentBlockRecord,
+    ConversationRecord,
+    ConversationRenderProjection,
+    MessageRecord,
+    RunRecord,
+)
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
@@ -26,12 +33,13 @@ if TYPE_CHECKING:
 
     from polylogue.lib import filters
     from polylogue.lib.stats import ArchiveStats
-    from polylogue.protocols import VectorProvider
+
+from polylogue.protocols import ConversationReader, SearchStore, TagStore, VectorProvider
 
 logger = get_logger(__name__)
 
 
-class ConversationRepository:
+class ConversationRepository(ConversationReader, SearchStore, TagStore):
     """Async repository for conversation storage operations.
 
     Wraps SQLiteBackend to provide high-level async storage interface with
@@ -66,9 +74,6 @@ class ConversationRepository:
             self._backend = backend
         else:
             self._backend = SQLiteBackend(db_path=db_path)
-
-        # Expose db_path for schema inference (generate_provider_schema needs it)
-        self._db_path = getattr(self._backend, "_db_path", None)
 
     async def __aenter__(self) -> ConversationRepository:
         """Enter async context manager."""
@@ -124,6 +129,22 @@ class ConversationRepository:
 
         return Conversation.from_records(conv_record, msg_records, att_records)
 
+    async def get_render_projection(self, conversation_id: str) -> ConversationRenderProjection | None:
+        """Fetch repository-owned render projection with raw attachment layout preserved."""
+        conv_record = await self._backend.get_conversation(conversation_id)
+        if not conv_record:
+            return None
+
+        msg_records, att_records = await asyncio.gather(
+            self._backend.get_messages(conversation_id),
+            self._backend.get_attachments(conversation_id),
+        )
+        return ConversationRenderProjection(
+            conversation=conv_record,
+            messages=msg_records,
+            attachments=att_records,
+        )
+
     async def view(self, conversation_id: str) -> Conversation | None:
         """Get a conversation with ID resolution support.
 
@@ -162,6 +183,35 @@ class ConversationRepository:
         """
         return await self._backend.get_conversation(conversation_id)
 
+    async def _hydrate_conversations(
+        self,
+        conversation_records: builtins.list[ConversationRecord],
+        *,
+        ordered_ids: builtins.list[str] | None = None,
+    ) -> builtins.list[Conversation]:
+        """Hydrate eager conversation models from already-fetched records."""
+        if not conversation_records:
+            return []
+
+        by_id = {record.conversation_id: record for record in conversation_records}
+        conversation_ids = ordered_ids or [record.conversation_id for record in conversation_records]
+        present_ids = [conversation_id for conversation_id in conversation_ids if conversation_id in by_id]
+        if not present_ids:
+            return []
+
+        msgs_by_id, atts_by_id = await asyncio.gather(
+            self._backend.get_messages_batch(present_ids),
+            self._backend.get_attachments_batch(present_ids),
+        )
+        return [
+            Conversation.from_records(
+                by_id[conversation_id],
+                msgs_by_id.get(conversation_id, []),
+                atts_by_id.get(conversation_id, []),
+            )
+            for conversation_id in present_ids
+        ]
+
     async def conversation_exists(self, content_hash: str) -> bool:
         """Check if conversation with given content hash exists.
 
@@ -197,6 +247,14 @@ class ConversationRepository:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> builtins.list[ConversationSummary]:
         """List conversation summaries without loading messages.
 
@@ -209,6 +267,14 @@ class ConversationRepository:
             since: Filter to conversations updated on/after this ISO date
             until: Filter to conversations updated on/before this ISO date
             title_contains: Filter by title substring (case-insensitive)
+            has_tool_use: Only conversations with tool_use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            max_messages: Maximum message count
+            min_words: Minimum total word count
+            has_file_ops: Only conversations with file operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations with subagent blocks
 
         Returns:
             List of ConversationSummary objects
@@ -222,6 +288,14 @@ class ConversationRepository:
             since=since,
             until=until,
             title_contains=title_contains,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            has_file_ops=has_file_ops,
+            has_git_ops=has_git_ops,
+            has_subagent=has_subagent,
         )
         return [ConversationSummary.from_record(rec) for rec in conv_records]
 
@@ -234,6 +308,14 @@ class ConversationRepository:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> builtins.list[Conversation]:
         """List conversations with eager-loaded messages and attachments.
 
@@ -245,6 +327,14 @@ class ConversationRepository:
             since: Filter to conversations updated on/after this ISO date
             until: Filter to conversations updated on/before this ISO date
             title_contains: Filter by title substring (case-insensitive)
+            has_tool_use: Only conversations with tool_use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            max_messages: Maximum message count
+            min_words: Minimum total word count
+            has_file_ops: Only conversations with file operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations with subagent blocks
 
         Returns:
             List of Conversation objects with all data eager-loaded
@@ -257,13 +347,17 @@ class ConversationRepository:
             since=since,
             until=until,
             title_contains=title_contains,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            has_file_ops=has_file_ops,
+            has_git_ops=has_git_ops,
+            has_subagent=has_subagent,
         )
 
-        # Fetch messages and attachments for all conversations in parallel
-        if not conv_records:
-            return []
-
-        return await self._get_many([rec.conversation_id for rec in conv_records])
+        return await self._hydrate_conversations(conv_records)
 
     async def count(
         self,
@@ -272,6 +366,14 @@ class ConversationRepository:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> int:
         """Count conversations matching filters.
 
@@ -281,6 +383,14 @@ class ConversationRepository:
             since: Filter to conversations updated on/after this ISO date
             until: Filter to conversations updated on/before this ISO date
             title_contains: Filter by title substring
+            has_tool_use: Only conversations with tool_use blocks
+            has_thinking: Only conversations with thinking blocks
+            min_messages: Minimum message count
+            max_messages: Maximum message count
+            min_words: Minimum total word count
+            has_file_ops: Only conversations with file operations
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations with subagent blocks
 
         Returns:
             Count of matching conversations
@@ -291,6 +401,14 @@ class ConversationRepository:
             since=since,
             until=until,
             title_contains=title_contains,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            has_file_ops=has_file_ops,
+            has_git_ops=has_git_ops,
+            has_subagent=has_subagent,
         )
 
     async def aggregate_message_stats(
@@ -347,7 +465,7 @@ class ConversationRepository:
         child_records = await self._backend.list_conversations(parent_id=conversation_id)
         if not child_records:
             return []
-        return await self._get_many([rec.conversation_id for rec in child_records])
+        return await self._hydrate_conversations(child_records)
 
     async def get_root(self, conversation_id: str) -> Conversation:
         """Walk up the parent chain to find the root conversation.
@@ -435,9 +553,9 @@ class ConversationRepository:
             List of Conversation objects with all data eager-loaded
         """
         ids = await self._backend.search_conversations(query, limit=limit, providers=providers)
-        return await self._get_many(ids)
+        return await self.get_many(ids)
 
-    async def _get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
+    async def get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
         """Bulk fetch conversations with eager-loaded messages and attachments.
 
         Uses batch queries to fetch all messages and attachments in 2 queries
@@ -453,25 +571,8 @@ class ConversationRepository:
         if not conversation_ids:
             return []
 
-        # Fetch conversation records
         records = await self._backend.get_conversations_batch(conversation_ids)
-        if not records:
-            return []
-
-        # Build dict for order preservation
-        by_id = {rec.conversation_id: rec for rec in records}
-        present_ids = [cid for cid in conversation_ids if cid in by_id]
-
-        # Batch-fetch all messages and attachments (2 queries total)
-        msgs_by_id, atts_by_id = await asyncio.gather(
-            self._backend.get_messages_batch(present_ids),
-            self._backend.get_attachments_batch(present_ids),
-        )
-
-        return [
-            Conversation.from_records(by_id[cid], msgs_by_id.get(cid, []), atts_by_id.get(cid, []))
-            for cid in present_ids
-        ]
+        return await self._hydrate_conversations(records, ordered_ids=conversation_ids)
 
     async def get_conversation_stats(self, conversation_id: str) -> dict[str, int] | None:
         """Get message counts without loading messages.
@@ -487,6 +588,14 @@ class ConversationRepository:
         if not conv_record:
             return None
         return await self._backend.get_conversation_stats(conversation_id)
+
+    async def get_message_counts_batch(self, conversation_ids: builtins.list[str]) -> dict[str, int]:
+        """Get message counts for multiple conversations."""
+        return await self._backend.get_message_counts_batch(conversation_ids)
+
+    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
+        """Get conversation counts grouped by provider, month, or year."""
+        return await self._backend.get_stats_by(group_by)
 
     async def iter_messages(
         self,
@@ -507,12 +616,14 @@ class ConversationRepository:
         Yields:
             Message objects one at a time
         """
+        conv_record = await self._backend.get_conversation(conversation_id)
+        provider_name = conv_record.provider_name if conv_record else None
         async for record in self._backend.iter_messages(
             conversation_id,
             dialogue_only=dialogue_only,
             limit=limit,
         ):
-            yield Message.from_record(record, attachments=[])
+            yield Message.from_record(record, attachments=[], provider=provider_name)
 
     async def search_similar(
         self,
@@ -555,7 +666,7 @@ class ConversationRepository:
             key=lambda x: conv_scores[x],
         )[:limit]
 
-        return await self._get_many(ranked_ids)
+        return await self.get_many(ranked_ids)
 
     async def _get_message_conversation_mapping(
         self, message_ids: builtins.list[str]
@@ -574,7 +685,7 @@ class ConversationRepository:
         placeholders = ",".join("?" * len(message_ids))
         query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
 
-        async with self._backend._get_connection() as conn:
+        async with self._backend.connection() as conn:
             cursor = await conn.execute(query, message_ids)
             rows = await cursor.fetchall()
 
@@ -599,6 +710,7 @@ class ConversationRepository:
         conversation: Conversation | ConversationRecord,
         messages: builtins.list[MessageRecord],
         attachments: builtins.list[AttachmentRecord],
+        content_blocks: builtins.list[ContentBlockRecord] | None = None,
     ) -> dict[str, int]:
         """Save a conversation with its messages and attachments atomically.
 
@@ -622,7 +734,7 @@ class ConversationRepository:
         else:
             conv_record = conversation
 
-        return await self._save_via_backend(conv_record, messages, attachments)
+        return await self._save_via_backend(conv_record, messages, attachments, content_blocks or [])
 
     def _conversation_to_record(self, conversation: Conversation) -> ConversationRecord:
         """Convert a Conversation model to a ConversationRecord.
@@ -665,6 +777,7 @@ class ConversationRepository:
         conversation: ConversationRecord,
         messages: builtins.list[MessageRecord],
         attachments: builtins.list[AttachmentRecord],
+        content_blocks: builtins.list[ContentBlockRecord] | None = None,
     ) -> dict[str, int]:
         """Internal implementation of save_conversation via backend.
 
@@ -696,7 +809,7 @@ class ConversationRepository:
 
         # Lightweight hash check OUTSIDE the write lock — read-only, no contention
         existing_hash: str | None = None
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute(
                 "SELECT content_hash FROM conversations WHERE conversation_id = ?",
                 (conversation.conversation_id,),
@@ -724,8 +837,30 @@ class ConversationRepository:
                 counts["conversations"] = 1
 
                 if messages:
+                    # Ensure provider_name is always set on messages (may be empty
+                    # when messages are built outside the prepare pipeline).
+                    pname = conversation.provider_name
+                    if pname:
+                        messages = [
+                            m.model_copy(update={"provider_name": pname})
+                            if not m.provider_name
+                            else m
+                            for m in messages
+                        ]
                     await backend.save_messages(messages)
                     counts["messages"] = len(messages)
+                    await backend.upsert_conversation_stats(
+                        conversation.conversation_id,
+                        pname,
+                        messages,
+                    )
+
+                # Collect content blocks from messages if not supplied explicitly
+                all_blocks: builtins.list[ContentBlockRecord] = list(content_blocks or [])
+                for msg in messages:
+                    all_blocks.extend(msg.content_blocks)
+                if all_blocks:
+                    await backend.save_content_blocks(all_blocks)
 
                 new_attachment_ids: set[str] = {str(att.attachment_id) for att in attachments}
                 await backend.prune_attachments(conversation.conversation_id, new_attachment_ids)
@@ -910,7 +1045,7 @@ class ConversationRepository:
         """
         from polylogue.lib.stats import ArchiveStats
 
-        async with self._backend._get_connection() as conn:
+        async with self._backend.connection() as conn:
             # Total counts
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
             conv_count = (await cursor.fetchone())[0]
@@ -949,9 +1084,8 @@ class ConversationRepository:
         # Get database size
         db_size = 0
         try:
-            from pathlib import Path
 
-            db_size = Path(self._db_path).stat().st_size if self._db_path else 0
+            db_size = self._backend.db_path.stat().st_size
         except Exception as exc:
             logger.warning("DB size check failed: %s", exc)
 

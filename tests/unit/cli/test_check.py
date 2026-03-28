@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -145,16 +146,15 @@ class TestCheckCommand:
                 """
                 INSERT INTO messages (
                     message_id, conversation_id, role, text,
-                    timestamp, content_hash, version
+                    content_hash, version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     "orphan-msg",
                     "non-existent-conv",
                     "user",
                     "orphaned text",
-                    "2024-01-01T00:00:00Z",
                     "abc123",
                     1,
                 ),
@@ -440,3 +440,193 @@ class TestCheckCommandSupplementary:
         result = runner.invoke(cli, ["check", "--repair", "--vacuum"])
         assert result.exit_code == 0
         assert "VACUUM" in result.output
+
+    def test_schema_provider_requires_schemas_flag(self, cli_workspace):
+        """--schema-provider requires --schemas."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--schema-provider", "chatgpt"])
+        assert result.exit_code != 0
+        assert "--schema-provider requires --schemas" in result.output
+
+    def test_check_schemas_json_output(self, cli_workspace):
+        """--schemas adds schema_verification block to JSON output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+        from polylogue.schemas.verification import ProviderSchemaVerification, SchemaVerificationReport
+
+        fake_report = SchemaVerificationReport(
+            providers={
+                "chatgpt": ProviderSchemaVerification(
+                    provider="chatgpt",
+                    total_records=3,
+                    valid_records=3,
+                )
+            },
+            max_samples=None,
+            total_records=3,
+        )
+
+        with patch(
+            "polylogue.schemas.verification.verify_raw_corpus",
+            return_value=fake_report,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["--plain", "check", "--json", "--schemas", "--schema-samples", "all"])
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert "schema_verification" in data
+        assert data["schema_verification"]["total_records"] == 3
+        assert data["schema_verification"]["max_samples"] == "all"
+        assert data["schema_verification"]["record_limit"] == "all"
+        assert data["schema_verification"]["record_offset"] == 0
+
+    def test_check_schemas_forwards_record_chunk_options(self, cli_workspace):
+        """Chunking options are forwarded to verify_raw_corpus."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+        from polylogue.schemas.verification import SchemaVerificationReport
+
+        fake_report = SchemaVerificationReport(
+            providers={},
+            max_samples=None,
+            total_records=0,
+            record_limit=250,
+            record_offset=500,
+        )
+
+        with patch(
+            "polylogue.schemas.verification.verify_raw_corpus",
+            return_value=fake_report,
+        ) as mock_verify:
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                [
+                    "--plain",
+                    "check",
+                    "--json",
+                    "--schemas",
+                    "--schema-provider",
+                    "claude-code",
+                    "--schema-samples",
+                    "16",
+                    "--schema-record-limit",
+                    "250",
+                    "--schema-record-offset",
+                    "500",
+                ],
+            )
+
+        assert result.exit_code == 0
+        mock_verify.assert_called_once_with(
+            providers=["claude-code"],
+            max_samples=16,
+            record_limit=250,
+            record_offset=500,
+            quarantine_malformed=False,
+        )
+
+    def test_schema_samples_invalid_value_fails(self, cli_workspace):
+        """--schema-samples must be a positive integer or 'all'."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--schemas", "--schema-samples", "0"])
+        assert result.exit_code != 0
+        assert "--schema-samples must be a positive integer or 'all'" in result.output
+
+    def test_schema_record_limit_requires_schemas_flag(self, cli_workspace):
+        """--schema-record-limit requires --schemas."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--schema-record-limit", "100"])
+        assert result.exit_code != 0
+        assert "--schema-record-limit requires --schemas" in result.output
+
+    def test_schema_record_offset_requires_schemas_flag(self, cli_workspace):
+        """--schema-record-offset requires --schemas."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--schema-record-offset", "10"])
+        assert result.exit_code != 0
+        assert "--schema-record-offset requires --schemas" in result.output
+
+    def test_schema_record_limit_invalid_value_fails(self, cli_workspace):
+        """--schema-record-limit must be a positive integer."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--schemas", "--schema-record-limit", "0"])
+        assert result.exit_code != 0
+        assert "--schema-record-limit must be a positive integer" in result.output
+
+    def test_schema_record_offset_invalid_value_fails(self, cli_workspace):
+        """--schema-record-offset must be non-negative."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--schemas", "--schema-record-offset", "-1"])
+        assert result.exit_code != 0
+        assert "--schema-record-offset must be >= 0" in result.output
+
+    def test_schema_quarantine_requires_schemas_flag(self, cli_workspace):
+        """--schema-quarantine-malformed requires --schemas."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--schema-quarantine-malformed"])
+        assert result.exit_code != 0
+        assert "--schema-quarantine-malformed requires --schemas" in result.output
+
+    def test_check_schemas_forwards_quarantine_flag(self, cli_workspace):
+        """Quarantine option is forwarded to verify_raw_corpus."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+        from polylogue.schemas.verification import SchemaVerificationReport
+
+        fake_report = SchemaVerificationReport(
+            providers={},
+            max_samples=None,
+            total_records=0,
+        )
+
+        with patch(
+            "polylogue.schemas.verification.verify_raw_corpus",
+            return_value=fake_report,
+        ) as mock_verify:
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                ["--plain", "check", "--json", "--schemas", "--schema-quarantine-malformed"],
+            )
+
+        assert result.exit_code == 0
+        mock_verify.assert_called_once_with(
+            providers=None,
+            max_samples=None,
+            record_limit=None,
+            record_offset=0,
+            quarantine_malformed=True,
+        )
