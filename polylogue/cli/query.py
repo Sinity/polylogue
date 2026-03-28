@@ -55,6 +55,10 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     filter_chain = ConversationFilter(conv_repo, vector_provider=vector_provider)
 
+    # Apply --id (exact conversation ID or prefix match)
+    if params.get("conv_id"):
+        filter_chain = filter_chain.id(params["conv_id"])
+
     # Apply query terms (positional args)
     query_terms = params.get("query", ())
     for term in query_terms:
@@ -211,6 +215,9 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         results = [conv.dialogue_only() for conv in results]
 
     # Handle stats-only output
+    if params.get("stats_by"):
+        _output_stats_by(env, results, params["stats_by"])
+        return
     if params.get("stats_only"):
         _output_stats(env, results)
         return
@@ -403,6 +410,58 @@ def _output_stats(env: AppEnv, results: list[Conversation]) -> None:
     env.ui.console.print(f"Attachments: {attachments}")
     if date_range:
         env.ui.console.print(f"Date range: {date_range}")
+
+
+def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -> None:
+    """Output statistics grouped by a dimension."""
+    from collections import defaultdict
+
+    if not results:
+        env.ui.console.print("No conversations matched.")
+        return
+
+    groups: dict[str, list[Conversation]] = defaultdict(list)
+    for conv in results:
+        if dimension == "provider":
+            key = conv.provider or "unknown"
+        elif dimension == "month":
+            key = conv.updated_at.strftime("%Y-%m") if conv.updated_at else "unknown"
+        elif dimension == "year":
+            key = conv.updated_at.strftime("%Y") if conv.updated_at else "unknown"
+        elif dimension == "day":
+            key = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else "unknown"
+        else:
+            key = "all"
+        groups[key].append(conv)
+
+    # Sort groups: by date desc for temporal, alphabetically for provider
+    if dimension in {"month", "year", "day"}:
+        sorted_keys = sorted(groups.keys(), reverse=True)
+    else:
+        sorted_keys = sorted(groups.keys())
+
+    env.ui.console.print(f"\nMatched: {len(results)} conversations (by {dimension})\n")
+
+    # Header
+    click.echo(f"{'':2s}{'Group':<16s} {'Convs':>6s} {'Messages':>9s} {'Words':>10s}")
+    click.echo(f"{'':2s}{'-' * 16} {'-' * 6} {'-' * 9} {'-' * 10}")
+
+    total_convs = 0
+    total_msgs = 0
+    total_words = 0
+
+    for key in sorted_keys:
+        convs = groups[key]
+        n_convs = len(convs)
+        n_msgs = sum(len(c.messages) for c in convs)
+        n_words = sum(sum(m.word_count for m in c.messages) for c in convs)
+        click.echo(f"  {key:<16s} {n_convs:>6,d} {n_msgs:>9,d} {n_words:>10,d}")
+        total_convs += n_convs
+        total_msgs += n_msgs
+        total_words += n_words
+
+    click.echo(f"{'':2s}{'-' * 16} {'-' * 6} {'-' * 9} {'-' * 10}")
+    click.echo(f"  {'TOTAL':<16s} {total_convs:>6,d} {total_msgs:>9,d} {total_words:>10,d}")
 
 
 def _output_results(
