@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from argparse import Namespace
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +37,14 @@ class DummyConsole:
         self.messages.append((args, kwargs))
 
 
+class DummyProgressTracker:
+    def advance(self, *args, **kwargs):
+        pass
+
+    def update(self, *args, **kwargs):
+        pass
+
+
 @dataclass
 class DummyUI:
     plain: bool = True
@@ -46,6 +55,11 @@ class DummyUI:
 
     def banner(self, *args, **kwargs):  # pragma: no cover - unused in tests
         pass
+
+    @contextmanager
+    def progress(self, *args, **kwargs):  # pragma: no cover - unused in tests
+        """Dummy progress context manager that yields a tracker with no-op methods."""
+        yield DummyProgressTracker()
 
 
 def test_render_command_persists_state(tmp_path, state_env, monkeypatch):

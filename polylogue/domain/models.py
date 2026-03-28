@@ -78,4 +78,3 @@ class Conversation:
 
     def total_messages(self) -> int:
         return sum(len(branch.messages) for branch in self.branches)
-
