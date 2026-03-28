@@ -68,14 +68,17 @@ async def configure_connection(conn: aiosqlite.Connection) -> None:
     await conn.execute("PRAGMA foreign_keys = ON")
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
-    # Performance: 128 MB page cache (default is 2 MB — unusable for large DBs)
-    await conn.execute("PRAGMA cache_size = -131072")
+    # Performance: 512 MB page cache (default is 2 MB — unusable for large DBs)
+    await conn.execute("PRAGMA cache_size = -524288")
     # Performance: NORMAL sync is safe with WAL and avoids fsync per write
     await conn.execute("PRAGMA synchronous = NORMAL")
-    # Performance: 256 MB memory-mapped I/O for faster reads
-    await conn.execute("PRAGMA mmap_size = 268435456")
+    # Performance: 1 GB memory-mapped I/O for faster reads on large DBs
+    await conn.execute("PRAGMA mmap_size = 1073741824")
     # Performance: keep temp tables in memory
     await conn.execute("PRAGMA temp_store = MEMORY")
+    # Performance: increase WAL autocheckpoint from 1000 to 10000 pages
+    # to reduce checkpoint frequency during bulk writes
+    await conn.execute("PRAGMA wal_autocheckpoint = 10000")
 
 
 # ---------------------------------------------------------------------------
