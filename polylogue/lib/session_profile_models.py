@@ -78,7 +78,6 @@ class SessionProfile:
             "work_events": [event.to_dict() for event in self.work_events],
             "phases": [
                 {
-                    "kind": phase.kind,
                     "start_time": phase.start_time.isoformat() if phase.start_time else None,
                     "end_time": phase.end_time.isoformat() if phase.end_time else None,
                     "canonical_session_date": (
@@ -161,7 +160,6 @@ class SessionProfile:
             ),
             phases=tuple(
                 SessionPhase(
-                    kind=str(item["kind"]),
                     start_time=datetime.fromisoformat(str(item["start_time"])) if item.get("start_time") else None,
                     end_time=datetime.fromisoformat(str(item["end_time"])) if item.get("end_time") else None,
                     canonical_session_date=(

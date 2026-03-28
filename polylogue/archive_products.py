@@ -123,7 +123,7 @@ class SessionPhaseEvidencePayload(ArchiveProductModel):
 
 
 class SessionPhaseInferencePayload(ArchiveProductModel):
-    kind: str
+    kind: str = "phase"
     confidence: float = 0.0
     evidence: tuple[str, ...] = ()
     support_level: str = "weak"
