@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from chatmd.importers.codex import import_codex_session
+from polylogue.importers.codex import import_codex_session
 
 
 def _write_session(tmp_path: Path, name: str, entries: list[dict]) -> Path:

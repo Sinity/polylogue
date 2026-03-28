@@ -10,7 +10,7 @@ from .base import ImportResult
 from .utils import estimate_token_count, store_large_text
 
 
-DEFAULT_PROJECT_ROOT = Path.home() / ".config" / "claude" / "projects"
+DEFAULT_PROJECT_ROOT = Path.home() / ".claude" / "projects"
 
 
 def import_claude_code_session(
