@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, Literal
 
@@ -33,6 +36,7 @@ def _decode_raw_payload(
     raw_content: bytes | str | Any,
     *,
     jsonl_dict_only: bool = False,
+    prefer_jsonl: bool = False,
 ) -> tuple[Any, WireFormat, int]:
     """Decode JSON payload bytes, with JSONL fallback support.
 
@@ -40,29 +44,65 @@ def _decode_raw_payload(
         raw_content: Raw bytes/string from storage.
         jsonl_dict_only: When true, JSONL fallback keeps only dict records.
             Used by verification workflows that operate on object records only.
+        prefer_jsonl: Prefer streaming JSONL decode before attempting whole-file
+            JSON parsing. Used for known record-oriented providers and ``.jsonl``
+            payload paths so validation does not waste time on a doomed document
+            parse attempt first.
     """
     raw = raw_content if isinstance(raw_content, (bytes, str)) else str(raw_content)
+    if prefer_jsonl:
+        try:
+            payload, malformed_lines = _decode_jsonl_payload(
+                raw,
+                jsonl_dict_only=jsonl_dict_only,
+            )
+            return payload, "jsonl", malformed_lines
+        except (UnicodeDecodeError, ValueError):
+            pass
     try:
         return orjson.loads(raw), "json", 0
-    except (orjson.JSONDecodeError, ValueError):
-        text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-        lines: list[Any] = []
-        malformed_lines = 0
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                parsed = orjson.loads(line)
-            except (orjson.JSONDecodeError, ValueError):
-                malformed_lines += 1
-                continue
-            if jsonl_dict_only and not isinstance(parsed, dict):
-                continue
-            lines.append(parsed)
-        if not lines:
-            raise
-        return lines, "jsonl", malformed_lines
+    except (orjson.JSONDecodeError, ValueError) as exc:
+        try:
+            payload, malformed_lines = _decode_jsonl_payload(
+                raw,
+                jsonl_dict_only=jsonl_dict_only,
+            )
+        except ValueError:
+            raise exc from None
+        return payload, "jsonl", malformed_lines
+
+
+def _decode_jsonl_payload(
+    raw: bytes | str,
+    *,
+    jsonl_dict_only: bool = False,
+) -> tuple[list[Any], int]:
+    """Decode JSONL incrementally to avoid full-file line splitting."""
+    lines: list[Any] = []
+    malformed_lines = 0
+    first_line = True
+    stream = BytesIO(raw) if isinstance(raw, bytes) else StringIO(raw)
+
+    for raw_line in stream:
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+        if first_line:
+            line = line.lstrip("\ufeff")
+            first_line = False
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = orjson.loads(line)
+        except (orjson.JSONDecodeError, ValueError):
+            malformed_lines += 1
+            continue
+        if jsonl_dict_only and not isinstance(parsed, dict):
+            continue
+        lines.append(parsed)
+
+    if not lines:
+        raise ValueError("No valid JSONL records found")
+    return lines, malformed_lines
 
 
 def _infer_payload_provider(
@@ -70,13 +110,18 @@ def _infer_payload_provider(
     *,
     source_path: str | Path | None,
     fallback_provider: str,
+    payload_provider: str | None = None,
 ) -> str:
     """Infer canonical provider from payload/path, with fallback."""
-    normalized = str(source_path or "")
-    if ".zip:" in normalized:
-        normalized = normalized.split(":", 1)[0]
-    if normalized:
-        inferred = detect_provider(payload, Path(normalized))
+    if payload_provider:
+        return canonical_runtime_provider(
+            payload_provider,
+            preserve_unknown=True,
+            default=payload_provider,
+        )
+    source_hint = str(source_path or "")
+    if source_hint:
+        inferred = detect_provider(payload, Path(source_hint))
         if inferred:
             return canonical_runtime_provider(
                 inferred,
@@ -95,17 +140,29 @@ def build_raw_payload_envelope(
     *,
     source_path: str | Path | None,
     fallback_provider: str,
+    payload_provider: str | None = None,
     jsonl_dict_only: bool = False,
 ) -> RawPayloadEnvelope:
     """Decode raw payload and attach canonical provider/wire-format identity."""
+    normalized_path = str(source_path or "").lower()
+    prefer_jsonl = normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+    preferred_provider = payload_provider or fallback_provider
+    if not prefer_jsonl:
+        prefer_jsonl = canonical_runtime_provider(
+            preferred_provider,
+            preserve_unknown=True,
+            default=preferred_provider,
+        ) in {"claude-code", "codex"}
     payload, wire_format, malformed_jsonl_lines = _decode_raw_payload(
         raw_content,
         jsonl_dict_only=jsonl_dict_only,
+        prefer_jsonl=prefer_jsonl,
     )
     provider = _infer_payload_provider(
         payload,
         source_path=source_path,
         fallback_provider=fallback_provider,
+        payload_provider=payload_provider,
     )
     return RawPayloadEnvelope(
         payload=payload,
@@ -158,6 +215,82 @@ def limit_samples(
     for sample in samples:
         buckets.setdefault(record_bucket_key(sample, record_type_key), []).append(sample)
     return _take_bucketed_samples(buckets, limit)
+
+
+def collect_limited_samples(
+    sample_factory: Callable[[], Iterable[dict[str, Any]]],
+    *,
+    limit: int,
+    stratify: bool,
+    record_type_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Collect bounded samples from a re-iterable source without full materialization."""
+    if limit <= 0:
+        return []
+    if not stratify:
+        selected: list[dict[str, Any]] = []
+        for sample in sample_factory():
+            selected.append(sample)
+            if len(selected) >= limit:
+                break
+        return selected
+
+    bucket_counts = Counter(
+        record_bucket_key(sample, record_type_key)
+        for sample in sample_factory()
+    )
+    if not bucket_counts:
+        return []
+
+    target_counts = _bucket_target_counts(bucket_counts, limit)
+    collected_counts = Counter()
+    selected: list[dict[str, Any]] = []
+
+    for sample in sample_factory():
+        bucket = record_bucket_key(sample, record_type_key)
+        target = target_counts.get(bucket, 0)
+        if target == 0 or collected_counts[bucket] >= target:
+            continue
+        selected.append(sample)
+        collected_counts[bucket] += 1
+        if len(selected) >= limit:
+            break
+
+    return selected
+
+
+def _bucket_target_counts(
+    bucket_counts: Counter[str],
+    limit: int,
+) -> Counter[str]:
+    """Compute per-bucket quotas matching the existing round-robin sampler."""
+    remaining = Counter(bucket_counts)
+    selected = Counter()
+    ordered_keys = sorted(bucket_counts, key=lambda key: bucket_counts[key], reverse=True)
+    selected_total = 0
+
+    for key in ordered_keys:
+        if selected_total >= limit or remaining[key] <= 0:
+            continue
+        selected[key] += 1
+        remaining[key] -= 1
+        selected_total += 1
+
+    while selected_total < limit:
+        progressed = False
+        for key in ordered_keys:
+            if selected_total >= limit:
+                break
+            if remaining[key] <= 0:
+                continue
+            selected[key] += 1
+            remaining[key] -= 1
+            selected_total += 1
+            progressed = True
+        if not progressed:
+            break
+
+    return selected
 
 
 def _take_bucketed_samples(
@@ -250,6 +383,7 @@ __all__ = [
     "RawPayloadEnvelope",
     "WireFormat",
     "build_raw_payload_envelope",
+    "collect_limited_samples",
     "extract_payload_samples",
     "is_record_candidate",
     "limit_samples",

@@ -6,11 +6,10 @@ specific example tables in the parser test files.
 from __future__ import annotations
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from polylogue.lib.roles import normalize_role
-
 
 # ---------------------------------------------------------------------------
 # Law 1: normalize_role never raises for any non-empty string

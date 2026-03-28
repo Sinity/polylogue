@@ -314,14 +314,13 @@ class TestHybridSearchProviderRRF:
         ]
 
         # Mock the database lookup
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
+        with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
             mock_context.execute.return_value.fetchall.return_value = [
-                {"message_id": "msg1", "conversation_id": "conv1"},
-                {"message_id": "msg2", "conversation_id": "conv1"},  # Same conv as msg1
-                {"message_id": "msg3", "conversation_id": "conv2"},
-                {"message_id": "msg4", "conversation_id": "conv3"},
+                {"conversation_id": "conv1"},
+                {"conversation_id": "conv2"},
+                {"conversation_id": "conv3"},
             ]
 
             results = hybrid_provider.search_conversations("test query", limit=10)
@@ -396,47 +395,12 @@ class TestProviderFilteringIntegration:
         ]
 
         # Mock database to return conversation IDs with provider info
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
+        with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
-
-            # First call: message → conversation mapping
-            def mock_execute(*args, **kwargs):
-                sql = args[0] if args else ""
-                params = args[1] if len(args) > 1 else []
-
-                result = MagicMock()
-                if "FROM messages WHERE message_id IN" in sql:
-                    # Map messages to conversations
-                    rows = []
-                    for msg_id in params:
-                        if "claude" in msg_id:
-                            rows.append({
-                                "message_id": msg_id,
-                                "conversation_id": f"conv-claude-{msg_id.split('-')[2]}"
-                            })
-                        elif "chatgpt" in msg_id:
-                            rows.append({
-                                "message_id": msg_id,
-                                "conversation_id": f"conv-chatgpt-{msg_id.split('-')[2]}"
-                            })
-                    result.fetchall.return_value = rows
-                elif "FROM conversations" in sql and "provider_name IN" in sql and "source_name IN" in sql:
-                    # Provider filtering query (checks both provider_name and source_name)
-                    if "chatgpt" in str(params):
-                        # Return only chatgpt conversation IDs
-                        rows = [{
-                            "conversation_id": f"conv-chatgpt-{i}"
-                        } for i in range(5)]
-                    else:
-                        rows = []
-                    result.fetchall.return_value = rows
-                else:
-                    result.fetchall.return_value = []
-
-                return result
-
-            mock_context.execute.side_effect = mock_execute
+            mock_context.execute.return_value.fetchall.return_value = [
+                {"conversation_id": f"conv-chatgpt-{i}"} for i in range(5)
+            ]
 
             # Search with provider filter
             results = hybrid_provider.search_conversations(
@@ -456,14 +420,14 @@ class TestProviderFilteringIntegration:
         ]
         hybrid_provider.vector_provider.query.return_value = []
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
+        with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
 
             mock_context.execute.return_value.fetchall.return_value = [
-                {"message_id": "msg-claude-1", "conversation_id": "conv-1"},
-                {"message_id": "msg-chatgpt-1", "conversation_id": "conv-2"},
-                {"message_id": "msg-gemini-1", "conversation_id": "conv-3"},
+                {"conversation_id": "conv-1"},
+                {"conversation_id": "conv-2"},
+                {"conversation_id": "conv-3"},
             ]
 
             results = hybrid_provider.search_conversations(
@@ -482,36 +446,13 @@ class TestProviderFilteringIntegration:
         ]
         hybrid_provider.vector_provider.query.return_value = []
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
+        with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
-
-            def mock_execute(*args, **kwargs):
-                sql = args[0] if args else ""
-                params = args[1] if len(args) > 1 else ()
-
-                result = MagicMock()
-                if "FROM messages WHERE message_id IN" in sql:
-                    result.fetchall.return_value = [
-                        {"message_id": "msg-claude-1", "conversation_id": "conv-1"},
-                        {"message_id": "msg-chatgpt-1", "conversation_id": "conv-2"},
-                        {"message_id": "msg-gemini-1", "conversation_id": "conv-3"},
-                    ]
-                elif "FROM conversations" in sql and ("provider_name IN" in sql or "source_name IN" in sql):
-                    # Filter to claude and chatgpt only based on params
-                    # The actual SQL checks both provider_name and source_name with OR
-                    if "claude" in str(params) and "chatgpt" in str(params):
-                        result.fetchall.return_value = [
-                            {"conversation_id": "conv-1"},
-                            {"conversation_id": "conv-2"},
-                        ]
-                    else:
-                        result.fetchall.return_value = []
-                else:
-                    result.fetchall.return_value = []
-                return result
-
-            mock_context.execute.side_effect = mock_execute
+            mock_context.execute.return_value.fetchall.return_value = [
+                {"conversation_id": "conv-1"},
+                {"conversation_id": "conv-2"},
+            ]
 
             results = hybrid_provider.search_conversations(
                 "test query",
@@ -588,31 +529,12 @@ class TestSearchProviderSourceFiltering:
             vector_provider=mock_vec,
         )
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
+        with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
-
-            def mock_execute(*args, **kwargs):
-                sql = args[0] if args else ""
-                args[1] if len(args) > 1 else []
-
-                result = MagicMock()
-                if "FROM messages WHERE message_id IN" in sql:
-                    result.fetchall.return_value = [
-                        {"message_id": "msg-1", "conversation_id": "conv-1"},
-                        {"message_id": "msg-2", "conversation_id": "conv-2"},
-                    ]
-                elif "provider_name IN" in sql and "source_name IN" in sql:
-                    # The fix checks both provider_name and source_name
-                    # This should be an OR condition (either matches)
-                    result.fetchall.return_value = [
-                        {"conversation_id": "conv-1"},
-                    ]
-                else:
-                    result.fetchall.return_value = []
-                return result
-
-            mock_context.execute.side_effect = mock_execute
+            mock_context.execute.return_value.fetchall.return_value = [
+                {"conversation_id": "conv-1"},
+            ]
 
             provider.search_conversations(
                 "test",
@@ -621,11 +543,11 @@ class TestSearchProviderSourceFiltering:
             )
 
             # Should have called the SQL with both provider_name and source_name checks
-            calls = [str(call) for call in mock_context.execute.call_args_list]
-            sql_calls = [call for call in calls if "provider_name" in call]
-
-            # Should have made a call checking both columns
-            assert any("source_name" in call for call in sql_calls)
+            execute_call = mock_context.execute.call_args
+            assert execute_call is not None
+            sql = execute_call.args[0]
+            assert "conversations.provider_name" in sql
+            assert "conversations.source_name" in sql
 
 
 class TestListConversationsByParent:

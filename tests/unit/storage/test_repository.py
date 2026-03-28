@@ -12,7 +12,7 @@ similarity search, and archive statistics.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -27,6 +27,7 @@ from polylogue.storage.store import (
     RunRecord,
 )
 from tests.infra.helpers import ConversationBuilder, make_attachment, make_conversation, make_message
+from tests.infra.mutmut import preserved_mutmut_env
 
 
 @pytest.fixture
@@ -316,8 +317,23 @@ class TestCountAndList:
         summaries = await repo.list_summaries(**kwargs)
         assert len(summaries) == expected_count
 
+    async def test_iter_summary_pages(self, repo):
+        """iter_summary_pages() yields bounded pages without full-list callers."""
+        pages = [page async for page in repo.iter_summary_pages(page_size=2)]
+
+        assert [len(page) for page in pages] == [2, 1]
+        assert {summary.id for page in pages for summary in page} == {
+            "conv-1",
+            "conv-2",
+            "conv-3",
+        }
+
     async def test_list_operations(self, repo):
         """list() filters by title and returns lazy Conversation objects."""
+        repo.backend.get_conversations_batch = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("list() should not refetch conversation records by ID")
+        )
+
         # Title filter
         convs_filtered = await repo.list(title_contains="First")
         assert len(convs_filtered) == 1
@@ -327,6 +343,16 @@ class TestCountAndList:
         convs_all = await repo.list()
         assert len(convs_all) == 3
         assert all(hasattr(c, "id") for c in convs_all)
+
+    async def test_get_children_uses_loaded_child_records(self, repo):
+        """get_children() should hydrate from list_conversations() results directly."""
+        repo.backend.get_conversations_batch = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("get_children() should not refetch child conversation records by ID")
+        )
+
+        children = await repo.get_children("conv-1")
+
+        assert [str(child.id) for child in children] == ["conv-3"]
 
 
 # =============================================================================
@@ -742,7 +768,7 @@ class TestEmbedConversation:
             assert count == 2
 
         # Test without provider and no fallback
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", preserved_mutmut_env(), clear=True):
             with patch(
                 "polylogue.storage.search_providers.create_vector_provider",
                 return_value=None,

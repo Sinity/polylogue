@@ -29,6 +29,7 @@ from polylogue.storage.backends.schema import _ensure_schema
 from polylogue.storage.store import ConversationRecord
 from tests.infra.helpers import make_hash
 
+
 class TestEnsureVec0Table:
     """Tests that the schema includes a vec0 virtual table for embeddings."""
 

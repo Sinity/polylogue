@@ -12,9 +12,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.errors import DatabaseError
 from polylogue.lib.branch_type import BranchType
+from polylogue.lib.hashing import hash_text
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
-from polylogue.lib.hashing import hash_text
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
 
 # Maximum reasonable file size (1TB)
@@ -170,7 +170,8 @@ class RawConversationRecord(BaseModel):
     This matches the data flow: acquire raw first, then parse.
     """
     raw_id: str  # SHA256 of raw_content
-    provider_name: str
+    provider_name: str  # Provenance/provider hint from acquisition time
+    payload_provider: str | None = None  # Durable provider classification from decoded payload
     source_name: str | None = None  # Config source name (e.g., "inbox"), distinct from provider
     source_path: str
     source_index: int | None = None  # Position in bundle (e.g., conversations[3])
@@ -216,6 +217,7 @@ class RawConversationState(BaseModel):
     source_path: str | None = None
     parsed_at: str | None = None
     parse_error: str | None = None
+    payload_provider: str | None = None
     validation_status: str | None = None
     validation_provider: str | None = None
 
@@ -344,6 +346,7 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
     return RawConversationRecord(
         raw_id=row["raw_id"],
         provider_name=row["provider_name"],
+        payload_provider=_row_get(row, "payload_provider"),
         source_name=row["source_name"],
         source_path=row["source_path"],
         source_index=row["source_index"],

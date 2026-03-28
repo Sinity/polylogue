@@ -14,6 +14,7 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
 from polylogue.storage.store import (
     ConversationRecord,
     MessageRecord,
+    RawConversationRecord,
     _json_or_none,
 )
 from tests.infra.helpers import (
@@ -914,6 +916,49 @@ class TestSQLiteBackendInit:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         assert hasattr(backend, "_write_lock")
         assert isinstance(backend._write_lock, asyncio.Lock)
+
+
+class TestPagedIdIteration:
+    """Tests for bounded ID iteration helpers."""
+
+    async def test_iter_raw_ids_pages_without_duplicates(self, tmp_path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        base = datetime(2026, 3, 10, tzinfo=timezone.utc)
+
+        for i in range(5):
+            await backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=f"raw-{i}",
+                    provider_name="chatgpt",
+                    source_name="inbox-a",
+                    source_path=f"/tmp/raw-{i}.json",
+                    raw_content=b'{"id":"x"}',
+                    acquired_at=(base + timedelta(minutes=i)).isoformat(),
+                )
+            )
+
+        ids = [raw_id async for raw_id in backend.iter_raw_ids(page_size=2)]
+
+        assert ids == ["raw-4", "raw-3", "raw-2", "raw-1", "raw-0"]
+
+    async def test_iter_conversation_ids_pages_in_sort_order(self, tmp_path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        for i in range(5):
+            await backend.save_conversation_record(
+                make_conversation(
+                    f"conv-{i}",
+                    provider_name="chatgpt",
+                    title=f"Conversation {i}",
+                    sort_key=float(i),
+                )
+            )
+
+        ids = [conversation_id async for conversation_id in backend.iter_conversation_ids(page_size=2)]
+        count = await backend.count_conversation_ids()
+
+        assert ids == ["conv-4", "conv-3", "conv-2", "conv-1", "conv-0"]
+        assert count == 5
 
 
 class TestBackendLifecycle:

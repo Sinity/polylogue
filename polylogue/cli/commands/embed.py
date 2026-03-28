@@ -71,8 +71,6 @@ def embed_command(
     """
     import os
 
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
-    from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_providers import create_vector_provider
 
     # Check for API key
@@ -98,8 +96,7 @@ def embed_command(
     if model != "voyage-4":
         vec_provider.model = model
 
-    backend = SQLiteBackend()
-    repo = ConversationRepository(backend=backend)
+    repo = env.repository
 
     # Embed specific conversation
     if conversation:
@@ -114,7 +111,7 @@ def _show_embedding_stats(env: AppEnv) -> None:
     """Display embedding statistics."""
     from polylogue.storage.backends.connection import open_connection
 
-    with open_connection(None) as conn:
+    with open_connection(env.config.db_path) as conn:
         # Total conversations
         total_convs = conn.execute(
             "SELECT COUNT(*) FROM conversations"
@@ -205,16 +202,13 @@ def _embed_batch(
     """Embed multiple conversations."""
     import asyncio
 
-    from rich.console import Console as RichConsole
-    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
-
     from polylogue.storage.backends.connection import open_connection
 
     backend = repo.backend
 
     # Get conversations to embed — stream via fetchmany to bound memory.
     conv_ids: list[tuple[str, str | None]] = []
-    with open_connection(None) as conn:
+    with open_connection(backend.db_path) as conn:
         if rebuild:
             cursor = conn.execute(
                 "SELECT conversation_id, title FROM conversations ORDER BY updated_at DESC"
@@ -261,42 +255,19 @@ def _embed_batch(
             return True
         return False
 
-    # Use Rich progress bar only when console supports it
-    use_rich = isinstance(env.ui.console, RichConsole)
-
     try:
-        if use_rich:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                console=env.ui.console,
-            ) as progress:
-                task = progress.add_task("Embedding", total=len(conv_ids))
-
-                for conv_id, title in conv_ids:
-                    progress.update(task, description=f"Embedding {title or conv_id[:12]}...")
-                    try:
-                        if _embed_one(conv_id):
-                            embedded_count += 1
-                    except Exception as exc:
-                        error_count += 1
-                        progress.console.print(f"Warning: {conv_id[:12]}: {exc}")
-                    progress.update(task, advance=1)
-        else:
+        with env.ui.progress("Embedding conversations", total=len(conv_ids)) as progress:
             for i, (conv_id, title) in enumerate(conv_ids, 1):
-                label = title or conv_id[:12]
-                click.echo(f"  [{i}/{len(conv_ids)}] {label}...", nl=False)
+                if not env.ui.plain:
+                    progress.update(description=f"Embedding {title or conv_id[:12]}...")
                 try:
                     if _embed_one(conv_id):
                         embedded_count += 1
-                        click.echo(" ok")
-                    else:
-                        click.echo(" (no messages)")
                 except Exception as exc:
                     error_count += 1
-                    click.echo(f" error: {exc}")
+                    label = title or conv_id[:12]
+                    env.ui.console.print(f"Warning: [{i}/{len(conv_ids)}] {label}: {exc}")
+                progress.advance()
     finally:
         loop.close()
 

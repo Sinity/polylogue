@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,13 @@ def run_cli(
         "HOME": os.environ.get("HOME", "/tmp"),
     }
 
+    # Preserve mutmut's runtime markers when subprocess-based CLI tests run
+    # under mutation testing. The mutated trampoline imports fail without them.
+    for key in ("MUTANT_UNDER_TEST", "PY_IGNORE_IMPORTMISMATCH"):
+        value = os.environ.get(key)
+        if value is not None:
+            clean_env[key] = value
+
     # Add any custom environment variables (these override the defaults)
     if env:
         clean_env.update(env)
@@ -72,8 +80,28 @@ def run_cli(
     # arbitrary working directories via `cwd`.
     project_root = Path(__file__).parent.parent.parent
 
+    command = ["uv", "run", "--project", str(project_root), "polylogue"] + args
+    if "MUTANT_UNDER_TEST" in clean_env:
+        # Mutated subprocess code imports mutmut's trampoline helpers and
+        # expects mutmut.config to be initialized before any mutated imports.
+        project_root_literal = repr(str(project_root))
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import os, runpy, sys; "
+                "import mutmut.__main__ as _mutmut_main; "
+                "_mutmut_cwd = os.getcwd(); "
+                f"os.chdir({project_root_literal}); "
+                "_mutmut_main.ensure_config_loaded(); "
+                "os.chdir(_mutmut_cwd); "
+                "sys.argv = ['polylogue', *sys.argv[1:]]; "
+                "runpy.run_module('polylogue', run_name='__main__')"
+            ),
+        ] + args
+
     result = subprocess.run(
-        ["uv", "run", "--project", str(project_root), "polylogue"] + args,
+        command,
         capture_output=True,
         text=True,
         env=clean_env,

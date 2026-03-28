@@ -7,9 +7,12 @@ and the semantic models.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hypothesis import strategies as st
+
+if TYPE_CHECKING:
+    from polylogue.lib.models import Conversation, Message
 
 # =============================================================================
 # Content Block Strategies
@@ -311,7 +314,7 @@ def conversation_strategy(
 
 
 @st.composite
-def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> "Message":
+def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Message:
     """Generate a Message model instance with arbitrary content."""
     from polylogue.lib.models import Message as MessageModel
 
@@ -347,7 +350,7 @@ def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> "Mess
 
 
 @st.composite
-def conversation_model_strategy(draw: st.DrawFn, *, min_messages: int = 0, max_messages: int = 10) -> "Conversation":
+def conversation_model_strategy(draw: st.DrawFn, *, min_messages: int = 0, max_messages: int = 10) -> Conversation:
     """Generate a Conversation model instance with arbitrary messages."""
     from polylogue.lib.messages import MessageCollection
     from polylogue.lib.models import Conversation as ConversationModel

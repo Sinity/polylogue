@@ -16,6 +16,7 @@ from polylogue.cli.formatting import (
     format_index_status,
     format_plan_counts,
     format_plan_details,
+    format_run_details,
 )
 from polylogue.cli.helpers import (
     fail,
@@ -54,14 +55,14 @@ def _format_elapsed(seconds: float) -> str:
 class _PlainProgressObserver(RunObserver):
     """Plain-text progress output for non-TTY runs."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, banner: str = "Syncing...") -> None:
         self.pipeline_start = time.time()
         self.stage_start = self.pipeline_start
         self.last_update = self.pipeline_start
         self.stage_processed = 0
         self.last_desc = ""
         self.last_stage = ""
-        print("Syncing...", flush=True)
+        print(banner, flush=True)
 
     def _stage_key(self, desc: str) -> str:
         return desc.split(":")[0].split("[")[0].strip()
@@ -98,6 +99,9 @@ class _PlainProgressObserver(RunObserver):
 
     def on_completed(self, result: RunResult) -> None:
         total_elapsed = time.time() - self.pipeline_start
+        count_summary = format_counts(result.counts)
+        if count_summary:
+            print(f"  Counts: {count_summary}", flush=True)
         print(f"  Pipeline complete in {_format_elapsed(total_elapsed)}", flush=True)
 
 
@@ -117,10 +121,15 @@ class _RichProgressObserver(RunObserver):
 
 
 @contextmanager
-def _progress_observer(env: AppEnv) -> Iterator[RunObserver]:
+def _progress_observer(
+    env: AppEnv,
+    *,
+    initial_desc: str = "Syncing sources...",
+    plain_banner: str = "Syncing...",
+) -> Iterator[RunObserver]:
     """Yield a progress observer appropriate for the active UI."""
     if env.ui.plain:
-        yield _PlainProgressObserver()
+        yield _PlainProgressObserver(banner=plain_banner)
         return
 
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
@@ -134,7 +143,7 @@ def _progress_observer(env: AppEnv) -> Iterator[RunObserver]:
         console=env.ui.console,  # type: ignore[arg-type]
         transient=True,
     ) as progress:
-        task_id = progress.add_task("Syncing sources...", total=None)
+        task_id = progress.add_task(initial_desc, total=None)
         yield _RichProgressObserver(progress, task_id)
 
 
@@ -230,6 +239,7 @@ def _display_result(
     """Display sync result summary."""
     run_lines = [
         f"Counts: {format_counts(result.counts)}",
+        *format_run_details(result.counts),
         f"Duration: {result.duration_ms}ms",
     ]
     title_parts: list[str] = []
@@ -343,13 +353,19 @@ def run_command(
     plan_snapshot = None
     if preview:
         try:
-            plan_snapshot = plan_sources(
-                cfg,
-                stage=stage,
-                ui=env.ui,
-                source_names=selected_sources,
-                backend=env.backend,
-            )
+            with _progress_observer(
+                env,
+                initial_desc="Planning preview...",
+                plain_banner="Planning preview...",
+            ) as progress_observer:
+                plan_snapshot = plan_sources(
+                    cfg,
+                    stage=stage,
+                    ui=env.ui,
+                    source_names=selected_sources,
+                    backend=env.backend,
+                    progress_callback=progress_observer.on_progress,
+                )
         except DriveError as exc:
             fail("run", str(exc))
         plan_lines = []

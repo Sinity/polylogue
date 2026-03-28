@@ -8,11 +8,10 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from polylogue.lib.log import get_logger
-from polylogue.sources.providers.codex import CodexRecord
-
 from polylogue.lib.branch_type import BranchType
+from polylogue.lib.log import get_logger
 from polylogue.lib.roles import Role
+from polylogue.sources.providers.codex import CodexRecord
 from polylogue.types import Provider
 
 from .base import ParsedConversation, ParsedMessage, content_blocks_from_segments

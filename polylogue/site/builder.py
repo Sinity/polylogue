@@ -8,17 +8,34 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import IO, TYPE_CHECKING
 
-from jinja2 import DictLoader, Environment, select_autoescape
+from jinja2 import DictLoader, Environment, Template, select_autoescape
 
 from polylogue.lib.log import get_logger
 from polylogue.paths import safe_path_component
+from polylogue.rendering.core import build_rendered_message_payload
 from polylogue.rendering.renderers.html import MarkdownRenderer, PygmentsHighlighter
 
+if TYPE_CHECKING:
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
+
 logger = get_logger(__name__)
+
+
+def _format_summary_date(value: object, fmt: str, summary_id: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        return value.strftime(fmt)
+    except (AttributeError, ValueError) as exc:
+        logger.debug("Timestamp format error for %s: %s", summary_id, exc)
+        return str(value)[:10] if fmt == "%Y-%m-%d" else str(value)
 
 # Default index page template
 INDEX_TEMPLATE = """<!DOCTYPE html>
@@ -241,14 +258,7 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
             </div>
         </header>
 
-        <div id="search" style="margin-bottom: 2rem;"></div>
-        <link href="/_pagefind/pagefind-ui.css" rel="stylesheet">
-        <script src="/_pagefind/pagefind-ui.js"></script>
-        <script>
-            window.addEventListener('DOMContentLoaded', function() {
-                new PagefindUI({ element: "#search", showSubResults: true });
-            });
-        </script>
+        {{ search_markup | safe }}
 
         {% if providers %}
         <div class="sidebar">
@@ -688,12 +698,54 @@ class ConversationIndex:
     id: str
     title: str
     provider: str
-    source: str | None
     created_at: str | None
     updated_at: str | None
     message_count: int
     preview: str
     path: str
+
+    @classmethod
+    def from_summary(cls, summary: object, message_count: int) -> ConversationIndex:
+        sid = str(summary.id)
+        provider = getattr(summary.provider, "value", str(summary.provider))
+        return cls(
+            id=sid,
+            title=summary.display_title or sid[:12],
+            provider=provider,
+            created_at=_format_summary_date(summary.created_at, "%Y-%m-%d", sid),
+            updated_at=_format_summary_date(summary.updated_at, "%Y-%m-%d %H:%M", sid),
+            message_count=message_count,
+            preview=summary.summary or "",
+            path=f"{safe_path_component(provider, fallback='provider')}/{sid[:12]}/conversation.html",
+        )
+
+
+@dataclass
+class ArchiveIndexStats:
+    """Streaming archive aggregates used by site-generation surfaces."""
+
+    root_page_conversations: list[ConversationIndex] = field(default_factory=list)
+    provider_counts: dict[str, int] = field(default_factory=dict)
+    provider_messages: dict[str, int] = field(default_factory=dict)
+    provider_order: list[str] = field(default_factory=list)
+    total_conversations: int = 0
+    total_messages: int = 0
+
+    def record(self, conversation: ConversationIndex, *, root_page_size: int) -> None:
+        """Accumulate counters and the root index first page in scan order."""
+        if len(self.root_page_conversations) < root_page_size:
+            self.root_page_conversations.append(conversation)
+
+        self.total_conversations += 1
+        self.total_messages += conversation.message_count
+        if conversation.provider not in self.provider_counts:
+            self.provider_order.append(conversation.provider)
+        self.provider_counts[conversation.provider] = (
+            self.provider_counts.get(conversation.provider, 0) + 1
+        )
+        self.provider_messages[conversation.provider] = (
+            self.provider_messages.get(conversation.provider, 0) + conversation.message_count
+        )
 
 
 class SiteBuilder:
@@ -707,10 +759,15 @@ class SiteBuilder:
     - search-index.json: For client-side search (lunr.js / pagefind)
     """
 
+    SUMMARY_PAGE_SIZE = 500
+
     def __init__(
         self,
         output_dir: Path,
         config: SiteConfig | None = None,
+        *,
+        backend: SQLiteBackend | None = None,
+        repository: ConversationRepository | None = None,
     ) -> None:
         """Initialize site builder.
 
@@ -720,6 +777,11 @@ class SiteBuilder:
         """
         self.output_dir = Path(output_dir)
         self.config = config or SiteConfig()
+        if repository is not None and backend is None:
+            backend = repository.backend
+        self._backend = backend
+        self._repository = repository
+        self._owns_storage = backend is None and repository is None
 
         # Set up markdown rendering with syntax highlighting
         self._highlighter = PygmentsHighlighter()
@@ -735,10 +797,29 @@ class SiteBuilder:
             loader=DictLoader({
                 "index.html": INDEX_TEMPLATE,
                 "dashboard.html": DASHBOARD_TEMPLATE,
+            }),
+            autoescape=select_autoescape(["html", "xml"]),
+            enable_async=True,
+        )
+        self.page_env = Environment(
+            loader=DictLoader({
                 "conversation.html": conv_template,
             }),
             autoescape=select_autoescape(["html", "xml"]),
+            enable_async=True,
         )
+
+    def _open_storage(self) -> tuple[SQLiteBackend, ConversationRepository]:
+        """Return the canonical storage pair used by site generation."""
+        if self._backend is None:
+            from polylogue.storage.backends.async_sqlite import SQLiteBackend
+
+            self._backend = SQLiteBackend()
+        if self._repository is None:
+            from polylogue.storage.repository import ConversationRepository
+
+            self._repository = ConversationRepository(backend=self._backend)
+        return self._backend, self._repository
 
     def build(self, incremental: bool = True) -> dict[str, int]:
         """Build complete static site (sync entry point).
@@ -755,264 +836,343 @@ class SiteBuilder:
     async def _build_async(self, incremental: bool = True) -> dict[str, int]:
         """Async implementation of the site build."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+            archive_stats, conversation_pages = await self._scan_archive(
+                incremental=incremental
+            )
 
-        # Build conversation index
-        conversations = await self._build_index()
+            # Generate pages (index pages always rebuilt; conversation pages respect incremental)
+            await self._generate_root_index(archive_stats, generated_at=generated_at)
+            provider_count = await self._generate_provider_indexes(
+                archive_stats,
+                generated_at=generated_at,
+            )
 
-        # Generate pages (index pages always rebuilt; conversation pages respect incremental)
-        self._generate_root_index(conversations)
-        provider_count = self._generate_provider_indexes(conversations)
-        conv_pages = await self._generate_conversation_pages(conversations, incremental=incremental)
+            if self.config.include_dashboard:
+                await self._generate_dashboard(
+                    archive_stats,
+                    generated_at=generated_at,
+                )
 
-        if self.config.include_dashboard:
-            self._generate_dashboard(conversations)
+            # Generate search index
+            if self.config.enable_search and self.config.search_provider == "pagefind":
+                self._generate_pagefind_config()
 
-        # Generate search index
-        if self.config.enable_search:
-            self._generate_search_index(conversations)
+            return {
+                "conversations": archive_stats.total_conversations,
+                "conversation_pages": conversation_pages,
+                "index_pages": 1 + provider_count + (1 if self.config.include_dashboard else 0),
+            }
+        finally:
+            if self._owns_storage and self._backend is not None:
+                await self._backend.close()
+                self._backend = None
+                self._repository = None
 
+    async def _iter_conversation_indexes(
+        self,
+        *,
+        provider: str | None = None,
+        backend: SQLiteBackend | None = None,
+        repository: ConversationRepository | None = None,
+    ) -> AsyncIterator[ConversationIndex]:
+        """Yield lightweight conversation indexes in repository sort order."""
+        if backend is None or repository is None:
+            backend, repository = self._open_storage()
+
+        async for summaries in repository.iter_summary_pages(
+            page_size=self.SUMMARY_PAGE_SIZE,
+            provider=provider,
+        ):
+            message_counts = await backend.get_message_counts_batch(
+                [str(summary.id) for summary in summaries]
+            )
+            for summary in summaries:
+                yield ConversationIndex.from_summary(
+                    summary,
+                    message_counts.get(str(summary.id), 0),
+                )
+
+    def _search_document(self, conversation: ConversationIndex) -> dict[str, str]:
+        """Build a JSON-search entry for a site index conversation."""
         return {
-            "conversations": len(conversations),
-            "conversation_pages": conv_pages,
-            "index_pages": 1 + provider_count + (1 if self.config.include_dashboard else 0),
+            "id": conversation.id,
+            "title": conversation.title,
+            "provider": conversation.provider,
+            "preview": conversation.preview,
+            "path": conversation.path,
         }
 
-    async def _build_index(self) -> list[ConversationIndex]:
-        """Build index of all conversations.
+    async def _scan_archive(self, *, incremental: bool) -> tuple[ArchiveIndexStats, int]:
+        """Scan archive summaries once and drive streaming site outputs from that pass."""
+        _backend, repository = self._open_storage()
+        stats = ArchiveIndexStats()
+        available_pages = 0
+        search_path = self.output_dir / "search-index.json"
+        search_handle: IO[str] | None = None
+        wrote_search_entry = False
 
-        Uses lightweight summaries to avoid loading message content into memory.
-        For a 4800+ conversation archive this reduces memory from ~9GB to ~100MB.
-        """
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
-        from polylogue.storage.repository import ConversationRepository
+        if self.config.enable_search and self.config.search_provider != "pagefind":
+            search_handle = search_path.open("w", encoding="utf-8")
+            search_handle.write("[")
 
-        backend = SQLiteBackend()
-        repo = ConversationRepository(backend=backend)
+        try:
+            async for conversation in self._iter_conversation_indexes(
+                backend=self._backend,
+                repository=repository,
+            ):
+                stats.record(
+                    conversation,
+                    root_page_size=self.config.conversations_per_page,
+                )
+                if search_handle is not None:
+                    if wrote_search_entry:
+                        search_handle.write(",")
+                    json.dump(self._search_document(conversation), search_handle)
+                    wrote_search_entry = True
+                available_pages += await self._generate_conversation_page(
+                    repository,
+                    conversation,
+                    incremental=incremental,
+                )
+        except Exception:
+            if search_handle is not None:
+                search_handle.close()
+                search_path.unlink(missing_ok=True)
+                search_handle = None
+            raise
+        finally:
+            if search_handle is not None:
+                search_handle.write("]")
+                search_handle.close()
 
-        # Use summaries (no message content) instead of full conversations
-        summaries = await repo.list_summaries(limit=100_000)
+        return stats, available_pages
 
-        # Batch-fetch message counts
-        all_ids = [str(s.id) for s in summaries]
-        msg_counts = await backend.get_message_counts_batch(all_ids)
+    async def _iter_conversation_page_messages(
+        self,
+        repo,
+        conversation_id: str,
+    ) -> AsyncIterator[dict[str, object]]:
+        """Yield site message payloads lazily for a conversation page."""
+        async for msg in repo.iter_messages(conversation_id):
+            if not msg.text:
+                continue
+            yield build_rendered_message_payload(
+                message_id=msg.message_id,
+                role=msg.role or "unknown",
+                text=msg.text,
+                timestamp=msg.sort_key,
+                render_html=self._md_renderer.render,
+            )
 
-        conversations: list[ConversationIndex] = []
-
-        for summary in summaries:
-            sid = str(summary.id)
-
-            # Format created_at
-            created_at_str = None
-            if summary.created_at:
-                try:
-                    created_at_str = summary.created_at.strftime("%Y-%m-%d")
-                except (AttributeError, ValueError) as exc:
-                    logger.debug("Timestamp format error for %s: %s", sid, exc)
-                    created_at_str = str(summary.created_at)[:10]
-
-            updated_at_str = None
-            if summary.updated_at:
-                try:
-                    updated_at_str = summary.updated_at.strftime("%Y-%m-%d %H:%M")
-                except (AttributeError, ValueError) as exc:
-                    logger.debug("Timestamp format error for %s: %s", sid, exc)
-                    updated_at_str = str(summary.updated_at)
-
-            provider = summary.provider.value
-            conversations.append(ConversationIndex(
-                id=sid,
-                title=summary.display_title or sid[:12],
-                provider=provider,
-                source=None,
-                created_at=created_at_str,
-                updated_at=updated_at_str,
-                message_count=msg_counts.get(sid, 0),
-                preview=summary.summary or "",
-                path=f"{safe_path_component(provider, fallback='provider')}/{sid[:12]}/conversation.html",
-            ))
-
-        # Sort by updated_at descending
-        conversations.sort(
-            key=lambda c: c.updated_at or "",
-            reverse=True,
-        )
-
-        return conversations
-
-    async def _generate_conversation_pages(
-        self, conversations: list[ConversationIndex], *, incremental: bool = True
+    async def _generate_conversation_page(
+        self,
+        repository: ConversationRepository,
+        conversation: ConversationIndex,
+        *,
+        incremental: bool = True,
     ) -> int:
-        """Generate individual HTML pages for each conversation.
+        """Generate one conversation page, or keep an up-to-date existing one."""
+        template = self.page_env.get_template("conversation.html")
+        page_path = self.output_dir / conversation.path
+        page_path.parent.mkdir(parents=True, exist_ok=True)
 
-        Streams messages from the database to avoid loading entire conversations
-        into memory. For a 4800+ conversation archive, this is the most expensive
-        step but produces the actual viewable conversation content.
+        if incremental and page_path.exists():
+            if conversation.updated_at:
+                try:
+                    file_mtime = datetime.fromtimestamp(page_path.stat().st_mtime)
+                    conv_updated = datetime.fromisoformat(conversation.updated_at)
+                    if file_mtime > conv_updated:
+                        return 1
+                except (ValueError, OSError):
+                    pass
+            else:
+                return 1
 
-        Args:
-            conversations: List of conversations to generate pages for
-            incremental: If True, skip pages whose file mtime is newer than
-                the conversation's updated_at timestamp.
+        try:
+            await self._write_template_stream(
+                template,
+                page_path,
+                title=conversation.title,
+                provider=conversation.provider,
+                message_count=conversation.message_count,
+                updated_at=conversation.updated_at,
+                messages=self._iter_conversation_page_messages(
+                    repository,
+                    conversation.id,
+                ),
+            )
+            return 1
+        except Exception as exc:
+            page_path.unlink(missing_ok=True)
+            logger.warning(
+                "Skipping conversation page %s: %s",
+                conversation.id,
+                exc,
+            )
+            return 0
 
-        Returns:
-            Number of conversation pages generated
-        """
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
-        from polylogue.storage.repository import ConversationRepository
+    async def _write_template_stream(
+        self,
+        template: Template,
+        output_path: Path,
+        **context: object,
+    ) -> None:
+        """Render a template to disk without materializing the full output string."""
+        stream = template.generate_async(**context)
+        with output_path.open("w", encoding="utf-8") as handle:
+            async for chunk in stream:
+                handle.write(chunk)
 
-        backend = SQLiteBackend()
-        repo = ConversationRepository(backend=backend)
-
-        template = self.env.get_template("conversation.html")
-        generated = 0
-
-        skipped = 0
-        for conv_idx in conversations:
-            # Build output path matching the link in index pages
-            page_path = self.output_dir / conv_idx.path
-            page_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Incremental: skip if page exists and is newer than conversation update
-            if incremental and page_path.exists():
-                if conv_idx.updated_at:
-                    try:
-                        from datetime import datetime
-
-                        file_mtime = datetime.fromtimestamp(page_path.stat().st_mtime)
-                        conv_updated = datetime.fromisoformat(conv_idx.updated_at)
-                        if file_mtime > conv_updated:
-                            generated += 1
-                            continue
-                    except (ValueError, OSError):
-                        pass  # Parse/stat error — rebuild this page
-                else:
-                    # No updated_at on conversation — skip if file exists
-                    generated += 1
-                    continue
-
-            try:
-                # Stream messages without loading full conversation
-                messages = []
-                async for msg in repo.iter_messages(conv_idx.id, limit=500):
-                    if not msg.text:
-                        continue
-                    text = msg.text
-                    # Truncate very long messages for the static site
-                    if len(text) > 5000:
-                        text = text[:5000] + "\n\n[... truncated ...]"
-                    html_content = self._md_renderer.render(text)
-                    messages.append({
-                        "role": msg.role or "unknown",
-                        "text": text,
-                        "html_content": html_content,
-                    })
-
-                html = template.render(
-                    title=conv_idx.title,
-                    provider=conv_idx.provider,
-                    message_count=conv_idx.message_count,
-                    updated_at=conv_idx.updated_at,
-                    messages=messages,
-                )
-
-                page_path.write_text(html, encoding="utf-8")
-                generated += 1
-            except Exception as exc:
-                logger.warning(
-                    "Skipping conversation page %s: %s", conv_idx.id, exc
-                )
-                skipped += 1
-
-        if skipped:
-            logger.warning("Skipped %d conversation pages due to errors", skipped)
-
-        return generated
-
-    def _generate_root_index(self, conversations: list[ConversationIndex]) -> None:
-        """Generate root index.html."""
-        # Group by provider for sidebar
-        by_provider: dict[str, int] = {}
-        total_messages = 0
-        for conv in conversations:
-            by_provider[conv.provider] = by_provider.get(conv.provider, 0) + 1
-            total_messages += conv.message_count
-
+    async def _generate_root_index(
+        self,
+        archive_stats: ArchiveIndexStats,
+        *,
+        generated_at: str,
+    ) -> None:
+        """Generate root index.html from streamed archive aggregates."""
         template = self.env.get_template("index.html")
-        html = template.render(
+        await self._write_template_stream(
+            template,
+            self.output_dir / "index.html",
             title=self.config.title,
             description=self.config.description,
-            conversations=conversations[:self.config.conversations_per_page],
-            total_conversations=len(conversations),
-            total_messages=total_messages,
-            providers=by_provider,
-            provider_count=len(by_provider),
-            generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            search_markup=self._search_markup(),
+            conversations=archive_stats.root_page_conversations,
+            total_conversations=archive_stats.total_conversations,
+            total_messages=archive_stats.total_messages,
+            providers=archive_stats.provider_counts,
+            provider_count=len(archive_stats.provider_counts),
+            generated_at=generated_at,
         )
 
-        (self.output_dir / "index.html").write_text(html, encoding="utf-8")
-
-    def _generate_provider_indexes(self, conversations: list[ConversationIndex]) -> int:
-        """Generate per-provider index pages.
-
-        Returns:
-            Number of provider index pages generated
-        """
-        # Group by provider
-        by_provider: dict[str, list[ConversationIndex]] = {}
-        for conv in conversations:
-            by_provider.setdefault(conv.provider, []).append(conv)
-
+    async def _generate_provider_indexes(
+        self,
+        archive_stats: ArchiveIndexStats,
+        *,
+        generated_at: str,
+    ) -> int:
+        """Generate provider-scoped index pages without a full shared archive list."""
         template = self.env.get_template("index.html")
 
-        for provider, convs in by_provider.items():
+        for provider in archive_stats.provider_order:
             safe_provider = safe_path_component(provider, fallback="provider")
             provider_dir = self.output_dir / safe_provider
             provider_dir.mkdir(parents=True, exist_ok=True)
 
-            total_messages = sum(c.message_count for c in convs)
-
-            html = template.render(
+            await self._write_template_stream(
+                template,
+                provider_dir / "index.html",
                 title=f"{provider} | {self.config.title}",
                 description=f"Conversations from {provider}",
-                conversations=convs,
-                total_conversations=len(convs),
-                total_messages=total_messages,
-                providers={},  # Don't show sidebar on provider pages
+                search_markup=self._search_markup(),
+                conversations=self._iter_conversation_indexes(provider=provider),
+                total_conversations=archive_stats.provider_counts[provider],
+                total_messages=archive_stats.provider_messages[provider],
+                providers={},
                 provider_count=1,
-                generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                generated_at=generated_at,
             )
 
-            (provider_dir / "index.html").write_text(html, encoding="utf-8")
+        return len(archive_stats.provider_order)
 
-        return len(by_provider)
-
-    def _generate_dashboard(self, conversations: list[ConversationIndex]) -> None:
-        """Generate statistics dashboard."""
-        by_provider: dict[str, int] = {}
-        total_messages = 0
-        for conv in conversations:
-            by_provider[conv.provider] = by_provider.get(conv.provider, 0) + 1
-            total_messages += conv.message_count
-
-        max_count = max(by_provider.values()) if by_provider else 1
-
+    async def _generate_dashboard(
+        self,
+        archive_stats: ArchiveIndexStats,
+        *,
+        generated_at: str,
+    ) -> None:
+        """Generate statistics dashboard from archive aggregates."""
         template = self.env.get_template("dashboard.html")
-        html = template.render(
+        await self._write_template_stream(
+            template,
+            self.output_dir / "dashboard.html",
             title=self.config.title,
-            providers=by_provider,
-            max_count=max_count,
-            total_conversations=len(conversations),
-            total_messages=total_messages,
-            provider_count=len(by_provider),
+            providers=archive_stats.provider_counts,
+            max_count=max(archive_stats.provider_counts.values(), default=1),
+            total_conversations=archive_stats.total_conversations,
+            total_messages=archive_stats.total_messages,
+            provider_count=len(archive_stats.provider_counts),
+            generated_at=generated_at,
         )
 
-        (self.output_dir / "dashboard.html").write_text(html, encoding="utf-8")
-
-    def _generate_search_index(self, conversations: list[ConversationIndex]) -> None:
-        """Generate client-side search index."""
+    def _search_markup(self) -> str:
+        """Render the search UI snippet for index pages."""
+        if not self.config.enable_search:
+            return ""
         if self.config.search_provider == "pagefind":
-            self._generate_pagefind_config()
-        else:
-            self._generate_lunr_index(conversations)
+            return """
+        <div id="search" style="margin-bottom: 2rem;"></div>
+        <link href="/_pagefind/pagefind-ui.css" rel="stylesheet">
+        <script src="/_pagefind/pagefind-ui.js"></script>
+        <script>
+            window.addEventListener('DOMContentLoaded', function() {
+                new PagefindUI({ element: "#search", showSubResults: true });
+            });
+        </script>
+"""
+        return """
+        <div class="search-panel" style="margin-bottom: 2rem;">
+            <input id="search-input" type="search" placeholder="Search conversations..." style="width: 100%; padding: 0.85rem 1rem; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary);" />
+            <p id="search-status" style="margin-top: 0.75rem; color: var(--text-secondary);"></p>
+            <ul id="search-results" class="conversation-list" style="margin-top: 1rem; display: none;"></ul>
+        </div>
+        <script>
+            window.addEventListener('DOMContentLoaded', async function() {
+                const input = document.getElementById('search-input');
+                const status = document.getElementById('search-status');
+                const results = document.getElementById('search-results');
+                const archiveList = document.querySelector('.conversation-list');
+                let docs = [];
+                try {
+                    const response = await fetch('/search-index.json');
+                    docs = response.ok ? await response.json() : [];
+                } catch (error) {
+                    status.textContent = 'Search index unavailable.';
+                    return;
+                }
+
+                function renderResults(query) {
+                    const term = query.trim().toLowerCase();
+                    if (!term) {
+                        results.style.display = 'none';
+                        results.innerHTML = '';
+                        archiveList.style.display = '';
+                        status.textContent = '';
+                        return;
+                    }
+
+                    archiveList.style.display = 'none';
+                    const matches = docs.filter((doc) => {
+                        return [doc.title, doc.provider, doc.preview]
+                            .filter(Boolean)
+                            .join(' ')
+                            .toLowerCase()
+                            .includes(term);
+                    }).slice(0, 50);
+
+                    results.innerHTML = matches.map((doc) => `
+                        <li class="conversation-card">
+                            <a href="${doc.path}" class="conversation-link">
+                                <h2 class="conversation-title">${doc.title}</h2>
+                                <div class="conversation-meta">
+                                    <span class="badge">${doc.provider}</span>
+                                    <span>${doc.preview || ''}</span>
+                                </div>
+                            </a>
+                        </li>
+                    `).join('');
+                    results.style.display = matches.length ? '' : 'none';
+                    status.textContent = matches.length
+                        ? `${matches.length} result(s)`
+                        : 'No conversations matched.';
+                }
+
+                input.addEventListener('input', (event) => renderResults(event.target.value));
+            });
+        </script>
+"""
 
     def _generate_pagefind_config(self) -> None:
         """Generate pagefind index.
@@ -1054,23 +1214,5 @@ class SiteBuilder:
                 "Pagefind not found in PATH. Run 'pagefind --site %s' to build search index.",
                 self.output_dir,
             )
-
-    def _generate_lunr_index(self, conversations: list[ConversationIndex]) -> None:
-        """Generate lunr.js search index."""
-        documents = []
-        for conv in conversations:
-            documents.append({
-                "id": conv.id,
-                "title": conv.title,
-                "provider": conv.provider,
-                "preview": conv.preview,
-                "path": conv.path,
-            })
-
-        (self.output_dir / "search-index.json").write_text(
-            json.dumps(documents),
-            encoding="utf-8",
-        )
-
 
 __all__ = ["SiteBuilder", "SiteConfig", "ConversationIndex"]

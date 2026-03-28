@@ -660,6 +660,14 @@ class TestFormatCounts:
         result = format_counts({"conversations": 10, "messages": 50, "rendered": 10})
         assert "10 rendered" in result
 
+    def test_with_pipeline_stage_counts(self):
+        from polylogue.cli.formatting import format_counts
+
+        result = format_counts({"acquired": 7, "validated": 6, "validation_invalid": 1})
+        assert "7 acquired" in result
+        assert "6 validated" in result
+        assert "1 invalid" in result
+
     def test_zero_rendered_omitted(self):
         from polylogue.cli.formatting import format_counts
 
