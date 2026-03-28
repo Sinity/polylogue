@@ -17,7 +17,7 @@ from polylogue.render_paths import render_root
 from polylogue.rendering.core import ConversationFormatter
 
 if TYPE_CHECKING:
-    pass
+    from polylogue.lib.models import Conversation
 
 
 class PygmentsHighlighter:
@@ -132,366 +132,14 @@ class MarkdownRenderer:
         return html
 
 
-# Default template with enhanced styling and syntax highlighting
-DEFAULT_HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="en" data-theme="{{ theme }}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }} | Polylogue</title>
-    <style>
-        :root {
-            --bg-primary: #0a0a0c;
-            --bg-secondary: #16161a;
-            --bg-elevated: #1e1e24;
-            --bg-code: #282c34;
-            --text-primary: #f8f9fa;
-            --text-secondary: #94a3b8;
-            --text-muted: #6b7280;
-            --accent: #6366f1;
-            --accent-glow: rgba(99, 102, 241, 0.4);
-            --border: #2d2d35;
-            --border-subtle: #1f1f23;
-            --user-bg: rgba(99, 102, 241, 0.1);
-            --user-border: rgba(99, 102, 241, 0.3);
-            --assistant-bg: rgba(16, 185, 129, 0.1);
-            --assistant-border: rgba(16, 185, 129, 0.3);
-            --system-bg: rgba(245, 158, 11, 0.1);
-            --system-border: rgba(245, 158, 11, 0.3);
-            --tool-bg: rgba(139, 92, 246, 0.1);
-            --tool-border: rgba(139, 92, 246, 0.3);
-        }
+DEFAULT_HTML_TEMPLATE = (Path(__file__).parent.parent / "templates" / "conversation.html").read_text()
 
-        [data-theme="light"] {
-            --bg-primary: #ffffff;
-            --bg-secondary: #f9fafb;
-            --bg-elevated: #ffffff;
-            --bg-code: #f6f8fa;
-            --text-primary: #111827;
-            --text-secondary: #4b5563;
-            --text-muted: #9ca3af;
-            --border: #e5e7eb;
-            --border-subtle: #f3f4f6;
-            --user-bg: #e3f2fd;
-            --assistant-bg: #f5f5f5;
-        }
+_ROLE_CLASS_RE = re.compile(r"[^a-z0-9-]")
 
-        @media (prefers-color-scheme: light) {
-            :root:not([data-theme="dark"]) {
-                --bg-primary: #ffffff;
-                --bg-secondary: #f9fafb;
-                --bg-elevated: #ffffff;
-                --bg-code: #f6f8fa;
-                --text-primary: #111827;
-                --text-secondary: #4b5563;
-                --text-muted: #9ca3af;
-                --border: #e5e7eb;
-                --border-subtle: #f3f4f6;
-                --user-bg: #e3f2fd;
-                --assistant-bg: #f5f5f5;
-            }
-        }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: var(--bg-primary);
-            color: var(--text-primary);
-            line-height: 1.7;
-            -webkit-font-smoothing: antialiased;
-        }
-
-        .nav-header {
-            position: sticky;
-            top: 0;
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border);
-            padding: 1rem 2rem;
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            z-index: 100;
-        }
-
-        .nav-back {
-            color: var(--accent);
-            text-decoration: none;
-            font-weight: 500;
-        }
-
-        .nav-breadcrumb {
-            color: var(--text-muted);
-            font-size: 0.875rem;
-        }
-
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-
-        .conversation-header {
-            margin-bottom: 3rem;
-            padding-bottom: 2rem;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .conversation-header h1 {
-            font-size: 2rem;
-            font-weight: 700;
-            margin-bottom: 1rem;
-            background: linear-gradient(to right, var(--text-primary), var(--text-secondary));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .conversation-meta {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            flex-wrap: wrap;
-        }
-
-        .badge {
-            padding: 0.25rem 0.75rem;
-            border-radius: 9999px;
-            font-weight: 600;
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            background: var(--bg-elevated);
-            border: 1px solid var(--border);
-        }
-
-        .meta-item {
-            color: var(--text-muted);
-            font-size: 0.875rem;
-        }
-
-        .messages {
-            display: flex;
-            flex-direction: column;
-            gap: 2rem;
-        }
-
-        .message {
-            display: flex;
-            gap: 1rem;
-            padding: 1.5rem;
-            border-radius: 12px;
-            border: 1px solid var(--border-subtle);
-            transition: border-color 0.2s;
-        }
-
-        .message:hover { border-color: var(--border); }
-        .message-user { background: var(--user-bg); border-color: var(--user-border); }
-        .message-assistant { background: var(--assistant-bg); border-color: var(--assistant-border); }
-        .message-system { background: var(--system-bg); border-color: var(--system-border); }
-        .message-tool, .message-tool_use, .message-tool_result {
-            background: var(--tool-bg);
-            border-color: var(--tool-border);
-        }
-
-        .message-avatar {
-            flex-shrink: 0;
-        }
-
-        .avatar-icon {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 2.5rem;
-            height: 2.5rem;
-            border-radius: 8px;
-            background: var(--bg-elevated);
-            font-weight: 700;
-            font-size: 0.75rem;
-            color: var(--accent);
-        }
-
-        .message-user .avatar-icon {
-            background: var(--accent);
-            color: white;
-        }
-
-        .message-content {
-            flex-grow: 1;
-            min-width: 0;
-        }
-
-        .message-header {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            margin-bottom: 0.5rem;
-        }
-
-        .role-label {
-            font-size: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--text-muted);
-        }
-
-        .timestamp {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-        }
-
-        .message-body {
-            color: var(--text-primary);
-            font-size: 0.95rem;
-        }
-
-        .message-body p { margin-bottom: 1rem; }
-        .message-body p:last-child { margin-bottom: 0; }
-
-        .message-body pre {
-            background: var(--bg-code);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 1rem;
-            overflow-x: auto;
-            margin: 1rem 0;
-        }
-
-        .message-body code {
-            font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
-            font-size: 0.875em;
-        }
-
-        .message-body p code {
-            background: var(--bg-elevated);
-            padding: 0.125rem 0.375rem;
-            border-radius: 4px;
-        }
-
-        /* Pygments highlight overrides */
-        .highlight {
-            background: var(--bg-code) !important;
-            border-radius: 8px;
-            overflow-x: auto;
-            margin: 1rem 0;
-        }
-
-        .highlight pre {
-            margin: 0;
-            padding: 1rem;
-            background: transparent !important;
-            border: none;
-        }
-
-        .toc {
-            position: fixed;
-            right: 2rem;
-            top: 6rem;
-            width: 200px;
-            max-height: calc(100vh - 8rem);
-            overflow-y: auto;
-            padding: 1rem;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            font-size: 0.75rem;
-            display: none;
-        }
-
-        @media (min-width: 1200px) {
-            .toc { display: block; }
-        }
-
-        .toc h3 {
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            color: var(--text-muted);
-            margin-bottom: 1rem;
-        }
-
-        .toc-list {
-            list-style: none;
-        }
-
-        .toc-list li { margin-bottom: 0.5rem; }
-
-        .toc-list a {
-            color: var(--text-secondary);
-            text-decoration: none;
-            display: block;
-            padding: 0.25rem 0;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .toc-list a:hover { color: var(--text-primary); }
-
-        @media (max-width: 768px) {
-            .container { padding: 1rem; }
-            .message { flex-direction: column; gap: 0.5rem; }
-            .conversation-header h1 { font-size: 1.5rem; }
-        }
-
-        {{ highlight_css }}
-    </style>
-</head>
-<body>
-    <nav class="nav-header">
-        <a href="../index.html" class="nav-back">← Back</a>
-        <span class="nav-breadcrumb">{{ provider }} / {{ conversation_id[:12] }}...</span>
-    </nav>
-
-    <main class="container">
-        <header class="conversation-header">
-            <h1>{{ title or "Untitled Conversation" }}</h1>
-            <div class="conversation-meta">
-                <span class="badge">{{ provider }}</span>
-                <span class="meta-item">{{ message_count }} messages</span>
-                {% if created_at %}
-                <span class="meta-item">{{ created_at }}</span>
-                {% endif %}
-            </div>
-        </header>
-
-        <div class="messages">
-            {% for msg in messages %}
-            <article class="message message-{{ msg.role or 'unknown' }}" id="msg-{{ loop.index }}">
-                <div class="message-avatar">
-                    <span class="avatar-icon">{{ (msg.role or 'msg')[:2] | upper }}</span>
-                </div>
-                <div class="message-content">
-                    <header class="message-header">
-                        <span class="role-label">{{ msg.role or 'message' }}</span>
-                        {% if msg.timestamp %}
-                        <time class="timestamp">{{ msg.timestamp }}</time>
-                        {% endif %}
-                    </header>
-                    <div class="message-body">
-                        {{ msg.html_content | safe }}
-                    </div>
-                </div>
-            </article>
-            {% endfor %}
-        </div>
-    </main>
-
-    <aside class="toc">
-        <h3>Messages</h3>
-        <ol class="toc-list">
-            {% for msg in messages %}
-            <li>
-                <a href="#msg-{{ loop.index }}">
-                    {{ msg.role or 'unknown' }}: {{ (msg.text or "")[:30] }}{% if (msg.text or "")|length > 30 %}...{% endif %}
-                </a>
-            </li>
-            {% endfor %}
-        </ol>
-    </aside>
-</body>
-</html>
-"""
+def _role_css_class(role: str) -> str:
+    """Convert a role name to a CSS-safe class like ``message-tool-use``."""
+    return "message-" + _ROLE_CLASS_RE.sub("-", role.lower())
 
 
 class HTMLRenderer:
@@ -570,10 +218,12 @@ class HTMLRenderer:
                 text = row["text"] or ""
                 if not text:
                     continue
+                role = row["role"] or "message"
                 html_content = self.md_renderer.render(text)
                 messages.append({
                     "id": row["message_id"],
-                    "role": row["role"] or "message",
+                    "role": role,
+                    "role_class": _role_css_class(role),
                     "text": text,
                     "html_content": html_content,
                     "timestamp": row["timestamp"],
@@ -639,4 +289,57 @@ class HTMLRenderer:
         return html_path
 
 
-__all__ = ["HTMLRenderer", "PygmentsHighlighter", "MarkdownRenderer"]
+def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
+    """Render an in-memory Conversation to a standalone HTML string.
+
+    Uses the same Jinja2 template and Pygments highlighting as
+    :class:`HTMLRenderer`, but works directly from a ``Conversation``
+    object rather than querying the database.
+
+    Args:
+        conv: Conversation with messages to render.
+        theme: ``"dark"`` or ``"light"``.
+
+    Returns:
+        Complete HTML document as a string.
+    """
+    style = "monokai" if theme == "dark" else "default"
+    highlighter = PygmentsHighlighter(style=style)
+    md_renderer = MarkdownRenderer(highlighter)
+
+    messages: list[dict[str, str | None]] = []
+    for msg in conv.messages:
+        if not msg.text:
+            continue
+        role = msg.role or "message"
+        html_content = md_renderer.render(msg.text)
+        messages.append({
+            "id": msg.id,
+            "role": role,
+            "role_class": _role_css_class(role),
+            "text": msg.text,
+            "html_content": html_content,
+            "timestamp": str(msg.timestamp) if msg.timestamp else None,
+        })
+
+    title = conv.display_title or str(conv.id)
+
+    env = Environment(
+        loader=DictLoader({"conversation.html": DEFAULT_HTML_TEMPLATE}),
+        autoescape=select_autoescape(["html", "xml"]),
+    )
+    template = env.get_template("conversation.html")
+
+    return template.render(
+        title=title,
+        provider=conv.provider,
+        conversation_id=str(conv.id),
+        messages=messages,
+        message_count=len(messages),
+        created_at=str(conv.created_at) if conv.created_at else None,
+        highlight_css=highlighter.get_css(),
+        theme=theme,
+    )
+
+
+__all__ = ["HTMLRenderer", "PygmentsHighlighter", "MarkdownRenderer", "render_conversation_html"]

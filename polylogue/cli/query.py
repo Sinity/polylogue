@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -220,18 +219,26 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     # Streaming path
     if params.get("stream"):
-        if params.get("latest"):
-            summaries = conv_repo.list_summaries(limit=1)
-            if not summaries:
-                env.ui.console.print("No conversations in archive.")
-                raise SystemExit(2)
-            full_id = str(summaries[0].id)
-        elif params.get("conv_id"):
+        # Use the filter chain to resolve the conversation ID, so that filters
+        # (--provider, --since, --tag, etc.) are respected even in streaming mode.
+        if params.get("conv_id"):
             resolved = conv_repo.resolve_id(params["conv_id"])
             if not resolved:
                 click.echo(f"No conversation found matching: {params['conv_id']}", err=True)
                 raise SystemExit(2)
             full_id = str(resolved)
+        elif params.get("latest"):
+            # filter_chain already has .sort("date").limit(1) from line 172-173
+            summaries = filter_chain.list_summaries()
+            if not summaries:
+                _no_results(env, params)
+            full_id = str(summaries[0].id)
+        elif _describe_filters(params):
+            # Filters active but no --latest: pick most recent match
+            summaries = filter_chain.sort("date").limit(1).list_summaries()
+            if not summaries:
+                _no_results(env, params)
+            full_id = str(summaries[0].id)
         else:
             # Try to resolve first query term as ID
             if query_terms:
@@ -275,6 +282,9 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         return
 
     if params.get("delete_matched"):
+        if not _describe_filters(params):
+            click.echo("Error: --delete requires at least one filter to prevent accidental deletion of the entire archive.", err=True)
+            raise SystemExit(1)
         _delete_conversations(env, results, params)
         return
 
@@ -521,6 +531,10 @@ def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -
     """Output statistics grouped by a dimension."""
     from collections import defaultdict
 
+    from rich.table import Table
+
+    from polylogue.lib.theme import provider_color
+
     if not results:
         env.ui.console.print("No conversations matched.")
         return
@@ -550,9 +564,11 @@ def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -
 
     env.ui.console.print(f"\nMatched: {len(results)} conversations (by {dimension})\n")
 
-    # Header
-    click.echo(f"{'':2s}{'Group':<16s} {'Convs':>6s} {'Messages':>9s} {'Words':>10s}")
-    click.echo(f"{'':2s}{'-' * 16} {'-' * 6} {'-' * 9} {'-' * 10}")
+    table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+    table.add_column("Group", style="bold", min_width=12)
+    table.add_column("Convs", justify="right")
+    table.add_column("Messages", justify="right")
+    table.add_column("Words", justify="right")
 
     total_convs = 0
     total_msgs = 0
@@ -563,13 +579,17 @@ def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -
         n_convs = len(convs)
         n_msgs = sum(len(c.messages) for c in convs)
         n_words = sum(sum(m.word_count for m in c.messages) for c in convs)
-        click.echo(f"  {key:<16s} {n_convs:>6,d} {n_msgs:>9,d} {n_words:>10,d}")
+        # Color provider names with their brand color
+        label = f"[{provider_color(key).hex}]{key}[/]" if dimension == "provider" else key
+        table.add_row(label, f"{n_convs:,}", f"{n_msgs:,}", f"{n_words:,}")
         total_convs += n_convs
         total_msgs += n_msgs
         total_words += n_words
 
-    click.echo(f"{'':2s}{'-' * 16} {'-' * 6} {'-' * 9} {'-' * 10}")
-    click.echo(f"  {'TOTAL':<16s} {total_convs:>6,d} {total_msgs:>9,d} {total_words:>10,d}")
+    table.add_section()
+    table.add_row("[bold]TOTAL[/]", f"[bold]{total_convs:,}[/]", f"[bold]{total_msgs:,}[/]", f"[bold]{total_words:,}[/]")
+
+    env.ui.console.print(table)
 
 
 def _output_results(
@@ -592,6 +612,10 @@ def _output_results(
     # Single result and not list mode: show content
     if len(results) == 1 and not list_mode:
         conv = results[0]
+        # Use Rich rendering for interactive terminal markdown display
+        if output_format == "markdown" and destinations == ["stdout"] and not env.ui.plain:
+            _render_conversation_rich(env, conv)
+            return
         content = _format_conversation(conv, output_format, fields)
         _send_output(env, content, destinations, output_format, conv)
         return
@@ -640,13 +664,14 @@ def _format_list(
     elif output_format == "csv":
         return _conv_to_csv(results)
     else:
+        # Plain text table (for piping — no Rich markup)
         lines = []
         for conv in results:
             date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else "unknown"
             raw_title = conv.display_title or conv.id[:20]
             title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
             msg_count = len(conv.messages)
-            lines.append(f"{conv.id[:24]:24s}  {date:10s}  [{conv.provider:12s}]  {title} ({msg_count} msgs)")
+            lines.append(f"{conv.id[:24]:24s}  {date:10s}  {conv.provider:12s}  {title} ({msg_count} msgs)")
         return "\n".join(lines)
 
 
@@ -719,15 +744,29 @@ def _output_summary_list(
             ])
         click.echo(buf.getvalue().rstrip())
     else:
-        # Plain text format (default) — now with message counts
-        lines = []
+        # Rich table format (default)
+        from rich.table import Table
+        from rich.text import Text
+
+        from polylogue.lib.theme import provider_color
+
+        table = Table(show_header=True, header_style="bold", box=None, pad_edge=False, show_edge=False)
+        table.add_column("ID", style="dim", max_width=24, no_wrap=True)
+        table.add_column("Date", style="dim")
+        table.add_column("Provider")
+        table.add_column("Title", ratio=1)
+        table.add_column("Msgs", justify="right")
+
         for s in summaries:
-            date = s.display_date.strftime("%Y-%m-%d") if s.display_date else "unknown"
+            date = s.display_date.strftime("%Y-%m-%d") if s.display_date else ""
             raw_title = s.display_title or str(s.id)[:20]
-            title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
+            title = (raw_title[:60] + "...") if len(raw_title) > 63 else raw_title
             count = msg_counts.get(str(s.id), 0)
-            lines.append(f"{str(s.id)[:24]:24s}  {date:10s}  [{s.provider:12s}]  {title} ({count} msgs)")
-        env.ui.console.print("\n".join(lines))
+            pc = provider_color(s.provider)
+            prov_text = Text(s.provider, style=pc.hex)
+            table.add_row(str(s.id)[:24], date, prov_text, title, str(count))
+
+        env.ui.console.print(table)
 
 
 def _conv_to_csv(results: list[Conversation]) -> str:
@@ -838,59 +877,86 @@ def _conv_to_markdown(conv: Conversation) -> str:
     return "\n".join(lines)
 
 
-def _conv_to_html(conv: Conversation) -> str:
-    """Convert conversation to HTML with Pygments syntax highlighting.
+def _render_conversation_rich(env: AppEnv, conv: Conversation) -> None:
+    """Render a conversation with Rich role colors and thinking block styling.
 
-    Uses the rendering subsystem's MarkdownRenderer for proper code highlighting
-    and the HTMLRenderer's styled template for polished output.
+    Only used for interactive terminal display — never for piped/file output.
     """
-    from html import escape as html_escape
+    from rich import box
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+    from rich.text import Text
 
-    from polylogue.rendering.renderers.html import MarkdownRenderer as HtmlMarkdownRenderer
-    from polylogue.rendering.renderers.html import PygmentsHighlighter
+    from polylogue.lib.theme import THINKING_STYLE, provider_color, role_color
 
-    highlighter = PygmentsHighlighter(style="monokai")
-    md_renderer = HtmlMarkdownRenderer(highlighter)
+    console = env.ui.console
 
+    # Header
     title = conv.display_title or conv.id
-    title_safe = html_escape(title)
-    messages_html = []
+    pc = provider_color(conv.provider)
+    header = Text()
+    header.append(title, style="bold")
+    if conv.display_date:
+        header.append(f"  {conv.display_date.strftime('%Y-%m-%d %H:%M')}", style="dim")
+    header.append(f"  [{pc.hex}]{conv.provider}[/{pc.hex}]")
+    console.print(header)
+    console.print()
+
     for msg in conv.messages:
         if not msg.text:
             continue
-        role = msg.role or "message"
-        role_safe = html_escape(role, quote=True)
-        # CSS class names: only allow lowercase alphanumeric and hyphens
-        role_class = "message-" + re.sub(r"[^a-z0-9-]", "-", role.lower())
-        html_content = md_renderer.render(msg.text)
-        messages_html.append(
-            f'<div class="{role_class}"><strong>{role_safe}:</strong>{html_content}</div>'
-        )
 
-    highlight_css = highlighter.get_css()
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>{title_safe} | Polylogue</title>
-    <style>
-        body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #0a0a0c; color: #f8f9fa; }}
-        h1 {{ border-bottom: 1px solid #2d2d35; padding-bottom: 12px; }}
-        .message-user {{ background: rgba(99, 102, 241, 0.1); border-left: 3px solid rgba(99, 102, 241, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
-        .message-assistant {{ background: rgba(16, 185, 129, 0.1); border-left: 3px solid rgba(16, 185, 129, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
-        .message-system {{ background: rgba(245, 158, 11, 0.1); border-left: 3px solid rgba(245, 158, 11, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
-        .message-tool {{ background: rgba(139, 92, 246, 0.1); border-left: 3px solid rgba(139, 92, 246, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
-        pre {{ background: #282c34; padding: 12px; border-radius: 6px; overflow-x: auto; }}
-        code {{ font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }}
-        strong {{ color: #94a3b8; text-transform: capitalize; }}
-        {highlight_css}
-    </style>
-</head>
-<body>
-    <h1>{title_safe}</h1>
-    {"".join(messages_html)}
-</body>
-</html>"""
+        role = msg.role or "unknown"
+        rc = role_color(role)
+
+        # Check for thinking blocks
+        is_thinking = msg.is_thinking
+
+        if is_thinking:
+            # Thinking blocks: dimmed, italic, with 💭 indicator
+            content = Text(msg.text[:500], style=THINKING_STYLE["rich_style"])
+            if len(msg.text) > 500:
+                content.append(f"\n... ({len(msg.text):,} chars)", style="dim")
+            panel = Panel(
+                content,
+                title=f"{THINKING_STYLE['icon']} Thinking",
+                title_align="left",
+                border_style=THINKING_STYLE["border_color"],
+                box=box.SIMPLE,
+                padding=(0, 1),
+            )
+            console.print(panel)
+        else:
+            # Regular messages: role-colored border
+            role_label = role.capitalize()
+            try:
+                md = Markdown(msg.text)
+                panel = Panel(
+                    md,
+                    title=f"[{rc.label}]{role_label}[/{rc.label}]",
+                    title_align="left",
+                    border_style=rc.hex,
+                    box=box.ROUNDED,
+                    padding=(0, 1),
+                )
+                console.print(panel)
+            except Exception:
+                # Fallback for markdown parsing failures
+                console.print(f"[{rc.label}]{role_label}:[/{rc.label}] {msg.text[:200]}")
+
+        console.print()
+
+
+def _conv_to_html(conv: Conversation) -> str:
+    """Convert conversation to HTML with Pygments syntax highlighting.
+
+    Delegates to the shared ``render_conversation_html`` function which
+    uses the same Jinja2 template and Pygments highlighting as the
+    rendering subsystem's ``HTMLRenderer``.
+    """
+    from polylogue.rendering.renderers.html import render_conversation_html
+
+    return render_conversation_html(conv)
 
 
 def _yaml_safe(value: str) -> str:
@@ -951,7 +1017,7 @@ def _conv_to_yaml(conv: Conversation, fields: str | None) -> str:
 
     data = _conv_to_dict(conv, fields)
     # For single conversation, also include full message content
-    if fields is None or "messages" in fields:
+    if fields is None or "messages" in fields.split(","):
         data["messages"] = [
             {
                 "id": str(msg.id),
@@ -1211,7 +1277,9 @@ def _open_result(
     try:
         config = load_effective_config(env)
     except Exception as exc:
-        LOGGER.debug("Config load failed, falling back to defaults: %s", exc)
+        LOGGER.warning(
+            "Config load failed, falling back to defaults: %s", exc
+        )
         config = None
 
     render_root = None
@@ -1227,7 +1295,7 @@ def _open_result(
 
     if not render_root or not render_root.exists():
         click.echo("No rendered outputs found.", err=True)
-        click.echo("Run 'polylogue sync' first to render conversations.", err=True)
+        click.echo("Run 'polylogue run' first to render conversations.", err=True)
         raise SystemExit(1)
 
     # Search for rendered file matching this conversation ID
@@ -1249,7 +1317,7 @@ def _open_result(
 
     if not render_file:
         click.echo("No rendered output found for this conversation.", err=True)
-        click.echo("Run 'polylogue sync' to render conversations.", err=True)
+        click.echo("Run 'polylogue run' to render conversations.", err=True)
         raise SystemExit(1)
 
     # Open in browser
