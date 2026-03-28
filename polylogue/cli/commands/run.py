@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -20,9 +21,22 @@ from polylogue.cli.helpers import (
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
-from polylogue.pipeline.runner import plan_sources, run_sources
+from polylogue.pipeline.runner import RUN_STAGE_CHOICES, plan_sources, run_sources
 from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds as a compact duration string."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours}h{mins:02d}m{secs:02d}s"
 
 
 def _run_sync_once(
@@ -35,18 +49,54 @@ def _run_sync_once(
 ) -> RunResult:
     """Execute a single sync run."""
     if env.ui.plain:
+        pipeline_start = time.time()
         print("Syncing...", flush=True)
-        last_update = [time.time()]
+        stage_start = [time.time()]
+        last_update = [stage_start[0]]
         processed = [0]
+        stage_processed = [0]
+
+        last_desc = [""]
+        last_stage = [""]
+
+        def _stage_key(desc: str) -> str:
+            """Extract base stage name, ignoring count suffixes like 'Rendering: 42/5060'."""
+            return desc.split(":")[0].split("[")[0].strip()
 
         def plain_progress(amount: int, desc: str | None = None) -> None:
             processed[0] += amount
+            stage_processed[0] += amount
             now = time.time()
-            if now - last_update[0] >= 1:
-                print(f"  {desc or 'Processing'}: {processed[0]:,} items...", flush=True)
+            # Detect major stage transitions (e.g., Acquiring→Parsing→Rendering)
+            current_stage = _stage_key(desc) if desc else last_stage[0]
+            is_stage_change = current_stage != last_stage[0] and current_stage
+            if is_stage_change:
+                # Print summary line for the completed stage
+                if last_stage[0]:
+                    prev_elapsed = now - stage_start[0]
+                    print(
+                        f"  {last_stage[0]}: done ({stage_processed[0] - amount:,}"
+                        f" in {_format_elapsed(prev_elapsed)})",
+                        flush=True,
+                    )
+                last_stage[0] = current_stage
+                stage_start[0] = now
+                stage_processed[0] = amount
+            if desc:
+                last_desc[0] = desc
+            if is_stage_change or now - last_update[0] >= 1:
+                elapsed = now - stage_start[0]
+                total_elapsed = now - pipeline_start
+                rate = stage_processed[0] / elapsed if elapsed > 0.5 else 0
+                rate_str = f" ({rate:,.0f}/s)" if rate > 0 else ""
+                print(
+                    f"  {last_desc[0] or 'Processing'}: {stage_processed[0]:,}{rate_str}"
+                    f" [{_format_elapsed(total_elapsed)} total]...",
+                    flush=True,
+                )
                 last_update[0] = now
 
-        return run_sources(
+        result = asyncio.run(run_sources(
             config=cfg,
             stage=stage,
             plan=plan_snapshot,
@@ -54,7 +104,10 @@ def _run_sync_once(
             source_names=selected_sources,
             progress_callback=plain_progress,
             render_format=render_format,
-        )
+        ))
+        total_elapsed = time.time() - pipeline_start
+        print(f"  Pipeline complete in {_format_elapsed(total_elapsed)}", flush=True)
+        return result
     else:
         from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
@@ -74,7 +127,7 @@ def _run_sync_once(
                     progress.update(task_id, description=desc)
                 progress.update(task_id, advance=amount)
 
-            return run_sources(
+            return asyncio.run(run_sources(
                 config=cfg,
                 stage=stage,
                 plan=plan_snapshot,
@@ -82,7 +135,7 @@ def _run_sync_once(
                 source_names=selected_sources,
                 progress_callback=progress_callback,
                 render_format=render_format,
-            )
+            ))
 
 
 def _display_result(
@@ -144,65 +197,24 @@ def _display_result(
         click.echo(hint_line, err=True)
 
 
-def _notify_new_conversations(count: int) -> None:
-    """Send desktop notification for new conversations."""
-    try:
-        import subprocess
-
-        subprocess.run(
-            ["notify-send", "Polylogue", f"Synced {count} new conversation(s)"],
-            capture_output=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        pass  # notify-send not available
-
-
-def _exec_on_new(exec_cmd: str, count: int) -> None:
-    """Execute command when new conversations are synced."""
-    import os
-    import subprocess
-
-    env = os.environ.copy()
-    env["POLYLOGUE_NEW_COUNT"] = str(count)
-    subprocess.run(exec_cmd, shell=True, env=env, check=False)
-
-
-def _webhook_on_new(webhook_url: str, count: int) -> None:
-    """Call webhook URL when new conversations are synced."""
-    import logging
-
-    _logger = logging.getLogger(__name__)
-    try:
-        import json as json_lib
-        import urllib.request
-
-        data = json_lib.dumps({"event": "sync", "new_conversations": count}).encode()
-        req = urllib.request.Request(
-            webhook_url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=10)
-    except Exception as exc:
-        _logger.warning("Webhook failed for %s: %s", webhook_url, exc)
-
-
 @click.command("run")
 @click.option("--preview", is_flag=True, help="Preview work without writing")
 @click.option(
     "--stage",
-    type=click.Choice(["acquire", "parse", "render", "index", "generate-schemas", "all"]),
+    type=click.Choice(list(RUN_STAGE_CHOICES)),
     default="all",
     show_default=True,
-    help="Pipeline stage: acquire (store raw), parse (raw→conversations), render, index, or all",
+    help=(
+        "Pipeline stage: acquire (store raw), validate (schema check raw payloads), "
+        "parse (extract conversations), render (output), index (search), "
+        "generate-schemas, or all"
+    ),
 )
 @click.option(
     "--source",
     "sources",
     multiple=True,
-    help="Limit to source name (repeatable, or 'last'). Use `polylogue sources` to list.",
+    help="Limit to source name (repeatable). 'last' = previously synced source. List with: polylogue sources",
 )
 @click.option(
     "--format",
@@ -216,6 +228,7 @@ def _webhook_on_new(webhook_url: str, count: int) -> None:
 @click.option("--notify", is_flag=True, help="Desktop notification on new conversations (requires --watch)")
 @click.option("--exec", "exec_cmd", help="Execute command on new conversations (requires --watch)")
 @click.option("--webhook", help="Call webhook URL on new conversations (requires --watch)")
+@click.option("--reparse", is_flag=True, help="Force re-parsing of all raw conversations (clears parse tracking)")
 @click.pass_obj
 def run_command(
     env: AppEnv,
@@ -227,6 +240,7 @@ def run_command(
     notify: bool,
     exec_cmd: str | None,
     webhook: str | None,
+    reparse: bool,
 ) -> None:
     """Run pipeline stages on configured sources."""
     # Validate watch-related flags
@@ -239,6 +253,14 @@ def run_command(
 
     selected_sources = resolve_sources(cfg, sources, "run")
     selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "run")
+
+    # Reset parse tracking if --reparse was requested
+    if reparse:
+        from polylogue.services import get_backend
+
+        backend = get_backend()
+        reset_count = asyncio.run(backend.reset_parse_status())
+        click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
 
     # Preview mode
     plan_snapshot = None
@@ -267,31 +289,58 @@ def run_command(
 
     # Watch mode
     if watch:
+        from polylogue.pipeline.events import (
+            CompositeSyncHandler,
+            ExecHandler,
+            NotificationHandler,
+            SyncEvent,
+            WebhookHandler,
+        )
+        from polylogue.pipeline.watch import WatchRunner
+
+        # Build event handlers from CLI flags
+        handlers: list[object] = []
+
+        # Always display results when new conversations arrive
+        class _DisplayHandler:
+            def on_sync(self, event: SyncEvent) -> None:
+                if event.new_conversations > 0 and event.run_result is not None:
+                    _display_result(env, cfg, event.run_result, stage, selected_sources)
+
+        handlers.append(_DisplayHandler())
+
+        if notify:
+            handlers.append(NotificationHandler())
+        if exec_cmd:
+            handlers.append(ExecHandler(exec_cmd))
+        if webhook:
+            handlers.append(WebhookHandler(webhook))
+
+        composite = CompositeSyncHandler(handlers)  # type: ignore[arg-type]
+
+        def _sync_once() -> RunResult:
+            return _run_sync_once(cfg, env, stage, selected_sources, render_format)
+
+        def _on_idle(result: RunResult) -> None:
+            click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
+
+        def _on_error(exc: Exception) -> None:
+            if isinstance(exc, DriveError):
+                click.echo(f"Sync error: {exc}", err=True)
+            else:
+                click.echo(f"Unexpected error during sync: {exc}", err=True)
+
         env.ui.console.print("Watch mode: syncing every 60 seconds. Press Ctrl+C to stop.")
-        poll_interval = 60
-        try:
-            while True:
-                try:
-                    result = _run_sync_once(cfg, env, stage, selected_sources, render_format)
-                    new_count = result.counts.get("conversations", 0)
-                    if new_count > 0:
-                        _display_result(env, cfg, result, stage, selected_sources)
-                        if notify:
-                            _notify_new_conversations(new_count)
-                        if exec_cmd:
-                            _exec_on_new(exec_cmd, new_count)
-                        if webhook:
-                            _webhook_on_new(webhook, new_count)
-                    else:
-                        click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
-                except DriveError as exc:
-                    click.echo(f"Sync error: {exc}", err=True)
-                except Exception as exc:
-                    click.echo(f"Unexpected error during sync: {exc}", err=True)
-                time.sleep(poll_interval)
-        except KeyboardInterrupt:
-            env.ui.console.print("\nWatch mode stopped.")
-            return
+        runner = WatchRunner(
+            sync_fn=_sync_once,
+            handler=composite,
+            interval=60,
+            on_idle=_on_idle,
+            on_error=_on_error,
+        )
+        runner.run()
+        env.ui.console.print("\nWatch mode stopped.")
+        return
     else:
         # Single sync run
         try:

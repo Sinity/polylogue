@@ -15,9 +15,8 @@ Usage:
 
 from __future__ import annotations
 
-import json
+import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 try:
@@ -28,9 +27,19 @@ except ImportError:
     Draft202012Validator = None
     ValidationError = Exception
 
+from polylogue.schemas.registry import SchemaRegistry, canonical_schema_provider
 
-# Schema directory relative to this file
-SCHEMA_DIR = Path(__file__).parent.parent / "schemas" / "providers"
+_RECORD_VALIDATION_PROVIDERS = {"claude-code", "codex"}
+
+_UUID_KEY_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+_RECORD_CANDIDATE_KEYS = frozenset({
+    "type", "record_type", "role", "content", "message", "uuid", "id",
+    "timestamp", "parentUuid", "sessionId", "payload",
+})
 
 
 @dataclass
@@ -67,7 +76,11 @@ class SchemaValidator:
     - Nested structures that differ from samples
     """
 
-    def __init__(self, schema: dict[str, Any], strict: bool = True):
+    # Class-level cache: avoids re-reading schema files and re-compiling
+    # validators for the same provider during a pipeline run.
+    _cache: dict[tuple[str, bool], SchemaValidator] = {}
+
+    def __init__(self, schema: dict[str, Any], strict: bool = True, provider: str | None = None):
         """Initialize validator with a schema.
 
         Args:
@@ -79,14 +92,17 @@ class SchemaValidator:
 
         self.schema = schema
         self.strict = strict
+        self.provider = provider
         self._validator = Draft202012Validator(schema)
 
-        # Extract known property names for drift detection
-        self._known_properties = self._extract_known_properties(schema)
+    @classmethod
+    def canonical_provider(cls, provider: str) -> str:
+        """Map runtime provider aliases to canonical schema provider names."""
+        return canonical_schema_provider(provider)
 
     @classmethod
     def for_provider(cls, provider: str, strict: bool = True) -> SchemaValidator:
-        """Create a validator for a specific provider.
+        """Create a validator for a specific provider, caching by (provider, strict).
 
         Args:
             provider: Provider name (chatgpt, claude-ai, claude-code, codex, gemini)
@@ -98,19 +114,23 @@ class SchemaValidator:
         Raises:
             FileNotFoundError: If no schema exists for the provider
         """
-        schema_path = SCHEMA_DIR / f"{provider}.schema.json"
-        if not schema_path.exists():
-            raise FileNotFoundError(f"No schema found for provider: {provider}")
+        canonical_provider = cls.canonical_provider(provider)
+        key = (canonical_provider, strict)
+        cached = cls._cache.get(key)
+        if cached is not None:
+            return cached
 
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        return cls(schema, strict=strict)
+        schema = SchemaRegistry().get_schema(canonical_provider, version="latest")
+        if schema is None:
+            raise FileNotFoundError(f"No schema found for provider: {provider} (canonical: {canonical_provider})")
+        instance = cls(schema, strict=strict, provider=canonical_provider)
+        cls._cache[key] = instance
+        return instance
 
     @classmethod
     def available_providers(cls) -> list[str]:
         """List providers with available schemas."""
-        if not SCHEMA_DIR.exists():
-            return []
-        return sorted(p.stem.replace(".schema", "") for p in SCHEMA_DIR.glob("*.schema.json"))
+        return SchemaRegistry().list_providers()
 
     def validate(self, data: Any) -> ValidationResult:
         """Validate data against the schema with drift detection.
@@ -137,6 +157,108 @@ class SchemaValidator:
             errors=errors,
             drift_warnings=drift_warnings,
         )
+
+    def validation_samples(self, payload: Any, *, max_samples: int | None = 16) -> list[dict[str, Any]]:
+        """Extract representative objects from a payload for validation.
+
+        For record-oriented providers (JSONL), this returns a stratified subset of
+        record dicts. For document-oriented providers, this returns the top-level
+        payload object.
+        """
+        if not isinstance(payload, (dict, list)):
+            return []
+
+        granularity = self.schema.get("x-polylogue-sample-granularity")
+        if not isinstance(granularity, str):
+            granularity = "record" if self.provider in _RECORD_VALIDATION_PROVIDERS else "document"
+
+        if granularity != "record":
+            if isinstance(payload, dict):
+                return [payload]
+            # Document-like payloads in list form are rare; validate the first dict.
+            first_dict = next((item for item in payload if isinstance(item, dict)), None)
+            return [first_dict] if isinstance(first_dict, dict) else []
+
+        def _is_record_candidate(item: dict[str, Any]) -> bool:
+            if any(key in item for key in _RECORD_CANDIDATE_KEYS):
+                return True
+            payload_obj = item.get("payload")
+            return isinstance(payload_obj, dict)
+
+        if isinstance(payload, dict):
+            return [payload] if _is_record_candidate(payload) else []
+
+        def _signature(item: dict[str, Any]) -> str:
+            for key in ("type", "record_type"):
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    return f"{key}:{value}"
+            payload_obj = item.get("payload")
+            if isinstance(payload_obj, dict):
+                value = payload_obj.get("type")
+                if isinstance(value, str) and value:
+                    return f"payload.type:{value}"
+            return "unknown"
+
+        if max_samples is None:
+            return [
+                item for item in payload
+                if isinstance(item, dict) and _is_record_candidate(item)
+            ]
+
+        if max_samples <= 0:
+            return []
+
+        # Fast path for sampled mode: scan at most a bounded number of records
+        # and keep a small per-signature reservoir, avoiding full-list scans
+        # on massive JSONL payloads.
+        scan_cap = max(1024, max_samples * 64)
+        per_bucket_cap = 8
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        head_items: list[dict[str, Any]] = []
+        dict_count = 0
+        truncated = False
+        for item in payload:
+            if not isinstance(item, dict) or not _is_record_candidate(item):
+                continue
+            dict_count += 1
+            if dict_count <= max_samples:
+                head_items.append(item)
+            sig = _signature(item)
+            bucket = buckets.setdefault(sig, [])
+            if len(bucket) < per_bucket_cap:
+                bucket.append(item)
+            if dict_count >= scan_cap:
+                truncated = True
+                break
+
+        if dict_count == 0:
+            return []
+        if not truncated and dict_count <= max_samples:
+            return head_items
+
+        ordered_keys = sorted(buckets, key=lambda k: len(buckets[k]), reverse=True)
+        selected: list[dict[str, Any]] = []
+
+        for key in ordered_keys:
+            if len(selected) >= max_samples:
+                break
+            selected.append(buckets[key].pop(0))
+
+        while len(selected) < max_samples:
+            progressed = False
+            for key in ordered_keys:
+                bucket = buckets[key]
+                if not bucket:
+                    continue
+                selected.append(bucket.pop(0))
+                progressed = True
+                if len(selected) >= max_samples:
+                    break
+            if not progressed:
+                break
+
+        return selected
 
     def _format_error(self, error: ValidationError) -> str:
         """Format a validation error for display."""
@@ -169,7 +291,9 @@ class SchemaValidator:
                     pass
                 elif isinstance(has_additional, dict):
                     # Field is allowed by additionalProperties schema but not named -> Drift
-                    warnings.append(f"Unexpected field: {current_path}")
+                    dynamic_container = bool(schema.get("x-polylogue-dynamic-keys"))
+                    if not dynamic_container and not self._looks_dynamic_key(key):
+                        warnings.append(f"Unexpected field: {current_path}")
                     # Recurse if value is dict to find nested drift
                     if isinstance(value, dict):
                         warnings.extend(self._detect_drift(value, has_additional, current_path))
@@ -187,24 +311,13 @@ class SchemaValidator:
 
         return warnings
 
-    def _extract_known_properties(self, schema: dict[str, Any]) -> set[str]:
-        """Extract all known property names from schema (recursively)."""
-        props: set[str] = set()
-
-        if "properties" in schema:
-            props.update(schema["properties"].keys())
-            for prop_schema in schema["properties"].values():
-                if isinstance(prop_schema, dict):
-                    props.update(self._extract_known_properties(prop_schema))
-
-        if "items" in schema and isinstance(schema["items"], dict):
-            props.update(self._extract_known_properties(schema["items"]))
-
-        if "additionalProperties" in schema and isinstance(schema["additionalProperties"], dict):
-            props.update(self._extract_known_properties(schema["additionalProperties"]))
-
-        return props
-
+    def _looks_dynamic_key(self, key: str) -> bool:
+        """Detect dynamic identifier keys (UUIDs, hashes, generated IDs)."""
+        if _UUID_KEY_RE.match(key):
+            return True
+        if re.match(r"^[0-9a-f]{24,}$", key, re.IGNORECASE):
+            return True
+        return bool(re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE))
 
 def validate_provider_export(
     data: Any,
