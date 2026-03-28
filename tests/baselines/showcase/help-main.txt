@@ -23,7 +23,7 @@ Usage: cli [OPTIONS] COMMAND [ARGS]...
       polylogue tags      List tags with counts
       polylogue site      Build static HTML archive
       polylogue sources   List configured sources
-      polylogue schema    Schema inference and versioning
+      polylogue schema    Schema generation, package versioning, and evidence
       polylogue mcp       Start MCP server
       polylogue qa        Snapshot/index QA artifacts
 
@@ -38,16 +38,22 @@ Options:
   -t, --tag TEXT                  Include tags (comma = OR, supports key:value)
   --exclude-tag TEXT              Exclude tags
   --title TEXT                    Title contains
+  --path TEXT                     Touched path contains substring (repeatable =
+                                  AND)
+  --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent]
+                                  Require semantic action category (repeatable
+                                  = AND)
+  --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent]
+                                  Exclude semantic action category (repeatable
+                                  = AND)
+  --similar TEXT                  Semantic similarity query (requires
+                                  embeddings)
   --has TEXT                      Filter by content: thinking (reasoning), tools
                                   (calls), summary, attachments
   --has-tool-use                  Only conversations with tool use (SQL
                                   pushdown)
   --has-thinking                  Only conversations with thinking blocks (SQL
                                   pushdown)
-  --has-file-ops                  Only conversations with file read/write/edit
-                                  ops
-  --has-git-ops                   Only conversations with git operations
-  --has-subagent                  Only conversations that spawned subagents
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
   --min-words INTEGER             Minimum total word count
@@ -98,7 +104,7 @@ Commands:
   qa           Snapshot and index QA artifacts to a reproducible archive path.
   reset        Reset database, assets, rendered outputs, or auth state.
   run          Run pipeline stages on configured sources.
-  schema       Schema inference, versioning, and promotion.
+  schema       Schema generation, package versioning, and evidence inspection.
   site         Generate a static HTML site from the archive.
   sources      List configured sources.
   tags         List all tags with conversation counts.

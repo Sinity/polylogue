@@ -8,6 +8,7 @@ Extracted from monolithic test_search_index.py.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,8 +23,15 @@ from polylogue.storage.index import rebuild_index, update_index_for_conversation
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
+from polylogue.storage.store import ACTION_EVENT_MATERIALIZER_VERSION, ContentBlockRecord
 from tests.infra.mutmut import preserved_mutmut_env
-from tests.infra.storage_records import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
+from tests.infra.storage_records import (
+    ConversationBuilder,
+    DbFactory,
+    make_conversation,
+    make_message,
+    store_records,
+)
 from tests.infra.strategies import fts5_match_text_strategy, search_query_strategy
 
 # ============================================================================
@@ -150,7 +158,9 @@ def test_rebuild_index_with_empty_database(test_conn):
     rebuild_index(test_conn)
 
     count = test_conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+    action_count = test_conn.execute("SELECT COUNT(*) FROM action_events_fts").fetchone()[0]
     assert count == 0
+    assert action_count == 0
 
 
 async def test_search_returns_searchresult_object(workspace_env, storage_repository):
@@ -231,6 +241,121 @@ def test_update_index_deletes_old_entries_from_conversation(test_conn):
     # New message should be indexed
     new_hits = test_conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?", ("new",)).fetchone()[0]
     assert new_hits == 1
+
+
+async def test_rebuild_index_populates_action_search_rows(workspace_env, storage_repository):
+    """rebuild_index() also populates persisted action-event search rows."""
+    conv = make_conversation("conv-actions", title="Action indexing")
+    msg = make_message(
+        "msg-actions",
+        "conv-actions",
+        role="assistant",
+        text="Ran tests",
+        content_blocks=[
+            ContentBlockRecord(
+                block_id="blk-actions-0",
+                message_id="msg-actions",
+                conversation_id="conv-actions",
+                block_index=0,
+                type="tool_use",
+                tool_name="Bash",
+                tool_id="tool-actions",
+                tool_input=json.dumps({"command": "pytest -q tests/unit/core/test_semantic_facts.py"}),
+                semantic_type="shell",
+            )
+        ],
+    )
+
+    await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    rebuild_index()
+
+    with open_connection(storage_repository.backend.db_path) as conn:
+        action_row = conn.execute(
+            """
+            SELECT normalized_tool_name, action_kind, materializer_version, command
+            FROM action_events
+            WHERE conversation_id = ?
+            """,
+            ("conv-actions",),
+        ).fetchone()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM action_events_fts WHERE action_events_fts MATCH ?",
+            ("semantic_facts",),
+        ).fetchone()[0]
+    assert action_row is not None
+    assert action_row["normalized_tool_name"] == "bash"
+    assert action_row["action_kind"] == "shell"
+    assert action_row["materializer_version"] == ACTION_EVENT_MATERIALIZER_VERSION
+    assert action_row["command"] == "pytest -q tests/unit/core/test_semantic_facts.py"
+    assert count == 1
+
+
+def test_update_index_refreshes_action_entries_for_updated_tool_blocks(test_conn):
+    """update_index_for_conversations() refreshes action-search rows from content blocks."""
+    conv = make_conversation("conv-action-refresh", title="Action refresh")
+    msg = make_message(
+        "msg-action-refresh",
+        "conv-action-refresh",
+        role="assistant",
+        text="Ran commands",
+        content_blocks=[
+            ContentBlockRecord(
+                block_id="blk-refresh-0",
+                message_id="msg-action-refresh",
+                conversation_id="conv-action-refresh",
+                block_index=0,
+                type="tool_use",
+                tool_name="Bash",
+                tool_id="tool-refresh",
+                tool_input=json.dumps({"command": "pytest -q"}),
+                semantic_type="shell",
+            )
+        ],
+    )
+    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
+    rebuild_index(test_conn)
+
+    original_hits = test_conn.execute(
+        "SELECT COUNT(*) FROM action_events_fts WHERE action_events_fts MATCH ?",
+        ("pytest",),
+    ).fetchone()[0]
+    assert original_hits == 1
+
+    test_conn.execute("DELETE FROM content_blocks WHERE message_id = ?", ("msg-action-refresh",))
+    test_conn.execute(
+        """
+        INSERT INTO content_blocks (
+            block_id, message_id, conversation_id, block_index, type, text, tool_name, tool_id, tool_input, media_type, metadata, semantic_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "blk-refresh-0b",
+            "msg-action-refresh",
+            "conv-action-refresh",
+            0,
+            "tool_use",
+            None,
+            "Bash",
+            "tool-refresh",
+            json.dumps({"command": "ruff check polylogue/lib/action_events.py"}),
+            None,
+            None,
+            "shell",
+        ),
+    )
+
+    update_index_for_conversations(["conv-action-refresh"], test_conn)
+
+    pytest_hits = test_conn.execute(
+        "SELECT COUNT(*) FROM action_events_fts WHERE action_events_fts MATCH ?",
+        ("pytest",),
+    ).fetchone()[0]
+    ruff_hits = test_conn.execute(
+        "SELECT COUNT(*) FROM action_events_fts WHERE action_events_fts MATCH ?",
+        ("action_events",),
+    ).fetchone()[0]
+    assert pytest_hits == 0
+    assert ruff_hits == 1
 
 
 def test_batch_index_10k_messages(test_conn):
@@ -508,6 +633,32 @@ class TestCreateVectorProvider:
                     provider = create_vector_provider()
                     assert provider is None
 
+    def test_logs_sqlite_vec_missing_only_once_per_process(self, monkeypatch):
+        """Missing sqlite-vec warning is emitted once even if provider creation repeats."""
+        import builtins
+
+        import polylogue.storage.search_providers as search_providers
+
+        monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
+        monkeypatch.setattr(search_providers, "_sqlite_vec_missing_warned", False)
+
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "sqlite_vec":
+                raise ImportError("No module named 'sqlite_vec'")
+            return original_import(name, *args, **kwargs)
+
+        with (
+            patch.dict("sys.modules", {"sqlite_vec": None}),
+            patch.object(builtins, "__import__", mock_import),
+            patch.object(search_providers.logger, "warning") as mock_warning,
+        ):
+            assert create_vector_provider() is None
+            assert create_vector_provider() is None
+
+        assert mock_warning.call_count == 1
+
     async def test_config_priority_and_explicit_override(self, monkeypatch, tmp_path):
         """Config voyage_api_key takes priority; explicit args override both config and env."""
         monkeypatch.setenv("VOYAGE_API_KEY", "env-voyage-key")
@@ -729,7 +880,7 @@ async def test_search_after_index(workspace_env, storage_repository):
 def test_health_cached(workspace_env):
     """Test that health status is cached."""
     from polylogue.config import get_config
-    from polylogue.health import get_health
+    from polylogue.health_archive import get_health
 
     config = get_config()
     get_health(config)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import sqlite3
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
@@ -15,6 +15,7 @@ from polylogue.cli.commands.embed import (
     _embed_single,
     _show_embedding_stats,
 )
+from polylogue.storage.embedding_stats import EmbeddingStatsSnapshot
 
 
 @pytest.fixture
@@ -95,34 +96,64 @@ class TestShowEmbeddingStats:
     )
     def test_show_stats_variants(self, mock_env, capsys, query_results, expected_coverage, expected_pending):
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = [MagicMock(fetchone=MagicMock(return_value=qr)) for qr in query_results]
+        mock_conn.execute.return_value.fetchone.return_value = query_results[0]
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open, patch(
+            "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+            return_value=EmbeddingStatsSnapshot(
+                embedded_conversations=int(query_results[1][0]),
+                embedded_messages=int(query_results[2][0]),
+                pending_conversations=int(query_results[3][0]),
+            ),
+        ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
             _show_embedding_stats(mock_env)
 
         captured = capsys.readouterr()
         assert "Embedding Statistics" in captured.out
-        assert f"Coverage:               {expected_coverage}" in captured.out
-        assert f"Pending:                {expected_pending}" in captured.out
+        assert f"Coverage:              {expected_coverage}" in captured.out
+        assert f"Pending:               {expected_pending}" in captured.out
+        assert "Retrieval ready:" in captured.out
 
     def test_show_stats_embedding_status_missing(self, mock_env, capsys):
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = [
-            MagicMock(fetchone=MagicMock(return_value=(100,))),
-            sqlite3.OperationalError("table does not exist"),
-            sqlite3.OperationalError("table does not exist"),
-            sqlite3.OperationalError("table does not exist"),
-        ]
+        mock_conn.execute.return_value.fetchone.return_value = (100,)
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open, patch(
+            "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+            return_value=EmbeddingStatsSnapshot(),
+        ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
             _show_embedding_stats(mock_env)
 
         captured = capsys.readouterr()
         assert "Embedding Statistics" in captured.out
+
+    def test_show_stats_json_output(self, mock_env, capsys):
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = [
+            MagicMock(fetchone=MagicMock(return_value=(100,))),
+        ]
+
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open, patch(
+            "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+            return_value=EmbeddingStatsSnapshot(
+                embedded_conversations=40,
+                embedded_messages=200,
+                pending_conversations=60,
+            ),
+        ):
+            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
+            mock_open.return_value.__exit__ = MagicMock(return_value=False)
+            _show_embedding_stats(mock_env, json_output=True)
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "partial"
+        assert payload["embedded_conversations"] == 40
+        assert payload["pending_conversations"] == 60
+        assert payload["retrieval_ready"] is True
 
 
 class TestEmbedSingle:
@@ -221,7 +252,7 @@ class TestEmbedCommand:
         assert result.exit_code == 0
         assert "embed" in result.output.lower()
 
-    @pytest.mark.parametrize("option", ["--stats", "--model", "--rebuild", "--limit", "--conversation"])
+    @pytest.mark.parametrize("option", ["--stats", "--json", "--model", "--rebuild", "--limit", "--conversation"])
     def test_embed_command_help_lists_options(self, runner, cli_workspace, option):
         result = runner.invoke(cli, ["embed", "--help"])
         assert option in result.output
@@ -231,6 +262,18 @@ class TestEmbedCommand:
             result = runner.invoke(cli, ["--plain", "embed", "--stats"])
         assert result.exit_code == 0
         mock_stats.assert_called_once()
+
+    def test_embed_command_json_requires_stats(self, runner, cli_workspace):
+        result = runner.invoke(cli, ["--plain", "embed", "--json"])
+        assert result.exit_code != 0
+        assert "--json requires --stats" in result.output
+
+    def test_embed_command_stats_json_short_circuit(self, runner, cli_workspace):
+        with patch("polylogue.cli.commands.embed._show_embedding_stats") as mock_stats:
+            result = runner.invoke(cli, ["--plain", "embed", "--stats", "--json"])
+        assert result.exit_code == 0
+        mock_stats.assert_called_once()
+        assert mock_stats.call_args.kwargs == {"json_output": True}
 
     def test_embed_command_single_conversation_dispatches(self, runner, cli_workspace):
         with patch.dict("os.environ", {"VOYAGE_API_KEY": "key"}, clear=False), patch(

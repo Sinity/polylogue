@@ -24,6 +24,7 @@ import pytest
 
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, Message
+from polylogue.storage.repository import ConversationRepository
 
 # =============================================================================
 # Filter state isolation (implicit in CLI routing bugs)
@@ -41,11 +42,12 @@ class TestFilterStateIsolation:
     def mock_repo(self):
         """Create a mock repository for filter testing."""
         repo = AsyncMock()
-        repo.list = AsyncMock(return_value=[])
+        repo.list_by_query = AsyncMock(return_value=[])
         repo.search = AsyncMock(return_value=[])
         repo.count = AsyncMock(return_value=0)
         repo.list_summaries = AsyncMock(return_value=[])
         repo.search_summaries = AsyncMock(return_value=[])
+        repo.list_summaries_by_query = AsyncMock(return_value=[])
         repo.resolve_id = AsyncMock(return_value=None)
         repo.get = AsyncMock(return_value=None)
         repo.get_summary = AsyncMock(return_value=None)
@@ -79,10 +81,10 @@ class TestFilterStateIsolation:
         await f1.list()
         await f2.list()
 
-        first_call = mock_repo.list.await_args_list[0]
-        second_call = mock_repo.list.await_args_list[1]
-        assert first_call.kwargs["provider"] == "chatgpt"
-        assert second_call.kwargs["provider"] == "claude-ai"
+        first_query = mock_repo.list_by_query.await_args_list[0].args[0]
+        second_query = mock_repo.list_by_query.await_args_list[1].args[0]
+        assert first_query.provider == "chatgpt"
+        assert second_query.provider == "claude-ai"
 
     @pytest.mark.asyncio
     async def test_chained_methods_accumulate_on_same_instance(self, mock_repo):
@@ -102,8 +104,8 @@ class TestFilterStateIsolation:
         f.provider("claude-ai")  # second call
 
         await f.list()
-        call = mock_repo.list.await_args_list[-1]
-        assert call.kwargs["providers"] == ["chatgpt", "claude-ai"]
+        query = mock_repo.list_by_query.await_args_list[-1].args[0]
+        assert query.providers == ("chatgpt", "claude-ai")
 
     @pytest.mark.asyncio
     async def test_filter_sort_replaces_not_accumulates(self, mock_repo):
@@ -118,7 +120,7 @@ class TestFilterStateIsolation:
             text="this message has many many words",
             updated_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
         )
-        mock_repo.list.return_value = [newer_short, older_long]
+        mock_repo.list_by_query.return_value = [newer_short, older_long]
 
         f = ConversationFilter(mock_repo)
         f.sort("date")
@@ -134,7 +136,8 @@ class TestFilterStateIsolation:
         await f.list()
 
         mock_repo.search.assert_not_called()
-        mock_repo.list.assert_awaited_once_with(limit=None)
+        query = mock_repo.list_by_query.await_args.args[0]
+        assert query.limit is None
 
     @pytest.mark.asyncio
     async def test_limit_replaces_previous_limit(self, mock_repo):
@@ -144,9 +147,9 @@ class TestFilterStateIsolation:
         f.limit(5)
         await f.list()
 
-        call = mock_repo.list.await_args_list[-1]
+        query = mock_repo.list_by_query.await_args_list[-1].args[0]
         # _effective_fetch_limit() applies a 2x safety margin: max(5*2, 2) = 10
-        assert call.kwargs["limit"] == 10
+        assert query.limit == 10
 
 
 # =============================================================================
@@ -246,6 +249,7 @@ class TestConcurrentSaveGuards:
         from polylogue.storage.store import ConversationRecord, MessageRecord
 
         backend = sqlite_backend
+        repo = ConversationRepository(backend=backend)
 
         async def _save_one(idx: int) -> None:
             conv = ConversationRecord(
@@ -264,7 +268,7 @@ class TestConcurrentSaveGuards:
                 content_hash=f"mhash-{idx}",
                 version=1,
             )
-            await backend.save_conversation(conv, [msg], [])
+            await repo.save_conversation(conv, [msg], [])
 
         # Run 10 concurrent saves
         await asyncio.gather(*[_save_one(i) for i in range(10)])
@@ -281,6 +285,7 @@ class TestConcurrentSaveGuards:
         from polylogue.storage.store import ConversationRecord, MessageRecord
 
         backend = sqlite_backend
+        repo = ConversationRepository(backend=backend)
 
         async def _upsert(version: int) -> None:
             conv = ConversationRecord(
@@ -299,7 +304,7 @@ class TestConcurrentSaveGuards:
                 content_hash=f"mhash-v{version}",
                 version=version,
             )
-            await backend.save_conversation(conv, [msg], [])
+            await repo.save_conversation(conv, [msg], [])
 
         # Run 5 concurrent upserts to the same conversation
         await asyncio.gather(*[_upsert(i) for i in range(5)])
@@ -316,6 +321,7 @@ class TestConcurrentSaveGuards:
         from polylogue.storage.store import ConversationRecord
 
         backend = sqlite_backend
+        repo = ConversationRepository(backend=backend)
 
         async def _write(idx: int) -> None:
             conv = ConversationRecord(
@@ -326,7 +332,7 @@ class TestConcurrentSaveGuards:
                 content_hash=f"hash-{idx}",
                 version=1,
             )
-            await backend.save_conversation(conv, [], [])
+            await repo.save_conversation(conv, [], [])
 
         async def _read() -> int:
             async with backend.connection() as conn:

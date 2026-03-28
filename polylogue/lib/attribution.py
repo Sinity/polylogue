@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.lib.viewports import ToolCall
+from polylogue.lib.action_events import ActionEvent
+from polylogue.lib.semantic_facts import ConversationSemanticFacts, build_conversation_semantic_facts
 
-_BRANCH_PATTERN = re.compile(r"git\s+(?:checkout|switch)\s+(?:-[bc]\s+)?(\S+)")
+if TYPE_CHECKING:
+    from polylogue.lib.models import Conversation
+
 _LANGUAGE_EXTENSIONS = {
     ".py": "python", ".rs": "rust", ".ts": "typescript", ".tsx": "typescript",
     ".js": "javascript", ".jsx": "javascript", ".go": "go", ".nix": "nix",
@@ -25,15 +26,6 @@ _LANGUAGE_EXTENSIONS = {
     ".sql": "sql", ".r": "r", ".R": "r", ".toml": "toml", ".yaml": "yaml",
     ".json": "json", ".md": "markdown", ".html": "html", ".css": "css",
 }
-
-
-def _get_tool_calls(message: Message) -> list[ToolCall]:
-    """Extract tool calls from a message's harmonized viewport."""
-    harmonized = message.harmonized
-    if harmonized is None:
-        return []
-    calls = getattr(harmonized, "tool_calls", None)
-    return list(calls) if calls else []
 
 
 def _repo_root_from_path(path: str) -> str | None:
@@ -52,6 +44,21 @@ def _language_from_path(path: str) -> str | None:
     return _LANGUAGE_EXTENSIONS.get(suffix)
 
 
+def _clean_dialogue_path(path: str) -> str | None:
+    candidate = path.rstrip(".,;:)'\">`*_")
+    if not candidate:
+        return None
+    if candidate.rstrip("/") == "/realm/project":
+        return None
+    if "<" in candidate or ">" in candidate:
+        return None
+    if any(ch in candidate for ch in "*?[]{}"):
+        return None
+    if set(candidate) <= {".", "/"}:
+        return None
+    return candidate
+
+
 @dataclass(frozen=True)
 class ConversationAttribution:
     """Raw path/repo/branch attribution extracted from a conversation.
@@ -68,49 +75,50 @@ class ConversationAttribution:
     canonical_projects: tuple[str, ...]  # resolved project names (e.g. "sinex", "sinnix")
 
 
-def extract_attribution(conversation: Conversation) -> ConversationAttribution:
-    """Extract path/repo/branch attribution from all tool calls in a conversation."""
+def extract_attribution_from_action_events(
+    actions: tuple[ActionEvent, ...] | list[ActionEvent],
+    *,
+    provider_meta: dict[str, object] | None = None,
+) -> ConversationAttribution:
+    """Extract attribution from canonical action events plus optional provider metadata."""
     repo_paths: set[str] = set()
     cwd_paths: set[str] = set()
     branch_names: set[str] = set()
     file_paths: set[str] = set()
     languages: set[str] = set()
 
-    for message in conversation.messages:
-        for tc in _get_tool_calls(message):
-            # Collect affected paths
-            for path in tc.affected_paths:
-                file_paths.add(path)
-                lang = _language_from_path(path)
-                if lang:
-                    languages.add(lang)
-                repo = _repo_root_from_path(path)
-                if repo:
-                    repo_paths.add(repo)
+    provider_meta = provider_meta if isinstance(provider_meta, dict) else {}
+    cwd_value = provider_meta.get("cwd")
+    if isinstance(cwd_value, str) and cwd_value:
+        cwd_paths.add(cwd_value)
+        repo = _repo_root_from_path(cwd_value)
+        if repo:
+            repo_paths.add(repo)
 
-            # Extract cwd from shell commands
-            cmd = tc.input.get("command", "")
-            if isinstance(cmd, str):
-                # Look for cd commands
-                for match in re.finditer(r'cd\s+"?(/[^\s"]+)', cmd):
-                    cwd_paths.add(match.group(1))
-                # Look for git branch operations
-                for match in _BRANCH_PATTERN.finditer(cmd):
-                    branch = match.group(1)
-                    if not branch.startswith("-"):
-                        branch_names.add(branch)
+    git_branch = provider_meta.get("gitBranch")
+    if isinstance(git_branch, str) and git_branch:
+        branch_names.add(git_branch)
 
-    # Scan assistant text for file paths and language mentions (catches pure-conversation sessions)
-    _REALM_PATH_PATTERN = re.compile(r'/realm/project/[^\s,;:)\]]+')
-    _LANGUAGE_NAMES = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
-    for message in conversation.messages:
-        if not message.is_assistant or not message.text:
-            continue
-        for match in _REALM_PATH_PATTERN.finditer(message.text):
-            path = match.group().rstrip(".,;:)'\">`")
-            # Skip template/placeholder paths like /realm/project/<name>
-            if "<" in path or ">" in path:
-                continue
+    git_meta = provider_meta.get("git")
+    if isinstance(git_meta, dict):
+        branch = git_meta.get("branch")
+        if isinstance(branch, str) and branch:
+            branch_names.add(branch)
+        repository_url = git_meta.get("repository_url")
+        if isinstance(repository_url, str) and repository_url.startswith("/"):
+            repo = _repo_root_from_path(repository_url)
+            if repo:
+                repo_paths.add(repo)
+
+    for action in actions:
+        if action.cwd_path:
+            cwd_paths.add(action.cwd_path)
+            repo = _repo_root_from_path(action.cwd_path)
+            if repo:
+                repo_paths.add(repo)
+        for branch in action.branch_names:
+            branch_names.add(branch)
+        for path in action.affected_paths:
             file_paths.add(path)
             lang = _language_from_path(path)
             if lang:
@@ -118,12 +126,7 @@ def extract_attribution(conversation: Conversation) -> ConversationAttribution:
             repo = _repo_root_from_path(path)
             if repo:
                 repo_paths.add(repo)
-        text_lower = message.text.lower()
-        for lang_name in _LANGUAGE_NAMES:
-            if lang_name in text_lower:
-                languages.add(lang_name)
 
-    # Resolve repo_paths to canonical project names (basename of /realm/project/<X>)
     canonical: set[str] = set()
     for rp in repo_paths:
         parts = PurePosixPath(rp).parts
@@ -141,4 +144,57 @@ def extract_attribution(conversation: Conversation) -> ConversationAttribution:
         file_paths_touched=tuple(sorted(file_paths)),
         languages_detected=tuple(sorted(languages)),
         canonical_projects=tuple(sorted(canonical)),
+    )
+
+
+def extract_attribution(
+    conversation: Conversation,
+    *,
+    facts: ConversationSemanticFacts | None = None,
+) -> ConversationAttribution:
+    """Extract path/repo/branch attribution from all tool calls in a conversation."""
+    semantic_facts = facts or build_conversation_semantic_facts(conversation)
+    base = extract_attribution_from_action_events(
+        semantic_facts.action_events,
+        provider_meta=conversation.provider_meta if isinstance(conversation.provider_meta, dict) else None,
+    )
+    repo_paths = set(base.repo_paths)
+    cwd_paths = set(base.cwd_paths)
+    branch_names = set(base.branch_names)
+    file_paths = set(base.file_paths_touched)
+    languages = set(base.languages_detected)
+
+    # Scan dialogue text for file paths and language mentions (catches pure-conversation sessions)
+    realm_path_pattern = re.compile(r'/realm/project/[^\s,;:)\]]+')
+    language_names = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
+    for message in semantic_facts.message_facts:
+        if not message.is_dialogue or not message.text:
+            continue
+        for match in realm_path_pattern.finditer(message.text):
+            path = _clean_dialogue_path(match.group())
+            if path is None:
+                continue
+            file_paths.add(path)
+            lang = _language_from_path(path)
+            if lang:
+                languages.add(lang)
+            repo = _repo_root_from_path(path)
+            if repo:
+                repo_paths.add(repo)
+        text_lower = message.text.lower()
+        for lang_name in language_names:
+            if lang_name in text_lower:
+                languages.add(lang_name)
+
+    return ConversationAttribution(
+        repo_paths=tuple(sorted(repo_paths)),
+        cwd_paths=tuple(sorted(cwd_paths)),
+        branch_names=tuple(sorted(branch_names)),
+        file_paths_touched=tuple(sorted(file_paths)),
+        languages_detected=tuple(sorted(languages)),
+        canonical_projects=tuple(sorted({
+            PurePosixPath(path).name
+            for path in repo_paths
+            if PurePosixPath(path).parent.name == "project"
+        })),
     )

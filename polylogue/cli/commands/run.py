@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 import click
@@ -38,7 +37,8 @@ from polylogue.pipeline.observers import (
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, plan_sources, run_sources
 from polylogue.protocols import ProgressCallback
 from polylogue.sources import DriveError
-from polylogue.storage.store import PlanResult, RunResult
+from polylogue.storage.state_views import PlanResult, RunResult
+from polylogue.sync_bridge import run_coroutine_sync
 
 
 def _execute_sync_once(
@@ -51,7 +51,7 @@ def _execute_sync_once(
     progress_callback: ProgressCallback | None = None,
 ) -> RunResult:
     """Execute a single sync run with the provided progress callback."""
-    return asyncio.run(run_sources(
+    return run_coroutine_sync(run_sources(
         config=cfg,
         stage=stage,
         plan=plan_snapshot,
@@ -268,7 +268,7 @@ def run_command(
 
     # Reset parse tracking if --reparse was requested
     if reparse:
-        reset_count = asyncio.run(env.backend.reset_parse_status())
+        reset_count = run_coroutine_sync(env.repository.reset_parse_status())
         click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
 
     # Preview mode

@@ -12,6 +12,7 @@ Performance characteristics:
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,43 +21,25 @@ import aiosqlite
 
 import polylogue.paths as _paths
 from polylogue.logging import get_logger
-from polylogue.storage.backends.connection import (
-    DB_TIMEOUT,
-)
-from polylogue.storage.backends.queries import (
-    artifacts as artifacts_q,
-)
-from polylogue.storage.backends.queries import (
-    attachments as attachments_q,
-)
-from polylogue.storage.backends.queries import (
-    conversations as conversations_q,
-)
-from polylogue.storage.backends.queries import (
-    messages as messages_q,
-)
-from polylogue.storage.backends.queries import (
-    publications as publications_q,
-)
-from polylogue.storage.backends.queries import (
-    raw as raw_queries,
-)
-from polylogue.storage.backends.queries import (
-    runs as runs_q,
-)
-from polylogue.storage.backends.queries import (
-    stats as stats_q,
-)
+from polylogue.storage.backends.connection import DB_TIMEOUT
+from polylogue.storage.backends.queries import action_events as action_events_q
+from polylogue.storage.backends.queries import artifacts as artifacts_q
+from polylogue.storage.backends.queries import attachments as attachments_q
+from polylogue.storage.backends.queries import conversations as conversations_q
+from polylogue.storage.backends.queries import messages as messages_q
+from polylogue.storage.backends.queries import raw as raw_queries
+from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.backends.query_store import SQLiteQueryStore
+from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.state_views import RawConversationState, RawConversationStateUpdate
 from polylogue.storage.store import (
+    ActionEventRecord,
     ArtifactObservationRecord,
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
-    PublicationRecord,
     RawConversationRecord,
-    RawConversationState,
     RunRecord,
 )
 from polylogue.types import Provider, ValidationMode, ValidationStatus
@@ -137,6 +120,11 @@ class SQLiteBackend:
     def db_path(self) -> Path:
         """Return the backing SQLite database path."""
         return self._db_path
+
+    @property
+    def transaction_depth(self) -> int:
+        """Return the active transaction nesting depth."""
+        return self._transaction_depth
 
     @asynccontextmanager
     async def connection(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -281,12 +269,20 @@ class SQLiteBackend:
         For the current version: nothing to do.
         For any other version: raise — wipe DB and re-run.
         """
+        from polylogue.storage.action_event_lifecycle import (
+            action_event_read_model_status_async,
+            rebuild_action_event_read_model_async,
+        )
         from polylogue.storage.backends.schema import (
+            _ACTION_EVENT_DDL,
+            _ACTION_FTS_DDL,
             _ARTIFACT_OBSERVATION_DDL,
+            _PUBLICATION_DDL,
             _VEC0_DDL,
             SCHEMA_DDL,
             SCHEMA_VERSION,
         )
+        from polylogue.storage.fts_lifecycle import ACTION_FTS_REBUILD_SQL
 
         cursor = await conn.execute("PRAGMA user_version")
         row = await cursor.fetchone()
@@ -304,6 +300,44 @@ class SQLiteBackend:
             await conn.commit()
         elif current_version == SCHEMA_VERSION:
             await conn.executescript(_ARTIFACT_OBSERVATION_DDL)
+            await conn.executescript(_PUBLICATION_DDL)
+            await conn.executescript(_ACTION_EVENT_DDL)
+            cursor = await conn.execute("PRAGMA table_info(action_events)")
+            action_event_columns = {row[1] for row in await cursor.fetchall()}
+            if "materializer_version" not in action_event_columns:
+                await conn.execute(
+                    "ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1"
+                )
+            action_event_status = await action_event_read_model_status_async(conn)
+            rebuilt_action_events = False
+            has_tool_blocks = bool(
+                await (
+                    await conn.execute(
+                        "SELECT 1 FROM content_blocks WHERE type = 'tool_use' LIMIT 1"
+                    )
+                ).fetchone()
+            )
+            if has_tool_blocks and (
+                int(action_event_status["count"]) == 0 or not bool(action_event_status["matches_version"])
+            ):
+                try:
+                    await rebuild_action_event_read_model_async(conn)
+                    rebuilt_action_events = True
+                except sqlite3.OperationalError as exc:
+                    if "database is locked" not in str(exc).lower():
+                        raise
+                    logger.warning(
+                        "Skipping asynchronous action-event backfill during schema ensure because the database is locked"
+                    )
+            cursor = await conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
+            )
+            action_fts_exists = await cursor.fetchone()
+            await conn.executescript(_ACTION_FTS_DDL)
+            if rebuilt_action_events or not action_fts_exists:
+                await conn.execute("DELETE FROM action_events_fts")
+                await conn.execute(ACTION_FTS_REBUILD_SQL)
+            await conn.commit()
         else:
             from polylogue.errors import DatabaseError
 
@@ -416,6 +450,11 @@ class SQLiteBackend:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        path_terms: list[str] | None = None,
+        action_terms: list[str] | None = None,
+        excluded_action_terms: list[str] | None = None,
+        tool_terms: list[str] | None = None,
+        excluded_tool_terms: list[str] | None = None,
         limit: int | None = None,
         offset: int = 0,
         has_tool_use: bool = False,
@@ -423,29 +462,30 @@ class SQLiteBackend:
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> list[ConversationRecord]:
         """List conversations with optional filtering and pagination."""
         return await self.queries.list_conversations(
-            source=source,
-            provider=provider,
-            providers=providers,
-            parent_id=parent_id,
-            since=since,
-            until=until,
-            title_contains=title_contains,
-            limit=limit,
-            offset=offset,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            has_file_ops=has_file_ops,
-            has_git_ops=has_git_ops,
-            has_subagent=has_subagent,
+            ConversationRecordQuery(
+                source=source,
+                provider=provider,
+                providers=tuple(providers or ()),
+                parent_id=parent_id,
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                path_terms=tuple(path_terms or ()),
+                action_terms=tuple(action_terms or ()),
+                excluded_action_terms=tuple(excluded_action_terms or ()),
+                tool_terms=tuple(tool_terms or ()),
+                excluded_tool_terms=tuple(excluded_tool_terms or ()),
+                limit=limit,
+                offset=offset,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+            )
         )
 
     async def count_conversations(
@@ -456,31 +496,37 @@ class SQLiteBackend:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        path_terms: list[str] | None = None,
+        action_terms: list[str] | None = None,
+        excluded_action_terms: list[str] | None = None,
+        tool_terms: list[str] | None = None,
+        excluded_tool_terms: list[str] | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> int:
         """Count conversations matching filters without loading records."""
         return await self.queries.count_conversations(
-            source=source,
-            provider=provider,
-            providers=providers,
-            since=since,
-            until=until,
-            title_contains=title_contains,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            has_file_ops=has_file_ops,
-            has_git_ops=has_git_ops,
-            has_subagent=has_subagent,
+            ConversationRecordQuery(
+                source=source,
+                provider=provider,
+                providers=tuple(providers or ()),
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                path_terms=tuple(path_terms or ()),
+                action_terms=tuple(action_terms or ()),
+                excluded_action_terms=tuple(excluded_action_terms or ()),
+                tool_terms=tuple(tool_terms or ()),
+                excluded_tool_terms=tuple(excluded_tool_terms or ()),
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+            )
         )
 
     async def aggregate_message_stats(
@@ -500,40 +546,6 @@ class SQLiteBackend:
             await conversations_q.save_conversation_record(
                 conn, record, self._transaction_depth
             )
-
-    async def save_conversation(
-        self,
-        conversation: ConversationRecord,
-        messages: list[MessageRecord],
-        attachments: list[AttachmentRecord],
-    ) -> dict[str, int]:
-        """Save a conversation with messages and attachments atomically."""
-        counts: dict[str, int] = {
-            "conversations_created": 0,
-            "messages_created": 0,
-            "attachments_created": 0,
-        }
-
-        existing = await self.get_conversation(conversation.conversation_id)
-        await self.save_conversation_record(conversation)
-        if not existing or existing.content_hash != conversation.content_hash:
-            counts["conversations_created"] = 1
-
-        if messages:
-            existing_messages = {
-                msg.message_id: msg for msg in await self.get_messages(conversation.conversation_id)
-            }
-            for message in messages:
-                existing_msg = existing_messages.get(message.message_id)
-                if not existing_msg or existing_msg.content_hash != message.content_hash:
-                    counts["messages_created"] += 1
-            await self.save_messages(messages)
-
-        if attachments:
-            await self.save_attachments(attachments)
-            counts["attachments_created"] = len(attachments)
-
-        return counts
 
     # --- Message CRUD ---
 
@@ -560,6 +572,35 @@ class SQLiteBackend:
         async with self._get_connection() as conn:
             await attachments_q.save_content_blocks(conn, records, self._transaction_depth)
 
+    async def replace_action_events(
+        self,
+        conversation_id: str,
+        records: list[ActionEventRecord],
+    ) -> None:
+        """Replace durable action-event rows for one conversation."""
+        async with self._get_connection() as conn:
+            await action_events_q.replace_action_events(
+                conn,
+                conversation_id,
+                records,
+                self._transaction_depth,
+            )
+
+    async def get_action_events(self, conversation_id: str) -> list[ActionEventRecord]:
+        """Get durable action-event rows for one conversation."""
+        return await self.queries.get_action_events(conversation_id)
+
+    async def get_action_events_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[ActionEventRecord]]:
+        """Get durable action-event rows for multiple conversations."""
+        return await self.queries.get_action_events_batch(conversation_ids)
+
+    async def get_action_event_read_model_status(self) -> dict[str, int | bool]:
+        """Return readiness metadata for the durable action-event read model."""
+        return await self.queries.get_action_event_read_model_status()
+
     async def upsert_conversation_stats(
         self,
         conversation_id: str,
@@ -578,15 +619,13 @@ class SQLiteBackend:
 
     async def get_attachments(self, conversation_id: str) -> list[AttachmentRecord]:
         """Get all attachments for a conversation."""
-        async with self._get_connection() as conn:
-            return await attachments_q.get_attachments(conn, conversation_id)
+        return await self.queries.get_attachments(conversation_id)
 
     async def get_attachments_batch(
         self, conversation_ids: list[str]
     ) -> dict[str, list[AttachmentRecord]]:
         """Get attachments for multiple conversations in a single query."""
-        async with self._get_connection() as conn:
-            return await attachments_q.get_attachments_batch(conn, conversation_ids)
+        return await self.queries.get_attachments_batch(conversation_ids)
 
     async def save_attachments(self, records: list[AttachmentRecord]) -> None:
         """Persist attachment records with reference counting."""
@@ -688,108 +727,6 @@ class SQLiteBackend:
         """Search conversations using the canonical ranked FTS conversation query."""
         return await self.queries.search_conversations(query, limit, providers)
 
-    # --- Metadata CRUD ---
-
-    async def get_metadata(self, conversation_id: str) -> dict[str, object]:
-        """Get metadata dict for a conversation."""
-        async with self._get_connection() as conn:
-            return await conversations_q.get_metadata(conn, conversation_id)
-
-    async def _metadata_read_modify_write(
-        self, conversation_id: str, mutator: callable[[dict[str, object]], bool]
-    ) -> None:
-        """Atomically read-modify-write conversation metadata."""
-        async with self._write_lock:
-            if self._txn_conn is None:
-                self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
-                self._txn_conn.row_factory = aiosqlite.Row
-                await self._txn_conn.execute("PRAGMA foreign_keys = ON")
-                await self._txn_conn.execute("PRAGMA journal_mode=WAL")
-                await self._txn_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
-
-            try:
-                await self._txn_conn.execute("BEGIN IMMEDIATE")
-                current = await conversations_q.get_metadata(self._txn_conn, conversation_id)
-                if mutator(current):
-                    await conversations_q.update_metadata_raw(
-                        self._txn_conn, conversation_id, current
-                    )
-                await self._txn_conn.commit()
-            except Exception:
-                await self._txn_conn.rollback()
-                raise
-            finally:
-                if self._txn_conn is not None:
-                    await self._txn_conn.close()
-                    self._txn_conn = None
-
-    async def update_metadata(self, conversation_id: str, key: str, value: object) -> None:
-        """Set a single metadata key."""
-
-        def _set(meta: dict[str, object]) -> bool:
-            meta[key] = value
-            return True
-
-        await self._metadata_read_modify_write(conversation_id, _set)
-
-    async def delete_metadata(self, conversation_id: str, key: str) -> None:
-        """Remove a metadata key."""
-
-        def _delete(meta: dict[str, object]) -> bool:
-            if key in meta:
-                del meta[key]
-                return True
-            return False
-
-        await self._metadata_read_modify_write(conversation_id, _delete)
-
-    async def add_tag(self, conversation_id: str, tag: str) -> None:
-        """Add a tag to the conversation's tags list."""
-
-        def _add(meta: dict[str, object]) -> bool:
-            tags = meta.get("tags", [])
-            if not isinstance(tags, list):
-                tags = []
-            if tag not in tags:
-                tags.append(tag)
-                meta["tags"] = tags
-                return True
-            return False
-
-        await self._metadata_read_modify_write(conversation_id, _add)
-
-    async def remove_tag(self, conversation_id: str, tag: str) -> None:
-        """Remove a tag from the conversation's tags list."""
-
-        def _remove(meta: dict[str, object]) -> bool:
-            tags = meta.get("tags", [])
-            if isinstance(tags, list) and tag in tags:
-                tags.remove(tag)
-                meta["tags"] = tags
-                return True
-            return False
-
-        await self._metadata_read_modify_write(conversation_id, _remove)
-
-    async def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
-        """List all tags with counts."""
-        async with self._get_connection() as conn:
-            return await conversations_q.list_tags(conn, provider=provider)
-
-    async def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
-        """Replace entire metadata dict."""
-        async with self._get_connection() as conn:
-            await conversations_q.set_metadata(
-                conn, conversation_id, metadata, self._transaction_depth
-            )
-
-    async def delete_conversation(self, conversation_id: str) -> bool:
-        """Delete conversation and all related records."""
-        async with self.transaction(), self._get_connection() as conn:
-            return await conversations_q.delete_conversation_sql(
-                conn, conversation_id, self._transaction_depth
-            )
-
     async def iter_messages(
         self,
         conversation_id: str,
@@ -799,15 +736,23 @@ class SQLiteBackend:
         limit: int | None = None,
     ) -> AsyncIterator[MessageRecord]:
         """Stream messages in chunks instead of loading all at once."""
-        async with self._get_connection() as conn:
-            async for msg in messages_q.iter_messages(
-                conn,
-                conversation_id,
-                chunk_size=chunk_size,
-                dialogue_only=dialogue_only,
-                limit=limit,
-            ):
-                yield msg
+        if chunk_size != 100:
+            async with self._get_connection() as conn:
+                async for msg in messages_q.iter_messages(
+                    conn,
+                    conversation_id,
+                    chunk_size=chunk_size,
+                    dialogue_only=dialogue_only,
+                    limit=limit,
+                ):
+                    yield msg
+            return
+        async for msg in self.queries.iter_messages(
+            conversation_id,
+            dialogue_only=dialogue_only,
+            limit=limit,
+        ):
+            yield msg
 
     async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]:
         """Get message counts without loading messages."""
@@ -833,29 +778,12 @@ class SQLiteBackend:
         """Fetch the most recent pipeline run record."""
         return await self.queries.get_latest_run()
 
-    async def get_latest_publication(
-        self,
-        publication_kind: str,
-    ) -> PublicationRecord | None:
-        """Fetch the most recent publication record for one publication kind."""
-        return await self.queries.get_latest_publication(publication_kind)
-
     async def close(self) -> None:
         """Close database connections."""
         if self._txn_conn is not None:
             await self._txn_conn.close()
             self._txn_conn = None
         self._transaction_depth = 0
-
-    async def record_run(self, record: RunRecord) -> None:
-        """Record a pipeline run audit entry."""
-        async with self.transaction(), self._get_connection() as conn:
-            await runs_q.record_run(conn, record, self._transaction_depth)
-
-    async def record_publication(self, record: PublicationRecord) -> None:
-        """Persist one publication manifest."""
-        async with self.transaction(), self._get_connection() as conn:
-            await publications_q.record_publication(conn, record, self._transaction_depth)
 
     # --- Raw Conversation Storage ---
 
@@ -877,6 +805,21 @@ class SQLiteBackend:
         """Retrieve a raw conversation by ID."""
         async with self._get_connection() as conn:
             return await raw_queries.get_raw_conversation(conn, raw_id)
+
+    async def update_raw_state(
+        self,
+        raw_id: str,
+        *,
+        state: RawConversationStateUpdate,
+    ) -> None:
+        """Apply a typed raw-state mutation."""
+        async with self._get_connection() as conn:
+            await raw_queries.apply_raw_state_update(
+                conn,
+                raw_id,
+                state=state,
+                transaction_depth=self._transaction_depth,
+            )
 
     async def mark_raw_parsed(
         self,

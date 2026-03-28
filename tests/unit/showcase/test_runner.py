@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from polylogue.showcase.cli_boundary import ShowcaseCliResult
+from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.runner import ShowcaseRunner
 
 
@@ -42,7 +45,10 @@ class TestShowcaseRunnerSeeding:
 
         fake_corpus = MagicMock()
         fake_corpus.wire_format.encoding = "json"
-        fake_corpus.generate.return_value = [b"{}"]
+        fake_corpus.generate_batch.return_value = SimpleNamespace(
+            artifacts=[SimpleNamespace(raw_bytes=b"{}")],
+            report=SimpleNamespace(generated_count=1, element_kind="conversation_document"),
+        )
 
         with patch(
             "polylogue.schemas.synthetic.SyntheticCorpus.available_providers",
@@ -54,8 +60,8 @@ class TestShowcaseRunnerSeeding:
             ):
                 runner._generate_synthetic_fixtures(fixture_root, count=1)
 
-        fake_corpus.generate.assert_called_once()
-        assert fake_corpus.generate.call_args.kwargs["style"] == "showcase"
+        fake_corpus.generate_batch.assert_called_once()
+        assert fake_corpus.generate_batch.call_args.kwargs["style"] == "showcase"
 
 
 class TestShowcaseRunnerWorkspaceEnv:
@@ -95,3 +101,28 @@ class TestShowcaseRunnerWorkspaceEnv:
                 runner.run()
 
         mock_seed.assert_called_once()
+
+
+class TestShowcaseRunnerExecution:
+    def test_run_exercise_uses_cli_boundary(self, tmp_path):
+        runner = ShowcaseRunner(
+            output_dir=tmp_path / "output",
+            workspace_env={"POLYLOGUE_ARCHIVE_ROOT": str(tmp_path / "archive")},
+        )
+        exercise = Exercise(
+            name="help-main",
+            group="structural",
+            description="Main help",
+            args=["--help"],
+        )
+
+        with patch(
+            "polylogue.showcase.runner.invoke_showcase_cli",
+            return_value=ShowcaseCliResult(exit_code=0, stdout="polylogue\n", stderr=""),
+        ) as mock_invoke:
+            result = runner._run_exercise(exercise)
+
+        assert result.passed is True
+        assert result.exit_code == 0
+        mock_invoke.assert_called_once()
+        assert mock_invoke.call_args.args[0] == ["--plain", "--help"]

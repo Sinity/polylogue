@@ -95,17 +95,20 @@ def _do_corpus(
         provider_dir = out / provider
         provider_dir.mkdir(parents=True, exist_ok=True)
 
-        raw_items = corpus.generate(
+        batch = corpus.generate_batch(
             count=count,
             messages_per_conversation=range(4, 16),
             seed=42,
         )
 
-        for idx, raw_bytes in enumerate(raw_items):
+        for idx, artifact in enumerate(batch.artifacts):
             dest = provider_dir / f"sample-{idx:02d}{ext}"
-            dest.write_bytes(raw_bytes)
+            dest.write_bytes(artifact.raw_bytes)
 
-        env.ui.console.print(f"  {provider}: {count} files → {provider_dir}")
+        env.ui.console.print(
+            f"  {provider}: {batch.report.generated_count} files "
+            f"({batch.report.element_kind or 'default'}) → {provider_dir}"
+        )
 
     env.ui.console.print(f"\nCorpus written to: {out}")
 
@@ -118,11 +121,10 @@ def _do_seed(
     env_only: bool,
 ) -> None:
     """Seed a full demo database via the pipeline."""
-    import asyncio
-
     from polylogue.config import Config, Source
     from polylogue.pipeline.runner import run_sources
     from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.sync_bridge import run_coroutine_sync
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-demo-"))
 
@@ -150,13 +152,13 @@ def _do_seed(
         provider_dir = fixture_dir / provider
         provider_dir.mkdir(parents=True, exist_ok=True)
 
-        raw_items = corpus.generate(
+        batch = corpus.generate_batch(
             count=count,
             messages_per_conversation=range(6, 20),
             seed=42,
         )
-        for idx, raw_bytes in enumerate(raw_items):
-            (provider_dir / f"demo-{idx:02d}{ext}").write_bytes(raw_bytes)
+        for idx, artifact in enumerate(batch.artifacts):
+            (provider_dir / f"demo-{idx:02d}{ext}").write_bytes(artifact.raw_bytes)
 
         sources.append(Source(name=provider, path=provider_dir))
 
@@ -167,7 +169,7 @@ def _do_seed(
             sources=sources,
         )
 
-        result = asyncio.run(run_sources(
+        result = run_coroutine_sync(run_sources(
             config=config,
             stage="all",
             plan=None,

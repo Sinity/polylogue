@@ -6,12 +6,13 @@ or accepts an assistant's proposal. Heuristic, not ML.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from polylogue.lib.semantic_facts import ConversationSemanticFacts, build_conversation_semantic_facts
+
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, Message
+    from polylogue.lib.models import Conversation
 
 _ACCEPTANCE_PATTERNS = (
     "let's go with", "sounds good", "yes, do that", "proceed",
@@ -37,13 +38,18 @@ class Decision:
     context: str
 
 
-def extract_decisions(conversation: Conversation) -> list[Decision]:
+def extract_decisions(
+    conversation: Conversation,
+    *,
+    facts: ConversationSemanticFacts | None = None,
+) -> list[Decision]:
     """Extract decisions from user messages that follow assistant proposals.
 
     Looks for user acceptance patterns ("let's go with", "proceed", etc.)
     that follow assistant messages containing proposals.
     """
-    messages = list(conversation.messages)
+    semantic_facts = facts or build_conversation_semantic_facts(conversation)
+    messages = list(semantic_facts.message_facts)
     if len(messages) < 2:
         return []
 

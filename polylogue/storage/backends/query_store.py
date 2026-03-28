@@ -8,6 +8,9 @@ from contextlib import AbstractAsyncContextManager
 import aiosqlite
 
 from polylogue.storage.backends.queries import (
+    action_events as action_events_q,
+)
+from polylogue.storage.backends.queries import (
     attachments as attachments_q,
 )
 from polylogue.storage.backends.queries import (
@@ -28,7 +31,10 @@ from polylogue.storage.backends.queries import (
 from polylogue.storage.backends.queries import (
     stats as stats_q,
 )
+from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.store import (
+    ActionEventRecord,
+    AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
@@ -59,85 +65,19 @@ class SQLiteQueryStore:
 
     async def list_conversations(
         self,
-        *,
-        source: str | None = None,
-        provider: str | None = None,
-        providers: list[str] | None = None,
-        parent_id: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        limit: int | None = None,
-        offset: int = 0,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
+        request: ConversationRecordQuery,
     ) -> list[ConversationRecord]:
         """List conversation records with filtering and pagination."""
         async with self._connection_factory() as conn:
-            return await conversations_q.list_conversations(
-                conn,
-                source=source,
-                provider=provider,
-                providers=providers,
-                parent_id=parent_id,
-                since=since,
-                until=until,
-                title_contains=title_contains,
-                limit=limit,
-                offset=offset,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
-            )
+            return await conversations_q.list_conversations(conn, **request.to_list_kwargs())
 
     async def count_conversations(
         self,
-        *,
-        source: str | None = None,
-        provider: str | None = None,
-        providers: list[str] | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
+        request: ConversationRecordQuery,
     ) -> int:
         """Count conversation records matching the given filters."""
         async with self._connection_factory() as conn:
-            return await conversations_q.count_conversations(
-                conn,
-                source=source,
-                provider=provider,
-                providers=providers,
-                since=since,
-                until=until,
-                title_contains=title_contains,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
-            )
+            return await conversations_q.count_conversations(conn, **request.to_count_kwargs())
 
     async def conversation_exists_by_hash(self, content_hash: str) -> bool:
         """Check whether a conversation with the given content hash exists."""
@@ -155,6 +95,33 @@ class SQLiteQueryStore:
         """Return ranked conversation IDs for the given search query."""
         async with self._connection_factory() as conn:
             return await conversations_q.search_conversations(conn, query, limit, providers)
+
+    async def search_action_conversations(
+        self, query: str, limit: int = 100, providers: list[str] | None = None
+    ) -> list[str]:
+        """Return ranked conversation IDs for persisted action-aware search."""
+        async with self._connection_factory() as conn:
+            return await conversations_q.search_action_conversations(conn, query, limit, providers)
+
+    async def get_action_events(self, conversation_id: str) -> list[ActionEventRecord]:
+        """Get durable action-event rows for one conversation."""
+        async with self._connection_factory() as conn:
+            return await action_events_q.get_action_events(conn, conversation_id)
+
+    async def get_action_events_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[ActionEventRecord]]:
+        """Get durable action-event rows for multiple conversations."""
+        async with self._connection_factory() as conn:
+            return await action_events_q.get_action_events_batch(conn, conversation_ids)
+
+    async def get_action_event_read_model_status(self) -> dict[str, int | bool]:
+        """Return readiness metadata for the durable action-event read model."""
+        from polylogue.storage.action_event_lifecycle import action_event_read_model_status_async
+
+        async with self._connection_factory() as conn:
+            return await action_event_read_model_status_async(conn)
 
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
         """Get message records for a conversation with content blocks attached."""
@@ -195,6 +162,36 @@ class SQLiteQueryStore:
         """Get content block records keyed by message ID."""
         async with self._connection_factory() as conn:
             return await attachments_q.get_content_blocks(conn, message_ids)
+
+    async def get_attachments(self, conversation_id: str) -> list[AttachmentRecord]:
+        """Get attachment records for one conversation."""
+        async with self._connection_factory() as conn:
+            return await attachments_q.get_attachments(conn, conversation_id)
+
+    async def get_attachments_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[AttachmentRecord]]:
+        """Get attachment records for multiple conversations."""
+        async with self._connection_factory() as conn:
+            return await attachments_q.get_attachments_batch(conn, conversation_ids)
+
+    async def iter_messages(
+        self,
+        conversation_id: str,
+        *,
+        dialogue_only: bool = False,
+        limit: int | None = None,
+    ) -> AsyncIterator[MessageRecord]:
+        """Stream message records for a conversation."""
+        async with self._connection_factory() as conn:
+            async for record in messages_q.iter_messages(
+                conn,
+                conversation_id,
+                dialogue_only=dialogue_only,
+                limit=limit,
+            ):
+                yield record
 
     async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]:
         """Get lightweight message statistics for one conversation."""

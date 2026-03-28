@@ -98,6 +98,93 @@ _PUBLICATION_DDL = """
 """
 
 
+_ACTION_EVENT_DDL = """
+        CREATE TABLE IF NOT EXISTS action_events (
+            event_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_id TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+            materializer_version INTEGER NOT NULL DEFAULT 1,
+            source_block_id TEXT,
+            timestamp TEXT,
+            sort_key REAL,
+            sequence_index INTEGER NOT NULL,
+            provider_name TEXT,
+            action_kind TEXT NOT NULL,
+            tool_name TEXT,
+            normalized_tool_name TEXT NOT NULL,
+            tool_id TEXT,
+            affected_paths_json TEXT,
+            cwd_path TEXT,
+            branch_names_json TEXT,
+            command TEXT,
+            query_text TEXT,
+            url TEXT,
+            output_text TEXT,
+            search_text TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_action_events_conversation
+        ON action_events(conversation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_action_events_message
+        ON action_events(message_id);
+
+        CREATE INDEX IF NOT EXISTS idx_action_events_kind
+        ON action_events(action_kind);
+
+        CREATE INDEX IF NOT EXISTS idx_action_events_tool
+        ON action_events(normalized_tool_name);
+
+        CREATE INDEX IF NOT EXISTS idx_action_events_sort
+        ON action_events(conversation_id, sort_key, sequence_index);
+"""
+
+
+_ACTION_FTS_DDL = """
+        CREATE VIRTUAL TABLE IF NOT EXISTS action_events_fts USING fts5(
+            event_id UNINDEXED,
+            message_id UNINDEXED,
+            conversation_id UNINDEXED,
+            action_kind UNINDEXED,
+            tool_name UNINDEXED,
+            text,
+            tokenize='unicode61'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS action_events_fts_ai
+        AFTER INSERT ON action_events BEGIN
+            INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
+            VALUES (
+                new.event_id,
+                new.message_id,
+                new.conversation_id,
+                new.action_kind,
+                new.normalized_tool_name,
+                new.search_text
+            );
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS action_events_fts_ad
+        AFTER DELETE ON action_events BEGIN
+            DELETE FROM action_events_fts WHERE event_id = old.event_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS action_events_fts_au
+        AFTER UPDATE ON action_events BEGIN
+            DELETE FROM action_events_fts WHERE event_id = old.event_id;
+            INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
+            VALUES (
+                new.event_id,
+                new.message_id,
+                new.conversation_id,
+                new.action_kind,
+                new.normalized_tool_name,
+                new.search_text
+            );
+        END;
+"""
+
+
 # Complete target schema applied to fresh databases.
 SCHEMA_DDL = """
         CREATE TABLE IF NOT EXISTS raw_conversations (
@@ -338,6 +425,9 @@ SCHEMA_DDL = """
         END;
 """
 
+SCHEMA_DDL += _ACTION_EVENT_DDL
+SCHEMA_DDL += _ACTION_FTS_DDL
+
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     row = conn.execute(
@@ -373,9 +463,50 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         return
 
     if current_version == SCHEMA_VERSION:
+        from polylogue.storage.action_event_lifecycle import (
+            action_event_read_model_status_sync,
+            rebuild_action_event_read_model_sync,
+        )
+
         conn.executescript(_ARTIFACT_OBSERVATION_DDL)
         conn.executescript(_PUBLICATION_DDL)
+        conn.executescript(_ACTION_EVENT_DDL)
+        action_event_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(action_events)").fetchall()
+        }
+        if "materializer_version" not in action_event_columns:
+            conn.execute(
+                "ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1"
+            )
+        action_event_status = action_event_read_model_status_sync(conn)
+        rebuilt_action_events = False
+        has_tool_blocks = bool(
+            conn.execute(
+                "SELECT 1 FROM content_blocks WHERE type = 'tool_use' LIMIT 1"
+            ).fetchone()
+        )
+        if has_tool_blocks and (
+            int(action_event_status["count"]) == 0 or not bool(action_event_status["matches_version"])
+        ):
+            try:
+                rebuild_action_event_read_model_sync(conn)
+                rebuilt_action_events = True
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc).lower():
+                    raise
+                logger.warning(
+                    "Skipping synchronous action-event backfill during schema ensure because the database is locked"
+                )
+        action_fts_exists = _table_exists(conn, "action_events_fts")
+        conn.executescript(_ACTION_FTS_DDL)
+        if rebuilt_action_events or not action_fts_exists:
+            from polylogue.storage.fts_lifecycle import ACTION_FTS_REBUILD_SQL
+
+            conn.execute("DELETE FROM action_events_fts")
+            conn.execute(ACTION_FTS_REBUILD_SQL)
         _ensure_vec0_table(conn)
+        conn.commit()
         return
 
     from polylogue.errors import DatabaseError

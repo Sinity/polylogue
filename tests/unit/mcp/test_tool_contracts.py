@@ -9,19 +9,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.stats import ArchiveStats
 from tests.infra.mcp import (
     invoke_surface,
     invoke_surface_async,
-    make_mock_filter,
     make_repo_mock,
     make_simple_conversation,
 )
 
 STATS_CONFIGS = [
-    (100, 5000, {"claude-ai": 50, "chatgpt": 30, "claude-code": 20}, 10, 200, 1048576, 1.0),
-    (0, 0, {}, 0, 0, 0, 0),
-    (5, 20, {"test": 5}, 0, 0, None, 0),
+    (100, 5000, {"claude-ai": 50, "chatgpt": 30, "claude-code": 20}, 10, 200, 90, 1048576, 10.0, 1.0),
+    (0, 0, {}, 0, 0, 0, 0, 0.0, 0),
+    (5, 20, {"test": 5}, 0, 0, 5, None, 0.0, 0),
 ]
 
 QUERY_TOOL_CASES = [
@@ -44,10 +44,66 @@ QUERY_TOOL_CASES = [
         },
     ),
     (
+        "search",
+        {"query": "hello", "path": "/realm/project/polylogue/README.md", "limit": 5},
+        {
+            "contains": ("hello",),
+            "path": ("/realm/project/polylogue/README.md",),
+            "limit": (5,),
+        },
+    ),
+    (
+        "search",
+        {"query": "hello", "retrieval_lane": "actions", "limit": 5},
+        {
+            "contains": ("hello",),
+            "retrieval_lane": ("actions",),
+            "limit": (5,),
+        },
+    ),
+    (
+        "search",
+        {"query": "hello", "action": "search", "exclude_action": "git", "tool": "grep", "exclude_tool": "bash", "limit": 5},
+        {
+            "contains": ("hello",),
+            "action": ("search",),
+            "exclude_action": ("git",),
+            "tool": ("grep",),
+            "exclude_tool": ("bash",),
+            "limit": (5,),
+        },
+    ),
+    (
+        "search",
+        {"query": "hello", "action_sequence": "file_read,file_edit,shell", "limit": 5},
+        {
+            "contains": ("hello",),
+            "action_sequence": (("file_read", "file_edit", "shell"),),
+            "limit": (5,),
+        },
+    ),
+    (
+        "search",
+        {"query": "hello", "action_text": "pytest -q", "limit": 5},
+        {
+            "contains": ("hello",),
+            "action_text": ("pytest -q",),
+            "limit": (5,),
+        },
+    ),
+    (
         "list_conversations",
         {"limit": 10},
         {
             "limit": (10,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"retrieval_lane": "hybrid", "limit": 2},
+        {
+            "retrieval_lane": ("hybrid",),
+            "limit": (2,),
         },
     ),
     (
@@ -58,6 +114,49 @@ QUERY_TOOL_CASES = [
             "since": ("2024-01-01",),
             "tag": ("bug",),
             "title": ("incident",),
+            "limit": (2,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"path": "/realm/project/polylogue/README.md", "limit": 2},
+        {
+            "path": ("/realm/project/polylogue/README.md",),
+            "limit": (2,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"action": "file_edit", "exclude_action": "web", "tool": "edit", "exclude_tool": "read", "limit": 2},
+        {
+            "action": ("file_edit",),
+            "exclude_action": ("web",),
+            "tool": ("edit",),
+            "exclude_tool": ("read",),
+            "limit": (2,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"action_sequence": "file_read,file_edit,shell", "limit": 2},
+        {
+            "action_sequence": (("file_read", "file_edit", "shell"),),
+            "limit": (2,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"action_text": "pytest -q", "limit": 2},
+        {
+            "action_text": ("pytest -q",),
+            "limit": (2,),
+        },
+    ),
+    (
+        "list_conversations",
+        {"action": "none", "limit": 2},
+        {
+            "action": ("none",),
             "limit": (2,),
         },
     ),
@@ -73,34 +172,57 @@ class TestQueryTools:
     @pytest.mark.parametrize(("tool_name", "args", "expected_calls"), QUERY_TOOL_CASES)
     @pytest.mark.asyncio
     async def test_query_tool_filter_contract(self, simple_conversation, tool_name, args, expected_calls, mcp_server):
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = make_repo_mock()
-            mock_repo.search.return_value = [simple_conversation]
-            mock_repo.list.return_value = [simple_conversation]
-            mock_get_repo.return_value = mock_repo
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.query_conversations = AsyncMock(return_value=[simple_conversation])
+            mock_get_archive_ops.return_value = mock_ops
 
-            with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
-                filter_instance = make_mock_filter(results=[simple_conversation])
-                mock_filter_cls.return_value = filter_instance
-
-                raw = await mcp_server._tool_manager._tools[tool_name].fn(**args)
+            raw = await mcp_server._tool_manager._tools[tool_name].fn(**args)
 
         payload = json.loads(raw)
         assert isinstance(payload, list)
         assert len(payload) == 1
         assert payload[0]["id"] == simple_conversation.id
+        mock_ops.query_conversations.assert_awaited_once()
+        spec = mock_ops.query_conversations.await_args.args[0]
+        assert isinstance(spec, ConversationQuerySpec)
         for method_name, method_args in expected_calls.items():
-            getattr(filter_instance, method_name).assert_called_once_with(*method_args)
+            expected_value = method_args[0] if len(method_args) == 1 else method_args
+            if method_name == "contains":
+                assert spec.query_terms == (expected_value,)
+            elif method_name == "provider":
+                assert tuple(str(provider) for provider in spec.providers) == (expected_value,)
+            elif method_name == "since":
+                assert spec.since == expected_value
+            elif method_name == "retrieval_lane":
+                assert spec.retrieval_lane == expected_value
+            elif method_name == "path":
+                assert spec.path_terms == (expected_value,)
+            elif method_name == "action":
+                assert spec.action_terms == (expected_value,)
+            elif method_name == "exclude_action":
+                assert spec.excluded_action_terms == (expected_value,)
+            elif method_name == "tool":
+                assert spec.tool_terms == (expected_value,)
+            elif method_name == "exclude_tool":
+                assert spec.excluded_tool_terms == (expected_value,)
+            elif method_name == "action_sequence":
+                assert spec.action_sequence == expected_value
+            elif method_name == "action_text":
+                assert spec.action_text_terms == (expected_value,)
+            elif method_name == "tag":
+                assert spec.tags == (expected_value,)
+            elif method_name == "title":
+                assert spec.title == expected_value
+            elif method_name == "limit":
+                assert spec.limit == expected_value
 
     @pytest.mark.asyncio
     async def test_search_with_empty_query(self, mcp_server):
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo, patch(
-            "polylogue.lib.filters.ConversationFilter"
-        ) as mock_filter_cls:
-            mock_repo = make_repo_mock()
-            mock_repo.search.return_value = []
-            mock_get_repo.return_value = mock_repo
-            mock_filter_cls.return_value = make_mock_filter(results=[])
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.query_conversations = AsyncMock(return_value=[])
+            mock_get_archive_ops.return_value = mock_ops
 
             result = await invoke_surface_async(mcp_server._tool_manager._tools["search"].fn, query="", limit=10)
 
@@ -171,7 +293,9 @@ class TestStatsTool:
             "providers",
             "embedded_convs",
             "embedded_msgs",
+            "pending_convs",
             "db_size",
+            "expected_coverage",
             "expected_mb",
         ),
         STATS_CONFIGS,
@@ -183,7 +307,9 @@ class TestStatsTool:
         providers,
         embedded_convs,
         embedded_msgs,
+        pending_convs,
         db_size,
+        expected_coverage,
         expected_mb,
         mcp_server,
     ):
@@ -195,6 +321,7 @@ class TestStatsTool:
                 providers=providers,
                 embedded_conversations=embedded_convs,
                 embedded_messages=embedded_msgs,
+                pending_embedding_conversations=pending_convs,
                 db_size_bytes=db_size,
             )
             mock_get_repo.return_value = mock_repo
@@ -204,6 +331,8 @@ class TestStatsTool:
         data = json.loads(result)
         assert data["total_conversations"] == total_conversations
         assert data["total_messages"] == total_messages
+        assert data["pending_embedding_conversations"] == pending_convs
+        assert data["embedding_coverage_percent"] == expected_coverage
         assert data["db_size_mb"] == expected_mb
 
 
@@ -454,7 +583,7 @@ class TestMutationTools:
         mock_report.cached = False
 
         with patch("polylogue.mcp.server._get_config") as mock_get_config, patch(
-            "polylogue.health.get_health"
+            "polylogue.health_archive.get_health"
         ) as mock_get_health:
             mock_get_config.return_value = MagicMock()
             mock_get_health.return_value = mock_report

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable, Sequence
+from typing import Protocol
 
 import aiosqlite
 
@@ -16,14 +17,46 @@ FTS_MESSAGES_TABLE_SQL = """
     );
 """
 
+FTS_ACTIONS_TABLE_SQL = """
+    CREATE VIRTUAL TABLE IF NOT EXISTS action_events_fts USING fts5(
+        event_id UNINDEXED,
+        message_id UNINDEXED,
+        conversation_id UNINDEXED,
+        action_kind UNINDEXED,
+        tool_name UNINDEXED,
+        text,
+        tokenize='unicode61'
+    );
+"""
+
 FTS_INDEX_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
 FTS_INDEX_DOC_COUNT_SQL = "SELECT COUNT(*) FROM messages_fts_docsize"
+ACTION_FTS_INDEX_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
+ACTION_FTS_INDEX_DOC_COUNT_SQL = "SELECT COUNT(*) FROM action_events_fts_docsize"
 FTS_REBUILD_SQL = """
     INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
     SELECT messages.rowid, messages.message_id, messages.conversation_id, messages.text
     FROM messages
     WHERE messages.text IS NOT NULL
 """
+
+ACTION_FTS_REBUILD_SQL = """
+    INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
+    SELECT
+        ae.event_id,
+        ae.message_id,
+        ae.conversation_id,
+        ae.action_kind,
+        ae.normalized_tool_name,
+        ae.search_text
+    FROM action_events ae
+"""
+
+
+class _IndexedMessage(Protocol):
+    message_id: str
+    conversation_id: str
+    text: str | None
 
 
 def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
@@ -46,28 +79,55 @@ def _insert_conversation_rows_sql(chunk_size: int) -> str:
     """
 
 
+def _delete_action_rows_sql(chunk_size: int) -> str:
+    placeholders = ", ".join("?" for _ in range(chunk_size))
+    return f"DELETE FROM action_events_fts WHERE conversation_id IN ({placeholders})"
+
+
+def _insert_action_rows_sql(chunk_size: int) -> str:
+    placeholders = ", ".join("?" for _ in range(chunk_size))
+    return f"""
+        INSERT INTO action_events_fts (event_id, message_id, conversation_id, action_kind, tool_name, text)
+        SELECT
+            ae.event_id,
+            ae.message_id,
+            ae.conversation_id,
+            ae.action_kind,
+            ae.normalized_tool_name,
+            ae.search_text
+        FROM action_events ae
+        WHERE ae.conversation_id IN ({placeholders})
+    """
+
+
 def ensure_fts_index_sync(conn: sqlite3.Connection) -> None:
     """Ensure the FTS5 table exists on a sync SQLite connection."""
     conn.execute(FTS_MESSAGES_TABLE_SQL)
+    conn.execute(FTS_ACTIONS_TABLE_SQL)
 
 
 async def ensure_fts_index_async(conn: aiosqlite.Connection) -> None:
     """Ensure the FTS5 table exists on an async SQLite connection."""
     await conn.execute(FTS_MESSAGES_TABLE_SQL)
+    await conn.execute(FTS_ACTIONS_TABLE_SQL)
 
 
 def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     """Rebuild the full FTS index from persisted message rows."""
     ensure_fts_index_sync(conn)
     conn.execute("DELETE FROM messages_fts")
+    conn.execute("DELETE FROM action_events_fts")
     conn.execute(FTS_REBUILD_SQL)
+    conn.execute(ACTION_FTS_REBUILD_SQL)
 
 
 async def rebuild_fts_index_async(conn: aiosqlite.Connection) -> None:
     """Rebuild the full FTS index from persisted message rows."""
     await ensure_fts_index_async(conn)
     await conn.execute("DELETE FROM messages_fts")
+    await conn.execute("DELETE FROM action_events_fts")
     await conn.execute(FTS_REBUILD_SQL)
+    await conn.execute(ACTION_FTS_REBUILD_SQL)
 
 
 def repair_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
@@ -80,11 +140,13 @@ def repair_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[s
         params = tuple(chunk)
         conn.execute(_delete_conversation_rows_sql(len(chunk)), params)
         conn.execute(_insert_conversation_rows_sql(len(chunk)), params)
+        conn.execute(_delete_action_rows_sql(len(chunk)), params)
+        conn.execute(_insert_action_rows_sql(len(chunk)), params)
 
 
 def replace_fts_rows_for_messages_sync(
     conn: sqlite3.Connection,
-    messages: Sequence[tuple[str, str, str | None]] | Sequence[object],
+    messages: Sequence[tuple[str, str, str | None]] | Sequence[_IndexedMessage],
 ) -> None:
     """Replace FTS rows for the supplied message payloads.
 
@@ -96,14 +158,14 @@ def replace_fts_rows_for_messages_sync(
     if not messages:
         return
 
-    def _message_id(message: object) -> str:
-        return getattr(message, "message_id")
+    def _message_id(message: _IndexedMessage) -> str:
+        return message.message_id
 
-    def _conversation_id(message: object) -> str:
-        return getattr(message, "conversation_id")
+    def _conversation_id(message: _IndexedMessage) -> str:
+        return message.conversation_id
 
-    def _text(message: object) -> str | None:
-        return getattr(message, "text")
+    def _text(message: _IndexedMessage) -> str | None:
+        return message.text
 
     conversation_ids = sorted({_conversation_id(message) for message in messages})
     for chunk in _chunked(conversation_ids, size=500):
@@ -164,6 +226,8 @@ async def repair_fts_index_async(
         params = tuple(chunk)
         await conn.execute(_delete_conversation_rows_sql(len(chunk)), params)
         await conn.execute(_insert_conversation_rows_sql(len(chunk)), params)
+        await conn.execute(_delete_action_rows_sql(len(chunk)), params)
+        await conn.execute(_insert_action_rows_sql(len(chunk)), params)
 
 
 def fts_index_status_sync(conn: sqlite3.Connection) -> dict[str, object]:
@@ -171,9 +235,13 @@ def fts_index_status_sync(conn: sqlite3.Connection) -> dict[str, object]:
     row = conn.execute(FTS_INDEX_EXISTS_SQL).fetchone()
     exists = bool(row)
     count = 0
+    action_count = 0
     if exists:
         count = conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone()[0]
-    return {"exists": exists, "count": int(count)}
+        action_row = conn.execute(ACTION_FTS_INDEX_EXISTS_SQL).fetchone()
+        if action_row:
+            action_count = conn.execute(ACTION_FTS_INDEX_DOC_COUNT_SQL).fetchone()[0]
+    return {"exists": exists, "count": int(count), "action_count": int(action_count)}
 
 
 async def fts_index_status_async(conn: aiosqlite.Connection) -> dict[str, object]:
@@ -181,10 +249,15 @@ async def fts_index_status_async(conn: aiosqlite.Connection) -> dict[str, object
     row = await (await conn.execute(FTS_INDEX_EXISTS_SQL)).fetchone()
     exists = bool(row)
     count = 0
+    action_count = 0
     if exists:
         count_row = await (await conn.execute(FTS_INDEX_DOC_COUNT_SQL)).fetchone()
         count = count_row[0] if count_row else 0
-    return {"exists": exists, "count": int(count)}
+        action_exists_row = await (await conn.execute(ACTION_FTS_INDEX_EXISTS_SQL)).fetchone()
+        if action_exists_row:
+            action_count_row = await (await conn.execute(ACTION_FTS_INDEX_DOC_COUNT_SQL)).fetchone()
+            action_count = action_count_row[0] if action_count_row else 0
+    return {"exists": exists, "count": int(count), "action_count": int(action_count)}
 
 
 __all__ = [

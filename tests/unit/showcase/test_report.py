@@ -24,18 +24,25 @@ from polylogue.rendering.semantic_proof import (
     SemanticProofSuiteReport,
 )
 from polylogue.schemas.audit import AuditReport
-from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
+from polylogue.schemas.roundtrip_proof import (
+    ProviderRoundtripProofReport,
+    RoundtripProofSuiteReport,
+    RoundtripStageReport,
+)
+from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.invariants import InvariantResult
-from polylogue.showcase.qa_runner import QAResult
-from polylogue.showcase.report import (
-    generate_json_report,
+from polylogue.showcase.qa_report import (
     generate_qa_markdown,
     generate_qa_session,
     generate_qa_summary,
+)
+from polylogue.showcase.qa_runner import QAResult
+from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
+from polylogue.showcase.showcase_report import (
+    generate_json_report,
     generate_showcase_session,
     write_showcase_session,
 )
-from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
 # ---------------------------------------------------------------------------
 # Builders
@@ -169,6 +176,30 @@ def _make_semantic_report(*, critical: bool = False) -> SemanticProofSuiteReport
             "canonical_markdown_v1": canonical_report,
             "export_html_v1": html_report,
         }
+    )
+
+
+def _make_roundtrip_report(*, clean: bool = True) -> RoundtripProofSuiteReport:
+    status = "ok" if clean else "error"
+    return RoundtripProofSuiteReport(
+        provider_reports={
+            "chatgpt": ProviderRoundtripProofReport(
+                provider="chatgpt",
+                package_version="v1",
+                element_kind="conversation_document",
+                wire_encoding="json",
+                stages={
+                    "selection": RoundtripStageReport("selection", "ok", "selected"),
+                    "synthetic": RoundtripStageReport("synthetic", "ok", "generated", {"generated_artifacts": 1}),
+                    "acquisition": RoundtripStageReport("acquisition", "ok", "acquired"),
+                    "validation": RoundtripStageReport("validation", "ok", "validated"),
+                    "parse_dispatch": RoundtripStageReport("parse_dispatch", "ok", "parsed", {"parsed_conversations": 1}),
+                    "prepare_persist": RoundtripStageReport("prepare_persist", "ok", "persisted", {"persisted_conversations": 1}),
+                    "corpus_verification": RoundtripStageReport("corpus_verification", "ok", "verified"),
+                    "artifact_proof": RoundtripStageReport("artifact_proof", status, "proof", error=None if clean else "boom"),
+                },
+            )
+        },
     )
 
 
@@ -365,6 +396,7 @@ def test_full_qa_session_contains_composed_stage_payloads():
     assert session["semantic_proof"]["status"] == "error"
     assert session["semantic_proof"]["report"]["summary"]["critical_surfaces"] == 2
     assert session["semantic_proof"]["report"]["surfaces"]["canonical_markdown_v1"]["summary"]["critical_conversations"] == 1
+    assert session["roundtrip_proof"]["status"] == "skip"
     assert session["showcase"]["summary"] == {
         "total": 2,
         "passed": 1,
@@ -396,6 +428,7 @@ def test_generate_qa_summary_reports_stage_statuses():
             total_records=1,
         ),
         semantic_proof_report=_make_semantic_report(),
+        roundtrip_proof_report=_make_roundtrip_report(),
         exercises_skipped=True,
         invariants_skipped=True,
     )
@@ -407,6 +440,7 @@ def test_generate_qa_summary_reports_stage_statuses():
     assert "Packages: v1=1" in summary
     assert "Elements: conversation_document=1" in summary
     assert "Semantic Proof: surfaces=2" in summary
+    assert "Roundtrip Proof: providers=1" in summary
     assert "canonical_markdown_v1: clean=1" in summary
     assert "renderable_messages(preserved=1, declared_loss=0, critical_loss=0)" in summary
     assert "Exercises: SKIPPED" in summary
@@ -436,6 +470,7 @@ def test_generate_qa_markdown_includes_artifact_proof_section():
             total_records=2,
         ),
         semantic_proof_report=_make_semantic_report(),
+        roundtrip_proof_report=_make_roundtrip_report(),
         exercises_skipped=True,
         invariants_skipped=True,
     )
@@ -444,11 +479,14 @@ def test_generate_qa_markdown_includes_artifact_proof_section():
 
     assert "## Artifact Proof" in markdown
     assert "## Semantic Proof" in markdown
+    assert "## Roundtrip Proof" in markdown
     assert "| Unsupported parseable | 1 |" in markdown
     assert "| v4 | 1 |" in markdown
     assert "| subagent_conversation_stream | 1 |" in markdown
     assert "| bundle_scope | 1 |" in markdown
     assert "| claude-code | 2 | 0 | 1 | 1 | 0 | 0 |" in markdown
     assert "| Surface count | 2 |" in markdown
+    assert "| Providers | 1 |" in markdown
+    assert "| chatgpt | v1 | conversation_document | - |" in markdown
     assert "| canonical_markdown_v1 | 1 | 1 | 0 | 1 | 1 | 0 |" in markdown
     assert "| renderable_messages | 1 | 0 | 0 |" in markdown

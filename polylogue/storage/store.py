@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -20,7 +19,6 @@ from polylogue.types import (
     ContentHash,
     ConversationId,
     MessageId,
-    PlanStage,
     Provider,
     SemanticBlockType,
     ValidationMode,
@@ -32,6 +30,7 @@ MAX_ATTACHMENT_SIZE = 1024 * 1024 * 1024 * 1024
 
 # SQLite SQLITE_MAX_LENGTH is 1 GB; keep raw blobs under 900 MB to leave headroom
 MAX_RAW_CONTENT_SIZE = 900 * 1024 * 1024
+ACTION_EVENT_MATERIALIZER_VERSION = 1
 
 
 class ConversationRecord(BaseModel):
@@ -348,110 +347,56 @@ class ArtifactObservationRecord(BaseModel):
         return ArtifactSupportStatus.from_string(str(v))
 
 
-class ArtifactCohortSummary(BaseModel):
-    """Aggregate summary for one observed artifact cohort."""
+class ActionEventRecord(BaseModel):
+    """Durable canonical semantic action-event row."""
 
-    provider_name: str
-    payload_provider: Provider | None = None
-    artifact_kind: str
-    support_status: ArtifactSupportStatus
-    cohort_id: str | None = None
-    observation_count: int = 0
-    unique_raw_ids: int = 0
-    first_observed_at: str | None = None
-    last_observed_at: str | None = None
-    bundle_scope_count: int = 0
-    sample_source_paths: list[str] = Field(default_factory=list)
-    resolved_package_version: str | None = None
-    resolved_element_kind: str | None = None
-    resolution_reason: str | None = None
-    link_group_count: int = 0
-    linked_sidecar_count: int = 0
+    event_id: str
+    conversation_id: ConversationId
+    message_id: MessageId
+    materializer_version: int = ACTION_EVENT_MATERIALIZER_VERSION
+    source_block_id: str | None = None
+    timestamp: str | None = None
+    sort_key: float | None = None
+    sequence_index: int
+    provider_name: str | None = None
+    action_kind: str
+    tool_name: str | None = None
+    normalized_tool_name: str
+    tool_id: str | None = None
+    affected_paths: tuple[str, ...] = ()
+    cwd_path: str | None = None
+    branch_names: tuple[str, ...] = ()
+    command: str | None = None
+    query_text: str | None = None
+    url: str | None = None
+    output_text: str | None = None
+    search_text: str
 
-    @field_validator("payload_provider", mode="before")
+    @field_validator(
+        "event_id",
+        "conversation_id",
+        "message_id",
+        "action_kind",
+        "normalized_tool_name",
+        "search_text",
+    )
     @classmethod
-    def coerce_cohort_payload_provider(cls, v: object) -> Provider | None:
-        if v is None:
-            return None
-        if isinstance(v, Provider):
-            return v
-        return Provider.from_string(str(v))
-
-    @field_validator("support_status", mode="before")
-    @classmethod
-    def coerce_cohort_support_status(cls, v: object) -> ArtifactSupportStatus:
-        return ArtifactSupportStatus.from_string(str(v))
-
-
-class PlanResult(BaseModel):
-    timestamp: int
-    stage: PlanStage = PlanStage.ALL
-    counts: dict[str, int]
-    details: dict[str, int] = Field(default_factory=dict)
-    sources: list[str]
-    cursors: dict[str, dict[str, Any]]
-
-    @field_validator("stage", mode="before")
-    @classmethod
-    def coerce_stage(cls, v: object) -> PlanStage:
-        return PlanStage.from_string(str(v))
-
-
-class RawConversationState(BaseModel):
-    raw_id: str
-    source_name: str | None = None
-    source_path: str | None = None
-    parsed_at: str | None = None
-    parse_error: str | None = None
-    payload_provider: Provider | None = None
-    validation_status: ValidationStatus | None = None
-    validation_provider: Provider | None = None
-
-    @field_validator("payload_provider", "validation_provider", mode="before")
-    @classmethod
-    def coerce_optional_provider(cls, v: object) -> Provider | None:
-        if v is None:
-            return None
-        if isinstance(v, Provider):
-            return v
-        return Provider.from_string(str(v))
-
-    @field_validator("validation_status", mode="before")
-    @classmethod
-    def coerce_state_validation_status(cls, v: object) -> ValidationStatus | None:
-        if v is None:
-            return None
-        return ValidationStatus.from_string(str(v))
-
-
-class RunResult(BaseModel):
-    run_id: str
-    counts: dict[str, int]
-    drift: dict[str, dict[str, int]]
-    indexed: bool
-    index_error: str | None
-    duration_ms: int
-    render_failures: list[dict[str, str]] = []
-
-
-class ExistingConversation(BaseModel):
-    conversation_id: str
-    content_hash: str
-
-
-@dataclass(frozen=True)
-class ConversationRenderProjection:
-    """Repository-owned render projection preserving raw attachment layout."""
-
-    conversation: ConversationRecord
-    messages: list[MessageRecord]
-    attachments: list[AttachmentRecord]
+    def action_non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
 
 
 def _json_or_none(value: dict[str, object] | None) -> str | None:
     if value is None:
         return None
     return json_dumps(value)
+
+
+def _json_array_or_none(value: tuple[str, ...] | list[str] | None) -> str | None:
+    if not value:
+        return None
+    return json_dumps(list(value))
 
 
 def _make_ref_id(attachment_id: AttachmentId, conversation_id: ConversationId, message_id: MessageId | None) -> str:
@@ -463,8 +408,9 @@ def _make_ref_id(attachment_id: AttachmentId, conversation_id: ConversationId, m
 
 
 __all__ = [
+    "ACTION_EVENT_MATERIALIZER_VERSION",
+    "ActionEventRecord",
     "AttachmentRecord",
-    "ArtifactCohortSummary",
     "ArtifactObservationRecord",
     "ContentBlockRecord",
     "ConversationRecord",
@@ -473,4 +419,5 @@ __all__ = [
     "PublicationRecord",
     "RawConversationRecord",
     "RunRecord",
+    "_json_array_or_none",
 ]

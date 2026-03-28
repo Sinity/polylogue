@@ -472,6 +472,20 @@ class TestMessageCountContract:
         items = corpus.generate(count=0, seed=0)
         assert items == []
 
+    def test_generate_batch_reports_provider_and_count(self):
+        """generate_batch() exposes a typed report aligned with raw output."""
+        available = SyntheticCorpus.available_providers()
+        if not available:
+            pytest.skip("No schemas available")
+
+        corpus = SyntheticCorpus.for_provider(available[0])
+        batch = corpus.generate_batch(count=2, seed=7, messages_per_conversation=range(4, 5))
+        assert len(batch.artifacts) == 2
+        assert batch.report.generated_count == 2
+        assert batch.report.provider == corpus.provider
+        assert batch.report.package_version == corpus.package_version
+        assert batch.raw_items == [artifact.raw_bytes for artifact in batch.artifacts]
+
 
 class TestParseRoundtrip:
     """Synthetic data round-trips through the actual provider parsers."""

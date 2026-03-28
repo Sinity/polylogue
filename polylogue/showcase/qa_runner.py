@@ -6,7 +6,6 @@ with optional real-data ingestion into isolated workspaces.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,11 +25,13 @@ from polylogue.showcase.workspace import (
     run_pipeline_for_configured_sources,
     run_pipeline_for_fixture_workspace,
 )
+from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
     from polylogue.rendering.semantic_proof import SemanticProofSuiteReport
     from polylogue.schemas.audit import AuditReport
-    from polylogue.schemas.verification import ArtifactProofReport
+    from polylogue.schemas.roundtrip_proof import RoundtripProofSuiteReport
+    from polylogue.schemas.verification_models import ArtifactProofReport
 
 
 @dataclass
@@ -44,6 +45,8 @@ class QAResult:
     proof_error: str | None = None
     semantic_proof_report: SemanticProofSuiteReport | None = None
     semantic_proof_error: str | None = None
+    roundtrip_proof_report: RoundtripProofSuiteReport | None = None
+    roundtrip_proof_error: str | None = None
     showcase_result: ShowcaseResult | None = None
     exercises_skipped: bool = False
     invariant_results: list[InvariantResult] = field(default_factory=list)
@@ -85,6 +88,15 @@ class QAResult:
         return OutcomeStatus.OK if self.semantic_proof_report.is_clean else OutcomeStatus.ERROR
 
     @property
+    def roundtrip_proof_status(self) -> OutcomeStatus:
+        """Status for the schema/evidence roundtrip proof stage."""
+        if self.roundtrip_proof_error is not None:
+            return OutcomeStatus.ERROR
+        if self.roundtrip_proof_report is None:
+            return OutcomeStatus.SKIP
+        return OutcomeStatus.OK if self.roundtrip_proof_report.is_clean else OutcomeStatus.ERROR
+
+    @property
     def showcase_status(self) -> OutcomeStatus:
         """Status for the exercise stage."""
         if self.exercises_skipped:
@@ -111,6 +123,7 @@ class QAResult:
                 self.audit_status,
                 self.proof_status,
                 self.semantic_proof_status,
+                self.roundtrip_proof_status,
                 self.showcase_status,
                 self.invariant_status,
             )
@@ -143,14 +156,22 @@ def _populate_proof(
     workspace_env: dict[str, str] | None,
 ) -> None:
     """Populate the artifact proof stage against the active archive."""
-    from polylogue.schemas.verification import prove_raw_artifact_coverage
+    from polylogue.paths import db_path as default_db_path
+    from polylogue.schemas.verification_artifacts import prove_raw_artifact_coverage
+    from polylogue.schemas.verification_requests import ArtifactProofRequest
 
     try:
         if workspace_env:
             with override_workspace_env(workspace_env):
-                result.proof_report = prove_raw_artifact_coverage()
+                result.proof_report = prove_raw_artifact_coverage(
+                    db_path=default_db_path(),
+                    request=ArtifactProofRequest(),
+                )
         else:
-            result.proof_report = prove_raw_artifact_coverage()
+            result.proof_report = prove_raw_artifact_coverage(
+                db_path=default_db_path(),
+                request=ArtifactProofRequest(),
+            )
     except Exception as exc:
         result.proof_error = str(exc)
 
@@ -171,6 +192,23 @@ def _populate_semantic_proof(
             result.semantic_proof_report = prove_semantic_surface_suite()
     except Exception as exc:
         result.semantic_proof_error = str(exc)
+
+
+def _populate_roundtrip_proof(
+    result: QAResult,
+    *,
+    provider: str | None,
+) -> None:
+    """Populate the synthetic schema/evidence roundtrip proof stage."""
+    from polylogue.schemas.roundtrip_proof import prove_schema_evidence_roundtrip_suite
+
+    try:
+        result.roundtrip_proof_report = prove_schema_evidence_roundtrip_suite(
+            providers=[provider] if provider else None,
+            count=1,
+        )
+    except Exception as exc:
+        result.roundtrip_proof_error = str(exc)
 
 
 def run_qa_session(
@@ -198,9 +236,10 @@ def run_qa_session(
       1. Schema audit
       2. Artifact proof
       3. Semantic proof
-      4. Exercises (showcase)
-      5. Invariant checks
-      6. Report generation
+      4. Roundtrip proof
+      5. Exercises (showcase)
+      6. Invariant checks
+      7. Report generation
     """
     result = QAResult(report_dir=report_dir)
     workspace_env_for_runner: dict[str, str] | None = workspace_env
@@ -251,7 +290,7 @@ def run_qa_session(
 
         config = get_config()
         names = source_names if source_names else None
-        asyncio.run(run_sources(
+        run_coroutine_sync(run_sources(
             config=config,
             stage="all",
             plan=None,
@@ -273,6 +312,7 @@ def run_qa_session(
             if not audit_report.all_passed:
                 _populate_proof(result, workspace_env=workspace_env_for_runner)
                 _populate_semantic_proof(result, workspace_env=workspace_env_for_runner)
+                _populate_roundtrip_proof(result, provider=provider)
                 result.exercises_skipped = True
                 result.invariants_skipped = True
                 if verbose:
@@ -285,6 +325,7 @@ def run_qa_session(
             result.audit_error = str(e)
             _populate_proof(result, workspace_env=workspace_env_for_runner)
             _populate_semantic_proof(result, workspace_env=workspace_env_for_runner)
+            _populate_roundtrip_proof(result, provider=provider)
             result.exercises_skipped = True
             result.invariants_skipped = True
             if report_dir:
@@ -298,7 +339,10 @@ def run_qa_session(
     # --- Step 3: Semantic proof ---
     _populate_semantic_proof(result, workspace_env=workspace_env_for_runner)
 
-    # --- Step 4: Exercises ---
+    # --- Step 4: Roundtrip proof ---
+    _populate_roundtrip_proof(result, provider=provider)
+
+    # --- Step 5: Exercises ---
     if skip_exercises:
         result.exercises_skipped = True
     else:
@@ -315,13 +359,13 @@ def run_qa_session(
         showcase_result = runner.run()
         result.showcase_result = showcase_result
 
-    # --- Step 5: Invariant checks ---
+    # --- Step 6: Invariant checks ---
     if skip_invariants:
         result.invariants_skipped = True
     elif result.showcase_result:
         result.invariant_results = check_invariants(result.showcase_result.results)
 
-    # --- Step 6: Save reports ---
+    # --- Step 7: Save reports ---
     if report_dir:
         result.report_dir = report_dir
         _save_qa_reports(result, report_dir)
@@ -362,11 +406,20 @@ def _save_qa_reports(result: QAResult, report_dir: Path) -> None:
             json.dumps({"error": result.semantic_proof_error}, indent=2, sort_keys=True)
         )
 
-    from polylogue.showcase.report import (
+    if result.roundtrip_proof_report is not None:
+        (report_dir / "roundtrip-proof.json").write_text(
+            json.dumps(result.roundtrip_proof_report.to_dict(), indent=2, sort_keys=True)
+        )
+    elif result.roundtrip_proof_error is not None:
+        (report_dir / "roundtrip-proof.json").write_text(
+            json.dumps({"error": result.roundtrip_proof_error}, indent=2, sort_keys=True)
+        )
+
+    from polylogue.showcase.qa_report import (
         generate_qa_markdown,
         generate_qa_session,
-        save_reports,
     )
+    from polylogue.showcase.report_files import save_reports
 
     if result.showcase_result:
         save_reports(result.showcase_result)
@@ -383,7 +436,7 @@ def _save_qa_reports(result: QAResult, report_dir: Path) -> None:
 
 def format_qa_summary(result: QAResult) -> str:
     """Format a human-readable QA session summary."""
-    from polylogue.showcase.report import generate_qa_summary
+    from polylogue.showcase.qa_report import generate_qa_summary
 
     return generate_qa_summary(result)
 

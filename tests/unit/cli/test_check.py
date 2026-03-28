@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.health import HealthCheck, HealthReport, VerifyStatus
+from polylogue.health_models import HealthCheck, HealthReport, VerifyStatus
 from polylogue.rendering.semantic_proof import (
     ProviderSemanticProof,
     SemanticConversationProof,
@@ -17,9 +17,25 @@ from polylogue.rendering.semantic_proof import (
     SemanticProofReport,
     SemanticProofSuiteReport,
 )
-from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
+from polylogue.schemas.operator_models import (
+    ArtifactCohortListResult,
+    ArtifactObservationListResult,
+    ArtifactProofResult,
+)
+from polylogue.schemas.roundtrip_proof import (
+    ProviderRoundtripProofReport,
+    RoundtripProofSuiteReport,
+    RoundtripStageReport,
+)
+from polylogue.schemas.verification_models import (
+    ArtifactProofReport,
+    ProviderArtifactProof,
+    ProviderSchemaVerification,
+    SchemaVerificationReport,
+)
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.store import ArtifactCohortSummary, ArtifactObservationRecord
+from polylogue.storage.state_views import ArtifactCohortSummary
+from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 from tests.infra.storage_records import DbFactory
 
@@ -155,6 +171,50 @@ def _make_semantic_report(*, critical: bool = False) -> SemanticProofSuiteReport
             "export_html_v1": html_report,
         },
     )
+
+
+def _make_roundtrip_report(*, clean: bool = True) -> RoundtripProofSuiteReport:
+    status = "ok" if clean else "error"
+    failed = [] if clean else ["artifact_proof"]
+    provider_report = ProviderRoundtripProofReport(
+        provider="chatgpt",
+        package_version="v1",
+        element_kind="conversation_document",
+        wire_encoding="json",
+        stages={
+            "selection": RoundtripStageReport("selection", "ok", "selected"),
+            "synthetic": RoundtripStageReport("synthetic", "ok", "generated", {"generated_artifacts": 1}),
+            "acquisition": RoundtripStageReport("acquisition", "ok", "acquired"),
+            "validation": RoundtripStageReport("validation", "ok", "validated"),
+            "parse_dispatch": RoundtripStageReport(
+                "parse_dispatch",
+                "ok",
+                "parsed",
+                {"parsed_conversations": 1},
+            ),
+            "prepare_persist": RoundtripStageReport(
+                "prepare_persist",
+                "ok",
+                "persisted",
+                {"persisted_conversations": 1},
+            ),
+            "corpus_verification": RoundtripStageReport("corpus_verification", "ok", "verified"),
+            "artifact_proof": RoundtripStageReport("artifact_proof", status, "proof", error=None if clean else "boom"),
+        },
+    )
+    if not clean:
+        provider_report = ProviderRoundtripProofReport(
+            provider="chatgpt",
+            package_version="v1",
+            element_kind="conversation_document",
+            wire_encoding="json",
+            stages={
+                **provider_report.stages,
+                "artifact_proof": RoundtripStageReport("artifact_proof", "error", "boom", error="boom"),
+            },
+        )
+    assert provider_report.summary["failed_stages"] == failed
+    return RoundtripProofSuiteReport(provider_reports={"chatgpt": provider_report})
 
 
 class TestHealthReportConstruction:
@@ -596,7 +656,6 @@ class TestCheckCommandSupplementary:
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
-        from polylogue.schemas.verification import ProviderSchemaVerification, SchemaVerificationReport
 
         fake_report = SchemaVerificationReport(
             providers={
@@ -611,7 +670,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.verify_raw_corpus",
+            "polylogue.cli.check_workflow.run_schema_verification",
             return_value=fake_report,
         ):
             runner = CliRunner()
@@ -630,7 +689,6 @@ class TestCheckCommandSupplementary:
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
-        from polylogue.schemas.verification import SchemaVerificationReport
 
         fake_report = SchemaVerificationReport(
             providers={},
@@ -641,7 +699,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.verify_raw_corpus",
+            "polylogue.cli.check_workflow.run_schema_verification",
             return_value=fake_report,
         ) as mock_verify:
             runner = CliRunner()
@@ -664,21 +722,20 @@ class TestCheckCommandSupplementary:
             )
 
         assert result.exit_code == 0
-        mock_verify.assert_called_once_with(
-            providers=["claude-code"],
-            max_samples=16,
-            record_limit=250,
-            record_offset=500,
-            quarantine_malformed=False,
-            progress_callback=ANY,
-        )
+        request = mock_verify.call_args.args[0]
+        assert request.providers == ["claude-code"]
+        assert request.max_samples == 16
+        assert request.record_limit == 250
+        assert request.record_offset == 500
+        assert request.quarantine_malformed is False
+        assert request.progress_callback is not None
+        assert mock_verify.call_args.kwargs["db_path"] == ANY
 
     def test_check_schemas_forwards_quarantine_flag(self, cli_workspace):
         """Quarantine option is forwarded to verify_raw_corpus."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
-        from polylogue.schemas.verification import SchemaVerificationReport
 
         fake_report = SchemaVerificationReport(
             providers={},
@@ -687,7 +744,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.verify_raw_corpus",
+            "polylogue.cli.check_workflow.run_schema_verification",
             return_value=fake_report,
         ) as mock_verify:
             runner = CliRunner()
@@ -697,14 +754,13 @@ class TestCheckCommandSupplementary:
             )
 
         assert result.exit_code == 0
-        mock_verify.assert_called_once_with(
-            providers=None,
-            max_samples=None,
-            record_limit=None,
-            record_offset=0,
-            quarantine_malformed=True,
-            progress_callback=ANY,
-        )
+        request = mock_verify.call_args.args[0]
+        assert request.providers is None
+        assert request.max_samples is None
+        assert request.record_limit is None
+        assert request.record_offset == 0
+        assert request.quarantine_malformed is True
+        assert request.progress_callback is not None
 
     def test_check_proof_json_output(self, cli_workspace):
         """--proof adds artifact_proof block to JSON output."""
@@ -731,8 +787,8 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.prove_raw_artifact_coverage",
-            return_value=fake_report,
+            "polylogue.cli.check_workflow.run_artifact_proof",
+            return_value=ArtifactProofResult(report=fake_report),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["--plain", "check", "--json", "--proof"])
@@ -766,8 +822,8 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.prove_raw_artifact_coverage",
-            return_value=fake_report,
+            "polylogue.cli.check_workflow.run_artifact_proof",
+            return_value=ArtifactProofResult(report=fake_report),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["--plain", "check", "--proof"])
@@ -789,8 +845,8 @@ class TestCheckCommandSupplementary:
         fake_report = ArtifactProofReport(providers={}, total_records=0)
 
         with patch(
-            "polylogue.schemas.verification.prove_raw_artifact_coverage",
-            return_value=fake_report,
+            "polylogue.cli.check_workflow.run_artifact_proof",
+            return_value=ArtifactProofResult(report=fake_report),
         ) as mock_prove:
             runner = CliRunner()
             result = runner.invoke(
@@ -810,11 +866,10 @@ class TestCheckCommandSupplementary:
             )
 
         assert result.exit_code == 0
-        mock_prove.assert_called_once_with(
-            providers=["claude-code"],
-            record_limit=25,
-            record_offset=50,
-        )
+        request = mock_prove.call_args.args[0]
+        assert request.providers == ["claude-code"]
+        assert request.record_limit == 25
+        assert request.record_offset == 50
 
     def test_check_semantic_proof_json_output(self, cli_workspace):
         """--semantic-proof adds semantic_proof block to JSON output."""
@@ -901,6 +956,350 @@ class TestCheckCommandSupplementary:
             record_offset=50,
         )
 
+    def test_check_semantic_contracts_json_output(self, cli_workspace):
+        """--semantic-contracts exposes the declared surface catalog in JSON output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--plain",
+                "check",
+                "--json",
+                "--semantic-contracts",
+                "--semantic-surface",
+                "html",
+                "--semantic-surface",
+                "stream_markdown",
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["semantic_contracts"]["count"] == 2
+        assert data["semantic_contracts"]["items"] == [
+            {
+                "surface": "export_html_v1",
+                "category": "export",
+                "aliases": ["html"],
+                "export_format": "html",
+                "stream_format": None,
+                "contract_count": 10,
+                "contracts": [
+                    {
+                        "metric": "title_metadata",
+                        "mode": "preserve",
+                        "policy": "export_html_v1 must preserve the display title",
+                        "input_key": "title",
+                        "output_key": "title",
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "provider_identity",
+                        "mode": "preserve",
+                        "policy": "export_html_v1 must preserve provider identity at document level",
+                        "input_key": "provider",
+                        "output_key": "provider",
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "date_metadata",
+                        "mode": "presence",
+                        "policy": "export_html_v1 must preserve conversation date presence at document level",
+                        "input_key": "date",
+                        "output_key": "has_date",
+                        "input_transform": "presence_bool",
+                        "output_transform": "bool",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "text_messages",
+                        "mode": "preserve",
+                        "policy": "export_html_v1 must preserve visible message sections for text-bearing messages",
+                        "input_key": "text_messages",
+                        "output_key": "message_sections",
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "role_sections",
+                        "mode": "preserve",
+                        "policy": "export_html_v1 must preserve visible role labels for text-bearing messages",
+                        "input_key": "text_role_counts",
+                        "output_key": "role_counts",
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "timestamp_values",
+                        "mode": "preserve",
+                        "policy": "export_html_v1 must preserve visible message timestamps",
+                        "input_key": "timestamped_text_messages",
+                        "output_key": "timestamp_lines",
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "branch_structure",
+                        "mode": "preserve",
+                        "policy": "export_html_v1 must preserve visible branch groupings for branched messages",
+                        "input_key": "branch_messages",
+                        "output_key": "branch_labels",
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "attachment_semantics",
+                        "mode": "declared_loss",
+                        "policy": "export_html_v1 intentionally omits attachment payload semantics",
+                        "input_key": "attachment_count",
+                        "output_key": None,
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "thinking_semantics",
+                        "mode": "declared_loss",
+                        "policy": "export_html_v1 preserves display text but not typed thinking markers",
+                        "input_key": "thinking_messages",
+                        "output_key": None,
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "tool_semantics",
+                        "mode": "declared_loss",
+                        "policy": "export_html_v1 preserves display text but not typed tool markers",
+                        "input_key": "tool_messages",
+                        "output_key": None,
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                ],
+            },
+            {
+                "surface": "query_stream_markdown_v1",
+                "category": "query_stream",
+                "aliases": ["stream_markdown"],
+                "export_format": None,
+                "stream_format": "markdown",
+                "contract_count": 11,
+                "contracts": [
+                    {
+                        "metric": "title_metadata",
+                        "mode": "preserve",
+                        "policy": "query_stream_markdown_v1 must preserve the conversation title",
+                        "input_key": "title",
+                        "output_key": "title",
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "provider_identity",
+                        "mode": "preserve",
+                        "policy": "query_stream_markdown_v1 must preserve provider identity in the stream header",
+                        "input_key": "provider",
+                        "output_key": "provider",
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "date_metadata",
+                        "mode": "presence",
+                        "policy": "query_stream_markdown_v1 must preserve conversation date presence in the stream header",
+                        "input_key": "date",
+                        "output_key": "has_date",
+                        "input_transform": "presence_bool",
+                        "output_transform": "bool",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "text_messages",
+                        "mode": "preserve",
+                        "policy": "query_stream_markdown_v1 must preserve one visible section per text-bearing message",
+                        "input_key": "text_messages",
+                        "output_key": "message_sections",
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "role_sections",
+                        "mode": "preserve",
+                        "policy": "query_stream_markdown_v1 must preserve visible role headings for streamed messages",
+                        "input_key": "text_role_counts",
+                        "output_key": "role_counts",
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "footer_count",
+                        "mode": "preserve",
+                        "policy": "query_stream_markdown_v1 must report the number of emitted messages honestly",
+                        "input_key": "text_messages",
+                        "output_key": "footer_count",
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "timestamp_values",
+                        "mode": "declared_loss",
+                        "policy": "query_stream_markdown_v1 intentionally omits per-message timestamps",
+                        "input_key": "timestamped_text_messages",
+                        "output_key": None,
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "attachment_semantics",
+                        "mode": "declared_loss",
+                        "policy": "query_stream_markdown_v1 intentionally omits attachment semantics",
+                        "input_key": "attachment_count",
+                        "output_key": None,
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "thinking_semantics",
+                        "mode": "declared_loss",
+                        "policy": "query_stream_markdown_v1 preserves display text but not typed thinking markers",
+                        "input_key": "thinking_messages",
+                        "output_key": None,
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "tool_semantics",
+                        "mode": "declared_loss",
+                        "policy": "query_stream_markdown_v1 preserves display text but not typed tool markers",
+                        "input_key": "tool_messages",
+                        "output_key": None,
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                    {
+                        "metric": "branch_structure",
+                        "mode": "declared_loss",
+                        "policy": "query_stream_markdown_v1 intentionally omits explicit branch topology",
+                        "input_key": "branch_messages",
+                        "output_key": None,
+                        "input_transform": "identity",
+                        "output_transform": "identity",
+                        "default_output": 0,
+                    },
+                ],
+            },
+        ]
+
+    def test_check_semantic_contracts_plain_output(self, cli_workspace):
+        """--semantic-contracts renders the declared surface catalog in plain output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--plain", "check", "--semantic-contracts", "--semantic-surface", "read_all"])
+
+        assert result.exit_code == 0
+        assert "Semantic contracts: 9 surfaces" in result.output
+        assert "query_summary_json_v1: category=query_summary; aliases=query_summary_json; contracts=7" in result.output
+        assert "query_stream_markdown_v1: category=query_stream; aliases=stream_markdown; stream_format=markdown; contracts=11" in result.output
+        assert "mcp_detail_json_v1: category=mcp; aliases=mcp_detail; contracts=13" in result.output
+        assert "metrics=conversation_id:preserve, provider_identity:preserve" in result.output
+
+    def test_check_roundtrip_proof_json_output(self, cli_workspace):
+        """--roundtrip-proof adds roundtrip_proof block to JSON output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = _make_roundtrip_report()
+
+        with patch(
+            "polylogue.schemas.roundtrip_proof.prove_schema_evidence_roundtrip_suite",
+            return_value=fake_report,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["--plain", "check", "--json", "--roundtrip-proof"])
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["roundtrip_proof"]["summary"]["provider_count"] == 1
+        assert data["roundtrip_proof"]["summary"]["clean"] is True
+        assert "chatgpt" in data["roundtrip_proof"]["providers"]
+
+    def test_check_roundtrip_proof_plain_output(self, cli_workspace):
+        """--roundtrip-proof renders the roundtrip proof summary in plain output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = _make_roundtrip_report(clean=False)
+
+        with patch(
+            "polylogue.schemas.roundtrip_proof.prove_schema_evidence_roundtrip_suite",
+            return_value=fake_report,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["--plain", "check", "--roundtrip-proof"])
+
+        assert result.exit_code == 0
+        assert "Roundtrip proof:" in result.output
+        assert "failed=1" in result.output
+        assert "chatgpt: failed, package=v1" in result.output
+
+    def test_check_roundtrip_proof_forwards_scope(self, cli_workspace):
+        """Roundtrip provider/count are forwarded to the proof workflow."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = _make_roundtrip_report()
+
+        with patch(
+            "polylogue.schemas.roundtrip_proof.prove_schema_evidence_roundtrip_suite",
+            return_value=fake_report,
+        ) as mock_roundtrip:
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                [
+                    "--plain",
+                    "check",
+                    "--json",
+                    "--roundtrip-proof",
+                    "--roundtrip-provider",
+                    "chatgpt",
+                    "--roundtrip-count",
+                    "2",
+                ],
+            )
+
+        assert result.exit_code == 0
+        mock_roundtrip.assert_called_once_with(providers=["chatgpt"], count=2)
+
     def test_check_artifacts_json_output(self, cli_workspace):
         """--artifacts adds artifact_observations rows to JSON output."""
         from click.testing import CliRunner
@@ -938,8 +1337,8 @@ class TestCheckCommandSupplementary:
         ]
 
         with patch(
-            "polylogue.schemas.verification.list_artifact_observation_rows",
-            return_value=fake_rows,
+            "polylogue.cli.check_workflow.list_artifact_observations",
+            return_value=ArtifactObservationListResult(rows=fake_rows),
         ):
             runner = CliRunner()
             result = runner.invoke(
@@ -991,8 +1390,8 @@ class TestCheckCommandSupplementary:
         ]
 
         with patch(
-            "polylogue.schemas.verification.list_artifact_cohort_rows",
-            return_value=fake_rows,
+            "polylogue.cli.check_workflow.list_artifact_cohorts",
+            return_value=ArtifactCohortListResult(rows=fake_rows),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["--plain", "check", "--cohorts"])

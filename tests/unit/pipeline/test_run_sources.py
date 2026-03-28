@@ -15,7 +15,7 @@ from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.store import PlanResult
+from polylogue.storage.state_views import PlanResult
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
 
@@ -61,7 +61,7 @@ def _write_chatgpt_export(path: Path, conversation_id: str, *, text: str = "Test
 
 class TestRunSourcesRenderFailures:
     def test_render_failure_tracked_in_result(self, workspace_env):
-        from polylogue.storage.store import RunResult
+        from polylogue.storage.state_views import RunResult
 
         archive_root = workspace_env["archive_root"]
         archive_root.mkdir(parents=True, exist_ok=True)
@@ -455,7 +455,8 @@ class TestAcquisitionServiceIntegration:
 
     async def test_acquire_claude_code_sidecars_into_artifact_ledger(self, tmp_path: Path):
         from polylogue.pipeline.services.acquisition import AcquisitionService
-        from polylogue.schemas.verification import list_artifact_observation_rows
+        from polylogue.schemas.verification_artifacts import list_artifact_observation_rows
+        from polylogue.schemas.verification_requests import ArtifactObservationQuery
 
         session_dir = tmp_path / "claude-code" / "project-a" / "session-1"
         subagents_dir = session_dir / "subagents"
@@ -488,7 +489,10 @@ class TestAcquisitionServiceIntegration:
         )
 
         assert result.counts["acquired"] == 4
-        observations = list_artifact_observation_rows(db_path=backend.db_path)
+        observations = list_artifact_observation_rows(
+            db_path=backend.db_path,
+            request=ArtifactObservationQuery(),
+        )
         assert len(observations) == 5
         assert {row.artifact_kind for row in observations} == {
             "conversation_record_stream",

@@ -239,6 +239,99 @@ def build_ranked_conversation_search_query(
     return sql, tuple(params)
 
 
+def build_ranked_action_search_query(
+    *,
+    query: str,
+    limit: int,
+    scope_names: Sequence[str] | None = None,
+    since: str | None = None,
+    include_snippet: bool = False,
+) -> tuple[str, tuple[object, ...]] | None:
+    """Build the canonical ranked action-search query.
+
+    This returns one best-matching row per conversation, ordered by the
+    strongest action-level hit with deterministic tie-breaks.
+    """
+    fts_query = normalize_fts5_query(query)
+    if fts_query is None:
+        return None
+
+    candidate_columns = [
+        "action_events_fts.event_id",
+        "action_events_fts.message_id",
+        "action_events_fts.conversation_id",
+        "action_events_fts.action_kind",
+        "action_events_fts.tool_name",
+        "conversations.provider_name",
+        "conversations.source_name",
+        "conversations.title",
+        "messages.sort_key",
+        "bm25(action_events_fts) AS relevance",
+    ]
+    if include_snippet:
+        candidate_columns.append("snippet(action_events_fts, 5, '[', ']', '…', 12) AS snippet")
+
+    sql = f"""
+        WITH candidate_hits AS (
+            SELECT
+                {", ".join(candidate_columns)}
+            FROM action_events_fts
+            JOIN conversations ON conversations.conversation_id = action_events_fts.conversation_id
+            JOIN messages ON messages.message_id = action_events_fts.message_id
+            WHERE action_events_fts MATCH ?
+    """
+    params: list[object] = [fts_query]
+
+    if scope_names:
+        scope_sql, scope_params = _build_provider_scope_filter(
+            scope_names,
+            provider_column="conversations.provider_name",
+        )
+        sql += f" AND {scope_sql}"
+        params.extend(scope_params)
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+        except ValueError as exc:
+            raise ValueError(f"Invalid --since date '{since}': {exc}. Use ISO format (e.g., 2023-01-01)") from exc
+        sql += " AND messages.sort_key >= ?"
+        params.append(since_dt.timestamp())
+
+    sql += """
+        ),
+        ranked_hits AS (
+            SELECT
+                conversation_id,
+                message_id,
+                provider_name,
+                source_name,
+                title,
+                sort_key,
+                relevance,
+                ROW_NUMBER() OVER (
+                    PARTITION BY conversation_id
+                    ORDER BY relevance ASC, sort_key DESC, message_id ASC
+                ) AS rank
+            FROM candidate_hits
+        )
+        SELECT
+            conversation_id,
+            message_id,
+            provider_name,
+            source_name,
+            title,
+            sort_key,
+            relevance
+        FROM ranked_hits
+        WHERE rank = 1
+        ORDER BY relevance ASC, sort_key DESC, message_id ASC
+        LIMIT ?
+    """
+    params.append(limit)
+    return sql, tuple(params)
+
+
 @lru_cache(maxsize=128)
 def _search_messages_cached(cache_key: SearchCacheKey) -> SearchResult:
     """Internal cached implementation of search_messages.
@@ -366,4 +459,11 @@ def search_messages(
     return _search_messages_cached(cache_key)
 
 
-__all__ = ["SearchHit", "SearchResult", "search_messages", "escape_fts5_query"]
+__all__ = [
+    "SearchHit",
+    "SearchResult",
+    "search_messages",
+    "escape_fts5_query",
+    "build_ranked_conversation_search_query",
+    "build_ranked_action_search_query",
+]

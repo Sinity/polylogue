@@ -51,6 +51,30 @@ class TestCommandConstruction:
         cmd = build_lane_command(LANES["query-routing"])
         assert "query_routing" in cmd
 
+    def test_semantic_stack_lane_uses_explicit_semantic_suite(self):
+        cmd = build_lane_command(LANES["semantic-stack"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/core/test_semantic_facts.py" in cmd
+        assert "tests/unit/sources/test_unified_semantic_laws.py" in cmd
+
+    def test_retrieval_dogfood_lane_uses_retrieval_suite(self):
+        cmd = build_lane_command(LANES["retrieval-dogfood"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/cli/test_query_exec.py" in cmd
+        assert "tests/unit/core/test_health_core.py" in cmd
+
+    def test_embeddings_coverage_lane_uses_embed_suite(self):
+        cmd = build_lane_command(LANES["embeddings-coverage"])
+        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert "tests/unit/cli/test_embed.py" in cmd
+        assert "tests/unit/storage/test_embedding_stats.py" in cmd
+
+    def test_memory_budget_lane_uses_budget_runner(self):
+        cmd = build_lane_command(LANES["memory-budget"])
+        assert cmd[:3] == [sys.executable, "-m", "devtools.query_memory_budget"]
+        assert "--max-rss-mb" in cmd
+        assert "polylogue" in cmd
+
     def test_long_haul_lane_uses_campaign_runner(self):
         cmd = build_lane_command(LANES["long-haul-small"])
         assert cmd[:3] == [sys.executable, "-m", "devtools.run_campaign"]
@@ -74,3 +98,13 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "machine-contract" in captured.out
         assert "query-routing" in captured.out
+        assert "semantic-stack" in captured.out
+
+    def test_archive_intelligence_dry_run_includes_new_lanes(self, capsys):
+        exit_code = main(["--lane", "archive-intelligence", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "retrieval-dogfood" in captured.out
+        assert "embeddings-coverage" in captured.out
+        assert "schema-roundtrip" in captured.out

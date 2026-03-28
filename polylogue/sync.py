@@ -16,37 +16,36 @@ Example::
 
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Awaitable
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
+
+from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
     from polylogue.facade import ArchiveStats
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.storage.search import SearchResult
 
+T = TypeVar("T")
 
-def _run(coro):
-    """Run an async coroutine synchronously."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop is not None and loop.is_running():
-        import concurrent.futures
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
-    return asyncio.run(coro)
+def _run(coro: Awaitable[T]) -> T:
+    """Run a Polylogue coroutine from synchronous callers.
+
+    This remains the canonical sync execution seam for module-local sync helpers
+    and external consumers that build async filter pipelines before forcing the
+    terminal awaitable.
+    """
+
+    return run_coroutine_sync(coro)
 
 
 class SyncPolylogue:
     """Synchronous wrapper around the async ``Polylogue`` facade.
 
-    All methods delegate to ``Polylogue`` via ``asyncio.run()``.
-    Thread-safe: if already inside a running event loop, execution
-    is dispatched to a background thread.
+    All methods delegate to ``Polylogue`` through the shared sync bridge.
     """
 
     def __init__(
@@ -127,3 +126,6 @@ class SyncPolylogue:
 
     def __repr__(self) -> str:
         return f"SyncPolylogue(facade={self._facade!r})"
+
+
+__all__ = ["SyncPolylogue", "_run"]

@@ -10,10 +10,12 @@ from typing import NoReturn
 from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
-from polylogue.health import cached_health_summary, get_health
+from polylogue.health_archive import get_health
+from polylogue.health_cache import cached_health_summary
 from polylogue.logging import get_logger
-from polylogue.operations import ProviderMetrics, compute_provider_comparison, get_provider_counts
+from polylogue.operations import compute_provider_comparison, get_provider_counts
 from polylogue.pipeline.runner import latest_run
+from polylogue.sync_bridge import run_coroutine_sync
 from polylogue.ui.theme import provider_color
 
 logger = get_logger(__name__)
@@ -103,12 +105,17 @@ def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> l
 def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     ui = env.ui
     config = load_effective_config(env)
-    import asyncio
+    archive_stats = None
 
-    last_run_data = asyncio.run(latest_run(env.backend))
+    last_run_data = run_coroutine_sync(latest_run(env.backend))
     last_line = "Last run: none"
     if last_run_data:
         last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"
+
+    try:
+        archive_stats = run_coroutine_sync(env.repository.get_archive_stats())
+    except Exception:
+        logger.debug("Archive stats computation failed", exc_info=True)
 
     lines = [
         f"Archive: {config.archive_root}",
@@ -116,6 +123,16 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         f"Sources: {format_sources_summary(config.sources)}",
         last_line,
     ]
+    if archive_stats is not None:
+        embedding_line = (
+            f"Embeddings: {archive_stats.embedded_conversations:,}/{archive_stats.total_conversations:,} convs, "
+            f"{archive_stats.embedded_messages:,} msgs ({archive_stats.embedding_coverage:.1f}%)"
+        )
+        if archive_stats.pending_embedding_conversations:
+            embedding_line += f", pending {archive_stats.pending_embedding_conversations:,}"
+        if archive_stats.stale_embedding_messages:
+            embedding_line += f", stale {archive_stats.stale_embedding_messages:,}"
+        lines.append(embedding_line)
 
     if verbose:
         # Show detailed health checks
@@ -147,11 +164,11 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         try:
             if verbose:
                 # Full metrics (slow: ~29s) needed for Deep Dive section
-                metrics = asyncio.run(compute_provider_comparison(services=env.services))
+                metrics = run_coroutine_sync(compute_provider_comparison(services=env.services))
                 counts: list[tuple[str, int]] = [(m.provider_name, m.conversation_count) for m in metrics]
             else:
                 # Fast path: conversations-table-only query (~1ms)
-                counts = asyncio.run(get_provider_counts(services=env.services))
+                counts = run_coroutine_sync(get_provider_counts(services=env.services))
                 metrics = []
 
             if counts:

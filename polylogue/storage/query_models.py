@@ -1,0 +1,89 @@
+"""Typed low-level query models for repository and SQLite read surfaces."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+
+
+@dataclass(frozen=True)
+class ConversationRecordQuery:
+    """Canonical record-level conversation selection for storage reads."""
+
+    source: str | None = None
+    provider: str | None = None
+    providers: tuple[str, ...] = ()
+    parent_id: str | None = None
+    since: str | None = None
+    until: str | None = None
+    title_contains: str | None = None
+    path_terms: tuple[str, ...] = ()
+    action_terms: tuple[str, ...] = ()
+    excluded_action_terms: tuple[str, ...] = ()
+    tool_terms: tuple[str, ...] = ()
+    excluded_tool_terms: tuple[str, ...] = ()
+    limit: int | None = None
+    offset: int = 0
+    has_tool_use: bool = False
+    has_thinking: bool = False
+    min_messages: int | None = None
+    max_messages: int | None = None
+    min_words: int | None = None
+
+    def with_limit(self, limit: int | None) -> ConversationRecordQuery:
+        return replace(self, limit=limit)
+
+    def with_offset(self, offset: int) -> ConversationRecordQuery:
+        return replace(self, offset=offset)
+
+    def for_count(self) -> ConversationRecordQuery:
+        return replace(self, limit=None, offset=0)
+
+    def without_unstable_semantic_filters(self) -> ConversationRecordQuery:
+        return replace(
+            self,
+            path_terms=(),
+            action_terms=(),
+            excluded_action_terms=(),
+            tool_terms=(),
+            excluded_tool_terms=(),
+        )
+
+    def for_search(self) -> tuple[str | None, list[str] | None]:
+        if self.provider:
+            return self.provider, None
+        if self.providers:
+            return None, list(self.providers)
+        return None, None
+
+    def to_list_kwargs(self) -> dict[str, object]:
+        return {
+            "source": self.source,
+            "provider": self.provider,
+            "providers": list(self.providers) or None,
+            "parent_id": self.parent_id,
+            "since": self.since,
+            "until": self.until,
+            "title_contains": self.title_contains,
+            "path_terms": list(self.path_terms) or None,
+            "action_terms": list(self.action_terms) or None,
+            "excluded_action_terms": list(self.excluded_action_terms) or None,
+            "tool_terms": list(self.tool_terms) or None,
+            "excluded_tool_terms": list(self.excluded_tool_terms) or None,
+            "limit": self.limit,
+            "offset": self.offset,
+            "has_tool_use": self.has_tool_use,
+            "has_thinking": self.has_thinking,
+            "min_messages": self.min_messages,
+            "max_messages": self.max_messages,
+            "min_words": self.min_words,
+        }
+
+    def to_count_kwargs(self) -> dict[str, object]:
+        data = self.to_list_kwargs()
+        data.pop("limit")
+        data.pop("offset")
+        data.pop("parent_id")
+        return data
+
+
+__all__ = ["ConversationRecordQuery"]
