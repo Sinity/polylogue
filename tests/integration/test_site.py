@@ -34,13 +34,39 @@ async def _empty_messages(*args, **kwargs):
 async def _iter_messages(payloads):
     """Yield lightweight message-like objects for conversation-page tests."""
     for index, (role, text) in enumerate(payloads, start=1):
-        yield MagicMock(id=f"msg-{index}", role=role, text=text)
+        yield MagicMock(
+            id=f"msg-{index}",
+            message_id=f"msg-{index}",
+            role=role,
+            text=text,
+            sort_key=f"2024-01-15T10:{index:02d}:00+00:00",
+        )
+
+
+async def _summary_pages(*pages):
+    """Yield configured summary pages in repository sort order."""
+    for page in pages:
+        yield page
+
+
+def _configure_summary_pages(repo, *pages):
+    """Configure a repository mock to serve paged summary iteration."""
+    non_empty_pages = tuple(page for page in pages if page)
+    repo.list_summaries = AsyncMock(side_effect=AssertionError("Use iter_summary_pages instead"))
+    repo.iter_summary_pages = MagicMock(
+        side_effect=lambda *args, **kwargs: _summary_pages(*non_empty_pages)
+    )
+
+
+async def _collect_conversation_indexes(builder):
+    """Collect the builder's streamed conversation indexes for assertions."""
+    return [conversation async for conversation in builder._iter_conversation_indexes()]
 
 
 def _async_repo(summaries):
     """Build an AsyncMock ConversationRepository pre-configured with summaries."""
     repo = AsyncMock()
-    repo.list_summaries.return_value = summaries
+    _configure_summary_pages(repo, summaries)
     repo.iter_messages = _empty_messages
     return repo
 
@@ -198,7 +224,7 @@ class TestSiteBuilderBuild:
 
         output_dir = tmp_path / "site"
 
-        # Mock the ConversationRepository - patch where they're imported (inside _build_index)
+        # Mock storage where SiteBuilder resolves it internally
         with patch(
             "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
@@ -211,7 +237,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(
                 title="Test Archive",
@@ -248,7 +274,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="Test Archive")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -274,7 +300,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = []
+            _configure_summary_pages(mock_repo, [])
 
             config = SiteConfig(title="Empty Archive")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -301,12 +327,12 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test"))
-            asyncio.run(builder._build_index())
+            asyncio.run(_collect_conversation_indexes(builder))
 
-            mock_repo.list_summaries.assert_awaited_once_with(limit=500, offset=0)
+            mock_repo.iter_summary_pages.assert_called_once_with(page_size=500, provider=None)
 
     def test_build_multiple_providers(
         self, tmp_path, mock_summary, mock_summary_gemini
@@ -331,7 +357,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary, mock_summary_gemini]
+            _configure_summary_pages(mock_repo, [mock_summary, mock_summary_gemini])
 
             config = SiteConfig(title="Multi-Provider Archive")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -362,7 +388,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="No Dashboard", include_dashboard=False)
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -390,7 +416,7 @@ class TestSiteBuilderBuild:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="With Dashboard", include_dashboard=True)
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -434,13 +460,13 @@ class TestConversationIndex:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
 
             # This should not raise AttributeError
-            conversations = asyncio.run(builder._build_index())
+            conversations = asyncio.run(_collect_conversation_indexes(builder))
 
             # Verify the index was built successfully
             assert len(conversations) == 1
@@ -450,8 +476,7 @@ class TestConversationIndex:
             assert index.id == "test-conv-001"
             assert index.title == "Test Conversation"
             assert index.provider == "claude"
-            # source should be None (not accessed from conversation)
-            assert index.source is None
+            assert not hasattr(index, "source")
             assert index.message_count == 3
 
     def test_conversation_index_title_fallback(self, tmp_path, mock_summary_no_title):
@@ -472,11 +497,11 @@ class TestConversationIndex:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary_no_title]
+            _configure_summary_pages(mock_repo, [mock_summary_no_title])
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = asyncio.run(builder._build_index())
+            conversations = asyncio.run(_collect_conversation_indexes(builder))
 
             assert len(conversations) == 1
             index = conversations[0]
@@ -501,11 +526,11 @@ class TestConversationIndex:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = asyncio.run(builder._build_index())
+            conversations = asyncio.run(_collect_conversation_indexes(builder))
 
             index = conversations[0]
             assert index.message_count == 3
@@ -538,11 +563,11 @@ class TestConversationIndex:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [summary_with_content]
+            _configure_summary_pages(mock_repo, [summary_with_content])
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = asyncio.run(builder._build_index())
+            conversations = asyncio.run(_collect_conversation_indexes(builder))
 
             index = conversations[0]
             assert index.preview == "Hello, how are you?"
@@ -565,11 +590,11 @@ class TestConversationIndex:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [mock_summary]
+            _configure_summary_pages(mock_repo, [mock_summary])
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
-            conversations = asyncio.run(builder._build_index())
+            conversations = asyncio.run(_collect_conversation_indexes(builder))
 
             index = conversations[0]
             assert index.created_at == "2024-01-15"
@@ -604,7 +629,7 @@ class TestSiteCommand:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = []
+            _configure_summary_pages(mock_repo, [])
 
             from polylogue.ui import UI
 
@@ -642,7 +667,7 @@ class TestSiteCommand:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = []
+            _configure_summary_pages(mock_repo, [])
 
             from polylogue.ui import UI
 
@@ -694,7 +719,7 @@ class TestSiteCommand:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = []
+            _configure_summary_pages(mock_repo, [])
 
             from polylogue.ui import UI
 
@@ -729,7 +754,7 @@ class TestSiteCommand:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = []
+            _configure_summary_pages(mock_repo, [])
 
             from polylogue.ui import UI
 
@@ -796,7 +821,7 @@ class TestSiteCommand:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [test_summary]
+            _configure_summary_pages(mock_repo, [test_summary])
 
             from polylogue.ui import UI
 
@@ -848,7 +873,7 @@ class TestSiteBuilderIntegration:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [summary]
+            _configure_summary_pages(mock_repo, [summary])
 
             config = SiteConfig(title="Test Archive", include_dashboard=True)
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -890,7 +915,7 @@ class TestSiteBuilderIntegration:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = [summary]
+            _configure_summary_pages(mock_repo, [summary])
 
             config = SiteConfig(
                 title="Test",
@@ -929,7 +954,7 @@ class TestSiteBuilderIntegration:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = _empty_messages
-            mock_repo.list_summaries.return_value = []
+            _configure_summary_pages(mock_repo, [])
 
             builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test", enable_search=False))
             builder.build()
@@ -966,7 +991,7 @@ class TestSiteBuilderIntegration:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = lambda *args, **kwargs: _iter_messages(payloads)
-            mock_repo.list_summaries.return_value = [summary]
+            _configure_summary_pages(mock_repo, [summary])
 
             builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test"))
             builder.build()
@@ -1001,7 +1026,7 @@ class TestSiteBuilderIntegration:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.iter_messages = lambda *args, **kwargs: _iter_messages([("assistant", long_text)])
-            mock_repo.list_summaries.return_value = [summary]
+            _configure_summary_pages(mock_repo, [summary])
 
             builder = SiteBuilder(output_dir=output_dir, config=SiteConfig(title="Test"))
             builder.build()

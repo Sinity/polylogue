@@ -316,6 +316,17 @@ class TestCountAndList:
         summaries = await repo.list_summaries(**kwargs)
         assert len(summaries) == expected_count
 
+    async def test_iter_summary_pages(self, repo):
+        """iter_summary_pages() yields bounded pages without full-list callers."""
+        pages = [page async for page in repo.iter_summary_pages(page_size=2)]
+
+        assert [len(page) for page in pages] == [2, 1]
+        assert {summary.id for page in pages for summary in page} == {
+            "conv-1",
+            "conv-2",
+            "conv-3",
+        }
+
     async def test_list_operations(self, repo):
         """list() filters by title and returns lazy Conversation objects."""
         repo.backend.get_conversations_batch = AsyncMock(  # type: ignore[method-assign]
