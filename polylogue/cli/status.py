@@ -1,24 +1,106 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 
 import argparse
 import importlib
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Set, cast
 
 from ..commands import CommandEnv, status_command
 from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..util import parse_input_time_to_epoch
 from .context import DEFAULT_OUTPUT_ROOTS, DEFAULT_RENDER_OUT
 
+def _dump_runs(ui, records: List[dict], destination: str) -> None:
+    payload = json.dumps(records, indent=2)
+    if destination == "-":
+        print(payload)
+        return
+    path = Path(destination).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    ui.console.print(f"[green]Wrote {len(records)} run(s) to {path}")
+
+
+def _dump_summary(ui, payload: Dict[str, Any], destination: str) -> None:
+    body = json.dumps(payload, indent=2)
+    if destination == "-":
+        print(body)
+        return
+    path = Path(destination).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    ui.console.print(f"[green]Wrote status summary to {path}")
+
+
+def _provider_filter(raw: Optional[str]) -> Optional[Set[str]]:
+    if not raw:
+        return None
+    providers = {item.strip().lower() for item in raw.split(",") if item.strip()}
+    return providers or None
+
+
 def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
 
+    dump_only = getattr(args, "dump_only", False)
+    summary_only = getattr(args, "summary_only", False)
+    provider_filter = _provider_filter(getattr(args, "providers", None))
+
+    if summary_only and not getattr(args, "summary", None):
+        setattr(args, "summary", "-")
+
     def emit() -> None:
-        result = status_command(env)
+        runs_limit = max(1, getattr(args, "runs_limit", 200))
+        dump_requested = getattr(args, "dump", None)
+        dump_limit = max(1, getattr(args, "dump_limit", 1)) if dump_requested else None
+        effective_limit = runs_limit
+        if dump_limit is not None:
+            effective_limit = max(effective_limit, dump_limit)
+        result = status_command(env, runs_limit=effective_limit)
+        run_summary = result.run_summary
+        provider_summary = result.provider_summary
+        if provider_filter:
+            run_summary = {
+                cmd: stats
+                for cmd, stats in run_summary.items()
+                if (stats.get("provider") or "").lower() in provider_filter
+            }
+            provider_summary = {
+                name: stats
+                for name, stats in provider_summary.items()
+                if name.lower() in provider_filter
+            }
         console = ui.console
+
+        if dump_only:
+            destination = dump_requested or "-"
+            limit = max(1, getattr(args, "dump_limit", 100))
+            dump_records = result.runs[-limit:]
+            if provider_filter:
+                dump_records = [
+                    record
+                    for record in dump_records
+                    if (record.get("provider") or "").lower() in provider_filter
+                    or not record.get("provider")
+                ]
+            _dump_runs(ui, dump_records, destination)
+            return
+
+        summary_requested = getattr(args, "summary", None)
+        if summary_requested:
+            summary_payload = {
+                "generatedAt": datetime.now(timezone.utc).isoformat(),
+                "runSummary": run_summary,
+                "providerSummary": provider_summary,
+            }
+            _dump_summary(ui, summary_payload, summary_requested)
+            if summary_only:
+                return
+
         if getattr(args, "json", False):
             payload = {
                 "credentials_present": result.credentials_present,
@@ -26,8 +108,8 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 "state_path": str(result.state_path),
                 "runs_path": str(result.runs_path),
                 "recent_runs": result.recent_runs,
-                "run_summary": result.run_summary,
-                "provider_summary": result.provider_summary,
+                "run_summary": run_summary,
+                "provider_summary": provider_summary,
             }
             print(json.dumps(payload, indent=2))
             return
@@ -36,28 +118,32 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             console.print("Environment:")
             console.print(f"  credentials.json: {'present' if result.credentials_present else 'missing'}")
             console.print(f"  token.json: {'present' if result.token_present else 'missing'}")
-            console.print(f"  state cache: {result.state_path}")
+            console.print(f"  state db: {result.state_path}")
             console.print(f"  runs log: {result.runs_path}")
-            if result.run_summary:
+            if run_summary:
                 console.print("Run summary:")
-                for cmd, stats in result.run_summary.items():
+                for cmd, stats in run_summary.items():
                     console.print(
-                        f"  {cmd}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} (~{stats.get('words', 0)} words) diffs={stats['diffs']}"
+                        f"  {cmd}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} (~{stats.get('words', 0)} words) diffs={stats['diffs']} retries={stats.get('retries', 0)} failures={stats.get('failures', 0)}"
                     )
                     if stats.get("last"):
                         console.print(
                             f"    last={stats['last']} out={stats['last_out']} count={stats['last_count']} skipped={stats['skipped']} pruned={stats['pruned']}"
                         )
-            if result.provider_summary:
+                    if stats.get("last_error"):
+                        console.print(f"    last_error={stats['last_error']}")
+            if provider_summary:
                 console.print("Provider summary:")
-                for provider, stats in result.provider_summary.items():
+                for provider, stats in provider_summary.items():
                     console.print(
-                        f"  {provider}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} (~{stats.get('words', 0)} words) diffs={stats['diffs']}"
+                        f"  {provider}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} (~{stats.get('words', 0)} words) diffs={stats['diffs']} retries={stats.get('retries', 0)} failures={stats.get('failures', 0)}"
                     )
                     if stats.get("last"):
                         console.print(
                             f"    last={stats['last']} out={stats['last_out']} commands={', '.join(stats['commands'])}"
                         )
+                    if stats.get("last_error"):
+                        console.print(f"    last_error={stats['last_error']}")
         else:
             from rich.table import Table
 
@@ -66,10 +152,10 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             table.add_column("Value")
             table.add_row("credentials.json", "present" if result.credentials_present else "missing")
             table.add_row("token.json", "present" if result.token_present else "missing")
-            table.add_row("state cache", str(result.state_path))
+            table.add_row("state db", str(result.state_path))
             table.add_row("runs log", str(result.runs_path))
             console.print(table)
-            if result.run_summary:
+            if run_summary:
                 summary_table = Table(title="Run Summary", show_lines=False)
                 summary_table.add_column("Command")
                 summary_table.add_column("Runs", justify="right")
@@ -77,8 +163,10 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 summary_table.add_column("Attachment MiB", justify="right")
                 summary_table.add_column("Tokens (~words)", justify="right")
                 summary_table.add_column("Diffs", justify="right")
+                summary_table.add_column("Retries", justify="right")
+                summary_table.add_column("Failures", justify="right")
                 summary_table.add_column("Last Run", justify="left")
-                for cmd, stats in result.run_summary.items():
+                for cmd, stats in run_summary.items():
                     summary_table.add_row(
                         cmd,
                         str(stats["count"]),
@@ -86,11 +174,53 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                         f"{stats['attachmentBytes'] / (1024 * 1024):.2f}",
                         f"{stats['tokens']} (~{stats.get('words', 0)} words)" if stats.get("tokens") else "0",
                         str(stats["diffs"]),
+                        str(stats.get("retries", 0)),
+                        str(stats.get("failures", 0)),
                         (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
                     )
                 console.print(summary_table)
+            if provider_summary:
+                provider_table = Table(title="Provider Summary", show_lines=False)
+                provider_table.add_column("Provider")
+                provider_table.add_column("Runs", justify="right")
+                provider_table.add_column("Attachments", justify="right")
+                provider_table.add_column("Attachment MiB", justify="right")
+                provider_table.add_column("Tokens (~words)", justify="right")
+                provider_table.add_column("Diffs", justify="right")
+                provider_table.add_column("Retries", justify="right")
+                provider_table.add_column("Failures", justify="right")
+                provider_table.add_column("Commands")
+                provider_table.add_column("Last Run", justify="left")
+                for provider, stats in provider_summary.items():
+                    provider_table.add_row(
+                        provider,
+                        str(stats["count"]),
+                        str(stats["attachments"]),
+                        f"{stats['attachmentBytes'] / (1024 * 1024):.2f}",
+                        f"{stats['tokens']} (~{stats.get('words', 0)} words)" if stats.get("tokens") else "0",
+                        str(stats["diffs"]),
+                        str(stats.get("retries", 0)),
+                        str(stats.get("failures", 0)),
+                        ", ".join(stats.get("commands", [])),
+                        (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
+                    )
+                console.print(provider_table)
+
+        if dump_requested:
+            limit = max(1, getattr(args, "dump_limit", 100))
+            dump_records = result.runs[-limit:]
+            if provider_filter:
+                dump_records = [
+                    record
+                    for record in dump_records
+                    if (record.get("provider") or "").lower() in provider_filter
+                    or not record.get("provider")
+                ]
+            _dump_runs(ui, dump_records, dump_requested)
 
     if getattr(args, "watch", False):
+        if dump_only:
+            raise SystemExit("--dump-only cannot be combined with --watch")
         interval = getattr(args, "interval", 5.0)
         try:
             while True:
@@ -114,11 +244,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         console.print(f"[red]Directory not found: {directory}")
         return
 
-    canonical_files = [
-        path
-        for path in directory.glob("*/conversation.md")
-        if path.parent.parent == directory
-    ]
+    canonical_files = list(directory.rglob("conversation.md"))
     legacy_files = list(directory.glob("*.md"))
     md_files = sorted(set(legacy_files + canonical_files))
     if not md_files:

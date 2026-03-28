@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterable, Set, Tuple
+from typing import Any, Callable, Iterable, List, Optional, Set, Tuple
 
 try:  # pragma: no cover - optional dependency
     from watchfiles import watch as _watch_directory
@@ -12,11 +12,8 @@ except ImportError:  # pragma: no cover - used in non-watch environments
         yield from ()
 
 from ..commands import CommandEnv
-from ..local_sync import sync_claude_code_sessions, sync_codex_sessions
-from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT
+from ..local_sync import get_local_provider
 from .context import (
-    DEFAULT_CLAUDE_CODE_SYNC_OUT,
-    DEFAULT_CODEX_SYNC_OUT,
     DEFAULT_COLLAPSE,
     resolve_collapse_value,
     resolve_html_enabled,
@@ -30,49 +27,23 @@ WatchDirectoryFn = Callable[..., WatchBatch]
 
 
 def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
-    provider = getattr(args, "provider", None)
-    if provider == "codex":
-        _run_watch_sessions(
-            args,
-            env,
-            provider="codex",
-            base_default=CODEX_SESSIONS_ROOT,
-            out_default=DEFAULT_CODEX_SYNC_OUT,
-            banner="Watching Codex sessions",
-            log_title="Codex Watch",
-            sync_fn=sync_codex_sessions,
-        )
-    elif provider == "claude-code":
-        _run_watch_sessions(
-            args,
-            env,
-            provider="claude-code",
-            base_default=CLAUDE_CODE_PROJECT_ROOT,
-            out_default=DEFAULT_CLAUDE_CODE_SYNC_OUT,
-            banner="Watching Claude Code sessions",
-            log_title="Claude Code Watch",
-            sync_fn=sync_claude_code_sessions,
-        )
-    else:
-        raise SystemExit(f"Unsupported provider for watch: {provider}")
+    provider_name = getattr(args, "provider", None)
+    provider = get_local_provider(provider_name)
+    if not provider.supports_watch:
+        raise SystemExit(f"{provider.title} does not support watch mode")
+    _run_watch_sessions(args, env, provider)
 
 
 def _run_watch_sessions(
     args: argparse.Namespace,
     env: CommandEnv,
-    *,
-    provider: str,
-    base_default: Path,
-    out_default: Path,
-    banner: str,
-    log_title: str,
-    sync_fn,
+    provider,
 ) -> None:
     watch_fn = _watch_directory
     ui = env.ui
-    base_dir = Path(args.base_dir).expanduser() if args.base_dir else base_default
+    base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base
     base_dir.mkdir(parents=True, exist_ok=True)
-    out_dir = resolve_output_path(args.out, out_default)
+    out_dir = resolve_output_path(args.out, provider.default_output)
     out_dir.mkdir(parents=True, exist_ok=True)
     collapse = resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE)
     settings = env.settings
@@ -81,11 +52,14 @@ def _run_watch_sessions(
     debounce = max(0.5, args.debounce)
 
     console = ui.console
-    ui.banner(banner, str(base_dir))
+    ui.banner(provider.watch_banner, str(base_dir))
 
-    def sync_once() -> None:
+    def sync_once(changed: Optional[Iterable[Path]] = None) -> None:
         try:
-            result = sync_fn(
+            session_override = None
+            if changed:
+                session_override = [Path(p) for p in changed]
+            result = provider.sync_fn(
                 base_dir=base_dir,
                 output_dir=out_dir,
                 collapse_threshold=collapse,
@@ -94,12 +68,14 @@ def _run_watch_sessions(
                 force=False,
                 prune=False,
                 diff=False,
-                sessions=None,
+                sessions=session_override,
+                branch_mode=getattr(args, "branch_export", "full"),
+                registrar=env.registrar,
             )
         except Exception as exc:  # pragma: no cover - defensive
-            console.print(f"[red]{log_title} failed: {exc}")
+            console.print(f"[red]{provider.watch_log_title} failed: {exc}")
         else:
-            _log_local_sync(ui, log_title, result, provider=provider)
+            _log_local_sync(ui, provider.watch_log_title, result, provider=provider.name)
 
     sync_once()
     if getattr(args, "once", False):
@@ -107,15 +83,22 @@ def _run_watch_sessions(
     last_run = time.monotonic()
     try:
         for changes in watch_fn(base_dir, recursive=True):
-            if not any(Path(path).suffix == ".jsonl" for _, path in changes):
+            relevant: List[Path] = []
+            for _, changed_path in changes:
+                path_obj = Path(changed_path)
+                if provider.watch_suffixes:
+                    if path_obj.suffix not in provider.watch_suffixes:
+                        continue
+                relevant.append(path_obj)
+            if provider.watch_suffixes and not relevant:
                 continue
             now = time.monotonic()
             if now - last_run < debounce:
                 continue
-            sync_once()
+            sync_once(relevant)
             last_run = now
     except KeyboardInterrupt:  # pragma: no cover - user interrupt
-        console.print(f"[cyan]{log_title} stopped.")
+        console.print(f"[cyan]{provider.watch_log_title} stopped.")
 
 
 __all__ = ["run_watch_cli"]
