@@ -12,7 +12,9 @@ from .base import ParsedAttachment, ParsedConversation, ParsedMessage
 _logger = get_logger(__name__)
 
 
-def extract_text_from_chunk(chunk: dict[str, object]) -> str | None:
+def extract_text_from_chunk(chunk: object) -> str | None:
+    if not isinstance(chunk, dict):
+        return None
     for key in ("text", "content", "message", "markdown", "data"):
         value = chunk.get(key)
         if isinstance(value, str):
