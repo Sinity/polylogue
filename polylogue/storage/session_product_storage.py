@@ -319,7 +319,7 @@ def replace_session_phases_sync(
                         record.duration_ms,
                         record.canonical_session_date,
                         record.confidence,
-                        _json_array_or_none(record.evidence_reasons),
+                        _json_array_or_none(record.evidence_reasons) or "[]",
                         _json_or_none(record.tool_counts),
                         record.word_count,
                     ]

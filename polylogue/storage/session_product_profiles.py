@@ -45,8 +45,6 @@ def profile_inference_search_text(profile: SessionProfile) -> str:
         *profile.auto_tags,
         *(event.summary for event in profile.work_events),
         *(event.kind.value for event in profile.work_events),
-        *(phase.kind for phase in profile.phases),
-        *(decision.summary for decision in profile.decisions),
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
     return search_text or profile.conversation_id
@@ -93,7 +91,7 @@ def session_enrichment_payload(
     user_turns = user_turn_texts(analysis)
     assistant_turns = assistant_turn_texts(analysis)
     blockers_val = blocker_texts(analysis)
-    refined_work_kind = keyword_work_kind(user_turns, profile) or primary_work_kind(profile)
+    refined_work_kind = None  # primary_work_kind heuristic removed
     support_signals_val = enrichment_support_signals(profile, analysis)
     input_band_summary = {
         "user_turns": len(user_turns),
@@ -164,7 +162,6 @@ def profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
     signals = profile_support_signals(profile)
     return {
         "canonical_projects": list(profile.canonical_projects),
-        "primary_work_kind": primary_work_kind(profile),
         "work_event_count": len(profile.work_events),
         "phase_count": len(profile.phases),
         "engaged_duration_ms": profile.engaged_duration_ms,
@@ -178,7 +175,6 @@ def profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
         "work_events": [event.to_dict() for event in profile.work_events],
         "phases": [
             {
-                "kind": phase.kind,
                 "start_time": phase.start_time.isoformat() if phase.start_time else None,
                 "end_time": phase.end_time.isoformat() if phase.end_time else None,
                 "canonical_session_date": (
@@ -232,7 +228,7 @@ def build_session_profile_record(
         title=profile.title,
         first_message_at=profile.first_message_at.isoformat() if profile.first_message_at else None,
         last_message_at=profile.last_message_at.isoformat() if profile.last_message_at else None,
-        primary_work_kind=primary_work_kind(profile),
+        primary_work_kind=None,
         repo_paths=profile.repo_paths,
         canonical_projects=profile.canonical_projects,
         tags=profile.tags,
@@ -296,7 +292,6 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
         "engaged_duration_ms": record.engaged_duration_ms,
         "wall_duration_ms": record.wall_duration_ms,
         "cost_is_estimated": record.cost_is_estimated,
-        "primary_work_kind": record.primary_work_kind,
     }
     return SessionProfile.from_dict(merged_payload)
 
@@ -313,33 +308,6 @@ def now_iso() -> str:
 def event_summary(event: WorkEvent) -> str:
     summary = str(event.summary or "").strip()
     return summary or event.kind.value
-
-
-def primary_work_kind(profile: SessionProfile) -> str | None:
-    """Determine the primary work kind, weighted by event duration.
-
-    Uses duration_ms to weight each event. Falls back to count-based if
-    no events have duration data. This prevents 10 small debugging events
-    (2 min each) from outweighing 3 large implementation events (40 min each).
-    """
-    if not profile.work_events:
-        return None
-
-    # Try duration-weighted first
-    duration_by_kind: Counter[str] = Counter()
-    has_duration = False
-    for event in profile.work_events:
-        duration = event.duration_ms or 0
-        if duration > 0:
-            has_duration = True
-        duration_by_kind[event.kind.value] += duration
-
-    if has_duration and duration_by_kind.total() > 0:
-        return duration_by_kind.most_common(1)[0][0]
-
-    # Fall back to count-based if no duration data
-    counts = Counter(event.kind.value for event in profile.work_events)
-    return counts.most_common(1)[0][0]
 
 
 def support_level(confidence: float, *, support_signals: tuple[str, ...], fallback: bool = False) -> str:
@@ -378,7 +346,7 @@ def phase_support_signals(phase: SessionPhase) -> tuple[str, ...]:
 
 
 def phase_fallback(phase: SessionPhase) -> bool:
-    return not phase.tool_counts or phase.kind in {"mixed", "conversation"}
+    return not phase.tool_counts
 
 
 def engaged_duration_source(profile: SessionProfile) -> str:
@@ -507,27 +475,6 @@ def blocker_texts(analysis: SessionAnalysis | None) -> tuple[str, ...]:
     return dedupe_texts(texts, limit=4, width=140)
 
 
-def keyword_work_kind(user_turns: tuple[str, ...], profile: SessionProfile) -> str | None:
-    joined = " ".join(turn.lower() for turn in user_turns)
-    mapping = (
-        ("debugging", ("error", "failed", "traceback", "bug", "fix")),
-        ("testing", ("test", "pytest", "assert", "spec")),
-        ("planning", ("plan", "approach", "architecture", "design")),
-        ("documentation", ("readme", "document", "docs", "docstring")),
-        ("configuration", ("config", "nix", "flake", "settings", "toml", "yaml")),
-        ("refactoring", ("refactor", "cleanup", "rename", "extract", "restructure")),
-        ("data_analysis", ("duckdb", "sql", "analysis", "csv", "plot", "pandas")),
-        ("research", ("search", "compare", "investigate", "look up", "browse")),
-    )
-    for kind, markers in mapping:
-        if any(marker in joined for marker in markers):
-            return kind
-    if profile.work_events:
-        counts = Counter(event.kind.value for event in profile.work_events)
-        return counts.most_common(1)[0][0]
-    return None
-
-
 def enrichment_support_signals(
     profile: SessionProfile,
     analysis: SessionAnalysis | None,
@@ -563,11 +510,9 @@ __all__ = [
     "event_summary",
     "event_support_signals",
     "hydrate_session_profile",
-    "keyword_work_kind",
     "now_iso",
     "phase_fallback",
     "phase_support_signals",
-    "primary_work_kind",
     "profile_enrichment_search_text",
     "profile_evidence_payload",
     "profile_evidence_search_text",
