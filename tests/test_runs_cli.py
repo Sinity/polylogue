@@ -52,3 +52,17 @@ def test_runs_cli_since_until(state_env):
     output = "\n".join(env.ui.console.lines)
     assert "codex" in output
     assert "drive" not in output
+
+
+def test_runs_cli_json_lines(state_env, capsys):
+    util.add_run({"cmd": "sync drive", "provider": "drive", "count": 1})
+    util.add_run({"cmd": "sync codex", "provider": "codex", "count": 2})
+    env = CommandEnv(ui=DummyUI())
+    run_runs_cli(
+        SimpleNamespace(limit=10, providers=None, commands=None, since=None, until=None, json=False, json_lines=True),
+        env,
+    )
+    out = capsys.readouterr().out.strip().splitlines()
+    assert len(out) == 2
+    decoded = [json.loads(line) for line in out]
+    assert {row["cmd"] for row in decoded} == {"sync drive", "sync codex"}
