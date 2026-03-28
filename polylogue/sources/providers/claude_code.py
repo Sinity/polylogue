@@ -238,7 +238,7 @@ class ClaudeCodeRecord(BaseModel):
         intentionally excluded — they are surfaced via Message.extract_thinking().
         """
         return "\n".join(
-            block.get("text", "")
+            block.get("text") or ""
             for block in content
             if isinstance(block, dict) and block.get("type") == "text"
         )
