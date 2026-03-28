@@ -69,6 +69,18 @@ async def run_sources(
     try:
         selected_sources = select_sources(config, source_names)
 
+        # Suspend FTS triggers during bulk pipeline operations.
+        # Triggers fire per-row during message INSERTs, causing massive
+        # overhead (~8s per 50 updates with realistic text). The index
+        # stage rebuilds FTS at the end anyway, making trigger updates
+        # pure waste during ingest.
+        if stage in ("all", "parse", "render", "index") or stage in INGEST_STAGES:
+            from polylogue.storage.fts_lifecycle import suspend_fts_triggers_async
+
+            async with active_backend.connection() as conn:
+                await suspend_fts_triggers_async(conn)
+                await conn.commit()
+
         if stage == "acquire":
             sm = metrics.start_stage("acquire")
             acquire_result = await execute_acquire_stage(
@@ -190,6 +202,15 @@ async def run_sources(
             duration_ms=int((time.perf_counter() - start) * 1000),
         )
     finally:
+        # Restore FTS triggers that were suspended for bulk operations
+        try:
+            from polylogue.storage.fts_lifecycle import restore_fts_triggers_async
+
+            async with active_backend.connection() as conn:
+                await restore_fts_triggers_async(conn)
+                await conn.commit()
+        except Exception:
+            pass  # Don't fail on trigger restore — index rebuild handles FTS
         if owns_repository:
             await active_repository.close()
         elif owns_backend:
