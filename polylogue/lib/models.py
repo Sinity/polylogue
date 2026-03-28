@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from polylogue.lib.messages import MessageCollection, MessageSource
+from polylogue.lib.messages import MessageCollection
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
@@ -137,70 +137,6 @@ class ToolInvocation(BaseModel):
         return paths
 
 
-class GitOperation(BaseModel):
-    """Parsed git operation from Bash tool use."""
-
-    command: str
-    """Git subcommand (commit, push, checkout, etc.)."""
-
-    branch: str | None = None
-    """Branch name if applicable."""
-
-    commit_hash: str | None = None
-    """Commit hash if applicable."""
-
-    files: list[str] = Field(default_factory=list)
-    """Files affected by the operation."""
-
-    message: str | None = None
-    """Commit message if this is a commit operation."""
-
-
-class FileChange(BaseModel):
-    """File modification extracted from Edit/Write tools."""
-
-    path: str
-    """Absolute path to the file."""
-
-    operation: str
-    """Operation type: read, write, edit, delete."""
-
-    old_content: str | None = None
-    """Previous content (for edits)."""
-
-    new_content: str | None = None
-    """New content (for writes/edits)."""
-
-
-class SubagentSpawn(BaseModel):
-    """Subagent spawn extracted from Task tool invocations."""
-
-    agent_type: str
-    """Type of subagent (e.g., Explore, Plan, Bash)."""
-
-    prompt: str
-    """Prompt/task given to the subagent."""
-
-    description: str | None = None
-    """Short description of what the agent will do."""
-
-    run_in_background: bool = False
-    """Whether this agent runs in background."""
-
-
-class ContextCompaction(BaseModel):
-    """Context compaction event."""
-
-    timestamp: datetime | None = None
-    """When the compaction occurred."""
-
-    summary: str
-    """Summary of compacted content."""
-
-    messages_compacted: int | None = None
-    """Number of messages that were compacted."""
-
-
 class Attachment(BaseModel):
     id: str
     name: str | None = None
@@ -222,12 +158,11 @@ class Attachment(BaseModel):
         )
 
 
-# Patterns for context dump detection (kept for is_context_dump)
+# Patterns for context dump detection (kept for is_context_dump).
+# Only patterns NOT already handled by fast inline checks in is_context_dump.
 _CONTEXT_PATTERNS = [
     r"^Contents of .+:",
     r"^<file path=",
-    r"<system>.*</system>",  # System prompts pasted as context
-    r"(```\w*\n.*?\n```.*?){3,}",  # 3+ code fences = context dump
 ]
 
 
@@ -317,7 +252,7 @@ class Message(BaseModel):
     @property
     def is_tool_use(self) -> bool:
         """Message contains tool/function calls or results."""
-        # Check structured content_blocks (populated at ingest time)
+        # Check structured content_blocks (populated at parse time)
         if self.provider_meta:
             blocks = self.provider_meta.get("content_blocks", [])
             if isinstance(blocks, list) and any(
@@ -340,7 +275,7 @@ class Message(BaseModel):
     @property
     def is_thinking(self) -> bool:
         """Message contains reasoning/thinking traces."""
-        # Check structured content_blocks (populated at ingest time)
+        # Check structured content_blocks (populated at parse time)
         if self.provider_meta:
             blocks = self.provider_meta.get("content_blocks", [])
             if isinstance(blocks, list) and any(isinstance(b, dict) and b.get("type") == "thinking" for b in blocks):
@@ -544,19 +479,11 @@ class Conversation(BaseModel):
     """A conversation with messages and metadata.
 
     The `messages` field is a `MessageCollection` which supports both lazy
-    and eager loading:
+    eager loading. Messages are pre-loaded in memory via `Conversation.from_records()`
+    or filter operations.
 
-    - **Lazy mode**: Messages stream from the database on iteration, using
-      O(1) memory regardless of conversation size. Created by `Conversation.from_lazy()`.
-
-    - **Eager mode**: Messages are pre-loaded in memory. Created by
-      `Conversation.from_records()` or filter operations.
-
-    Both modes support the same API: iteration, len(), and indexing.
-    Indexing in lazy mode will materialize the full list on first access.
-
-    For backward compatibility, you can also pass a list of Message objects
-    directly, which will be auto-wrapped in an eager MessageCollection.
+    You can also pass a list of Message objects directly — Pydantic coercion
+    will auto-wrap them in an eager MessageCollection.
     """
 
     id: ConversationId
@@ -613,40 +540,6 @@ class Conversation(BaseModel):
             provider=conversation.provider_name,
             title=conversation.title,
             messages=MessageCollection(messages=rich_messages),
-            created_at=parse_timestamp(conversation.created_at),
-            updated_at=parse_timestamp(conversation.updated_at),
-            provider_meta=conversation.provider_meta,
-            metadata=conversation.metadata or {},
-            parent_id=conversation.parent_conversation_id,
-            branch_type=conversation.branch_type,
-        )
-
-    @classmethod
-    def from_lazy(
-        cls,
-        conversation: ConversationRecord,
-        source: MessageSource,
-    ) -> Conversation:
-        """Create a Conversation with lazy-loaded messages.
-
-        Messages will be streamed from the database on iteration, using O(1)
-        memory regardless of conversation size. len() uses a COUNT(*) query.
-
-        Args:
-            conversation: Conversation metadata record
-            source: MessageSource for streaming messages
-
-        Returns:
-            Conversation with messages in lazy mode
-        """
-        return cls(
-            id=conversation.conversation_id,
-            provider=conversation.provider_name,
-            title=conversation.title,
-            messages=MessageCollection(
-                conversation_id=conversation.conversation_id,
-                source=source,
-            ),
             created_at=parse_timestamp(conversation.created_at),
             updated_at=parse_timestamp(conversation.updated_at),
             provider_meta=conversation.provider_meta,
@@ -733,14 +626,6 @@ class Conversation(BaseModel):
     def substantive_only(self) -> Conversation:
         """Return a view with only substantive dialogue."""
         return self.filter(lambda m: m.is_substantive)
-
-    def without_attachments(self) -> Conversation:
-        """Return a view with attachments stripped from messages.
-
-        Note: This materializes messages to apply the transformation.
-        """
-        new_msgs = [m.model_copy(update={"attachments": []}) for m in self.messages]
-        return self.model_copy(update={"messages": MessageCollection(messages=new_msgs)})
 
     def mainline_messages(self) -> list[Message]:
         """Return only mainline messages (branch_index == 0)."""
@@ -844,10 +729,6 @@ class Conversation(BaseModel):
         return sum(m.word_count for m in self.messages)
 
     @property
-    def substantive_word_count(self) -> int:
-        return sum(m.word_count for m in self.messages if m.is_substantive)
-
-    @property
     def total_cost_usd(self) -> float:
         """Total cost in USD (sum of all message costs)."""
         return sum(m.cost_usd or 0.0 for m in self.messages)
@@ -867,3 +748,13 @@ class Conversation(BaseModel):
         """
         from polylogue.lib.projections import ConversationProjection
         return ConversationProjection(self)
+
+
+__all__ = [
+    "Attachment",
+    "Conversation",
+    "ConversationSummary",
+    "DialoguePair",
+    "Message",
+    "ToolInvocation",
+]

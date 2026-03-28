@@ -14,7 +14,7 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import questionary
 from pygments import highlight
@@ -29,11 +29,15 @@ from rich.syntax import Syntax
 from rich.text import Text
 from rich.theme import Theme
 
+from polylogue.errors import PolylogueError
+from polylogue.lib.theme import rich_theme_styles
 
-class UIError(Exception):
+
+class UIError(PolylogueError):
     """UI-related errors (prompt stubs, user interaction)."""
 
 
+@runtime_checkable
 class ConsoleLike(Protocol):
     def print(self, *objects: object, **kwargs: object) -> None: ...
 
@@ -65,26 +69,7 @@ class ConsoleFacade:
     _prompt_responses: deque[dict[str, object]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.theme = Theme(
-            {
-                "banner.icon": "bold #7fdbca",
-                "banner.title": "bold #e0f2f1",
-                "banner.subtitle": "#cdecef",
-                "banner.border": "#14b8a6",
-                "panel.border": "#3b82f6",
-                "panel.text": "#e5e7eb",
-                "summary.title": "bold #c4e0ff",
-                "summary.bullet": "bold #34d399",
-                "summary.text": "#d6dee8",
-                "status.icon.error": "bold #ff6b6b",
-                "status.icon.warning": "bold #f9a825",
-                "status.icon.success": "bold #34d399",
-                "status.icon.info": "bold #38bdf8",
-                "status.message": "#e5e7eb",
-                "code.border": "#4c1d95",
-                "markdown.border": "#475569",
-            }
-        )
+        self.theme = Theme(rich_theme_styles())
         if self.plain:
             self.console = PlainConsole()
         else:
@@ -339,7 +324,7 @@ class PlainConsoleFacade(ConsoleFacade):
 
     def __post_init__(self) -> None:
         self.plain = True
-        self.console = PlainConsole()
+        super().__post_init__()
 
 
 def create_console_facade(plain: bool) -> ConsoleFacade:
