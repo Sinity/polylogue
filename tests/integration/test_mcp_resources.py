@@ -9,6 +9,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue.lib.models import Conversation, Message
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.store import ConversationRecord, MessageRecord
 from tests.integration.conftest import make_mock_filter
 
 # =============================================================================
@@ -89,6 +92,31 @@ SERIALIZATION_CASES = [
         "_conversation_to_full_dict",
     ),
 ]
+
+
+async def _insert_conversation(
+    repo: ConversationRepository,
+    *,
+    conversation_id: str,
+    provider: str,
+    provider_conversation_id: str,
+    text: str,
+) -> None:
+    conversation = ConversationRecord(
+        conversation_id=conversation_id,
+        provider_name=provider,
+        provider_conversation_id=provider_conversation_id,
+        title=f"{provider} conversation",
+        content_hash=f"hash-{conversation_id}",
+    )
+    message = MessageRecord(
+        message_id=f"{conversation_id}:m1",
+        conversation_id=conversation_id,
+        role="user",
+        text=text,
+        content_hash=f"hash-{conversation_id}:m1",
+    )
+    await repo.save_conversation(conversation, [message], [])
 
 
 # =============================================================================
@@ -551,29 +579,68 @@ class TestSearchToolFilters:
                 mock_get_repo.return_value = mock_repo
 
                 with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                    MockFilter.return_value = make_mock_filter(since=ValueError("Invalid date"))
+                    filter_instance = make_mock_filter(since=ValueError("Invalid date"))
+                    MockFilter.return_value = filter_instance
 
                     server = _build_server()
-                    # Tool should raise or return error dict
-                    try:
-                        result = await server._tool_manager._tools["search"].fn(**args)
-                        # If no exception, check result contains error info
-                        json.loads(result)
-                        # Tools that catch errors may return dict with error key
-                    except ValueError:
-                        pass  # Expected for invalid date
+                    result = await server._tool_manager._tools["search"].fn(**args)
+                    payload = json.loads(result)
+
+                    assert isinstance(payload, dict), assertion_desc
+                    assert "error" in payload, assertion_desc
+                    assert error_keyword in payload["error"].lower(), assertion_desc
+                    assert payload.get("tool") == "search"
+                    filter_instance.since.assert_called_once_with(args["since"])
         else:
             with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
                 mock_repo = MagicMock()
                 mock_get_repo.return_value = mock_repo
 
                 with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                    MockFilter.return_value = make_mock_filter(results=[])
+                    filter_instance = make_mock_filter(results=[])
+                    MockFilter.return_value = filter_instance
 
                     server = _build_server()
-                    # For invalid_limit_type, tool should handle gracefully
-                    try:
-                        result = await server._tool_manager._tools["search"].fn(**args)
-                        json.loads(result)
-                    except (TypeError, ValueError):
-                        pass  # Expected for invalid limit type
+                    result = await server._tool_manager._tools["search"].fn(**args)
+                    payload = json.loads(result)
+
+                    assert isinstance(payload, list), assertion_desc
+                    filter_instance.limit.assert_called_once_with(10)
+
+
+class TestSearchToolRealRepository:
+    """Real backend coverage for MCP search tool behavior."""
+
+    @pytest.mark.asyncio
+    async def test_search_returns_real_matching_conversation(self, tmp_path):
+        """Search returns persisted IDs without mocked filter layer."""
+        from polylogue.mcp.server import _build_server
+
+        backend = SQLiteBackend(db_path=tmp_path / "mcp-resources-real.db")
+        repo = ConversationRepository(backend=backend)
+
+        try:
+            await _insert_conversation(
+                repo,
+                conversation_id="chatgpt:alpha",
+                provider="chatgpt",
+                provider_conversation_id="alpha",
+                text="alpha beta gamma",
+            )
+            await _insert_conversation(
+                repo,
+                conversation_id="chatgpt:delta",
+                provider="chatgpt",
+                provider_conversation_id="delta",
+                text="delta epsilon",
+            )
+
+            with patch("polylogue.mcp.server._get_repo", return_value=repo):
+                server = _build_server()
+                raw = await server._tool_manager._tools["search"].fn(query="alpha", limit=10)
+                payload = json.loads(raw)
+                ids = {item["id"] for item in payload}
+                assert "chatgpt:alpha" in ids
+                assert "chatgpt:delta" not in ids
+        finally:
+            await backend.close()
