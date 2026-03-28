@@ -37,11 +37,7 @@ def infer_auto_tags(profile: SessionProfile) -> tuple[str, ...]:
     tags: list[str] = [f"provider:{profile.provider}"]
     for project in list(profile.canonical_projects)[:3]:
         tags.append(f"project:{project}")
-    if profile.work_events:
-        kind_counter: Counter[str] = Counter()
-        for event in profile.work_events:
-            kind_counter[event.kind.value if hasattr(event.kind, "value") else str(event.kind)] += 1
-        tags.append(f"kind:{kind_counter.most_common(1)[0][0]}")
+    # kind:X tag removed — it used the sloppy primary_work_kind heuristic
     if profile.is_continuation:
         tags.append("continuation")
     if profile.continuation_depth >= 3:
