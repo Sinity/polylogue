@@ -22,11 +22,13 @@ from typing import Any
 import pytest
 
 from polylogue.schemas.field_stats import FieldStats, _collect_field_stats
-from polylogue.schemas.schema_generation import (
+from polylogue.schemas.generation_support import (
     _annotate_semantic_and_relational,
+)
+from polylogue.schemas.generation_workflow import (
     generate_schema_from_samples,
 )
-from polylogue.schemas.semantic_inference import (
+from polylogue.schemas.semantic_inference_runtime import (
     infer_semantic_roles,
 )
 

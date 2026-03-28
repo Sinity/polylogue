@@ -2,26 +2,52 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
 
+from polylogue.archive_product_rollups import aggregate_session_tag_rollup_products
+from polylogue.archive_product_summaries import (
+    aggregate_day_session_summary_products,
+    aggregate_week_session_summary_products,
+)
+from polylogue.archive_products import (
+    ArchiveDebtProduct,
+    ArchiveDebtProductQuery,
+    DaySessionSummaryProduct,
+    DaySessionSummaryProductQuery,
+    ProviderAnalyticsProduct,
+    ProviderAnalyticsProductQuery,
+    SessionEnrichmentProduct,
+    SessionEnrichmentProductQuery,
+    SessionPhaseProduct,
+    SessionPhaseProductQuery,
+    SessionProfileProduct,
+    SessionProfileProductQuery,
+    SessionTagRollupProduct,
+    SessionTagRollupQuery,
+    SessionWorkEventProduct,
+    SessionWorkEventProductQuery,
+    WeekSessionSummaryProduct,
+    WeekSessionSummaryProductQuery,
+    WorkThreadProduct,
+    WorkThreadProductQuery,
+)
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.paths import conversation_render_root
 from polylogue.services import RuntimeServices, build_runtime_services
+from polylogue.storage.backends.connection import connection_context
+from polylogue.storage.repair import collect_archive_debt_statuses_sync
 from polylogue.storage.search import SearchHit, SearchResult
+
+logger = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.lib.models import Conversation
-    from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
+    from polylogue.lib.conversation_models import Conversation
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
-
-logger = structlog.get_logger(__name__)
 
 
 def _build_search_snippet(text: str, query: str) -> str:
@@ -77,6 +103,91 @@ def _conversation_search_hit(
     )
 
 
+def provider_analytics_product(row) -> ProviderAnalyticsProduct:
+    conversation_count = row["conversation_count"]
+    user_message_count = row["user_message_count"]
+    assistant_message_count = row["assistant_message_count"]
+    user_word_sum = row["user_word_sum"] or 0
+    assistant_word_sum = row["assistant_word_sum"] or 0
+    tool_use_percentage = (
+        (row["conversations_with_tools"] / conversation_count) * 100
+        if conversation_count > 0
+        else 0.0
+    )
+    thinking_percentage = (
+        (row["conversations_with_thinking"] / conversation_count) * 100
+        if conversation_count > 0
+        else 0.0
+    )
+    return ProviderAnalyticsProduct(
+        provider_name=row["provider_name"] or "unknown",
+        conversation_count=conversation_count,
+        message_count=row["message_count"],
+        user_message_count=user_message_count,
+        assistant_message_count=assistant_message_count,
+        avg_messages_per_conversation=(
+            row["message_count"] / conversation_count if conversation_count > 0 else 0.0
+        ),
+        avg_user_words=(user_word_sum / user_message_count if user_message_count > 0 else 0.0),
+        avg_assistant_words=(
+            assistant_word_sum / assistant_message_count if assistant_message_count > 0 else 0.0
+        ),
+        tool_use_count=row["tool_use_count"],
+        thinking_count=row["thinking_count"],
+        total_conversations_with_tools=row["conversations_with_tools"],
+        total_conversations_with_thinking=row["conversations_with_thinking"],
+        tool_use_percentage=tool_use_percentage,
+        thinking_percentage=thinking_percentage,
+    )
+
+
+class ArchiveSearchMixin:
+    """Conversation retrieval and search methods for archive operations."""
+
+    async def get_conversation(self, conversation_id: str):
+        return await self.repository.view(conversation_id)
+
+    async def get_conversations(self, conversation_ids: list[str]):
+        return await self.repository.get_many(conversation_ids)
+
+    async def list_conversations(
+        self,
+        *,
+        provider: str | None = None,
+        limit: int | None = None,
+    ):
+        return await self.repository.list(provider=provider, limit=limit)
+
+    async def query_conversations(self, spec: ConversationQuerySpec):
+        return await spec.list(self.repository)
+
+    async def search(
+        self,
+        query: str,
+        *,
+        limit: int = 100,
+        source: str | None = None,
+        since: str | None = None,
+    ) -> SearchResult:
+        spec = ConversationQuerySpec(
+            query_terms=(query,),
+            providers=(source,) if source else (),
+            since=since,
+            limit=limit,
+        )
+        conversations = await self.query_conversations(spec)
+        return SearchResult(
+            hits=[
+                _conversation_search_hit(
+                    conversation,
+                    query=query,
+                    render_root_path=self.config.render_root,
+                )
+                for conversation in conversations
+            ]
+        )
+
+
 class ArchiveStats:
     """Statistics about the archive for the public facade surface."""
 
@@ -88,7 +199,7 @@ class ArchiveStats:
         providers: dict[str, int],
         tags: dict[str, int],
         last_sync: str | None,
-        recent: list[Conversation],
+        recent,
     ):
         self.conversation_count = conversation_count
         self.message_count = message_count
@@ -105,37 +216,267 @@ class ArchiveStats:
         )
 
 
-@dataclass
-class ProviderMetrics:
-    """Aggregated message and provider metrics for archive summaries."""
+class ArchiveStatsMixin:
+    """Archive summary, status, and provider-count helpers."""
 
-    provider_name: str
-    conversation_count: int
-    message_count: int
-    user_message_count: int
-    assistant_message_count: int
-    avg_messages_per_conversation: float
-    avg_user_words: float
-    avg_assistant_words: float
-    tool_use_count: int
-    thinking_count: int
-    total_conversations_with_tools: int
-    total_conversations_with_thinking: int
+    async def storage_stats(self):
+        return await self.repository.get_archive_stats()
 
-    @property
-    def tool_use_percentage(self) -> float:
-        if self.conversation_count == 0:
-            return 0.0
-        return (self.total_conversations_with_tools / self.conversation_count) * 100
+    async def summary_stats(self) -> ArchiveStats:
+        storage_stats = await self.storage_stats()
+        aggregate_stats = await self.repository.queries.aggregate_message_stats()
+        tags = await self.repository.list_tags()
+        recent = await self.list_conversations(limit=5)
 
-    @property
-    def thinking_percentage(self) -> float:
-        if self.conversation_count == 0:
-            return 0.0
-        return (self.total_conversations_with_thinking / self.conversation_count) * 100
+        last_sync = None
+        try:
+            last_sync = await self.backend.queries.get_last_sync_timestamp()
+        except Exception as exc:  # pragma: no cover - defensive debug path
+            logger.debug("failed to query last sync timestamp", error=str(exc))
+
+        return ArchiveStats(
+            conversation_count=storage_stats.total_conversations,
+            message_count=storage_stats.total_messages,
+            word_count=int(aggregate_stats.get("words_approx", 0)),
+            providers=storage_stats.providers,
+            tags=tags,
+            last_sync=last_sync,
+            recent=recent,
+        )
+
+    async def provider_counts(self) -> list[tuple[str, int]]:
+        rows = await self.backend.queries.get_provider_conversation_counts()
+        return [(row["provider_name"] or "unknown", row["conversation_count"]) for row in rows]
+
+    async def get_session_product_status(self) -> dict[str, int | bool]:
+        return await self.repository.get_session_product_status()
 
 
-class ArchiveOperations:
+class ArchiveProductSessionMixin:
+    async def get_session_profile_product(
+        self,
+        conversation_id: str,
+        *,
+        tier: str = "merged",
+    ) -> SessionProfileProduct | None:
+        record = await self.repository.get_session_profile_record(conversation_id)
+        return SessionProfileProduct.from_record(record, tier=tier) if record is not None else None
+
+    async def list_session_profile_products(
+        self,
+        query: SessionProfileProductQuery | None = None,
+    ) -> list[SessionProfileProduct]:
+        request = query or SessionProfileProductQuery()
+        records = await self.repository.list_session_profile_records(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+            first_message_since=request.first_message_since,
+            first_message_until=request.first_message_until,
+            session_date_since=request.session_date_since,
+            session_date_until=request.session_date_until,
+            tier=request.tier,
+            limit=request.limit,
+            offset=request.offset,
+            query=request.query,
+        )
+        return [SessionProfileProduct.from_record(record, tier=request.tier) for record in records]
+
+    async def get_session_enrichment_product(
+        self,
+        conversation_id: str,
+    ) -> SessionEnrichmentProduct | None:
+        record = await self.repository.get_session_enrichment_record(conversation_id)
+        return SessionEnrichmentProduct.from_record(record) if record is not None else None
+
+    async def list_session_enrichment_products(
+        self,
+        query: SessionEnrichmentProductQuery | None = None,
+    ) -> list[SessionEnrichmentProduct]:
+        request = query or SessionEnrichmentProductQuery()
+        records = await self.repository.list_session_enrichment_records(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+            first_message_since=request.first_message_since,
+            first_message_until=request.first_message_until,
+            session_date_since=request.session_date_since,
+            session_date_until=request.session_date_until,
+            refined_work_kind=request.refined_work_kind,
+            limit=request.limit,
+            offset=request.offset,
+            query=request.query,
+        )
+        return [SessionEnrichmentProduct.from_record(record) for record in records]
+
+    async def get_session_work_event_products(
+        self,
+        conversation_id: str,
+    ) -> list[SessionWorkEventProduct]:
+        records = await self.repository.get_session_work_event_records(conversation_id)
+        return [SessionWorkEventProduct.from_record(record) for record in records]
+
+    async def list_session_work_event_products(
+        self,
+        query: SessionWorkEventProductQuery | None = None,
+    ) -> list[SessionWorkEventProduct]:
+        request = query or SessionWorkEventProductQuery()
+        records = await self.repository.list_session_work_event_records(
+            conversation_id=request.conversation_id,
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+            kind=request.kind,
+            limit=request.limit,
+            offset=request.offset,
+            query=request.query,
+        )
+        return [SessionWorkEventProduct.from_record(record) for record in records]
+
+    async def get_session_phase_products(
+        self,
+        conversation_id: str,
+    ) -> list[SessionPhaseProduct]:
+        records = await self.repository.get_session_phase_records(conversation_id)
+        return [SessionPhaseProduct.from_record(record) for record in records]
+
+    async def list_session_phase_products(
+        self,
+        query: SessionPhaseProductQuery | None = None,
+    ) -> list[SessionPhaseProduct]:
+        request = query or SessionPhaseProductQuery()
+        records = await self.repository.list_session_phase_records(
+            conversation_id=request.conversation_id,
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+            kind=request.kind,
+            limit=request.limit,
+            offset=request.offset,
+        )
+        return [SessionPhaseProduct.from_record(record) for record in records]
+
+    async def get_work_thread_product(self, thread_id: str) -> WorkThreadProduct | None:
+        record = await self.repository.get_work_thread_record(thread_id)
+        return WorkThreadProduct.from_record(record) if record is not None else None
+
+    async def list_work_thread_products(
+        self,
+        query: WorkThreadProductQuery | None = None,
+    ) -> list[WorkThreadProduct]:
+        request = query or WorkThreadProductQuery()
+        records = await self.repository.list_work_thread_records(
+            since=request.since,
+            until=request.until,
+            limit=request.limit,
+            offset=request.offset,
+            query=request.query,
+        )
+        return [WorkThreadProduct.from_record(record) for record in records]
+
+
+class ArchiveProductAggregateMixin:
+    async def list_session_tag_rollup_products(
+        self,
+        query: SessionTagRollupQuery | None = None,
+    ) -> list[SessionTagRollupProduct]:
+        request = query or SessionTagRollupQuery()
+        rows = await self.repository.list_session_tag_rollup_records(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+            query=request.query,
+        )
+        products = aggregate_session_tag_rollup_products(rows)
+        if request.offset:
+            products = products[request.offset :]
+        if request.limit is not None:
+            products = products[: request.limit]
+        return products
+
+    async def list_day_session_summary_products(
+        self,
+        query: DaySessionSummaryProductQuery | None = None,
+    ) -> list[DaySessionSummaryProduct]:
+        request = query or DaySessionSummaryProductQuery()
+        rows = await self.repository.list_day_session_summary_records(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+        )
+        products = aggregate_day_session_summary_products(rows)
+        if request.offset:
+            products = products[request.offset :]
+        if request.limit is not None:
+            products = products[: request.limit]
+        return products
+
+    async def list_week_session_summary_products(
+        self,
+        query: WeekSessionSummaryProductQuery | None = None,
+    ) -> list[WeekSessionSummaryProduct]:
+        request = query or WeekSessionSummaryProductQuery()
+        rows = await self.repository.list_day_session_summary_records(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+        )
+        products = aggregate_week_session_summary_products(rows)
+        if request.offset:
+            products = products[request.offset :]
+        if request.limit is not None:
+            products = products[: request.limit]
+        return products
+
+    async def list_provider_analytics_products(
+        self,
+        query: ProviderAnalyticsProductQuery | None = None,
+    ) -> list[ProviderAnalyticsProduct]:
+        rows = await self.backend.queries.get_provider_metrics_rows()
+        products = [provider_analytics_product(row) for row in rows]
+        request = query or ProviderAnalyticsProductQuery()
+        if request.provider:
+            products = [product for product in products if product.provider_name == request.provider]
+        if request.offset:
+            products = products[request.offset :]
+        if request.limit is not None:
+            products = products[: request.limit]
+        return products
+
+
+class ArchiveProductDebtMixin:
+    async def list_archive_debt_products(
+        self,
+        query: ArchiveDebtProductQuery | None = None,
+    ) -> list[ArchiveDebtProduct]:
+        request = query or ArchiveDebtProductQuery()
+        with connection_context(self.config.db_path) as conn:
+            statuses = collect_archive_debt_statuses_sync(conn)
+        products = [
+            ArchiveDebtProduct.from_status(status)
+            for status in statuses.values()
+        ]
+        products.sort(key=lambda product: (product.category, product.debt_name))
+        if request.category:
+            products = [product for product in products if product.category == request.category]
+        if request.only_actionable:
+            products = [product for product in products if not product.healthy]
+        if request.offset:
+            products = products[request.offset:]
+        if request.limit is not None:
+            products = products[:request.limit]
+        return products
+
+
+class ArchiveProductMixin(
+    ArchiveProductSessionMixin,
+    ArchiveProductAggregateMixin,
+    ArchiveProductDebtMixin,
+):
+    """Versioned archive-product retrieval methods."""
+
+
+class ArchiveOperations(ArchiveSearchMixin, ArchiveStatsMixin, ArchiveProductMixin):
     """Canonical archive-level operations over configured runtime dependencies."""
 
     def __init__(
@@ -180,126 +521,6 @@ class ArchiveOperations:
                 self._backend = self.repository.backend
         return self._backend
 
-    async def get_conversation(self, conversation_id: str) -> Conversation | None:
-        return await self.repository.view(conversation_id)
-
-    async def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
-        return await self.repository.get_many(conversation_ids)
-
-    async def list_conversations(
-        self,
-        *,
-        provider: str | None = None,
-        limit: int | None = None,
-    ) -> list[Conversation]:
-        return await self.repository.list(provider=provider, limit=limit)
-
-    async def query_conversations(self, spec: ConversationQuerySpec) -> list[Conversation]:
-        return await spec.build_filter(self.repository).list()
-
-    async def search(
-        self,
-        query: str,
-        *,
-        limit: int = 100,
-        source: str | None = None,
-        since: str | None = None,
-    ) -> SearchResult:
-        spec = ConversationQuerySpec(
-            query_terms=(query,),
-            providers=(source,) if source else (),
-            since=since,
-            limit=limit,
-        )
-        conversations = await self.query_conversations(spec)
-        return SearchResult(
-            hits=[
-                _conversation_search_hit(
-                    conversation,
-                    query=query,
-                    render_root_path=self.config.render_root,
-                )
-                for conversation in conversations
-            ]
-        )
-
-    async def storage_stats(self) -> StorageArchiveStats:
-        return await self.repository.get_archive_stats()
-
-    async def summary_stats(self) -> ArchiveStats:
-        conversations = await self.list_conversations(limit=None)
-
-        providers: dict[str, int] = {}
-        tags: dict[str, int] = {}
-        total_messages = 0
-        total_words = 0
-
-        for conv in conversations:
-            providers[conv.provider] = providers.get(conv.provider, 0) + 1
-            for tag in conv.tags:
-                tags[tag] = tags.get(tag, 0) + 1
-            total_messages += len(conv.messages)
-            total_words += sum(m.word_count for m in conv.messages)
-
-        epoch = datetime.min.replace(tzinfo=timezone.utc)
-        recent = sorted(
-            conversations,
-            key=lambda c: c.updated_at or c.created_at or epoch,
-            reverse=True,
-        )[:5]
-
-        last_sync = None
-        try:
-            last_sync = await self.backend.queries.get_last_sync_timestamp()
-        except Exception as exc:
-            logger.debug("failed to query last sync timestamp", error=str(exc))
-
-        return ArchiveStats(
-            conversation_count=len(conversations),
-            message_count=total_messages,
-            word_count=total_words,
-            providers=providers,
-            tags=tags,
-            last_sync=last_sync,
-            recent=recent,
-        )
-
-    async def provider_counts(self) -> list[tuple[str, int]]:
-        rows = await self.backend.queries.get_provider_conversation_counts()
-        return [(row["provider_name"] or "unknown", row["conversation_count"]) for row in rows]
-
-    async def provider_metrics(self) -> list[ProviderMetrics]:
-        rows = await self.backend.queries.get_provider_metrics_rows()
-        results: list[ProviderMetrics] = []
-        for row in rows:
-            conversation_count = row["conversation_count"]
-            user_message_count = row["user_message_count"]
-            assistant_message_count = row["assistant_message_count"]
-            user_word_sum = row["user_word_sum"] or 0
-            assistant_word_sum = row["assistant_word_sum"] or 0
-
-            results.append(
-                ProviderMetrics(
-                    provider_name=row["provider_name"] or "unknown",
-                    conversation_count=conversation_count,
-                    message_count=row["message_count"],
-                    user_message_count=user_message_count,
-                    assistant_message_count=assistant_message_count,
-                    avg_messages_per_conversation=(
-                        row["message_count"] / conversation_count if conversation_count > 0 else 0.0
-                    ),
-                    avg_user_words=(user_word_sum / user_message_count if user_message_count > 0 else 0.0),
-                    avg_assistant_words=(
-                        assistant_word_sum / assistant_message_count if assistant_message_count > 0 else 0.0
-                    ),
-                    tool_use_count=row["tool_use_count"],
-                    thinking_count=row["thinking_count"],
-                    total_conversations_with_tools=row["conversations_with_tools"],
-                    total_conversations_with_thinking=row["conversations_with_thinking"],
-                )
-            )
-        return results
-
 
 async def _with_operations(
     action,
@@ -330,23 +551,23 @@ async def get_provider_counts(
     return await _with_operations(_action, services=services, db_path=db_path)
 
 
-async def compute_provider_comparison(
+async def list_provider_analytics_products(
     *,
     services: RuntimeServices | None = None,
     db_path: Path | None = None,
-) -> list[ProviderMetrics]:
-    """Return provider-level metrics for the verbose archive summary."""
+) -> list[ProviderAnalyticsProduct]:
+    """Return provider-level analytics products for archive summaries."""
 
-    async def _action(operations: ArchiveOperations) -> list[ProviderMetrics]:
-        return await operations.provider_metrics()
+    async def _action(operations: ArchiveOperations) -> list[ProviderAnalyticsProduct]:
+        return await operations.list_provider_analytics_products()
 
     return await _with_operations(_action, services=services, db_path=db_path)
 
 
 __all__ = [
+    "ArchiveDebtProduct",
     "ArchiveOperations",
     "ArchiveStats",
-    "ProviderMetrics",
-    "compute_provider_comparison",
     "get_provider_counts",
+    "list_provider_analytics_products",
 ]

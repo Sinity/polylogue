@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import TYPE_CHECKING
 
+from polylogue.lib.dates import parse_date
+from polylogue.lib.query_plan import ConversationQueryPlan
+from polylogue.lib.viewports import ToolCategory
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
+    from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import VectorProvider
     from polylogue.storage.repository import ConversationRepository
+
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
 
 
 class QuerySpecError(ValueError):
@@ -23,7 +33,16 @@ class QuerySpecError(ValueError):
         self.value = value
 
 
-def _split_csv(value: object) -> tuple[str, ...]:
+# ---------------------------------------------------------------------------
+# Normalization constants and helpers
+# ---------------------------------------------------------------------------
+
+QUERY_ACTION_TYPES = tuple(category.value for category in ToolCategory) + ("none",)
+QUERY_SEQUENCE_ACTION_TYPES = tuple(category.value for category in ToolCategory)
+QUERY_RETRIEVAL_LANES = ("auto", "dialogue", "actions", "hybrid")
+
+
+def split_csv(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
@@ -31,12 +50,237 @@ def _split_csv(value: object) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in value if str(item).strip())
 
 
-def _as_tuple(value: object) -> tuple[str, ...]:
+def as_tuple(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
         return (value,)
     return tuple(str(item) for item in value)
+
+
+def parse_query_date(field: str, value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = parse_date(value)
+    if parsed is None:
+        raise QuerySpecError(field, value)
+    return parsed
+
+
+def normalize_tool_terms(value: object) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for term in as_tuple(value):
+        candidate = str(term).strip().lower()
+        if candidate:
+            normalized.append(candidate)
+    return tuple(normalized)
+
+
+def normalize_action_terms(field: str, value: object) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for term in as_tuple(value):
+        candidate = str(term).strip().lower()
+        if candidate not in QUERY_ACTION_TYPES:
+            raise QuerySpecError(field, term)
+        normalized.append(candidate)
+    return tuple(normalized)
+
+
+def normalize_action_sequence(field: str, value: object) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for term in split_csv(value):
+        candidate = str(term).strip().lower()
+        if candidate not in QUERY_SEQUENCE_ACTION_TYPES:
+            raise QuerySpecError(field, term)
+        normalized.append(candidate)
+    return tuple(normalized)
+
+
+# ---------------------------------------------------------------------------
+# Description helpers
+# ---------------------------------------------------------------------------
+
+
+def describe_query_spec(spec) -> list[str]:
+    parts: list[str] = []
+    if spec.query_terms:
+        parts.append(f"search: {' '.join(spec.query_terms)}")
+    if spec.contains_terms:
+        parts.append(f"contains: {', '.join(spec.contains_terms)}")
+    if spec.exclude_text_terms:
+        parts.append(f"exclude text: {', '.join(spec.exclude_text_terms)}")
+    if spec.retrieval_lane != "auto":
+        parts.append(f"retrieval: {spec.retrieval_lane}")
+    if spec.path_terms:
+        parts.append(f"path: {', '.join(spec.path_terms)}")
+    if spec.action_terms:
+        parts.append(f"action: {', '.join(spec.action_terms)}")
+    if spec.excluded_action_terms:
+        parts.append(f"exclude action: {', '.join(spec.excluded_action_terms)}")
+    if spec.action_sequence:
+        parts.append(f"action sequence: {' -> '.join(spec.action_sequence)}")
+    if spec.action_text_terms:
+        parts.append(f"action text: {', '.join(spec.action_text_terms)}")
+    if spec.tool_terms:
+        parts.append(f"tool: {', '.join(spec.tool_terms)}")
+    if spec.excluded_tool_terms:
+        parts.append(f"exclude tool: {', '.join(spec.excluded_tool_terms)}")
+    if spec.providers:
+        parts.append(f"provider: {', '.join(p.value for p in spec.providers)}")
+    if spec.excluded_providers:
+        parts.append(f"exclude provider: {', '.join(p.value for p in spec.excluded_providers)}")
+    if spec.tags:
+        parts.append(f"tag: {', '.join(spec.tags)}")
+    if spec.excluded_tags:
+        parts.append(f"exclude tag: {', '.join(spec.excluded_tags)}")
+    if spec.title:
+        parts.append(f"title: {spec.title}")
+    if spec.has_types:
+        parts.append(f"has: {', '.join(spec.has_types)}")
+    if spec.filter_has_tool_use:
+        parts.append("has: tool_use (sql)")
+    if spec.filter_has_thinking:
+        parts.append("has: thinking (sql)")
+    if spec.min_messages is not None:
+        parts.append(f"min_messages: {spec.min_messages}")
+    if spec.max_messages is not None:
+        parts.append(f"max_messages: {spec.max_messages}")
+    if spec.min_words is not None:
+        parts.append(f"min_words: {spec.min_words}")
+    if spec.similar_text:
+        parts.append(f"similar: {spec.similar_text}")
+    if spec.since:
+        parts.append(f"since: {spec.since}")
+    if spec.until:
+        parts.append(f"until: {spec.until}")
+    if spec.conversation_id:
+        parts.append(f"id: {spec.conversation_id}")
+    return parts
+
+
+def query_spec_has_filters(spec) -> bool:
+    return any(
+        (
+            spec.query_terms,
+            spec.contains_terms,
+            spec.exclude_text_terms,
+            spec.path_terms,
+            spec.action_terms,
+            spec.excluded_action_terms,
+            spec.action_sequence,
+            spec.action_text_terms,
+            spec.tool_terms,
+            spec.excluded_tool_terms,
+            spec.providers,
+            spec.excluded_providers,
+            spec.tags,
+            spec.excluded_tags,
+            spec.has_types,
+            spec.title is not None,
+            spec.conversation_id is not None,
+            spec.since is not None,
+            spec.until is not None,
+            spec.latest,
+            spec.filter_has_tool_use,
+            spec.filter_has_thinking,
+            spec.min_messages is not None,
+            spec.max_messages is not None,
+            spec.min_words is not None,
+            spec.similar_text is not None,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Builders (from_params, to_plan)
+# ---------------------------------------------------------------------------
+
+
+def build_query_spec_from_params(
+    spec_cls,
+    params: Mapping[str, object],
+):
+    return spec_cls(
+        query_terms=as_tuple(params.get("query")),
+        contains_terms=as_tuple(params.get("contains")),
+        exclude_text_terms=as_tuple(params.get("exclude_text")),
+        retrieval_lane=str(params.get("retrieval_lane") or "auto"),
+        path_terms=as_tuple(params.get("path_terms") or params.get("path")),
+        action_terms=normalize_action_terms("action", params.get("action")),
+        excluded_action_terms=normalize_action_terms("exclude_action", params.get("exclude_action")),
+        action_sequence=normalize_action_sequence("action_sequence", params.get("action_sequence")),
+        action_text_terms=as_tuple(params.get("action_text")),
+        tool_terms=normalize_tool_terms(params.get("tool")),
+        excluded_tool_terms=normalize_tool_terms(params.get("exclude_tool")),
+        providers=tuple(Provider.from_string(p) for p in split_csv(params.get("provider"))),
+        excluded_providers=tuple(Provider.from_string(p) for p in split_csv(params.get("exclude_provider"))),
+        tags=split_csv(params.get("tag")),
+        excluded_tags=split_csv(params.get("exclude_tag")),
+        has_types=as_tuple(params.get("has_type")),
+        title=str(params["title"]) if params.get("title") else None,
+        conversation_id=str(params["conv_id"]) if params.get("conv_id") else None,
+        since=str(params["since"]) if params.get("since") else None,
+        until=str(params["until"]) if params.get("until") else None,
+        latest=bool(params.get("latest")),
+        sort=str(params["sort"]) if params.get("sort") else None,
+        reverse=bool(params.get("reverse")),
+        limit=int(params["limit"]) if params.get("limit") else None,
+        sample=int(params["sample"]) if params.get("sample") else None,
+        filter_has_tool_use=bool(params.get("filter_has_tool_use")),
+        filter_has_thinking=bool(params.get("filter_has_thinking")),
+        min_messages=int(params["min_messages"]) if params.get("min_messages") else None,
+        max_messages=int(params["max_messages"]) if params.get("max_messages") else None,
+        min_words=int(params["min_words"]) if params.get("min_words") else None,
+        similar_text=str(params["similar_text"]) if params.get("similar_text") else None,
+    )
+
+
+def query_spec_to_plan(
+    spec,
+    *,
+    vector_provider=None,
+) -> ConversationQueryPlan:
+    plan = ConversationQueryPlan(
+        query_terms=spec.query_terms,
+        contains_terms=spec.contains_terms,
+        negative_terms=spec.exclude_text_terms,
+        retrieval_lane=spec.retrieval_lane,
+        path_terms=spec.path_terms,
+        action_terms=spec.action_terms,
+        excluded_action_terms=spec.excluded_action_terms,
+        action_sequence=spec.action_sequence,
+        action_text_terms=spec.action_text_terms,
+        tool_terms=spec.tool_terms,
+        excluded_tool_terms=spec.excluded_tool_terms,
+        providers=spec.providers,
+        excluded_providers=spec.excluded_providers,
+        tags=spec.tags,
+        excluded_tags=spec.excluded_tags,
+        has_types=spec.has_types,
+        title=spec.title,
+        conversation_id=spec.conversation_id,
+        since=parse_query_date("since", spec.since),
+        until=parse_query_date("until", spec.until),
+        sort=spec.sort or "date",
+        reverse=spec.reverse,
+        limit=spec.limit,
+        sample=spec.sample,
+        filter_has_tool_use=spec.filter_has_tool_use,
+        filter_has_thinking=spec.filter_has_thinking,
+        min_messages=spec.min_messages,
+        max_messages=spec.max_messages,
+        min_words=spec.min_words,
+        similar_text=spec.similar_text,
+        vector_provider=vector_provider,
+    )
+    if spec.latest:
+        plan = replace(plan, sort="date", limit=1)
+    return plan
+
+
+# ---------------------------------------------------------------------------
+# Dataclass
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -46,6 +290,14 @@ class ConversationQuerySpec:
     query_terms: tuple[str, ...] = ()
     contains_terms: tuple[str, ...] = ()
     exclude_text_terms: tuple[str, ...] = ()
+    retrieval_lane: str = "auto"
+    path_terms: tuple[str, ...] = ()
+    action_terms: tuple[str, ...] = ()
+    excluded_action_terms: tuple[str, ...] = ()
+    action_sequence: tuple[str, ...] = ()
+    action_text_terms: tuple[str, ...] = ()
+    tool_terms: tuple[str, ...] = ()
+    excluded_tool_terms: tuple[str, ...] = ()
     providers: tuple[Provider, ...] = ()
     excluded_providers: tuple[Provider, ...] = ()
     tags: tuple[str, ...] = ()
@@ -66,114 +318,60 @@ class ConversationQuerySpec:
     min_messages: int | None = None
     max_messages: int | None = None
     min_words: int | None = None
-    # Semantic content filters (EXISTS subquery on content_blocks.semantic_type)
-    filter_has_file_ops: bool = False
-    filter_has_git_ops: bool = False
-    filter_has_subagent: bool = False
+    similar_text: str | None = None
 
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> ConversationQuerySpec:
         """Build a query spec from CLI-style parameter mapping."""
-        return cls(
-            query_terms=_as_tuple(params.get("query")),
-            contains_terms=_as_tuple(params.get("contains")),
-            exclude_text_terms=_as_tuple(params.get("exclude_text")),
-            providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("provider"))),
-            excluded_providers=tuple(Provider.from_string(p) for p in _split_csv(params.get("exclude_provider"))),
-            tags=_split_csv(params.get("tag")),
-            excluded_tags=_split_csv(params.get("exclude_tag")),
-            has_types=_as_tuple(params.get("has_type")),
-            title=str(params["title"]) if params.get("title") else None,
-            conversation_id=str(params["conv_id"]) if params.get("conv_id") else None,
-            since=str(params["since"]) if params.get("since") else None,
-            until=str(params["until"]) if params.get("until") else None,
-            latest=bool(params.get("latest")),
-            sort=str(params["sort"]) if params.get("sort") else None,
-            reverse=bool(params.get("reverse")),
-            limit=int(params["limit"]) if params.get("limit") else None,
-            sample=int(params["sample"]) if params.get("sample") else None,
-            filter_has_tool_use=bool(params.get("filter_has_tool_use")),
-            filter_has_thinking=bool(params.get("filter_has_thinking")),
-            min_messages=int(params["min_messages"]) if params.get("min_messages") else None,
-            max_messages=int(params["max_messages"]) if params.get("max_messages") else None,
-            min_words=int(params["min_words"]) if params.get("min_words") else None,
-            filter_has_file_ops=bool(params.get("filter_has_file_ops")),
-            filter_has_git_ops=bool(params.get("filter_has_git_ops")),
-            filter_has_subagent=bool(params.get("filter_has_subagent")),
-        )
+        return build_query_spec_from_params(cls, params)
 
     def describe(self) -> list[str]:
         """Human-readable filter descriptions for UX/error output."""
-        parts: list[str] = []
-        if self.query_terms:
-            parts.append(f"search: {' '.join(self.query_terms)}")
-        if self.contains_terms:
-            parts.append(f"contains: {', '.join(self.contains_terms)}")
-        if self.exclude_text_terms:
-            parts.append(f"exclude text: {', '.join(self.exclude_text_terms)}")
-        if self.providers:
-            parts.append(f"provider: {', '.join(p.value for p in self.providers)}")
-        if self.excluded_providers:
-            parts.append(f"exclude provider: {', '.join(p.value for p in self.excluded_providers)}")
-        if self.tags:
-            parts.append(f"tag: {', '.join(self.tags)}")
-        if self.excluded_tags:
-            parts.append(f"exclude tag: {', '.join(self.excluded_tags)}")
-        if self.title:
-            parts.append(f"title: {self.title}")
-        if self.has_types:
-            parts.append(f"has: {', '.join(self.has_types)}")
-        if self.filter_has_tool_use:
-            parts.append("has: tool_use (sql)")
-        if self.filter_has_thinking:
-            parts.append("has: thinking (sql)")
-        if self.filter_has_file_ops:
-            parts.append("has: file_ops (sql)")
-        if self.filter_has_git_ops:
-            parts.append("has: git_ops (sql)")
-        if self.filter_has_subagent:
-            parts.append("has: subagent (sql)")
-        if self.min_messages is not None:
-            parts.append(f"min_messages: {self.min_messages}")
-        if self.max_messages is not None:
-            parts.append(f"max_messages: {self.max_messages}")
-        if self.min_words is not None:
-            parts.append(f"min_words: {self.min_words}")
-        if self.since:
-            parts.append(f"since: {self.since}")
-        if self.until:
-            parts.append(f"until: {self.until}")
-        if self.conversation_id:
-            parts.append(f"id: {self.conversation_id}")
-        return parts
+        return describe_query_spec(self)
 
     def has_filters(self) -> bool:
         """Whether the spec narrows conversation selection."""
-        return any(
-            (
-                self.query_terms,
-                self.contains_terms,
-                self.exclude_text_terms,
-                self.providers,
-                self.excluded_providers,
-                self.tags,
-                self.excluded_tags,
-                self.has_types,
-                self.title is not None,
-                self.conversation_id is not None,
-                self.since is not None,
-                self.until is not None,
-                self.latest,
-                self.filter_has_tool_use,
-                self.filter_has_thinking,
-                self.filter_has_file_ops,
-                self.filter_has_git_ops,
-                self.filter_has_subagent,
-                self.min_messages is not None,
-                self.max_messages is not None,
-                self.min_words is not None,
-            )
-        )
+        return query_spec_has_filters(self)
+
+    def to_plan(
+        self,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> ConversationQueryPlan:
+        """Compile the immutable spec to the canonical execution plan."""
+        return query_spec_to_plan(self, vector_provider=vector_provider)
+
+    async def list(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> list[Conversation]:
+        return await self.build_filter(repository, vector_provider=vector_provider).list()
+
+    async def list_summaries(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> list[ConversationSummary]:
+        return await self.build_filter(repository, vector_provider=vector_provider).list_summaries()
+
+    async def count(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> int:
+        return await self.build_filter(repository, vector_provider=vector_provider).count()
+
+    async def delete(
+        self,
+        repository: ConversationRepository,
+        *,
+        vector_provider: VectorProvider | None = None,
+    ) -> int:
+        return await self.build_filter(repository, vector_provider=vector_provider).delete()
 
     def build_filter(
         self,
@@ -181,70 +379,19 @@ class ConversationQuerySpec:
         *,
         vector_provider: VectorProvider | None = None,
     ) -> ConversationFilter:
-        """Compile the spec to a canonical ConversationFilter."""
+        """Build a fluent filter facade over the canonical execution plan."""
         from polylogue.lib.filters import ConversationFilter
 
-        filter_chain = ConversationFilter(repository, vector_provider=vector_provider)
-
-        if self.conversation_id:
-            filter_chain = filter_chain.id(self.conversation_id)
-
-        for term in self.query_terms:
-            filter_chain = filter_chain.contains(term)
-        for term in self.contains_terms:
-            filter_chain = filter_chain.contains(term)
-        for term in self.exclude_text_terms:
-            filter_chain = filter_chain.exclude_text(term)
-        if self.providers:
-            filter_chain = filter_chain.provider(*self.providers)
-        if self.excluded_providers:
-            filter_chain = filter_chain.exclude_provider(*self.excluded_providers)
-        if self.tags:
-            filter_chain = filter_chain.tag(*self.tags)
-        if self.excluded_tags:
-            filter_chain = filter_chain.exclude_tag(*self.excluded_tags)
-        if self.title:
-            filter_chain = filter_chain.title(self.title)
-        for content_type in self.has_types:
-            filter_chain = filter_chain.has(content_type)
-        if self.filter_has_tool_use:
-            filter_chain = filter_chain.has_tool_use()
-        if self.filter_has_thinking:
-            filter_chain = filter_chain.has_thinking()
-        if self.filter_has_file_ops:
-            filter_chain = filter_chain.has_file_operations()
-        if self.filter_has_git_ops:
-            filter_chain = filter_chain.has_git_operations()
-        if self.filter_has_subagent:
-            filter_chain = filter_chain.has_subagent_spawns()
-        if self.min_messages is not None:
-            filter_chain = filter_chain.min_messages(self.min_messages)
-        if self.max_messages is not None:
-            filter_chain = filter_chain.max_messages(self.max_messages)
-        if self.min_words is not None:
-            filter_chain = filter_chain.min_words(self.min_words)
-        if self.since:
-            try:
-                filter_chain = filter_chain.since(self.since)
-            except ValueError as exc:
-                raise QuerySpecError("since", self.since) from exc
-        if self.until:
-            try:
-                filter_chain = filter_chain.until(self.until)
-            except ValueError as exc:
-                raise QuerySpecError("until", self.until) from exc
-        if self.latest:
-            filter_chain = filter_chain.sort("date").limit(1)
-        if self.sort:
-            filter_chain = filter_chain.sort(self.sort)
-        if self.reverse:
-            filter_chain = filter_chain.reverse()
-        if self.limit is not None:
-            filter_chain = filter_chain.limit(self.limit)
-        if self.sample is not None:
-            filter_chain = filter_chain.sample(self.sample)
-
-        return filter_chain
+        return ConversationFilter(
+            repository,
+            vector_provider=vector_provider,
+            query_plan=self.to_plan(vector_provider=vector_provider),
+        )
 
 
-__all__ = ["ConversationQuerySpec", "QuerySpecError"]
+__all__ = [
+    "ConversationQuerySpec",
+    "QUERY_ACTION_TYPES",
+    "QUERY_RETRIEVAL_LANES",
+    "QuerySpecError",
+]

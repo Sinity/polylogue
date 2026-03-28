@@ -14,6 +14,8 @@ import pytest
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context, open_connection
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
+from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import ConversationRecord, RawConversationRecord
 from tests.infra.storage_records import make_attachment, make_conversation, make_message
 
@@ -196,7 +198,7 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
 
     backend._schema_ensured = False
     backend._ensure_schema = counting_ensure_schema
-    await asyncio.gather(*[backend.list_conversations() for _ in range(20)])
+    await asyncio.gather(*[backend.queries.list_conversations(ConversationRecordQuery()) for _ in range(20)])
     assert init_count == 1
 
     slow_backend = SQLiteBackend(db_path=tmp_path / "slow.db")
@@ -229,7 +231,7 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     await asyncio.gather(*[write_operation(idx) for idx in range(5)])
     assert set(execution_order) == {0, 1, 2, 3, 4}
 
-    await backend.list_conversations()
+    await backend.queries.list_conversations(ConversationRecordQuery())
     assert not backend._write_lock.locked()
 
     read_completed = False
@@ -240,7 +242,7 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
 
     async def quick_read() -> None:
         nonlocal read_completed
-        await backend.list_conversations()
+        await backend.queries.list_conversations(ConversationRecordQuery())
         read_completed = True
 
     write_task = asyncio.create_task(slow_write())
@@ -330,8 +332,10 @@ async def test_backend_transaction_contracts(tmp_path: Path) -> None:
 async def test_backend_delete_contracts(tmp_path: Path) -> None:
     """Deleting a conversation must remove rows, attachments, and FTS entries exactly once."""
     from polylogue.storage.index import ensure_index, update_index_for_conversations
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 
     backend = SQLiteBackend(db_path=tmp_path / "delete.db")
+    repo = ConversationRepository(backend=backend)
     conv = make_conversation("conv-delete", title="Delete")
     msg1 = make_message("msg-1", "conv-delete", text="Hello")
     msg2 = make_message("msg-2", "conv-delete", role="assistant", text="Hi there")
@@ -345,23 +349,52 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
     with open_connection(backend.db_path) as conn:
         ensure_index(conn)
         update_index_for_conversations(["conv-delete"], conn)
+        rebuild_session_products_sync(conn)
         conn.commit()
         assert conn.execute(
             "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
             ("conv-delete",),
         ).fetchone()[0] > 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_profiles WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] > 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] > 0
+        assert conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0] >= 1
 
-    assert await backend.delete_conversation("conv-delete") is True
+    assert await repo.delete_conversation("conv-delete") is True
     assert await backend.get_conversation("conv-delete") is None
     assert len(await backend.get_messages("conv-delete")) == 0
     assert len(await backend.get_attachments("conv-delete")) == 0
-    assert await backend.delete_conversation("conv-delete") is False
+    assert await repo.delete_conversation("conv-delete") is False
 
     with open_connection(backend.db_path) as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
             ("conv-delete",),
         ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_profiles WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
+            ("conv-delete",),
+        ).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0] == 0
     await backend.close()
 
 

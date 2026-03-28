@@ -2,205 +2,16 @@
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
-from typing import NoReturn
 
 from polylogue.cli.formatting import format_sources_summary
-from polylogue.cli.types import AppEnv
-from polylogue.config import Config
+from polylogue.cli.helper_source_selection import maybe_prompt_sources, resolve_sources
+from polylogue.cli.helper_source_state import load_last_source, save_last_source, source_state_path
+from polylogue.cli.helper_summary import print_summary_impl
+from polylogue.cli.helper_support import fail, load_effective_config
 from polylogue.health import cached_health_summary, get_health
-from polylogue.logging import get_logger
-from polylogue.operations import ProviderMetrics, compute_provider_comparison, get_provider_counts
+from polylogue.operations import get_provider_counts, list_provider_analytics_products
 from polylogue.pipeline.runner import latest_run
-from polylogue.ui.theme import provider_color
-
-logger = get_logger(__name__)
-
-
-def fail(command: str, message: str) -> NoReturn:
-    raise SystemExit(f"{command}: {message}")
-
-
-def source_state_path() -> Path:
-    raw_state_root = os.environ.get("XDG_STATE_HOME")
-    state_root = Path(raw_state_root).expanduser() if raw_state_root else Path.home() / ".local/state"
-    return state_root / "polylogue" / "last-source.json"
-
-
-def load_last_source() -> str | None:
-    path = source_state_path()
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
-    if isinstance(payload, dict):
-        source = payload.get("source")
-        if isinstance(source, str):
-            return source
-    return None
-
-
-def save_last_source(source_name: str) -> None:
-    path = source_state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"source": source_name}), encoding="utf-8")
-
-
-def maybe_prompt_sources(
-    env: AppEnv,
-    config: Config,
-    selected_sources: list[str] | None,
-    command: str,
-) -> list[str] | None:
-    if selected_sources is not None or env.ui.plain:
-        return selected_sources
-    names = [source.name for source in config.sources]
-    if len(names) <= 1:
-        return selected_sources
-    options = ["all"] + names
-    last_choice = load_last_source()
-    if last_choice and last_choice in options:
-        options.remove(last_choice)
-        options.insert(0, last_choice)
-    choice = env.ui.choose(f"Select source for {command}", options)
-    if not choice:
-        fail(command, "No source selected.")
-    # At this point choice is guaranteed to be str (not None) due to the above check
-    save_last_source(choice)
-    if choice == "all":
-        return None
-    return [choice]
-
-
-def load_effective_config(env: AppEnv) -> Config:
-    """Return the hardcoded configuration (zero-config)."""
-    return env.config
-
-
-def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> list[str] | None:
-    if not sources:
-        return None
-    requested = list(dict.fromkeys(sources))
-    if "last" in requested:
-        if len(requested) > 1:
-            fail(command, "--source last cannot be combined with other sources")
-        last = load_last_source()
-        if not last:
-            fail(command, "No previously selected source found for --source last")
-        requested = [last]  # last is guaranteed str here due to the if not last check above
-    defined = {source.name for source in config.sources}
-    missing = sorted(set(requested) - defined)
-    if missing:
-        known = ", ".join(sorted(defined)) or "none"
-        fail(command, f"Unknown source(s): {', '.join(missing)}. Known sources: {known}")
-    return requested
-
-
-def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
-    ui = env.ui
-    config = load_effective_config(env)
-    import asyncio
-
-    last_run_data = asyncio.run(latest_run(env.backend))
-    last_line = "Last run: none"
-    if last_run_data:
-        last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"
-
-    lines = [
-        f"Archive: {config.archive_root}",
-        f"Render: {config.render_root}",
-        f"Sources: {format_sources_summary(config.sources)}",
-        last_line,
-    ]
-
-    if verbose:
-        # Show detailed health checks
-        report = get_health(config)
-        cached = report.cached
-        age = report.age_seconds
-        health_header = f"Health (cached={cached}, age={age}s)" if cached is not None else "Health"
-        lines.append(health_header)
-        checks = report.checks
-        if checks:
-            for check in checks:
-                name = check.name
-                status = check.status
-                detail = check.detail
-                status_str = str(status) if status else "?"
-                icon = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]", "error": "[red]✗[/red]"}.get(
-                    status_str, "?"
-                )
-                if ui.plain:
-                    icon = {"ok": "OK", "warning": "WARN", "error": "ERR"}.get(status_str, "?")
-                lines.append(f"  {icon} {name}: {detail}")
-    else:
-        lines.append(f"Health: {cached_health_summary(config.archive_root)}")
-
-    ui.summary("Polylogue", lines)
-
-    # Show analytics visualization (compatible with plain mode too)
-    if ui:
-        try:
-            if verbose:
-                # Full metrics (slow: ~29s) needed for Deep Dive section
-                metrics = asyncio.run(compute_provider_comparison(services=env.services))
-                counts: list[tuple[str, int]] = [(m.provider_name, m.conversation_count) for m in metrics]
-            else:
-                # Fast path: conversations-table-only query (~1ms)
-                counts = asyncio.run(get_provider_counts(services=env.services))
-                metrics = []
-
-            if counts:
-                ui.console.print()
-                total_convs = sum(c for _, c in counts)
-                ui.console.print(f"[bold]Archive:[/bold] {total_convs:,} conversations")
-
-                max_width = 30
-                for provider_name, conv_count in counts:
-                    if total_convs > 0:
-                        pct = (conv_count / total_convs) * 100
-                        bar_len = int((conv_count / total_convs) * max_width)
-                    else:
-                        pct = 0
-                        bar_len = 0
-
-                    bar = "█" * bar_len
-                    color = provider_color(provider_name).hex
-
-                    name_padded = f"{provider_name}:".ljust(14)
-                    count_padded = f"{conv_count:,}".rjust(5)
-                    pct_padded = f"({pct:.0f}%)".rjust(5)
-
-                    ui.console.print(f"  {name_padded} {count_padded} {pct_padded}  │  [{color}]{bar}[/{color}]")
-
-                # Additional stats if verbose (metrics already loaded above)
-                if verbose and metrics:
-                    ui.console.print()
-                    ui.console.print("[bold]Deep Dive:[/bold]")
-                    for m in metrics:
-                        ui.console.print(f"[bold]{m.provider_name}[/bold]")
-                        ui.console.print(
-                            f"  Messages: {m.message_count:,} (avg {m.avg_messages_per_conversation:.1f}/conv)"
-                        )
-                        ui.console.print(
-                            f"  Words: {int(m.avg_user_words)} user / {int(m.avg_assistant_words)} asst (avg)"
-                        )
-                        if m.tool_use_count > 0:
-                            ui.console.print(
-                                f"  Tool Use: {m.tool_use_count:,} ({m.tool_use_percentage:.1f}% of convs)"
-                            )
-                        if m.thinking_count > 0:
-                            ui.console.print(
-                                f"  Thinking: {m.thinking_count:,} ({m.thinking_percentage:.1f}% of convs)"
-                            )
-                        ui.console.print()
-
-        except Exception:
-            logger.debug("Analytics computation failed", exc_info=True)
 
 
 def latest_render_path(render_root: Path) -> Path | None:
@@ -209,9 +20,8 @@ def latest_render_path(render_root: Path) -> Path | None:
     candidates = list(render_root.rglob("conversation.md")) + list(render_root.rglob("conversation.html"))
     if not candidates:
         return None
-    # Handle race condition where files may be deleted between listing and stat
     latest: Path | None = None
-    latest_mtime: float = 0.0
+    latest_mtime = 0.0
     for path in candidates:
         try:
             mtime = path.stat().st_mtime
@@ -219,6 +29,36 @@ def latest_render_path(render_root: Path) -> Path | None:
                 latest_mtime = mtime
                 latest = path
         except OSError:
-            # File was deleted between listing and stat, skip it
             continue
     return latest
+
+
+def print_summary(env, *, verbose: bool = False) -> None:
+    print_summary_impl(
+        env,
+        verbose=verbose,
+        latest_run_fn=latest_run,
+        format_sources_summary_fn=format_sources_summary,
+        cached_health_summary_fn=cached_health_summary,
+        get_health_fn=get_health,
+        get_provider_counts_fn=get_provider_counts,
+        list_provider_analytics_products_fn=list_provider_analytics_products,
+    )
+
+__all__ = [
+    "cached_health_summary",
+    "fail",
+    "format_sources_summary",
+    "get_health",
+    "get_provider_counts",
+    "latest_render_path",
+    "latest_run",
+    "list_provider_analytics_products",
+    "load_effective_config",
+    "load_last_source",
+    "maybe_prompt_sources",
+    "print_summary",
+    "resolve_sources",
+    "save_last_source",
+    "source_state_path",
+]

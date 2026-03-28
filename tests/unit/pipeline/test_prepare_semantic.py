@@ -12,11 +12,8 @@ Covers:
 from __future__ import annotations
 
 from polylogue.lib.viewports import ToolCategory, classify_tool
-from polylogue.pipeline.semantic import (
-    extract_subagent_spawns,
-    extract_tool_metadata,
-    parse_git_operation,
-)
+from polylogue.pipeline.semantic_capture import extract_subagent_spawns, parse_git_operation
+from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 
 # =============================================================================
 # Tests for classify_tool
@@ -32,6 +29,9 @@ class TestClassifyTool:
     def test_edit_is_file_edit(self):
         assert classify_tool("Edit", {}) == ToolCategory.FILE_EDIT
 
+    def test_multiedit_is_file_edit(self):
+        assert classify_tool("MultiEdit", {}) == ToolCategory.FILE_EDIT
+
     def test_bash_without_git_is_shell(self):
         assert classify_tool("Bash", {"command": "ls -la"}) == ToolCategory.SHELL
 
@@ -46,6 +46,27 @@ class TestClassifyTool:
 
     def test_glob_is_search(self):
         assert classify_tool("Glob", {}) == ToolCategory.SEARCH
+
+    def test_agent_planning_tools_are_agent_category(self):
+        assert classify_tool("TodoWrite", {}) == ToolCategory.AGENT
+        assert classify_tool("TaskCreate", {}) == ToolCategory.AGENT
+        assert classify_tool("EnterPlanMode", {}) == ToolCategory.AGENT
+        assert classify_tool("Skill", {}) == ToolCategory.AGENT
+
+    def test_shell_control_tools_are_shell_category(self):
+        assert classify_tool("KillShell", {}) == ToolCategory.SHELL
+
+    def test_lsp_inspection_tools_are_search_category(self):
+        assert classify_tool("mcp__cclsp__find_definition", {}) == ToolCategory.SEARCH
+        assert classify_tool("mcp__plugin_serena_serena__find_referencing_symbols", {}) == ToolCategory.SEARCH
+        assert classify_tool("mcp__plugin_serena_serena__get_symbols_in_file", {}) == ToolCategory.SEARCH
+        assert classify_tool("mcp__cclsp__get_diagnostics", {}) == ToolCategory.SEARCH
+
+    def test_tabs_context_tools_are_web_category(self):
+        assert classify_tool("mcp__claude-in-chrome__tabs_context_mcp", {}) == ToolCategory.WEB
+
+    def test_ls_is_search(self):
+        assert classify_tool("LS", {"path": "/realm/project/polylogue"}) == ToolCategory.SEARCH
 
     def test_unknown_tool_is_other(self):
         assert classify_tool("FancyCustomTool", {}) == ToolCategory.OTHER
@@ -114,6 +135,18 @@ class TestExtractToolMetadata:
     def test_shell_returns_none(self):
         meta = extract_tool_metadata("Bash", {"command": "ls -la"})
         assert meta is None
+
+    def test_search_returns_path_and_pattern(self):
+        meta = extract_tool_metadata("Grep", {"path": "/realm/project/polylogue", "pattern": "build_session_profile"})
+        assert meta is not None
+        assert meta["path"] == "/realm/project/polylogue"
+        assert meta["pattern"] == "build_session_profile"
+
+    def test_agent_todo_metadata_summarizes_todos(self):
+        meta = extract_tool_metadata("TodoWrite", {"todos": [{"id": "1"}, {"id": "2"}]})
+        assert meta is not None
+        assert meta["tool"] == "TodoWrite"
+        assert meta["todo_count"] == 2
 
     def test_other_tool_returns_none(self):
         meta = extract_tool_metadata("UnknownTool", {})
@@ -189,4 +222,3 @@ class TestExtractSubagentSpawns:
 
     def test_empty_invocations(self):
         assert extract_subagent_spawns([]) == []
-

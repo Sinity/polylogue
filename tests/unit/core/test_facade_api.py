@@ -7,6 +7,15 @@ from datetime import datetime, timezone
 import pytest
 
 from polylogue import Polylogue
+from polylogue.archive_products import (
+    DaySessionSummaryProductQuery,
+    SessionEnrichmentProductQuery,
+    SessionPhaseProductQuery,
+    SessionProfileProductQuery,
+    SessionTagRollupQuery,
+    WeekSessionSummaryProductQuery,
+    WorkThreadProductQuery,
+)
 from polylogue.facade import ArchiveStats
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
@@ -163,7 +172,7 @@ class TestPolylogueGetConversation:
         """Test retrieving a conversation after adding data."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Create and save a conversation
         conv_record = ConversationRecord(
@@ -196,8 +205,7 @@ class TestPolylogueGetConversation:
             ),
         ]
 
-        # Use the async backend's save_conversation method
-        await backend.save_conversation(conv_record, msg_records, [])
+        await repository.save_conversation(conv_record, msg_records, [])
 
         # Retrieve by ID
         conv = await archive.get_conversation("conv-1")
@@ -222,7 +230,7 @@ class TestPolylogueGetConversations:
         """Test batch retrieval of multiple conversations."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Create multiple conversations
         for i in range(3):
@@ -235,7 +243,7 @@ class TestPolylogueGetConversations:
                 updated_at="2025-01-01T00:00:00Z",
                 content_hash=f"hash-{i}",
             )
-            await backend.save_conversation(conv_record, [], [])
+            await repository.save_conversation(conv_record, [], [])
 
         # Retrieve batch
         ids = ["conv-0", "conv-1", "conv-2"]
@@ -248,7 +256,7 @@ class TestPolylogueGetConversations:
         """Test batch retrieval with some missing IDs."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Create only conv-1
         conv_record = ConversationRecord(
@@ -260,13 +268,133 @@ class TestPolylogueGetConversations:
             updated_at="2025-01-01T00:00:00Z",
             content_hash="hash-1",
         )
-        await backend.save_conversation(conv_record, [], [])
+        await repository.save_conversation(conv_record, [], [])
 
         # Request multiple IDs but only conv-1 exists
         ids = ["conv-1", "conv-999"]
         convs = await archive.get_conversations(ids)
         assert len(convs) == 1
         assert convs[0].id == "conv-1"
+
+
+class TestPolylogueArchiveProducts:
+    @pytest.mark.asyncio
+    async def test_durable_session_products_are_publicly_queryable(self, cli_workspace):
+        from polylogue.storage.backends.connection import open_connection
+        from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+        from tests.infra.storage_records import ConversationBuilder
+
+        db_path = cli_workspace["db_path"]
+        (
+            ConversationBuilder(db_path, "conv-root")
+            .provider("claude-code")
+            .title("Root Thread")
+            .updated_at("2026-03-01T10:10:00+00:00")
+            .add_message(
+                "u1",
+                role="user",
+                text="Plan the refactor",
+                timestamp="2026-03-01T10:00:00+00:00",
+            )
+            .add_message(
+                "a1",
+                role="assistant",
+                text="Editing files",
+                timestamp="2026-03-01T10:05:00+00:00",
+                provider_meta={
+                    "content_blocks": [
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Edit",
+                            "semantic_type": "file_edit",
+                            "input": {"path": "/realm/project/polylogue/polylogue/facade.py"},
+                        }
+                    ]
+                },
+            )
+            .save()
+        )
+        (
+            ConversationBuilder(db_path, "conv-child")
+            .provider("claude-code")
+            .title("Child Thread")
+            .parent_conversation("conv-root")
+            .branch_type("continuation")
+            .updated_at("2026-03-01T11:05:00+00:00")
+            .add_message(
+                "u2",
+                role="user",
+                text="Run tests",
+                timestamp="2026-03-01T11:00:00+00:00",
+            )
+            .save()
+        )
+        with open_connection(db_path) as conn:
+            rebuild_session_products_sync(conn)
+
+        archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+        profile = await archive.get_session_profile_product("conv-root")
+        profiles = await archive.list_session_profile_products(
+            SessionProfileProductQuery(
+                provider="claude-code",
+                first_message_since="2026-03-01T00:00:00+00:00",
+                session_date_since="2026-03-01",
+                limit=10,
+            )
+        )
+        enrichments = await archive.list_session_enrichment_products(
+            SessionEnrichmentProductQuery(
+                provider="claude-code",
+                session_date_since="2026-03-01",
+                limit=10,
+            )
+        )
+        phases = await archive.list_session_phase_products(
+            SessionPhaseProductQuery(provider="claude-code", limit=10)
+        )
+        threads = await archive.list_work_thread_products(WorkThreadProductQuery(limit=10))
+
+        assert profile is not None
+        assert profile.product_kind == "session_profile"
+        assert profile.title == "Root Thread"
+        assert profile.evidence is not None
+        assert profile.evidence.canonical_session_date == "2026-03-01"
+        assert profile.inference is not None
+        assert profile.inference.engaged_duration_ms >= 0
+
+        evidence_only = await archive.get_session_profile_product("conv-root", tier="evidence")
+        inference_only = await archive.get_session_profile_product("conv-root", tier="inference")
+        assert evidence_only is not None
+        assert evidence_only.semantic_tier == "evidence"
+        assert evidence_only.evidence is not None
+        assert evidence_only.inference is None
+        assert inference_only is not None
+        assert inference_only.semantic_tier == "inference"
+        assert inference_only.evidence is None
+        assert inference_only.inference is not None
+
+        assert any(item.conversation_id == "conv-root" for item in profiles)
+        assert any(item.conversation_id == "conv-root" for item in enrichments)
+        assert enrichments[0].enrichment.refined_work_kind is not None
+        assert any(item.conversation_id == "conv-root" for item in phases)
+        assert len(threads) == 1
+        assert threads[0].thread["session_count"] == 2
+
+        tag_rollups = await archive.list_session_tag_rollup_products(
+            SessionTagRollupQuery(provider="claude-code")
+        )
+        day_summaries = await archive.list_day_session_summary_products(
+            DaySessionSummaryProductQuery(provider="claude-code", limit=10)
+        )
+        week_summaries = await archive.list_week_session_summary_products(
+            WeekSessionSummaryProductQuery(provider="claude-code", limit=10)
+        )
+
+        assert any(item.tag == "provider:claude-code" for item in tag_rollups)
+        assert len(day_summaries) == 1
+        assert day_summaries[0].summary["session_count"] == 2
+        assert len(week_summaries) == 1
+        assert week_summaries[0].summary["session_count"] == 2
 
 
 # ============================================================================
@@ -286,7 +414,7 @@ class TestPolylogueListConversations:
         """Test listing conversations with various filter combinations."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Setup conversations
         for i in range(setup_count):
@@ -301,7 +429,7 @@ class TestPolylogueListConversations:
                 content_hash=f"hash-{i}",
                 provider_meta={"source": source_filter or "inbox"} if source_filter else {},
             )
-            await backend.save_conversation(conv_record, [], [])
+            await repository.save_conversation(conv_record, [], [])
 
         # Retrieve with filters
         convs = await archive.list_conversations(
@@ -425,7 +553,7 @@ class TestPolylogueStats:
         """Test stats() with conversations in database."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Create conversations with different providers
         for i in range(2):
@@ -458,7 +586,7 @@ class TestPolylogueStats:
                     content_hash=f"mh-{i}-1",
                 ),
             ]
-            await backend.save_conversation(conv_record, msg_records, [])
+            await repository.save_conversation(conv_record, msg_records, [])
 
         # Add ChatGPT conversation
         conv_record = ConversationRecord(
@@ -480,7 +608,7 @@ class TestPolylogueStats:
                 content_hash="mh-chatgpt",
             ),
         ]
-        await backend.save_conversation(conv_record, msg_records, [])
+        await repository.save_conversation(conv_record, msg_records, [])
 
         stats = await archive.stats()
         assert stats.conversation_count == 3
@@ -495,7 +623,7 @@ class TestPolylogueStats:
         """Test that stats includes recent conversations."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.backend
+        repository = archive.repository
 
         # Create a single conversation
         conv_record = ConversationRecord(
@@ -507,7 +635,7 @@ class TestPolylogueStats:
             updated_at="2025-01-15T12:00:00Z",
             content_hash="h-1",
         )
-        await backend.save_conversation(conv_record, [], [])
+        await repository.save_conversation(conv_record, [], [])
 
         stats = await archive.stats()
         assert len(stats.recent) == 1

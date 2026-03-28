@@ -7,12 +7,10 @@ focuses on boundary conditions and corner cases.
 
 from __future__ import annotations
 
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.schemas.schema_inference import (
-    FieldStats,
     _annotate_schema,
     _collect_field_stats,
     _is_content_field,

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
+from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_async
 from polylogue.storage.fts_lifecycle import (
     ensure_fts_index_async,
     fts_index_status_async,
@@ -33,6 +34,7 @@ async def ensure_index(backend: SQLiteBackend) -> None:
 async def rebuild_index(backend: SQLiteBackend) -> None:
     """Rebuild the entire FTS5 index from persisted message rows."""
     async with backend.connection() as conn:
+        await rebuild_action_event_read_model_async(conn)
         await rebuild_fts_index_async(conn)
         await conn.commit()
     invalidate_search_cache()
@@ -47,6 +49,7 @@ async def update_index_for_conversations(
     changed = bool(conversation_id_list)
 
     async with backend.connection() as conn:
+        await rebuild_action_event_read_model_async(conn, conversation_ids=conversation_id_list)
         await repair_fts_index_async(conn, conversation_id_list)
         await conn.commit()
     if changed:

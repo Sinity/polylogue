@@ -12,17 +12,16 @@ import pytest
 
 from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.click_app import mcp_command
-from polylogue.rendering.semantic_proof import SemanticProofReport, SemanticProofSuiteReport
 from tests.infra.cli_subprocess import run_cli
 
 
 class TestHandleQueryMode:
     def _make_params(self, **overrides):
         defaults = {
-            "query_term": (),
             "conv_id": None,
             "contains": (),
             "exclude_text": (),
+            "retrieval_lane": None,
             "provider": None,
             "exclude_provider": None,
             "tag": None,
@@ -31,6 +30,14 @@ class TestHandleQueryMode:
             "since": None,
             "until": None,
             "title": None,
+            "path_terms": (),
+            "action": (),
+            "exclude_action": (),
+            "action_sequence": None,
+            "action_text": (),
+            "tool": (),
+            "exclude_tool": (),
+            "similar_text": None,
             "latest": False,
             "limit": None,
             "sort": None,
@@ -56,9 +63,6 @@ class TestHandleQueryMode:
             "verbose": False,
             "filter_has_tool_use": False,
             "filter_has_thinking": False,
-            "filter_has_file_ops": False,
-            "filter_has_git_ops": False,
-            "filter_has_subagent": False,
             "min_messages": None,
             "max_messages": None,
             "min_words": None,
@@ -72,6 +76,7 @@ class TestHandleQueryMode:
         mock_ctx = MagicMock()
         mock_ctx.params = params
         mock_ctx.obj = MagicMock()
+        mock_ctx.meta = {}
 
         with patch("polylogue.cli.query.execute_query") as mock_execute, patch(
             "polylogue.cli.click_app._show_stats"
@@ -90,7 +95,18 @@ class TestHandleQueryMode:
         mock_execute.assert_not_called()
 
     def test_query_terms_trigger_query(self):
-        mock_execute, mock_stats = self._call(self._make_params(query_term=("error", "handling")))
+        mock_ctx = MagicMock()
+        mock_ctx.params = self._make_params()
+        mock_ctx.obj = MagicMock()
+        mock_ctx.meta = {"polylogue_query_terms": ("error", "handling")}
+
+        with patch("polylogue.cli.query.execute_query") as mock_execute, patch(
+            "polylogue.cli.click_app._show_stats"
+        ) as mock_stats:
+            from polylogue.cli.click_app import _handle_query_mode
+
+            _handle_query_mode(mock_ctx)
+
         mock_execute.assert_called_once()
         mock_stats.assert_not_called()
 
@@ -105,6 +121,15 @@ class TestHandleQueryMode:
             self._make_params(until="2025-12-31"),
             self._make_params(latest=True),
             self._make_params(title="test"),
+            self._make_params(path_terms=("/realm/project/polylogue/README.md",)),
+            self._make_params(action=("search",)),
+            self._make_params(exclude_action=("git",)),
+            self._make_params(action_sequence="file_read,file_edit,shell"),
+            self._make_params(action_text=("pytest -q",)),
+            self._make_params(retrieval_lane="actions", contains=("pytest",)),
+            self._make_params(tool=("grep",)),
+            self._make_params(exclude_tool=("bash",)),
+            self._make_params(similar_text="sqlite locking bug"),
             self._make_params(exclude_text=("noise",)),
             self._make_params(exclude_provider="chatgpt"),
             self._make_params(exclude_tag="deprecated"),
@@ -139,7 +164,18 @@ class TestHandleQueryMode:
             mock_stats.assert_not_called()
 
     def test_query_terms_forwarded(self):
-        mock_execute, _ = self._call(self._make_params(query_term=("python", "error")))
+        mock_ctx = MagicMock()
+        mock_ctx.params = self._make_params()
+        mock_ctx.obj = MagicMock()
+        mock_ctx.meta = {"polylogue_query_terms": ("python", "error")}
+
+        with patch("polylogue.cli.query.execute_query") as mock_execute, patch(
+            "polylogue.cli.click_app._show_stats"
+        ):
+            from polylogue.cli.click_app import _handle_query_mode
+
+            _handle_query_mode(mock_ctx)
+
         params = mock_execute.call_args[0][1]
         assert params["query"] == ("python", "error")
 
@@ -159,6 +195,15 @@ class TestQueryFirstGroupParseArgs:
             cli_runner.invoke(cli, ["hello", "world", "--plain"], catch_exceptions=False)
         _, params = mock_execute.call_args[0]
         assert set(params.get("query", ())) == {"hello", "world"}
+
+    def test_query_option_before_command_name_stays_query_mode(self, cli_runner):
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query") as mock_execute:
+            cli_runner.invoke(cli, ["-p", "claude-ai", "check", "--plain"], catch_exceptions=False)
+        _, params = mock_execute.call_args[0]
+        assert params.get("provider") == "claude-ai"
+        assert params.get("query") == ("check",)
 
     def test_option_args_preserved(self, cli_runner):
         from polylogue.cli.click_app import cli
@@ -196,6 +241,7 @@ class TestQueryFirstGroupParseArgs:
         result = cli_runner.invoke(cli, ["--help"], catch_exceptions=False)
         assert result.exit_code == 0
         assert "polylogue" in result.output.lower()
+        assert "products" in result.output
         assert "--provider" in result.output
         assert "--latest" in result.output
 
@@ -358,6 +404,7 @@ class TestCliMetadata:
             "dashboard",
             "generate",
             "embed",
+            "products",
             "qa",
             "schema",
             "site",
@@ -448,8 +495,8 @@ class TestQaCommand:
 
     def test_json_output_uses_composed_qa_session_payload(self, cli_runner):
         from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-        from polylogue.schemas.audit import AuditReport
-        from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
+        from polylogue.schemas.audit_models import AuditReport
+        from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
         from polylogue.showcase.qa_runner import QAResult
 
         qa_result = QAResult(
@@ -466,15 +513,6 @@ class TestQaCommand:
                 },
                 total_records=1,
             ),
-            semantic_proof_report=SemanticProofSuiteReport(
-                surface_reports={
-                    "canonical_markdown_v1": SemanticProofReport(
-                        surface="canonical_markdown_v1",
-                        conversations=[],
-                        provider_reports={},
-                    )
-                },
-            ),
             exercises_skipped=True,
             invariants_skipped=True,
         )
@@ -485,7 +523,6 @@ class TestQaCommand:
         assert result.exit_code == 0
         payload = json.loads(result.output.split("\nPlain output active", 1)[0])
         assert payload["audit"]["status"] == "ok"
-        assert payload["semantic_proof"]["status"] == "ok"
         assert payload["showcase"]["status"] == "skip"
         assert payload["overall_status"] == "ok"
 
@@ -558,14 +595,13 @@ class TestDashboardCommand:
         assert result.exit_code == 0
         mock_app.run.assert_called_once()
 
-    def test_dashboard_creates_app_with_config(self, cli_runner, cli_workspace) -> None:
+    def test_dashboard_creates_app_with_repository(self, cli_runner, cli_workspace) -> None:
         with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
             result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
         assert result.exit_code == 0
         kwargs = mock_app_cls.call_args.kwargs
-        assert kwargs["config"].archive_root == cli_workspace["archive_root"]
         assert kwargs["repository"] is not None
 
 

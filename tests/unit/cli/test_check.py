@@ -10,18 +10,22 @@ from click.testing import CliRunner
 
 from polylogue.cli import cli
 from polylogue.health import HealthCheck, HealthReport, VerifyStatus
-from polylogue.rendering.semantic_proof import (
-    ProviderSemanticProof,
-    SemanticConversationProof,
-    SemanticMetricCheck,
-    SemanticProofReport,
-    SemanticProofSuiteReport,
+from polylogue.schemas.operator_models import (
+    ArtifactCohortListResult,
+    ArtifactObservationListResult,
+    ArtifactProofResult,
 )
-from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
+from polylogue.schemas.verification_models import (
+    ArtifactProofReport,
+    ProviderArtifactProof,
+    ProviderSchemaVerification,
+    SchemaVerificationReport,
+)
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.store import ArtifactCohortSummary, ArtifactObservationRecord
+from polylogue.storage.state_views import ArtifactCohortSummary
+from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
-from tests.infra.storage_records import DbFactory
+from tests.infra.storage_records import ConversationBuilder, DbFactory
 
 
 @pytest.fixture
@@ -43,119 +47,6 @@ def _extract_json(output: str) -> dict:
     if isinstance(data, dict) and data.get("status") == "ok" and "result" in data:
         return data["result"]
     return data
-
-
-def _make_semantic_report(*, critical: bool = False) -> SemanticProofSuiteReport:
-    checks = [
-        SemanticMetricCheck(
-            metric="renderable_messages",
-            status="critical_loss" if critical else "preserved",
-            policy="canonical markdown must preserve every renderable message section",
-            input_value=2,
-            output_value=1 if critical else 2,
-        ),
-        SemanticMetricCheck(
-            metric="thinking_semantics",
-            status="declared_loss",
-            policy="canonical markdown preserves display text but not typed thinking markers",
-            input_value=1,
-            output_value=0,
-        ),
-    ]
-    canonical_report = SemanticProofReport(
-        surface="canonical_markdown_v1",
-        conversations=[
-            SemanticConversationProof(
-                conversation_id="conv-1",
-                provider="chatgpt",
-                surface="canonical_markdown_v1",
-                input_facts={"renderable_messages": 2},
-                output_facts={"message_sections": 1 if critical else 2},
-                checks=checks,
-            )
-        ],
-        provider_reports={
-            "chatgpt": ProviderSemanticProof(
-                provider="chatgpt",
-                total_conversations=1,
-                clean_conversations=0 if critical else 1,
-                critical_conversations=1 if critical else 0,
-                preserved_checks=0 if critical else 1,
-                declared_loss_checks=1,
-                critical_loss_checks=1 if critical else 0,
-                metric_summary={
-                    "renderable_messages": {
-                        "preserved": 0 if critical else 1,
-                        "declared_loss": 0,
-                        "critical_loss": 1 if critical else 0,
-                    },
-                    "thinking_semantics": {
-                        "preserved": 0,
-                        "declared_loss": 1,
-                        "critical_loss": 0,
-                    },
-                },
-            )
-        },
-    )
-    html_report = SemanticProofReport(
-        surface="export_html_v1",
-        conversations=[
-            SemanticConversationProof(
-                conversation_id="conv-1",
-                provider="chatgpt",
-                surface="export_html_v1",
-                input_facts={"text_messages": 2},
-                output_facts={"message_sections": 1 if critical else 2},
-                checks=[
-                    SemanticMetricCheck(
-                        metric="text_messages",
-                        status="critical_loss" if critical else "preserved",
-                        policy="export_html_v1 must preserve visible message sections for text-bearing messages",
-                        input_value=2,
-                        output_value=1 if critical else 2,
-                    ),
-                    SemanticMetricCheck(
-                        metric="branch_structure",
-                        status="preserved",
-                        policy="export_html_v1 must preserve visible branch groupings for branched messages",
-                        input_value=0,
-                        output_value=0,
-                    ),
-                ],
-            )
-        ],
-        provider_reports={
-            "chatgpt": ProviderSemanticProof(
-                provider="chatgpt",
-                total_conversations=1,
-                clean_conversations=0 if critical else 1,
-                critical_conversations=1 if critical else 0,
-                preserved_checks=1 if critical else 2,
-                declared_loss_checks=0,
-                critical_loss_checks=1 if critical else 0,
-                metric_summary={
-                    "text_messages": {
-                        "preserved": 0 if critical else 1,
-                        "declared_loss": 0,
-                        "critical_loss": 1 if critical else 0,
-                    },
-                    "branch_structure": {
-                        "preserved": 1,
-                        "declared_loss": 0,
-                        "critical_loss": 0,
-                    },
-                },
-            )
-        },
-    )
-    return SemanticProofSuiteReport(
-        surface_reports={
-            "canonical_markdown_v1": canonical_report,
-            "export_html_v1": html_report,
-        },
-    )
-
 
 class TestHealthReportConstruction:
     """Tests for proper HealthReport instantiation."""
@@ -206,6 +97,78 @@ class TestHealthReportConstruction:
 
         assert len(report.checks) == 0
         assert report.summary == {"ok": 0, "warning": 0, "error": 0}
+
+
+def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products")
+        .provider("claude-code")
+        .title("Scoped Check Repair")
+        .add_message("u1", role="user", text="Plan the cleanup")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "check",
+            "--json",
+            "--repair",
+            "--preview",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["maintenance"]["targets"] == ["session_products"]
+    assert payload["maintenance"]["items"][0]["name"] == "session_products"
+    assert payload["maintenance"]["items"][0]["repaired_count"] > 0
+
+
+def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products-apply")
+        .provider("claude-code")
+        .title("Scoped Check Repair Apply")
+        .add_message("u1", role="user", text="Repair the durable products")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "check",
+            "--json",
+            "--repair",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["maintenance"]["targets"] == ["session_products"]
+    assert payload["maintenance"]["items"][0]["name"] == "session_products"
+    assert payload["maintenance"]["items"][0]["success"] is True
 
 
 class TestCheckCommand:
@@ -509,21 +472,15 @@ class TestCheckCommandSupplementary:
     # --- Flag validation: invalid combos rejected with correct error ---
 
     INVALID_FLAG_COMBOS = [
-        (["check", "--vacuum"], "--vacuum requires --repair"),
-        (["check", "--preview"], "--preview requires --repair"),
+        (["check", "--vacuum"], "--vacuum requires --repair or --cleanup"),
+        (["check", "--preview"], "--preview requires --repair or --cleanup"),
         (["check", "--schema-provider", "chatgpt"], "--schema-provider requires --schemas"),
         (["check", "--schema-record-limit", "100"], "--schema-record-limit requires --schemas"),
         (["check", "--schema-record-offset", "10"], "--schema-record-offset requires --schemas"),
         (["check", "--schema-quarantine-malformed"], "--schema-quarantine-malformed requires --schemas"),
-        (["check", "--semantic-provider", "chatgpt"], "--semantic-provider requires --semantic-proof"),
-        (["check", "--semantic-surface", "html"], "--semantic-surface requires --semantic-proof"),
-        (["check", "--semantic-limit", "10"], "--semantic-limit requires --semantic-proof"),
-        (["check", "--semantic-offset", "10"], "--semantic-offset requires --semantic-proof"),
         (["check", "--schemas", "--schema-samples", "0"], "--schema-samples must be a positive integer or 'all'"),
         (["check", "--schemas", "--schema-record-limit", "0"], "--schema-record-limit must be a positive integer"),
         (["check", "--schemas", "--schema-record-offset", "-1"], "--schema-record-offset must be >= 0"),
-        (["check", "--semantic-proof", "--semantic-limit", "0"], "--semantic-limit must be a positive integer"),
-        (["check", "--semantic-proof", "--semantic-offset", "-1"], "--semantic-offset must be >= 0"),
     ]
 
     @pytest.mark.parametrize("args,expected_error", INVALID_FLAG_COMBOS)
@@ -541,7 +498,7 @@ class TestCheckCommandSupplementary:
     # --- Remaining non-repetitive tests ---
 
     def test_json_output_with_repair(self, cli_workspace):
-        """--json with --repair includes repair results."""
+        """--json with --repair includes maintenance results."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
@@ -551,10 +508,10 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         envelope = json.loads(result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output)
         data = envelope.get("result", envelope)
-        assert "repairs" in data
+        assert "maintenance" in data
 
     def test_repair_with_no_issues_shows_message(self, cli_workspace):
-        """When repair finds no issues, should show 'No issues' message."""
+        """When repair finds no issues, should show a maintenance status message."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
@@ -562,7 +519,7 @@ class TestCheckCommandSupplementary:
         runner = CliRunner()
         result = runner.invoke(cli, ["check", "--repair"])
         assert result.exit_code == 0
-        assert "No issues" in result.output or "Repaired" in result.output or "repair" in result.output.lower()
+        assert "No selected maintenance work" in result.output or "Changed" in result.output or "maintenance" in result.output.lower()
 
     def test_vacuum_with_repair(self, cli_workspace):
         """--vacuum with --repair should attempt VACUUM."""
@@ -587,7 +544,7 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         envelope = json.loads(result.output)
         data = envelope.get("result", envelope)
-        assert "repairs" in data
+        assert "maintenance" in data
         assert data["vacuum"]["ok"] is True
         assert data["vacuum"]["preview"] is True
 
@@ -596,7 +553,6 @@ class TestCheckCommandSupplementary:
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
-        from polylogue.schemas.verification import ProviderSchemaVerification, SchemaVerificationReport
 
         fake_report = SchemaVerificationReport(
             providers={
@@ -611,7 +567,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.verify_raw_corpus",
+            "polylogue.cli.check_workflow.run_schema_verification",
             return_value=fake_report,
         ):
             runner = CliRunner()
@@ -630,7 +586,6 @@ class TestCheckCommandSupplementary:
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
-        from polylogue.schemas.verification import SchemaVerificationReport
 
         fake_report = SchemaVerificationReport(
             providers={},
@@ -641,7 +596,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.verify_raw_corpus",
+            "polylogue.cli.check_workflow.run_schema_verification",
             return_value=fake_report,
         ) as mock_verify:
             runner = CliRunner()
@@ -664,21 +619,20 @@ class TestCheckCommandSupplementary:
             )
 
         assert result.exit_code == 0
-        mock_verify.assert_called_once_with(
-            providers=["claude-code"],
-            max_samples=16,
-            record_limit=250,
-            record_offset=500,
-            quarantine_malformed=False,
-            progress_callback=ANY,
-        )
+        request = mock_verify.call_args.args[0]
+        assert request.providers == ["claude-code"]
+        assert request.max_samples == 16
+        assert request.record_limit == 250
+        assert request.record_offset == 500
+        assert request.quarantine_malformed is False
+        assert request.progress_callback is not None
+        assert mock_verify.call_args.kwargs["db_path"] == ANY
 
     def test_check_schemas_forwards_quarantine_flag(self, cli_workspace):
         """Quarantine option is forwarded to verify_raw_corpus."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
-        from polylogue.schemas.verification import SchemaVerificationReport
 
         fake_report = SchemaVerificationReport(
             providers={},
@@ -687,7 +641,7 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.verify_raw_corpus",
+            "polylogue.cli.check_workflow.run_schema_verification",
             return_value=fake_report,
         ) as mock_verify:
             runner = CliRunner()
@@ -697,14 +651,13 @@ class TestCheckCommandSupplementary:
             )
 
         assert result.exit_code == 0
-        mock_verify.assert_called_once_with(
-            providers=None,
-            max_samples=None,
-            record_limit=None,
-            record_offset=0,
-            quarantine_malformed=True,
-            progress_callback=ANY,
-        )
+        request = mock_verify.call_args.args[0]
+        assert request.providers is None
+        assert request.max_samples is None
+        assert request.record_limit is None
+        assert request.record_offset == 0
+        assert request.quarantine_malformed is True
+        assert request.progress_callback is not None
 
     def test_check_proof_json_output(self, cli_workspace):
         """--proof adds artifact_proof block to JSON output."""
@@ -731,8 +684,8 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.prove_raw_artifact_coverage",
-            return_value=fake_report,
+            "polylogue.cli.check_workflow.run_artifact_proof",
+            return_value=ArtifactProofResult(report=fake_report),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["--plain", "check", "--json", "--proof"])
@@ -766,8 +719,8 @@ class TestCheckCommandSupplementary:
         )
 
         with patch(
-            "polylogue.schemas.verification.prove_raw_artifact_coverage",
-            return_value=fake_report,
+            "polylogue.cli.check_workflow.run_artifact_proof",
+            return_value=ArtifactProofResult(report=fake_report),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["--plain", "check", "--proof"])
@@ -789,8 +742,8 @@ class TestCheckCommandSupplementary:
         fake_report = ArtifactProofReport(providers={}, total_records=0)
 
         with patch(
-            "polylogue.schemas.verification.prove_raw_artifact_coverage",
-            return_value=fake_report,
+            "polylogue.cli.check_workflow.run_artifact_proof",
+            return_value=ArtifactProofResult(report=fake_report),
         ) as mock_prove:
             runner = CliRunner()
             result = runner.invoke(
@@ -810,96 +763,10 @@ class TestCheckCommandSupplementary:
             )
 
         assert result.exit_code == 0
-        mock_prove.assert_called_once_with(
-            providers=["claude-code"],
-            record_limit=25,
-            record_offset=50,
-        )
-
-    def test_check_semantic_proof_json_output(self, cli_workspace):
-        """--semantic-proof adds semantic_proof block to JSON output."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        fake_report = _make_semantic_report()
-
-        with patch(
-            "polylogue.rendering.semantic_proof.prove_semantic_surface_suite",
-            return_value=fake_report,
-        ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "check", "--json", "--semantic-proof"])
-
-        assert result.exit_code == 0
-        data = _extract_json(result.output)
-        assert "semantic_proof" in data
-        assert data["semantic_proof"]["summary"]["surface_count"] == 2
-        assert data["semantic_proof"]["summary"]["clean_surfaces"] == 2
-        assert data["semantic_proof"]["summary"]["metric_summary"]["thinking_semantics"]["declared_loss"] == 1
-        assert "export_html_v1" in data["semantic_proof"]["surfaces"]
-
-    def test_check_semantic_proof_plain_output(self, cli_workspace):
-        """--semantic-proof renders the semantic proof summary in plain output."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        fake_report = _make_semantic_report(critical=True)
-
-        with patch(
-            "polylogue.rendering.semantic_proof.prove_semantic_surface_suite",
-            return_value=fake_report,
-        ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "check", "--semantic-proof"])
-
-        assert result.exit_code == 0
-        assert "Semantic proof:" in result.output
-        assert "critical=2" in result.output
-        assert "renderable_messages(preserved=0, declared_loss=0, critical_loss=1)" in result.output
-        assert "canonical_markdown_v1: conversations=1 clean=0 critical=1" in result.output
-        assert "export_html_v1: conversations=1 clean=0 critical=1" in result.output
-        assert "chatgpt: conversations=1 clean=0 critical=1" in result.output
-
-    def test_check_semantic_proof_forwards_scope(self, cli_workspace):
-        """Semantic provider/surface/limit/offset are forwarded to the proof workflow."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        fake_report = _make_semantic_report()
-
-        with patch(
-            "polylogue.rendering.semantic_proof.prove_semantic_surface_suite",
-            return_value=fake_report,
-        ) as mock_prove:
-            runner = CliRunner()
-            result = runner.invoke(
-                cli,
-                [
-                    "--plain",
-                    "check",
-                    "--json",
-                    "--semantic-proof",
-                    "--semantic-provider",
-                    "chatgpt",
-                    "--semantic-surface",
-                    "html",
-                    "--semantic-limit",
-                    "25",
-                    "--semantic-offset",
-                    "50",
-                ],
-            )
-
-        assert result.exit_code == 0
-        mock_prove.assert_called_once_with(
-            providers=["chatgpt"],
-            surfaces=["html"],
-            record_limit=25,
-            record_offset=50,
-        )
+        request = mock_prove.call_args.args[0]
+        assert request.providers == ["claude-code"]
+        assert request.record_limit == 25
+        assert request.record_offset == 50
 
     def test_check_artifacts_json_output(self, cli_workspace):
         """--artifacts adds artifact_observations rows to JSON output."""
@@ -938,8 +805,8 @@ class TestCheckCommandSupplementary:
         ]
 
         with patch(
-            "polylogue.schemas.verification.list_artifact_observation_rows",
-            return_value=fake_rows,
+            "polylogue.cli.check_workflow.list_artifact_observations",
+            return_value=ArtifactObservationListResult(rows=fake_rows),
         ):
             runner = CliRunner()
             result = runner.invoke(
@@ -991,8 +858,8 @@ class TestCheckCommandSupplementary:
         ]
 
         with patch(
-            "polylogue.schemas.verification.list_artifact_cohort_rows",
-            return_value=fake_rows,
+            "polylogue.cli.check_workflow.list_artifact_cohorts",
+            return_value=ArtifactCohortListResult(rows=fake_rows),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["--plain", "check", "--cohorts"])

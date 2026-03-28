@@ -8,9 +8,10 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.schemas.generation_cluster_collection import _collect_cluster_accumulators
+from polylogue.schemas.generation_workflow import _build_provider_bundle
+from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
-from polylogue.schemas.sampling import SchemaUnit
-from polylogue.schemas.schema_generation import _build_provider_bundle, _collect_cluster_accumulators
 from polylogue.schemas.schema_inference import (
     PROVIDERS,
     GenerationResult,
@@ -292,7 +293,7 @@ class TestGenerateAllSchemas:
         )
 
         with (
-            patch("polylogue.schemas.schema_generation._build_provider_bundle", return_value=fake_bundle),
+            patch("polylogue.schemas.generation_workflow._build_provider_bundle", return_value=fake_bundle),
             patch("polylogue.schemas.registry.SchemaRegistry.save_cluster_manifest", return_value=output_dir / "chatgpt" / "manifest.json"),
         ):
             results = generate_all_schemas(output_dir, providers=["chatgpt"])
@@ -305,7 +306,7 @@ class TestGenerateAllSchemas:
     def test_skips_failed_schemas(self, tmp_path):
         failed_result = GenerationResult(provider="broken", sample_count=0, schema=None, error="No samples")
 
-        with patch("polylogue.schemas.schema_generation.generate_provider_schema", return_value=failed_result):
+        with patch("polylogue.schemas.generation_workflow.generate_provider_schema", return_value=failed_result):
             results = generate_all_schemas(tmp_path, providers=["broken"])
 
         assert not (tmp_path / "broken" / "v1.schema.json.gz").exists()
@@ -334,7 +335,7 @@ class TestProfileClustering:
         ]
 
         monkeypatch.setattr(
-            "polylogue.schemas.schema_generation.iter_schema_units",
+            "polylogue.schemas.sampling.iter_schema_units",
             lambda *args, **kwargs: iter(units),
         )
 
@@ -381,7 +382,7 @@ class TestProfileClustering:
         ]
 
         monkeypatch.setattr(
-            "polylogue.schemas.schema_generation.iter_schema_units",
+            "polylogue.schemas.sampling.iter_schema_units",
             lambda *args, **kwargs: iter(units),
         )
 

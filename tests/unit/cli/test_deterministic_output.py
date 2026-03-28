@@ -23,13 +23,12 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.rendering.semantic_proof import SemanticProofReport, SemanticProofSuiteReport
-from polylogue.schemas.audit import AuditReport
-from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
+from polylogue.schemas.audit_models import AuditReport
+from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.invariants import InvariantResult
+from polylogue.showcase.qa_report import generate_qa_session
 from polylogue.showcase.qa_runner import QAResult
-from polylogue.showcase.report import generate_qa_session
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
 # ANSI escape code pattern: ESC[ ... final-byte
@@ -152,15 +151,6 @@ class TestFrozenClockShowcaseReport:
                 },
                 total_records=1,
             ),
-            semantic_proof_report=SemanticProofSuiteReport(
-                surface_reports={
-                    "canonical_markdown_v1": SemanticProofReport(
-                        surface="canonical_markdown_v1",
-                        conversations=[],
-                        provider_reports={},
-                    )
-                },
-            ),
             showcase_result=showcase_result,
             invariant_results=[
                 InvariantResult("json_valid", "test-exercise", OutcomeStatus.OK),
@@ -172,14 +162,14 @@ class TestFrozenClockShowcaseReport:
         result = self._make_qa_result()
 
         with patch(
-            "polylogue.showcase.report.datetime"
+            "polylogue.showcase.qa_report.datetime"
         ) as mock_dt:
             mock_dt.now.return_value = self.FROZEN_DT
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             session_a = generate_qa_session(result)
 
         with patch(
-            "polylogue.showcase.report.datetime"
+            "polylogue.showcase.qa_report.datetime"
         ) as mock_dt:
             mock_dt.now.return_value = self.FROZEN_DT
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
@@ -195,12 +185,12 @@ class TestFrozenClockShowcaseReport:
         dt_a = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
         dt_b = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
-        with patch("polylogue.showcase.report.datetime") as mock_dt:
+        with patch("polylogue.showcase.qa_report.datetime") as mock_dt:
             mock_dt.now.return_value = dt_a
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             session_a = generate_qa_session(result)
 
-        with patch("polylogue.showcase.report.datetime") as mock_dt:
+        with patch("polylogue.showcase.qa_report.datetime") as mock_dt:
             mock_dt.now.return_value = dt_b
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             session_b = generate_qa_session(result)
@@ -387,13 +377,14 @@ class TestJsonDeterminism:
     def _normalize_check_result(data: dict) -> dict:
         """Remove cache-state fields that legitimately vary between runs.
 
-        The health system caches results; the first run produces cached=False
-        and the second cached=True with a non-zero age_seconds. These fields
+        The health system may serve live or cached reports. These provenance fields
         are runtime artifacts, not output determinism issues.
         """
         result = dict(data.get("result", data))
-        result.pop("cached", None)
-        result.pop("age_seconds", None)
+        provenance = dict(result.get("provenance") or {})
+        provenance.pop("source", None)
+        provenance.pop("cache_age_seconds", None)
+        result["provenance"] = provenance
         return {**data, "result": result}
 
     def test_check_json_deterministic_with_frozen_time(self, cli_workspace):

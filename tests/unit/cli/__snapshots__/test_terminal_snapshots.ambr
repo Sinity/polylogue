@@ -3,16 +3,29 @@
   '''
   Usage: polylogue check [OPTIONS]
   
-    Health check with optional repair.
+    Health check with optional maintenance and cleanup previews.
   
   Options:
     --json                          Output as JSON
     -v, --verbose                   Show breakdown by provider
-    --repair                        Attempt to repair detected issues
-    --preview                       Preview repairs without executing (requires
-                                    --repair)
-    --vacuum                        Reclaim unused space after repair (requires
-                                    --repair)
+    --cached                        Use the recent cached archive-health report
+                                    when available
+    --repair                        Run safe derived-data and database
+                                    maintenance repairs
+    --cleanup                       Run destructive archive cleanup for orphaned
+                                    or empty persisted data
+    --target [session_products|action_event_read_model|dangling_fts|wal_checkpoint
+  |orphaned_messages|orphaned_content_blocks|empty_conversations|orphaned_attachme
+  nts]
+                                    Limit maintenance to named targets such as
+                                    session_products, action_event_read_model,
+                                    dangling_fts, wal_checkpoint,
+                                    orphaned_messages, orphaned_content_blocks,
+                                    empty_conversations, or orphaned_attachments
+    --preview                       Preview maintenance without executing
+                                    (requires --repair or --cleanup)
+    --vacuum                        Reclaim unused space after maintenance
+                                    (requires --repair or --cleanup)
     --deep                          Run SQLite integrity check (slow on large
                                     databases)
     --runtime                       Run environment and runtime verification
@@ -22,9 +35,6 @@
     --proof                         Run durable artifact support proof
     --artifacts                     List durable artifact observations
     --cohorts                       Summarize durable artifact cohorts
-    --semantic-proof                Run semantic preservation proof across
-                                    canonical, export, query, stream, and MCP
-                                    read surfaces
     --schema-provider TEXT          Limit schema verification to DB provider
                                     name (repeatable)
     --artifact-provider TEXT        Limit artifact proof<PATH> to
@@ -37,15 +47,6 @@
                                     observation rows
     --artifact-offset INTEGER       Start offset for artifact
                                     proof<PATH>  [default: 0]
-    --semantic-provider TEXT        Limit semantic proof to conversation
-                                    providers (repeatable)
-    --semantic-surface TEXT         Limit semantic proof to
-                                    canonical<PATH> surfaces
-                                    such as canonical, export_all, query_all,
-                                    stream_all, mcp_all, read_all, or all
-    --semantic-limit INTEGER        Limit semantic proof to N conversations
-    --semantic-offset INTEGER       Start offset for semantic proof  [default:
-                                    0]
     --schema-samples TEXT           Validation samples per raw payload: positive
                                     integer or 'all'  [default: all]
     --schema-record-limit INTEGER   Limit schema verification to N raw records
@@ -123,6 +124,18 @@
         polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
+        polylogue --path <PATH> --action file_read --l
+  ist
+        polylogue --action search --action file_edit --list
+        polylogue --action-sequence file_read,file_edit,shell --list
+        polylogue --action-text "pytest -q" --list
+        polylogue "pytest -q tests<PATH>" --retrieval-l
+  ane actions --limit 5
+        polylogue --action other --stats-by tool --format json
+        polylogue --stats-by project --provider claude-code --since 2026-01-01 --f
+  ormat json
+        polylogue --tool bash --exclude-tool read --list
+        polylogue --similar "sqlite locking bug in parser" --limit 5
   
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
@@ -134,10 +147,11 @@
         polylogue qa        Composable QA (audit, exercises, invariants)
         polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
+        polylogue products  Inspect durable session<PATH> products
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
-        polylogue schema    Schema inference and versioning
+        polylogue schema    Schema generation, package versioning, and evidence
         polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
@@ -146,22 +160,41 @@
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
     --exclude-text TEXT             Exclude FTS term
+    --retrieval-lane [auto|dialogue|actions|hybrid]
+                                    Query lane: dialogue FTS, action text, or
+                                    hybrid
     -p, --provider TEXT             Include providers (comma = OR)
     --exclude-provider TEXT         Exclude providers
     -t, --tag TEXT                  Include tags (comma = OR, supports
                                     key:value)
     --exclude-tag TEXT              Exclude tags
     --title TEXT                    Title contains
+    --path TEXT                     Touched path contains substring (repeatable
+                                    = AND)
+    --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|o
+  ther|none]
+                                    Require semantic action category (repeatable
+                                    = AND)
+    --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|su
+  bagent|other|none]
+                                    Exclude semantic action category (repeatable
+                                    = AND)
+    --action-sequence TEXT          Require ordered semantic action subsequence
+                                    (comma-separated)
+    --action-text TEXT              Require text within normalized action
+                                    evidence (repeatable = AND)
+    --tool TEXT                     Require normalized tool name (repeatable =
+                                    AND)
+    --exclude-tool TEXT             Exclude normalized tool name (repeatable =
+                                    AND)
+    --similar TEXT                  Semantic similarity query (requires
+                                    embeddings)
     --has TEXT                      Filter by content: thinking (reasoning),
                                     tools (calls), summary, attachments
     --has-tool-use                  Only conversations with tool use (SQL
                                     pushdown)
     --has-thinking                  Only conversations with thinking blocks (SQL
                                     pushdown)
-    --has-file-ops                  Only conversations with file read<PATH>
-                                    ops
-    --has-git-ops                   Only conversations with git operations
-    --has-subagent                  Only conversations that spawned subagents
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
@@ -182,7 +215,7 @@
     --list                          Force list format
     --stats                         Only statistics, no content
     --count                         Print matched count and exit
-    --stats-by [provider|month|year|day]
+    --stats-by [provider|month|year|day|action|tool|project|work-kind]
                                     Aggregate statistics by dimension
     --open                          Open result in browser<PATH>
     --transform [strip-tools|strip-thinking|strip-all]
@@ -204,16 +237,17 @@
   
   Commands:
     auth         Authenticate with external services (Google Drive for...
-    check        Health check with optional repair.
+    check        Health check with optional maintenance and cleanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversations.
     generate     Generate synthetic conversations for demos, testing, and...
     mcp          Start the MCP server for AI assistant integration.
+    products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, assets, rendered outputs, or auth state.
     run          Run pipeline stages on configured sources.
-    schema       Schema inference, versioning, and promotion.
+    schema       Schema generation, package versioning, and evidence...
     site         Generate a static HTML site from the archive.
     sources      List configured sources.
     tags         List all tags with conversation counts.
@@ -234,6 +268,20 @@
         polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
+        polylogue --path <PATH> --
+  action file_read --list
+        polylogue --action search --action file_edit --list
+        polylogue --action-sequence file_read,file_edit,shell
+  --list
+        polylogue --action-text "pytest -q" --list
+        polylogue "pytest -q tests<PATH>
+  ts.py" --retrieval-lane actions --limit 5
+        polylogue --action other --stats-by tool --format json
+        polylogue --stats-by project --provider claude-code --
+  since 2026-01-01 --format json
+        polylogue --tool bash --exclude-tool read --list
+        polylogue --similar "sqlite locking bug in parser" --l
+  imit 5
   
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
@@ -246,10 +294,13 @@
   nvariants)
         polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
+        polylogue products  Inspect durable session<PATH>
+  enance products
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
-        polylogue schema    Schema inference and versioning
+        polylogue schema    Schema generation, package version
+  ing, and evidence
         polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
@@ -260,6 +311,10 @@
     -c, --contains TEXT             FTS term (repeatable = AND
   )
     --exclude-text TEXT             Exclude FTS term
+    --retrieval-lane [auto|dialogue|actions|hybrid]
+                                    Query lane: dialogue FTS,
+  action text, or
+                                    hybrid
     -p, --provider TEXT             Include providers (comma =
    OR)
     --exclude-provider TEXT         Exclude providers
@@ -268,6 +323,35 @@
                                     key:value)
     --exclude-tag TEXT              Exclude tags
     --title TEXT                    Title contains
+    --path TEXT                     Touched path contains subs
+  tring (repeatable
+                                    = AND)
+    --action [file_read|file_write|file_edit|shell|git|search|
+  web|agent|subagent|other|none]
+                                    Require semantic action ca
+  tegory (repeatable
+                                    = AND)
+    --exclude-action [file_read|file_write|file_edit|shell|git
+  |search|web|agent|subagent|other|none]
+                                    Exclude semantic action ca
+  tegory (repeatable
+                                    = AND)
+    --action-sequence TEXT          Require ordered semantic a
+  ction subsequence
+                                    (comma-separated)
+    --action-text TEXT              Require text within normal
+  ized action
+                                    evidence (repeatable = AND
+  )
+    --tool TEXT                     Require normalized tool na
+  me (repeatable =
+                                    AND)
+    --exclude-tool TEXT             Exclude normalized tool na
+  me (repeatable =
+                                    AND)
+    --similar TEXT                  Semantic similarity query
+  (requires
+                                    embeddings)
     --has TEXT                      Filter by content: thinkin
   g (reasoning),
                                     tools (calls), summary, at
@@ -278,13 +362,6 @@
     --has-thinking                  Only conversations with th
   inking blocks (SQL
                                     pushdown)
-    --has-file-ops                  Only conversations with fi
-  le read<PATH>
-                                    ops
-    --has-git-ops                   Only conversations with gi
-  t operations
-    --has-subagent                  Only conversations that sp
-  awned subagents
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
@@ -314,7 +391,8 @@
   t
     --count                         Print matched count and ex
   it
-    --stats-by [provider|month|year|day]
+    --stats-by [provider|month|year|day|action|tool|project|wo
+  rk-kind]
                                     Aggregate statistics by di
   mension
     --open                          Open result in browser<PATH>
@@ -349,7 +427,8 @@
   Commands:
     auth         Authenticate with external services (Google D
   rive for...
-    check        Health check with optional repair.
+    check        Health check with optional maintenance and cl
+  eanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversation
@@ -358,12 +437,14 @@
   esting, and...
     mcp          Start the MCP server for AI assistant integra
   tion.
+    products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, a
   nd invariant...
     reset        Reset database, assets, rendered outputs, or
   auth state.
     run          Run pipeline stages on configured sources.
-    schema       Schema inference, versioning, and promotion.
+    schema       Schema generation, package versioning, and ev
+  idence...
     site         Generate a static HTML site from the archive.
     sources      List configured sources.
     tags         List all tags with conversation counts.
@@ -384,6 +465,15 @@
         polylogue "error" -p claude-ai --since 2025-01 --list
         polylogue --has thinking --sort tokens --limit 10
         polylogue -t important --stats-by provider
+        polylogue --path <PATH> --action file_read --list
+        polylogue --action search --action file_edit --list
+        polylogue --action-sequence file_read,file_edit,shell --list
+        polylogue --action-text "pytest -q" --list
+        polylogue "pytest -q tests<PATH>" --retrieval-lane actions --limit 5
+        polylogue --action other --stats-by tool --format json
+        polylogue --stats-by project --provider claude-code --since 2026-01-01 --format json
+        polylogue --tool bash --exclude-tool read --list
+        polylogue --similar "sqlite locking bug in parser" --limit 5
   
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
@@ -395,10 +485,11 @@
         polylogue qa        Composable QA (audit, exercises, invariants)
         polylogue generate  Synthetic data generation
         polylogue embed     Generate vector embeddings
+        polylogue products  Inspect durable session<PATH> products
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
-        polylogue schema    Schema inference and versioning
+        polylogue schema    Schema generation, package versioning, and evidence
         polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
@@ -407,22 +498,39 @@
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
     --exclude-text TEXT             Exclude FTS term
+    --retrieval-lane [auto|dialogue|actions|hybrid]
+                                    Query lane: dialogue FTS, action text, or
+                                    hybrid
     -p, --provider TEXT             Include providers (comma = OR)
     --exclude-provider TEXT         Exclude providers
     -t, --tag TEXT                  Include tags (comma = OR, supports
                                     key:value)
     --exclude-tag TEXT              Exclude tags
     --title TEXT                    Title contains
+    --path TEXT                     Touched path contains substring (repeatable
+                                    = AND)
+    --action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
+                                    Require semantic action category (repeatable
+                                    = AND)
+    --exclude-action [file_read|file_write|file_edit|shell|git|search|web|agent|subagent|other|none]
+                                    Exclude semantic action category (repeatable
+                                    = AND)
+    --action-sequence TEXT          Require ordered semantic action subsequence
+                                    (comma-separated)
+    --action-text TEXT              Require text within normalized action
+                                    evidence (repeatable = AND)
+    --tool TEXT                     Require normalized tool name (repeatable =
+                                    AND)
+    --exclude-tool TEXT             Exclude normalized tool name (repeatable =
+                                    AND)
+    --similar TEXT                  Semantic similarity query (requires
+                                    embeddings)
     --has TEXT                      Filter by content: thinking (reasoning),
                                     tools (calls), summary, attachments
     --has-tool-use                  Only conversations with tool use (SQL
                                     pushdown)
     --has-thinking                  Only conversations with thinking blocks (SQL
                                     pushdown)
-    --has-file-ops                  Only conversations with file read<PATH>
-                                    ops
-    --has-git-ops                   Only conversations with git operations
-    --has-subagent                  Only conversations that spawned subagents
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
@@ -443,7 +551,7 @@
     --list                          Force list format
     --stats                         Only statistics, no content
     --count                         Print matched count and exit
-    --stats-by [provider|month|year|day]
+    --stats-by [provider|month|year|day|action|tool|project|work-kind]
                                     Aggregate statistics by dimension
     --open                          Open result in browser<PATH>
     --transform [strip-tools|strip-thinking|strip-all]
@@ -465,16 +573,17 @@
   
   Commands:
     auth         Authenticate with external services (Google Drive for...
-    check        Health check with optional repair.
+    check        Health check with optional maintenance and cleanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversations.
     generate     Generate synthetic conversations for demos, testing, and...
     mcp          Start the MCP server for AI assistant integration.
+    products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, assets, rendered outputs, or auth state.
     run          Run pipeline stages on configured sources.
-    schema       Schema inference, versioning, and promotion.
+    schema       Schema generation, package versioning, and evidence...
     site         Generate a static HTML site from the archive.
     sources      List configured sources.
     tags         List all tags with conversation counts.

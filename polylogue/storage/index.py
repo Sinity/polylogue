@@ -3,9 +3,12 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 
+from .action_event_rebuild_runtime import rebuild_action_event_read_model_sync
 from .backends.connection import connection_context, open_connection
 from .fts_lifecycle import (
     _chunked as _chunked,
+)
+from .fts_lifecycle import (
     ensure_fts_index_sync,
     fts_index_status_sync,
     rebuild_fts_index_sync,
@@ -23,6 +26,7 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
     """Rebuild the entire FTS5 search index from persisted message rows."""
 
     def _do(db_conn: sqlite3.Connection) -> None:
+        rebuild_action_event_read_model_sync(db_conn)
         rebuild_fts_index_sync(db_conn)
         db_conn.commit()
         invalidate_search_cache()
@@ -36,6 +40,7 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
     changed = bool(conversation_ids)
 
     def _do(db_conn: sqlite3.Connection) -> None:
+        rebuild_action_event_read_model_sync(db_conn, conversation_ids=conversation_ids)
         repair_fts_index_sync(db_conn, conversation_ids)
         db_conn.commit()
         if changed:
@@ -53,6 +58,7 @@ def index_status(conn: sqlite3.Connection | None = None) -> dict[str, object]:
 
 
 __all__ = [
+    "_chunked",
     "rebuild_index",
     "update_index_for_conversations",
     "index_status",

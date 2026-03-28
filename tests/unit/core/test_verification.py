@@ -1,8 +1,4 @@
-"""Direct tests for polylogue.schemas.verification module.
-
-Covers ProviderSchemaVerification serialization, SchemaVerificationReport,
-and verify_raw_corpus with nonexistent DB and provider filtering.
-"""
+"""Direct tests for schema verification and artifact-proof workflows."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -11,17 +7,24 @@ from pathlib import Path
 import pytest
 
 from polylogue.schemas.packages import SchemaElementManifest, SchemaResolution, SchemaVersionPackage
-from polylogue.schemas.verification import (
+from polylogue.schemas.verification_artifacts import (
+    list_artifact_cohort_rows,
+    list_artifact_observation_rows,
+    prove_raw_artifact_coverage,
+)
+from polylogue.schemas.verification_corpus import verify_raw_corpus
+from polylogue.schemas.verification_models import (
     ArtifactProofReport,
     ProviderArtifactProof,
     ProviderSchemaVerification,
     SchemaVerificationReport,
-    list_artifact_cohort_rows,
-    list_artifact_observation_rows,
-    prove_raw_artifact_coverage,
-    verify_raw_corpus,
 )
-from polylogue.storage.artifact_observations import artifact_observation_id
+from polylogue.schemas.verification_requests import (
+    ArtifactObservationQuery,
+    ArtifactProofRequest,
+    SchemaVerificationRequest,
+)
+from polylogue.storage.artifact_inspection import artifact_observation_id
 from polylogue.storage.backends.connection import open_connection
 
 
@@ -242,7 +245,7 @@ class TestArtifactProofReport:
 
 class TestVerifyRawCorpus:
     def test_nonexistent_db_returns_empty(self, tmp_path: Path) -> None:
-        report = verify_raw_corpus(db_path=tmp_path / "nope.db")
+        report = verify_raw_corpus(db_path=tmp_path / "nope.db", request=SchemaVerificationRequest())
         assert report.total_records == 0
         assert report.providers == {}
 
@@ -252,7 +255,7 @@ class TestVerifyRawCorpus:
         db = tmp_path / "empty.db"
         with open_connection(db):
             pass
-        report = verify_raw_corpus(db_path=db)
+        report = verify_raw_corpus(db_path=db, request=SchemaVerificationRequest())
         assert report.total_records == 0
         assert report.providers == {}
 
@@ -262,7 +265,10 @@ class TestVerifyRawCorpus:
         db = tmp_path / "empty.db"
         with open_connection(db):
             pass
-        report = verify_raw_corpus(db_path=db, providers=["chatgpt"])
+        report = verify_raw_corpus(
+            db_path=db,
+            request=SchemaVerificationRequest(providers=["chatgpt"]),
+        )
         assert report.total_records == 0
 
     def test_max_samples_preserved_in_report(self, tmp_path: Path) -> None:
@@ -271,7 +277,10 @@ class TestVerifyRawCorpus:
         db = tmp_path / "empty.db"
         with open_connection(db):
             pass
-        report = verify_raw_corpus(db_path=db, max_samples=100)
+        report = verify_raw_corpus(
+            db_path=db,
+            request=SchemaVerificationRequest(max_samples=100),
+        )
         assert report.max_samples == 100
 
     def test_record_limit_preserved_in_report(self, tmp_path: Path) -> None:
@@ -280,7 +289,10 @@ class TestVerifyRawCorpus:
         db = tmp_path / "empty.db"
         with open_connection(db):
             pass
-        report = verify_raw_corpus(db_path=db, record_limit=50)
+        report = verify_raw_corpus(
+            db_path=db,
+            request=SchemaVerificationRequest(record_limit=50),
+        )
         assert report.record_limit == 50
 
     def test_record_offset_preserved_in_report(self, tmp_path: Path) -> None:
@@ -289,7 +301,10 @@ class TestVerifyRawCorpus:
         db = tmp_path / "empty.db"
         with open_connection(db):
             pass
-        report = verify_raw_corpus(db_path=db, record_offset=25)
+        report = verify_raw_corpus(
+            db_path=db,
+            request=SchemaVerificationRequest(record_offset=25),
+        )
         assert report.record_offset == 25
 
     def test_offset_negative_becomes_zero(self, tmp_path: Path) -> None:
@@ -298,18 +313,11 @@ class TestVerifyRawCorpus:
         db = tmp_path / "empty.db"
         with open_connection(db):
             pass
-        report = verify_raw_corpus(db_path=db, record_offset=-10)
+        report = verify_raw_corpus(
+            db_path=db,
+            request=SchemaVerificationRequest(record_offset=-10),
+        )
         assert report.record_offset == 0
-
-    def test_defaults_no_db_path(self) -> None:
-        # When db_path=None and default DB doesn't exist, should return empty report
-        from pathlib import Path
-        from unittest.mock import patch
-
-        fake_path = Path("/nonexistent/fake/db.db")
-        with patch("polylogue.schemas.verification.default_db_path", return_value=fake_path):
-            report = verify_raw_corpus()
-            assert report.total_records == 0
 
     def test_quarantine_malformed_flag_preserved(self, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
@@ -318,7 +326,10 @@ class TestVerifyRawCorpus:
         with open_connection(db):
             pass
         # Should not raise even with quarantine_malformed=True on empty DB
-        report = verify_raw_corpus(db_path=db, quarantine_malformed=True)
+        report = verify_raw_corpus(
+            db_path=db,
+            request=SchemaVerificationRequest(quarantine_malformed=True),
+        )
         assert report.total_records == 0
 
     def test_report_structure_matches_schema(self, tmp_path: Path) -> None:
@@ -327,7 +338,7 @@ class TestVerifyRawCorpus:
         db = tmp_path / "empty.db"
         with open_connection(db):
             pass
-        report = verify_raw_corpus(db_path=db)
+        report = verify_raw_corpus(db_path=db, request=SchemaVerificationRequest())
         assert hasattr(report, "providers")
         assert hasattr(report, "max_samples")
         assert hasattr(report, "total_records")
@@ -340,7 +351,7 @@ class TestVerifyRawCorpus:
         db = tmp_path / "empty.db"
         with open_connection(db):
             pass
-        report = verify_raw_corpus(db_path=db)
+        report = verify_raw_corpus(db_path=db, request=SchemaVerificationRequest())
 
         # Even with empty DB, any stats should have these fields
         for stat in report.providers.values():
@@ -354,7 +365,10 @@ class TestVerifyRawCorpus:
 
 class TestProveRawArtifactCoverage:
     def test_nonexistent_db_returns_empty(self, tmp_path: Path) -> None:
-        report = prove_raw_artifact_coverage(db_path=tmp_path / "missing.db")
+        report = prove_raw_artifact_coverage(
+            db_path=tmp_path / "missing.db",
+            request=ArtifactProofRequest(),
+        )
         assert report.total_records == 0
         assert report.providers == {}
 
@@ -454,10 +468,13 @@ class TestProveRawArtifactCoverage:
                 return package
             return None
 
-        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.resolve_payload", _resolve_payload)
-        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.get_package", _get_package)
+        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.get_package", _get_package)
 
-        report = prove_raw_artifact_coverage(db_path=db_path)
+        report = prove_raw_artifact_coverage(
+            db_path=db_path,
+            request=ArtifactProofRequest(),
+        )
 
         assert report.total_records == 5
         assert report.contract_backed_records == 1
@@ -606,10 +623,13 @@ class TestProveRawArtifactCoverage:
                 return package
             return None
 
-        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.resolve_payload", _resolve_payload)
-        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.get_package", _get_package)
+        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.get_package", _get_package)
 
-        report = prove_raw_artifact_coverage(db_path=db_path)
+        report = prove_raw_artifact_coverage(
+            db_path=db_path,
+            request=ArtifactProofRequest(),
+        )
 
         assert report.total_records == 1
         assert report.contract_backed_records == 1
@@ -702,10 +722,13 @@ class TestProveRawArtifactCoverage:
                 return package
             return None
 
-        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.resolve_payload", _resolve_payload)
-        monkeypatch.setattr("polylogue.storage.artifact_observations.SchemaRegistry.get_package", _get_package)
+        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.get_package", _get_package)
 
-        rows = list_artifact_observation_rows(db_path=db_path)
+        rows = list_artifact_observation_rows(
+            db_path=db_path,
+            request=ArtifactObservationQuery(),
+        )
         assert len(rows) == 3
         assert {row.artifact_kind for row in rows} == {
             "conversation_document",
@@ -715,12 +738,15 @@ class TestProveRawArtifactCoverage:
 
         supported_rows = list_artifact_observation_rows(
             db_path=db_path,
-            support_statuses=["supported_parseable"],
+            request=ArtifactObservationQuery(support_statuses=["supported_parseable"]),
         )
         assert len(supported_rows) == 1
         assert supported_rows[0].resolved_package_version == "v1"
 
-        cohorts = list_artifact_cohort_rows(db_path=db_path)
+        cohorts = list_artifact_cohort_rows(
+            db_path=db_path,
+            request=ArtifactObservationQuery(),
+        )
         assert len(cohorts) == 3
         chatgpt_cohort = next(row for row in cohorts if row.provider_name == "chatgpt")
         assert chatgpt_cohort.support_status.value == "supported_parseable"

@@ -24,12 +24,17 @@ import pytest
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
+from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 
 # Number of conversations for scale tests.
 # 200 is enough to expose N+1 patterns while keeping tests fast (<2s).
 SCALE_COUNT = 200
+
+
+def _record_query(**kwargs) -> ConversationRecordQuery:
+    return ConversationRecordQuery(**kwargs)
 
 
 async def _seed_conversations(
@@ -287,7 +292,7 @@ class TestPerformanceBudget:
         """list_conversations(limit=50) on 5k-message DB must finish in <100ms."""
         backend, _ = await _seed_budget_db(tmp_path)
         t0 = time.monotonic()
-        results = await backend.list_conversations(limit=50)
+        results = await backend.queries.list_conversations(_record_query(limit=50))
         elapsed_ms = (time.monotonic() - t0) * 1000
         assert len(results) == 50
         assert elapsed_ms < 100, f"list_conversations took {elapsed_ms:.0f}ms (budget: 100ms)"
@@ -324,13 +329,15 @@ class TestPerformanceBudget:
         """
         backend, _ = await _seed_budget_db(tmp_path)
         t0 = time.monotonic()
-        results = await backend.list_conversations(has_tool_use=True, limit=50)
+        results = await backend.queries.list_conversations(
+            _record_query(has_tool_use=True, limit=50)
+        )
         elapsed_ms = (time.monotonic() - t0) * 1000
         assert elapsed_ms < 100, f"has_tool_use filter took {elapsed_ms:.0f}ms (budget: 100ms)"
         _ = results  # exercised
 
     async def test_semantic_filter_budget(self, tmp_path):
-        """has_file_ops EXISTS filter on 5k DB must finish in <200ms.
+        """Semantic action EXISTS filter on 5k DB must finish in <200ms.
 
         Now that content_blocks are seeded, this validates the covering index
         and ensures the filter returns real results.
@@ -348,15 +355,23 @@ class TestPerformanceBudget:
                     conversation_id=cid,
                     block_index=0,
                     type='tool_use',
+                    tool_name='Read',
                     semantic_type='file_read',
                 ))
         await backend.save_content_blocks(blocks)
+        from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
+
+        with open_connection(backend.db_path) as conn:
+            rebuild_action_event_read_model_sync(conn)
+            conn.commit()
 
         t0 = time.monotonic()
-        results = await backend.list_conversations(has_file_ops=True, limit=50)
+        results = await backend.queries.list_conversations(
+            _record_query(action_terms=("file_read",), limit=50)
+        )
         elapsed_ms = (time.monotonic() - t0) * 1000
         assert len(results) > 0, "Semantic filter should find results with seeded content_blocks"
-        assert elapsed_ms < 200, f"has_file_ops filter took {elapsed_ms:.0f}ms (budget: 200ms)"
+        assert elapsed_ms < 200, f"action_terms filter took {elapsed_ms:.0f}ms (budget: 200ms)"
 
 
 # ============================================================================
@@ -374,10 +389,6 @@ class TestLargeInputRoundTrip:
 
     async def test_large_message_round_trips(self, tmp_path):
         """Store a message with 200KB text, retrieve, verify text matches and FTS indexes."""
-        from hypothesis import given, settings
-        from hypothesis import strategies as st
-        from tests.infra.strategies.adversarial import large_input_strategy
-
         db_path = tmp_path / "large.db"
         backend = SQLiteBackend(db_path=db_path)
 
@@ -513,7 +524,7 @@ class TestScaleBudgets:
         backend = SQLiteBackend(db_path=db_path)
         try:
             t0 = time.monotonic()
-            results = await backend.list_conversations(limit=100)
+            results = await backend.queries.list_conversations(_record_query(limit=100))
             elapsed = time.monotonic() - t0
 
             assert len(results) == 100
@@ -530,7 +541,7 @@ class TestScaleBudgets:
         try:
             repo = ConversationRepository(backend=backend)
             t0 = time.monotonic()
-            results = await repo.search_summaries("Message", limit=50)
+            _ = await repo.search_summaries("Message", limit=50)
             elapsed = time.monotonic() - t0
 
             assert elapsed < 1.0, (
@@ -546,25 +557,27 @@ class TestScaleBudgets:
         try:
             # Provider filter
             t0 = time.monotonic()
-            results = await backend.list_conversations(
-                provider="chatgpt", limit=100
+            _ = await backend.queries.list_conversations(
+                _record_query(provider="chatgpt", limit=100)
             )
             elapsed_provider = time.monotonic() - t0
 
             # Date range filter
             t0 = time.monotonic()
-            results = await backend.list_conversations(
-                since="2025-03-01", until="2025-06-30", limit=100
+            _ = await backend.queries.list_conversations(
+                _record_query(since="2025-03-01", until="2025-06-30", limit=100)
             )
             elapsed_date = time.monotonic() - t0
 
             # Combined filter
             t0 = time.monotonic()
-            results = await backend.list_conversations(
-                provider="claude-ai",
-                since="2025-01-01",
-                until="2025-12-31",
-                limit=100,
+            _ = await backend.queries.list_conversations(
+                _record_query(
+                    provider="claude-ai",
+                    since="2025-01-01",
+                    until="2025-12-31",
+                    limit=100,
+                )
             )
             elapsed_combined = time.monotonic() - t0
 
