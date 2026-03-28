@@ -48,6 +48,7 @@ from polylogue.storage.backends.queries import (
     stats as stats_q,
 )
 from polylogue.storage.backends.query_store import SQLiteQueryStore
+from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.store import (
     ArtifactObservationRecord,
     AttachmentRecord,
@@ -429,23 +430,25 @@ class SQLiteBackend:
     ) -> list[ConversationRecord]:
         """List conversations with optional filtering and pagination."""
         return await self.queries.list_conversations(
-            source=source,
-            provider=provider,
-            providers=providers,
-            parent_id=parent_id,
-            since=since,
-            until=until,
-            title_contains=title_contains,
-            limit=limit,
-            offset=offset,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            has_file_ops=has_file_ops,
-            has_git_ops=has_git_ops,
-            has_subagent=has_subagent,
+            ConversationRecordQuery(
+                source=source,
+                provider=provider,
+                providers=tuple(providers or ()),
+                parent_id=parent_id,
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                limit=limit,
+                offset=offset,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            )
         )
 
     async def count_conversations(
@@ -467,20 +470,22 @@ class SQLiteBackend:
     ) -> int:
         """Count conversations matching filters without loading records."""
         return await self.queries.count_conversations(
-            source=source,
-            provider=provider,
-            providers=providers,
-            since=since,
-            until=until,
-            title_contains=title_contains,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            has_file_ops=has_file_ops,
-            has_git_ops=has_git_ops,
-            has_subagent=has_subagent,
+            ConversationRecordQuery(
+                source=source,
+                provider=provider,
+                providers=tuple(providers or ()),
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            )
         )
 
     async def aggregate_message_stats(
@@ -521,7 +526,8 @@ class SQLiteBackend:
 
         if messages:
             existing_messages = {
-                msg.message_id: msg for msg in await self.get_messages(conversation.conversation_id)
+                msg.message_id: msg
+                for msg in await self.queries.get_messages(conversation.conversation_id)
             }
             for message in messages:
                 existing_msg = existing_messages.get(message.message_id)
@@ -578,15 +584,13 @@ class SQLiteBackend:
 
     async def get_attachments(self, conversation_id: str) -> list[AttachmentRecord]:
         """Get all attachments for a conversation."""
-        async with self._get_connection() as conn:
-            return await attachments_q.get_attachments(conn, conversation_id)
+        return await self.queries.get_attachments(conversation_id)
 
     async def get_attachments_batch(
         self, conversation_ids: list[str]
     ) -> dict[str, list[AttachmentRecord]]:
         """Get attachments for multiple conversations in a single query."""
-        async with self._get_connection() as conn:
-            return await attachments_q.get_attachments_batch(conn, conversation_ids)
+        return await self.queries.get_attachments_batch(conversation_ids)
 
     async def save_attachments(self, records: list[AttachmentRecord]) -> None:
         """Persist attachment records with reference counting."""
@@ -799,15 +803,23 @@ class SQLiteBackend:
         limit: int | None = None,
     ) -> AsyncIterator[MessageRecord]:
         """Stream messages in chunks instead of loading all at once."""
-        async with self._get_connection() as conn:
-            async for msg in messages_q.iter_messages(
-                conn,
-                conversation_id,
-                chunk_size=chunk_size,
-                dialogue_only=dialogue_only,
-                limit=limit,
-            ):
-                yield msg
+        if chunk_size != 100:
+            async with self._get_connection() as conn:
+                async for msg in messages_q.iter_messages(
+                    conn,
+                    conversation_id,
+                    chunk_size=chunk_size,
+                    dialogue_only=dialogue_only,
+                    limit=limit,
+                ):
+                    yield msg
+            return
+        async for msg in self.queries.iter_messages(
+            conversation_id,
+            dialogue_only=dialogue_only,
+            limit=limit,
+        ):
+            yield msg
 
     async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]:
         """Get message counts without loading messages."""

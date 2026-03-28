@@ -14,11 +14,8 @@ from typing import Any
 import click
 
 from polylogue.showcase.dimensions import (
-    ExerciseDimensions,
     query_read,
-    query_write,
     schema_exercise,
-    structural_smoke,
 )
 from polylogue.showcase.exercises import Exercise, Validation
 
