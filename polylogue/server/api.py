@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from polylogue.db import DatabaseError
 from polylogue.lib.models import Conversation
 from polylogue.lib.repository import ConversationRepository
 from polylogue.server.deps import get_repository
@@ -22,4 +23,13 @@ def get_conversation(conversation_id: str, repo: ConversationRepository = Depend
 
 @router.get("/search", response_model=list[Conversation])
 def search_conversations(q: str = Query(..., min_length=3), repo: ConversationRepository = Depends(get_repository)):
-    return repo.search(q)
+    try:
+        return repo.search(q)
+    except (RuntimeError, DatabaseError) as exc:
+        message = str(exc)
+        if "index not built" in message.lower() or "search index" in message.lower():
+            raise HTTPException(
+                status_code=503,
+                detail="Search index not built. Run `polylogue run` or `polylogue index` first.",
+            ) from exc
+        raise HTTPException(status_code=500, detail=message) from exc

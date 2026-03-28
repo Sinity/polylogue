@@ -74,6 +74,9 @@ def parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> Pars
     elif isinstance(payload.get("chunks"), list):
         chunks = payload.get("chunks")
 
+    # Fallback timestamp from conversation metadata
+    default_timestamp = str(payload.get("createTime")) if payload.get("createTime") else None
+
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
     for idx, chunk in enumerate(chunks, start=1):
@@ -88,12 +91,37 @@ def parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> Pars
             continue
         role = normalize_role(chunk_obj.get("role") or chunk_obj.get("author"))
         msg_id = str(chunk_obj.get("id") or f"chunk-{idx}")
+        # Preserve useful metadata (isThought for Gemini thinking traces, tokenCount, etc.)
+        meta = {"raw": chunk_obj}
+        if chunk_obj.get("isThought"):
+            meta["isThought"] = True
+        if chunk_obj.get("tokenCount"):
+            meta["tokenCount"] = chunk_obj.get("tokenCount")
+
+        # Extract structured content blocks for semantic detection
+        content_blocks = []
+        if chunk_obj.get("isThought"):
+            # Gemini thinking block
+            content_blocks.append({
+                "type": "thinking",
+                "text": text,
+            })
+        else:
+            # Regular text content
+            content_blocks.append({
+                "type": "text",
+                "text": text,
+            })
+        if content_blocks:
+            meta["content_blocks"] = content_blocks
+
         messages.append(
             ParsedMessage(
                 provider_message_id=msg_id,
                 role=role,
                 text=text,
-                timestamp=None,
+                timestamp=default_timestamp,
+                provider_meta=meta,
             )
         )
         for doc in _collect_drive_docs(chunk_obj):

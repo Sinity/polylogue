@@ -16,7 +16,7 @@ Polylogue is built for Nix-first development, but you can run it directly from t
 
 - Nix dev shell: `direnv allow` or `nix develop`
 - Build a packaged CLI: `nix build .#polylogue`
-- Run from source: `python3 polylogue.py --help`
+- Run from source: `uv run polylogue --help` or `python -m polylogue.cli --help`
 
 ## Quick start
 
@@ -113,6 +113,10 @@ Polylogue supports optional vector search using Qdrant and Voyage AI embeddings.
 ## Development
 
 - Tests: `pytest -q`
+- NixOS: If numpy fails with `libstdc++.so.6` not found, prepend the nix-ld path:
+  ```bash
+  LD_LIBRARY_PATH="/run/current-system/sw/share/nix-ld/lib:$LD_LIBRARY_PATH" pytest -q
+  ```
 - Refresh screenshots: `python3 scripts/generate_screenshots.py`
 - See `docs/` for provider walkthroughs and pipeline details.
 
