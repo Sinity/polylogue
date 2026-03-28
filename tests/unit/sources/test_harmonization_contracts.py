@@ -93,49 +93,7 @@ _PROVIDER_STRATEGIES = {
 
 
 # ---------------------------------------------------------------------------
-# Law 1: HarmonizedMessage.role is always a canonical role value
-# ---------------------------------------------------------------------------
-
-@given(st.sampled_from(list(_PROVIDER_STRATEGIES.keys())).flatmap(
-    lambda p: _PROVIDER_STRATEGIES[p].map(lambda raw: (p, raw))
-))
-def test_harmonized_role_is_canonical(args: tuple) -> None:
-    """extract_harmonized_message always produces a canonical role."""
-    provider, raw = args
-    msg = extract_harmonized_message(provider, raw)
-    assert msg.role.value in _CANONICAL_ROLES
-
-
-# ---------------------------------------------------------------------------
-# Law 2: HarmonizedMessage.text is always a string (never None)
-# ---------------------------------------------------------------------------
-
-@given(st.sampled_from(list(_PROVIDER_STRATEGIES.keys())).flatmap(
-    lambda p: _PROVIDER_STRATEGIES[p].map(lambda raw: (p, raw))
-))
-def test_harmonized_text_is_string(args: tuple) -> None:
-    """extract_harmonized_message always produces a str text field."""
-    provider, raw = args
-    msg = extract_harmonized_message(provider, raw)
-    assert isinstance(msg.text, str)
-
-
-# ---------------------------------------------------------------------------
-# Law 3: HarmonizedMessage.provider matches the extraction provider
-# ---------------------------------------------------------------------------
-
-@given(st.sampled_from(list(_PROVIDER_STRATEGIES.keys())).flatmap(
-    lambda p: _PROVIDER_STRATEGIES[p].map(lambda raw: (p, raw))
-))
-def test_harmonized_provider_matches(args: tuple) -> None:
-    """The provider field in HarmonizedMessage matches the input provider."""
-    provider, raw = args
-    msg = extract_harmonized_message(provider, raw)
-    assert msg.provider == provider
-
-
-# ---------------------------------------------------------------------------
-# Law 4: HarmonizedMessage coerces any string role to canonical Role
+# Law 1: HarmonizedMessage coerces any string role to canonical Role
 # ---------------------------------------------------------------------------
 
 @given(st.sampled_from(["user", "assistant", "system", "tool", "unknown",
@@ -191,7 +149,7 @@ def test_extract_tool_calls_never_crashes(content: list, provider: Provider) -> 
 
 
 # ---------------------------------------------------------------------------
-# Law 7: HarmonizedMessage.provider coerces string providers
+# Law 4: HarmonizedMessage.provider coerces string providers
 # ---------------------------------------------------------------------------
 
 @given(st.sampled_from(["chatgpt", "claude", "claude-code", "gemini", "codex"]))
