@@ -43,6 +43,13 @@
           pyproject = true;
           src = ./.;
 
+          postPatch = ''
+            cat > polylogue/_build_info.py << BUILDEOF
+            BUILD_COMMIT = "${self.rev or self.dirtyRev or "unknown"}"
+            BUILD_DIRTY = ${if self ? dirtyRev then "True" else "False"}
+            BUILDEOF
+          '';
+
           build-system = with pkgs.python313Packages; [
             setuptools
             wheel
