@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+<<<<<<< HEAD
 import sqlite3
+||||||| parent of dbc8f11c (feat: add archive-intelligence validation lanes)
+=======
+import json
+>>>>>>> dbc8f11c (feat: add archive-intelligence validation lanes)
 from typing import TYPE_CHECKING
 
 import click
@@ -40,6 +45,12 @@ if TYPE_CHECKING:
     help="Show embedding statistics only",
 )
 @click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit embedding statistics as JSON (requires --stats)",
+)
+@click.option(
     "--limit", "-n",
     type=int,
     default=None,
@@ -52,6 +63,7 @@ def embed_command(
     model: str,
     rebuild: bool,
     stats: bool,
+    json_output: bool,
     limit: int | None,
 ) -> None:
     """Generate semantic embeddings for conversations.
@@ -73,6 +85,10 @@ def embed_command(
 
     from polylogue.storage.search_providers import create_vector_provider
 
+    if json_output and not stats:
+        click.echo("Error: --json requires --stats", err=True)
+        raise click.Abort()
+
     # Check for API key
     voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
     if not voyage_key and not stats:
@@ -82,7 +98,7 @@ def embed_command(
 
     # Stats only mode
     if stats:
-        _show_embedding_stats(env)
+        _show_embedding_stats(env, json_output=json_output)
         return
 
     # Create vector provider
@@ -107,16 +123,16 @@ def embed_command(
     _embed_batch(env, repo, vec_provider, rebuild=rebuild, limit=limit)
 
 
-def _show_embedding_stats(env: AppEnv) -> None:
-    """Display embedding statistics."""
+def _embedding_status_payload(env: AppEnv) -> dict[str, int | float | str | bool]:
+    """Read canonical embedding-status statistics for operator surfaces."""
     from polylogue.storage.backends.connection import open_connection
 
     with open_connection(env.config.db_path) as conn:
-        # Total conversations
         total_convs = conn.execute(
             "SELECT COUNT(*) FROM conversations"
         ).fetchone()[0]
 
+<<<<<<< HEAD
         # Conversations with embeddings
         try:
             embedded_convs = conn.execute(
@@ -144,14 +160,53 @@ def _show_embedding_stats(env: AppEnv) -> None:
             logger.debug("pending embeddings query failed: %s", exc)
             pending = total_convs - embedded_convs
 
+||||||| parent of dbc8f11c (feat: add archive-intelligence validation lanes)
+    embedded_convs = embedding_stats.embedded_conversations
+    embedded_msgs = embedding_stats.embedded_messages
+    pending = embedding_stats.pending_conversations or max(total_convs - embedded_convs, 0)
+
+=======
+    embedded_convs = embedding_stats.embedded_conversations
+    embedded_msgs = embedding_stats.embedded_messages
+    pending = embedding_stats.pending_conversations or max(total_convs - embedded_convs, 0)
+>>>>>>> dbc8f11c (feat: add archive-intelligence validation lanes)
     coverage = (embedded_convs / total_convs * 100) if total_convs > 0 else 0
+    if total_convs <= 0:
+        status = "empty"
+    elif embedded_convs <= 0:
+        status = "none"
+    elif pending > 0:
+        status = "partial"
+    else:
+        status = "complete"
+
+    return {
+        "status": status,
+        "total_conversations": int(total_convs),
+        "embedded_conversations": int(embedded_convs),
+        "embedded_messages": int(embedded_msgs),
+        "pending_conversations": int(pending),
+        "embedding_coverage_percent": round(float(coverage), 1),
+        "retrieval_ready": bool(embedded_msgs > 0),
+    }
+
+
+def _show_embedding_stats(env: AppEnv, *, json_output: bool = False) -> None:
+    """Display embedding statistics."""
+    payload = _embedding_status_payload(env)
+
+    if json_output:
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
 
     click.echo("\nEmbedding Statistics")
-    click.echo(f"  Total conversations:    {total_convs}")
-    click.echo(f"  Embedded conversations: {embedded_convs}")
-    click.echo(f"  Embedded messages:      {embedded_msgs}")
-    click.echo(f"  Coverage:               {coverage:.1f}%")
-    click.echo(f"  Pending:                {pending}")
+    click.echo(f"  Status:                {payload['status']}")
+    click.echo(f"  Total conversations:   {payload['total_conversations']}")
+    click.echo(f"  Embedded conversations:{payload['embedded_conversations']:>4}")
+    click.echo(f"  Embedded messages:     {payload['embedded_messages']}")
+    click.echo(f"  Coverage:              {payload['embedding_coverage_percent']:.1f}%")
+    click.echo(f"  Pending:               {payload['pending_conversations']}")
+    click.echo(f"  Retrieval ready:       {'yes' if payload['retrieval_ready'] else 'no'}")
 
 
 def _embed_single(

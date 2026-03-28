@@ -407,6 +407,27 @@ class TestEmbedCommand:
         assert str(stats_rows[2]) in result.output
         assert str(stats_rows[3]) in result.output
 
+    def test_embed_stats_json_contract(self, runner, cli_workspace):
+        with patch("polylogue.cli.commands.embed._embedding_status_payload") as mock_payload, patch.dict(
+            "os.environ",
+            {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
+            clear=False,
+        ):
+            mock_payload.return_value = {
+                "status": "partial",
+                "total_conversations": 5,
+                "embedded_conversations": 3,
+                "embedded_messages": 45,
+                "pending_conversations": 2,
+                "embedding_coverage_percent": 60.0,
+                "retrieval_ready": True,
+            }
+            result = runner.invoke(cli, ["embed", "--stats", "--json"])
+
+        assert result.exit_code == 0
+        assert '"status": "partial"' in result.output
+        assert '"embedding_coverage_percent": 60.0' in result.output
+
     def test_embed_no_sqlite_vec_contract(self, runner, cli_workspace):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=None):
             result = runner.invoke(cli, ["embed"], env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"})
