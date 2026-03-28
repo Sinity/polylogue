@@ -312,12 +312,13 @@ def _prepare_chunks_for_render(
     for idx, chunk in enumerate(chunks):
         if not isinstance(chunk, dict):
             continue
+        chunk = dict(chunk)
+        chunk["_polylogue_index"] = idx
         # Coerce ``text`` from structured ``content`` segments when available.
         text = chunk.get("text")
         if (text is None or not str(text).strip()) and isinstance(chunk.get("content"), list):
             rendered = _render_content_parts(chunk["content"])
             if rendered:
-                chunk = dict(chunk)
                 chunk["text"] = rendered
                 text = rendered
         text_str = (text or "").strip()
@@ -476,7 +477,8 @@ def build_markdown_from_chunks(
     i = 0
     while i < len(chunks):
         c = chunks[i]
-        parts.append(f"<a id=\"msg-{i}\"></a>\n")
+        anchor_id = c.get("_polylogue_index", i)
+        parts.append(f"<a id=\"msg-{anchor_id}\"></a>\n")
         role = c.get("role", "model")
         is_thought = bool(c.get("isThought", False))
         if role == "user":
@@ -515,7 +517,8 @@ def build_markdown_from_chunks(
             if not thought and isinstance(c.get("content"), list):
                 thought = _render_content_parts(c.get("content"))
             resp_chunk = chunks[i + 1]
-            parts.append(f"<a id=\"msg-{i + 1}\"></a>\n")
+            resp_anchor_id = resp_chunk.get("_polylogue_index", i + 1)
+            parts.append(f"<a id=\"msg-{resp_anchor_id}\"></a>\n")
             response = resp_chunk.get("text", "") or ""
             if not response and isinstance(resp_chunk.get("content"), list):
                 response = _render_content_parts(resp_chunk.get("content"))
