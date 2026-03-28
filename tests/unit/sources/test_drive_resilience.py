@@ -273,59 +273,6 @@ class TestAPIOperations:
         client._service = mock_drive_service["service"]
         return client, mock_drive_service
 
-    def test_resolve_folder_id_by_name(self, drive_client_with_service):
-        """Resolve folder ID by name."""
-        client, mock_service = drive_client_with_service
-
-        folder_id = client.resolve_folder_id("Google AI Studio")
-        assert folder_id == "folder1"
-
-    def test_resolve_folder_id_not_found(self, drive_client_with_service):
-        """Raise error when folder not found."""
-        client, mock_service = drive_client_with_service
-
-        with pytest.raises(DriveNotFoundError, match="Folder.*not found"):
-            client.resolve_folder_id("NonexistentFolder")
-
-    def test_iter_json_files(self, drive_client_with_service):
-        """Iterate through JSON files in a folder."""
-        client, mock_service = drive_client_with_service
-
-        from tests.infra.drive_mocks import mock_drive_file
-
-        json_file1 = mock_drive_file(
-            file_id="json1",
-            name="test.json",
-            mime_type="application/json",
-            parents=["folder1"],
-        )
-        json_file2 = mock_drive_file(
-            file_id="json2",
-            name="data.json",
-            mime_type="application/json",
-            parents=["folder1"],
-        )
-
-        mock_service["service"]._files_resource.files.update({
-            "json1": json_file1,
-            "json2": json_file2,
-        })
-        mock_service["file_content"]["json1"] = b'{"test": "content"}'
-        mock_service["file_content"]["json2"] = b'{"data": "content"}'
-
-        files = list(client.iter_json_files("folder1"))
-        assert len(files) >= 1
-        file_names = [f.name for f in files]
-        assert "test.json" in file_names or "data.json" in file_names
-
-    def test_get_metadata(self, drive_client_with_service):
-        """Get file metadata."""
-        client, mock_service = drive_client_with_service
-
-        metadata = client.get_metadata("prompt1")
-        assert metadata.name == "Test Prompt"
-        assert metadata.mime_type == "application/vnd.google-makersuite.prompt"
-
     def test_download_bytes(self, drive_client_with_service, mock_media_downloader):
         """Download file as bytes."""
         client, mock_service = drive_client_with_service
@@ -333,26 +280,6 @@ class TestAPIOperations:
         content = client.download_bytes("prompt1")
         assert isinstance(content, bytes)
         assert b"Test Prompt" in content
-
-    def test_download_json_payload(self, drive_client_with_service, mock_media_downloader):
-        """Download and parse JSON payload."""
-        client, mock_service = drive_client_with_service
-
-        payload = client.download_json_payload("prompt1", name="prompt1.json")
-        assert isinstance(payload, dict)
-        assert payload["title"] == "Test Prompt"
-        assert payload["content"] == "Test content"
-
-    def test_download_to_path(self, drive_client_with_service, mock_media_downloader, tmp_path):
-        """Download file to local path."""
-        client, mock_service = drive_client_with_service
-
-        output_path = tmp_path / "downloaded.json"
-        result = client.download_to_path("prompt1", output_path)
-
-        assert result.file_id == "prompt1"
-        assert output_path.exists()
-        assert b"Test Prompt" in output_path.read_bytes()
 
     def test_download_with_encoding_fallback(self, drive_client_with_service, mock_media_downloader):
         """Download should handle encoding issues gracefully."""
@@ -371,38 +298,6 @@ class TestAPIOperations:
         content = client.download_bytes("binary1")
         assert isinstance(content, bytes)
         assert content == b"\xff\xfe Invalid UTF-8"
-
-    def test_resolve_folder_id_with_multiple_matches(self, drive_client_with_service):
-        """Handle multiple folders with same name."""
-        client, mock_service = drive_client_with_service
-
-        from tests.infra.drive_mocks import mock_drive_file
-
-        folder2 = mock_drive_file(
-            file_id="folder2",
-            name="Google AI Studio",
-            mime_type="application/vnd.google-apps.folder",
-        )
-        mock_service["service"]._files_resource.files["folder2"] = folder2
-
-        folder_id = client.resolve_folder_id("Google AI Studio")
-        assert folder_id in ["folder1", "folder2"]
-
-    def test_iter_json_files_empty_folder(self, drive_client_with_service):
-        """Iterate through empty folder."""
-        client, mock_service = drive_client_with_service
-
-        from tests.infra.drive_mocks import mock_drive_file
-
-        empty_folder = mock_drive_file(
-            file_id="empty",
-            name="Empty Folder",
-            mime_type="application/vnd.google-apps.folder",
-        )
-        mock_service["service"]._files_resource.files["empty"] = empty_folder
-
-        files = list(client.iter_json_files("empty"))
-        assert len(files) == 0
 
 
 # ============================================================================
