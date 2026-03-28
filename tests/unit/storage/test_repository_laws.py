@@ -15,7 +15,9 @@ from hypothesis import strategies as st
 
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation
+from polylogue.sources import RecordBundle, save_bundle
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository, _records_to_conversation
 from polylogue.storage.store import (
     AttachmentRecord,
@@ -24,7 +26,7 @@ from polylogue.storage.store import (
     MessageRecord,
     RunRecord,
 )
-from tests.infra.storage_records import make_message
+from tests.infra.storage_records import make_attachment, make_conversation, make_message
 from tests.infra.strategies import (
     ConversationSpec,
     MessageSpec,
@@ -646,6 +648,40 @@ def test_repository_metadata_and_filter_forwarders() -> None:
     backend.delete_conversation.assert_awaited_once_with("conv-1")
 
 
+def test_repository_context_manager_and_manual_close_contract(tmp_path: Path) -> None:
+    """Repository context managers must clean up safely and explicit close must stay idempotent."""
+
+    async def exercise() -> None:
+        db_path = tmp_path / "repository-context.db"
+        async with ConversationRepository(db_path=db_path) as repo:
+            assert await repo.get_conversation("missing") is None
+
+        await repo.close()
+        await repo.close()
+        assert await repo.get_conversation("missing") is None
+
+    asyncio.run(exercise())
+
+
+def test_repository_concurrent_empty_read_contract(tmp_path: Path) -> None:
+    """Concurrent read and existence APIs must agree on empty repositories."""
+
+    async def exercise() -> None:
+        db_path = tmp_path / "repository-concurrency.db"
+        async with ConversationRepository(db_path=db_path) as repo:
+            conversations = await asyncio.gather(
+                *[repo.get_conversation(f"test:{i}") for i in range(5)]
+            )
+            existence = await asyncio.gather(
+                *[repo.conversation_exists_by_hash(f"hash-{i}") for i in range(5)]
+            )
+
+            assert all(conversation is None for conversation in conversations)
+            assert all(found is False for found in existence)
+
+    asyncio.run(exercise())
+
+
 def test_repository_embed_conversation_uses_supplied_provider_and_counts_messages() -> None:
     backend = MagicMock()
     messages = [
@@ -1043,6 +1079,59 @@ def test_repository_save_via_backend_propagates_provider_name_and_collects_block
     assert {block.block_id for block in saved_blocks} == {"blk-explicit", "blk-msg"}
     backend.prune_attachments.assert_awaited_once_with("claude:conv-1", {"att-1"})
     backend.save_attachments.assert_awaited_once_with([attachment])
+
+
+def test_repository_save_bundle_prunes_removed_attachments_contract() -> None:
+    """Re-saving a bundle with fewer attachments must prune removed attachment rows."""
+
+    async def exercise() -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "repository-prune.db"
+            repository = ConversationRepository(db_path=db_path)
+            try:
+                initial_bundle = RecordBundle(
+                    conversation=make_conversation("conv:prune", provider_name="codex", content_hash="hash-v1"),
+                    messages=[
+                        make_message(
+                            "msg:prune",
+                            "conv:prune",
+                            text="hello",
+                            timestamp="2026-03-12T10:00:00Z",
+                            content_hash="msg-hash-v1",
+                        )
+                    ],
+                    attachments=[
+                        make_attachment("att-0", "conv:prune", "msg:prune"),
+                        make_attachment("att-1", "conv:prune", "msg:prune"),
+                        make_attachment("att-2", "conv:prune", "msg:prune"),
+                    ],
+                )
+                await save_bundle(initial_bundle, repository=repository)
+
+                updated_bundle = RecordBundle(
+                    conversation=make_conversation("conv:prune", provider_name="codex", content_hash="hash-v2"),
+                    messages=[
+                        make_message(
+                            "msg:prune",
+                            "conv:prune",
+                            text="hello",
+                            timestamp="2026-03-12T10:00:00Z",
+                            content_hash="msg-hash-v1",
+                        )
+                    ],
+                    attachments=[make_attachment("att-0", "conv:prune", "msg:prune")],
+                )
+                await save_bundle(updated_bundle, repository=repository)
+
+                with open_connection(db_path) as conn:
+                    rows = conn.execute(
+                        "SELECT attachment_id FROM attachments WHERE attachment_id LIKE 'att-%' ORDER BY attachment_id"
+                    ).fetchall()
+                assert [row["attachment_id"] for row in rows] == ["att-0"]
+            finally:
+                await repository.close()
+
+    asyncio.run(exercise())
 
 
 def test_repository_search_and_similarity_contracts() -> None:

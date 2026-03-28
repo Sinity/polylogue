@@ -141,7 +141,9 @@ CAMPAIGNS: dict[str, Campaign] = {
             "polylogue/schemas/verification.py",
         ),
         tests=(
-            "tests/unit/core/test_schema.py",
+            "tests/unit/core/test_schema_validation.py",
+            "tests/unit/core/test_schema_generation.py",
+            "tests/unit/core/test_schema_annotations.py",
             "tests/unit/core/test_schema_laws.py",
             "tests/unit/core/test_schema_privacy.py",
             "tests/unit/core/test_schema_verification.py",
@@ -154,7 +156,7 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="Schema inference and privacy heuristics",
         paths_to_mutate=("polylogue/schemas/schema_inference.py",),
         tests=(
-            "tests/unit/core/test_schema.py",
+            "tests/unit/core/test_schema_generation.py",
             "tests/unit/core/test_schema_laws.py",
             "tests/unit/core/test_schema_privacy.py",
         ),
@@ -167,7 +169,7 @@ CAMPAIGNS: dict[str, Campaign] = {
             "polylogue/schemas/verification.py",
         ),
         tests=(
-            "tests/unit/core/test_schema.py",
+            "tests/unit/core/test_schema_validation.py",
             "tests/unit/core/test_schema_laws.py",
             "tests/unit/core/test_schema_verification.py",
             "tests/unit/storage/test_schema_safety.py",
@@ -178,7 +180,13 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="Acquire/validate/parse planning and stage contracts",
         paths_to_mutate=("polylogue/pipeline/services",),
         tests=(
-            "tests/unit/pipeline/test_services.py",
+            "tests/unit/pipeline/test_acquisition_service.py",
+            "tests/unit/pipeline/test_validation_service.py",
+            "tests/unit/pipeline/test_planning_service.py",
+            "tests/unit/pipeline/test_parsing_service.py",
+            "tests/unit/pipeline/test_render_service.py",
+            "tests/unit/pipeline/test_indexing.py",
+            "tests/unit/pipeline/test_ingest_state.py",
             "tests/unit/pipeline/test_service_laws.py",
         ),
         notes=("Likely to need more helper-level laws to reduce timeout noise.",),
@@ -238,7 +246,6 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="Repository query, projection, and CRUD contracts",
         paths_to_mutate=("polylogue/storage/repository.py",),
         tests=(
-            "tests/unit/storage/test_async.py",
             "tests/unit/storage/test_repository_laws.py",
         ),
         notes=("Large surface; use to gauge storage law readiness before repository-law work.",),
@@ -789,11 +796,17 @@ def cmd_list(_args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     campaign = CAMPAIGNS[args.campaign]
+    json_out = None if args.json_out is None else (args.json_out if args.json_out.is_absolute() else ROOT / args.json_out)
+    markdown_out = (
+        None
+        if args.markdown_out is None
+        else (args.markdown_out if args.markdown_out.is_absolute() else ROOT / args.markdown_out)
+    )
     result = run_campaign(
         campaign,
         repo_root=ROOT,
-        json_out=args.json_out,
-        markdown_out=args.markdown_out,
+        json_out=json_out,
+        markdown_out=markdown_out,
         keep_workspace=args.keep_workspace,
     )
     print(format_markdown(result))
@@ -801,10 +814,12 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_index(args: argparse.Namespace) -> int:
-    results = load_results(args.campaign_dir)
+    campaign_dir = args.campaign_dir if args.campaign_dir.is_absolute() else ROOT / args.campaign_dir
+    out = args.out if args.out.is_absolute() else ROOT / args.out
+    results = load_results(campaign_dir)
     rendered = format_index(results)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(rendered)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(rendered)
     print(rendered)
     return 0
 

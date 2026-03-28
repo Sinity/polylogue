@@ -10,6 +10,13 @@ from typing import Any
 
 from hypothesis import strategies as st
 
+from tests.infra.adversarial_cases import (
+    FTS5_OPERATORS,
+    PATH_TRAVERSAL_STRINGS,
+    SQL_INJECTION_PAYLOADS,
+    SYMLINK_PATH_STRINGS,
+)
+
 # =============================================================================
 # Path Traversal Strategies
 # =============================================================================
@@ -21,41 +28,7 @@ def path_traversal_strategy(draw: st.DrawFn) -> str:
 
     Tests the path sanitizer in ParsedAttachment.
     """
-    traversal_patterns = [
-        # Basic traversal
-        "../",
-        "..\\",
-        "../../../",
-        "..\\..\\..\\",
-        # URL encoded
-        "%2e%2e/",
-        "%2e%2e%2f",
-        "..%2f",
-        "%2e%2e\\",
-        # Double URL encoded
-        "%252e%252e/",
-        # Unicode normalization attacks
-        "..%c0%af",
-        "..%c1%9c",
-        # Null byte injection
-        "../\x00",
-        "file.txt\x00.jpg",
-        # Mixed separators
-        "..\\../",
-        "..\\/",
-        # Long paths
-        "../" * 20,
-        # Absolute paths
-        "/etc/passwd",
-        "C:\\Windows\\System32",
-        # Special directories
-        "~/.ssh/id_rsa",
-        "$HOME/.bashrc",
-        # Hidden files
-        ".hidden/../../../etc/passwd",
-    ]
-
-    pattern = draw(st.sampled_from(traversal_patterns))
+    pattern = draw(st.sampled_from(PATH_TRAVERSAL_STRINGS))
 
     # Optionally combine with random prefix/suffix
     if draw(st.booleans()):
@@ -72,11 +45,7 @@ def path_traversal_strategy(draw: st.DrawFn) -> str:
 @st.composite
 def symlink_path_strategy(draw: st.DrawFn) -> str:
     """Generate paths that might involve symlinks."""
-    return draw(st.sampled_from([
-        "/tmp/link/../../../etc/passwd",
-        "symlink/../secret",
-        "./link/./link/../target",
-    ]))
+    return draw(st.sampled_from(SYMLINK_PATH_STRINGS))
 
 
 # =============================================================================
@@ -90,48 +59,13 @@ def sql_injection_strategy(draw: st.DrawFn) -> str:
 
     Tests the FTS5 query escaper and any raw SQL paths.
     """
-    injection_patterns = [
-        # Basic SQL injection
-        "'; DROP TABLE messages; --",
-        "' OR '1'='1",
-        "' OR 1=1 --",
-        "'; DELETE FROM conversations; --",
-        "' UNION SELECT * FROM sqlite_master --",
-        # FTS5 specific
-        "test OR 1=1",
-        'test" OR "1"="1',
-        "test AND 1=1",
-        "* OR MATCH",
-        "NEAR(test, 5)",
-        # Boolean operators
-        "NOT test",
-        "test OR test",
-        "test AND NOT test",
-        # Wildcards
-        "*",
-        "te*st",
-        "test*",
-        # Column prefixes (FTS5)
-        "text:test",
-        "role:user",
-        # Special characters
-        '"test"',
-        "'test'",
-        "test; SELECT",
-        "test/* comment */",
-        # Unicode tricks
-        "test\u0000",
-        "test\u001f",
-    ]
-
-    return draw(st.sampled_from(injection_patterns))
+    return draw(st.sampled_from(SQL_INJECTION_PAYLOADS))
 
 
 @st.composite
 def fts5_operator_strategy(draw: st.DrawFn) -> str:
     """Generate FTS5 operator strings that need escaping."""
-    operators = ["AND", "OR", "NOT", "NEAR", "MATCH"]
-    return draw(st.sampled_from(operators))
+    return draw(st.sampled_from(FTS5_OPERATORS))
 
 
 # =============================================================================

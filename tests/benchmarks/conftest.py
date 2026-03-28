@@ -4,18 +4,10 @@ Session-scoped databases are seeded once per session to avoid
 fixture overhead dominating benchmark measurements.
 
 Usage:
-    pytest tests/benchmarks/ --benchmark-enable -p no:xdist -p no:randomly \\
-        --override-ini="addopts=-ra --benchmark-enable" -v
-
-    Save a baseline:
-    pytest tests/benchmarks/ --benchmark-enable -p no:xdist \\
-        --override-ini="addopts=-ra --benchmark-enable" \\
-        --benchmark-save=v3-baseline
-
-    Compare against baseline (fail if >20% regression):
-    pytest tests/benchmarks/ --benchmark-enable -p no:xdist \\
-        --override-ini="addopts=-ra --benchmark-enable" \\
-        --benchmark-compare=v3-baseline --benchmark-compare-fail=mean:20%
+    nix develop -c python -m devtools.benchmark_campaign list
+    nix develop -c python -m devtools.benchmark_campaign run search-filters
+    nix develop -c python -m devtools.benchmark_campaign compare \\
+        docs/benchmark-campaigns/<baseline>.json docs/benchmark-campaigns/<candidate>.json
 """
 from __future__ import annotations
 
