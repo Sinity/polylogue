@@ -89,6 +89,8 @@ class ConversationFilter:
         self._path_terms: list[str] = []
         self._action_terms: list[str] = []
         self._excluded_action_terms: list[str] = []
+        self._tool_terms: list[str] = []
+        self._excluded_tool_terms: list[str] = []
         self._id_prefix: str | None = None
         self._sort_field: SortField = "date"
         self._sort_reverse: bool = False
@@ -226,6 +228,8 @@ class ConversationFilter:
         self._path_terms = list(query_plan.path_terms)
         self._action_terms = list(query_plan.action_terms)
         self._excluded_action_terms = list(query_plan.excluded_action_terms)
+        self._tool_terms = list(query_plan.tool_terms)
+        self._excluded_tool_terms = list(query_plan.excluded_tool_terms)
         self._id_prefix = query_plan.conversation_id
         self._parent_id = query_plan.parent_id
         self._sort_field = query_plan.sort
@@ -259,6 +263,8 @@ class ConversationFilter:
             path_terms=tuple(self._path_terms),
             action_terms=tuple(self._action_terms),
             excluded_action_terms=tuple(self._excluded_action_terms),
+            tool_terms=tuple(self._tool_terms),
+            excluded_tool_terms=tuple(self._excluded_tool_terms),
             conversation_id=self._id_prefix,
             parent_id=self._parent_id,
             since=self._since_date,
