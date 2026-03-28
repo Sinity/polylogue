@@ -101,14 +101,19 @@ def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
         yield items[idx : idx + size]
 
 
-def index_status() -> dict[str, object]:
-    with open_connection(None) as conn:
-        row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
+def index_status(conn: sqlite3.Connection | None = None) -> dict[str, object]:
+    def _query(c: sqlite3.Connection) -> dict[str, object]:
+        row = c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         exists = bool(row)
         count = 0
         if exists:
-            count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+            count = c.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
         return {"exists": exists, "count": int(count)}
+
+    if conn is not None:
+        return _query(conn)
+    with open_connection(None) as fallback_conn:
+        return _query(fallback_conn)
 
 
 __all__ = [

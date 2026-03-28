@@ -22,6 +22,7 @@ from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
 from polylogue.cli.commands.site import site_command
+from polylogue.cli.commands.tags import tags_command
 from polylogue.cli.formatting import announce_plain_mode, should_use_plain
 from polylogue.cli.types import AppEnv
 from polylogue.ui import create_ui
@@ -116,6 +117,7 @@ def _handle_query_mode(ctx: click.Context) -> None:
     has_filters = any(
         params.get(k)
         for k in (
+            "conv_id",
             "contains",
             "exclude_text",
             "provider",
@@ -137,13 +139,24 @@ def _handle_query_mode(ctx: click.Context) -> None:
             "list_mode",
             "limit",
             "stats_only",
+            "count_only",
             "stream",
             "dialogue_only",
         )
     )
 
-    # Stats mode: no query terms, no filters, and no explicit output mode
-    if not query_terms and not has_filters and not has_output_mode:
+    # Modifier flags that require query execution
+    has_modifiers = any(
+        params.get(k)
+        for k in (
+            "add_tag",
+            "set_meta",
+            "delete_matched",
+        )
+    )
+
+    # Stats mode: no query terms, no filters, no output mode, and no modifiers
+    if not query_terms and not has_filters and not has_output_mode and not has_modifiers:
         _show_stats(env, verbose=params.get("verbose", False))
         return
 
@@ -203,9 +216,10 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     type=click.Choice(["markdown", "json", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
     help="Output format",
 )
-@click.option("--fields", help="Select fields for list/json output (comma-separated)")
+@click.option("--fields", help="Fields for list/json: id, title, provider, date, messages, words, tags, summary")
 @click.option("--list", "list_mode", is_flag=True, help="Force list format")
 @click.option("--stats", "stats_only", is_flag=True, help="Only statistics, no content")
+@click.option("--count", "count_only", is_flag=True, help="Print matched count and exit")
 @click.option(
     "--stats-by",
     "stats_by",
@@ -219,7 +233,7 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     help="Transform output: strip-tools, strip-thinking, or strip-all",
 )
 # --- Streaming options (memory-efficient for large conversations) ---
-@click.option("--stream", is_flag=True, help="Stream output (low memory, no buffering)")
+@click.option("--stream", is_flag=True, help="Stream output (low memory). Requires --latest or -i ID")
 @click.option("--dialogue-only", "-d", is_flag=True, help="Show only user/assistant messages")
 # --- Modifier options (write operations) ---
 @click.option("--set", "set_meta", nargs=2, multiple=True, help="Set metadata key value")
@@ -259,6 +273,7 @@ def cli(
     fields: str | None,
     list_mode: bool,
     stats_only: bool,
+    count_only: bool,
     stats_by: str | None,
     open_result: bool,
     transform: str | None,
@@ -284,12 +299,25 @@ def cli(
         polylogue --latest --output browser
 
     \b
+    Combined filters:
+        polylogue "error" -p claude --since 2025-01 --list
+        polylogue --has thinking --sort tokens --limit 10
+        polylogue -t important --stats-by provider
+
+    \b
+    Modifiers (write operations):
+        polylogue "urgent" --add-tag review --dry-run
+        polylogue -p old --delete --dry-run
+
+    \b
     Subcommands:
-        polylogue run     Run pipeline stages (acquire, parse, render, index)
-        polylogue check   Health check and repair
-        polylogue mcp     Start MCP server
-        polylogue reset   Reset database
-        polylogue auth    Google Drive OAuth
+        polylogue run       Ingest/render/index pipeline
+        polylogue check     Health check and repair
+        polylogue embed     Generate vector embeddings
+        polylogue tags      List tags with counts
+        polylogue site      Build static HTML archive
+        polylogue sources   List configured sources
+        polylogue mcp       Start MCP server
 
     Run `polylogue <command> --help` for subcommand details.
     """
@@ -316,6 +344,7 @@ cli.add_command(completions_command)
 cli.add_command(dashboard_command)
 cli.add_command(embed_command)
 cli.add_command(site_command)
+cli.add_command(tags_command)
 
 
 def main() -> None:

@@ -33,6 +33,8 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
         if not isinstance(parts, list):
             continue
         text = "\n".join(str(part) for part in parts if part)
+        if not text:
+            continue
         # Role is required - skip messages without one
         author = msg.get("author")
         raw_role = author.get("role") if isinstance(author, dict) else None

@@ -29,6 +29,47 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 
+def _describe_filters(params: dict[str, Any]) -> list[str]:
+    """Build a human-readable list of active filters from params."""
+    parts: list[str] = []
+    if params.get("query"):
+        parts.append(f"search: {' '.join(params['query'])}")
+    if params.get("contains"):
+        parts.append(f"contains: {', '.join(params['contains'])}")
+    if params.get("provider"):
+        parts.append(f"provider: {params['provider']}")
+    if params.get("exclude_provider"):
+        parts.append(f"exclude provider: {params['exclude_provider']}")
+    if params.get("tag"):
+        parts.append(f"tag: {params['tag']}")
+    if params.get("exclude_tag"):
+        parts.append(f"exclude tag: {params['exclude_tag']}")
+    if params.get("title"):
+        parts.append(f"title: {params['title']}")
+    if params.get("has_type"):
+        parts.append(f"has: {', '.join(params['has_type'])}")
+    if params.get("since"):
+        parts.append(f"since: {params['since']}")
+    if params.get("until"):
+        parts.append(f"until: {params['until']}")
+    if params.get("conv_id"):
+        parts.append(f"id: {params['conv_id']}")
+    return parts
+
+
+def _no_results(env: AppEnv, params: dict[str, Any], *, exit_code: int = 2) -> None:
+    """Print a helpful no-results message and exit."""
+    filters = _describe_filters(params)
+    if filters:
+        click.echo("No conversations matched filters:", err=True)
+        for f in filters:
+            click.echo(f"  {f}", err=True)
+        click.echo("Hint: try broadening your filters or use --list to browse", err=True)
+    else:
+        click.echo("No conversations matched.", err=True)
+    raise SystemExit(exit_code)
+
+
 def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     """Execute a query-mode command.
 
@@ -114,7 +155,8 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         try:
             filter_chain = filter_chain.since(params["since"])
         except ValueError as exc:
-            click.echo(f"Error: {exc}", err=True)
+            click.echo(f"Error: Cannot parse date: '{params['since']}'", err=True)
+            click.echo("Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)", err=True)
             raise SystemExit(1) from exc
 
     # Apply --until
@@ -122,7 +164,8 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         try:
             filter_chain = filter_chain.until(params["until"])
         except ValueError as exc:
-            click.echo(f"Error: {exc}", err=True)
+            click.echo(f"Error: Cannot parse date: '{params['until']}'", err=True)
+            click.echo("Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)", err=True)
             raise SystemExit(1) from exc
 
     # Apply --latest (= --sort date --limit 1)
@@ -145,6 +188,15 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if params.get("sample"):
         filter_chain = filter_chain.sample(params["sample"])
 
+    # Handle --count (lightweight: just count, no loading)
+    if params.get("count_only"):
+        if filter_chain.can_use_summaries():
+            n = len(filter_chain.list_summaries())
+        else:
+            n = len(filter_chain.list())
+        click.echo(n)
+        return
+
     # Execute query
     # Determine if we can use lightweight summaries
     list_mode = params.get("list_mode", False)
@@ -162,8 +214,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if use_summaries:
         summary_results = filter_chain.list_summaries()
         if not summary_results:
-            env.ui.console.print("No conversations matched.")
-            raise SystemExit(2)
+            _no_results(env, params)
         _output_summary_list(env, summary_results, params, conv_repo)
         return
 
@@ -181,6 +232,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
                 resolved = conv_repo.resolve_id(query_terms[0])
                 if not resolved:
                     click.echo(f"No conversation found matching: {query_terms[0]}", err=True)
+                    click.echo("Hint: use --list to browse conversations, or --latest for most recent", err=True)
                     raise SystemExit(2)
                 full_id = str(resolved)
             else:
@@ -191,8 +243,6 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         stream_format = "json-lines" if output_format == "json" else output_format
         if stream_format not in ("plaintext", "markdown", "json-lines"):
             stream_format = "plaintext"
-
-        from polylogue.cli.query import stream_conversation
 
         stream_conversation(
             env,
@@ -283,8 +333,9 @@ def _apply_modifiers(
     if count > 10 and not force:
         click.echo(f"About to modify {count} conversations")
         click.echo(f"Operations: {op_desc}")
-        click.echo("\nUse --force to skip this prompt, or --dry-run to preview.")
-        raise SystemExit(1)
+        if not env.ui.confirm("Proceed?", default=False):
+            env.ui.console.print("Aborted.")
+            return
 
     # Load repository
     repo = get_repository()
@@ -372,11 +423,12 @@ def _delete_conversations(
     if count > 10 and not force:
         click.echo(f"About to DELETE {count} conversations:", err=True)
         _print_breakdown()
-        click.echo("\nUse --force to skip this prompt, or --dry-run to preview.", err=True)
-        raise SystemExit(1)
+        if not env.ui.confirm("Proceed?", default=False):
+            env.ui.console.print("Aborted.")
+            return
 
     # Individual confirmation if not bulk but not forced
-    if not force:
+    elif not force:
         click.echo(f"About to delete {count} conversation(s):")
         _print_breakdown()
         if not env.ui.confirm("Proceed?", default=False):
@@ -510,8 +562,7 @@ def _output_results(
 ) -> None:
     """Output query results."""
     if not results:
-        env.ui.console.print("No conversations matched.")
-        raise SystemExit(2)  # Exit code 2 for no results
+        _no_results(env, params)
 
     output_format = params.get("output_format", "markdown")
     output_dest = params.get("output", "stdout")
@@ -540,11 +591,13 @@ def _format_conversation(
 ) -> str:
     """Format a single conversation for output."""
     if output_format == "json":
-        return json.dumps(_conv_to_dict(conv, fields), indent=2)
+        return _conv_to_json(conv, fields)
     elif output_format == "yaml":
         return _conv_to_yaml(conv, fields)
     elif output_format == "html":
         return _conv_to_html(conv)
+    elif output_format == "csv":
+        return _conv_to_csv_messages(conv)
     elif output_format == "obsidian":
         return _conv_to_obsidian(conv)
     elif output_format == "org":
@@ -573,7 +626,8 @@ def _format_list(
         lines = []
         for conv in results:
             date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else "unknown"
-            title = conv.display_title[:50] if conv.display_title else conv.id[:20]
+            raw_title = conv.display_title or conv.id[:20]
+            title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
             msg_count = len(conv.messages)
             lines.append(f"{conv.id[:24]:24s}  {date:10s}  [{conv.provider:12s}]  {title} ({msg_count} msgs)")
         return "\n".join(lines)
@@ -611,7 +665,7 @@ def _output_summary_list(
             }
             for s in summaries
         ]
-        env.ui.console.print(json.dumps(data, indent=2))
+        click.echo(json.dumps(data, indent=2))
     elif output_format == "yaml":
         import yaml
 
@@ -626,13 +680,34 @@ def _output_summary_list(
             }
             for s in summaries
         ]
-        env.ui.console.print(yaml.dump(data, default_flow_style=False, allow_unicode=True))
+        click.echo(yaml.dump(data, default_flow_style=False, allow_unicode=True))
+    elif output_format == "csv":
+        import csv
+        import io
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["id", "date", "provider", "title", "messages", "tags", "summary"])
+        for s in summaries:
+            date = s.updated_at.strftime("%Y-%m-%d") if s.updated_at else ""
+            tags_str = ",".join(s.tags) if s.tags else ""
+            writer.writerow([
+                str(s.id),
+                date,
+                s.provider,
+                s.display_title or "",
+                msg_counts.get(str(s.id), 0),
+                tags_str,
+                s.summary or "",
+            ])
+        click.echo(buf.getvalue().rstrip())
     else:
         # Plain text format (default) — now with message counts
         lines = []
         for s in summaries:
             date = s.updated_at.strftime("%Y-%m-%d") if s.updated_at else "unknown"
-            title = s.display_title[:50] if s.display_title else str(s.id)[:20]
+            raw_title = s.display_title or str(s.id)[:20]
+            title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
             count = msg_counts.get(str(s.id), 0)
             lines.append(f"{str(s.id)[:24]:24s}  {date:10s}  [{s.provider:12s}]  {title} ({count} msgs)")
         env.ui.console.print("\n".join(lines))
@@ -645,10 +720,11 @@ def _conv_to_csv(results: list[Conversation]) -> str:
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "date", "provider", "title", "messages", "words"])
+    writer.writerow(["id", "date", "provider", "title", "messages", "words", "tags", "summary"])
 
     for conv in results:
         date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else ""
+        tags_str = ",".join(conv.tags) if conv.tags else ""
         writer.writerow(
             [
                 str(conv.id),
@@ -657,6 +733,8 @@ def _conv_to_csv(results: list[Conversation]) -> str:
                 conv.display_title or "",
                 len(conv.messages),
                 sum(m.word_count for m in conv.messages),
+                tags_str,
+                conv.summary or "",
             ]
         )
 
@@ -664,7 +742,11 @@ def _conv_to_csv(results: list[Conversation]) -> str:
 
 
 def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
-    """Convert conversation to dict, optionally selecting fields."""
+    """Convert conversation to summary dict (message count, not content).
+
+    Used for list-mode output where loading all message text is unnecessary.
+    For full-content output, use _conv_to_json() instead.
+    """
     full = {
         "id": str(conv.id),
         "provider": conv.provider,
@@ -681,6 +763,44 @@ def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
     return {k: v for k, v in full.items() if k in selected}
 
 
+def _conv_to_json(conv: Conversation, fields: str | None) -> str:
+    """Convert a single conversation to full JSON with message content."""
+    data = _conv_to_dict(conv, fields)
+    # Override message count with full message content
+    if fields is None or "messages" in (fields or "").split(","):
+        data["messages"] = [
+            {
+                "id": str(msg.id),
+                "role": msg.role,
+                "text": msg.text,
+                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+            }
+            for msg in conv.messages
+        ]
+    return json.dumps(data, indent=2)
+
+
+def _conv_to_csv_messages(conv: Conversation) -> str:
+    """Convert a single conversation's messages to CSV rows."""
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["conversation_id", "message_id", "role", "timestamp", "text"])
+    for msg in conv.messages:
+        if not msg.text:
+            continue
+        writer.writerow([
+            str(conv.id),
+            str(msg.id),
+            msg.role or "",
+            msg.timestamp.isoformat() if msg.timestamp else "",
+            msg.text,
+        ])
+    return buf.getvalue().rstrip()
+
+
 def _conv_to_markdown(conv: Conversation) -> str:
     """Convert conversation to markdown."""
     lines = [f"# {conv.display_title or conv.id}", ""]
@@ -690,11 +810,12 @@ def _conv_to_markdown(conv: Conversation) -> str:
     lines.append("")
 
     for msg in conv.messages:
-        role_label = msg.role.capitalize()
+        if not msg.text:
+            continue
+        role_label = (msg.role or "unknown").capitalize()
         lines.append(f"## {role_label}")
         lines.append("")
-        if msg.text:
-            lines.append(msg.text)
+        lines.append(msg.text)
         lines.append("")
 
     return "\n".join(lines)
@@ -718,11 +839,13 @@ def _conv_to_html(conv: Conversation) -> str:
     title_safe = html_escape(title)
     messages_html = []
     for msg in conv.messages:
+        if not msg.text:
+            continue
         role = msg.role or "message"
         role_safe = html_escape(role, quote=True)
         # CSS class names: only allow lowercase alphanumeric and hyphens
         role_class = "message-" + re.sub(r"[^a-z0-9-]", "-", role.lower())
-        html_content = md_renderer.render(msg.text or "")
+        html_content = md_renderer.render(msg.text)
         messages_html.append(
             f'<div class="{role_class}"><strong>{role_safe}:</strong>{html_content}</div>'
         )
@@ -755,8 +878,8 @@ def _conv_to_html(conv: Conversation) -> str:
 
 def _yaml_safe(value: str) -> str:
     """Quote a YAML value if it contains special characters."""
-    if any(c in value for c in ":#{}[]|>&*!?@`'\",\n"):
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    if any(c in value for c in ":#{}[]|>&*!?@`'\",\n\t"):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t")
         return f'"{escaped}"'
     return value
 
@@ -787,10 +910,11 @@ def _conv_to_org(conv: Conversation) -> str:
     ]
 
     for msg in conv.messages:
-        role_label = msg.role.upper()
+        if not msg.text:
+            continue
+        role_label = (msg.role or "unknown").upper()
         lines.append(f"* {role_label}")
-        if msg.text:
-            lines.append(msg.text)
+        lines.append(msg.text)
         lines.append("")
 
     return "\n".join(lines)
@@ -947,12 +1071,11 @@ def _write_message_streaming(msg: Message, output_format: str) -> None:
         sys.stdout.flush()
 
     elif output_format == "markdown":
-        # Markdown format with headers
-        role_label = msg.role.capitalize() if msg.role else "Unknown"
-        sys.stdout.write(f"## {role_label}\n\n")
+        # Markdown format with headers — skip empty-text messages (tool progress, etc.)
         if msg.text:
-            sys.stdout.write(f"{msg.text}\n\n")
-        sys.stdout.flush()
+            role_label = (msg.role or "unknown").capitalize()
+            sys.stdout.write(f"## {role_label}\n\n{msg.text}\n\n")
+            sys.stdout.flush()
 
     elif output_format == "json-lines":
         # JSONL format - one JSON object per line
@@ -978,7 +1101,7 @@ def _send_output(
     """Send output to specified destinations."""
     for dest in destinations:
         if dest == "stdout":
-            env.ui.console.print(content)
+            click.echo(content)
         elif dest == "browser":
             _open_in_browser(env, content, output_format, conv)
         elif dest == "clipboard":

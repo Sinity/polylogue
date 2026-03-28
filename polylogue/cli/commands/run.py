@@ -216,7 +216,6 @@ def _webhook_on_new(webhook_url: str, count: int) -> None:
 @click.option("--notify", is_flag=True, help="Desktop notification on new conversations (requires --watch)")
 @click.option("--exec", "exec_cmd", help="Execute command on new conversations (requires --watch)")
 @click.option("--webhook", help="Call webhook URL on new conversations (requires --watch)")
-@click.option("-p", "--provider", help="Limit to specific provider")
 @click.pass_obj
 def run_command(
     env: AppEnv,
@@ -228,7 +227,6 @@ def run_command(
     notify: bool,
     exec_cmd: str | None,
     webhook: str | None,
-    provider: str | None,
 ) -> None:
     """Run pipeline stages on configured sources."""
     # Validate watch-related flags
@@ -288,6 +286,8 @@ def run_command(
                         click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
                 except DriveError as exc:
                     click.echo(f"Sync error: {exc}", err=True)
+                except Exception as exc:
+                    click.echo(f"Unexpected error during sync: {exc}", err=True)
                 time.sleep(poll_interval)
         except KeyboardInterrupt:
             env.ui.console.print("\nWatch mode stopped.")
@@ -319,7 +319,7 @@ def sources_command(env: AppEnv, json_output: bool) -> None:
             }
             for source in cfg.sources
         ]
-        env.ui.console.print(json.dumps(payload, indent=2))
+        click.echo(json.dumps(payload, indent=2))
         return
     lines = []
     for source in cfg.sources:
@@ -330,3 +330,6 @@ def sources_command(env: AppEnv, json_output: bool) -> None:
         else:
             lines.append(f"{source.name}: (missing path)")
     env.ui.summary("Sources", lines)
+
+
+__all__ = ["run_command", "sources_command"]

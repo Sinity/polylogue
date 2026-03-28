@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -91,7 +91,8 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
             conn.enable_load_extension(False)
     except ImportError:
         return False
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning("sqlite-vec extension load failed: %s", exc)
         return False
 
 
@@ -1081,6 +1082,9 @@ class SQLiteBackend:
         if limit is not None:
             query += " LIMIT ?"
             params.append(limit)
+        elif offset > 0:
+            # SQLite requires LIMIT before OFFSET; use -1 for unlimited
+            query += " LIMIT -1"
 
         if offset > 0:
             query += " OFFSET ?"
@@ -1579,66 +1583,138 @@ class SQLiteBackend:
             return {}
         return json.loads(row["metadata"]) if row["metadata"] else {}
 
-    def update_metadata(self, conversation_id: str, key: str, value: object) -> None:
-        """Set a single metadata key."""
+    def _metadata_read_modify_write(
+        self, conversation_id: str, mutator: Callable[[dict[str, object]], bool]
+    ) -> None:
+        """Atomically read-modify-write conversation metadata.
+
+        Uses BEGIN IMMEDIATE to prevent concurrent writers from
+        interleaving between the read and write (TOCTOU prevention).
+        Falls back to SAVEPOINT when already inside a transaction.
+
+        Args:
+            conversation_id: Target conversation
+            mutator: Receives current metadata dict, mutates it in place,
+                     returns True if a write is needed
+        """
         import json
 
         conn = self._get_connection()
-        current = self.get_metadata(conversation_id)
-        current[key] = value
-        conn.execute(
-            "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
-            (json.dumps(current), conversation_id),
-        )
-        conn.commit()
+
+        if conn.in_transaction:
+            # Already in a transaction — use savepoint for nested atomicity
+            conn.execute("SAVEPOINT metadata_rmw")
+            try:
+                current = self.get_metadata(conversation_id)
+                if mutator(current):
+                    conn.execute(
+                        "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+                        (json.dumps(current), conversation_id),
+                    )
+                conn.execute("RELEASE SAVEPOINT metadata_rmw")
+            except Exception:
+                conn.execute("ROLLBACK TO SAVEPOINT metadata_rmw")
+                raise
+        else:
+            # No active transaction — use BEGIN IMMEDIATE for exclusive lock
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                current = self.get_metadata(conversation_id)
+                if mutator(current):
+                    conn.execute(
+                        "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+                        (json.dumps(current), conversation_id),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def update_metadata(self, conversation_id: str, key: str, value: object) -> None:
+        """Set a single metadata key."""
+
+        def _set(meta: dict[str, object]) -> bool:
+            meta[key] = value
+            return True
+
+        self._metadata_read_modify_write(conversation_id, _set)
 
     def delete_metadata(self, conversation_id: str, key: str) -> None:
         """Remove a metadata key."""
-        import json
 
-        conn = self._get_connection()
-        current = self.get_metadata(conversation_id)
-        if key in current:
-            del current[key]
-            conn.execute(
-                "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
-                (json.dumps(current), conversation_id),
-            )
-            conn.commit()
+        def _delete(meta: dict[str, object]) -> bool:
+            if key in meta:
+                del meta[key]
+                return True
+            return False
+
+        self._metadata_read_modify_write(conversation_id, _delete)
 
     def add_tag(self, conversation_id: str, tag: str) -> None:
         """Add a tag to the conversation's tags list."""
-        import json
 
-        conn = self._get_connection()
-        current = self.get_metadata(conversation_id)
-        tags = current.get("tags", [])
-        if not isinstance(tags, list):
-            tags = []
-        if tag not in tags:
-            tags.append(tag)
-            current["tags"] = tags
-            conn.execute(
-                "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
-                (json.dumps(current), conversation_id),
-            )
-            conn.commit()
+        def _add(meta: dict[str, object]) -> bool:
+            tags = meta.get("tags", [])
+            if not isinstance(tags, list):
+                tags = []
+            if tag not in tags:
+                tags.append(tag)
+                meta["tags"] = tags
+                return True
+            return False
+
+        self._metadata_read_modify_write(conversation_id, _add)
 
     def remove_tag(self, conversation_id: str, tag: str) -> None:
         """Remove a tag from the conversation's tags list."""
-        import json
 
+        def _remove(meta: dict[str, object]) -> bool:
+            tags = meta.get("tags", [])
+            if isinstance(tags, list) and tag in tags:
+                tags.remove(tag)
+                meta["tags"] = tags
+                return True
+            return False
+
+        self._metadata_read_modify_write(conversation_id, _remove)
+
+    def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
+        """List all tags with counts, using json_each for efficiency.
+
+        Args:
+            provider: Optional provider filter.
+
+        Returns:
+            Dict of tag → count, sorted by count descending.
+        """
         conn = self._get_connection()
-        current = self.get_metadata(conversation_id)
-        tags = current.get("tags", [])
-        if isinstance(tags, list) and tag in tags:
-            tags.remove(tag)
-            current["tags"] = tags
-            conn.execute(
-                "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
-                (json.dumps(current), conversation_id),
-            )
-            conn.commit()
+        if provider:
+            rows = conn.execute(
+                """
+                SELECT tag.value AS tag_name, COUNT(*) AS cnt
+                FROM conversations,
+                     json_each(json_extract(metadata, '$.tags')) AS tag
+                WHERE metadata IS NOT NULL
+                  AND json_extract(metadata, '$.tags') IS NOT NULL
+                  AND provider_name = ?
+                GROUP BY tag.value
+                ORDER BY cnt DESC
+                """,
+                (provider,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT tag.value AS tag_name, COUNT(*) AS cnt
+                FROM conversations,
+                     json_each(json_extract(metadata, '$.tags')) AS tag
+                WHERE metadata IS NOT NULL
+                  AND json_extract(metadata, '$.tags') IS NOT NULL
+                GROUP BY tag.value
+                ORDER BY cnt DESC
+                """,
+            ).fetchall()
+        return {row["tag_name"]: row["cnt"] for row in rows}
 
     def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
         """Replace entire metadata dict."""
@@ -1741,7 +1817,8 @@ class SQLiteBackend:
                     break
                 fetch_limit = min(chunk_size, remaining)
 
-            query += f" LIMIT {fetch_limit} OFFSET {offset}"
+            query += " LIMIT ? OFFSET ?"
+            params.extend([fetch_limit, offset])
 
             rows = conn.execute(query, tuple(params)).fetchall()
             if not rows:
