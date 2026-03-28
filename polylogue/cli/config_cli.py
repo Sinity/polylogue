@@ -2,30 +2,45 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 from ..commands import CommandEnv
 
 
 def run_config_show(args: object, env: CommandEnv) -> None:
     """Show current configuration (combines env + settings)."""
-    from ..config import CONFIG, CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN
+    from ..config import CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN
     from ..config import is_config_declarative
     from ..schema import stamp_payload
     from ..settings import SETTINGS_PATH
 
     ui = env.ui
     settings = env.settings
-    defaults = CONFIG.defaults
+    defaults = env.config.defaults
+    exports = env.config.exports
+    index_cfg = env.config.index
     declarative, decl_reason, decl_target = is_config_declarative(CONFIG_PATH)
 
     credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
     drive_cfg = getattr(env, "config", None).drive if hasattr(env, "config") else None
-    credential_path = drive_cfg.credentials_path if drive_cfg else DEFAULT_CREDENTIALS
-    token_path = drive_cfg.token_path if drive_cfg else DEFAULT_TOKEN
+    credential_path = (
+        Path(credential_env).expanduser()
+        if credential_env
+        else (drive_cfg.credentials_path if drive_cfg else DEFAULT_CREDENTIALS)
+    )
+    token_path = (
+        Path(token_env).expanduser()
+        if token_env
+        else (drive_cfg.token_path if drive_cfg else DEFAULT_TOKEN)
+    )
 
     if getattr(args, "json", False):
         roots_map = getattr(env.config.defaults, "roots", {}) or {}
+        roots_payload = {
+            label: {key: str(value) for key, value in vars(paths).items()}
+            for label, paths in roots_map.items()
+        }
         payload = stamp_payload(
             {
                 "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
@@ -53,19 +68,19 @@ def run_config_show(args: object, env: CommandEnv) -> None:
                     "claude_code": str(defaults.output_dirs.sync_claude_code),
                     "chatgpt": str(defaults.output_dirs.import_chatgpt),
                     "claude": str(defaults.output_dirs.import_claude),
-                    "roots": {label: vars(paths) for label, paths in roots_map.items()},
+                    "roots": roots_payload,
                 },
                 "inputs": {
-                    "chatgpt": str(CONFIG.exports.chatgpt),
-                    "claude": str(CONFIG.exports.claude),
+                    "chatgpt": str(exports.chatgpt),
+                    "claude": str(exports.claude),
                 },
                 "index": {
-                    "backend": CONFIG.index.backend if CONFIG.index else "sqlite",
+                    "backend": index_cfg.backend if index_cfg else "sqlite",
                     "qdrant": {
-                        "url": CONFIG.index.qdrant_url if CONFIG.index else None,
-                        "api_key": CONFIG.index.qdrant_api_key if CONFIG.index else None,
-                        "collection": CONFIG.index.qdrant_collection if CONFIG.index else None,
-                        "vector_size": CONFIG.index.qdrant_vector_size if CONFIG.index else None,
+                        "url": index_cfg.qdrant_url if index_cfg else None,
+                        "api_key": index_cfg.qdrant_api_key if index_cfg else None,
+                        "collection": index_cfg.qdrant_collection if index_cfg else None,
+                        "vector_size": index_cfg.qdrant_vector_size if index_cfg else None,
                     },
                 },
                 "statePath": str(env.conversations.state_path),
@@ -119,7 +134,11 @@ def run_config_show(args: object, env: CommandEnv) -> None:
     if roots_map:
         summary_lines.append("  labeled roots:")
         for label, paths in roots_map.items():
-            summary_lines.append(f"    {label}: render={paths.render} codex={paths.sync_codex}")
+            summary_lines.append(
+                "    "
+                f"{label}: render={paths.render} gemini={paths.sync_drive} codex={paths.sync_codex} "
+                f"claude-code={paths.sync_claude_code} chatgpt={paths.import_chatgpt} claude={paths.import_claude}"
+            )
     summary_lines.extend(
         [
             "",

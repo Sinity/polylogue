@@ -25,6 +25,7 @@ from .importers.claude_code import (
     list_claude_code_sessions,
 )
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
+from .importers.utils import find_conversations_json
 from .paths import DATA_HOME
 from .util import DiffTracker, format_duration, path_order_key, sanitize_filename, slugify_title
 from .services.conversation_registrar import ConversationRegistrar, create_default_registrar
@@ -173,6 +174,17 @@ class _NoopProgress:
         return None
 
 
+def _ensure_output_dir(output_dir: Path, *, provider: str) -> None:
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"{provider} output directory could not be created: {output_dir} ({exc})"
+        ) from exc
+    if not os.access(output_dir, os.W_OK | os.X_OK):
+        raise RuntimeError(f"{provider} output directory is not writable: {output_dir}")
+
+
 def _sync_sessions(
     sessions: Iterable[Path],
     *,
@@ -195,11 +207,11 @@ def _sync_sessions(
     meta: Optional[Dict[str, str]] = None,
     jobs: int = 1,
 ) -> LocalSyncResult:
+    _ensure_output_dir(output_dir, provider=provider)
     if registrar is None:
         state_dir = output_dir / ".polylogue-state"
-        state_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_output_dir(state_dir, provider=f"{provider} state")
         registrar = create_default_registrar(database_path=state_dir / "polylogue.db")
-    output_dir.mkdir(parents=True, exist_ok=True)
     start_time = time.perf_counter()
     written: List[ImportResult] = []
     skipped = 0
@@ -259,7 +271,7 @@ def _sync_sessions(
         eta = ((total - done) / rate) if rate > 0 else None
         pct = (done / total) * 100.0
         ui.console.print(
-            f"[dim]{provider} progress: {done}/{total} ({pct:.1f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
+            f"[dim]{provider} progress: {done}/{total} ({pct:.0f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
         )
 
     def _process_single(session_path: Path) -> Dict[str, object]:
@@ -302,7 +314,12 @@ def _sync_sessions(
             if isinstance(raw_output, str) and raw_output.strip():
                 candidate_path = Path(raw_output)
                 if candidate_path.exists():
-                    md_path = candidate_path
+                    try:
+                        candidate_path.resolve().relative_to(output_root)
+                    except ValueError:
+                        pass
+                    else:
+                        md_path = candidate_path
 
         source_paths = _resolve_source_paths(provider, session_path, state_entry, session_id)
 
@@ -330,6 +347,11 @@ def _sync_sessions(
             except Exception:
                 existing_dirty = False
 
+        if not force and not existing_dirty and _is_up_to_date_multi(source_paths, md_path):
+            entry["skipped"] = True
+            entry["skip_reason"] = "up-to-date"
+            return entry
+
         if not force and not existing_dirty and provider != "claude-code":
             try:
                 from .importers.raw_storage import compute_hash
@@ -338,17 +360,12 @@ def _sync_sessions(
                 current_hash = compute_hash(session_path.read_bytes())
                 with open_connection(registrar.database.resolve_path()) as conn:
                     raw_row = get_raw_import_by_conversation(conn, provider, conversation_id)
-                if raw_row and raw_row["hash"] == current_hash:
+                if raw_row and raw_row["hash"] == current_hash and md_path.exists():
                     entry["skipped"] = True
                     entry["skip_reason"] = "up-to-date"
                     return entry
             except Exception:
                 pass
-
-        if not force and _is_up_to_date_multi(source_paths, md_path):
-            entry["skipped"] = True
-            entry["skip_reason"] = "up-to-date"
-            return entry
 
         diff_tracker = DiffTracker(md_path, diff)
         try:
@@ -524,26 +541,183 @@ def _sync_sessions(
     )
 
 
+def _classify_conversation_entry(entry: object) -> Optional[str]:
+    if not isinstance(entry, dict):
+        return None
+    if "mapping" in entry or "current_node" in entry:
+        return "chatgpt"
+    if "chat_messages" in entry or "chatMessages" in entry:
+        return "claude"
+    if "create_time" in entry or "update_time" in entry:
+        return "chatgpt"
+    if "uuid" in entry and any(key in entry for key in ("name", "title", "created_at", "updated_at")):
+        return "claude"
+    if "uuid" in entry and "model" in entry:
+        return "claude"
+    messages = entry.get("messages")
+    if isinstance(messages, list) and messages:
+        first = messages[0]
+        if isinstance(first, dict):
+            if "sender" in first or "sender_id" in first:
+                return "claude"
+            if "author" in first or "role" in first:
+                return "chatgpt"
+    return None
+
+
+_CLASSIFY_JSON_MAX_BYTES = 32 * 1024 * 1024
+_CLASSIFY_SNIPPET_BYTES = 512 * 1024
+
+
+def _classify_conversations_snippet(data: bytes) -> Optional[str]:
+    if not data:
+        return None
+    lowered = data.lower()
+    if b'"chat_messages"' in lowered or b'"chatmessages"' in lowered:
+        return "claude"
+    if b'"mapping"' in lowered or b'"current_node"' in lowered:
+        return "chatgpt"
+    if b'"sender"' in lowered or b'"sender_id"' in lowered:
+        return "claude"
+    if b'"author"' in lowered or b'"role"' in lowered:
+        return "chatgpt"
+    if b'"uuid"' in lowered and (b'"created_at"' in lowered or b'"updated_at"' in lowered):
+        return "claude"
+    if b'"uuid"' in lowered and b'"model"' in lowered:
+        return "claude"
+    return None
+
+
+def _classify_conversations_stream(handle, prefix: str, *, limit: int = 3) -> Optional[str]:
+    try:
+        import ijson
+    except Exception:
+        return None
+    try:
+        for idx, conv in enumerate(ijson.items(handle, prefix)):
+            provider = _classify_conversation_entry(conv)
+            if provider:
+                return provider
+            if idx + 1 >= limit:
+                break
+    except Exception:
+        return None
+    return None
+
+
+def _classify_conversations_file(path: Path) -> Optional[str]:
+    size = None
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = None
+    try:
+        with path.open("rb") as fh:
+            provider = _classify_conversations_stream(fh, "conversations.item")
+            if provider:
+                return provider
+    except Exception:
+        pass
+    try:
+        with path.open("rb") as fh:
+            provider = _classify_conversations_stream(fh, "item")
+            if provider:
+                return provider
+    except Exception:
+        pass
+    if size is not None and size <= _CLASSIFY_JSON_MAX_BYTES:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            provider = _classify_conversations_json(data)
+            if provider:
+                return provider
+        except Exception:
+            pass
+    try:
+        with path.open("rb") as fh:
+            snippet = fh.read(_CLASSIFY_SNIPPET_BYTES)
+        provider = _classify_conversations_snippet(snippet)
+        if provider:
+            return provider
+    except Exception:
+        pass
+    return None
+
+
+def _find_zip_conversations(zf: zipfile.ZipFile) -> Optional[str]:
+    candidates = [
+        name
+        for name in zf.namelist()
+        if name.lower().endswith("conversations.json")
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda name: (name.count("/"), len(name), name))
+
+
+def _classify_conversations_zip(path: Path) -> Optional[str]:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            name = _find_zip_conversations(zf)
+            if not name:
+                return None
+            try:
+                with zf.open(name) as fh:
+                    provider = _classify_conversations_stream(fh, "conversations.item")
+                if provider:
+                    return provider
+            except Exception:
+                pass
+            try:
+                with zf.open(name) as fh:
+                    provider = _classify_conversations_stream(fh, "item")
+                if provider:
+                    return provider
+            except Exception:
+                pass
+            try:
+                info = zf.getinfo(name)
+                size = info.file_size
+            except Exception:
+                size = None
+            if size is not None and size <= _CLASSIFY_JSON_MAX_BYTES:
+                try:
+                    with zf.open(name) as fh:
+                        data = json.load(fh)
+                    provider = _classify_conversations_json(data)
+                    if provider:
+                        return provider
+                except Exception:
+                    pass
+            try:
+                with zf.open(name) as fh:
+                    snippet = fh.read(_CLASSIFY_SNIPPET_BYTES)
+                provider = _classify_conversations_snippet(snippet)
+                if provider:
+                    return provider
+            except Exception:
+                pass
+    except Exception:
+        return None
+    return None
+
+
 def _detect_export_provider(path: Path) -> Optional[str]:
     conv_path: Optional[Path] = None
     suffix = path.suffix.lower()
     if path.is_dir():
-        candidate = path / "conversations.json"
-        if candidate.exists():
-            conv_path = candidate
+        conv_path = find_conversations_json(path)
     elif path.is_file() and path.name.lower() == "conversations.json":
         conv_path = path
     elif path.is_file() and suffix == ".zip" and zipfile.is_zipfile(path):
-        try:
-            with zipfile.ZipFile(path) as zf:
-                if "conversations.json" in zf.namelist():
-                    with zf.open("conversations.json") as fh:
-                        data = json.loads(fh.read().decode("utf-8"))
-                        return _classify_conversations_json(data)
-        except Exception:
-            return None
+        detected = _classify_conversations_zip(path)
+        if detected:
+            return detected
 
     if conv_path and conv_path.exists():
+        detected = _classify_conversations_file(conv_path)
+        if detected:
+            return detected
         try:
             data = json.loads(conv_path.read_text(encoding="utf-8"))
             return _classify_conversations_json(data)
@@ -565,12 +739,10 @@ def _classify_conversations_json(data: object) -> Optional[str]:
         if conversations:
             data = conversations
     if isinstance(data, list) and data:
-        first = data[0]
-        if isinstance(first, dict):
-            if "mapping" in first:
-                return "chatgpt"
-            # Claude exports typically lack mapping and include simple message lists
-            return "claude"
+        for entry in data[:3]:
+            provider = _classify_conversation_entry(entry)
+            if provider:
+                return provider
     return None
 
 
@@ -645,8 +817,10 @@ def _normalize_export_target(path: Path) -> Optional[Path]:
         return candidate
     if candidate.name.lower() == "conversations.json":
         return candidate.parent
-    if candidate.is_dir() and (candidate / "conversations.json").exists():
-        return candidate
+    if candidate.is_dir():
+        conv_path = find_conversations_json(candidate)
+        if conv_path:
+            return conv_path.parent
     return None
 
 
@@ -670,7 +844,7 @@ def _sync_export_bundles(
     meta: Optional[Dict[str, str]] = None,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_output_dir(output_dir, provider=provider)
     start_time = time.perf_counter()
     written: List[ImportResult] = []
     skipped_exports = 0
@@ -711,7 +885,7 @@ def _sync_export_bundles(
         eta = ((total - done) / rate) if rate > 0 else None
         pct = (done / total) * 100.0
         ui.console.print(
-            f"[dim]{provider} progress: {done}/{total} ({pct:.1f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
+            f"[dim]{provider} progress: {done}/{total} ({pct:.0f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
         )
 
     with progress_ctx as tracker:
@@ -856,7 +1030,7 @@ def sync_codex_sessions(
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
-        sessions = _list_claude_code_paths(base_dir)
+        sessions = _list_codex_paths(base_dir)
     return _sync_sessions(
         sessions,
         output_dir=output_dir,
@@ -904,7 +1078,7 @@ def sync_claude_code_sessions(
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
-        sessions = base_dir.rglob("*.jsonl")
+        sessions = _list_claude_code_paths(base_dir)
     return _sync_sessions(
         sessions,
         output_dir=output_dir,
@@ -946,11 +1120,11 @@ def _list_claude_code_paths(base_dir: Path) -> List[Path]:
 
 
 def _list_chatgpt_exports(base_dir: Path) -> List[Path]:
-    return _discover_export_targets(base_dir)
+    return _discover_export_targets(base_dir, provider="chatgpt")
 
 
 def _list_claude_exports(base_dir: Path) -> List[Path]:
-    return _discover_export_targets(base_dir)
+    return _discover_export_targets(base_dir, provider="claude")
 
 
 def sync_chatgpt_exports(

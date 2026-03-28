@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -239,12 +240,27 @@ def _resolve_provider_root(archive: Archive, provider: str) -> Optional[Path]:
 def prune_state_entries(
     state_repo: ConversationStateRepository,
     archive: Archive,
+    status: Optional[Callable[[str], None]] = None,
 ) -> Tuple[int, List[DoctorIssue]]:
     issues: List[DoctorIssue] = []
     removed = 0
+    checked = 0
+    last_emit = 0.0
+
+    def _maybe_emit() -> None:
+        nonlocal last_emit
+        if not status:
+            return
+        now = time.perf_counter()
+        if checked == 1 or checked % 1000 == 0 or (now - last_emit) > 10:
+            last_emit = now
+            status(f"Pruning state entries ({checked} checked)")
+
     for provider in state_repo.providers():
         provider_root = _resolve_provider_root(archive, provider)
         for conversation_id, entry in state_repo.provider_items(provider):
+            checked += 1
+            _maybe_emit()
             output_path = entry.get("outputPath") if isinstance(entry, dict) else None
             if not output_path:
                 continue
@@ -310,15 +326,30 @@ def prune_database_entries(
     database: ConversationDatabase,
     state_repo: ConversationStateRepository,
     archive: Archive,
+    status: Optional[Callable[[str], None]] = None,
 ) -> Tuple[int, List[DoctorIssue]]:
     issues: List[DoctorIssue] = []
     to_delete: List[Tuple[str, str]] = []
+    checked = 0
+    last_emit = 0.0
+
+    def _maybe_emit() -> None:
+        nonlocal last_emit
+        if not status:
+            return
+        now = time.perf_counter()
+        if checked == 1 or checked % 2000 == 0 or (now - last_emit) > 10:
+            last_emit = now
+            status(f"Pruning database rows ({checked} scanned)")
+
     try:
         rows = database.query("SELECT provider, conversation_id, slug FROM conversations")
         for row in rows:
             provider = row["provider"]
             conversation_id = row["conversation_id"]
             slug = row["slug"]
+            checked += 1
+            _maybe_emit()
             candidate_paths: List[Path] = []
             state_entry = state_repo.get(provider, conversation_id)
             if isinstance(state_entry, dict):
@@ -376,23 +407,62 @@ def _config_issues() -> List[DoctorIssue]:
     return issues
 
 
-def _credential_issues() -> List[DoctorIssue]:
+def _output_dir_issues() -> List[DoctorIssue]:
     issues: List[DoctorIssue] = []
-    if not DEFAULT_CREDENTIALS.exists():
+    paths: set[Path] = set()
+    defaults = getattr(CONFIG, "defaults", None)
+    if defaults and getattr(defaults, "output_dirs", None):
+        paths.update(Path(p) for p in vars(defaults.output_dirs).values())
+    roots = getattr(defaults, "roots", {}) if defaults else {}
+    if isinstance(roots, dict):
+        for entry in roots.values():
+            if entry:
+                paths.update(Path(p) for p in vars(entry).values())
+
+    for path in sorted(paths, key=lambda p: str(p)):
+        if not path.exists():
+            continue
+        if not path.is_dir():
+            issues.append(
+                DoctorIssue(
+                    "output",
+                    path,
+                    "Output path is not a directory.",
+                    "error",
+                    hint="Fix the path or update paths.output_root in config.json.",
+                )
+            )
+            continue
+        if not os.access(path, os.W_OK | os.X_OK):
+            issues.append(
+                DoctorIssue(
+                    "output",
+                    path,
+                    "Output directory is not writable.",
+                    "error",
+                    hint="Fix permissions or update paths.output_root in config.json.",
+                )
+            )
+    return issues
+
+
+def _credential_issues(credentials_path: Path, token_path: Path) -> List[DoctorIssue]:
+    issues: List[DoctorIssue] = []
+    if not credentials_path.exists():
         issues.append(
             DoctorIssue(
                 "drive",
-                DEFAULT_CREDENTIALS,
+                credentials_path,
                 "Google Drive credentials missing.",
                 "warning",
                 hint="Run `polylogue sync drive` and follow the OAuth prompt to save credentials.json.",
             )
         )
-    if not DEFAULT_TOKEN.exists():
+    if not token_path.exists():
         issues.append(
             DoctorIssue(
                 "drive",
-                DEFAULT_TOKEN,
+                token_path,
                 "Drive OAuth token missing; next sync will request authorization.",
                 "info",
                 hint="Allow the OAuth consent flow during the next Drive sync.",
@@ -409,6 +479,9 @@ def run_doctor(
     service: Optional[ConversationService] = None,
     archive: Optional[Archive] = None,
     progress: Optional[Callable[[str, int, Optional[int]], None]] = None,
+    status: Optional[Callable[[str], None]] = None,
+    skip_index: bool = False,
+    skip_qdrant: bool = False,
 ) -> DoctorReport:
     credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
@@ -419,11 +492,19 @@ def run_doctor(
         if progress:
             progress(provider, checked, total)
 
+    def _status(message: str) -> None:
+        if status:
+            status(message)
+
+    if progress is None:
+        _status("Scanning Codex sessions")
     codex_report = inspect_codex(
         codex_dir,
         limit,
         progress=(lambda checked, total: _notify("codex", checked, total)) if progress else None,
     )
+    if progress is None:
+        _status("Scanning Claude Code sessions")
     claude_report = inspect_claude_code(
         claude_code_dir,
         limit,
@@ -436,37 +517,55 @@ def run_doctor(
     state_repo = service.state_repo
     database = service.database
     archive = archive or Archive(CONFIG)
+    drive_cfg = getattr(archive.config, "drive", None) if archive else None
+    if drive_cfg is None:
+        drive_cfg = getattr(CONFIG, "drive", None)
+    if credential_env:
+        credential_path = Path(credential_env).expanduser()
+    elif drive_cfg:
+        credential_path = drive_cfg.credentials_path
+    if token_env:
+        token_path = Path(token_env).expanduser()
+    elif drive_cfg:
+        token_path = drive_cfg.token_path
 
-    removed_state, state_issues = prune_state_entries(state_repo, archive)
+    _status("Pruning stale state entries")
+    removed_state, state_issues = prune_state_entries(state_repo, archive, status=status)
     if removed_state:
         counts["state"] = removed_state
     issues.extend(state_issues)
 
-    removed_db, db_issues = prune_database_entries(database, state_repo, archive)
+    _status("Pruning stale database entries")
+    removed_db, db_issues = prune_database_entries(database, state_repo, archive, status=status)
     if removed_db:
         counts["database"] = removed_db
     issues.extend(db_issues)
 
     issues.extend(_dependency_issues())
     issues.extend(_config_issues())
-    issues.extend(_credential_issues())
+    issues.extend(_output_dir_issues())
+    issues.extend(_credential_issues(credential_path, token_path))
     issues.extend(_drive_failure_issues())
-    try:
-        sqlite_notes = verify_sqlite_indexes(default_db_path())
-        if sqlite_notes:
-            counts["indexes"] = counts.get("indexes", 0) + len(sqlite_notes)
-            for note in sqlite_notes:
-                issues.append(DoctorIssue("index", default_db_path(), note, "info"))
-    except Exception as exc:
-        issues.append(DoctorIssue("index", default_db_path(), str(exc), "error"))
-    try:
-        qdrant_notes = verify_qdrant_collection()
-        if qdrant_notes:
-            for note in qdrant_notes:
-                issues.append(DoctorIssue("qdrant", Path("qdrant"), note, "info"))
-    except RuntimeError as exc:
-        if os.environ.get("POLYLOGUE_INDEX_BACKEND", "sqlite").strip().lower() == "qdrant":
-            issues.append(DoctorIssue("qdrant", Path("qdrant"), str(exc), "error"))
+    if not skip_index:
+        _status("Checking SQLite index health (quick check; use `polylogue doctor index check` for full scan)")
+        try:
+            sqlite_notes = verify_sqlite_indexes(default_db_path(), full=False)
+            if sqlite_notes:
+                counts["indexes"] = counts.get("indexes", 0) + len(sqlite_notes)
+                for note in sqlite_notes:
+                    issues.append(DoctorIssue("index", default_db_path(), note, "info"))
+        except Exception as exc:
+            issues.append(DoctorIssue("index", default_db_path(), str(exc), "error"))
+    if not skip_qdrant:
+        _status("Checking Qdrant index health")
+        try:
+            qdrant_notes = verify_qdrant_collection()
+            if qdrant_notes:
+                for note in qdrant_notes:
+                    issues.append(DoctorIssue("qdrant", Path("qdrant"), note, "info"))
+        except RuntimeError as exc:
+            if os.environ.get("POLYLOGUE_INDEX_BACKEND", "sqlite").strip().lower() == "qdrant":
+                issues.append(DoctorIssue("qdrant", Path("qdrant"), str(exc), "error"))
 
     return DoctorReport(
         checked=counts,

@@ -25,18 +25,31 @@ DEFAULT_CREDENTIALS = CONFIG_DIR / "credentials.json"
 _ENV_TOKEN_PATH = os.environ.get("POLYLOGUE_TOKEN_PATH")
 DEFAULT_TOKEN = Path(_ENV_TOKEN_PATH).expanduser() if _ENV_TOKEN_PATH else CONFIG_DIR / "token.json"
 DEFAULT_FOLDER_NAME = "Google AI Studio"
-FALLBACK_FOLDER_NAMES = ("AI Studio",)
 
 
 class DriveClient:
     """Wrapper that manages credentials and Drive service access."""
 
-    def __init__(self, ui: UI, *, retries: Optional[int] = None, retry_base: Optional[float] = None):
+    def __init__(
+        self,
+        ui: UI,
+        *,
+        retries: Optional[int] = None,
+        retry_base: Optional[float] = None,
+        credentials_path: Optional[Path] = None,
+        token_path: Optional[Path] = None,
+    ):
         self.ui = ui
-        env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
-        self._credentials_path: Path = Path(env_path).expanduser() if env_path else DEFAULT_CREDENTIALS
-        token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
-        self._token_path: Path = Path(token_env).expanduser() if token_env else DEFAULT_TOKEN
+        if credentials_path is None:
+            env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+            self._credentials_path = Path(env_path).expanduser() if env_path else DEFAULT_CREDENTIALS
+        else:
+            self._credentials_path = Path(credentials_path).expanduser()
+        if token_path is None:
+            token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
+            self._token_path = Path(token_env).expanduser() if token_env else DEFAULT_TOKEN
+        else:
+            self._token_path = Path(token_path).expanduser()
         self._service = None
         if retries is not None or retry_base is not None:
             set_retry_defaults(retries=retries, base_delay=retry_base)
@@ -56,7 +69,8 @@ class DriveClient:
         if self.ui.plain:
             raise SystemExit(
                 "Missing credentials.json. Download a Google OAuth client secret and place it at "
-                f"{cred_path} or set POLYLOGUE_CREDENTIAL_PATH/POLYLOGUE_TOKEN_PATH to point at your files."
+                f"{cred_path} or set POLYLOGUE_CREDENTIAL_PATH/POLYLOGUE_TOKEN_PATH "
+                "or drive.credentials_path/token_path in config.json."
             )
         return self._prompt_for_credentials()
 
@@ -154,21 +168,9 @@ class DriveClient:
         name = folder_name or DEFAULT_FOLDER_NAME
         svc = self.service()
         resolved = find_folder_id(svc, name, notifier=self._notify_retry)
-        if not resolved and folder_name is None:
-            for candidate in FALLBACK_FOLDER_NAMES:
-                if candidate == name:
-                    continue
-                resolved = find_folder_id(svc, candidate, notifier=self._notify_retry)
-                if resolved:
-                    message = f"Default Drive folder '{name}' not found; using '{candidate}'."
-                    if self.ui.plain:
-                        self.ui.console.print(message)
-                    else:
-                        self.ui.console.print(f"[yellow]{message}[/yellow]")
-                    return resolved
-        if not resolved:
-            raise SystemExit(f"Folder not found: {name}")
-        return resolved
+        if resolved:
+            return resolved
+        raise SystemExit(f"Folder not found: {name}")
 
     def list_chats(
         self,

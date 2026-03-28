@@ -39,7 +39,9 @@ from .env_cli import run_env_cli
 
 
 def _build_env(plain: bool) -> CommandEnv:
-    return CommandEnv(ui=create_ui(plain))
+    env = CommandEnv(ui=create_ui(plain))
+    env.prefs = prefs_cmd.load_prefs()
+    return env
 
 _FORCE_PLAIN_VALUES = {"1", "true", "yes", "on"}
 _PLAIN_REASON_FLAG = "requested via --plain"
@@ -608,6 +610,8 @@ def doctor() -> None:
 @click.option("--codex-dir", type=click.Path(path_type=Path), help="Override Codex sessions directory")
 @click.option("--claude-code-dir", type=click.Path(path_type=Path), help="Override Claude Code projects directory")
 @click.option("--limit", type=int, help="Limit number of files inspected per provider")
+@click.option("--skip-index", is_flag=True, help="Skip SQLite index validation (can speed up large archives)")
+@click.option("--skip-qdrant", is_flag=True, help="Skip Qdrant validation even when configured")
 @click.option("--json", is_flag=True, help="Emit machine-readable report")
 @click.option("--json-verbose", is_flag=True, help="Emit JSON with verbose details")
 @click.pass_obj

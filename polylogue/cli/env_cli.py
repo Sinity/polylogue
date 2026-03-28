@@ -35,8 +35,17 @@ def run_env_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
 
-    credential_path = Path(credential_env).expanduser() if credential_env else DEFAULT_CREDENTIALS
-    token_path = Path(token_env).expanduser() if token_env else DEFAULT_TOKEN
+    drive_cfg = getattr(env.config, "drive", None)
+    credential_path = (
+        Path(credential_env).expanduser()
+        if credential_env
+        else (drive_cfg.credentials_path if drive_cfg else DEFAULT_CREDENTIALS)
+    )
+    token_path = (
+        Path(token_env).expanduser()
+        if token_env
+        else (drive_cfg.token_path if drive_cfg else DEFAULT_TOKEN)
+    )
 
     checks.append(_path_status(paths_module.CONFIG_HOME, required=True, label="Config home"))
     checks.append(_path_status(paths_module.DATA_HOME, required=True, label="Data home"))
@@ -63,14 +72,19 @@ def run_env_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     if cfg_path.exists():
         try:
             cfg_raw: Dict[str, Any] = json.loads(cfg_path.read_text(encoding="utf-8"))
-            allowed_top = {"defaults", "index", "exports", "drive"}
+            allowed_top = {"paths", "ui", "defaults", "index", "exports", "drive"}
             extra_keys = sorted(set(cfg_raw.keys()) - allowed_top)
             if extra_keys:
                 drift_warnings.append(f"config contains unknown keys: {', '.join(extra_keys)}")
-            defaults = cfg_raw.get("defaults") or {}
+            defaults = cfg_raw.get("defaults") or cfg_raw.get("ui") or {}
+            paths = cfg_raw.get("paths") or {}
+            roots = {}
             if isinstance(defaults, dict):
-                if "roots" in defaults and not isinstance(defaults.get("roots"), dict):
-                    drift_warnings.append("defaults.roots should be a mapping of labels to output paths")
+                roots = defaults.get("roots") or roots
+            if isinstance(paths, dict):
+                roots = paths.get("roots") or roots
+            if roots and not isinstance(roots, dict):
+                drift_warnings.append("roots should be a mapping of labels to output paths")
         except Exception as exc:
             drift_warnings.append(f"config parse failed: {exc}")
 
