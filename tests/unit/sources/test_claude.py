@@ -14,7 +14,6 @@ from hypothesis import strategies as st
 from polylogue.pipeline.semantic import (
     detect_context_compaction,
     extract_file_changes,
-    extract_subagent_spawns,
     extract_thinking_traces,
     extract_tool_invocations,
     parse_git_operation,
@@ -303,69 +302,6 @@ class TestFileChanges:
         changes = extract_file_changes(invocations)
 
         assert len(changes[0]["new_content"]) <= 500
-
-
-# =============================================================================
-# Subagent Spawn Extraction Tests
-# =============================================================================
-
-
-class TestSubagentSpawns:
-    """Tests for subagent spawn extraction."""
-
-    def test_extract_task_invocation(self):
-        """Task tool invocations are extracted as spawns."""
-        invocations = [
-            {
-                "tool_name": "Task",
-                "input": {
-                    "subagent_type": "Explore",
-                    "prompt": "Find all config files",
-                    "description": "Search for configs",
-                },
-            },
-        ]
-
-        spawns = extract_subagent_spawns(invocations)
-
-        assert len(spawns) == 1
-        assert spawns[0]["agent_type"] == "Explore"
-        assert spawns[0]["prompt"] == "Find all config files"
-        assert spawns[0]["description"] == "Search for configs"
-
-    def test_default_agent_type(self):
-        """Missing subagent_type defaults to general-purpose."""
-        invocations = [
-            {"tool_name": "Task", "input": {"prompt": "Do something"}},
-        ]
-
-        spawns = extract_subagent_spawns(invocations)
-
-        assert spawns[0]["agent_type"] == "general-purpose"
-
-    def test_background_flag(self):
-        """Background flag is captured."""
-        invocations = [
-            {
-                "tool_name": "Task",
-                "input": {"prompt": "Search", "run_in_background": True},
-            },
-        ]
-
-        spawns = extract_subagent_spawns(invocations)
-
-        assert spawns[0]["run_in_background"]
-
-    def test_ignores_non_task_tools(self):
-        """Non-Task tools are ignored."""
-        invocations = [
-            {"tool_name": "Read", "input": {"file_path": "/test.py"}},
-            {"tool_name": "Bash", "input": {"command": "ls"}},
-        ]
-
-        spawns = extract_subagent_spawns(invocations)
-
-        assert len(spawns) == 0
 
 
 # =============================================================================

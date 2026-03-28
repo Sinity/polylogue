@@ -16,7 +16,12 @@ from typing import Any
 
 import pytest
 
-from polylogue.sources.parsers.drive import extract_text_from_chunk, parse_chunked_prompt
+from polylogue.sources.parsers.drive import (
+    _attachment_from_doc,
+    _collect_drive_docs,
+    extract_text_from_chunk,
+    parse_chunked_prompt,
+)
 
 
 @pytest.fixture
@@ -53,6 +58,47 @@ def synthetic_gemini_payload() -> dict[str, Any]:
 )
 def test_extract_text_from_chunk_contract(chunk: object, expected: str | None) -> None:
     assert extract_text_from_chunk(chunk) == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ("not a dict", []),
+        ({"driveDocument": "doc-1"}, ["doc-1"]),
+        ({"driveDocuments": [{"id": "doc-2"}, "doc-3"]}, [{"id": "doc-2"}, "doc-3"]),
+        (
+            {"metadata": {"driveDocument": "nested-doc"}},
+            ["nested-doc"],
+        ),
+    ],
+    ids=["non-dict", "single-doc", "list-docs", "nested-doc"],
+)
+def test_collect_drive_docs_contract(payload: object, expected: list[object]) -> None:
+    assert _collect_drive_docs(payload) == expected
+
+
+@pytest.mark.parametrize(
+    ("doc", "expected_id", "expected_size"),
+    [
+        ("doc-string-id", "doc-string-id", None),
+        ({"id": "doc-1", "sizeBytes": "5000"}, "doc-1", 5000),
+        ({"fileId": "doc-2", "size": 12}, "doc-2", 12),
+        (123, None, None),
+        ({"name": "missing-id"}, None, None),
+    ],
+    ids=["string-doc", "size-bytes-string", "file-id-int-size", "invalid-type", "missing-id"],
+)
+def test_attachment_from_doc_contract(
+    doc: object, expected_id: str | None, expected_size: int | None
+) -> None:
+    attachment = _attachment_from_doc(doc, "msg-1")
+    if expected_id is None:
+        assert attachment is None
+    else:
+        assert attachment is not None
+        assert attachment.provider_attachment_id == expected_id
+        assert attachment.message_provider_id == "msg-1"
+        assert attachment.size_bytes == expected_size
 
 
 def test_parse_chunked_prompt_preserves_core_conversation_metadata() -> None:
@@ -143,6 +189,7 @@ def test_parse_chunked_prompt_skips_chunks_without_text_or_role() -> None:
     payload = {
         "chunkedPrompt": {
             "chunks": [
+                "string chunk without role",
                 {"text": "missing role"},
                 {"role": "user"},
                 {"role": "user", "text": "kept"},

@@ -28,6 +28,7 @@ from tests.infra.helpers import make_claude_chat_message
 CLAUDE_PARSE_AI_CASES = [
     ({"chat_messages": [make_claude_chat_message("u1", "human", "Hello")]}, 1, "basic"),
     ({"chat_messages": []}, 0, "empty messages"),
+    ({"chat_messages": "not a list"}, 0, "non-list messages"),
     ({"chat_messages": [], "name": "Test Title"}, "Test Title", "title extraction"),
     ({"chat_messages": [{"uuid": "u1", "sender": "human", "content": {"text": "nested"}}]}, 1, "content dict"),
 ]
