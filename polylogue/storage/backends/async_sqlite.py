@@ -432,6 +432,9 @@ class SQLiteBackend:
         title_contains: str | None = None,
         limit: int | None = None,
         offset: int = 0,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> list[ConversationRecord]:
         """List conversations with optional filtering and pagination.
 
@@ -445,6 +448,9 @@ class SQLiteBackend:
             title_contains: Filter to conversations whose title contains this text (case-insensitive)
             limit: Maximum number of records to return
             offset: Number of records to skip
+            has_file_ops: Only conversations with file operations (read/write/edit)
+            has_git_ops: Only conversations with git operations
+            has_subagent: Only conversations that spawned subagents
         """
         async with self._get_connection() as conn:
             # Build query with filters
@@ -492,6 +498,9 @@ class SQLiteBackend:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
     ) -> int:
         """Count conversations matching filters without loading records.
 
@@ -781,6 +790,44 @@ class SQLiteBackend:
 
         return result
 
+    @staticmethod
+    def _topo_sort_messages(records: list[MessageRecord]) -> list[MessageRecord]:
+        """Sort messages so parents come before children (for FK constraint).
+
+        Cross-conversation parent references (parent outside this batch) are left
+        as-is — those FKs are never set by prepare.py anyway (only within-conversation
+        parent_message_id is resolved).
+        """
+        ids_in_batch = {r.message_id for r in records}
+        # Separate records with intra-batch parent from those without
+        no_parent: list[MessageRecord] = []
+        has_parent: list[MessageRecord] = []
+        for r in records:
+            if r.parent_message_id and r.parent_message_id in ids_in_batch:
+                has_parent.append(r)
+            else:
+                no_parent.append(r)
+        if not has_parent:
+            return records
+        # Build simple ordering: insert parents before children
+        ordered: list[MessageRecord] = list(no_parent)
+        inserted_ids = {r.message_id for r in ordered}
+        remaining = list(has_parent)
+        max_passes = len(remaining) + 1
+        for _ in range(max_passes):
+            if not remaining:
+                break
+            next_remaining: list[MessageRecord] = []
+            for r in remaining:
+                if r.parent_message_id in inserted_ids:
+                    ordered.append(r)
+                    inserted_ids.add(r.message_id)
+                else:
+                    next_remaining.append(r)
+            remaining = next_remaining
+        ordered.extend(remaining)  # Append anything still stuck (cycles)
+        return ordered
+
     async def save_messages(self, records: list[MessageRecord]) -> None:
         """Persist multiple message records using bulk insert.
 
@@ -789,6 +836,7 @@ class SQLiteBackend:
         """
         if not records:
             return
+        records = self._topo_sort_messages(records)
         async with self._get_connection() as conn:
             query = """
                 INSERT INTO messages (

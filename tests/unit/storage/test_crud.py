@@ -24,7 +24,9 @@ from polylogue.sources.parsers.claude import (
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import (
+    ContentBlockRecord,
     ConversationRecord,
+    MessageRecord,
 )
 from tests.infra.helpers import (
     make_attachment,
@@ -274,6 +276,59 @@ class TestMessageOperations:
 
         retrieved = await backend.get_messages("conv-1")
         assert retrieved == []
+        await backend.close()
+
+    async def test_content_block_semantic_type_stored(self, tmp_path: Path) -> None:
+        """ContentBlockRecord.semantic_type is persisted and retrieved correctly."""
+        from polylogue.types import MessageId
+
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        conv = make_conversation("conv-sem")
+        await backend.save_conversation_record(conv)
+
+        msg = make_message("msg-sem", "conv-sem", role="assistant", text="")
+        await backend.save_messages([msg])
+
+        blocks = [
+            ContentBlockRecord(
+                block_id="block-1",
+                message_id=MessageId("msg-sem"),
+                conversation_id="conv-sem",
+                block_index=0,
+                type="tool_use",
+                tool_name="Bash",
+                semantic_type="git",
+                metadata='{"command": "status"}',
+            ),
+            ContentBlockRecord(
+                block_id="block-2",
+                message_id=MessageId("msg-sem"),
+                conversation_id="conv-sem",
+                block_index=1,
+                type="thinking",
+                text="Let me think",
+                semantic_type="thinking",
+            ),
+            ContentBlockRecord(
+                block_id="block-3",
+                message_id=MessageId("msg-sem"),
+                conversation_id="conv-sem",
+                block_index=2,
+                type="text",
+                text="plain text",
+                semantic_type=None,
+            ),
+        ]
+        await backend.save_content_blocks(blocks)
+
+        blocks_by_msg = await backend.get_content_blocks(["msg-sem"])
+        retrieved = blocks_by_msg.get("msg-sem", [])
+        assert len(retrieved) == 3
+
+        by_index = {b.block_index: b for b in retrieved}
+        assert by_index[0].semantic_type == "git"
+        assert by_index[1].semantic_type == "thinking"
+        assert by_index[2].semantic_type is None
         await backend.close()
 
 
