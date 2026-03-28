@@ -22,11 +22,33 @@ from typing import TYPE_CHECKING
 import orjson
 
 from polylogue.lib.raw_payload import build_raw_payload_envelope
+<<<<<<< ours
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.prepare import PrepareCache, prepare_records
 from polylogue.protocols import ProgressCallback
 from polylogue.schemas.registry import SchemaRegistry
+||||||| base
+from polylogue.pipeline.services.parsing_batch import process_raw_batch
+from polylogue.pipeline.services.parsing_models import (
+    IngestPhase,
+    IngestResult,
+    IngestState,
+    ParseResult,
+)
+from polylogue.pipeline.services.parsing_workflow import ingest_sources, parse_from_raw
+from polylogue.schemas.registry import SchemaRegistry
+=======
+from polylogue.pipeline.services.parsing_batch import process_raw_batch
+from polylogue.pipeline.services.parsing_models import (
+    IngestPhase,
+    IngestResult,
+    IngestState,
+    ParseResult,
+)
+from polylogue.pipeline.services.parsing_workflow import ingest_sources, parse_from_raw
+from polylogue.schemas.runtime_registry import SchemaRegistry
+>>>>>>> theirs
 from polylogue.sources.dispatch import parse_payload
 from polylogue.storage.store import RawConversationRecord
 

@@ -18,7 +18,7 @@ from polylogue.schemas.privacy import (
     _is_safe_enum_value,
     _looks_high_entropy_token,
 )
-from polylogue.schemas.registry import SchemaRegistry
+from polylogue.schemas.runtime_registry import SchemaRegistry
 
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",

@@ -28,8 +28,8 @@ from polylogue.lib.provider_identity import (
 from polylogue.lib.raw_payload import (
     build_raw_payload_envelope,
     collect_limited_samples,
-    extract_record_samples_from_raw_content,
     extract_payload_samples,
+    extract_record_samples_from_raw_content,
     record_bucket_key,
 )
 from polylogue.paths import db_path as default_db_path
@@ -150,7 +150,7 @@ def fingerprint_hash(fingerprint: Any) -> str:
 
 def schema_cluster_id(cluster_payload: Any, artifact_kind: str) -> str:
     """Compute a stable cluster identifier for a schema unit."""
-    from polylogue.schemas.schema_generation import _structure_fingerprint
+    from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
     return fingerprint_hash((artifact_kind, _structure_fingerprint(cluster_payload)))
 
@@ -200,9 +200,8 @@ def derive_bundle_scope(
         if path.suffix == ".jsonl":
             return path.stem or None
 
-    if provider_token is Provider.CODEX:
-        if path.suffix == ".jsonl":
-            return path.stem or None
+    if provider_token is Provider.CODEX and path.suffix == ".jsonl":
+        return path.stem or None
 
     return path.stem or path.name or None
 
@@ -268,7 +267,7 @@ def _record_profile_tokens(
     for sample in samples[:512]:
         bucket = record_bucket_key(sample, record_type_key)
         keys = bucket_keys.setdefault(bucket, set())
-        keys.update(str(key) for key in sample.keys())
+        keys.update(str(key) for key in sample)
 
     tokens: list[str] = []
     for bucket, keys in sorted(bucket_keys.items()):
