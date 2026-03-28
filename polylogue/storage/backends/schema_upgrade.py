@@ -11,7 +11,6 @@ from polylogue.storage.backends.schema_ddl import (
     _ACTION_EVENT_DDL,
     _ACTION_FTS_DDL,
     _ARTIFACT_OBSERVATION_DDL,
-    _MAINTENANCE_RUN_DDL,
     _PUBLICATION_DDL,
     _SESSION_PRODUCT_DDL,
     _VEC0_DDL,
@@ -44,7 +43,6 @@ def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
 def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
     conn.executescript(_ARTIFACT_OBSERVATION_DDL)
     conn.executescript(_PUBLICATION_DDL)
-    conn.executescript(_MAINTENANCE_RUN_DDL)
     conn.executescript(_ACTION_EVENT_DDL)
     action_event_columns = _table_columns(conn, "action_events")
     if "materializer_version" not in action_event_columns:

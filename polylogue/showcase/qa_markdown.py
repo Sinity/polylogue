@@ -29,7 +29,6 @@ def generate_qa_markdown(
     lines.append("| --- | --- |")
     lines.append(f"| Schema Audit | {status_label(result.audit_status)} |")
     lines.append(f"| Artifact Proof | {status_label(result.proof_status)} |")
-    lines.append(f"| Semantic Proof | {status_label(result.semantic_proof_status)} |")
     lines.append(f"| Roundtrip Proof | {status_label(result.roundtrip_proof_status)} |")
     lines.append(f"| Exercises | {status_label(result.showcase_status)} |")
     lines.append(f"| Invariants | {status_label(result.invariant_status)} |")
@@ -99,68 +98,6 @@ def generate_qa_markdown(
             lines.append("")
     elif result.proof_error:
         lines.extend(["## Artifact Proof", "", f"- Error: {result.proof_error}", ""])
-
-    semantic_proof_report = session["semantic_proof"].get("report")
-    if semantic_proof_report is not None:
-        semantic_summary = semantic_proof_report["summary"]
-        lines.extend([
-            "## Semantic Proof",
-            "",
-            "| Metric | Value |",
-            "| --- | ---: |",
-            f"| Surface count | {semantic_summary['surface_count']} |",
-            f"| Clean surfaces | {semantic_summary['clean_surfaces']} |",
-            f"| Critical surfaces | {semantic_summary['critical_surfaces']} |",
-            f"| Total conversations | {semantic_summary['total_conversations']} |",
-            f"| Preserved checks | {semantic_summary['preserved_checks']} |",
-            f"| Declared loss checks | {semantic_summary['declared_loss_checks']} |",
-            f"| Critical loss checks | {semantic_summary['critical_loss_checks']} |",
-            "",
-        ])
-        if semantic_summary["metric_summary"]:
-            lines.extend([
-                "### Semantic Metrics",
-                "",
-                "| Metric | Preserved | Declared loss | Critical loss |",
-                "| --- | ---: | ---: | ---: |",
-            ])
-            for metric, counts in semantic_summary["metric_summary"].items():
-                lines.append(
-                    f"| {metric} | {counts['preserved']} | {counts['declared_loss']} | {counts['critical_loss']} |"
-                )
-            lines.append("")
-        if semantic_proof_report["surfaces"]:
-            lines.extend([
-                "### Surfaces",
-                "",
-                "| Surface | Conversations | Clean | Critical | Preserved checks | Declared loss | Critical loss |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-            ])
-            for surface, surface_report in semantic_proof_report["surfaces"].items():
-                surface_summary = surface_report["summary"]
-                lines.append(
-                    f"| {surface} | {surface_summary['total_conversations']} | "
-                    f"{surface_summary['clean_conversations']} | {surface_summary['critical_conversations']} | "
-                    f"{surface_summary['preserved_checks']} | {surface_summary['declared_loss_checks']} | "
-                    f"{surface_summary['critical_loss_checks']} |"
-                )
-            lines.extend([
-                "",
-                "### Surface Providers",
-                "",
-                "| Surface | Provider | Conversations | Clean | Critical | Preserved checks | Declared loss | Critical loss |",
-                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-            ])
-            for surface, surface_report in semantic_proof_report["surfaces"].items():
-                for provider, stats in surface_report["providers"].items():
-                    lines.append(
-                        f"| {surface} | {provider} | {stats['total_conversations']} | {stats['clean_conversations']} | "
-                        f"{stats['critical_conversations']} | {stats['preserved_checks']} | "
-                        f"{stats['declared_loss_checks']} | {stats['critical_loss_checks']} |"
-                    )
-            lines.append("")
-    elif result.semantic_proof_error:
-        lines.extend(["## Semantic Proof", "", f"- Error: {result.semantic_proof_error}", ""])
 
     roundtrip_report = session["roundtrip_proof"].get("report")
     if roundtrip_report is not None:

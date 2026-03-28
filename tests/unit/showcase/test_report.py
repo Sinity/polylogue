@@ -16,13 +16,6 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.rendering.semantic_proof import (
-    ProviderSemanticProof,
-    SemanticConversationProof,
-    SemanticMetricCheck,
-    SemanticProofReport,
-    SemanticProofSuiteReport,
-)
 from polylogue.schemas.audit import AuditReport
 from polylogue.schemas.roundtrip_proof import (
     ProviderRoundtripProofReport,
@@ -78,105 +71,6 @@ def _make_showcase(results: list[ExerciseResult]) -> ShowcaseResult:
     sr.results = results
     sr.total_duration_ms = sum(r.duration_ms for r in results)
     return sr
-
-
-def _make_semantic_report(*, critical: bool = False) -> SemanticProofSuiteReport:
-    checks = [
-        SemanticMetricCheck(
-            metric="renderable_messages",
-            status="critical_loss" if critical else "preserved",
-            policy="canonical markdown must preserve every renderable message section",
-            input_value=2,
-            output_value=1 if critical else 2,
-        ),
-        SemanticMetricCheck(
-            metric="thinking_semantics",
-            status="declared_loss",
-            policy="canonical markdown preserves display text but not typed thinking markers",
-            input_value=1,
-            output_value=0,
-        ),
-    ]
-    proof = SemanticConversationProof(
-        conversation_id="conv-1",
-        provider="chatgpt",
-        surface="canonical_markdown_v1",
-        input_facts={"renderable_messages": 2},
-        output_facts={"message_sections": 1 if critical else 2},
-        checks=checks,
-    )
-    canonical_report = SemanticProofReport(
-        surface="canonical_markdown_v1",
-        conversations=[proof],
-        provider_reports={
-            "chatgpt": ProviderSemanticProof(
-                provider="chatgpt",
-                total_conversations=1,
-                clean_conversations=0 if critical else 1,
-                critical_conversations=1 if critical else 0,
-                preserved_checks=0 if critical else 1,
-                declared_loss_checks=1,
-                critical_loss_checks=1 if critical else 0,
-                metric_summary={
-                    "renderable_messages": {
-                        "preserved": 0 if critical else 1,
-                        "declared_loss": 0,
-                        "critical_loss": 1 if critical else 0,
-                    },
-                    "thinking_semantics": {
-                        "preserved": 0,
-                        "declared_loss": 1,
-                        "critical_loss": 0,
-                    },
-                },
-            )
-        },
-    )
-    html_report = SemanticProofReport(
-        surface="export_html_v1",
-        conversations=[
-            SemanticConversationProof(
-                conversation_id="conv-1",
-                provider="chatgpt",
-                surface="export_html_v1",
-                input_facts={"text_messages": 2},
-                output_facts={"message_sections": 1 if critical else 2},
-                checks=[
-                    SemanticMetricCheck(
-                        metric="text_messages",
-                        status="critical_loss" if critical else "preserved",
-                        policy="export_html_v1 must preserve visible message sections for text-bearing messages",
-                        input_value=2,
-                        output_value=1 if critical else 2,
-                    ),
-                ],
-            )
-        ],
-        provider_reports={
-            "chatgpt": ProviderSemanticProof(
-                provider="chatgpt",
-                total_conversations=1,
-                clean_conversations=0 if critical else 1,
-                critical_conversations=1 if critical else 0,
-                preserved_checks=0 if critical else 1,
-                declared_loss_checks=0,
-                critical_loss_checks=1 if critical else 0,
-                metric_summary={
-                    "text_messages": {
-                        "preserved": 0 if critical else 1,
-                        "declared_loss": 0,
-                        "critical_loss": 1 if critical else 0,
-                    }
-                },
-            )
-        },
-    )
-    return SemanticProofSuiteReport(
-        surface_reports={
-            "canonical_markdown_v1": canonical_report,
-            "export_html_v1": html_report,
-        }
-    )
 
 
 def _make_roundtrip_report(*, clean: bool = True) -> RoundtripProofSuiteReport:
@@ -376,7 +270,6 @@ def test_full_qa_session_contains_composed_stage_payloads():
             },
             total_records=2,
         ),
-        semantic_proof_report=_make_semantic_report(critical=True),
         showcase_result=showcase,
         invariant_results=[
             InvariantResult("json_valid", "ex", OutcomeStatus.OK),
@@ -393,9 +286,6 @@ def test_full_qa_session_contains_composed_stage_payloads():
     assert session["proof"]["report"]["summary"]["unsupported_parseable_records"] == 1
     assert session["proof"]["report"]["summary"]["package_versions"] == {"v1": 1}
     assert session["proof"]["report"]["summary"]["element_kinds"] == {"conversation_document": 1}
-    assert session["semantic_proof"]["status"] == "error"
-    assert session["semantic_proof"]["report"]["summary"]["critical_surfaces"] == 2
-    assert session["semantic_proof"]["report"]["surfaces"]["canonical_markdown_v1"]["summary"]["critical_conversations"] == 1
     assert session["roundtrip_proof"]["status"] == "skip"
     assert session["showcase"]["summary"] == {
         "total": 2,
@@ -427,7 +317,6 @@ def test_generate_qa_summary_reports_stage_statuses():
             },
             total_records=1,
         ),
-        semantic_proof_report=_make_semantic_report(),
         roundtrip_proof_report=_make_roundtrip_report(),
         exercises_skipped=True,
         invariants_skipped=True,
@@ -439,10 +328,7 @@ def test_generate_qa_summary_reports_stage_statuses():
     assert "Artifact Proof: contract_backed=1" in summary
     assert "Packages: v1=1" in summary
     assert "Elements: conversation_document=1" in summary
-    assert "Semantic Proof: surfaces=2" in summary
     assert "Roundtrip Proof: providers=1" in summary
-    assert "canonical_markdown_v1: clean=1" in summary
-    assert "renderable_messages(preserved=1, declared_loss=0, critical_loss=0)" in summary
     assert "Exercises: SKIPPED" in summary
     assert "Invariants: SKIPPED" in summary
 
@@ -469,7 +355,6 @@ def test_generate_qa_markdown_includes_artifact_proof_section():
             },
             total_records=2,
         ),
-        semantic_proof_report=_make_semantic_report(),
         roundtrip_proof_report=_make_roundtrip_report(),
         exercises_skipped=True,
         invariants_skipped=True,
@@ -478,15 +363,11 @@ def test_generate_qa_markdown_includes_artifact_proof_section():
     markdown = generate_qa_markdown(qa_result)
 
     assert "## Artifact Proof" in markdown
-    assert "## Semantic Proof" in markdown
     assert "## Roundtrip Proof" in markdown
     assert "| Unsupported parseable | 1 |" in markdown
     assert "| v4 | 1 |" in markdown
     assert "| subagent_conversation_stream | 1 |" in markdown
     assert "| bundle_scope | 1 |" in markdown
     assert "| claude-code | 2 | 0 | 1 | 1 | 0 | 0 |" in markdown
-    assert "| Surface count | 2 |" in markdown
     assert "| Providers | 1 |" in markdown
     assert "| chatgpt | v1 | conversation_document | - |" in markdown
-    assert "| canonical_markdown_v1 | 1 | 1 | 0 | 1 | 1 | 0 |" in markdown
-    assert "| renderable_messages | 1 | 0 | 0 |" in markdown

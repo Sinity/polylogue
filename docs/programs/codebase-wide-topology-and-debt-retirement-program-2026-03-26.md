@@ -3,8 +3,8 @@
 # Codebase-Wide Topology And Debt Retirement Program
 
 Date: 2026-03-26
-Status: active cleanup/refactoring program
-Role: canonical whole-repository cleanup-only queue for every remaining architectural-debt band in Polylogue
+Status: executed cleanup/refactoring record
+Role: canonical executed whole-repository cleanup record for the codebase-wide architectural-debt retirement campaign in Polylogue
 
 Replaces as the live queue:
 
@@ -24,6 +24,30 @@ Prerequisite executed programs:
 - `runtime-substrate-decomposition-and-contract-hardening-program-2026-03-24.md`
 - `platform-wide-architecture-and-refactoring-program-2026-03-23.md`
 - the earlier executed convergence/refactoring records already indexed in `README.md`
+
+## Execution Outcome
+
+Executed on 2026-03-27.
+
+Closure evidence:
+
+- repository-wide Python hotspot scan is now `count 0` at the `>=250` line threshold
+- final broad targeted regression matrix passed: `952 passed`
+- named composite lane passed: `python -m devtools.run_validation_lanes --lane runtime-substrate-contracts`
+- named live/archive-oriented lane passed: `python -m devtools.run_validation_lanes --lane evidence-stewardship-live`
+- representative live CLI proofs passed:
+  - `python -m polylogue --plain products status --json`
+  - `python -m polylogue --plain products debt --json`
+  - `python -m polylogue --plain check --json`
+  - `python -m polylogue --plain embed --stats --json`
+- representative memory-budget probes passed:
+  - retrieval lane peak RSS `164.7 MB / 1536 MB`
+  - maintenance preview peak RSS `79.1 MB / 1024 MB`
+- `earlyoom` stayed quiet during closure verification; the last 90 minutes showed only normal memory-status lines
+
+Residual non-cleanup note:
+
+- `transcript_embeddings` remains intentionally pending in the live archive health output; that is retrieval rollout state, not unresolved topology debt for this cleanup program
 
 ## Repository Coverage Snapshot
 

@@ -12,7 +12,6 @@ import pytest
 
 from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.click_app import mcp_command
-from polylogue.rendering.semantic_proof import SemanticProofReport, SemanticProofSuiteReport
 from tests.infra.cli_subprocess import run_cli
 
 
@@ -514,15 +513,6 @@ class TestQaCommand:
                 },
                 total_records=1,
             ),
-            semantic_proof_report=SemanticProofSuiteReport(
-                surface_reports={
-                    "canonical_markdown_v1": SemanticProofReport(
-                        surface="canonical_markdown_v1",
-                        conversations=[],
-                        provider_reports={},
-                    )
-                },
-            ),
             exercises_skipped=True,
             invariants_skipped=True,
         )
@@ -533,7 +523,6 @@ class TestQaCommand:
         assert result.exit_code == 0
         payload = json.loads(result.output.split("\nPlain output active", 1)[0])
         assert payload["audit"]["status"] == "ok"
-        assert payload["semantic_proof"]["status"] == "ok"
         assert payload["showcase"]["status"] == "skip"
         assert payload["overall_status"] == "ok"
 

@@ -68,9 +68,6 @@ def test_site_builder_returns_typed_manifest_and_persists_it(db_path, tmp_path) 
     assert manifest.artifact_proof.package_versions == {}
     assert manifest.artifact_proof.element_kinds == {}
     assert manifest.artifact_proof.resolution_reasons == {}
-    assert manifest.semantic_proof is not None
-    assert manifest.semantic_proof.surface_count >= 1
-    assert manifest.semantic_proof.surfaces["canonical_markdown_v1"].total_conversations == 1
     assert manifest.maintenance is not None
     assert "messages_fts" in manifest.maintenance.derived_models
     assert (tmp_path / "site" / "site-manifest.json").exists()
@@ -80,7 +77,6 @@ def test_site_builder_returns_typed_manifest_and_persists_it(db_path, tmp_path) 
     assert persisted is not None
     assert persisted.publication_id == manifest.publication_id
     assert persisted.manifest["outputs"]["rendered_conversation_pages"] == 1
-    assert persisted.manifest["semantic_proof"]["surfaces"]["canonical_markdown_v1"]["total_conversations"] == 1
     assert "maintenance" in persisted.manifest
 
 

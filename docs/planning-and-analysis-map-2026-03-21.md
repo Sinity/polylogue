@@ -24,7 +24,7 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md](./programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md) | Current whole-repository cleanup/refactoring program with explicit wave-based execution order and parallel workstreams across rendering, CLI/UI/sync, MCP/operations, storage, schema, sources, lib/domain, pipeline/showcase/site, and cross-cutting package-root, test, devtools, and documentation topology | Active; this is now the live whole-repository cleanup queue rather than a hotspot slice |
+| [programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md](./programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md) | Executed whole-repository cleanup/refactoring record with explicit wave-based execution order, parallel workstreams, and final closure evidence across rendering, CLI/UI/sync, MCP/operations, storage, schema, sources, lib/domain, pipeline/showcase/site, and cross-cutting package-root, test, devtools, and documentation topology | Executed; the full hotspot wave is closed, the broad regression slice passed, named composite/live lanes passed, and representative live memory-budget proofs stayed within budget |
 | [programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md) | Absorbed predecessor cleanup/refactoring program for rendering/semantic-proof, operator adapters, storage write/rebuild bands, schema runtime analysis, provider/source boundaries, and domain/query-evidence topology narrowing | Absorbed predecessor; broadened into the codebase-wide topology/debt retirement queue |
 | [programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md) | Executed cleanup/refactoring program for query-engine, operator-command, repository/repair/build, raw-payload/pipeline, schema-toolchain, and sqlite-vec topology narrowing | Executed; query/service/schema/public roots were narrowed substantially, the named runtime-substrate contracts lane passed, and live archive debt/product status remained clean |
 | [programs/product-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/product-and-runtime-topology-cleanup-program-2026-03-26.md) | Executed cleanup/refactoring program for archive-product, health/debt, query-SQL, validation-lane, and declarative-root topology narrowing | Executed; archive-product/session-product/health/debt/template/validation roots were narrowed substantially, the named stewardship lane passed, and live archive debt remains clean |
@@ -129,12 +129,17 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md](./programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md)
-- it is explicitly the whole-repository cleanup authority now, not just a broad hotspot queue:
-  - every top-level runtime package is in scope
-  - MCP and operations consumer surfaces are in scope
-  - package-root import/re-export cleanup is in scope
-  - tests, devtools, memory-budget probes, validation lanes, and operator docs are in scope
+- there is no newer cleanup/refactoring queue yet; the latest whole-repository cleanup authority is now the executed record [programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md](./programs/codebase-wide-topology-and-debt-retirement-program-2026-03-26.md)
+- that record is now closed with whole-repository proof rather than left as an open queue:
+  - every top-level runtime package was included in scope
+  - MCP and operations consumer surfaces were included in scope
+  - package-root import/re-export cleanup was included in scope
+  - tests, devtools, memory-budget probes, validation lanes, and operator docs moved with the code
+  - the final Python hotspot scan is `count 0` at `>=250` lines
+  - the final broad targeted regression slice passed: `952 passed`
+  - the named composite lane `runtime-substrate-contracts` passed
+  - the named live lane `evidence-stewardship-live` passed
+  - the representative live memory proofs passed under budget
 - the narrower queue in [programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md](./programs/rendering-operator-provider-and-runtime-topology-cleanup-program-2026-03-26.md) has been absorbed because it was still a frontier slice rather than a whole-codebase authority
 - the just-executed cleanup program in [programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md](./programs/deep-query-service-and-schema-topology-cleanup-program-2026-03-26.md) closed the main structural drag around:
   - broad query planning/spec/retrieval roots
@@ -161,16 +166,7 @@ As of this map:
   - `orphaned_attachments=0`
   - `products debt --json` reports zero actionable debt
   - all durable session-product and retrieval-enrichment bands are ready, while transcript embeddings remain intentionally pending
-- the next cleanup drag is now explicitly codebase-wide:
-  - rendering/proof/output roots across `rendering/`, `cli/`, and renderer-facing helpers
-  - operator/control-plane roots across CLI, MCP, UI, sync, and machine/plain adapters
-  - operations/archive-support roots consumed by public product/query surfaces
-  - storage write/rebuild/status/DDL/query/search roots across repository, backend, lifecycle, and provider bands
-  - schema runtime/tooling/verification/synthetic roots across the full `schemas/` subsystem
-  - source/provider/parser/decode/Drive roots across the full `sources/` subsystem
-  - domain/evidence/query model roots across `lib/` and archive-product entity contracts
-  - pipeline/showcase/site/UI roots that still carry broad orchestration or page/report family logic
-  - cross-cutting root/package/test/devtools/docs topology that must move with the above cleanup rather than lag behind it
+- the whole-repository cleanup drag named above is now retired as an active frontier
 - the cleanup-only program in [programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md](./programs/cleanup-and-architectural-debt-retirement-program-2026-03-24.md) is now executed
 - it closed the main structural debt around:
   - broad query-execution and query-store ownership

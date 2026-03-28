@@ -11,7 +11,6 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
         _ACTION_EVENT_DDL,
         _ACTION_FTS_DDL,
         _ARTIFACT_OBSERVATION_DDL,
-        _MAINTENANCE_RUN_DDL,
         _PUBLICATION_DDL,
         _SESSION_PRODUCT_DDL,
         _VEC0_DDL,
@@ -45,7 +44,6 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
 
     await conn.executescript(_ARTIFACT_OBSERVATION_DDL)
     await conn.executescript(_PUBLICATION_DDL)
-    await conn.executescript(_MAINTENANCE_RUN_DDL)
     await conn.executescript(_ACTION_EVENT_DDL)
     cursor = await conn.execute("PRAGMA table_info(action_events)")
     action_event_columns = {row[1] for row in await cursor.fetchall()}

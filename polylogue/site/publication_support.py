@@ -4,14 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.paths import archive_root as default_archive_root
 from polylogue.publication import (
     ArchiveMaintenanceSummary,
     ArtifactProofSummary,
     DerivedModelPublicationSummary,
     PublicationRunSummary,
-    SemanticProofSuiteSummary,
-    SemanticProofSummary,
 )
 from polylogue.storage.store import RunRecord
 
@@ -58,46 +55,6 @@ def load_artifact_proof_summary(*, db_path: Path) -> ArtifactProofSummary:
         package_versions=report.package_versions,
         element_kinds=report.element_kinds,
         resolution_reasons=report.resolution_reasons,
-        clean=report.is_clean,
-    )
-
-
-def load_semantic_proof_summary(
-    *,
-    db_path: Path,
-    archive_root: Path | None = None,
-) -> SemanticProofSuiteSummary:
-    """Load the semantic-preservation proof summary for publication embedding."""
-    from polylogue.rendering.semantic_proof import prove_semantic_surface_suite
-
-    report = prove_semantic_surface_suite(
-        db_path=db_path,
-        archive_root=archive_root or default_archive_root(),
-    )
-    return SemanticProofSuiteSummary(
-        surface_count=report.surface_count,
-        clean_surfaces=report.clean_surfaces,
-        critical_surfaces=report.critical_surfaces,
-        total_conversations=report.total_conversations,
-        preserved_checks=report.preserved_checks,
-        declared_loss_checks=report.declared_loss_checks,
-        critical_loss_checks=report.critical_loss_checks,
-        metric_summary=report.metric_summary,
-        surfaces={
-            surface: SemanticProofSummary(
-                surface=surface,
-                total_conversations=surface_report.total_conversations,
-                provider_count=surface_report.provider_count,
-                clean_conversations=surface_report.clean_conversations,
-                critical_conversations=surface_report.critical_conversations,
-                preserved_checks=surface_report.preserved_checks,
-                declared_loss_checks=surface_report.declared_loss_checks,
-                critical_loss_checks=surface_report.critical_loss_checks,
-                metric_summary=surface_report.metric_summary,
-                clean=surface_report.is_clean,
-            )
-            for surface, surface_report in sorted(report.surfaces.items())
-        },
         clean=report.is_clean,
     )
 
