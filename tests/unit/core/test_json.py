@@ -15,11 +15,13 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
+import orjson
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from polylogue.lib import json as core_json
+from polylogue.lib.provider_identity import normalize_provider_token
 from polylogue.services import build_runtime_services
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -58,6 +60,57 @@ def test_dumps_custom_fallback_to_encoder():
     output = core_json.dumps(payload, default=custom_handler)
     data = core_json.loads(output)
     assert data["decimal"] == 1.5
+
+
+def test_dumps_custom_handler_takes_precedence_for_decimal():
+    """Custom handlers can override Decimal serialization instead of falling through."""
+
+    def custom_handler(obj: Any) -> Any:
+        if isinstance(obj, Decimal):
+            return f"decimal:{obj}"
+        raise TypeError("Not handled")
+
+    output = core_json.dumps({"decimal": Decimal("1.5")}, default=custom_handler)
+    data = core_json.loads(output)
+    assert data["decimal"] == "decimal:1.5"
+
+
+def test_dumps_preserves_non_type_errors_from_custom_handler():
+    """Only TypeError falls through to built-in encoding."""
+
+    def custom_handler(obj: Any) -> Any:
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        core_json.dumps({"decimal": Decimal("1.5")}, default=custom_handler)
+
+
+def test_dumps_forwards_orjson_options():
+    """Options are forwarded to orjson when the fast path succeeds."""
+    payload = {"b": 1, "a": 2}
+    output = core_json.dumps(payload, option=orjson.OPT_SORT_KEYS)
+    assert output == '{"a":2,"b":1}'
+
+
+def test_dumps_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object():
+    """The stdlib fallback still uses the combined encoder contract."""
+
+    class CustomType:
+        def __init__(self, value: int):
+            self.value = value
+
+    def custom_handler(obj: Any) -> Any:
+        if isinstance(obj, CustomType):
+            return {"custom": obj.value}
+        raise TypeError("Not handled")
+
+    output = core_json.dumps(
+        {"payload": CustomType(7)},
+        default=custom_handler,
+        option=orjson.OPT_NON_STR_KEYS,
+    )
+    data = core_json.loads(output)
+    assert data == {"payload": {"custom": 7}}
 
 
 # =============================================================================
@@ -156,7 +209,7 @@ async def test_repository(test_db):
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
 
-    from tests.infra.helpers import DbFactory
+    from tests.infra.storage_records import DbFactory
 
     factory = DbFactory(test_db)
     factory.create_conversation(
@@ -178,7 +231,7 @@ async def test_repository(test_db):
 
 async def test_repository_get_includes_attachment_conversation_id(test_db):
     """ConversationRepository.get_eager() returns attachments with conversation_id field."""
-    from tests.infra.helpers import DbFactory
+    from tests.infra.storage_records import DbFactory
 
     factory = DbFactory(test_db)
     factory.create_conversation(
@@ -216,7 +269,7 @@ async def test_repository_get_includes_attachment_conversation_id(test_db):
 
 async def test_repository_get_with_multiple_attachments(test_db):
     """get_eager() correctly groups multiple attachments per message."""
-    from tests.infra.helpers import DbFactory
+    from tests.infra.storage_records import DbFactory
 
     factory = DbFactory(test_db)
     factory.create_conversation(
@@ -262,7 +315,7 @@ async def test_repository_get_with_multiple_attachments(test_db):
 
 async def test_repository_get_attachment_metadata_decoded(test_db):
     """Attachment provider_meta JSON is properly decoded."""
-    from tests.infra.helpers import DbFactory
+    from tests.infra.storage_records import DbFactory
 
     factory = DbFactory(test_db)
     meta = {"original_name": "photo.png", "source": "upload"}
@@ -421,10 +474,26 @@ def test_provider_from_string_whitespace_stripped(value: str) -> None:
     assert Provider.from_string(f" {value}").value == value
 
 
-@given(st.text().filter(lambda s: s.strip().lower() not in [
-    "chatgpt", "claude", "claude-code", "codex", "gemini", "drive", "unknown",
-    "gpt", "openai", "claude-ai", "anthropic"
-]))
+KNOWN_PROVIDER_TOKENS = {
+    normalize_provider_token(token)
+    for token in (
+        "chatgpt",
+        "claude",
+        "claude-code",
+        "codex",
+        "gemini",
+        "drive",
+        "unknown",
+        "gpt",
+        "openai",
+        "claude-ai",
+        "anthropic",
+        "claudecode",
+    )
+}
+
+
+@given(st.text().filter(lambda s: normalize_provider_token(s) not in KNOWN_PROVIDER_TOKENS))
 def test_provider_from_string_unknown_fallback(value: str) -> None:
     """Unknown provider strings return UNKNOWN."""
     result = Provider.from_string(value)
