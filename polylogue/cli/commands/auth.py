@@ -7,6 +7,9 @@ from pathlib import Path
 import click
 
 from polylogue.cli.types import AppEnv
+from polylogue.lib.log import get_logger
+
+logger = get_logger(__name__)
 
 
 @click.command("auth")
@@ -54,7 +57,7 @@ def _get_drive_paths(env: AppEnv) -> tuple[Path, Path]:
         token_path = default_token_path(drive_config)
         return credentials_path, token_path
     except Exception:
-        # Fallback to defaults if config loading fails
+        logger.warning("Config loading failed for drive paths, using defaults")
         return default_credentials_path(), default_token_path()
 
 

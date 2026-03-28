@@ -106,9 +106,11 @@ class TestGetConfig:
 class TestConfigError:
     """Tests for ConfigError exception."""
 
-    def test_config_error_is_runtime_error(self):
-        """ConfigError inherits from RuntimeError."""
-        assert issubclass(ConfigError, RuntimeError)
+    def test_config_error_is_polylogue_error(self):
+        """ConfigError inherits from PolylogueError."""
+        from polylogue.errors import PolylogueError
+
+        assert issubclass(ConfigError, PolylogueError)
 
     def test_config_error_message(self):
         """ConfigError preserves error message."""

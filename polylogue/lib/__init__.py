@@ -61,6 +61,8 @@ __all__ = [
     "Attachment",
     "Conversation",
     "ConversationFilter",
+    "ConversationProjection",
+    "ConversationRepository",
     "DialoguePair",
     "Message",
     "MessageCollection",

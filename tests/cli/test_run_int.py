@@ -524,24 +524,30 @@ class TestWatchModeCallbacks:
                 mock_run.assert_called_once()
                 call_kwargs = mock_run.call_args[1]
                 assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == str(count)
-                assert call_kwargs["shell"] is True
+                # shell=False is the secure default (no shell kwarg passed)
+                assert call_kwargs.get("shell") is not True
         elif callback_type == "webhook":
-            with patch("urllib.request.urlopen") as mock_urlopen:
-                callback_func("http://example.com/webhook", count)
-                mock_urlopen.assert_called_once()
-                call_args = mock_urlopen.call_args[0][0]
-                assert call_args.get_full_url() == "http://example.com/webhook"
-                assert call_args.get_method() == "POST"
+            # Mock SSRF validation (DNS unavailable in sandbox)
+            fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
+            with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+                with patch("urllib.request.urlopen") as mock_urlopen:
+                    callback_func("http://example.com/webhook", count)
+                    mock_urlopen.assert_called_once()
+                    call_args = mock_urlopen.call_args[0][0]
+                    assert call_args.get_full_url() == "http://example.com/webhook"
+                    assert call_args.get_method() == "POST"
 
     def test_webhook_on_new_payload_format(self):
         """_webhook_on_new includes correct JSON payload."""
-        with patch("urllib.request.urlopen"):
-            with patch("urllib.request.Request") as mock_request:
-                _webhook_on_new("http://example.com/webhook", 7)
-                call_kwargs = mock_request.call_args[1]
-                payload = json.loads(call_kwargs["data"].decode())
-                assert payload["event"] == "sync"
-                assert payload["new_conversations"] == 7
+        fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
+        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+            with patch("urllib.request.urlopen"):
+                with patch("urllib.request.Request") as mock_request:
+                    _webhook_on_new("http://example.com/webhook", 7)
+                    call_kwargs = mock_request.call_args[1]
+                    payload = json.loads(call_kwargs["data"].decode())
+                    assert payload["event"] == "sync"
+                    assert payload["new_conversations"] == 7
 
 
 # =============================================================================

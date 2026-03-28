@@ -32,7 +32,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv venv && uv pip install -e ".[dev]"
-      - run: uv run pytest --cov=polylogue --cov-report=xml -q
+      - run: uv run pytest --cov=polylogue --cov-report=xml --cov-fail-under=90 -q
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
           HYPOTHESIS_PROFILE: ci

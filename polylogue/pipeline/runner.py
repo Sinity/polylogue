@@ -159,11 +159,10 @@ def run_sources(
     start = time.perf_counter()
 
     from polylogue.pipeline.services.parsing import ParsingService
-    from polylogue.storage.backends.sqlite import create_default_backend
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.services import get_backend, get_repository
 
-    backend = create_default_backend()
-    repository = ConversationRepository(backend=backend)
+    backend = get_backend()
+    repository = get_repository()
     parsing_service = ParsingService(
         repository=repository,
         archive_root=config.archive_root,
