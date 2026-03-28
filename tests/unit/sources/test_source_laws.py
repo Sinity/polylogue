@@ -8,16 +8,21 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.config import Source
 from polylogue.sources.source import (
+    _ConversationEmitter,
     _decode_json_bytes,
     _iter_json_stream,
+    _ParseContext,
+    _ZipEntryValidator,
     detect_provider,
     iter_source_conversations,
     iter_source_conversations_with_raw,
+    parse_drive_payload,
     parse_payload,
 )
 from polylogue.types import Provider
@@ -260,3 +265,156 @@ def test_iter_source_conversations_accepts_grouped_json_extensions(case: tuple[s
 
     assert conversations
     assert all(str(conversation.provider_name) == provider for conversation in conversations)
+
+
+@pytest.mark.parametrize(
+    ("provider", "payload", "expected_provider", "expected_count"),
+    [
+        (
+            "drive",
+            {"id": "generic", "messages": [{"id": "m1", "role": "user", "text": "hello"}]},
+            "drive",
+            1,
+        ),
+        (
+            "drive",
+            {"mapping": {}, "conversation_id": "chatgpt-ish", "id": "chatgpt-ish"},
+            "chatgpt",
+            1,
+        ),
+        (
+            "gemini",
+            [{"role": "user", "text": "hello"}, {"role": "model", "text": "hi"}],
+            "gemini",
+            1,
+        ),
+    ],
+)
+def test_parse_drive_payload_contract(
+    provider: str,
+    payload: object,
+    expected_provider: str,
+    expected_count: int,
+) -> None:
+    conversations = parse_drive_payload(provider, payload, "fallback")
+    assert len(conversations) >= expected_count
+    assert all(conversation.provider_name == expected_provider for conversation in conversations)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (b"\xef\xbb\xbf{\"id\":\"bom\"}", {"id": "bom"}),
+        (b"{\x00\"id\":\"nulls\"}", {"id": "nulls"}),
+        (b"", None),
+    ],
+)
+def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, object] | None) -> None:
+    decoded = _decode_json_bytes(raw)
+    if expected is None:
+        assert decoded is None
+    else:
+        assert decoded is not None
+        assert json.loads(decoded) == expected
+
+
+def test_conversation_emitter_individual_raw_capture_contract() -> None:
+    payloads = [
+        {"id": "conv-1", "messages": [{"id": "m1", "role": "user", "text": "first"}]},
+        {"id": "conv-2", "messages": [{"id": "m2", "role": "assistant", "text": "second"}]},
+    ]
+    raw = json.dumps(payloads).encode("utf-8")
+    ctx = _ParseContext(
+        provider_hint=Provider.DRIVE,
+        should_group=False,
+        source_path_str="/tmp/export.json",
+        fallback_id="export",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=True,
+        session_index={},
+        detect_path=Path("export.json"),
+    )
+
+    emitted = list(_ConversationEmitter(ctx).emit(BytesIO(raw), "export.json"))
+
+    assert [conversation.provider_conversation_id for _, conversation in emitted] == ["conv-1", "conv-2"]
+    assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == [0, 1]
+    assert all(raw_data is not None for raw_data, _ in emitted)
+    assert all(raw_data.provider_hint == Provider.DRIVE for raw_data, _ in emitted if raw_data is not None)
+
+
+def test_conversation_emitter_grouped_jsonl_contract() -> None:
+    raw = (
+        b'{"role":"user","content":[{"type":"input_text","text":"hello"}]}\n'
+        b'{"role":"assistant","content":[{"type":"output_text","text":"hi"}]}\n'
+    )
+    ctx = _ParseContext(
+        provider_hint=Provider.CODEX,
+        should_group=True,
+        source_path_str="/tmp/session.jsonl",
+        fallback_id="session",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=True,
+        session_index={},
+        detect_path=Path("session.jsonl"),
+    )
+
+    emitted = list(_ConversationEmitter(ctx).emit(BytesIO(raw), "session.jsonl"))
+
+    assert len(emitted) == 1
+    raw_data, conversation = emitted[0]
+    assert raw_data is not None
+    assert raw_data.raw_bytes == raw
+    assert conversation.provider_name == Provider.CODEX
+    assert len(conversation.messages) == 2
+
+
+def test_zip_entry_validator_filters_claude_bundle_entries_contract() -> None:
+    validator = _ZipEntryValidator(
+        "claude",
+        cursor_state={"failed_files": [], "failed_count": 0},
+        zip_path=Path("/tmp/archive.zip"),
+    )
+
+    keep = zipfile.ZipInfo("nested/conversations.json")
+    keep.file_size = 100
+    keep.compress_size = 50
+
+    wrong_name = zipfile.ZipInfo("nested/other.json")
+    wrong_name.file_size = 100
+    wrong_name.compress_size = 50
+
+    assert [entry.filename for entry in validator.filter_entries([keep, wrong_name])] == [
+        "nested/conversations.json"
+    ]
+
+
+def test_zip_entry_validator_rejects_suspicious_entries_contract() -> None:
+    cursor_state = {"failed_files": [], "failed_count": 0}
+    validator = _ZipEntryValidator(
+        "chatgpt",
+        cursor_state=cursor_state,
+        zip_path=Path("/tmp/archive.zip"),
+    )
+
+    keep = zipfile.ZipInfo("nested/conversations.json")
+    keep.file_size = 100
+    keep.compress_size = 50
+
+    wrong_name = zipfile.ZipInfo("nested/other.json")
+    wrong_name.file_size = 100
+    wrong_name.compress_size = 50
+
+    suspicious = zipfile.ZipInfo("nested/conversations.jsonl")
+    suspicious.file_size = 2_000_000
+    suspicious.compress_size = 1
+
+    unsupported = zipfile.ZipInfo("nested/readme.txt")
+    unsupported.file_size = 100
+    unsupported.compress_size = 50
+
+    kept = list(validator.filter_entries([keep, wrong_name, suspicious, unsupported]))
+
+    assert [entry.filename for entry in kept] == ["nested/conversations.json", "nested/other.json"]
+    assert cursor_state["failed_count"] == 1
+    assert cursor_state["failed_files"][0]["path"] == "/tmp/archive.zip:nested/conversations.jsonl"
