@@ -9,12 +9,6 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
-
-
 # Global cache state
 _cache_lock = threading.Lock()
 _cache_version = 0
