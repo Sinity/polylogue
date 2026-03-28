@@ -12,8 +12,8 @@ import sys
 from .util import colorize, get_cached_folder_id, set_cached_folder_id
 
 try:
-    import requests
-    from google.auth.transport.requests import AuthorizedSession, Request
+    import httpx
+    from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -27,6 +27,8 @@ except Exception as exc:
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 TOKEN_FILE = "token.json"
 DRIVE_BASE = "https://www.googleapis.com/drive/v3"
+_DEFAULT_RETRIES = 3
+_DEFAULT_BASE_DELAY = 0.5
 
 
 @dataclass
@@ -83,20 +85,29 @@ def require_google():
     if HAS_GOOGLE:
         return
     raise RuntimeError(
-        "Google Drive support requires google-auth and requests dependencies."
+        "Google Drive support requires google-auth and httpx dependencies."
     ) from GOOGLE_IMPORT_ERROR
+
+
+def set_retry_defaults(*, retries: Optional[int] = None, base_delay: Optional[float] = None) -> None:
+    """Override global retry/backoff defaults (used by DriveClient)."""
+    global _DEFAULT_RETRIES, _DEFAULT_BASE_DELAY
+    if retries is not None and retries > 0:
+        _DEFAULT_RETRIES = retries
+    if base_delay is not None and base_delay >= 0:
+        _DEFAULT_BASE_DELAY = base_delay
 
 
 def _retry(
     fn,
     *,
-    retries: int = 3,
-    base_delay: float = 0.5,
+    retries: Optional[int] = None,
+    base_delay: Optional[float] = None,
     operation: str = "request",
     notifier=None,
 ):
-    base_delay = max(0.0, base_delay)
-    retries = max(1, retries)
+    retries = max(1, retries or _DEFAULT_RETRIES)
+    base_delay = max(0.0, base_delay if base_delay is not None else _DEFAULT_BASE_DELAY)
     last_err = None
     attempts = 0
     for i in range(retries):
@@ -122,7 +133,7 @@ def _retry(
     return None
 
 
-def _raise_for_status(resp: requests.Response) -> None:
+def _raise_for_status(resp: httpx.Response) -> None:
     if resp.status_code < 400:
         return
     message = f"HTTP {resp.status_code}"
@@ -139,8 +150,42 @@ def _raise_for_status(resp: requests.Response) -> None:
     raise DriveApiError(message, resp.status_code, payload)
 
 
-def _authorized_session(creds: Credentials) -> AuthorizedSession:
-    return AuthorizedSession(creds)
+class AuthorizedClient:
+    """httpx.Client wrapper that automatically adds OAuth2 authorization headers."""
+
+    def __init__(self, credentials: Credentials):
+        self.credentials = credentials
+        self.client = httpx.Client()
+
+    def _get_headers(self) -> Dict[str, str]:
+        """Get authorization headers, refreshing token if needed."""
+        if not self.credentials.valid:
+            if self.credentials.expired and self.credentials.refresh_token:
+                self.credentials.refresh(Request())
+        return {"Authorization": f"Bearer {self.credentials.token}"}
+
+    def get(self, url: str, **kwargs) -> httpx.Response:
+        """Make GET request with authorization."""
+        headers = self._get_headers()
+        if "headers" in kwargs:
+            kwargs["headers"].update(headers)
+        else:
+            kwargs["headers"] = headers
+        return self.client.get(url, **kwargs)
+
+    def close(self) -> None:
+        """Close the underlying httpx client."""
+        self.client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+def _authorized_session(creds: Credentials) -> AuthorizedClient:
+    return AuthorizedClient(creds)
 
 
 def _run_console_flow(flow: InstalledAppFlow, *, verbose: bool) -> Credentials:
@@ -184,16 +229,13 @@ def _run_console_flow(flow: InstalledAppFlow, *, verbose: bool) -> Credentials:
     return flow.credentials
 
 
-def _drive_get_json(session: AuthorizedSession, path: str, params: Dict[str, Any], *, notifier=None) -> Dict[str, Any]:
+def _drive_get_json(session: AuthorizedClient, path: str, params: Dict[str, Any], *, notifier=None) -> Dict[str, Any]:
     url = f"{DRIVE_BASE}/{path}"
 
     def call():
         resp = session.get(url, params=params, timeout=60)
-        try:
-            _raise_for_status(resp)
-            return resp.json()
-        finally:
-            resp.close()
+        _raise_for_status(resp)
+        return resp.json()
 
     return _retry(call, operation="metadata", notifier=notifier)
 
@@ -311,16 +353,12 @@ def download_file(session, file_id: str, *, operation: str = "download", notifie
     url = f"{DRIVE_BASE}/files/{file_id}"
 
     def fetch():
-        resp = session.get(url, params={"alt": "media"}, timeout=120, stream=True)
-        try:
+        with session.get(url, params={"alt": "media"}, timeout=120) as resp:
             _raise_for_status(resp)
             buf = io.BytesIO()
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    buf.write(chunk)
+            for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                buf.write(chunk)
             return buf.getvalue()
-        finally:
-            resp.close()
 
     try:
         return _retry(fetch, operation=operation, notifier=notifier)

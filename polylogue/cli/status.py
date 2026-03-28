@@ -526,7 +526,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     display_rows = sorted_rows[:limit] if limit else sorted_rows
 
     if minimal_fallback:
-        warn("frontmatter metadata unavailable; used a minimal parser. Nested keys may be missing.")
+        warn("frontmatter metadata unavailable; used a minimal parser. Nested keys may be missing. Re-render to refresh metadata.")
 
     if json_lines:
         for row in display_rows:
