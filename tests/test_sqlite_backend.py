@@ -758,7 +758,7 @@ class TestTransactionManagement:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         # Need to access connection first to initialize transaction_depth
         backend._get_connection()
-        with pytest.raises(DatabaseError):
+        with pytest.raises(Exception, match="No active transaction to commit"):
             backend.commit()
 
     def test_rollback_without_begin_raises_error(self, tmp_path):
@@ -766,7 +766,7 @@ class TestTransactionManagement:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         # Need to access connection first to initialize transaction_depth
         backend._get_connection()
-        with pytest.raises(DatabaseError):
+        with pytest.raises(Exception, match="No active transaction to rollback"):
             backend.rollback()
 
     def test_transaction_context_manager(self, tmp_path):
