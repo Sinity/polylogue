@@ -1,38 +1,39 @@
 """Fluent filter builder for conversation-level queries.
 
 This module provides the `ConversationFilter` class for building chainable
-queries against the conversation repository.
+queries against the conversation repository.  All terminal methods
+(`list`, `first`, `count`, `delete`) are async.
 
-Example:
+Example::
+
     from polylogue import Polylogue
 
-    p = Polylogue()
+    async with Polylogue() as p:
+        # Get recent Claude conversations
+        convs = await p.filter().provider("claude").since("2024-01-01").limit(10).list()
 
-    # Get recent Claude conversations
-    convs = p.filter().provider("claude").since("2024-01-01").limit(10).list()
+        # Search for errors in ChatGPT
+        convs = await p.filter().provider("chatgpt").contains("error").list()
 
-    # Search for errors in ChatGPT
-    convs = p.filter().provider("chatgpt").contains("error").list()
+        # Get first matching conversation
+        conv = await p.filter().tag("important").first()
 
-    # Get first matching conversation
-    conv = p.filter().tag("important").first()
-
-    # Count conversations with thinking blocks
-    count = p.filter().has("thinking").count()
+        # Count conversations with thinking blocks
+        count = await p.filter().has("thinking").count()
 """
 
 from __future__ import annotations
 
 import builtins
-import logging
 import random
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from polylogue.lib.dates import parse_date
+from polylogue.lib.log import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
@@ -41,6 +42,8 @@ if TYPE_CHECKING:
 
 # Sort field options
 SortField = Literal["date", "tokens", "messages", "words", "longest", "random"]
+
+_T = TypeVar("_T")
 
 
 class ConversationFilter:
@@ -87,102 +90,42 @@ class ConversationFilter:
     # --- Filter methods (return self for chaining) ---
 
     def contains(self, text: str) -> ConversationFilter:
-        """Filter to conversations containing text (FTS search).
-
-        Args:
-            text: Text to search for in message content
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations containing text (FTS search)."""
         self._fts_terms.append(text)
         return self
 
-    def no_contains(self, text: str) -> ConversationFilter:
-        """Exclude conversations containing text.
-
-        Args:
-            text: Text to exclude
-
-        Returns:
-            self for chaining
-        """
+    def exclude_text(self, text: str) -> ConversationFilter:
+        """Exclude conversations containing text."""
         self._negative_fts_terms.append(text)
         return self
 
     def provider(self, *names: str) -> ConversationFilter:
-        """Filter to conversations from specific providers.
-
-        Args:
-            *names: Provider names (e.g., "claude", "chatgpt")
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations from specific providers."""
         self._providers.extend(names)
         return self
 
-    def no_provider(self, *names: str) -> ConversationFilter:
-        """Exclude conversations from specific providers.
-
-        Args:
-            *names: Provider names to exclude
-
-        Returns:
-            self for chaining
-        """
+    def exclude_provider(self, *names: str) -> ConversationFilter:
+        """Exclude conversations from specific providers."""
         self._excluded_providers.extend(names)
         return self
 
     def tag(self, *tags: str) -> ConversationFilter:
-        """Filter to conversations with specific tags.
-
-        Args:
-            *tags: Tag names to include
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations with specific tags."""
         self._tags.extend(tags)
         return self
 
-    def no_tag(self, *tags: str) -> ConversationFilter:
-        """Exclude conversations with specific tags.
-
-        Args:
-            *tags: Tag names to exclude
-
-        Returns:
-            self for chaining
-        """
+    def exclude_tag(self, *tags: str) -> ConversationFilter:
+        """Exclude conversations with specific tags."""
         self._excluded_tags.extend(tags)
         return self
 
     def has(self, *types: str) -> ConversationFilter:
-        """Filter to conversations containing specific content types.
-
-        Args:
-            *types: Content types like "thinking", "tools", "attachments", "summary"
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations containing specific content types."""
         self._has_types.extend(types)
         return self
 
     def since(self, date: str | datetime) -> ConversationFilter:
-        """Filter to conversations after date.
-
-        Args:
-            date: Date string (e.g., "2024-01-01", "yesterday", "last week")
-                  or datetime object
-
-        Returns:
-            self for chaining
-
-        Raises:
-            ValueError: If date string cannot be parsed
-        """
+        """Filter to conversations after date."""
         if isinstance(date, str):
             parsed = parse_date(date)
             if parsed is None:
@@ -194,18 +137,7 @@ class ConversationFilter:
         return self
 
     def until(self, date: str | datetime) -> ConversationFilter:
-        """Filter to conversations before date.
-
-        Args:
-            date: Date string (e.g., "2024-12-31", "today", "last month")
-                  or datetime object
-
-        Returns:
-            self for chaining
-
-        Raises:
-            ValueError: If date string cannot be parsed
-        """
+        """Filter to conversations before date."""
         if isinstance(date, str):
             parsed = parse_date(date)
             if parsed is None:
@@ -217,107 +149,47 @@ class ConversationFilter:
         return self
 
     def title(self, pattern: str) -> ConversationFilter:
-        """Filter to conversations with titles containing pattern.
-
-        Args:
-            pattern: Text pattern to match in title
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations with titles containing pattern."""
         self._title_pattern = pattern
         return self
 
     def id(self, prefix: str) -> ConversationFilter:
-        """Filter to conversations with ID starting with prefix.
-
-        Args:
-            prefix: ID prefix to match
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations with ID starting with prefix."""
         self._id_prefix = prefix
         return self
 
     def sort(self, field: SortField) -> ConversationFilter:
-        """Set sort field.
-
-        Args:
-            field: Sort field - "date", "tokens", "messages", "words", "longest", "random"
-
-        Returns:
-            self for chaining
-        """
+        """Set sort field."""
         self._sort_field = field
         return self
 
     def reverse(self) -> ConversationFilter:
-        """Reverse sort order (ascending instead of descending).
-
-        Returns:
-            self for chaining
-        """
+        """Reverse sort order (ascending instead of descending)."""
         self._sort_reverse = True
         return self
 
     def limit(self, n: int) -> ConversationFilter:
-        """Limit number of results.
-
-        Args:
-            n: Maximum number of conversations to return
-
-        Returns:
-            self for chaining
-        """
+        """Limit number of results."""
         self._limit_count = n
         return self
 
     def sample(self, n: int) -> ConversationFilter:
-        """Randomly sample n conversations from results.
-
-        Args:
-            n: Number of conversations to sample
-
-        Returns:
-            self for chaining
-        """
+        """Randomly sample n conversations from results."""
         self._sample_count = n
         return self
 
     def similar(self, text: str) -> ConversationFilter:
-        """Rank by semantic similarity to text (requires vector index).
-
-        Args:
-            text: Text to compare against
-
-        Returns:
-            self for chaining
-        """
+        """Rank by semantic similarity to text (requires vector index)."""
         self._similar_text = text
         return self
 
     def where(self, predicate: Callable[[Conversation], bool]) -> ConversationFilter:
-        """Add custom filter predicate.
-
-        Args:
-            predicate: Function that takes Conversation and returns bool
-
-        Returns:
-            self for chaining
-        """
+        """Add custom filter predicate."""
         self._predicates.append(predicate)
         return self
 
     def is_continuation(self, value: bool = True) -> ConversationFilter:
-        """Filter to continuation conversations (or exclude them if value=False).
-
-        Args:
-            value: If True, include only continuations. If False, exclude them.
-
-        Returns:
-            self for chaining
-        """
+        """Filter to continuation conversations (or exclude them if value=False)."""
         if value:
             self._predicates.append(lambda c: c.is_continuation)
         else:
@@ -325,14 +197,7 @@ class ConversationFilter:
         return self
 
     def is_sidechain(self, value: bool = True) -> ConversationFilter:
-        """Filter to sidechain conversations (or exclude them if value=False).
-
-        Args:
-            value: If True, include only sidechains. If False, exclude them.
-
-        Returns:
-            self for chaining
-        """
+        """Filter to sidechain conversations (or exclude them if value=False)."""
         if value:
             self._predicates.append(lambda c: c.is_sidechain)
         else:
@@ -340,14 +205,7 @@ class ConversationFilter:
         return self
 
     def is_root(self, value: bool = True) -> ConversationFilter:
-        """Filter to root conversations (those with no parent).
-
-        Args:
-            value: If True, include only roots. If False, exclude roots.
-
-        Returns:
-            self for chaining
-        """
+        """Filter to root conversations (those with no parent)."""
         if value:
             self._predicates.append(lambda c: c.is_root)
         else:
@@ -355,26 +213,12 @@ class ConversationFilter:
         return self
 
     def parent(self, conversation_id: str) -> ConversationFilter:
-        """Filter to conversations that are children of the given parent.
-
-        Args:
-            conversation_id: Parent conversation ID
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations that are children of the given parent."""
         self._predicates.append(lambda c: c.parent_id == conversation_id)
         return self
 
     def has_branches(self, value: bool = True) -> ConversationFilter:
-        """Filter to conversations that have branching messages.
-
-        Args:
-            value: If True, include only those with branches. If False, exclude them.
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations that have branching messages."""
         if value:
             self._predicates.append(lambda c: any(m.branch_index > 0 for m in c.messages))
         else:
@@ -382,6 +226,49 @@ class ConversationFilter:
         return self
 
     # --- Terminal methods (execute query) ---
+
+    def _apply_common_filters(
+        self,
+        items: builtins.list[_T],
+        *,
+        sql_pushed: bool = False,
+    ) -> builtins.list[_T]:
+        """Apply metadata-level filters shared by Conversation and ConversationSummary.
+
+        Both types expose .provider, .updated_at, .display_title, .tags, .id, .summary
+        via duck typing, so this single method handles all metadata filtering.
+        """
+        results = list(items)
+
+        if not sql_pushed:
+            if self._providers:
+                results = [x for x in results if x.provider in self._providers]
+            if self._since_date:
+                results = [x for x in results if x.updated_at and x.updated_at >= self._since_date]
+            if self._until_date:
+                results = [x for x in results if x.updated_at and x.updated_at <= self._until_date]
+            if self._title_pattern:
+                pattern_lower = self._title_pattern.lower()
+                results = [x for x in results if x.display_title and pattern_lower in x.display_title.lower()]
+
+        if self._excluded_providers:
+            excluded_set = set(self._excluded_providers)
+            results = [x for x in results if x.provider not in excluded_set]
+
+        if self._tags:
+            tag_set = set(self._tags)
+            results = [x for x in results if tag_set.intersection(x.tags)]
+        if self._excluded_tags:
+            excluded_tag_set = set(self._excluded_tags)
+            results = [x for x in results if not excluded_tag_set.intersection(x.tags)]
+
+        if self._id_prefix:
+            results = [x for x in results if str(x.id).startswith(self._id_prefix)]
+
+        if "summary" in self._has_types:
+            results = [x for x in results if x.summary]
+
+        return results
 
     def _apply_filters(
         self,
@@ -391,46 +278,12 @@ class ConversationFilter:
     ) -> builtins.list[Conversation]:
         """Apply in-memory filters to conversation list.
 
-        Args:
-            conversations: List of conversations to filter
-            sql_pushed: If True, provider/date/title filters were already
-                       applied in SQL and are skipped here to avoid double-filtering.
-
-        Returns:
-            Filtered list
+        Delegates shared metadata filters to _apply_common_filters, then applies
+        Conversation-specific filters that require message access.
         """
-        results = list(conversations)
+        results = self._apply_common_filters(conversations, sql_pushed=sql_pushed)
 
-        # Provider filters (skip if already pushed to SQL)
-        if not sql_pushed:
-            if self._providers:
-                results = [c for c in results if c.provider in self._providers]
-            if self._since_date:
-                results = [c for c in results if c.updated_at and c.updated_at >= self._since_date]
-            if self._until_date:
-                results = [c for c in results if c.updated_at and c.updated_at <= self._until_date]
-            if self._title_pattern:
-                pattern_lower = self._title_pattern.lower()
-                results = [c for c in results if c.display_title and pattern_lower in c.display_title.lower()]
-
-        # These filters are never pushed to SQL
-        if self._excluded_providers:
-            excluded_set = set(self._excluded_providers)
-            results = [c for c in results if c.provider not in excluded_set]
-
-        # Tag filters (use sets for O(1) lookup)
-        if self._tags:
-            tag_set = set(self._tags)
-            results = [c for c in results if tag_set.intersection(c.tags)]
-        if self._excluded_tags:
-            excluded_tag_set = set(self._excluded_tags)
-            results = [c for c in results if not excluded_tag_set.intersection(c.tags)]
-
-        # ID prefix filter
-        if self._id_prefix:
-            results = [c for c in results if str(c.id).startswith(self._id_prefix)]
-
-        # Content type filters
+        # Content type filters requiring message access
         if self._has_types:
             for content_type in self._has_types:
                 if content_type == "thinking":
@@ -439,8 +292,6 @@ class ConversationFilter:
                     results = [c for c in results if any(m.is_tool_use for m in c.messages)]
                 elif content_type == "attachments":
                     results = [c for c in results if any(m.attachments for m in c.messages)]
-                elif content_type == "summary":
-                    results = [c for c in results if c.summary]
 
         # Negative FTS — single pass combining all terms
         if self._negative_fts_terms:
@@ -458,32 +309,30 @@ class ConversationFilter:
 
             results = [c for c in results if not _has_neg_term(c)]
 
-        # Custom predicates
         for predicate in self._predicates:
             results = [c for c in results if predicate(c)]
 
         return results
 
-    def _apply_sort(self, conversations: builtins.list[Conversation]) -> builtins.list[Conversation]:
-        """Apply sorting to conversation list.
-
-        Args:
-            conversations: List of conversations to sort
-
-        Returns:
-            Sorted list
-        """
+    def _apply_sort_generic(
+        self,
+        items: builtins.list[_T],
+        sort_key_fn: Callable[[_T], Any],
+    ) -> builtins.list[_T]:
+        """Apply sorting using the given key function."""
         if self._sort_field == "random":
-            shuffled = list(conversations)
+            shuffled = list(items)
             random.shuffle(shuffled)
             return shuffled
+        return sorted(items, key=sort_key_fn, reverse=not self._sort_reverse)
+
+    def _apply_sort(self, conversations: builtins.list[Conversation]) -> builtins.list[Conversation]:
+        """Apply sorting to conversation list."""
+        from datetime import timezone
+
+        dt_min = datetime.min.replace(tzinfo=timezone.utc)
 
         def sort_key(c: Conversation) -> Any:
-            # Use UTC-aware min for comparison with aware timestamps
-            from datetime import timezone
-
-            dt_min = datetime.min.replace(tzinfo=timezone.utc)
-
             if self._sort_field == "date":
                 return c.updated_at or dt_min
             elif self._sort_field == "messages":
@@ -493,15 +342,10 @@ class ConversationFilter:
             elif self._sort_field == "longest":
                 return max((m.word_count for m in c.messages), default=0)
             elif self._sort_field == "tokens":
-                # Approximate: 1 token ≈ 4 chars
                 return sum(len(m.text or "") for m in c.messages) // 4
             return c.updated_at or dt_min
 
-        return sorted(
-            conversations,
-            key=sort_key,
-            reverse=not self._sort_reverse,  # Default is descending
-        )
+        return self._apply_sort_generic(conversations, sort_key)
 
     def _sql_pushdown_params(self) -> dict[str, object]:
         """Build kwargs for repository list/list_summaries that push filters to SQL.
@@ -523,6 +367,37 @@ class ConversationFilter:
             params["title_contains"] = self._title_pattern
         return params
 
+    def _describe_active_filters(self) -> list[str]:
+        """Return descriptions of all active filters (empty if no filters set)."""
+        parts: list[str] = []
+        if self._fts_terms:
+            parts.append(f"contains: {', '.join(self._fts_terms)}")
+        if self._providers:
+            parts.append(f"provider: {', '.join(self._providers)}")
+        if self._excluded_providers:
+            parts.append(f"exclude provider: {', '.join(self._excluded_providers)}")
+        if self._tags:
+            parts.append(f"tag: {', '.join(self._tags)}")
+        if self._excluded_tags:
+            parts.append(f"exclude tag: {', '.join(self._excluded_tags)}")
+        if self._has_types:
+            parts.append(f"has: {', '.join(self._has_types)}")
+        if self._since_date:
+            parts.append(f"since: {self._since_date.isoformat()}")
+        if self._until_date:
+            parts.append(f"until: {self._until_date.isoformat()}")
+        if self._title_pattern:
+            parts.append(f"title: {self._title_pattern}")
+        if self._id_prefix:
+            parts.append(f"id: {self._id_prefix}")
+        if self._negative_fts_terms:
+            parts.append(f"exclude text: {', '.join(self._negative_fts_terms)}")
+        if self._predicates:
+            parts.append(f"custom predicates: {len(self._predicates)}")
+        if self._similar_text:
+            parts.append(f"similar: {self._similar_text[:30]}")
+        return parts
+
     def _has_post_filters(self) -> bool:
         """Check if any filters require in-memory post-processing."""
         return bool(
@@ -542,11 +417,9 @@ class ConversationFilter:
         the full dataset, a higher limit when sorting could reduce results.
         """
         if self._limit_count is None:
-            if self._has_post_filters():
-                # Post-filters (tags, excludes) can match anywhere in the archive,
-                # so we must scan the full dataset to avoid missing results.
-                return None
-            return 1000  # No limit requested — fetch a reasonable max
+            # No explicit limit — fetch everything. Callers that want
+            # a display cap should set .limit() explicitly.
+            return None
 
         if self._has_post_filters():
             # Post-filters may reject many candidates; over-fetch aggressively
@@ -559,90 +432,90 @@ class ConversationFilter:
         # Simple case: limit is the only constraint, with small safety margin
         return max(self._limit_count * 2, 50)
 
-    def _fetch_candidates(self) -> builtins.list[Conversation]:
-        """Fetch candidate conversations from repository.
+    async def _fetch_generic(
+        self,
+        get_by_id: Callable[[str], Awaitable[_T | None]],
+        search: Callable[[str, int, builtins.list[str] | None], Awaitable[builtins.list[_T]]],
+        list_all: Callable[..., Awaitable[builtins.list[_T]]],
+    ) -> builtins.list[_T]:
+        """Fetch candidate items from repository using provided accessors.
 
-        Uses FTS search if terms specified, otherwise lists all.
-        Pushes provider, date, and title filters into SQL when possible.
-        Adapts fetch size to user's limit and filter complexity.
-
-        Returns:
-            List of lazy Conversation objects
+        Handles three fetch strategies: ID prefix resolution, FTS search,
+        and full list with SQL pushdown. Callers provide type-specific
+        repository methods as callbacks.
         """
-        # Fast path: resolve by ID prefix directly (avoids loading all conversations)
         if self._id_prefix and not self._fts_terms:
-            resolved_id = self._repo.resolve_id(self._id_prefix)
+            resolved_id = await self._repo.resolve_id(self._id_prefix)
             if resolved_id:
-                conv = self._repo.get(str(resolved_id))
-                return [conv] if conv else []
-            # Ambiguous prefix — fall through to list + post-filter
+                item = await get_by_id(str(resolved_id))
+                return [item] if item else []
 
         fetch_limit = self._effective_fetch_limit()
 
-        # If we have FTS terms, use search
         if self._fts_terms:
             query = " ".join(self._fts_terms)
             try:
                 search_limit = max(fetch_limit, 100) if fetch_limit is not None else 10000
-                # Push provider filter into SQL for efficiency
-                return self._repo.search(
-                    query, limit=search_limit, providers=self._providers or None
-                )
+                return await search(query, search_limit, self._providers or None)
             except Exception as exc:
                 logger.debug("FTS search failed, falling back to list: %s", exc)
 
-        # Push all SQL-eligible filters to backend
         sql_params = self._sql_pushdown_params()
-        return self._repo.list(limit=fetch_limit, **sql_params)
+        return await list_all(limit=fetch_limit, **sql_params)
 
-    def list(self) -> builtins.list[Conversation]:
-        """Execute query and return matching conversations.
+    async def _fetch_candidates(self) -> builtins.list[Conversation]:
+        """Fetch candidate conversations from repository."""
+        return await self._fetch_generic(
+            self._repo.get,
+            lambda q, lim, provs: self._repo.search(q, limit=lim, providers=provs),
+            self._repo.list,
+        )
 
-        Returns:
-            List of Conversation objects matching all filters
-        """
-        # If semantic search is requested, use vector provider
+    def _execute_pipeline(
+        self,
+        candidates: builtins.list[_T],
+        apply_filters: Callable[[builtins.list[_T], bool], builtins.list[_T]],
+        apply_sort: Callable[[builtins.list[_T]], builtins.list[_T]],
+    ) -> builtins.list[_T]:
+        """Run the shared filter → sort → sample → limit pipeline."""
+        sql_pushed = not self._fts_terms and not self._id_prefix
+        filtered = apply_filters(candidates, sql_pushed)
+        sorted_results = apply_sort(filtered)
+
+        if self._sample_count is not None and self._sample_count < len(sorted_results):
+            sorted_results = random.sample(sorted_results, self._sample_count)
+        if self._limit_count is not None:
+            sorted_results = sorted_results[: self._limit_count]
+        return sorted_results
+
+    async def list(self) -> builtins.list[Conversation]:
+        """Execute query and return matching conversations."""
+        # Semantic search has its own fetch path
         if self._similar_text:
-            candidates = self._repo.search_similar(
+            candidates = await self._repo.search_similar(
                 self._similar_text,
                 limit=self._limit_count or 10,
                 vector_provider=self._vector_provider,
             )
-            # Still apply in-memory filters
-            filtered = self._apply_filters(candidates)
-            return filtered
+            return self._apply_filters(candidates)
 
-        # Fetch candidates (with SQL pushdown for non-FTS path)
-        candidates = self._fetch_candidates()
+        candidates = await self._fetch_candidates()
+        return self._execute_pipeline(
+            candidates,
+            lambda items, pushed: self._apply_filters(items, sql_pushed=pushed),
+            self._apply_sort,
+        )
 
-        # FTS path doesn't push date/title, so those still need in-memory filtering.
-        # Non-FTS path pushes provider/date/title to SQL.
-        sql_pushed = not self._fts_terms and not self._id_prefix
-        filtered = self._apply_filters(candidates, sql_pushed=sql_pushed)
-
-        # Apply sorting
-        sorted_results = self._apply_sort(filtered)
-
-        # Apply sampling (before limit)
-        if self._sample_count is not None and self._sample_count < len(sorted_results):
-            sorted_results = random.sample(sorted_results, self._sample_count)
-
-        # Apply limit
-        if self._limit_count is not None:
-            sorted_results = sorted_results[: self._limit_count]
-
-        return sorted_results
-
-    def first(self) -> Conversation | None:
+    async def first(self) -> Conversation | None:
         """Execute query and return first matching conversation.
 
         Returns:
             First matching Conversation or None if no matches
         """
-        results = self.limit(1).list()
+        results = await self.limit(1).list()
         return results[0] if results else None
 
-    def count(self) -> int:
+    async def count(self) -> int:
         """Execute query and return count of matching conversations.
 
         When possible, uses SQL COUNT(*) directly for O(1) performance.
@@ -663,28 +536,26 @@ class ConversationFilter:
             and not self._tags
             and not self._excluded_tags
         ):
-            return self._repo.count(**self._sql_pushdown_params())
+            return await self._repo.count(**self._sql_pushdown_params())
 
         # Medium path: use summaries (lightweight) if possible
         if self.can_use_summaries():
-            saved_limit = self._limit_count
-            self._limit_count = None
+            saved_limit, self._limit_count = self._limit_count, None
             try:
-                results = self.list_summaries()
+                results = await self.list_summaries()
             finally:
                 self._limit_count = saved_limit
             return len(results)
 
         # Slow path: must load full conversations
-        saved_limit = self._limit_count
-        self._limit_count = None
+        saved_limit, self._limit_count = self._limit_count, None
         try:
-            results = self.list()
+            results = await self.list()
         finally:
             self._limit_count = saved_limit
         return len(results)
 
-    def delete(self) -> int:
+    async def delete(self) -> int:
         """Delete matching conversations.
 
         WARNING: This permanently deletes conversations. Use with caution.
@@ -693,17 +564,17 @@ class ConversationFilter:
             Number of conversations deleted
         """
         # Get all matching conversations
-        results = self.list()
+        results = await self.list()
         deleted_count = 0
 
         for conv in results:
             # Access the backend through the repository
-            if self._repo.backend.delete_conversation(str(conv.id)):
+            if await self._repo.backend.delete_conversation(str(conv.id)):
                 deleted_count += 1
 
         return deleted_count
 
-    def pick(self) -> Conversation | None:
+    async def pick(self) -> Conversation | None:
         """Interactive picker for matching conversations.
 
         If running in a TTY, presents a menu to select from matches.
@@ -714,7 +585,7 @@ class ConversationFilter:
         """
         import sys
 
-        results = self.list()
+        results = await self.list()
         if not results:
             return None
 
@@ -769,41 +640,13 @@ class ConversationFilter:
         # Sort by messages/words/longest/tokens needs message data
         return self._sort_field in ("messages", "words", "longest", "tokens")
 
-    def _fetch_summary_candidates(self) -> builtins.list[ConversationSummary]:
-        """Fetch candidate conversation summaries (lightweight, no messages).
-
-        Uses FTS search if terms specified, otherwise lists all summaries.
-        Pushes provider, date, and title filters into SQL when possible.
-
-        Returns:
-            List of ConversationSummary objects
-        """
-
-        # Fast path: resolve by ID prefix directly
-        if self._id_prefix and not self._fts_terms:
-            resolved_id = self._repo.resolve_id(self._id_prefix)
-            if resolved_id:
-                summary = self._repo.get_summary(str(resolved_id))
-                return [summary] if summary else []
-            # Ambiguous prefix — fall through to list + post-filter
-
-        fetch_limit = self._effective_fetch_limit()
-
-        # If we have FTS terms, use search
-        if self._fts_terms:
-            query = " ".join(self._fts_terms)
-            try:
-                search_limit = max(fetch_limit, 100) if fetch_limit is not None else 10000
-                # Push provider filter into SQL for efficiency
-                return self._repo.search_summaries(
-                    query, limit=search_limit, providers=self._providers or None
-                )
-            except Exception as exc:
-                logger.debug("FTS summary search failed, falling back to list: %s", exc)
-
-        # Push all SQL-eligible filters to backend
-        sql_params = self._sql_pushdown_params()
-        return self._repo.list_summaries(limit=fetch_limit, **sql_params)
+    async def _fetch_summary_candidates(self) -> builtins.list[ConversationSummary]:
+        """Fetch candidate conversation summaries (lightweight, no messages)."""
+        return await self._fetch_generic(
+            self._repo.get_summary,
+            lambda q, lim, provs: self._repo.search_summaries(q, limit=lim, providers=provs),
+            self._repo.list_summaries,
+        )
 
     def _apply_summary_filters(
         self,
@@ -811,122 +654,34 @@ class ConversationFilter:
         *,
         sql_pushed: bool = False,
     ) -> builtins.list[ConversationSummary]:
-        """Apply filters that work on summaries (no message access needed).
-
-        Args:
-            summaries: List of ConversationSummary objects
-            sql_pushed: If True, provider/date/title filters were already
-                       applied in SQL and are skipped here.
-
-        Returns:
-            Filtered list of summaries
-        """
-
-        results: builtins.list[ConversationSummary] = list(summaries)
-
-        # Skip filters already pushed to SQL
-        if not sql_pushed:
-            if self._providers:
-                results = [s for s in results if s.provider in self._providers]
-            if self._since_date:
-                results = [s for s in results if s.updated_at and s.updated_at >= self._since_date]
-            if self._until_date:
-                results = [s for s in results if s.updated_at and s.updated_at <= self._until_date]
-            if self._title_pattern:
-                pattern_lower = self._title_pattern.lower()
-                results = [s for s in results if s.display_title and pattern_lower in s.display_title.lower()]
-
-        # These filters are never pushed to SQL
-        if self._excluded_providers:
-            excluded_set = set(self._excluded_providers)
-            results = [s for s in results if s.provider not in excluded_set]
-
-        # Tag filters (use sets for O(1) lookup)
-        if self._tags:
-            tag_set = set(self._tags)
-            results = [s for s in results if tag_set.intersection(s.tags)]
-        if self._excluded_tags:
-            excluded_tag_set = set(self._excluded_tags)
-            results = [s for s in results if not excluded_tag_set.intersection(s.tags)]
-
-        # ID prefix filter
-        if self._id_prefix:
-            results = [s for s in results if str(s.id).startswith(self._id_prefix)]
-
-        # 'summary' has type (doesn't need messages)
-        if "summary" in self._has_types:
-            results = [s for s in results if s.summary]
-
-        return results
+        """Apply filters that work on summaries (no message access needed)."""
+        return self._apply_common_filters(summaries, sql_pushed=sql_pushed)
 
     def _apply_summary_sort(self, summaries: builtins.list[ConversationSummary]) -> builtins.list[ConversationSummary]:
-        """Apply sorting to summary list (limited to summary-compatible sorts).
-
-        Args:
-            summaries: List of summaries to sort
-
-        Returns:
-            Sorted list
-        """
+        """Apply sorting to summary list (limited to date-based sorts)."""
         from datetime import timezone
 
-        if self._sort_field == "random":
-            shuffled: builtins.list[ConversationSummary] = list(summaries)
-            random.shuffle(shuffled)
-            return shuffled
+        dt_min = datetime.min.replace(tzinfo=timezone.utc)
+        return self._apply_sort_generic(summaries, lambda s: s.updated_at or dt_min)
 
-        def sort_key(s: ConversationSummary) -> Any:
-            dt_min = datetime.min.replace(tzinfo=timezone.utc)
-            if self._sort_field == "date":
-                return s.updated_at or dt_min
-            # For content-dependent sorts, fall back to date
-            return s.updated_at or dt_min
-
-        return sorted(
-            summaries,
-            key=sort_key,
-            reverse=not self._sort_reverse,
-        )
-
-    def list_summaries(self) -> builtins.list[ConversationSummary]:
+    async def list_summaries(self) -> builtins.list[ConversationSummary]:
         """Execute query and return lightweight summaries (no messages loaded).
 
-        This is the memory-efficient alternative to list() for cases where
-        you don't need message content. Returns ConversationSummary objects
-        that have metadata but no messages.
-
-        Note: If content-dependent filters are set (regex, has:thinking, etc.),
-        this will raise an error. Use list() instead for those cases.
-
-        Returns:
-            List of ConversationSummary objects matching all summary-compatible filters
+        Memory-efficient alternative to list() for cases where you don't need
+        message content. Raises ValueError if content-dependent filters are set.
         """
-
         if self._needs_content_loading():
             raise ValueError(
                 "Cannot use list_summaries() with content-dependent filters "
                 "(regex, has:thinking, has:tools, etc.). Use list() instead."
             )
 
-        # Fetch lightweight candidates (with SQL pushdown for non-FTS path)
-        candidates = self._fetch_summary_candidates()
-
-        # Non-FTS path pushes provider/date/title to SQL
-        sql_pushed = not self._fts_terms and not self._id_prefix
-        filtered = self._apply_summary_filters(candidates, sql_pushed=sql_pushed)
-
-        # Apply sorting
-        sorted_results = self._apply_summary_sort(filtered)
-
-        # Apply sampling
-        if self._sample_count is not None and self._sample_count < len(sorted_results):
-            sorted_results = random.sample(sorted_results, self._sample_count)
-
-        # Apply limit
-        if self._limit_count is not None:
-            sorted_results = sorted_results[: self._limit_count]
-
-        return sorted_results
+        candidates = await self._fetch_summary_candidates()
+        return self._execute_pipeline(
+            candidates,
+            lambda items, pushed: self._apply_summary_filters(items, sql_pushed=pushed),
+            self._apply_summary_sort,
+        )
 
     def can_use_summaries(self) -> bool:
         """Check if this filter can use lightweight summaries.
@@ -934,3 +689,6 @@ class ConversationFilter:
         Returns True if list_summaries() would work, False if list() is required.
         """
         return not self._needs_content_loading()
+
+
+__all__ = ["ConversationFilter", "SortField"]
