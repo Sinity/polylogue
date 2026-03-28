@@ -253,7 +253,7 @@ EXERCISES: tuple[Exercise, ...] = (
        needs_data=True, writes=True, env="seeded", tier=2, depends_on="delete-one"),
 
     # =========================================================================
-    # subcommands (6) — tier 1: read-only health/stats; tier 2: site generation
+    # subcommands (10) — tier 1: read-only health/proof/stats; tier 2: site generation
     # =========================================================================
     _E("check-health", "subcommands", "Health check",
        ["check"], _V(stdout_contains=("ok",)), needs_data=True, tier=1),
@@ -262,6 +262,18 @@ EXERCISES: tuple[Exercise, ...] = (
        needs_data=True, output_ext=".json", tier=1),
     _E("check-verbose", "subcommands", "Verbose health check",
        ["check", "-v"], needs_data=True, tier=1),
+    _E("check-proof-json", "subcommands", "Artifact proof as JSON",
+       ["check", "--json", "--proof"], _V(stdout_is_valid_json=True),
+       needs_data=True, output_ext=".json", tier=1),
+    _E("check-cohorts-json", "subcommands", "Artifact cohorts as JSON",
+       ["check", "--json", "--cohorts"], _V(stdout_is_valid_json=True),
+       needs_data=True, output_ext=".json", tier=1),
+    _E("check-semantic-proof", "subcommands", "Semantic preservation proof",
+       ["check", "--semantic-proof"], _V(stdout_contains=("Semantic proof:",)),
+       needs_data=True, tier=1),
+    _E("check-semantic-proof-json", "subcommands", "Semantic preservation proof as JSON",
+       ["check", "--json", "--semantic-proof"], _V(stdout_is_valid_json=True),
+       needs_data=True, output_ext=".json", tier=1),
     _E("embed-stats", "subcommands", "Embedding statistics",
        ["embed", "--stats"], needs_data=True, tier=1),
     _E("tags-json", "subcommands", "Tags as JSON",

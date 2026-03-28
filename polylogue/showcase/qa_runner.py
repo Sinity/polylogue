@@ -28,6 +28,7 @@ from polylogue.showcase.workspace import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.rendering.semantic_proof import SemanticProofReport
     from polylogue.schemas.audit import AuditReport
     from polylogue.schemas.verification import ArtifactProofReport
 
@@ -41,6 +42,8 @@ class QAResult:
     audit_skipped: bool = False
     proof_report: ArtifactProofReport | None = None
     proof_error: str | None = None
+    semantic_proof_report: SemanticProofReport | None = None
+    semantic_proof_error: str | None = None
     showcase_result: ShowcaseResult | None = None
     exercises_skipped: bool = False
     invariant_results: list[InvariantResult] = field(default_factory=list)
@@ -73,6 +76,15 @@ class QAResult:
         return OutcomeStatus.OK if self.proof_report.is_clean else OutcomeStatus.ERROR
 
     @property
+    def semantic_proof_status(self) -> OutcomeStatus:
+        """Status for the semantic proof stage."""
+        if self.semantic_proof_error is not None:
+            return OutcomeStatus.ERROR
+        if self.semantic_proof_report is None:
+            return OutcomeStatus.SKIP
+        return OutcomeStatus.OK if self.semantic_proof_report.is_clean else OutcomeStatus.ERROR
+
+    @property
     def showcase_status(self) -> OutcomeStatus:
         """Status for the exercise stage."""
         if self.exercises_skipped:
@@ -98,6 +110,7 @@ class QAResult:
             for stage in (
                 self.audit_status,
                 self.proof_status,
+                self.semantic_proof_status,
                 self.showcase_status,
                 self.invariant_status,
             )
@@ -142,6 +155,24 @@ def _populate_proof(
         result.proof_error = str(exc)
 
 
+def _populate_semantic_proof(
+    result: QAResult,
+    *,
+    workspace_env: dict[str, str] | None,
+) -> None:
+    """Populate the semantic proof stage against the active archive."""
+    from polylogue.rendering.semantic_proof import prove_markdown_render_semantics
+
+    try:
+        if workspace_env:
+            with override_workspace_env(workspace_env):
+                result.semantic_proof_report = prove_markdown_render_semantics()
+        else:
+            result.semantic_proof_report = prove_markdown_render_semantics()
+    except Exception as exc:
+        result.semantic_proof_error = str(exc)
+
+
 def run_qa_session(
     *,
     live: bool = False,
@@ -166,9 +197,10 @@ def run_qa_session(
     Stages (in order, each skippable):
       1. Schema audit
       2. Artifact proof
-      3. Exercises (showcase)
-      4. Invariant checks
-      5. Report generation
+      3. Semantic proof
+      4. Exercises (showcase)
+      5. Invariant checks
+      6. Report generation
     """
     result = QAResult(report_dir=report_dir)
     workspace_env_for_runner: dict[str, str] | None = workspace_env
@@ -240,6 +272,7 @@ def run_qa_session(
 
             if not audit_report.all_passed:
                 _populate_proof(result, workspace_env=workspace_env_for_runner)
+                _populate_semantic_proof(result, workspace_env=workspace_env_for_runner)
                 result.exercises_skipped = True
                 result.invariants_skipped = True
                 if verbose:
@@ -251,6 +284,7 @@ def run_qa_session(
         except Exception as e:
             result.audit_error = str(e)
             _populate_proof(result, workspace_env=workspace_env_for_runner)
+            _populate_semantic_proof(result, workspace_env=workspace_env_for_runner)
             result.exercises_skipped = True
             result.invariants_skipped = True
             if report_dir:
@@ -261,7 +295,10 @@ def run_qa_session(
     # --- Step 2: Artifact proof ---
     _populate_proof(result, workspace_env=workspace_env_for_runner)
 
-    # --- Step 3: Exercises ---
+    # --- Step 3: Semantic proof ---
+    _populate_semantic_proof(result, workspace_env=workspace_env_for_runner)
+
+    # --- Step 4: Exercises ---
     if skip_exercises:
         result.exercises_skipped = True
     else:
@@ -278,13 +315,13 @@ def run_qa_session(
         showcase_result = runner.run()
         result.showcase_result = showcase_result
 
-    # --- Step 4: Invariant checks ---
+    # --- Step 5: Invariant checks ---
     if skip_invariants:
         result.invariants_skipped = True
     elif result.showcase_result:
         result.invariant_results = check_invariants(result.showcase_result.results)
 
-    # --- Step 5: Save reports ---
+    # --- Step 6: Save reports ---
     if report_dir:
         result.report_dir = report_dir
         _save_qa_reports(result, report_dir)
@@ -314,6 +351,15 @@ def _save_qa_reports(result: QAResult, report_dir: Path) -> None:
     elif result.proof_error is not None:
         (report_dir / "artifact-proof.json").write_text(
             json.dumps({"error": result.proof_error}, indent=2, sort_keys=True)
+        )
+
+    if result.semantic_proof_report is not None:
+        (report_dir / "semantic-proof.json").write_text(
+            json.dumps(result.semantic_proof_report.to_dict(), indent=2, sort_keys=True)
+        )
+    elif result.semantic_proof_error is not None:
+        (report_dir / "semantic-proof.json").write_text(
+            json.dumps({"error": result.semantic_proof_error}, indent=2, sort_keys=True)
         )
 
     from polylogue.showcase.report import (

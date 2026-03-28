@@ -1,0 +1,477 @@
+# serializer version: 1
+# name: TestCommandOutputs.test_check_output_snapshot
+  '''
+  Usage: polylogue check [OPTIONS]
+  
+    Health check with optional repair.
+  
+  Options:
+    --json                          Output as JSON
+    -v, --verbose                   Show breakdown by provider
+    --repair                        Attempt to repair detected issues
+    --preview                       Preview repairs without executing (requires
+                                    --repair)
+    --vacuum                        Reclaim unused space after repair (requires
+                                    --repair)
+    --deep                          Run SQLite integrity check (slow on large
+                                    databases)
+    --runtime                       Run environment and runtime verification
+                                    checks
+    --schemas                       Run raw-corpus schema verification (non-
+                                    mutating)
+    --proof                         Run durable artifact support proof
+    --artifacts                     List durable artifact observations
+    --cohorts                       Summarize durable artifact cohorts
+    --semantic-proof                Run semantic preservation proof over
+                                    canonical markdown rendering
+    --schema-provider TEXT          Limit schema verification to DB provider
+                                    name (repeatable)
+    --artifact-provider TEXT        Limit artifact proof<PATH> to
+                                    effective provider (repeatable)
+    --artifact-status TEXT          Limit artifact listing<PATH> to support
+                                    status (repeatable)
+    --artifact-kind TEXT            Limit artifact listing<PATH> to artifact
+                                    kind (repeatable)
+    --artifact-limit INTEGER        Limit artifact proof<PATH> to N
+                                    observation rows
+    --artifact-offset INTEGER       Start offset for artifact
+                                    proof<PATH>  [default: 0]
+    --semantic-provider TEXT        Limit semantic proof to conversation
+                                    providers (repeatable)
+    --semantic-limit INTEGER        Limit semantic proof to N conversations
+    --semantic-offset INTEGER       Start offset for semantic proof  [default:
+                                    0]
+    --schema-samples TEXT           Validation samples per raw payload: positive
+                                    integer or 'all'  [default: all]
+    --schema-record-limit INTEGER   Limit schema verification to N raw records
+                                    (for chunked runs)
+    --schema-record-offset INTEGER  Start offset for chunked schema verification
+                                    [default: 0]
+    --schema-quarantine-malformed   Mark malformed raw payloads as failed
+                                    validation during schema verification
+                                    (mutates DB)
+    -h, --help                      Show this message and exit.
+  '''
+# ---
+# name: TestCommandOutputs.test_run_help_output_snapshot
+  '''
+  Usage: polylogue run [OPTIONS]
+  
+    Run pipeline stages on configured sources.
+  
+  Options:
+    --preview                       Preview work without writing
+    --stage [acquire|validate|parse|render|index|generate-schemas|all]
+                                    Pipeline stage: acquire (store raw),
+                                    validate (schema check raw payloads), parse
+                                    (extract conversations), render (output),
+                                    index (search), generate-schemas, or all
+                                    [default: all]
+    --source TEXT                   Limit to source name (repeatable). 'last' =
+                                    previously synced source. List with:
+                                    polylogue sources
+    --format [markdown|html]        Output format for rendering (markdown or
+                                    html)  [default: html]
+    --watch                         Watch sources for changes and run
+                                    continuously
+    --notify                        Desktop notification on conversation changes
+                                    (requires --watch)
+    --exec TEXT                     Execute command on conversation changes
+                                    (requires --watch)
+    --webhook TEXT                  Call webhook URL on conversation changes
+                                    (requires --watch)
+    --reparse                       Force re-parsing of all raw conversations
+                                    (clears parse tracking)
+    -h, --help                      Show this message and exit.
+  '''
+# ---
+# name: TestCommandOutputs.test_sources_output_snapshot
+  '''
+  Usage: polylogue sources [OPTIONS]
+  
+    List configured sources.
+  
+  Options:
+    --json      Output JSON
+    -h, --help  Show this message and exit.
+  '''
+# ---
+# name: TestErrorOutput.test_invalid_command_error_output
+  '''
+  No conversations matched filters:
+    search: invalid-command-xyz
+  Hint: try broadening your filters or use --list to browse
+  '''
+# ---
+# name: TestHelpOutput.test_help_output_snapshot
+  '''
+  Usage: polylogue [OPTIONS] COMMAND [ARGS]...
+  
+    Polylogue - AI conversation archive.
+  
+    Query mode (default):
+        polylogue "search terms"
+        polylogue -p claude-ai --since "last week"
+        polylogue --latest --output browser
+  
+    Combined filters:
+        polylogue "error" -p claude-ai --since 2025-01 --list
+        polylogue --has thinking --sort tokens --limit 10
+        polylogue -t important --stats-by provider
+  
+    Modifiers (write operations):
+        polylogue "urgent" --add-tag review --dry-run
+        polylogue -p old --delete --dry-run
+  
+    Subcommands:
+        polylogue run       Parse<PATH> pipeline
+        polylogue check     Health check and repair
+        polylogue qa        Composable QA (audit, exercises, invariants)
+        polylogue generate  Synthetic data generation
+        polylogue embed     Generate vector embeddings
+        polylogue tags      List tags with counts
+        polylogue site      Build static HTML archive
+        polylogue sources   List configured sources
+        polylogue schema    Schema inference and versioning
+        polylogue mcp       Start MCP server
+  
+    Run `polylogue <command> --help` for subcommand details.
+  
+  Options:
+    -i, --id TEXT                   Conversation ID (exact or prefix match)
+    -c, --contains TEXT             FTS term (repeatable = AND)
+    --exclude-text TEXT             Exclude FTS term
+    -p, --provider TEXT             Include providers (comma = OR)
+    --exclude-provider TEXT         Exclude providers
+    -t, --tag TEXT                  Include tags (comma = OR, supports
+                                    key:value)
+    --exclude-tag TEXT              Exclude tags
+    --title TEXT                    Title contains
+    --has TEXT                      Filter by content: thinking (reasoning),
+                                    tools (calls), summary, attachments
+    --has-tool-use                  Only conversations with tool use (SQL
+                                    pushdown)
+    --has-thinking                  Only conversations with thinking blocks (SQL
+                                    pushdown)
+    --has-file-ops                  Only conversations with file read<PATH>
+                                    ops
+    --has-git-ops                   Only conversations with git operations
+    --has-subagent                  Only conversations that spawned subagents
+    --min-messages INTEGER          Minimum message count
+    --max-messages INTEGER          Maximum message count
+    --min-words INTEGER             Minimum total word count
+    --since TEXT                    After date (ISO, 'yesterday', 'last week')
+    --until TEXT                    Before date
+    -n, --limit INTEGER             Max results
+    --latest                        Most recent (= --sort date --limit 1)
+    --sort [date|tokens|messages|words|longest|random]
+                                    Sort by field
+    --reverse                       Reverse sort order
+    --sample INTEGER                Random sample of N conversations
+    -o, --output TEXT               Output destinations: browser, clipboard,
+                                    stdout (comma-separated)
+    -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
+                                    Output format
+    --fields TEXT                   Fields for list<PATH>: id, title, provider,
+                                    date, messages, words, tags, summary
+    --list                          Force list format
+    --stats                         Only statistics, no content
+    --count                         Print matched count and exit
+    --stats-by [provider|month|year|day]
+                                    Aggregate statistics by dimension
+    --open                          Open result in browser<PATH>
+    --transform [strip-tools|strip-thinking|strip-all]
+                                    Remove content: strip-tools (tool calls),
+                                    strip-thinking (reasoning), strip-all (both)
+    --stream                        Stream output (low memory). Requires
+                                    --latest or -i ID. Incompatible with
+                                    --transform
+    -d, --dialogue-only             Show only user<PATH> messages
+    --set TEXT...                   Set metadata key value
+    --add-tag TEXT                  Add tags (comma-separated)
+    --delete                        Delete matched (requires filter)
+    --dry-run                       Preview changes without executing
+    --force                         Skip confirmation for bulk operations
+    --plain                         Force non-interactive plain output
+    -v, --verbose                   Verbose output
+    --version                       Show the version and exit.
+    -h, --help                      Show this message and exit.
+  
+  Commands:
+    auth         Authenticate with external services (Google Drive for...
+    check        Health check with optional repair.
+    completions  Generate shell completion scripts.
+    dashboard    Launch the Mission Control TUI dashboard.
+    embed        Generate semantic embeddings for conversations.
+    generate     Generate synthetic conversations for demos, testing, and...
+    mcp          Start the MCP server for AI assistant integration.
+    qa           Run composable QA: schema audit, exercises, and invariant...
+    reset        Reset database, assets, rendered outputs, or auth state.
+    run          Run pipeline stages on configured sources.
+    schema       Schema inference, versioning, and promotion.
+    site         Generate a static HTML site from the archive.
+    sources      List configured sources.
+    tags         List all tags with conversation counts.
+  '''
+# ---
+# name: TestTerminalDimensions.test_help_at_narrow_width
+  '''
+  Usage: polylogue [OPTIONS] COMMAND [ARGS]...
+  
+    Polylogue - AI conversation archive.
+  
+    Query mode (default):
+        polylogue "search terms"
+        polylogue -p claude-ai --since "last week"
+        polylogue --latest --output browser
+  
+    Combined filters:
+        polylogue "error" -p claude-ai --since 2025-01 --list
+        polylogue --has thinking --sort tokens --limit 10
+        polylogue -t important --stats-by provider
+  
+    Modifiers (write operations):
+        polylogue "urgent" --add-tag review --dry-run
+        polylogue -p old --delete --dry-run
+  
+    Subcommands:
+        polylogue run       Parse<PATH> pipeline
+        polylogue check     Health check and repair
+        polylogue qa        Composable QA (audit, exercises, i
+  nvariants)
+        polylogue generate  Synthetic data generation
+        polylogue embed     Generate vector embeddings
+        polylogue tags      List tags with counts
+        polylogue site      Build static HTML archive
+        polylogue sources   List configured sources
+        polylogue schema    Schema inference and versioning
+        polylogue mcp       Start MCP server
+  
+    Run `polylogue <command> --help` for subcommand details.
+  
+  Options:
+    -i, --id TEXT                   Conversation ID (exact or
+  prefix match)
+    -c, --contains TEXT             FTS term (repeatable = AND
+  )
+    --exclude-text TEXT             Exclude FTS term
+    -p, --provider TEXT             Include providers (comma =
+   OR)
+    --exclude-provider TEXT         Exclude providers
+    -t, --tag TEXT                  Include tags (comma = OR,
+  supports
+                                    key:value)
+    --exclude-tag TEXT              Exclude tags
+    --title TEXT                    Title contains
+    --has TEXT                      Filter by content: thinkin
+  g (reasoning),
+                                    tools (calls), summary, at
+  tachments
+    --has-tool-use                  Only conversations with to
+  ol use (SQL
+                                    pushdown)
+    --has-thinking                  Only conversations with th
+  inking blocks (SQL
+                                    pushdown)
+    --has-file-ops                  Only conversations with fi
+  le read<PATH>
+                                    ops
+    --has-git-ops                   Only conversations with gi
+  t operations
+    --has-subagent                  Only conversations that sp
+  awned subagents
+    --min-messages INTEGER          Minimum message count
+    --max-messages INTEGER          Maximum message count
+    --min-words INTEGER             Minimum total word count
+    --since TEXT                    After date (ISO, 'yesterda
+  y', 'last week')
+    --until TEXT                    Before date
+    -n, --limit INTEGER             Max results
+    --latest                        Most recent (= --sort date
+   --limit 1)
+    --sort [date|tokens|messages|words|longest|random]
+                                    Sort by field
+    --reverse                       Reverse sort order
+    --sample INTEGER                Random sample of N convers
+  ations
+    -o, --output TEXT               Output destinations: brows
+  er, clipboard,
+                                    stdout (comma-separated)
+    -f, --format [markdown|json|html|obsidian|org|yaml|plainte
+  xt|csv]
+                                    Output format
+    --fields TEXT                   Fields for list<PATH>: id,
+  title, provider,
+                                    date, messages, words, tag
+  s, summary
+    --list                          Force list format
+    --stats                         Only statistics, no conten
+  t
+    --count                         Print matched count and ex
+  it
+    --stats-by [provider|month|year|day]
+                                    Aggregate statistics by di
+  mension
+    --open                          Open result in browser<PATH>
+  tor
+    --transform [strip-tools|strip-thinking|strip-all]
+                                    Remove content: strip-tool
+  s (tool calls),
+                                    strip-thinking (reasoning)
+  , strip-all (both)
+    --stream                        Stream output (low memory)
+  . Requires
+                                    --latest or -i ID. Incompa
+  tible with
+                                    --transform
+    -d, --dialogue-only             Show only user<PATH> m
+  essages
+    --set TEXT...                   Set metadata key value
+    --add-tag TEXT                  Add tags (comma-separated)
+    --delete                        Delete matched (requires f
+  ilter)
+    --dry-run                       Preview changes without ex
+  ecuting
+    --force                         Skip confirmation for bulk
+   operations
+    --plain                         Force non-interactive plai
+  n output
+    -v, --verbose                   Verbose output
+    --version                       Show the version and exit.
+    -h, --help                      Show this message and exit
+  .
+  
+  Commands:
+    auth         Authenticate with external services (Google D
+  rive for...
+    check        Health check with optional repair.
+    completions  Generate shell completion scripts.
+    dashboard    Launch the Mission Control TUI dashboard.
+    embed        Generate semantic embeddings for conversation
+  s.
+    generate     Generate synthetic conversations for demos, t
+  esting, and...
+    mcp          Start the MCP server for AI assistant integra
+  tion.
+    qa           Run composable QA: schema audit, exercises, a
+  nd invariant...
+    reset        Reset database, assets, rendered outputs, or
+  auth state.
+    run          Run pipeline stages on configured sources.
+    schema       Schema inference, versioning, and promotion.
+    site         Generate a static HTML site from the archive.
+    sources      List configured sources.
+    tags         List all tags with conversation counts.
+  '''
+# ---
+# name: TestTerminalDimensions.test_help_at_wide_width
+  '''
+  Usage: polylogue [OPTIONS] COMMAND [ARGS]...
+  
+    Polylogue - AI conversation archive.
+  
+    Query mode (default):
+        polylogue "search terms"
+        polylogue -p claude-ai --since "last week"
+        polylogue --latest --output browser
+  
+    Combined filters:
+        polylogue "error" -p claude-ai --since 2025-01 --list
+        polylogue --has thinking --sort tokens --limit 10
+        polylogue -t important --stats-by provider
+  
+    Modifiers (write operations):
+        polylogue "urgent" --add-tag review --dry-run
+        polylogue -p old --delete --dry-run
+  
+    Subcommands:
+        polylogue run       Parse<PATH> pipeline
+        polylogue check     Health check and repair
+        polylogue qa        Composable QA (audit, exercises, invariants)
+        polylogue generate  Synthetic data generation
+        polylogue embed     Generate vector embeddings
+        polylogue tags      List tags with counts
+        polylogue site      Build static HTML archive
+        polylogue sources   List configured sources
+        polylogue schema    Schema inference and versioning
+        polylogue mcp       Start MCP server
+  
+    Run `polylogue <command> --help` for subcommand details.
+  
+  Options:
+    -i, --id TEXT                   Conversation ID (exact or prefix match)
+    -c, --contains TEXT             FTS term (repeatable = AND)
+    --exclude-text TEXT             Exclude FTS term
+    -p, --provider TEXT             Include providers (comma = OR)
+    --exclude-provider TEXT         Exclude providers
+    -t, --tag TEXT                  Include tags (comma = OR, supports
+                                    key:value)
+    --exclude-tag TEXT              Exclude tags
+    --title TEXT                    Title contains
+    --has TEXT                      Filter by content: thinking (reasoning),
+                                    tools (calls), summary, attachments
+    --has-tool-use                  Only conversations with tool use (SQL
+                                    pushdown)
+    --has-thinking                  Only conversations with thinking blocks (SQL
+                                    pushdown)
+    --has-file-ops                  Only conversations with file read<PATH>
+                                    ops
+    --has-git-ops                   Only conversations with git operations
+    --has-subagent                  Only conversations that spawned subagents
+    --min-messages INTEGER          Minimum message count
+    --max-messages INTEGER          Maximum message count
+    --min-words INTEGER             Minimum total word count
+    --since TEXT                    After date (ISO, 'yesterday', 'last week')
+    --until TEXT                    Before date
+    -n, --limit INTEGER             Max results
+    --latest                        Most recent (= --sort date --limit 1)
+    --sort [date|tokens|messages|words|longest|random]
+                                    Sort by field
+    --reverse                       Reverse sort order
+    --sample INTEGER                Random sample of N conversations
+    -o, --output TEXT               Output destinations: browser, clipboard,
+                                    stdout (comma-separated)
+    -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
+                                    Output format
+    --fields TEXT                   Fields for list<PATH>: id, title, provider,
+                                    date, messages, words, tags, summary
+    --list                          Force list format
+    --stats                         Only statistics, no content
+    --count                         Print matched count and exit
+    --stats-by [provider|month|year|day]
+                                    Aggregate statistics by dimension
+    --open                          Open result in browser<PATH>
+    --transform [strip-tools|strip-thinking|strip-all]
+                                    Remove content: strip-tools (tool calls),
+                                    strip-thinking (reasoning), strip-all (both)
+    --stream                        Stream output (low memory). Requires
+                                    --latest or -i ID. Incompatible with
+                                    --transform
+    -d, --dialogue-only             Show only user<PATH> messages
+    --set TEXT...                   Set metadata key value
+    --add-tag TEXT                  Add tags (comma-separated)
+    --delete                        Delete matched (requires filter)
+    --dry-run                       Preview changes without executing
+    --force                         Skip confirmation for bulk operations
+    --plain                         Force non-interactive plain output
+    -v, --verbose                   Verbose output
+    --version                       Show the version and exit.
+    -h, --help                      Show this message and exit.
+  
+  Commands:
+    auth         Authenticate with external services (Google Drive for...
+    check        Health check with optional repair.
+    completions  Generate shell completion scripts.
+    dashboard    Launch the Mission Control TUI dashboard.
+    embed        Generate semantic embeddings for conversations.
+    generate     Generate synthetic conversations for demos, testing, and...
+    mcp          Start the MCP server for AI assistant integration.
+    qa           Run composable QA: schema audit, exercises, and invariant...
+    reset        Reset database, assets, rendered outputs, or auth state.
+    run          Run pipeline stages on configured sources.
+    schema       Schema inference, versioning, and promotion.
+    site         Generate a static HTML site from the archive.
+    sources      List configured sources.
+    tags         List all tags with conversation counts.
+  '''
+# ---

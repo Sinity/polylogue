@@ -10,6 +10,12 @@ from click.testing import CliRunner
 
 from polylogue.cli import cli
 from polylogue.health import HealthCheck, HealthReport, VerifyStatus
+from polylogue.rendering.semantic_proof import (
+    ProviderSemanticProof,
+    SemanticConversationProof,
+    SemanticMetricCheck,
+    SemanticProofReport,
+)
 from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import ArtifactCohortSummary, ArtifactObservationRecord
@@ -32,6 +38,61 @@ def _extract_json(output: str) -> dict:
         raise ValueError(f"No JSON found in output: {output}")
     json_str = "\n".join(lines[json_start:])
     return json.loads(json_str)
+
+
+def _make_semantic_report(*, critical: bool = False) -> SemanticProofReport:
+    checks = [
+        SemanticMetricCheck(
+            metric="renderable_messages",
+            status="critical_loss" if critical else "preserved",
+            policy="canonical markdown must preserve every renderable message section",
+            input_value=2,
+            output_value=1 if critical else 2,
+        ),
+        SemanticMetricCheck(
+            metric="thinking_semantics",
+            status="declared_loss",
+            policy="canonical markdown preserves display text but not typed thinking markers",
+            input_value=1,
+            output_value=0,
+        ),
+    ]
+    return SemanticProofReport(
+        surface="canonical_markdown_v1",
+        conversations=[
+            SemanticConversationProof(
+                conversation_id="conv-1",
+                provider="chatgpt",
+                surface="canonical_markdown_v1",
+                input_facts={"renderable_messages": 2},
+                output_facts={"message_sections": 1 if critical else 2},
+                checks=checks,
+            )
+        ],
+        provider_reports={
+            "chatgpt": ProviderSemanticProof(
+                provider="chatgpt",
+                total_conversations=1,
+                clean_conversations=0 if critical else 1,
+                critical_conversations=1 if critical else 0,
+                preserved_checks=0 if critical else 1,
+                declared_loss_checks=1,
+                critical_loss_checks=1 if critical else 0,
+                metric_summary={
+                    "renderable_messages": {
+                        "preserved": 0 if critical else 1,
+                        "declared_loss": 0,
+                        "critical_loss": 1 if critical else 0,
+                    },
+                    "thinking_semantics": {
+                        "preserved": 0,
+                        "declared_loss": 1,
+                        "critical_loss": 0,
+                    },
+                },
+            )
+        },
+    )
 
 
 class TestHealthReportConstruction:
@@ -390,8 +451,28 @@ class TestCheckCommand:
 class TestCheckCommandSupplementary:
     """Tests for check command edge cases."""
 
-    def test_vacuum_without_repair_fails(self, cli_workspace):
-        """--vacuum requires --repair."""
+    # --- Flag validation: invalid combos rejected with correct error ---
+
+    INVALID_FLAG_COMBOS = [
+        (["check", "--vacuum"], "--vacuum requires --repair"),
+        (["check", "--preview"], "--preview requires --repair"),
+        (["check", "--schema-provider", "chatgpt"], "--schema-provider requires --schemas"),
+        (["check", "--schema-record-limit", "100"], "--schema-record-limit requires --schemas"),
+        (["check", "--schema-record-offset", "10"], "--schema-record-offset requires --schemas"),
+        (["check", "--schema-quarantine-malformed"], "--schema-quarantine-malformed requires --schemas"),
+        (["check", "--semantic-provider", "chatgpt"], "--semantic-provider requires --semantic-proof"),
+        (["check", "--semantic-limit", "10"], "--semantic-limit requires --semantic-proof"),
+        (["check", "--semantic-offset", "10"], "--semantic-offset requires --semantic-proof"),
+        (["check", "--schemas", "--schema-samples", "0"], "--schema-samples must be a positive integer or 'all'"),
+        (["check", "--schemas", "--schema-record-limit", "0"], "--schema-record-limit must be a positive integer"),
+        (["check", "--schemas", "--schema-record-offset", "-1"], "--schema-record-offset must be >= 0"),
+        (["check", "--semantic-proof", "--semantic-limit", "0"], "--semantic-limit must be a positive integer"),
+        (["check", "--semantic-proof", "--semantic-offset", "-1"], "--semantic-offset must be >= 0"),
+    ]
+
+    @pytest.mark.parametrize("args,expected_error", INVALID_FLAG_COMBOS)
+    def test_invalid_flag_combinations_rejected(self, cli_workspace, args, expected_error):
+        """Flag dependencies and value constraints are enforced."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
@@ -755,6 +836,85 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         mock_prove.assert_called_once_with(
             providers=["claude-code"],
+            record_limit=25,
+            record_offset=50,
+        )
+
+    def test_check_semantic_proof_json_output(self, cli_workspace):
+        """--semantic-proof adds semantic_proof block to JSON output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = _make_semantic_report()
+
+        with patch(
+            "polylogue.rendering.semantic_proof.prove_markdown_render_semantics",
+            return_value=fake_report,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["--plain", "check", "--json", "--semantic-proof"])
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert "semantic_proof" in data
+        assert data["semantic_proof"]["surface"] == "canonical_markdown_v1"
+        assert data["semantic_proof"]["summary"]["clean_conversations"] == 1
+        assert data["semantic_proof"]["summary"]["metric_summary"]["thinking_semantics"]["declared_loss"] == 1
+
+    def test_check_semantic_proof_plain_output(self, cli_workspace):
+        """--semantic-proof renders the semantic proof summary in plain output."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = _make_semantic_report(critical=True)
+
+        with patch(
+            "polylogue.rendering.semantic_proof.prove_markdown_render_semantics",
+            return_value=fake_report,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["--plain", "check", "--semantic-proof"])
+
+        assert result.exit_code == 0
+        assert "Semantic proof:" in result.output
+        assert "critical=1" in result.output
+        assert "renderable_messages(preserved=0, declared_loss=0, critical_loss=1)" in result.output
+        assert "chatgpt: conversations=1 clean=0 critical=1" in result.output
+
+    def test_check_semantic_proof_forwards_scope(self, cli_workspace):
+        """Semantic provider/limit/offset are forwarded to the proof workflow."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = _make_semantic_report()
+
+        with patch(
+            "polylogue.rendering.semantic_proof.prove_markdown_render_semantics",
+            return_value=fake_report,
+        ) as mock_prove:
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                [
+                    "--plain",
+                    "check",
+                    "--json",
+                    "--semantic-proof",
+                    "--semantic-provider",
+                    "chatgpt",
+                    "--semantic-limit",
+                    "25",
+                    "--semantic-offset",
+                    "50",
+                ],
+            )
+
+        assert result.exit_code == 0
+        mock_prove.assert_called_once_with(
+            providers=["chatgpt"],
             record_limit=25,
             record_offset=50,
         )
