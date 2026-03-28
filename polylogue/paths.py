@@ -2,13 +2,17 @@
 
 This module defines all paths used by polylogue. There is no configuration file.
 All paths follow XDG Base Directory specification with sensible defaults.
+
+Path resolution is lazy — functions read environment variables at call time,
+not import time. This eliminates the need for importlib.reload() in tests:
+just set the env var and call the function again.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 
@@ -20,37 +24,107 @@ def _xdg_path(env_var: str, fallback: Path) -> Path:
     return fallback
 
 
-# XDG root directories
-CONFIG_ROOT = _xdg_path("XDG_CONFIG_HOME", Path.home() / ".config")
-DATA_ROOT = _xdg_path("XDG_DATA_HOME", Path.home() / ".local/share")
-CACHE_ROOT = _xdg_path("XDG_CACHE_HOME", Path.home() / ".cache")
-STATE_ROOT = _xdg_path("XDG_STATE_HOME", Path.home() / ".local/state")
+# ---------------------------------------------------------------------------
+# Lazy path accessors — read env vars at call time, cached per call site
+# ---------------------------------------------------------------------------
 
-# Polylogue-specific directories
-CONFIG_HOME = CONFIG_ROOT / "polylogue"
-DATA_HOME = DATA_ROOT / "polylogue"
-CACHE_HOME = CACHE_ROOT / "polylogue"
-STATE_HOME = STATE_ROOT / "polylogue"
 
-# Core paths (hardcoded, no configuration)
-DB_PATH = DATA_HOME / "polylogue.db"
-INBOX_ROOT = DATA_HOME / "inbox"
-RENDER_ROOT = DATA_HOME / "render"
-ARCHIVE_ROOT = DATA_HOME  # DB and renders live here
+def config_root() -> Path:
+    """XDG_CONFIG_HOME (default: ~/.config)."""
+    return _xdg_path("XDG_CONFIG_HOME", Path.home() / ".config")
 
-# Drive OAuth paths
-DRIVE_CREDENTIALS_PATH = CONFIG_HOME / "polylogue-credentials.json"
-DRIVE_TOKEN_PATH = STATE_HOME / "token.json"
 
-# Standard source paths (auto-discovered)
-CLAUDE_CODE_PATH = Path.home() / ".claude" / "projects"
-CODEX_PATH = Path.home() / ".codex" / "sessions"
+def data_root() -> Path:
+    """XDG_DATA_HOME (default: ~/.local/share)."""
+    return _xdg_path("XDG_DATA_HOME", Path.home() / ".local/share")
+
+
+def cache_root() -> Path:
+    """XDG_CACHE_HOME (default: ~/.cache)."""
+    return _xdg_path("XDG_CACHE_HOME", Path.home() / ".cache")
+
+
+def state_root() -> Path:
+    """XDG_STATE_HOME (default: ~/.local/state)."""
+    return _xdg_path("XDG_STATE_HOME", Path.home() / ".local/state")
+
+
+def config_home() -> Path:
+    """Polylogue config directory."""
+    return config_root() / "polylogue"
+
+
+def data_home() -> Path:
+    """Polylogue data directory."""
+    return data_root() / "polylogue"
+
+
+def cache_home() -> Path:
+    """Polylogue cache directory."""
+    return cache_root() / "polylogue"
+
+
+def state_home() -> Path:
+    """Polylogue state directory."""
+    return state_root() / "polylogue"
+
+
+def db_path() -> Path:
+    """Default database path."""
+    return data_home() / "polylogue.db"
+
+
+def inbox_root() -> Path:
+    """Default inbox directory."""
+    return data_home() / "inbox"
+
+
+def archive_root() -> Path:
+    """Archive root (overridable via POLYLOGUE_ARCHIVE_ROOT)."""
+    return _xdg_path("POLYLOGUE_ARCHIVE_ROOT", data_home())
+
+
+def render_root() -> Path:
+    """Render output root (overridable via POLYLOGUE_RENDER_ROOT)."""
+    return _xdg_path("POLYLOGUE_RENDER_ROOT", data_home() / "render")
+
+
+def drive_credentials_path() -> Path:
+    """Drive OAuth credentials path."""
+    return config_home() / "polylogue-credentials.json"
+
+
+def drive_token_path() -> Path:
+    """Drive OAuth token path."""
+    return state_home() / "token.json"
+
+
+def claude_code_path() -> Path:
+    """Claude Code sessions directory."""
+    return Path.home() / ".claude" / "projects"
+
+
+def codex_path() -> Path:
+    """Codex sessions directory."""
+    return Path.home() / ".codex" / "sessions"
+
+
 GEMINI_DRIVE_FOLDER = "Google AI Studio"
+
+
+def drive_cache_path() -> Path:
+    """Local cache directory for Drive-sourced files."""
+    return data_home() / "drive-cache"
 
 
 @dataclass
 class Source:
-    """A conversation source (local path or Drive folder)."""
+    """A conversation source (local path, Drive folder, or both).
+
+    Drive sources have both a ``folder`` (Drive folder name) and a ``path``
+    (local cache directory).  The pipeline syncs Drive files to the cache
+    path, then the normal file-based acquisition picks them up.
+    """
 
     name: str
     path: Path | None = None
@@ -64,8 +138,6 @@ class Source:
         has_folder = self.folder is not None and self.folder.strip()
         if not has_path and not has_folder:
             raise ValueError(f"Source '{self.name}' must have either 'path' or 'folder'")
-        if has_path and has_folder:
-            raise ValueError(f"Source '{self.name}' cannot have both 'path' and 'folder'")
         if self.folder:
             self.folder = self.folder.strip()
 
@@ -78,8 +150,8 @@ class Source:
 class DriveConfig:
     """Google Drive OAuth configuration."""
 
-    credentials_path: Path = DRIVE_CREDENTIALS_PATH
-    token_path: Path = DRIVE_TOKEN_PATH
+    credentials_path: Path = field(default_factory=drive_credentials_path)
+    token_path: Path = field(default_factory=drive_token_path)
     retry_count: int = 3
     timeout: int = 30
 
@@ -103,9 +175,9 @@ class IndexConfig:
             try:
                 dimension = int(dimension_str)
             except ValueError:
-                import logging
+                from polylogue.lib.log import get_logger
 
-                logging.getLogger(__name__).warning(
+                get_logger(__name__).warning(
                     "Invalid POLYLOGUE_VOYAGE_DIMENSION=%r, using model default", dimension_str
                 )
 
@@ -128,18 +200,23 @@ def get_sources() -> list[Source]:
     - codex: ~/.codex/sessions (auto-discovered)
     - gemini: Google Drive "Google AI Studio" folder
     """
-    sources = [Source(name="inbox", path=INBOX_ROOT)]
+    sources = [Source(name="inbox", path=inbox_root())]
 
     # Auto-discover Claude Code sessions
-    if CLAUDE_CODE_PATH.exists():
-        sources.append(Source(name="claude-code", path=CLAUDE_CODE_PATH))
+    if claude_code_path().exists():
+        sources.append(Source(name="claude-code", path=claude_code_path()))
 
     # Auto-discover Codex sessions
-    if CODEX_PATH.exists():
-        sources.append(Source(name="codex", path=CODEX_PATH))
+    if codex_path().exists():
+        sources.append(Source(name="codex", path=codex_path()))
 
-    # Gemini via Google Drive (always included, requires auth)
-    sources.append(Source(name="gemini", folder=GEMINI_DRIVE_FOLDER))
+    # Gemini via Google Drive — files are synced to a local cache dir,
+    # then processed by the normal file-based acquisition pipeline.
+    sources.append(Source(
+        name="gemini",
+        folder=GEMINI_DRIVE_FOLDER,
+        path=drive_cache_path() / "gemini",
+    ))
 
     return sources
 
@@ -186,26 +263,27 @@ def is_within_root(path: Path, root: Path) -> bool:
 
 
 __all__ = [
-    # XDG directories
-    "CONFIG_HOME",
-    "DATA_HOME",
-    "CACHE_HOME",
-    "STATE_HOME",
-    "CONFIG_ROOT",
-    "DATA_ROOT",
-    "CACHE_ROOT",
-    "STATE_ROOT",
-    # Core paths
-    "DB_PATH",
-    "INBOX_ROOT",
-    "RENDER_ROOT",
-    "ARCHIVE_ROOT",
-    "DRIVE_CREDENTIALS_PATH",
-    "DRIVE_TOKEN_PATH",
-    # Source paths
-    "CLAUDE_CODE_PATH",
-    "CODEX_PATH",
+    # XDG directory accessors
+    "config_home",
+    "data_home",
+    "cache_home",
+    "state_home",
+    "config_root",
+    "data_root",
+    "cache_root",
+    "state_root",
+    # Core path accessors
+    "db_path",
+    "inbox_root",
+    "render_root",
+    "archive_root",
+    "drive_credentials_path",
+    "drive_token_path",
+    # Source path accessors
+    "claude_code_path",
+    "codex_path",
     "GEMINI_DRIVE_FOLDER",
+    "drive_cache_path",
     # Classes
     "Source",
     "DriveConfig",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,11 +7,12 @@ from typing import Any
 
 from ..assets import asset_path
 from ..config import Source
+from ..lib.log import get_logger
 from ..paths import safe_path_component
 from .drive_client import DriveClient, _parse_modified_time
 from .source import ParsedConversation, parse_drive_payload
 
-LOGGER = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -45,13 +45,18 @@ def download_drive_files(
     for file_info in client.iter_json_files(folder_id):
         file_id = file_info.file_id
         name = file_info.name
-        dest_path = dest_dir / safe_path_component(name, fallback="drive_file")
+        safe_name = safe_path_component(name, fallback="drive_file")
+        # Ensure JSON-containing files have a .json extension so the
+        # file-based acquisition pipeline picks them up.
+        if not any(safe_name.lower().endswith(ext) for ext in (".json", ".jsonl", ".ndjson")):
+            safe_name += ".json"
+        dest_path = dest_dir / safe_name
 
         try:
             client.download_to_path(file_id, dest_path)
             downloaded.append(dest_path)
         except Exception as exc:
-            LOGGER.warning("Failed to download %s (%s): %s", name, file_id, exc)
+            logger.warning("Failed to download %s (%s): %s", name, file_id, exc)
             failed.append(
                 {
                     "file_id": file_id,
@@ -130,7 +135,7 @@ def iter_drive_conversations(
                 cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
                 cursor_state["latest_error"] = str(exc)
                 cursor_state["latest_error_file"] = file_meta.name
-            LOGGER.warning(
+            logger.warning(
                 "Failed to download Drive payload for %s (%s): %s",
                 file_meta.name,
                 file_meta.file_id,
