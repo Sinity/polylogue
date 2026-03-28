@@ -6,8 +6,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from rich.console import Console
-from rich.panel import Panel
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    Console = None  # type: ignore[assignment]
+    Panel = None  # type: ignore[assignment]
+    Text = None  # type: ignore[assignment]
+
+
+class PlainConsole:
+    """Minimal Console shim when Rich is unavailable."""
+
+    def __init__(self, *_: object, **__: object) -> None:
+        pass
+
+    def print(self, *objects: object, **_: object) -> None:
+        # Mimic ``rich.console.Console.print`` signature for basic usage.
+        text = " ".join(str(obj) for obj in objects)
+        print(text)
 
 
 @dataclass
@@ -17,7 +35,11 @@ class UI:
     plain: bool
 
     def __post_init__(self) -> None:
-        self.console = Console(no_color=self.plain, force_terminal=not self.plain)
+        if Console is None:
+            self.plain = True
+            self.console = PlainConsole()
+        else:
+            self.console = Console(no_color=self.plain, force_terminal=not self.plain)
 
     # Presentation helpers -------------------------------------------------
     def banner(self, title: str, subtitle: Optional[str] = None) -> None:
@@ -72,7 +94,11 @@ class UI:
                 return
         except Exception:
             pass
-        self.console.print(Panel(text, title=title))
+        if Console is None or Panel is None:
+            self.console.print(f"== {title} ==\n{text}")
+            return
+        renderable = Text(text) if Text is not None else text
+        self.console.print(Panel(renderable, title=title))
 
     # Prompting ------------------------------------------------------------
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
