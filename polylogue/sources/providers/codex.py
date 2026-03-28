@@ -16,10 +16,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from polylogue.lib.roles import normalize_role
+from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
     MessageMeta,
+    ReasoningTrace,
 )
 
 
@@ -120,6 +123,14 @@ class CodexRecord(BaseModel):
         return "unknown"
 
     @property
+    def role_normalized(self) -> str:
+        """Normalize effective_role to standard viewport values."""
+        try:
+            return normalize_role(self.effective_role)
+        except ValueError:
+            return "unknown"
+
+    @property
     def effective_content(self) -> list[dict[str, Any]]:
         """Get content blocks from any format."""
         if self.format_type == "envelope" and self.payload:
@@ -148,12 +159,7 @@ class CodexRecord(BaseModel):
     @property
     def parsed_timestamp(self) -> datetime | None:
         """Parse timestamp to datetime."""
-        if not self.timestamp:
-            return None
-        try:
-            return datetime.fromisoformat(self.timestamp.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+        return parse_timestamp(self.timestamp)
 
     # =========================================================================
     # Viewport extraction
@@ -162,11 +168,10 @@ class CodexRecord(BaseModel):
     def to_meta(self) -> MessageMeta:
         """Convert to harmonized MessageMeta."""
         role = self.effective_role
-        role_normalized = {
-            "user": "user",
-            "assistant": "assistant",
-            "system": "system",
-        }.get(role, "unknown")
+        try:
+            role_normalized = normalize_role(role)
+        except ValueError:
+            role_normalized = "unknown"
 
         return MessageMeta(
             id=self.id,
@@ -205,3 +210,7 @@ class CodexRecord(BaseModel):
                 ))
 
         return blocks
+
+    def extract_reasoning_traces(self) -> list[ReasoningTrace]:
+        """Extract reasoning traces (Codex does not expose reasoning; returns empty list)."""
+        return []

@@ -12,10 +12,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.roles import normalize_role
+from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
     MessageMeta,
+    ReasoningTrace,
 )
 
 
@@ -114,24 +117,21 @@ class ChatGPTMessage(BaseModel):
     @property
     def timestamp(self) -> datetime | None:
         """Get message timestamp as datetime."""
-        if self.create_time:
-            try:
-                return datetime.fromtimestamp(self.create_time)
-            except (ValueError, OSError):
-                pass
-        return None
+        return parse_timestamp(self.create_time)
+
+    @property
+    def parsed_timestamp(self) -> datetime | None:
+        """Get message timestamp as datetime (viewport interface alias for timestamp)."""
+        return self.timestamp
 
     @property
     def role_normalized(self) -> str:
         """Normalize role to standard values."""
-        role = self.author.role.lower() if self.author.role else "unknown"
-        mapping = {
-            "user": "user",
-            "assistant": "assistant",
-            "system": "system",
-            "tool": "tool",
-        }
-        return mapping.get(role, "unknown")
+        role = self.author.role if self.author.role else "unknown"
+        try:
+            return normalize_role(role)
+        except ValueError:
+            return "unknown"
 
     def to_meta(self) -> MessageMeta:
         """Convert to harmonized MessageMeta."""
@@ -179,6 +179,14 @@ class ChatGPTMessage(BaseModel):
             ))
 
         return blocks
+
+    def extract_content_blocks(self) -> list[ContentBlock]:
+        """Extract harmonized content blocks (viewport interface alias for to_content_blocks)."""
+        return self.to_content_blocks()
+
+    def extract_reasoning_traces(self) -> list[ReasoningTrace]:
+        """Extract reasoning traces (ChatGPT does not expose reasoning; returns empty list)."""
+        return []
 
 
 class ChatGPTNode(BaseModel):
@@ -295,18 +303,12 @@ class ChatGPTConversation(BaseModel):
     @property
     def created_at(self) -> datetime | None:
         """Get creation timestamp as datetime."""
-        try:
-            return datetime.fromtimestamp(self.create_time)
-        except (ValueError, OSError):
-            return None
+        return parse_timestamp(self.create_time)
 
     @property
     def updated_at(self) -> datetime | None:
         """Get update timestamp as datetime."""
-        try:
-            return datetime.fromtimestamp(self.update_time)
-        except (ValueError, OSError):
-            return None
+        return parse_timestamp(self.update_time)
 
     def iter_user_assistant_pairs(self) -> Iterator[tuple[ChatGPTMessage, ChatGPTMessage]]:
         """Iterate over (user_message, assistant_message) pairs."""

@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.roles import normalize_role
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -104,6 +105,20 @@ class GeminiMessage(BaseModel):
     safetyRatings: list[dict[str, Any]] = Field(default_factory=list)
     """Safety rating results."""
 
+    # Code execution
+    executableCode: dict[str, Any] | None = None
+    """Executable code block with language and code."""
+
+    codeExecutionResult: dict[str, Any] | None = None
+    """Code execution result with outcome and output."""
+
+    # Edit tracking
+    errorMessage: str | None = None
+    """Error message if present."""
+
+    isEdited: bool = False
+    """Whether this message was edited by the user."""
+
     # =========================================================================
     # Viewport extraction methods
     # =========================================================================
@@ -111,13 +126,16 @@ class GeminiMessage(BaseModel):
     @property
     def role_normalized(self) -> str:
         """Normalize role to standard values."""
-        role = self.role.lower() if self.role else "unknown"
-        return {
-            "user": "user",
-            "model": "assistant",
-            "assistant": "assistant",
-            "system": "system",
-        }.get(role, "unknown")
+        role = self.role if self.role else "unknown"
+        try:
+            return normalize_role(role)
+        except ValueError:
+            return "unknown"
+
+    @property
+    def parsed_timestamp(self):
+        """Gemini messages carry no per-message timestamp; returns None (viewport interface)."""
+        return None
 
     @property
     def text_content(self) -> str:
@@ -211,5 +229,27 @@ class GeminiMessage(BaseModel):
                         type=ContentType.FILE,
                         raw=part,
                     ))
+
+        # Code execution blocks
+        if self.executableCode:
+            language = self.executableCode.get("language", "")
+            code = self.executableCode.get("code", "")
+            if code:
+                blocks.append(ContentBlock(
+                    type=ContentType.CODE,
+                    text=code,
+                    language=language if isinstance(language, str) else None,
+                    raw=self.executableCode,
+                ))
+
+        if self.codeExecutionResult:
+            outcome = self.codeExecutionResult.get("outcome", "")
+            output = self.codeExecutionResult.get("output", "")
+            if output or outcome:
+                blocks.append(ContentBlock(
+                    type=ContentType.TOOL_RESULT,
+                    text=str(output) if output else f"[{outcome}]",
+                    raw=self.codeExecutionResult,
+                ))
 
         return blocks

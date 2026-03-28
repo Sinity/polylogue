@@ -11,7 +11,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta
+from polylogue.lib.roles import normalize_role
+from polylogue.lib.timestamps import parse_timestamp
+from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta, ReasoningTrace
 
 
 class ClaudeAIChatMessage(BaseModel):
@@ -41,19 +43,22 @@ class ClaudeAIChatMessage(BaseModel):
     """Associated files."""
 
     @property
+    def text_content(self) -> str:
+        """Extract plain text content (viewport interface)."""""
+        return self.text
+
+    @property
     def role_normalized(self) -> str:
         """Normalize role to standard values."""
-        return "user" if self.sender == "human" else "assistant"
+        try:
+            return normalize_role(self.sender)
+        except ValueError:
+            return "unknown"
 
     @property
     def parsed_timestamp(self) -> datetime | None:
         """Parse timestamp to datetime."""
-        if not self.created_at:
-            return None
-        try:
-            return datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+        return parse_timestamp(self.created_at)
 
     def to_meta(self) -> MessageMeta:
         """Convert to harmonized MessageMeta."""
@@ -71,6 +76,14 @@ class ClaudeAIChatMessage(BaseModel):
             text=self.text,
             raw={"text": self.text, "sender": self.sender},
         )]
+
+    def extract_content_blocks(self) -> list[ContentBlock]:
+        """Extract harmonized content blocks (viewport interface alias for to_content_blocks)."""
+        return self.to_content_blocks()
+
+    def extract_reasoning_traces(self) -> list[ReasoningTrace]:
+        """Extract reasoning traces (Claude AI web does not expose reasoning; returns empty list)."""
+        return []
 
 
 class ClaudeAIConversation(BaseModel):
@@ -107,18 +120,12 @@ class ClaudeAIConversation(BaseModel):
     @property
     def created_datetime(self) -> datetime | None:
         """Parse creation timestamp."""
-        try:
-            return datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+        return parse_timestamp(self.created_at)
 
     @property
     def updated_datetime(self) -> datetime | None:
         """Parse update timestamp."""
-        try:
-            return datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+        return parse_timestamp(self.updated_at)
 
     @property
     def messages(self) -> list[ClaudeAIChatMessage]:
