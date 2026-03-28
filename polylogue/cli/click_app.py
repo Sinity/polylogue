@@ -53,7 +53,16 @@ class QueryFirstGroup(click.Group):
             ctx.obj["_has_subcommand"] = True
             return super().parse_args(ctx, args)
 
-        # Otherwise, convert positional args to --query-term options
+        # Build value-taking options dynamically from Click params
+        # Maps option name → nargs (how many values it consumes)
+        value_options: dict[str, int] = {}
+        for param in self.params:
+            if isinstance(param, click.Option) and not param.is_flag:
+                nargs = param.nargs if param.nargs > 0 else 1
+                for opt in param.opts + param.secondary_opts:
+                    value_options[opt] = nargs
+
+        # Convert positional args to --query-term options
         # This allows the main command to receive them as options
         new_args = []
         i = 0
@@ -61,34 +70,9 @@ class QueryFirstGroup(click.Group):
             arg = args[i]
             if arg.startswith("-"):
                 new_args.append(arg)
-                # Check if this option takes a value
-                if arg in (
-                    "-p",
-                    "--provider",
-                    "-P",
-                    "--no-provider",
-                    "-t",
-                    "--tag",
-                    "-T",
-                    "--no-tag",
-                    "--title",
-                    "--has",
-                    "--since",
-                    "--until",
-                    "-n",
-                    "--limit",
-                    "--sort",
-                    "--sample",
-                    "-o",
-                    "--output",
-                    "-f",
-                    "--format",
-                    "--fields",
-                    "--set",
-                    "--add-tag",
-                    "--transform",
-                ):
-                    if i + 1 < len(args) and not args[i + 1].startswith("-"):
+                nargs = value_options.get(arg, 0)
+                for _ in range(nargs):
+                    if i + 1 < len(args):
                         i += 1
                         new_args.append(args[i])
             else:
@@ -131,11 +115,11 @@ def _handle_query_mode(ctx: click.Context) -> None:
         params.get(k)
         for k in (
             "contains",
-            "no_contains",
+            "exclude_text",
             "provider",
-            "no_provider",
+            "exclude_provider",
             "tag",
-            "no_tag",
+            "exclude_tag",
             "has_type",
             "since",
             "until",
@@ -185,11 +169,11 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option("--query-term", multiple=True, hidden=True, help="Query term (internal)")
 # --- Filter options ---
 @click.option("--contains", "-c", multiple=True, help="FTS term (repeatable = AND)")
-@click.option("--no-contains", "-C", multiple=True, help="Exclude FTS term")
+@click.option("--exclude-text", multiple=True, help="Exclude FTS term")
 @click.option("--provider", "-p", help="Include providers (comma = OR)")
-@click.option("--no-provider", "-P", help="Exclude providers")
+@click.option("--exclude-provider", help="Exclude providers")
 @click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)")
-@click.option("--no-tag", "-T", help="Exclude tags")
+@click.option("--exclude-tag", help="Exclude tags")
 @click.option("--title", help="Title contains")
 @click.option("--has", "has_type", multiple=True, help="Has: thinking, tools, summary, attachments")
 @click.option("--since", help="After date (ISO, 'yesterday', 'last week')")
@@ -245,11 +229,11 @@ def cli(
     query_term: tuple[str, ...],
     # Filters
     contains: tuple[str, ...],
-    no_contains: tuple[str, ...],
+    exclude_text: tuple[str, ...],
     provider: str | None,
-    no_provider: str | None,
+    exclude_provider: str | None,
     tag: str | None,
-    no_tag: str | None,
+    exclude_tag: str | None,
     title: str | None,
     has_type: tuple[str, ...],
     since: str | None,
