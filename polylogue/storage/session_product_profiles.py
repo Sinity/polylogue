@@ -45,8 +45,6 @@ def profile_inference_search_text(profile: SessionProfile) -> str:
         *profile.auto_tags,
         *(event.summary for event in profile.work_events),
         *(event.kind.value for event in profile.work_events),
-        *(phase.kind for phase in profile.phases),
-        *(decision.summary for decision in profile.decisions),
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
     return search_text or profile.conversation_id
@@ -178,7 +176,6 @@ def profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
         "work_events": [event.to_dict() for event in profile.work_events],
         "phases": [
             {
-                "kind": phase.kind,
                 "start_time": phase.start_time.isoformat() if phase.start_time else None,
                 "end_time": phase.end_time.isoformat() if phase.end_time else None,
                 "canonical_session_date": (
@@ -378,7 +375,7 @@ def phase_support_signals(phase: SessionPhase) -> tuple[str, ...]:
 
 
 def phase_fallback(phase: SessionPhase) -> bool:
-    return not phase.tool_counts or phase.kind in {"mixed", "conversation"}
+    return not phase.tool_counts
 
 
 def engaged_duration_source(profile: SessionProfile) -> str:
