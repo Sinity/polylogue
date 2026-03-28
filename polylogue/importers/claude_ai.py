@@ -7,11 +7,16 @@ from tempfile import TemporaryDirectory
 from typing import Dict, List, Optional, Set, Tuple
 
 from ..render import AttachmentInfo
-from ..util import assign_conversation_slug
+from ..util import assign_conversation_slug, sanitize_filename
 from ..conversation import process_conversation
 from ..branching import MessageRecord
 from .base import ImportResult
-from .utils import estimate_token_count, normalise_inline_footnotes, store_large_text
+from .utils import (
+    estimate_token_count,
+    normalise_inline_footnotes,
+    safe_extractall,
+    store_large_text,
+)
 
 
 def _load_bundle(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
@@ -21,7 +26,7 @@ def _load_bundle(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
         raise FileNotFoundError(f"Unsupported Claude export: {path}")
     tmp = TemporaryDirectory(prefix="claude-export-")
     with zipfile.ZipFile(path) as zf:
-        zf.extractall(tmp.name)
+        safe_extractall(zf, Path(tmp.name))
     return Path(tmp.name), tmp
 
 
@@ -109,8 +114,10 @@ def _render_claude_conversation(
     title = conv.get("name") or conv.get("title") or "claude-chat"
     conv_id = conv.get("uuid") or conv.get("id") or "claude"
     slug = assign_conversation_slug("claude.ai", conv_id, title, id_hint=(conv_id or "")[:8])
-    markdown_path = output_dir / f"{slug}.md"
-    attachments_dir = markdown_path.parent / f"{slug}_attachments"
+    conversation_dir = output_dir / slug
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = conversation_dir / "conversation.md"
+    attachments_dir = conversation_dir / "attachments"
 
     attachments: List[AttachmentInfo] = []
     file_index = _index_export_files(export_root)
@@ -304,7 +311,12 @@ def _copy_file(
     if source is None:
         return None
     attachments_dir.mkdir(parents=True, exist_ok=True)
-    target = attachments_dir / name
+    safe_name = sanitize_filename(name)
+    if not safe_name:
+        safe_name = sanitize_filename(file_id or "attachment")
+    if not safe_name:
+        safe_name = "attachment"
+    target = attachments_dir / safe_name
     counter = 1
     while target.exists():
         target = attachments_dir / f"{target.stem}_{counter}{target.suffix}"

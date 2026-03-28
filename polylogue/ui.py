@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Protocol, Set
 
-try:
+try:  # pragma: no cover - optional rich dependency
     from rich.console import Console
     from rich.panel import Panel
     from rich.text import Text
-except ModuleNotFoundError:  # pragma: no cover - optional dependency
-    Console = None  # type: ignore[assignment]
-    Panel = None  # type: ignore[assignment]
-    Text = None  # type: ignore[assignment]
+except ImportError:  # pragma: no cover - fall back to plain console
+    Console = None
+    Panel = None
+    Text = None
+
+
+class ConsoleLike(Protocol):
+    def print(self, *objects: object, **kwargs: object) -> None:
+        ...
 
 
 class PlainConsole:
@@ -33,13 +39,30 @@ class UI:
     """Abstraction over interactive (gum) and plain terminal interactions."""
 
     plain: bool
+    console: ConsoleLike = field(init=False)
+    _plain_warnings: Set[str] = field(init=False, default_factory=set)
 
     def __post_init__(self) -> None:
-        if Console is None:
+        if self.plain or Console is None:
             self.plain = True
             self.console = PlainConsole()
         else:
-            self.console = Console(no_color=self.plain, force_terminal=not self.plain)
+            self.console = Console(no_color=False, force_terminal=True)
+            missing = [cmd for cmd in ("gum", "sk") if shutil.which(cmd) is None]
+            if missing:
+                self.plain = True
+                self.console = PlainConsole()
+                self._warn_plain(
+                    " and ".join(missing) + " command(s)",
+                )
+
+    def _warn_plain(self, topic: str) -> None:
+        if topic in self._plain_warnings:
+            return
+        self._plain_warnings.add(topic)
+        self.console.print(
+            f"[yellow]Plain mode cannot prompt for {topic}; using defaults."
+        )
 
     # Presentation helpers -------------------------------------------------
     def banner(self, title: str, subtitle: Optional[str] = None) -> None:
@@ -49,29 +72,26 @@ class UI:
                 self.console.print(subtitle)
             return
         body = title if not subtitle else f"{title}\n{subtitle}"
-        try:
-            result = subprocess.run(
-                [
-                    "gum",
-                    "style",
-                    "--border",
-                    "rounded",
-                    "--margin",
-                    "1",
-                    "--padding",
-                    "1",
-                    body,
-                ],
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            if result.stdout.strip():
-                self.console.print(result.stdout.rstrip())
-            else:
-                self.console.print(body)
-        except Exception:
+        result = subprocess.run(
+            [
+                "gum",
+                "style",
+                "--border",
+                "rounded",
+                "--margin",
+                "1",
+                "--padding",
+                "1",
+                body,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.stdout.strip():
+            self.console.print(result.stdout.rstrip())
+        else:
             self.console.print(body)
 
     def summary(self, title: str, lines: Iterable[str]) -> None:
@@ -80,22 +100,16 @@ class UI:
             self.console.print(f"-- {title} --")
             self.console.print(text)
             return
-        try:
-            result = subprocess.run(
-                ["gum", "format"],
-                input=f"## {title}\n{text}\n",
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            if result.stdout.strip():
-                self.console.print(result.stdout.rstrip())
-                return
-        except Exception:
-            pass
-        if Console is None or Panel is None:
-            self.console.print(f"== {title} ==\n{text}")
+        result = subprocess.run(
+            ["gum", "format"],
+            input=f"## {title}\n{text}\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        if result.stdout.strip():
+            self.console.print(result.stdout.rstrip())
             return
         renderable = Text(text) if Text is not None else text
         self.console.print(Panel(renderable, title=title))
@@ -103,47 +117,41 @@ class UI:
     # Prompting ------------------------------------------------------------
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
         if self.plain:
+            self._warn_plain("confirmation")
             return default
-        try:
-            result = subprocess.run(
-                ["gum", "confirm", "--default", "true" if default else "false", prompt],
-                check=False,
-            )
-            return result.returncode == 0
-        except Exception:
-            return default
+        result = subprocess.run(
+            ["gum", "confirm", "--default", "true" if default else "false", prompt],
+            check=False,
+        )
+        return result.returncode == 0
 
     def choose(self, prompt: str, options: List[str]) -> Optional[str]:
         if not options:
             return None
         if self.plain:
-            return options[0]
-        try:
-            result = subprocess.run(
-                ["gum", "choose", "--header", prompt, *options],
-                check=False,
-                stdout=subprocess.PIPE,
-                text=True,
-            )
-            choice = result.stdout.strip()
-            return choice or None
-        except Exception:
-            return options[0]
+            self._warn_plain("selection")
+            return None
+        result = subprocess.run(
+            ["gum", "choose", "--header", prompt, *options],
+            check=False,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        choice = result.stdout.strip()
+        return choice or None
 
     def input(self, prompt: str, *, default: Optional[str] = None) -> Optional[str]:
         if self.plain:
+            self._warn_plain("input")
             return default
         cmd = ["gum", "input", "--placeholder", prompt]
         if default:
             cmd.extend(["--value", default])
-        try:
-            result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, text=True)
-            value = result.stdout.strip()
-            if not value:
-                return default
-            return value
-        except Exception:
+        result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, text=True)
+        value = result.stdout.strip()
+        if not value:
             return default
+        return value
 
 
 def detect_plain(flag_plain: bool) -> bool:
