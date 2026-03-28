@@ -175,6 +175,10 @@ class StorageRepository:
         with self._write_lock:
             self._backend.remove_tag(conversation_id, tag)
 
+    def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
+        """List all tags with counts. Read-only, no write lock needed."""
+        return self._backend.list_tags(provider=provider)
+
     def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
         """Replace entire metadata dict."""
         with self._write_lock:
