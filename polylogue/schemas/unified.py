@@ -1,17 +1,49 @@
+<<<<<<< HEAD
 """Unified provider harmonization over typed adapter models.
+||||||| parent of e9eba3a1 (feat: add foundation abstractions for codebase transformation)
+"""Unified provider harmonization over typed adapters and explicit fallback paths.
+=======
+"""Unified provider harmonization — typed adapters with schema-driven fallback.
+>>>>>>> e9eba3a1 (feat: add foundation abstractions for codebase transformation)
 
 This module exposes one runtime entrypoint for turning provider-native payloads
 or extracted provider metadata into a `HarmonizedMessage`.
 
+<<<<<<< HEAD
 Normal extraction should flow through the typed provider adapters in
 `polylogue.sources.providers.*`. Narrow fallback logic remains only for
 malformed/rawless metadata cases that still need robust behavior in tests and
 direct message construction.
+||||||| parent of e9eba3a1 (feat: add foundation abstractions for codebase transformation)
+The implementation is intentionally split behind this API:
+
+- ``unified_models`` owns the harmonized runtime model and token helpers
+- ``unified_adapters`` owns typed provider-adapter routing
+- ``unified_fallbacks`` owns malformed/rawless fallback extraction
+- ``unified_provider_meta`` owns DB/provider-meta hydration and parsed-message flow
+=======
+Architecture:
+- Provider adapters (``unified_adapters.py``) handle per-message extraction
+  from already-parsed records (where the parser has extracted messages from
+  the wire format)
+- Schema extraction (``schemas/extraction.py``) operates at the record level
+  and is used by parsers that want generic extraction from raw wire-format data
+- Fallback extraction (``unified_fallbacks.py``) handles malformed/partial data
+- Provider meta hydration (``unified_provider_meta.py``) handles DB-stored records
+
+The distinction: adapters work on extracted messages (post-parse), schema
+extraction works on raw records (pre-parse or during parse).
+>>>>>>> e9eba3a1 (feat: add foundation abstractions for codebase transformation)
 """
 
 from __future__ import annotations
 
+<<<<<<< HEAD
 from datetime import datetime
+||||||| parent of e9eba3a1 (feat: add foundation abstractions for codebase transformation)
+=======
+import logging
+>>>>>>> e9eba3a1 (feat: add foundation abstractions for codebase transformation)
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -35,6 +67,8 @@ from polylogue.lib.viewports import (
     ToolCall,
 )
 from polylogue.types import Provider
+
+logger = logging.getLogger(__name__)
 
 
 def _missing_role() -> str:
@@ -210,6 +244,7 @@ def _extract_with_adapter(provider: Provider, raw: dict[str, Any]) -> Harmonized
 
 
 def extract_harmonized_message(provider: Provider | str, raw: dict[str, Any]) -> HarmonizedMessage:
+<<<<<<< HEAD
     """Extract HarmonizedMessage from raw provider data.
 
     Args:
@@ -218,6 +253,15 @@ def extract_harmonized_message(provider: Provider | str, raw: dict[str, Any]) ->
 
     Returns:
         HarmonizedMessage with core fields and viewport extractions
+||||||| parent of e9eba3a1 (feat: add foundation abstractions for codebase transformation)
+    """Extract ``HarmonizedMessage`` from raw provider data."""
+=======
+    """Extract ``HarmonizedMessage`` from a provider-native message payload.
+
+    This operates on already-extracted message dicts (post-parse), not on
+    raw wire-format records. For record-level schema-driven extraction,
+    use ``schemas.extraction.extract_message_from_schema`` directly.
+>>>>>>> e9eba3a1 (feat: add foundation abstractions for codebase transformation)
     """
     p = provider if isinstance(provider, Provider) else Provider.from_string(provider)
     try:
@@ -226,6 +270,7 @@ def extract_harmonized_message(provider: Provider | str, raw: dict[str, Any]) ->
         return _extract_fallback_message(p, raw)
 
 
+<<<<<<< HEAD
 def _fallback_extract_claude_code(raw: dict[str, Any]) -> HarmonizedMessage:
     """Fallback extraction for malformed Claude Code records."""
     msg = raw.get("message", {})
@@ -737,3 +782,81 @@ def bulk_harmonize(
             if harmonized:
                 results.append(harmonized)
     return results
+||||||| parent of e9eba3a1 (feat: add foundation abstractions for codebase transformation)
+__all__ = [
+    "HarmonizedMessage",
+    "_coerce_content_blocks",
+    "_coerce_reasoning_traces",
+    "_coerce_tool_calls",
+    "_extract_generic_cost",
+    "_extract_generic_tokens",
+    "_harmonize_extracted_provider_meta",
+    "_has_extracted_viewports",
+    "_missing_role",
+    "_overlay_message_context",
+    "bulk_harmonize",
+    "extract_chatgpt_text",
+    "extract_claude_code_text",
+    "extract_content_blocks",
+    "extract_from_provider_meta",
+    "extract_harmonized_message",
+    "extract_reasoning_traces",
+    "extract_token_usage",
+    "extract_tool_calls",
+    "harmonize_parsed_message",
+    "is_message_record",
+]
+=======
+def try_schema_extraction(provider: Provider | str, raw: dict[str, Any]) -> HarmonizedMessage | None:
+    """Record-level schema extraction. Returns None if unavailable.
+
+    This is for raw wire-format records (pre-parse). Parsers can call
+    this to extract messages from records using schema semantic annotations
+    instead of provider-specific Pydantic models.
+    """
+    p = provider if isinstance(provider, Provider) else Provider.from_string(provider)
+    try:
+        from polylogue.schemas.extraction import extract_message_from_schema
+        from polylogue.schemas.runtime_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        resolution = registry.resolve_payload(str(p), raw)
+        if resolution is None:
+            return None
+        schema = registry.get_element_schema(
+            resolution.provider,
+            version=resolution.package_version,
+            element_kind=resolution.element_kind,
+        )
+        if schema is None:
+            return None
+        return extract_message_from_schema(raw, schema=schema, provider=p)
+    except Exception:
+        return None
+
+
+__all__ = [
+    "HarmonizedMessage",
+    "_coerce_content_blocks",
+    "_coerce_reasoning_traces",
+    "_coerce_tool_calls",
+    "_extract_generic_cost",
+    "_extract_generic_tokens",
+    "_harmonize_extracted_provider_meta",
+    "_has_extracted_viewports",
+    "_missing_role",
+    "_overlay_message_context",
+    "bulk_harmonize",
+    "extract_chatgpt_text",
+    "extract_claude_code_text",
+    "extract_content_blocks",
+    "extract_from_provider_meta",
+    "extract_harmonized_message",
+    "extract_reasoning_traces",
+    "extract_token_usage",
+    "extract_tool_calls",
+    "harmonize_parsed_message",
+    "is_message_record",
+    "try_schema_extraction",
+]
+>>>>>>> e9eba3a1 (feat: add foundation abstractions for codebase transformation)
