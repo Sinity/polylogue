@@ -662,3 +662,6 @@ class ConversationFilter:
         Returns True if list_summaries() would work, False if list() is required.
         """
         return not self._needs_content_loading()
+
+
+__all__ = ["ConversationFilter", "SortField"]

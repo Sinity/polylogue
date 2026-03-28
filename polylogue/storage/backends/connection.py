@@ -17,7 +17,7 @@ import polylogue.paths as _paths
 from polylogue.lib.log import get_logger
 from polylogue.storage.backends.schema import _ensure_schema
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
@@ -43,7 +43,7 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
     except ImportError:
         return False
     except Exception as exc:
-        LOGGER.warning("sqlite-vec extension load failed: %s", exc)
+        logger.warning("sqlite-vec extension load failed: %s", exc)
         return False
 
 

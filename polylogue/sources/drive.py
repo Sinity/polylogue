@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,11 +7,12 @@ from typing import Any
 
 from ..assets import asset_path
 from ..config import Source
+from ..lib.log import get_logger
 from ..paths import safe_path_component
 from .drive_client import DriveClient, _parse_modified_time
 from .source import ParsedConversation, parse_drive_payload
 
-LOGGER = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -51,7 +51,7 @@ def download_drive_files(
             client.download_to_path(file_id, dest_path)
             downloaded.append(dest_path)
         except Exception as exc:
-            LOGGER.warning("Failed to download %s (%s): %s", name, file_id, exc)
+            logger.warning("Failed to download %s (%s): %s", name, file_id, exc)
             failed.append(
                 {
                     "file_id": file_id,
@@ -130,7 +130,7 @@ def iter_drive_conversations(
                 cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
                 cursor_state["latest_error"] = str(exc)
                 cursor_state["latest_error_file"] = file_meta.name
-            LOGGER.warning(
+            logger.warning(
                 "Failed to download Drive payload for %s (%s): %s",
                 file_meta.name,
                 file_meta.file_id,

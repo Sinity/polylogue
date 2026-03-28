@@ -20,7 +20,7 @@ import click
 from polylogue.lib.formatting import format_conversation
 from polylogue.lib.log import get_logger
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -108,7 +108,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     except (ValueError, ImportError):
         pass  # Vector search not available
     except Exception as exc:
-        LOGGER.warning("Vector search setup failed: %s", exc)
+        logger.warning("Vector search setup failed: %s", exc)
 
     # Create filter chain
     from polylogue.lib.filters import ConversationFilter
@@ -1112,7 +1112,7 @@ def _open_result(
     try:
         config = load_effective_config(env)
     except Exception as exc:
-        LOGGER.warning(
+        logger.warning(
             "Config load failed, falling back to defaults: %s", exc
         )
         config = None

@@ -24,3 +24,6 @@ class PolylogueError(Exception):
 
 class DatabaseError(PolylogueError):
     """Base class for database errors."""
+
+
+__all__ = ["DatabaseError", "PolylogueError"]

@@ -36,7 +36,7 @@ from typing import Any, TypeVar
 
 from polylogue.lib.log import get_logger
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Event types
@@ -211,7 +211,7 @@ class EventBus:
             try:
                 handler(event)
             except Exception:
-                LOGGER.exception(
+                logger.exception(
                     "Event handler %s failed for %s",
                     getattr(handler, "__name__", repr(handler)),
                     event_type.__name__,
@@ -223,7 +223,7 @@ class EventBus:
                 try:
                     handler(event)
                 except Exception:
-                    LOGGER.exception(
+                    logger.exception(
                         "Wildcard handler %s failed for %s",
                         getattr(handler, "__name__", repr(handler)),
                         event_type.__name__,
