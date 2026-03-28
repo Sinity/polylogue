@@ -1,4 +1,4 @@
-"""Read/query method mixin for the conversation repository."""
+"""Archive conversation/message/tree read methods for the repository."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import builtins
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from polylogue.lib.models import Conversation, ConversationSummary, Message
-from polylogue.storage.action_event_rows import hydrate_action_events
+from polylogue.lib.conversation_models import Conversation, ConversationSummary
+from polylogue.lib.message_models import Message
 from polylogue.storage.hydrators import (
     conversation_from_records,
     conversation_summary_from_record,
@@ -16,14 +16,14 @@ from polylogue.storage.hydrators import (
 )
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.state_views import ConversationRenderProjection
-from polylogue.storage.store import ActionEventRecord, ConversationRecord
+from polylogue.storage.store import ConversationRecord
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
     from polylogue.lib import filters
 
 
-class RepositoryReadMixin:
+class RepositoryArchiveReadMixin:
     async def resolve_id(self, id_prefix: str) -> ConversationId | None:
         resolved = await self.queries.resolve_id(id_prefix)
         return ConversationId(resolved) if resolved else None
@@ -37,7 +37,6 @@ class RepositoryReadMixin:
             self.queries.get_messages(conversation_id),
             self.queries.get_attachments(conversation_id),
         )
-
         return conversation_from_records(conv_record, msg_records, att_records)
 
     async def get_render_projection(self, conversation_id: str) -> ConversationRenderProjection | None:
@@ -101,7 +100,7 @@ class RepositoryReadMixin:
         query: ConversationRecordQuery,
     ) -> builtins.list[ConversationSummary]:
         conv_records = await self.queries.list_conversations(query)
-        return [conversation_summary_from_record(rec) for rec in conv_records]
+        return [conversation_summary_from_record(record) for record in conv_records]
 
     async def list_summaries(
         self,
@@ -348,7 +347,7 @@ class RepositoryReadMixin:
         ids, records = await self._search_records(query, limit=limit, providers=providers)
         if not ids:
             return []
-        return [conversation_summary_from_record(rec) for rec in records]
+        return [conversation_summary_from_record(record) for record in records]
 
     async def search(
         self,
@@ -399,34 +398,8 @@ class RepositoryReadMixin:
     async def get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
         if not conversation_ids:
             return []
-
         records = await self.queries.get_conversations_batch(conversation_ids)
         return await self._hydrate_conversations(records, ordered_ids=conversation_ids)
-
-    async def get_action_event_records(self, conversation_id: str) -> list[ActionEventRecord]:
-        return await self.queries.get_action_events(conversation_id)
-
-    async def get_action_event_records_batch(
-        self,
-        conversation_ids: builtins.list[str],
-    ) -> dict[str, list[ActionEventRecord]]:
-        return await self.queries.get_action_events_batch(conversation_ids)
-
-    async def get_action_events(self, conversation_id: str):
-        return hydrate_action_events(await self.get_action_event_records(conversation_id))
-
-    async def get_action_events_batch(
-        self,
-        conversation_ids: builtins.list[str],
-    ) -> dict[str, tuple]:
-        records_by_conversation = await self.get_action_event_records_batch(conversation_ids)
-        return {
-            conversation_id: hydrate_action_events(records)
-            for conversation_id, records in records_by_conversation.items()
-        }
-
-    async def get_action_event_read_model_status(self) -> dict[str, int | bool]:
-        return await self.queries.get_action_event_read_model_status()
 
     async def iter_messages(
         self,
@@ -448,3 +421,6 @@ class RepositoryReadMixin:
         from polylogue.lib import filters
 
         return filters.ConversationFilter(self)
+
+
+__all__ = ["RepositoryArchiveReadMixin"]

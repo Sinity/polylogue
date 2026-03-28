@@ -127,6 +127,31 @@ class SemanticProofSuiteSummary(BaseModel):
     clean: bool
 
 
+class DerivedModelPublicationSummary(BaseModel):
+    """Compact readiness/freshness summary for one durable derived model."""
+
+    ready: bool
+    detail: str
+    source_documents: int = 0
+    materialized_documents: int = 0
+    source_rows: int = 0
+    materialized_rows: int = 0
+    pending_documents: int = 0
+    pending_rows: int = 0
+    stale_rows: int = 0
+    orphan_rows: int = 0
+    missing_provenance_rows: int = 0
+    materializer_version: int | None = None
+    matches_version: bool | None = None
+
+
+class ArchiveMaintenanceSummary(BaseModel):
+    """Archive maintenance/provenance snapshot embedded in publication manifests."""
+
+    truth_source: str = "live"
+    derived_models: dict[str, DerivedModelPublicationSummary] = Field(default_factory=dict)
+
+
 class ArchivePublicationSummary(BaseModel):
     """Archive-scale summary embedded in publication manifests."""
 
@@ -170,4 +195,5 @@ class SitePublicationManifest(BaseModel):
     latest_run: PublicationRunSummary | None = None
     artifact_proof: ArtifactProofSummary | None = None
     semantic_proof: SemanticProofSuiteSummary | None = None
+    maintenance: ArchiveMaintenanceSummary | None = None
     artifacts: OutputManifest

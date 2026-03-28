@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from polylogue.lib.dates import parse_date
-from polylogue.lib.query_execution import ConversationQueryPlan
+from polylogue.lib.query_plan import ConversationQueryPlan
 from polylogue.lib.viewports import ToolCategory
 from polylogue.types import Provider
 

@@ -12,7 +12,7 @@ from polylogue.types import Provider
 if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation
-    from polylogue.lib.query_execution import ConversationQueryPlan
+    from polylogue.lib.query_plan import ConversationQueryPlan
 
 
 def _extend_tuple(values: tuple[object, ...], additions: tuple[object, ...]) -> tuple[object, ...]:

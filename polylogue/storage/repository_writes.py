@@ -5,12 +5,18 @@ from __future__ import annotations
 import builtins
 from collections.abc import Callable
 
-from polylogue.lib.models import Conversation
+from polylogue.lib.conversation_models import Conversation
 from polylogue.storage.action_event_rows import attach_blocks_to_messages, build_action_event_records
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import publications as publications_q
 from polylogue.storage.backends.queries import runs as runs_q
 from polylogue.storage.search_cache import invalidate_search_cache
+from polylogue.storage.session_product_lifecycle import (
+    delete_session_products_for_conversation_async,
+    refresh_session_products_for_conversation_async,
+    refresh_thread_after_conversation_delete_async,
+    thread_root_id_async,
+)
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
@@ -143,6 +149,13 @@ class RepositoryWriteMixin:
                     await backend.save_attachments(attachments)
                     counts["attachments"] = len(attachments)
 
+                async with backend.connection() as conn:
+                    await refresh_session_products_for_conversation_async(
+                        conn,
+                        str(conversation.conversation_id),
+                        transaction_depth=backend.transaction_depth,
+                    )
+
         invalidate_search_cache()
         return counts
 
@@ -234,11 +247,54 @@ class RepositoryWriteMixin:
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         async with self._backend.transaction(), self._backend.connection() as conn:
-            deleted = await conversations_q.delete_conversation_sql(
-                conn,
-                conversation_id,
-                self._backend.transaction_depth,
-            )
+            parent_row = await (
+                await conn.execute(
+                    "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            child_rows = await (
+                await conn.execute(
+                    "SELECT conversation_id FROM conversations WHERE parent_conversation_id = ?",
+                    (conversation_id,),
+                )
+            ).fetchall()
+            existing_row = await (
+                await conn.execute(
+                    "SELECT conversation_id FROM conversations WHERE conversation_id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            deleted = False
+            if existing_row is not None:
+                await delete_session_products_for_conversation_async(
+                    conn,
+                    conversation_id,
+                    transaction_depth=self._backend.transaction_depth,
+                )
+                deleted = await conversations_q.delete_conversation_sql(
+                    conn,
+                    conversation_id,
+                    self._backend.transaction_depth,
+                )
+            if deleted:
+                affected_seeds = {
+                    str(row["conversation_id"])
+                    for row in child_rows
+                }
+                if parent_row is not None and parent_row["parent_conversation_id"] is not None:
+                    affected_seeds.add(str(parent_row["parent_conversation_id"]))
+                affected_roots: set[str] = set()
+                for seed in affected_seeds:
+                    root_id = await thread_root_id_async(conn, seed)
+                    if root_id is not None:
+                        affected_roots.add(root_id)
+                for root_id in affected_roots:
+                    await refresh_thread_after_conversation_delete_async(
+                        conn,
+                        root_id,
+                        transaction_depth=self._backend.transaction_depth,
+                    )
         if deleted:
             invalidate_search_cache()
         return deleted

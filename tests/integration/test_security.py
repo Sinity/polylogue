@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.paths import Source
-from polylogue.sources.source import MAX_UNCOMPRESSED_SIZE, iter_source_conversations
+from polylogue.sources.decoders import MAX_UNCOMPRESSED_SIZE
+from polylogue.sources.source_parsing import iter_source_conversations
 
 
 def test_symlink_traversal_blocked_in_directory() -> None:

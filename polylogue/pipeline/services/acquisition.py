@@ -21,7 +21,7 @@ from polylogue.logging import get_logger
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.parsers.base import RawConversationData
-from polylogue.sources.source import iter_source_raw_data
+from polylogue.sources.source_acquisition import iter_source_raw_data
 from polylogue.storage.artifact_observations import inspect_raw_artifact
 from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
 

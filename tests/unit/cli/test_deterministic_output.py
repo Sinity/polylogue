@@ -387,13 +387,14 @@ class TestJsonDeterminism:
     def _normalize_check_result(data: dict) -> dict:
         """Remove cache-state fields that legitimately vary between runs.
 
-        The health system caches results; the first run produces cached=False
-        and the second cached=True with a non-zero age_seconds. These fields
+        The health system may serve live or cached reports. These provenance fields
         are runtime artifacts, not output determinism issues.
         """
         result = dict(data.get("result", data))
-        result.pop("cached", None)
-        result.pop("age_seconds", None)
+        provenance = dict(result.get("provenance") or {})
+        provenance.pop("source", None)
+        provenance.pop("cache_age_seconds", None)
+        result["provenance"] = provenance
         return {**data, "result": result}
 
     def test_check_json_deterministic_with_frozen_time(self, cli_workspace):

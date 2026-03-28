@@ -37,6 +37,12 @@ from polylogue.cli.query_summary_output import (
     output_stats_by_conversations as _output_stats_by_conversations,
 )
 from polylogue.cli.query_summary_output import (
+    output_stats_by_profile_query as _output_stats_by_profile_query,
+)
+from polylogue.cli.query_summary_output import (
+    output_stats_by_profile_summaries as _output_stats_by_profile_summaries,
+)
+from polylogue.cli.query_summary_output import (
     output_stats_by_semantic_query as _output_stats_by_semantic_query,
 )
 from polylogue.cli.query_summary_output import (
@@ -68,6 +74,8 @@ render_stream_transcript = _render_stream_transcript
 stream_conversation = _stream_conversation
 format_summary_list = _format_summary_list
 output_stats_by_summaries = _output_stats_by_summaries
+output_stats_by_profile_query = _output_stats_by_profile_query
+output_stats_by_profile_summaries = _output_stats_by_profile_summaries
 output_stats_by_semantic_query = _output_stats_by_semantic_query
 output_stats_by_semantic_summaries = _output_stats_by_semantic_summaries
 output_stats_sql = _output_stats_sql
