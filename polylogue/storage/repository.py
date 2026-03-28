@@ -436,8 +436,10 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             List of conversation IDs from that provider
         """
-        records = await self._backend.list_conversations(provider=provider, limit=None)
-        return [rec.conversation_id for rec in records]
+        return [
+            conversation_id
+            async for conversation_id in self._backend.iter_conversation_ids(source_names=[provider])
+        ]
 
     async def get_parent(self, conversation_id: str) -> Conversation | None:
         """Get the parent conversation if it exists.
