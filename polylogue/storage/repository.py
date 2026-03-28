@@ -1,3 +1,5 @@
+"""Unified repository for conversation read/write operations."""
+
 from __future__ import annotations
 
 import builtins

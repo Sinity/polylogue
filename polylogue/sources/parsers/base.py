@@ -1,3 +1,5 @@
+"""Base parser models and message extraction utilities."""
+
 from __future__ import annotations
 
 from pathlib import Path
