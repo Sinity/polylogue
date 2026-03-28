@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import concurrent.futures
 import json
 import threading
@@ -17,14 +16,13 @@ from polylogue.cli.commands.run import (
     run_command,
     sources_command,
 )
-from polylogue.pipeline.events import (
-    ExecHandler,
-    NotificationHandler,
-    SyncEvent,
-    WebhookHandler,
-)
 from polylogue.config import Source, get_config
-from polylogue.pipeline.runner import latest_run, run_sources, plan_sources
+from polylogue.pipeline.observers import (
+    ExecObserver,
+    NotificationObserver,
+    WebhookObserver,
+)
+from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -57,11 +55,15 @@ async def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
     )
 
     config = get_config()
-    config.sources = [Source(name="codex", path=source_file)]
+    # Generic fixture payload is not provider-schema-conformant; use a generic
+    # source name so validate stage treats it as schema-less test input.
+    config.sources = [Source(name="inbox", path=source_file)]
 
     if with_plan:
         plan = plan_sources(config)
-        assert plan.counts["conversations"] == 1
+        assert plan.counts["scan"] == 1
+        assert plan.counts["store_raw"] == 1
+        assert plan.counts["parse"] == 1
         result = await run_sources(config=config, stage="all", plan=plan)
     else:
         result = await run_sources(config=config, stage="all")
@@ -190,7 +192,10 @@ async def test_run_index_filters_selected_sources(workspace_env, tmp_path, monke
     from polylogue.pipeline.services.indexing import IndexService
 
     async def fake_update_method(self, ids):
-        update_calls.append(list(ids))
+        if hasattr(ids, "__aiter__"):
+            update_calls.append([conversation_id async for conversation_id in ids])
+        else:
+            update_calls.append(list(ids))
         return True
 
     monkeypatch.setattr(IndexService, "update_index", fake_update_method)
@@ -335,8 +340,8 @@ def mock_plan_result():
 def mock_repository():
     """Mock ConversationRepository."""
     repo = MagicMock()
-    repo._backend = MagicMock()
-    repo._backend._get_connection = MagicMock()
+    repo.backend = MagicMock()
+    repo.backend._get_connection = MagicMock()
     return repo
 
 
@@ -345,8 +350,13 @@ def mock_backend():
     """Mock SQLite backend."""
     backend = MagicMock()
     backend._get_connection = MagicMock()
-    backend.iter_raw_conversations = MagicMock(return_value=[])
-    backend.get_raw_conversation = MagicMock(return_value=None)
+    async def _empty_iter():
+        if False:
+            yield None
+
+    backend.iter_raw_conversations = MagicMock(return_value=_empty_iter())
+    backend.get_raw_conversation = AsyncMock(return_value=None)
+    backend.get_raw_conversations_batch = AsyncMock(return_value=[])
     return backend
 
 
@@ -410,6 +420,7 @@ class TestDisplayResultComprehensive:
         [
             ("render", ["inbox"], True, 1, [], None),
             ("acquire", ["inbox"], False, 1, [], None),
+            ("validate", ["inbox"], False, 1, [], None),
             ("parse", ["inbox"], False, 1, [], None),
             ("all", None, True, 1, [], None),
             ("all", None, True, 0, [], None),
@@ -497,48 +508,48 @@ class TestRunCommandWatch:
 
 
 class TestWatchModeCallbacks:
-    """Test watch mode event handler callbacks."""
+    """Test watch mode observer callbacks."""
 
     def test_notify_callback_executes_with_count(self):
-        """NotificationHandler calls notify-send with conversation count."""
+        """NotificationObserver calls notify-send with conversation count."""
         with patch("subprocess.run") as mock_run:
-            handler = NotificationHandler()
-            handler.on_sync(SyncEvent(new_conversations=5, run_result=None))  # type: ignore[arg-type]
+            handler = NotificationObserver()
+            handler.on_completed(MagicMock(counts={"conversations": 5}))
             mock_run.assert_called_once()
             call_args = mock_run.call_args[0][0]
             assert "notify-send" in call_args
             assert "5" in str(call_args)
 
     def test_exec_callback_executes_with_count(self):
-        """ExecHandler runs command with correct environment."""
+        """ExecObserver runs command with correct environment."""
         with patch("subprocess.run") as mock_run:
-            handler = ExecHandler("echo $POLYLOGUE_NEW_COUNT")
-            handler.on_sync(SyncEvent(new_conversations=3, run_result=None))  # type: ignore[arg-type]
+            handler = ExecObserver("echo $POLYLOGUE_NEW_COUNT")
+            handler.on_completed(MagicMock(counts={"conversations": 3}))
             mock_run.assert_called_once()
             call_kwargs = mock_run.call_args[1]
             assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == "3"
             assert call_kwargs.get("shell") is not True
 
     def test_webhook_callback_executes_with_count(self):
-        """WebhookHandler sends POST with conversation count."""
+        """WebhookObserver sends POST with conversation count."""
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
-        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo):
             with patch("urllib.request.urlopen") as mock_urlopen:
-                handler = WebhookHandler("http://example.com/webhook")
-                handler.on_sync(SyncEvent(new_conversations=2, run_result=None))  # type: ignore[arg-type]
+                handler = WebhookObserver("http://example.com/webhook")
+                handler.on_completed(MagicMock(counts={"conversations": 2}))
                 mock_urlopen.assert_called_once()
                 call_args = mock_urlopen.call_args[0][0]
                 assert call_args.get_full_url() == "http://example.com/webhook"
                 assert call_args.get_method() == "POST"
 
     def test_webhook_on_new_payload_format(self):
-        """WebhookHandler includes correct JSON payload."""
+        """WebhookObserver includes correct JSON payload."""
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
-        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo):
             with patch("urllib.request.urlopen"):
                 with patch("urllib.request.Request") as mock_request:
-                    handler = WebhookHandler("http://example.com/webhook")
-                    handler.on_sync(SyncEvent(new_conversations=7, run_result=None))  # type: ignore[arg-type]
+                    handler = WebhookObserver("http://example.com/webhook")
+                    handler.on_completed(MagicMock(counts={"conversations": 7}))
                     call_kwargs = mock_request.call_args[1]
                     payload = json.loads(call_kwargs["data"].decode())
                     assert payload["event"] == "sync"
@@ -565,11 +576,8 @@ def test_sources_command_output(runner, cli_workspace, args, expect_json):
         obj=MagicMock(ui=MagicMock(plain=True, summary=MagicMock())),
     )
     if expect_json and result.exit_code == 0:
-        try:
-            data = json.loads(result.output)
-            assert isinstance(data, list)
-        except json.JSONDecodeError:
-            pass
+        data = json.loads(result.output)
+        assert isinstance(data, list)
 
 
 # =============================================================================
@@ -584,19 +592,19 @@ class TestParsingService:
     async def test_parse_from_raw(self, mock_backend, backend_initialized, provider):
         """parse_from_raw validates backend and filters by provider."""
         repo = MagicMock()
-        repo._backend = mock_backend if backend_initialized else None
+        repo.backend = mock_backend if backend_initialized else None
         service = ParsingService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
         if not backend_initialized:
             with pytest.raises(RuntimeError, match="backend is not initialized"):
                 await service.parse_from_raw(raw_ids=["raw-1"])
         else:
             async def async_iter():
-                for i, p in enumerate(["claude", "chatgpt"]):
-                    yield MagicMock(raw_id=f"raw-{i}", provider_name=p)
-            mock_backend.iter_raw_conversations.return_value = async_iter()
+                for i in range(2):
+                    yield f"raw-{i}"
+            mock_backend.iter_raw_ids.return_value = async_iter()
             with patch.object(service, "_process_raw_batch", new_callable=AsyncMock):
                 await service.parse_from_raw(provider=provider)
-                assert mock_backend.iter_raw_conversations.call_args[1]["provider"] == provider
+                assert mock_backend.iter_raw_ids.call_args[1]["provider_name"] == provider
 
     @pytest.mark.parametrize(
         "format_type,content,provider,is_bytes",
@@ -609,13 +617,13 @@ class TestParsingService:
     async def test_parse_raw_record_content_types(self, mock_backend, format_type, content, provider, is_bytes):
         """_parse_raw_record handles JSONL, JSON, and string content."""
         repo = MagicMock()
-        repo._backend = mock_backend
+        repo.backend = mock_backend
         service = ParsingService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
         raw_record = MagicMock()
         raw_record.raw_content = content.encode("utf-8") if is_bytes else content
         raw_record.provider_name = provider
         raw_record.raw_id = "raw-123"
-        with patch("polylogue.pipeline.services.parsing._parse_json_payload") as mock_parse:
+        with patch("polylogue.pipeline.services.parsing.parse_payload") as mock_parse:
             mock_parse.return_value = [] if format_type == "string" else [ParsedConversation(provider_name=provider, provider_conversation_id=f"conv-{format_type}", messages=[])]
             await service._parse_raw_record(raw_record)
             mock_parse.assert_called_once()
@@ -955,40 +963,59 @@ def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
 	assert attachment.provider_meta == original_meta
 
 
-def test_store_records_commits_within_lock(tmp_path: Path):
-	"""Verify store_records commits inside the lock scope."""
-	from tests.infra.helpers import make_conversation, make_message, store_records
+def test_store_records_commits_within_lock(monkeypatch):
+	"""Verify store_records commits while _WRITE_LOCK is held."""
+	from contextlib import contextmanager
 
-	# Create a test database
-	db_path = tmp_path / "test.db"
+	import tests.infra.helpers as helpers
+	from tests.infra.helpers import make_conversation, make_message
 
-	# Track commit calls to verify ordering
-	commit_order = []
-	lock_held = threading.Event()
+	class TrackingLock:
+		def __init__(self) -> None:
+			self.held = False
 
-	original_commit = None
+		def __enter__(self):
+			self.held = True
+			return self
 
-	def tracking_commit(self):
-		commit_order.append(("commit", lock_held.is_set()))
-		if original_commit:
-			return original_commit(self)
+		def __exit__(self, exc_type, exc, tb):
+			self.held = False
+			return False
 
-	# We need to verify that commit happens while _WRITE_LOCK is held
-	# This is tricky to test directly, but we can verify the code structure
+	class DummyConn:
+		def __init__(self, lock: TrackingLock) -> None:
+			self._lock = lock
+			self.commit_states: list[bool] = []
 
-	# For now, just verify the function works and commits
-	from polylogue.storage.backends.connection import open_connection
+		def commit(self) -> None:
+			self.commit_states.append(self._lock.held)
 
-	with open_connection(db_path) as conn:
-		record = make_conversation("test:1", title="Test", content_hash="abc123")
-		messages = [make_message("test:1:msg1", "test:1", text="Hello")]
-		result = store_records(
-			conversation=record,
-			messages=messages,
-			attachments=[],
-			conn=conn,
-		)
-		assert result["conversations"] >= 0  # Either inserted or skipped
+	lock = TrackingLock()
+	conn = DummyConn(lock)
+
+	@contextmanager
+	def fake_connection_context(passed_conn):
+		yield passed_conn
+
+	monkeypatch.setattr(helpers, "_WRITE_LOCK", lock)
+	monkeypatch.setattr(helpers, "connection_context", fake_connection_context)
+	monkeypatch.setattr(helpers, "upsert_conversation", lambda *_: True)
+	monkeypatch.setattr(helpers, "upsert_message", lambda *_: True)
+	monkeypatch.setattr(helpers, "upsert_attachment", lambda *_: True)
+	monkeypatch.setattr(helpers, "_prune_attachment_refs", lambda *_: None)
+
+	record = make_conversation("test:1", title="Test", content_hash="abc123")
+	messages = [make_message("test:1:msg1", "test:1", text="Hello")]
+	result = helpers.store_records(
+		conversation=record,
+		messages=messages,
+		attachments=[],
+		conn=conn,
+	)
+
+	assert result["conversations"] == 1
+	assert result["messages"] == 1
+	assert conn.commit_states == [True]
 
 
 def test_concurrent_store_records_no_deadlock(workspace_env):
@@ -1016,10 +1043,10 @@ def test_concurrent_store_records_no_deadlock(workspace_env):
 		futures = [executor.submit(store_one, i) for i in range(iterations)]
 		results = [f.result(timeout=30) for f in futures]  # 30s timeout to detect deadlock
 
-	# All should succeed
+	# All should succeed — each thread inserted exactly 1 unique conversation
 	assert len(results) == iterations
 	for r in results:
-		assert r["conversations"] >= 0
+		assert r["conversations"] == 1
 
 
 def test_set_add_is_thread_safe():
