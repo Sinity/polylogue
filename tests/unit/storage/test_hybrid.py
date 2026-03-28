@@ -21,7 +21,7 @@ from polylogue.storage.search_providers.hybrid import (
     reciprocal_rank_fusion,
 )
 from polylogue.storage.store import ConversationRecord, MessageRecord
-from tests.infra.helpers import make_hash
+from tests.infra.storage_records import make_hash
 
 
 class TestHybridSearchProvider:

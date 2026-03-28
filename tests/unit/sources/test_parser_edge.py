@@ -1,117 +1,14 @@
-"""Regression tests for parser bug fixes.
-
-These tests target specific edge cases that were previously crashing:
-1. ChatGPT author field crash when msg.author is a non-dict truthy value
-2. Claude Code cost aggregation crash on non-numeric strings
-3. Codex role normalization (raw role -> normalized role)
-4. Recursion depth limit to prevent stack overflow
-5. YAML-safe function for Obsidian frontmatter with special characters
-"""
+"""Pinned parser regressions that still add value beyond the law suites."""
 
 from __future__ import annotations
 
-from polylogue.lib.formatting import _yaml_safe
-from polylogue.sources.parsers.chatgpt import extract_messages_from_mapping
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.codex import parse as codex_parse
 from polylogue.sources.source import parse_payload
 
 # =============================================================================
-# 1. CHATGPT AUTHOR FIELD CRASH
-# =============================================================================
-
-
-def test_chatgpt_author_field_string_skips_message():
-    """Test that ChatGPT messages with string author (not dict) are skipped."""
-    mapping = {
-        "node1": {
-            "id": "node1",
-            "message": {
-                "id": "msg1",
-                "author": "system",  # String, not dict! Previously crashed
-                "content": {"content_type": "text", "parts": ["hello"]},
-                "create_time": 1700000000,
-            },
-            "children": [],
-        },
-        "node2": {
-            "id": "node2",
-            "message": {
-                "id": "msg2",
-                "author": {"role": "user"},  # Correct dict format
-                "content": {"content_type": "text", "parts": ["good morning"]},
-                "create_time": 1700000001,
-            },
-            "children": [],
-        },
-    }
-    messages, attachments = extract_messages_from_mapping(mapping)
-    # node1 should be skipped (author is string)
-    # node2 should be parsed (author is dict with role)
-    assert len(messages) == 1
-    assert messages[0].provider_message_id == "msg2"
-    assert messages[0].role == "user"
-    assert messages[0].text == "good morning"
-    assert len(attachments) == 0
-
-
-def test_chatgpt_author_field_none_skips_message():
-    """Test that ChatGPT messages with None author are skipped."""
-    mapping = {
-        "node1": {
-            "id": "node1",
-            "message": {
-                "id": "msg1",
-                "author": None,
-                "content": {"content_type": "text", "parts": ["hello"]},
-                "create_time": 1700000000,
-            },
-            "children": [],
-        },
-    }
-    messages, attachments = extract_messages_from_mapping(mapping)
-    assert len(messages) == 0
-
-
-def test_chatgpt_author_field_missing_skips_message():
-    """Test that ChatGPT messages with missing author are skipped."""
-    mapping = {
-        "node1": {
-            "id": "node1",
-            "message": {
-                "id": "msg1",
-                # author field missing entirely
-                "content": {"content_type": "text", "parts": ["hello"]},
-                "create_time": 1700000000,
-            },
-            "children": [],
-        },
-    }
-    messages, attachments = extract_messages_from_mapping(mapping)
-    assert len(messages) == 0
-
-
-def test_chatgpt_author_field_dict_empty_skips_message():
-    """Test that ChatGPT messages with empty dict author (no role) are skipped."""
-    mapping = {
-        "node1": {
-            "id": "node1",
-            "message": {
-                "id": "msg1",
-                "author": {},  # Dict but no role field
-                "content": {"content_type": "text", "parts": ["hello"]},
-                "create_time": 1700000000,
-            },
-            "children": [],
-        },
-    }
-    messages, attachments = extract_messages_from_mapping(mapping)
-    assert len(messages) == 0
-
-
-# =============================================================================
-# 2. CLAUDE CODE COST AGGREGATION CRASH
+# Claude Code cost aggregation regressions
 # =============================================================================
 
 
@@ -216,7 +113,7 @@ def test_claude_code_cost_usd_mixed_valid_invalid():
 
 
 # =============================================================================
-# 3. CODEX ROLE NORMALIZATION
+# Codex role normalization regressions
 # =============================================================================
 
 
@@ -265,7 +162,7 @@ def test_codex_role_normalization_model_to_assistant():
 
 
 # =============================================================================
-# 4. RECURSION DEPTH LIMIT
+# parse_payload recursion limit
 # =============================================================================
 
 
@@ -357,131 +254,6 @@ def test_parse_payload_shallow_nesting_succeeds():
     result = parse_payload("chatgpt", payload, "test-shallow")
     assert isinstance(result, list)
     assert len(result) > 0
-
-
-# =============================================================================
-# 5. YAML-SAFE FRONTMATTER
-# =============================================================================
-
-
-def test_yaml_safe_no_special_chars():
-    """Test that values without special characters are not quoted."""
-    assert _yaml_safe("simple_value") == "simple_value"
-    assert _yaml_safe("hello-world") == "hello-world"
-    assert _yaml_safe("123abc") == "123abc"
-
-
-def test_yaml_safe_colon_requires_quoting():
-    """Test that values with colons are quoted."""
-    result = _yaml_safe("key: value")
-    assert result.startswith('"') and result.endswith('"')
-    assert "key: value" in result
-
-
-def test_yaml_safe_hash_requires_quoting():
-    """Test that values with # are quoted."""
-    result = _yaml_safe("comment #text")
-    assert result.startswith('"') and result.endswith('"')
-    assert "comment #text" in result
-
-
-def test_yaml_safe_bracket_requires_quoting():
-    """Test that values with brackets are quoted."""
-    result = _yaml_safe("array [1,2,3]")
-    assert result.startswith('"') and result.endswith('"')
-
-
-def test_yaml_safe_brace_requires_quoting():
-    """Test that values with braces are quoted."""
-    result = _yaml_safe("{key: value}")
-    assert result.startswith('"') and result.endswith('"')
-
-
-def test_yaml_safe_pipe_requires_quoting():
-    """Test that values with pipe are quoted."""
-    result = _yaml_safe("one|two")
-    assert result.startswith('"') and result.endswith('"')
-
-
-def test_yaml_safe_ampersand_requires_quoting():
-    """Test that values with & are quoted."""
-    result = _yaml_safe("a&b")
-    assert result.startswith('"') and result.endswith('"')
-
-
-def test_yaml_safe_asterisk_requires_quoting():
-    """Test that values with * are quoted."""
-    result = _yaml_safe("*wildcard")
-    assert result.startswith('"') and result.endswith('"')
-
-
-def test_yaml_safe_quote_escaping():
-    """Test that quotes in values are properly escaped."""
-    result = _yaml_safe('he said "hello"')
-    # Should be quoted and internal quotes escaped
-    assert result.startswith('"') and result.endswith('"')
-    assert '\\"' in result
-
-
-def test_yaml_safe_backslash_escaping():
-    """Test that backslashes are properly escaped when in quoted strings.
-
-    Note: Backslash alone is not in the set of special chars that trigger quoting.
-    It's only escaped if the value is already being quoted due to other chars.
-    """
-    # Backslash alone does not trigger quoting
-    result = _yaml_safe('path\\to\\file')
-    # This string has no special YAML chars, so it shouldn't be quoted
-    assert result == 'path\\to\\file'
-
-    # But if combined with a special char that does trigger quoting
-    result2 = _yaml_safe('path\\to\\file:test')
-    # Now it should be quoted and backslash escaped
-    assert result2.startswith('"') and result2.endswith('"')
-    assert '\\\\' in result2
-
-
-def test_yaml_safe_newline_requires_quoting():
-    """Test that values with newlines are quoted."""
-    result = _yaml_safe('line1\nline2')
-    assert result.startswith('"') and result.endswith('"')
-
-
-def test_yaml_safe_multiple_special_chars():
-    """Test that values with multiple special characters are properly escaped."""
-    result = _yaml_safe('title: "The Best"')
-    assert result.startswith('"') and result.endswith('"')
-    assert '\\"' in result  # Quote should be escaped
-
-
-def test_yaml_safe_exclamation_mark():
-    """Test that ! is quoted."""
-    result = _yaml_safe("stop!")
-    assert result.startswith('"') and result.endswith('"')
-
-
-def test_yaml_safe_question_mark():
-    """Test that ? is quoted."""
-    result = _yaml_safe("what?")
-    assert result.startswith('"') and result.endswith('"')
-
-
-def test_yaml_safe_at_sign():
-    """Test that @ is quoted."""
-    result = _yaml_safe("@mention")
-    assert result.startswith('"') and result.endswith('"')
-
-
-def test_yaml_safe_backtick():
-    """Test that backtick is quoted."""
-    result = _yaml_safe("command `run`")
-    assert result.startswith('"') and result.endswith('"')
-
-
-def test_yaml_safe_comma():
-    """Test that comma is quoted."""
-    result = _yaml_safe("item1, item2")
-    assert result.startswith('"') and result.endswith('"')
 
 
 # =============================================================================

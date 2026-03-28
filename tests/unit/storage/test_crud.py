@@ -2,29 +2,15 @@
 
 from __future__ import annotations
 
-import json
-import sqlite3
-from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from polylogue.lib.roles import normalize_role as new_normalize_role
-from polylogue.schemas.unified import (
-    extract_from_provider_meta,
-    extract_harmonized_message,
-    is_message_record,
-)
-from polylogue.sources.parsers.base import normalize_role as old_normalize_role
-from polylogue.sources.parsers.claude import (
-    extract_text_from_segments as old_extract_segments,
-)
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import (
     ContentBlockRecord,
 )
-from tests.infra.helpers import (
+from tests.infra.storage_records import (
     make_attachment,
     make_conversation,
     make_message,
@@ -33,31 +19,6 @@ from tests.infra.helpers import (
 
 class TestConversationOperations:
     """Test conversation save/retrieve operations."""
-
-
-async def test_repository_message_mapping_uses_backend_path(tmp_path: Path) -> None:
-    """Regression: _get_message_conversation_mapping must use backend's db_path."""
-    from polylogue.storage.repository import ConversationRepository
-
-    db_path = tmp_path / "custom.db"
-    backend = SQLiteBackend(db_path=db_path)
-
-    conv = make_conversation("map-conv-1", title="Mapping Test")
-    msg = make_message("map-msg-1", "map-conv-1", text="Hello")
-
-    await backend.begin()
-    await backend.save_conversation_record(conv)
-    await backend.save_messages([msg])
-    await backend.commit()
-
-    repo = ConversationRepository(backend)
-    mapping = await repo._get_message_conversation_mapping(["map-msg-1"])
-    assert mapping == {"map-msg-1": "map-conv-1"}
-
-    # Non-existent messages should return empty
-    mapping_empty = await repo._get_message_conversation_mapping(["nonexistent"])
-    assert mapping_empty == {}
-    await backend.close()
 
 
 class TestMessageOperations:
@@ -434,179 +395,6 @@ class TestPruneAttachments:
         await backend.close()
 
 
-# =============================================================================
-# BACKEND COMPARISON TESTS (from test_backend_core.py)
-# =============================================================================
-
-
-@dataclass
-class ComparisonResult:
-    """Result of comparing old vs new extraction."""
-
-    field: str
-    old_value: str | None
-    new_value: str | None
-    equivalent: bool
-
-
-def compare_extractions(provider: str, raw: dict) -> list[ComparisonResult]:
-    """Compare old and new extraction for a single message."""
-    results = []
-
-    try:
-        new_msg = extract_harmonized_message(provider, raw)
-    except Exception as e:
-        return [ComparisonResult("extraction", None, str(e), False)]
-
-    if provider == "claude-code":
-        msg_obj = raw.get("message", {})
-        msg_type = raw.get("type")
-
-        if msg_type in ("user", "human"):
-            old_role = "user"
-        elif msg_type == "assistant":
-            old_role = "assistant"
-        else:
-            old_role = msg_type or "unknown"
-
-        content_raw = msg_obj.get("content") if isinstance(msg_obj, dict) else None
-        old_text = old_extract_segments(content_raw) if isinstance(content_raw, list) else None
-
-        old_role_norm = old_normalize_role(old_role)
-        new_role_norm = new_msg.role
-
-        results.append(ComparisonResult(
-            field="role",
-            old_value=old_role_norm,
-            new_value=new_role_norm,
-            equivalent=old_role_norm == new_role_norm,
-        ))
-
-        old_text_norm = (old_text or "").strip()
-        new_text_norm = (new_msg.text or "").strip()
-
-        text_equiv = old_text_norm == new_text_norm
-
-        results.append(ComparisonResult(
-            field="text",
-            old_value=old_text_norm[:50] + "..." if len(old_text_norm) > 50 else old_text_norm,
-            new_value=new_text_norm[:50] + "..." if len(new_text_norm) > 50 else new_text_norm,
-            equivalent=text_equiv,
-        ))
-
-    return results
-
-
-def _load_claude_code_message_records_from_raw(seeded_db: str | Path, *, limit: int = 500) -> list[dict]:
-    """Load Claude Code message records from raw_conversations JSONL payloads."""
-    conn = sqlite3.connect(seeded_db)
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT raw_content
-        FROM raw_conversations
-        WHERE provider_name = 'claude-code'
-        LIMIT ?
-        """,
-        (max(1, limit),),
-    )
-    rows = cur.fetchall()
-    conn.close()
-
-    records: list[dict] = []
-    for (raw_content,) in rows:
-        text = (
-            raw_content.decode("utf-8", errors="replace")
-            if isinstance(raw_content, (bytes, bytearray))
-            else str(raw_content)
-        )
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict) and is_message_record("claude-code", payload):
-                records.append(payload)
-                if len(records) >= limit:
-                    return records
-    return records
-
-
-class TestBackendComparison:
-    """Compare old vs new extraction backends."""
-
-    def test_role_normalization_equivalence(self):
-        """Old and new role normalization should produce same results for valid inputs."""
-        test_roles = [
-            "user", "human", "USER",
-            "assistant", "model", "ai",
-            "system",
-            "tool", "function",
-        ]
-
-        differences = []
-        for role in test_roles:
-            old = old_normalize_role(role)
-            new = new_normalize_role(role)
-            if old != new:
-                differences.append((role, old, new))
-
-        if differences:
-            print("\nRole normalization differences (may be improvements):")
-            for role, old, new in differences:
-                print(f"  {role!r}: old={old!r}, new={new!r}")
-
-        assert old_normalize_role("user") == new_normalize_role("user")
-        assert old_normalize_role("assistant") == new_normalize_role("assistant")
-
-    def test_claude_code_extraction_equivalence(self, seeded_db):
-        """Compare old and new extraction on Claude Code raw message records."""
-        records = _load_claude_code_message_records_from_raw(seeded_db, limit=500)
-        assert records, "Expected claude-code message records in seeded raw corpus"
-
-        equiv_count = Counter()
-        diff_samples = []
-        role_mismatches = 0
-
-        for raw in records:
-            results = compare_extractions("claude-code", raw)
-            for r in results:
-                if r.equivalent:
-                    equiv_count[r.field] += 1
-                else:
-                    if r.field == "role":
-                        role_mismatches += 1
-                    if len(diff_samples) < 10:
-                        diff_samples.append(r)
-
-        total = sum(equiv_count.values())
-        assert total > 0
-        assert role_mismatches == 0
-
-    def test_new_extraction_is_superset(self, seeded_db):
-        """New extraction should expose tool/reasoning data on raw records."""
-        records = _load_claude_code_message_records_from_raw(seeded_db, limit=500)
-        assert records, "Expected claude-code message records in seeded raw corpus"
-
-        tool_calls_found = 0
-        reasoning_found = 0
-        processed = 0
-
-        for raw in records:
-            new_msg = extract_from_provider_meta("claude-code", {"raw": raw})
-            processed += 1
-            tool_calls_found += len(new_msg.tool_calls)
-            reasoning_found += len(new_msg.reasoning_traces)
-
-        assert processed > 0
-        assert tool_calls_found > 0 or reasoning_found > 0, (
-            "New extraction should find tool calls or reasoning traces"
-        )
-
-
 class TestTransactionAtomicity:
     """Test that transaction management is atomic — partial failures roll back all changes."""
 
@@ -726,56 +514,3 @@ class TestTransactionAtomicity:
         assert retrieved_atts[0].attachment_id == "att-1"
 
         await backend.close()
-
-
-class TestAPICompatibility:
-    """Test that new extraction can be adapted to old API."""
-
-    def test_parsed_message_equivalent_fields(self):
-        """HarmonizedMessage has equivalent fields to ParsedMessage."""
-        from polylogue.schemas.unified import HarmonizedMessage
-        from polylogue.sources.parsers.base import ParsedMessage
-
-        field_mapping = {
-            "provider_message_id": "id",
-            "role": "role",
-            "text": "text",
-            "timestamp": "timestamp",
-            "provider_meta": "raw",
-        }
-
-        pm = ParsedMessage(provider_message_id="test", role="user", text="hello")
-        for pm_field in field_mapping:
-            assert hasattr(pm, pm_field), f"ParsedMessage missing {pm_field}"
-
-        hm = HarmonizedMessage(role="user", text="hello", provider="test")
-        for hm_field in field_mapping.values():
-            assert hasattr(hm, hm_field), f"HarmonizedMessage missing {hm_field}"
-
-    def test_can_convert_harmonized_to_parsed(self):
-        """Demonstrate conversion from HarmonizedMessage to ParsedMessage."""
-        from polylogue.sources.parsers.base import ParsedMessage
-
-        raw = {
-            "type": "assistant",
-            "uuid": "test-123",
-            "timestamp": "2024-01-15T10:30:00Z",
-            "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Hello!"}]
-            }
-        }
-
-        hm = extract_harmonized_message("claude-code", raw)
-
-        pm = ParsedMessage(
-            provider_message_id=hm.id or "unknown",
-            role=hm.role,
-            text=hm.text,
-            timestamp=hm.timestamp.isoformat() if hm.timestamp else None,
-            provider_meta={"raw": hm.raw},
-        )
-
-        assert pm.role == "assistant"
-        assert pm.text == "Hello!"
-        assert pm.provider_message_id == "test-123"

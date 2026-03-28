@@ -2,15 +2,38 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
 from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from polylogue.lib.provider_semantics import extract_chatgpt_text, extract_claude_code_text
-from polylogue.lib.viewports import ContentType
+from polylogue.lib.provider_semantics import (
+    extract_chatgpt_text,
+    extract_claude_code_text,
+    extract_codex_text,
+)
+from polylogue.lib.viewports import (
+    ContentBlock,
+    ContentType,
+    CostInfo,
+    MessageMeta,
+    ReasoningTrace,
+    TokenUsage,
+    ToolCall,
+)
 from polylogue.schemas.unified import (
+    HarmonizedMessage,
+    _coerce_content_blocks,
+    _coerce_reasoning_traces,
+    _coerce_tool_calls,
+    _extract_generic_cost,
+    _extract_generic_tokens,
+    _harmonize_extracted_provider_meta,
+    _has_extracted_viewports,
     _missing_role,
+    _overlay_message_context,
     bulk_harmonize,
     extract_content_blocks,
     extract_from_provider_meta,
@@ -31,9 +54,12 @@ from tests.infra.strategies import (
     claude_ai_semantic_message_strategy,
     claude_code_semantic_record_strategy,
     codex_semantic_record_strategy,
+    content_block_strategy,
     gemini_semantic_message_strategy,
     provider_semantic_case_strategy,
 )
+
+_VALID_VIEWPORT_ROLES = {"user", "assistant", "system", "tool", "unknown", "model"}
 
 
 def _build_viewport_record(provider: str, raw: dict[str, object]) -> object:
@@ -124,6 +150,44 @@ def _expected_block_types(provider: str, raw: dict[str, object]) -> list[Content
     raise AssertionError(provider)
 
 
+def _expected_reasoning_texts(content: list[object]) -> list[str]:
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "thinking":
+            text = block.get("thinking") or block.get("text")
+            if text:
+                texts.append(str(text))
+        elif block.get("isThought") and block.get("text"):
+            texts.append(str(block["text"]))
+    return texts
+
+
+def _expected_tool_blocks(content: list[object]) -> list[dict[str, object]]:
+    return [
+        block
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+
+
+def _expected_content_types(content: list[object]) -> list[ContentType]:
+    mapping = {
+        "text": ContentType.TEXT,
+        "thinking": ContentType.THINKING,
+        "tool_use": ContentType.TOOL_USE,
+        "tool_result": ContentType.TOOL_RESULT,
+        "code": ContentType.CODE,
+    }
+    return [
+        mapping[block_type]
+        for block in content
+        if isinstance(block, dict)
+        and (block_type := block.get("type", "text")) in mapping
+    ]
+
+
 @given(provider_semantic_case_strategy())
 @settings(max_examples=40, deadline=None)
 def test_unified_semantic_equivalence_for_rich_provider_cases(case: tuple[str, dict[str, object]]) -> None:
@@ -204,6 +268,221 @@ def test_is_message_record_contract(provider: str, raw: dict[str, object], expec
 def test_missing_role_contract() -> None:
     with pytest.raises(ValueError, match="Message has no role"):
         _missing_role()
+
+
+@given(st.sampled_from(["user", "assistant", "system", "tool", "unknown", "human", "model", "ASSISTANT", "SYSTEM", "USER"]))
+def test_harmonized_message_role_coercion_contract(role_str: str) -> None:
+    msg = HarmonizedMessage(role=role_str, text="test", provider="claude-code")
+    assert msg.role.value in _VALID_VIEWPORT_ROLES
+
+
+@given(st.sampled_from(["chatgpt", "claude", "claude-code", "gemini", "codex"]))
+def test_harmonized_message_provider_coercion_contract(provider_str: str) -> None:
+    msg = HarmonizedMessage(role="user", text="test", provider=provider_str)
+    assert msg.provider.value == provider_str
+
+
+def test_extract_harmonized_message_invalid_provider_contract() -> None:
+    with pytest.raises(ValueError, match="Unknown provider"):
+        extract_harmonized_message("unknown_provider", {})
+
+
+@given(
+    st.lists(
+        st.one_of(
+            content_block_strategy(),
+            st.fixed_dictionaries({"isThought": st.just(True), "text": st.text(min_size=1, max_size=100)}),
+            st.just("not a dict"),
+            st.just(42),
+        ),
+        max_size=10,
+    ),
+    st.sampled_from(["claude-code", "claude", "chatgpt", "gemini", "codex"]),
+)
+def test_extract_reasoning_traces_preserve_reasoning_blocks_contract(
+    content: list[object],
+    provider: str,
+) -> None:
+    traces = extract_reasoning_traces(content, provider)
+    assert [trace.text for trace in traces] == _expected_reasoning_texts(content)
+    assert all(str(trace.provider) == provider for trace in traces)
+
+
+@given(
+    st.lists(
+        st.one_of(
+            content_block_strategy(),
+            st.just("not a dict"),
+            st.just(None),
+        ),
+        max_size=10,
+    ),
+    st.sampled_from(["claude-code", "claude", "chatgpt", "gemini", "codex"]),
+)
+def test_extract_tool_calls_preserve_tool_use_blocks_contract(
+    content: list[object],
+    provider: str,
+) -> None:
+    calls = extract_tool_calls(content, provider)
+    expected = _expected_tool_blocks(content)
+    assert [call.name for call in calls] == [str(block.get("name", "")) for block in expected]
+    assert [call.id for call in calls] == [block.get("id") for block in expected]
+    assert [call.input for call in calls] == [
+        block.get("input", {}) if isinstance(block.get("input"), dict) else {}
+        for block in expected
+    ]
+    assert all(str(call.provider) == provider for call in calls)
+
+
+@given(
+    st.lists(
+        st.one_of(
+            content_block_strategy(),
+            st.fixed_dictionaries({"type": st.just("unknown"), "text": st.text(max_size=50)}),
+            st.just("not a dict"),
+        ),
+        max_size=10,
+    )
+)
+def test_extract_content_blocks_preserve_recognized_block_order_contract(
+    content: list[object],
+) -> None:
+    blocks = extract_content_blocks(content)
+    assert [block.type for block in blocks] == _expected_content_types(content)
+
+
+@given(
+    st.lists(
+        st.one_of(
+            st.fixed_dictionaries(
+                {
+                    "text": st.text(max_size=40),
+                    "input_text": st.text(max_size=40),
+                    "output_text": st.text(max_size=40),
+                }
+            ),
+            st.just({"type": "image", "url": "https://example.com"}),
+            st.just("not a dict"),
+        ),
+        max_size=8,
+    )
+)
+def test_extract_codex_text_prefers_first_available_text_field_contract(content: list[object]) -> None:
+    expected: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text", "") or block.get("input_text", "") or block.get("output_text", "")
+        if isinstance(text, str) and text:
+            expected.append(text)
+    assert extract_codex_text(content) == "\n".join(expected)
+
+
+def test_coerce_extracted_viewports_skip_invalid_items_and_inject_provider_contract() -> None:
+    trace = ReasoningTrace(text="kept-trace", provider="claude-code")
+    call = ToolCall(name="Read", input={"path": "README.md"}, provider="claude-code")
+    block = ContentBlock(type=ContentType.TEXT, text="kept-block", raw={"text": "kept-block"})
+
+    coerced_traces = _coerce_reasoning_traces(
+        [trace, {"text": "dict-trace"}, {"text": None}, "ignored"],
+        "claude-code",
+    )
+    coerced_calls = _coerce_tool_calls(
+        [call, {"name": "Write", "input": {"path": "notes.txt"}}, {"name": None}, "ignored"],
+        "claude-code",
+    )
+    coerced_blocks = _coerce_content_blocks(
+        [block, {"type": "text", "text": "dict-block", "raw": {"text": "dict-block"}}, {"type": "text"}, 123]
+    )
+
+    assert [item.text for item in coerced_traces] == ["kept-trace", "dict-trace"]
+    assert all(item.provider == "claude-code" for item in coerced_traces)
+    assert [item.name for item in coerced_calls] == ["Read", "Write"]
+    assert all(item.provider == "claude-code" for item in coerced_calls)
+    assert [item.text for item in coerced_blocks] == ["kept-block", "dict-block", None]
+
+
+def test_extract_generic_tokens_and_cost_contract() -> None:
+    usage = {"input_tokens": 10, "output_tokens": 12, "cache_read_input_tokens": 3, "cache_creation_input_tokens": 4}
+
+    assert _extract_generic_tokens({"usage": usage}) == extract_token_usage(usage)
+    assert _extract_generic_tokens({"tokens": {"output_tokens": 7}}) == TokenUsage(output_tokens=7)
+    assert _extract_generic_tokens({"tokenCount": 9}) == TokenUsage(output_tokens=9)
+    assert _extract_generic_tokens({"tokens": {"output_tokens": "bad"}}) is None
+
+    assert _extract_generic_cost({"cost": {"total_usd": 0.25}}) == CostInfo(total_usd=0.25)
+    assert _extract_generic_cost({"costUSD": 1.5}) == CostInfo(total_usd=1.5)
+    assert _extract_generic_cost({"cost": {"total_usd": "bad"}}) is None
+
+
+def test_harmonize_extracted_provider_meta_derives_text_reasoning_tools_and_overlays_contract() -> None:
+    provider_meta = {
+        "content_blocks": [
+            {"type": "text", "text": "plain text", "raw": {"text": "plain text"}},
+            {"type": "thinking", "text": "private reasoning", "raw": {"thinking": "private reasoning"}},
+            {
+                "type": "tool_use",
+                "tool_call": {"name": "Read", "id": "tool-1", "input": {"path": "README.md"}},
+                "raw": {"type": "tool_use"},
+            },
+        ],
+        "tokens": {"output_tokens": 5},
+        "costUSD": 0.25,
+        "durationMs": 12,
+        "sender": "assistant",
+        "created_at": "2025-01-01T00:00:00Z",
+    }
+
+    harmonized = _harmonize_extracted_provider_meta(
+        "claude-code",
+        provider_meta,
+        message_id="msg-1",
+        text=None,
+        role=None,
+        timestamp=None,
+    )
+
+    assert harmonized.id == "msg-1"
+    assert harmonized.role.value == "assistant"
+    assert harmonized.text == "plain text\nprivate reasoning"
+    assert [trace.text for trace in harmonized.reasoning_traces] == ["private reasoning"]
+    assert [call.name for call in harmonized.tool_calls] == ["Read"]
+    assert harmonized.tokens == TokenUsage(output_tokens=5)
+    assert harmonized.cost == CostInfo(total_usd=0.25)
+    assert harmonized.duration_ms == 12
+    assert harmonized.timestamp is not None
+
+
+def test_has_extracted_viewports_and_overlay_message_context_contract() -> None:
+    message = extract_harmonized_message(
+        "claude-ai",
+        {"uuid": "m1", "sender": "assistant", "text": "hello", "created_at": "2025-01-01T00:00:00Z"},
+    )
+    unknown = message.model_copy(update={"id": None, "role": "unknown", "text": "", "timestamp": None})
+
+    assert _has_extracted_viewports({"content_blocks": [], "duration_ms": 1}) is True
+    assert _has_extracted_viewports({"sender": "assistant", "text": "hello"}) is False
+
+    overlaid = _overlay_message_context(
+        unknown,
+        message_id="db-id",
+        role="assistant",
+        text="db text",
+        timestamp="2025-01-02T00:00:00Z",
+    )
+    untouched = _overlay_message_context(
+        message,
+        message_id="db-id",
+        role="user",
+        text="db text",
+        timestamp="2025-01-02T00:00:00Z",
+    )
+
+    assert overlaid.id == "db-id"
+    assert overlaid.role.value == "assistant"
+    assert overlaid.text == "db text"
+    assert overlaid.timestamp is not None
+    assert untouched == message
 
 
 @given(
@@ -295,6 +574,73 @@ def test_rich_provider_block_classification_contract(case: tuple[str, dict[str, 
     record = _build_viewport_record(provider, raw)
 
     assert [block.type for block in record.extract_content_blocks()] == _expected_block_types(provider, raw)
+
+
+@given(provider_semantic_case_strategy())
+@settings(max_examples=40, deadline=None)
+def test_provider_adapter_viewport_contract(case: tuple[str, dict[str, object]]) -> None:
+    provider, raw = case
+    record = _build_viewport_record(provider, raw)
+    meta = record.to_meta()
+    blocks = record.extract_content_blocks()
+    traces = record.extract_reasoning_traces()
+    calls = record.extract_tool_calls()
+
+    assert isinstance(record.text_content, str)
+    assert isinstance(record.role_normalized, str)
+    assert record.role_normalized in _VALID_VIEWPORT_ROLES
+    assert record.parsed_timestamp is None or isinstance(record.parsed_timestamp, datetime)
+    assert isinstance(meta, MessageMeta)
+    assert isinstance(blocks, list)
+    assert isinstance(traces, list)
+    assert isinstance(calls, list)
+    assert meta.provider == provider
+    assert meta.role == record.role_normalized
+    assert all(block.raw is not None for block in blocks)
+
+    if provider == "chatgpt":
+        assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
+        assert record.text_content == extract_chatgpt_text(record.content.model_dump(mode="python"))
+        assert blocks == record.to_content_blocks()
+        assert not traces
+        assert not calls
+    elif provider == "claude-ai":
+        assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
+        assert len(blocks) == 1
+        assert blocks[0].type == ContentType.TEXT
+        assert blocks[0].text == record.text
+        assert record.parsed_timestamp is None or meta.timestamp is not None
+        assert not traces
+        assert not calls
+    elif provider == "claude-code":
+        assert meta.role == record.role
+        if record.content_blocks_raw:
+            assert record.text_content == extract_claude_code_text(record.content_blocks_raw)
+        assert blocks == extract_content_blocks(record.content_blocks_raw)
+        assert traces == extract_reasoning_traces(record.content_blocks_raw, "claude-code")
+        assert calls == extract_tool_calls(record.content_blocks_raw, "claude-code")
+    elif provider == "codex":
+        assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
+        assert record.text_content == extract_codex_text(record.effective_content)
+        assert len(blocks) == len(record.effective_content)
+        assert not traces
+        assert not calls
+    elif provider == "gemini":
+        assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
+        if record.tokenCount is None:
+            assert meta.tokens is None
+        else:
+            assert meta.tokens is not None
+            assert meta.tokens.output_tokens == record.tokenCount
+        if record.isThought and record.text:
+            assert traces
+            assert blocks
+            assert blocks[0].type == ContentType.THINKING
+            assert traces[0].text == record.text
+        else:
+            assert not traces
+    else:  # pragma: no cover - guarded by provider_semantic_case_strategy
+        raise AssertionError(provider)
 
 
 @given(provider_semantic_case_strategy())
@@ -711,3 +1057,69 @@ def test_extract_harmonized_message_claude_code_type_fallback_contract(
 def test_extract_harmonized_message_claude_code_empty_message_raises_contract() -> None:
     with pytest.raises(ValueError, match="no role"):
         extract_harmonized_message("claude-code", {"uuid": "m1", "type": "human", "message": {}})
+
+
+@pytest.mark.parametrize(
+    ("content_type", "parts", "language", "expected_type", "expected_text"),
+    [
+        ("text", ["plain"], None, ContentType.TEXT, "plain"),
+        ("code", ["print('hi')"], "python", ContentType.CODE, "print('hi')"),
+        ("tether_browsing_display", ["search hit"], None, ContentType.TOOL_RESULT, "search hit"),
+        ("multimodal_image", ["opaque"], None, ContentType.UNKNOWN, "opaque"),
+    ],
+)
+def test_chatgpt_content_blocks_preserve_type_text_language_and_raw_contract(
+    content_type: str,
+    parts: list[str],
+    language: str | None,
+    expected_type: ContentType,
+    expected_text: str,
+) -> None:
+    message = ChatGPTMessage.model_validate(
+        {
+            "id": "chatgpt-blocks",
+            "author": {"role": "assistant"},
+            "content": {"content_type": content_type, "parts": parts, "language": language},
+            "create_time": 1700000000.0,
+        }
+    )
+
+    blocks = message.to_content_blocks()
+    meta = message.to_meta()
+
+    assert len(blocks) == 1
+    assert blocks[0].type == expected_type
+    assert blocks[0].text == expected_text
+    assert blocks[0].raw == message.content.model_dump()
+    assert blocks[0].language == language
+    assert meta.id == "chatgpt-blocks"
+    assert meta.role == "assistant"
+    assert meta.provider == "chatgpt"
+
+
+def test_codex_content_blocks_preserve_text_language_unknown_and_raw_contract() -> None:
+    record = CodexRecord.model_validate(
+        {
+            "id": "codex-blocks",
+            "role": "assistant",
+            "timestamp": "2024-06-15T10:30:00Z",
+            "content": [
+                {"type": "output_text", "output_text": "result"},
+                {"type": "code_output", "code": "print('hi')", "language": "python"},
+                {"type": "image_data", "text": "opaque"},
+            ],
+        }
+    )
+
+    blocks = record.extract_content_blocks()
+    meta = record.to_meta()
+
+    assert [block.type for block in blocks] == [ContentType.TEXT, ContentType.CODE, ContentType.UNKNOWN]
+    assert blocks[0].text == "result"
+    assert blocks[1].text == "print('hi')"
+    assert blocks[1].language == "python"
+    assert blocks[2].text == "opaque"
+    assert [block.raw for block in blocks] == record.effective_content
+    assert meta.id == "codex-blocks"
+    assert meta.role == "assistant"
+    assert meta.provider == "codex"
