@@ -407,7 +407,7 @@ def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
         conversation_id=str(conv.id),
         messages=messages,
         message_count=len(messages),
-        created_at=str(conv.created_at) if conv.created_at else None,
+        created_at=str(conv.display_date) if conv.display_date else None,
         highlight_css=highlighter.get_css(),
         theme=theme,
     )

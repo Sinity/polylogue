@@ -21,6 +21,7 @@ from polylogue.rendering.semantic_proof import (
     SemanticConversationProof,
     SemanticMetricCheck,
     SemanticProofReport,
+    SemanticProofSuiteReport,
 )
 from polylogue.schemas.audit import AuditReport
 from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
@@ -72,7 +73,7 @@ def _make_showcase(results: list[ExerciseResult]) -> ShowcaseResult:
     return sr
 
 
-def _make_semantic_report(*, critical: bool = False) -> SemanticProofReport:
+def _make_semantic_report(*, critical: bool = False) -> SemanticProofSuiteReport:
     checks = [
         SemanticMetricCheck(
             metric="renderable_messages",
@@ -97,7 +98,7 @@ def _make_semantic_report(*, critical: bool = False) -> SemanticProofReport:
         output_facts={"message_sections": 1 if critical else 2},
         checks=checks,
     )
-    return SemanticProofReport(
+    canonical_report = SemanticProofReport(
         surface="canonical_markdown_v1",
         conversations=[proof],
         provider_reports={
@@ -123,6 +124,51 @@ def _make_semantic_report(*, critical: bool = False) -> SemanticProofReport:
                 },
             )
         },
+    )
+    html_report = SemanticProofReport(
+        surface="export_html_v1",
+        conversations=[
+            SemanticConversationProof(
+                conversation_id="conv-1",
+                provider="chatgpt",
+                surface="export_html_v1",
+                input_facts={"text_messages": 2},
+                output_facts={"message_sections": 1 if critical else 2},
+                checks=[
+                    SemanticMetricCheck(
+                        metric="text_messages",
+                        status="critical_loss" if critical else "preserved",
+                        policy="export_html_v1 must preserve visible message sections for text-bearing messages",
+                        input_value=2,
+                        output_value=1 if critical else 2,
+                    ),
+                ],
+            )
+        ],
+        provider_reports={
+            "chatgpt": ProviderSemanticProof(
+                provider="chatgpt",
+                total_conversations=1,
+                clean_conversations=0 if critical else 1,
+                critical_conversations=1 if critical else 0,
+                preserved_checks=0 if critical else 1,
+                declared_loss_checks=0,
+                critical_loss_checks=1 if critical else 0,
+                metric_summary={
+                    "text_messages": {
+                        "preserved": 0 if critical else 1,
+                        "declared_loss": 0,
+                        "critical_loss": 1 if critical else 0,
+                    }
+                },
+            )
+        },
+    )
+    return SemanticProofSuiteReport(
+        surface_reports={
+            "canonical_markdown_v1": canonical_report,
+            "export_html_v1": html_report,
+        }
     )
 
 
@@ -317,7 +363,8 @@ def test_full_qa_session_contains_composed_stage_payloads():
     assert session["proof"]["report"]["summary"]["package_versions"] == {"v1": 1}
     assert session["proof"]["report"]["summary"]["element_kinds"] == {"conversation_document": 1}
     assert session["semantic_proof"]["status"] == "error"
-    assert session["semantic_proof"]["report"]["summary"]["critical_conversations"] == 1
+    assert session["semantic_proof"]["report"]["summary"]["critical_surfaces"] == 2
+    assert session["semantic_proof"]["report"]["surfaces"]["canonical_markdown_v1"]["summary"]["critical_conversations"] == 1
     assert session["showcase"]["summary"] == {
         "total": 2,
         "passed": 1,
@@ -359,7 +406,8 @@ def test_generate_qa_summary_reports_stage_statuses():
     assert "Artifact Proof: contract_backed=1" in summary
     assert "Packages: v1=1" in summary
     assert "Elements: conversation_document=1" in summary
-    assert "Semantic Proof: clean_conversations=1" in summary
+    assert "Semantic Proof: surfaces=2" in summary
+    assert "canonical_markdown_v1: clean=1" in summary
     assert "renderable_messages(preserved=1, declared_loss=0, critical_loss=0)" in summary
     assert "Exercises: SKIPPED" in summary
     assert "Invariants: SKIPPED" in summary
@@ -401,5 +449,6 @@ def test_generate_qa_markdown_includes_artifact_proof_section():
     assert "| subagent_conversation_stream | 1 |" in markdown
     assert "| bundle_scope | 1 |" in markdown
     assert "| claude-code | 2 | 0 | 1 | 1 | 0 | 0 |" in markdown
-    assert "| Total conversations | 1 |" in markdown
+    assert "| Surface count | 2 |" in markdown
+    assert "| canonical_markdown_v1 | 1 | 1 | 0 | 1 | 1 | 0 |" in markdown
     assert "| renderable_messages | 1 | 0 | 0 |" in markdown

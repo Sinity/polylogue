@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.rendering.semantic_proof import SemanticProofReport
+from polylogue.rendering.semantic_proof import SemanticProofReport, SemanticProofSuiteReport
 from polylogue.schemas.audit import AuditReport
 from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercises import Exercise, Validation
@@ -57,10 +57,14 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
             },
             total_records=1,
         ),
-        semantic_proof_report=SemanticProofReport(
-            surface="canonical_markdown_v1",
-            conversations=[],
-            provider_reports={},
+        semantic_proof_report=SemanticProofSuiteReport(
+            surface_reports={
+                "canonical_markdown_v1": SemanticProofReport(
+                    surface="canonical_markdown_v1",
+                    conversations=[],
+                    provider_reports={},
+                )
+            },
         ),
         showcase_result=_make_showcase_result(report_dir),
         invariant_results=[
@@ -85,6 +89,7 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
     assert proof_payload["summary"]["package_versions"] == {"v1": 1}
     assert proof_payload["summary"]["element_kinds"] == {"conversation_document": 1}
     assert semantic_payload["summary"]["clean"] is True
+    assert semantic_payload["summary"]["surface_count"] == 1
     assert invariant_checks == [
         {"exercise": "test-help", "invariant": "json_valid", "status": "ok"},
     ]

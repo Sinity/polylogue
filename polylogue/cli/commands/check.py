@@ -39,7 +39,12 @@ def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -
 @click.option("--proof", "check_proof", is_flag=True, help="Run durable artifact support proof")
 @click.option("--artifacts", "check_artifacts", is_flag=True, help="List durable artifact observations")
 @click.option("--cohorts", "check_cohorts", is_flag=True, help="Summarize durable artifact cohorts")
-@click.option("--semantic-proof", "check_semantic_proof", is_flag=True, help="Run semantic preservation proof over canonical markdown rendering")
+@click.option(
+    "--semantic-proof",
+    "check_semantic_proof",
+    is_flag=True,
+    help="Run semantic preservation proof across canonical render and export surfaces",
+)
 @click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)")
 @click.option(
     "--artifact-provider",
@@ -77,6 +82,12 @@ def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -
     "semantic_providers",
     multiple=True,
     help="Limit semantic proof to conversation providers (repeatable)",
+)
+@click.option(
+    "--semantic-surface",
+    "semantic_surfaces",
+    multiple=True,
+    help="Limit semantic proof to surfaces such as canonical, json, yaml, csv, markdown, html, obsidian, org, or all",
 )
 @click.option(
     "--semantic-limit",
@@ -136,6 +147,7 @@ def check_command(
     artifact_limit: int | None,
     artifact_offset: int,
     semantic_providers: tuple[str, ...],
+    semantic_surfaces: tuple[str, ...],
     semantic_limit: int | None,
     semantic_offset: int,
     schema_samples: str,
@@ -170,6 +182,8 @@ def check_command(
         fail("check", "--artifact-offset requires --proof, --artifacts, or --cohorts")
     if semantic_providers and not check_semantic_proof:
         fail("check", "--semantic-provider requires --semantic-proof")
+    if semantic_surfaces and not check_semantic_proof:
+        fail("check", "--semantic-surface requires --semantic-proof")
     if semantic_limit is not None and not check_semantic_proof:
         fail("check", "--semantic-limit requires --semantic-proof")
     if semantic_offset != 0 and not check_semantic_proof:
@@ -235,13 +249,17 @@ def check_command(
             record_offset=artifact_offset,
         )
     if check_semantic_proof:
-        from polylogue.rendering.semantic_proof import prove_markdown_render_semantics
+        from polylogue.rendering.semantic_proof import prove_semantic_surface_suite
 
-        semantic_report = prove_markdown_render_semantics(
-            providers=list(semantic_providers) if semantic_providers else None,
-            record_limit=semantic_limit,
-            record_offset=semantic_offset,
-        )
+        try:
+            semantic_report = prove_semantic_surface_suite(
+                providers=list(semantic_providers) if semantic_providers else None,
+                surfaces=list(semantic_surfaces) if semantic_surfaces else None,
+                record_limit=semantic_limit,
+                record_offset=semantic_offset,
+            )
+        except ValueError as exc:
+            fail("check", str(exc))
 
     # Run repairs before output so JSON mode includes repair results
     repair_results: list | None = None
@@ -399,24 +417,35 @@ def check_command(
         semantic_summary = semantic_report.to_dict()["summary"]
         lines.append("")
         lines.append(
-            f"Semantic proof: {semantic_summary['total_conversations']:,} conversations "
-            f"(clean={semantic_summary['clean_conversations']:,}, "
-            f"critical={semantic_summary['critical_conversations']:,}, "
+            f"Semantic proof: {semantic_summary['surface_count']:,} surfaces "
+            f"(clean={semantic_summary['clean_surfaces']:,}, "
+            f"critical={semantic_summary['critical_surfaces']:,}, "
+            f"total_conversations={semantic_summary['total_conversations']:,}, "
             f"preserved_checks={semantic_summary['preserved_checks']:,}, "
             f"declared_loss_checks={semantic_summary['declared_loss_checks']:,}, "
             f"critical_loss_checks={semantic_summary['critical_loss_checks']:,})"
         )
         if semantic_summary["metric_summary"]:
             lines.append(f"  Metrics: {_format_semantic_metric_summary(semantic_summary['metric_summary'])}")
-        for provider, stats in sorted(semantic_report.provider_reports.items()):
+        for surface, surface_report in sorted(semantic_report.surfaces.items()):
+            surface_summary = surface_report.to_dict()["summary"]
             lines.append(
-                f"  {provider}: conversations={stats.total_conversations:,} "
-                f"clean={stats.clean_conversations:,} "
-                f"critical={stats.critical_conversations:,} "
-                f"preserved_checks={stats.preserved_checks:,} "
-                f"declared_loss_checks={stats.declared_loss_checks:,} "
-                f"critical_loss_checks={stats.critical_loss_checks:,}"
+                f"  {surface}: conversations={surface_summary['total_conversations']:,} "
+                f"clean={surface_summary['clean_conversations']:,} "
+                f"critical={surface_summary['critical_conversations']:,} "
+                f"preserved_checks={surface_summary['preserved_checks']:,} "
+                f"declared_loss_checks={surface_summary['declared_loss_checks']:,} "
+                f"critical_loss_checks={surface_summary['critical_loss_checks']:,}"
             )
+            for provider, stats in sorted(surface_report.providers.items()):
+                lines.append(
+                    f"    {provider}: conversations={stats.total_conversations:,} "
+                    f"clean={stats.clean_conversations:,} "
+                    f"critical={stats.critical_conversations:,} "
+                    f"preserved_checks={stats.preserved_checks:,} "
+                    f"declared_loss_checks={stats.declared_loss_checks:,} "
+                    f"critical_loss_checks={stats.critical_loss_checks:,}"
+                )
 
     if runtime_report is not None:
         lines.append("")
