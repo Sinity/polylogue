@@ -13,6 +13,7 @@ from typing import Any
 import click
 from click.shell_completion import get_completion_class
 
+<<<<<<< HEAD
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
 from polylogue.cli.commands.embed import embed_command
@@ -23,6 +24,30 @@ from polylogue.cli.commands.run import run_command, sources_command
 from polylogue.cli.commands.schema import schema_command
 from polylogue.cli.commands.site import site_command
 from polylogue.cli.commands.tags import tags_command
+||||||| parent of f5cb862b (refactor: close codebase-wide cleanup hotspots)
+from polylogue.cli.commands.auth import auth_command
+from polylogue.cli.commands.check import check_command
+from polylogue.cli.commands.completions import completions_command
+from polylogue.cli.commands.dashboard import dashboard_command
+from polylogue.cli.commands.embed import embed_command
+from polylogue.cli.commands.generate import generate_command
+from polylogue.cli.commands.mcp import mcp_command
+from polylogue.cli.commands.products import products_command
+from polylogue.cli.commands.qa import qa_command
+from polylogue.cli.commands.reset import reset_command
+from polylogue.cli.commands.run import run_command, sources_command
+from polylogue.cli.commands.schema import schema_command
+from polylogue.cli.commands.site import site_command
+from polylogue.cli.commands.tags import tags_command
+=======
+from polylogue.cli.click_command_registration import (
+    completions_command,
+    dashboard_command,
+    mcp_command,
+    register_root_commands,
+)
+from polylogue.cli.click_option_groups import apply_query_mode_options
+>>>>>>> f5cb862b (refactor: close codebase-wide cleanup hotspots)
 from polylogue.cli.formatting import announce_plain_mode, plain_forced_by_env, should_use_plain
 from polylogue.cli.types import AppEnv
 from polylogue.logging import configure_logging
@@ -210,6 +235,7 @@ def mcp_command(env: AppEnv, transport: str) -> None:
     context_settings={"help_option_names": ["-h", "--help"]},
     invoke_without_command=True,
 )
+<<<<<<< HEAD
 # Query terms captured via --query-term (injected by parse_args override)
 @click.option("--query-term", multiple=True, hidden=True, help="Query term (internal)")
 # --- Filter options ---
@@ -282,6 +308,86 @@ def mcp_command(env: AppEnv, transport: str) -> None:
 # --- Global options ---
 @click.option("--plain", is_flag=True, help="Force non-interactive plain output")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output")
+||||||| parent of f5cb862b (refactor: close codebase-wide cleanup hotspots)
+# --- Filter options ---
+@click.option("--id", "-i", "conv_id", help="Conversation ID (exact or prefix match)")
+@click.option("--contains", "-c", multiple=True, help="FTS term (repeatable = AND)")
+@click.option("--exclude-text", multiple=True, help="Exclude FTS term")
+@click.option("--retrieval-lane", type=click.Choice(QUERY_RETRIEVAL_LANES), help="Query lane: dialogue FTS, action text, or hybrid")
+@click.option("--provider", "-p", help="Include providers (comma = OR)")
+@click.option("--exclude-provider", help="Exclude providers")
+@click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)")
+@click.option("--exclude-tag", help="Exclude tags")
+@click.option("--title", help="Title contains")
+@click.option("--path", "path_terms", multiple=True, help="Touched path contains substring (repeatable = AND)")
+@click.option("--action", multiple=True, type=click.Choice(QUERY_ACTION_TYPES), help="Require semantic action category (repeatable = AND)")
+@click.option("--exclude-action", multiple=True, type=click.Choice(QUERY_ACTION_TYPES), help="Exclude semantic action category (repeatable = AND)")
+@click.option("--action-sequence", help="Require ordered semantic action subsequence (comma-separated)")
+@click.option("--action-text", multiple=True, help="Require text within normalized action evidence (repeatable = AND)")
+@click.option("--tool", multiple=True, help="Require normalized tool name (repeatable = AND)")
+@click.option("--exclude-tool", multiple=True, help="Exclude normalized tool name (repeatable = AND)")
+@click.option("--similar", "similar_text", help="Semantic similarity query (requires embeddings)")
+@click.option("--has", "has_type", multiple=True, help="Filter by content: thinking (reasoning), tools (calls), summary, attachments")
+@click.option("--has-tool-use", "filter_has_tool_use", is_flag=True, help="Only conversations with tool use (SQL pushdown)")
+@click.option("--has-thinking", "filter_has_thinking", is_flag=True, help="Only conversations with thinking blocks (SQL pushdown)")
+@click.option("--min-messages", type=int, help="Minimum message count")
+@click.option("--max-messages", type=int, help="Maximum message count")
+@click.option("--min-words", type=int, help="Minimum total word count")
+@click.option("--since", help="After date (ISO, 'yesterday', 'last week')")
+@click.option("--until", help="Before date")
+@click.option("--limit", "-n", type=int, help="Max results")
+@click.option("--latest", is_flag=True, help="Most recent (= --sort date --limit 1)")
+@click.option(
+    "--sort",
+    type=click.Choice(["date", "tokens", "messages", "words", "longest", "random"]),
+    help="Sort by field",
+)
+@click.option("--reverse", is_flag=True, help="Reverse sort order")
+@click.option("--sample", type=int, help="Random sample of N conversations")
+# --- Output options ---
+@click.option(
+    "--output",
+    "-o",
+    help="Output destinations: browser, clipboard, stdout (comma-separated)",
+)
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["markdown", "json", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
+    help="Output format",
+)
+@click.option("--fields", help="Fields for list/json: id, title, provider, date, messages, words, tags, summary")
+@click.option("--list", "list_mode", is_flag=True, help="Force list format")
+@click.option("--stats", "stats_only", is_flag=True, help="Only statistics, no content")
+@click.option("--count", "count_only", is_flag=True, help="Print matched count and exit")
+@click.option(
+    "--stats-by",
+    "stats_by",
+    type=click.Choice(["provider", "month", "year", "day", "action", "tool", "project", "work-kind"]),
+    help="Aggregate statistics by dimension",
+)
+@click.option("--open", "open_result", is_flag=True, help="Open result in browser/editor")
+@click.option(
+    "--transform",
+    type=click.Choice(["strip-tools", "strip-thinking", "strip-all"]),
+    help="Remove content: strip-tools (tool calls), strip-thinking (reasoning), strip-all (both)",
+)
+# --- Streaming options (memory-efficient for large conversations) ---
+@click.option("--stream", is_flag=True, help="Stream output (low memory). Requires --latest or -i ID. Incompatible with --transform")
+@click.option("--dialogue-only", "-d", is_flag=True, help="Show only user/assistant messages")
+# --- Modifier options (write operations) ---
+@click.option("--set", "set_meta", nargs=2, multiple=True, help="Set metadata key value")
+@click.option("--add-tag", multiple=True, help="Add tags (comma-separated)")
+@click.option("--delete", "delete_matched", is_flag=True, help="Delete matched (requires filter)")
+@click.option("--dry-run", is_flag=True, help="Preview changes without executing")
+@click.option("--force", is_flag=True, help="Skip confirmation for bulk operations")
+# --- Global options ---
+@click.option("--plain", is_flag=True, help="Force non-interactive plain output")
+@click.option("-v", "--verbose", is_flag=True, help="Verbose output")
+=======
+@apply_query_mode_options
+>>>>>>> f5cb862b (refactor: close codebase-wide cleanup hotspots)
 @click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogue")
 @click.pass_context
 def cli(
@@ -383,6 +489,7 @@ def cli(
         announce_plain_mode()
 
 
+<<<<<<< HEAD
 # Register subcommands
 cli.add_command(run_command)
 cli.add_command(sources_command)
@@ -398,6 +505,26 @@ cli.add_command(tags_command)
 cli.add_command(generate_command)
 cli.add_command(qa_command)
 cli.add_command(schema_command)
+||||||| parent of f5cb862b (refactor: close codebase-wide cleanup hotspots)
+# Register subcommands
+cli.add_command(run_command)
+cli.add_command(sources_command)
+cli.add_command(check_command)
+cli.add_command(reset_command)
+cli.add_command(mcp_command)
+cli.add_command(auth_command)
+cli.add_command(completions_command)
+cli.add_command(dashboard_command)
+cli.add_command(embed_command)
+cli.add_command(products_command)
+cli.add_command(site_command)
+cli.add_command(tags_command)
+cli.add_command(generate_command)
+cli.add_command(qa_command)
+cli.add_command(schema_command)
+=======
+register_root_commands(cli)
+>>>>>>> f5cb862b (refactor: close codebase-wide cleanup hotspots)
 
 
 def main() -> None:
