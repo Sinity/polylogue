@@ -1,8 +1,8 @@
 # Schema Package Authority Program
 
 Date: 2026-03-22
-Status: current execution program
-Role: canonical live queue for schema package/version authority correction
+Status: executed program
+Role: executed record for schema package/version authority correction
 
 See also:
 
