@@ -10,13 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.lib.roles import normalize_role as new_normalize_role
 from polylogue.schemas.unified import (
     extract_from_provider_meta,
     extract_harmonized_message,
     is_message_record,
-)
-from polylogue.schemas.unified import (
-    normalize_role as new_normalize_role,
 )
 from polylogue.sources.parsers.base import normalize_role as old_normalize_role
 from polylogue.sources.parsers.claude import (
@@ -24,141 +22,17 @@ from polylogue.sources.parsers.claude import (
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import (
-    ConversationRecord,
+    ContentBlockRecord,
 )
 from tests.infra.helpers import (
     make_attachment,
     make_conversation,
     make_message,
-    make_hash,
 )
 
 
 class TestConversationOperations:
     """Test conversation save/retrieve operations."""
-
-    async def test_save_and_get_conversation(self, tmp_path: Path) -> None:
-        """save_conversation persists data retrievable by get_conversation."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        conv = make_conversation("conv-1", title="Test Conversation", provider_name="claude")
-        await backend.save_conversation_record(conv)
-
-        retrieved = await backend.get_conversation("conv-1")
-        assert retrieved is not None
-        assert retrieved.conversation_id == "conv-1"
-        assert retrieved.title == "Test Conversation"
-        assert retrieved.provider_name == "claude"
-        await backend.close()
-
-    async def test_get_nonexistent_conversation_returns_none(self, tmp_path: Path) -> None:
-        """get_conversation returns None for missing ID."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        result = await backend.get_conversation("nonexistent")
-        assert result is None
-        await backend.close()
-
-    async def test_save_conversation_upserts(self, tmp_path: Path) -> None:
-        """save_conversation updates existing conversation."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        conv1 = make_conversation("conv-1", title="Original Title")
-        await backend.save_conversation_record(conv1)
-
-        conv2 = make_conversation("conv-1", title="Updated Title")
-        await backend.save_conversation_record(conv2)
-
-        retrieved = await backend.get_conversation("conv-1")
-        assert retrieved is not None
-        assert retrieved.title == "Updated Title"
-        await backend.close()
-
-    async def test_title_contains_escapes_percent_wildcard(self, tmp_path: Path) -> None:
-        """LIKE % wildcard should be escaped in title search."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Create conversations with titles containing % and x
-        conv1 = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="test",
-            provider_conversation_id="prov-1",
-            title="100% done",
-            created_at="2025-01-01",
-            updated_at="2025-01-01",
-            content_hash=make_hash("100% done"),
-        )
-        conv2 = ConversationRecord(
-            conversation_id="conv-2",
-            provider_name="test",
-            provider_conversation_id="prov-2",
-            title="100x done",
-            created_at="2025-01-02",
-            updated_at="2025-01-02",
-            content_hash=make_hash("100x done"),
-        )
-        await backend.save_conversation_record(conv1)
-        await backend.save_conversation_record(conv2)
-
-        # Search for "100%"
-        results = await backend.list_conversations(title_contains="100%")
-        assert len(results) == 1
-        assert results[0].title == "100% done"
-        await backend.close()
-
-    async def test_title_contains_escapes_underscore_wildcard(self, tmp_path: Path) -> None:
-        """LIKE _ wildcard should be escaped in title search."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Create conversations
-        conv1 = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="test",
-            provider_conversation_id="prov-1",
-            title="100_ done",
-            created_at="2025-01-01",
-            updated_at="2025-01-01",
-            content_hash=make_hash("100_ done"),
-        )
-        conv2 = ConversationRecord(
-            conversation_id="conv-2",
-            provider_name="test",
-            provider_conversation_id="prov-2",
-            title="100x done",
-            created_at="2025-01-02",
-            updated_at="2025-01-02",
-            content_hash=make_hash("100x done"),
-        )
-        await backend.save_conversation_record(conv1)
-        await backend.save_conversation_record(conv2)
-
-        # Search for "100_"
-        results = await backend.list_conversations(title_contains="100_")
-        assert len(results) == 1
-        assert results[0].title == "100_ done"
-        await backend.close()
-
-    async def test_title_contains_escapes_backslash(self, tmp_path: Path) -> None:
-        """Backslashes should be escaped in title search."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Create a conversation with backslash
-        conv = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="test",
-            provider_conversation_id="prov-1",
-            title="C:\\Users\\test",
-            created_at="2025-01-01",
-            updated_at="2025-01-01",
-            content_hash=make_hash("C:\\Users\\test"),
-        )
-        await backend.save_conversation_record(conv)
-
-        # Search for "C:\Users\test" - should find it
-        results = await backend.list_conversations(title_contains="C:\\Users\\test")
-        assert len(results) == 1
-        assert "C:" in results[0].title
-        await backend.close()
 
 
 async def test_repository_message_mapping_uses_backend_path(tmp_path: Path) -> None:
@@ -217,6 +91,59 @@ class TestMessageOperations:
 
         retrieved = await backend.get_messages("conv-1")
         assert retrieved == []
+        await backend.close()
+
+    async def test_content_block_semantic_type_stored(self, tmp_path: Path) -> None:
+        """ContentBlockRecord.semantic_type is persisted and retrieved correctly."""
+        from polylogue.types import MessageId
+
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        conv = make_conversation("conv-sem")
+        await backend.save_conversation_record(conv)
+
+        msg = make_message("msg-sem", "conv-sem", role="assistant", text="")
+        await backend.save_messages([msg])
+
+        blocks = [
+            ContentBlockRecord(
+                block_id="block-1",
+                message_id=MessageId("msg-sem"),
+                conversation_id="conv-sem",
+                block_index=0,
+                type="tool_use",
+                tool_name="Bash",
+                semantic_type="git",
+                metadata='{"command": "status"}',
+            ),
+            ContentBlockRecord(
+                block_id="block-2",
+                message_id=MessageId("msg-sem"),
+                conversation_id="conv-sem",
+                block_index=1,
+                type="thinking",
+                text="Let me think",
+                semantic_type="thinking",
+            ),
+            ContentBlockRecord(
+                block_id="block-3",
+                message_id=MessageId("msg-sem"),
+                conversation_id="conv-sem",
+                block_index=2,
+                type="text",
+                text="plain text",
+                semantic_type=None,
+            ),
+        ]
+        await backend.save_content_blocks(blocks)
+
+        blocks_by_msg = await backend.get_content_blocks(["msg-sem"])
+        retrieved = blocks_by_msg.get("msg-sem", [])
+        assert len(retrieved) == 3
+
+        by_index = {b.block_index: b for b in retrieved}
+        assert by_index[0].semantic_type == "git"
+        assert by_index[1].semantic_type == "thinking"
+        assert by_index[2].semantic_type is None
         await backend.close()
 
 
@@ -363,114 +290,9 @@ class TestMetadataOperations:
         assert tags == {}
         await backend.close()
 
-    async def test_list_tags_counts(self, tmp_path: Path) -> None:
-        """list_tags returns correct tag counts across conversations."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Create 3 conversations with different tags
-        conv1 = make_conversation("conv-1")
-        conv2 = make_conversation("conv-2")
-        conv3 = make_conversation("conv-3")
-
-        await backend.save_conversation_record(conv1)
-        await backend.save_conversation_record(conv2)
-        await backend.save_conversation_record(conv3)
-
-        # Tag conv-1 with "important" and "work"
-        await backend.add_tag("conv-1", "important")
-        await backend.add_tag("conv-1", "work")
-
-        # Tag conv-2 with "important"
-        await backend.add_tag("conv-2", "important")
-
-        # conv-3 has no tags
-
-        tags = await backend.list_tags()
-        assert tags == {"important": 2, "work": 1}
-        await backend.close()
-
-    async def test_list_tags_provider_filter(self, tmp_path: Path) -> None:
-        """list_tags with provider filter only counts tags from that provider."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Create conversations with different providers
-        conv_claude = make_conversation("conv-claude", provider_name="claude")
-        conv_chatgpt = make_conversation("conv-chatgpt", provider_name="chatgpt")
-
-        await backend.save_conversation_record(conv_claude)
-        await backend.save_conversation_record(conv_chatgpt)
-
-        # Tag both
-        await backend.add_tag("conv-claude", "important")
-        await backend.add_tag("conv-chatgpt", "important")
-        await backend.add_tag("conv-chatgpt", "review")
-
-        # Filter by claude provider
-        tags_claude = await backend.list_tags(provider="claude")
-        assert tags_claude == {"important": 1}
-
-        # Filter by chatgpt provider
-        tags_chatgpt = await backend.list_tags(provider="chatgpt")
-        assert tags_chatgpt == {"important": 1, "review": 1}
-
-        # All tags
-        tags_all = await backend.list_tags()
-        assert tags_all == {"important": 2, "review": 1}
-
-        await backend.close()
-
-    async def test_list_tags_dedup(self, tmp_path: Path) -> None:
-        """list_tags doesn't double-count duplicate tags on same conversation."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        conv = make_conversation("conv-1")
-        await backend.save_conversation_record(conv)
-
-        # Add the same tag twice
-        await backend.add_tag("conv-1", "important")
-        await backend.add_tag("conv-1", "important")
-
-        tags = await backend.list_tags()
-        # Should count as 1, not 2
-        assert tags == {"important": 1}
-        await backend.close()
-
 
 class TestSearchOperations:
     """Test search and resolve operations."""
-
-    async def test_resolve_id_exact_match(self, tmp_path: Path) -> None:
-        """resolve_id returns full ID for exact match."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        conv = make_conversation("conversation-12345")
-        await backend.save_conversation_record(conv)
-
-        resolved = await backend.resolve_id("conversation-12345")
-        assert resolved == "conversation-12345"
-        await backend.close()
-
-    async def test_resolve_id_prefix_match(self, tmp_path: Path) -> None:
-        """resolve_id returns full ID for unique prefix."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        conv = make_conversation("unique-prefix-abc123")
-        await backend.save_conversation_record(conv)
-
-        resolved = await backend.resolve_id("unique-prefix")
-        assert resolved == "unique-prefix-abc123"
-        await backend.close()
-
-    async def test_resolve_id_ambiguous_returns_none(self, tmp_path: Path) -> None:
-        """resolve_id returns None for ambiguous prefix."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        await backend.save_conversation_record(make_conversation("prefix-abc"))
-        await backend.save_conversation_record(make_conversation("prefix-def"))
-
-        resolved = await backend.resolve_id("prefix")
-        assert resolved is None
-        await backend.close()
 
 
 class TestDeleteOperations:
@@ -555,7 +377,7 @@ class TestPruneAttachments:
         assert conv2_atts[0].attachment_id == "shared-att"
 
         # Check in database that attachment still exists
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'shared-att'")
             row = await cursor.fetchone()
             assert row[0] == 1
@@ -577,7 +399,7 @@ class TestPruneAttachments:
         await backend.prune_attachments("conv-sole", set())
 
         # Attachment should be removed
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'sole-att'")
             row = await cursor.fetchone()
             assert row[0] == 0
@@ -675,6 +497,42 @@ def compare_extractions(provider: str, raw: dict) -> list[ComparisonResult]:
     return results
 
 
+def _load_claude_code_message_records_from_raw(seeded_db: str | Path, *, limit: int = 500) -> list[dict]:
+    """Load Claude Code message records from raw_conversations JSONL payloads."""
+    conn = sqlite3.connect(seeded_db)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT raw_content
+        FROM raw_conversations
+        WHERE provider_name = 'claude-code'
+        LIMIT ?
+        """,
+        (max(1, limit),),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    records: list[dict] = []
+    for (raw_content,) in rows:
+        text = (
+            raw_content.decode("utf-8", errors="replace")
+            if isinstance(raw_content, (bytes, bytearray))
+            else str(raw_content)
+        )
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and is_message_record("claude-code", payload):
+                records.append(payload)
+                if len(records) >= limit:
+                    return records
+    return records
 
 
 class TestBackendComparison:
@@ -705,80 +563,48 @@ class TestBackendComparison:
         assert old_normalize_role("assistant") == new_normalize_role("assistant")
 
     def test_claude_code_extraction_equivalence(self, seeded_db):
-        """Compare old and new extraction on real Claude Code data."""
-        conn = sqlite3.connect(seeded_db)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT m.provider_meta
-            FROM messages m
-            JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name = 'claude-code'
-            LIMIT 500
-            """
-        )
-
-        rows = cur.fetchall()
-        conn.close()
+        """Compare old and new extraction on Claude Code raw message records."""
+        records = _load_claude_code_message_records_from_raw(seeded_db, limit=500)
+        assert records, "Expected claude-code message records in seeded raw corpus"
 
         equiv_count = Counter()
         diff_samples = []
+        role_mismatches = 0
 
-        for (pm_json,) in rows:
-            pm = json.loads(pm_json)
-            raw = pm.get("raw", pm)
-
-            if not is_message_record("claude-code", raw):
-                continue
-
+        for raw in records:
             results = compare_extractions("claude-code", raw)
-
             for r in results:
                 if r.equivalent:
                     equiv_count[r.field] += 1
                 else:
+                    if r.field == "role":
+                        role_mismatches += 1
                     if len(diff_samples) < 10:
                         diff_samples.append(r)
 
         total = sum(equiv_count.values())
-        if total == 0:
-            pytest.skip("No claude-code messages in seeded database")
+        assert total > 0
+        assert role_mismatches == 0
 
     def test_new_extraction_is_superset(self, seeded_db):
-        """New extraction should provide more information, not less."""
-        conn = sqlite3.connect(seeded_db)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT m.provider_meta
-            FROM messages m
-            JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name = 'claude-code'
-            LIMIT 500
-            """
-        )
-
-        rows = cur.fetchall()
-        conn.close()
+        """New extraction should expose tool/reasoning data on raw records."""
+        records = _load_claude_code_message_records_from_raw(seeded_db, limit=500)
+        assert records, "Expected claude-code message records in seeded raw corpus"
 
         tool_calls_found = 0
         reasoning_found = 0
+        processed = 0
 
-        for (pm_json,) in rows:
-            pm = json.loads(pm_json)
-
-            if not is_message_record("claude-code", pm.get("raw", pm)):
-                continue
-
-            new_msg = extract_from_provider_meta("claude-code", pm)
+        for raw in records:
+            new_msg = extract_from_provider_meta("claude-code", {"raw": raw})
+            processed += 1
             tool_calls_found += len(new_msg.tool_calls)
             reasoning_found += len(new_msg.reasoning_traces)
 
-        assert tool_calls_found >= 0
-        assert reasoning_found >= 0
-        print(f"Reasoning traces extracted: {reasoning_found}")
-
-        assert tool_calls_found > 0 or reasoning_found >= 0, "New extraction should find viewports"
+        assert processed > 0
+        assert tool_calls_found > 0 or reasoning_found > 0, (
+            "New extraction should find tool calls or reasoning traces"
+        )
 
 
 class TestTransactionAtomicity:
@@ -857,7 +683,7 @@ class TestTransactionAtomicity:
             await backend.rollback()
 
         # Verify all tables are empty
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
             row = await cursor.fetchone()
             assert row[0] == 0

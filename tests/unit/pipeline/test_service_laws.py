@@ -11,7 +11,7 @@ from hypothesis import HealthCheck, given, settings
 
 from polylogue.config import Source
 from polylogue.pipeline.services.acquisition import AcquisitionService
-from polylogue.pipeline.services.parsing import ParseResult
+from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -148,3 +148,32 @@ async def test_parse_result_merge_law_accumulates_counts_and_processed_ids(event
     assert result.counts == expected["counts"]
     assert result.changed_counts == expected["changed_counts"]
     assert result.processed_ids == expected["processed_ids"]
+
+
+async def test_parse_raw_record_contract_updates_payload_provider_and_dispatches_once(tmp_path: Path) -> None:
+    """_parse_raw_record should classify once, persist payload_provider on the record, and dispatch that provider."""
+    repository = MagicMock()
+    repository.backend = MagicMock()
+    service = ParsingService(repository=repository, archive_root=tmp_path / "archive", config=MagicMock())
+    raw_record = MagicMock(
+        raw_content=b'{"id":"conv-1"}',
+        source_path="/tmp/conversation.json",
+        provider_name="chatgpt",
+        payload_provider="",
+        raw_id="raw-1",
+    )
+    envelope = MagicMock(provider="gemini", payload={"id": "parsed"})
+
+    with patch("polylogue.pipeline.services.parsing.build_raw_payload_envelope", return_value=envelope) as mock_envelope:
+        with patch("polylogue.pipeline.services.parsing.parse_payload", return_value=["parsed"]) as mock_parse:
+            result = await service._parse_raw_record(raw_record)
+
+    mock_envelope.assert_called_once_with(
+        raw_record.raw_content,
+        source_path=raw_record.source_path,
+        fallback_provider=raw_record.provider_name,
+        payload_provider=None,
+    )
+    mock_parse.assert_called_once_with("gemini", {"id": "parsed"}, "raw-1")
+    assert raw_record.payload_provider == "gemini"
+    assert result == ["parsed"]

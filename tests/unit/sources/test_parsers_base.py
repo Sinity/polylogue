@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from polylogue.lib.models import DialoguePair, Message
@@ -584,6 +586,28 @@ class TestAttachmentFromMeta:
         meta3 = {"id": "att", "name": "file", "content_type": "application/json"}
         result3 = attachment_from_meta(meta3, "msg", 0)
         assert result3.mime_type == "application/json"
+
+    def test_parsed_attachment_sanitizes_edge_case_name_and_path(self):
+        """ParsedAttachment keeps parser-surface sanitization out of CLI tests."""
+        with patch("pathlib.Path.is_symlink", return_value=True):
+            blocked = ParsedAttachment(
+                provider_attachment_id="att-symlink",
+                message_provider_id="msg-1",
+                name="...",
+                path="/tmp/link",
+            )
+
+        assert blocked.name == "file"
+        assert blocked.path is not None
+        assert blocked.path.startswith("_blocked_")
+
+        empty = ParsedAttachment(
+            provider_attachment_id="att-empty",
+            message_provider_id="msg-2",
+            name="report.txt",
+            path="",
+        )
+        assert empty.path is None
 
 
 # =============================================================================

@@ -23,6 +23,16 @@ from tests.infra.strategies.adversarial import (
     path_traversal_strategy,
     sql_injection_strategy,
 )
+from tests.infra.strategies.cli import (
+    QueryDeleteCase,
+    QueryMutationCase,
+    SendOutputCase,
+    SummaryOutputCase,
+    query_delete_case_strategy,
+    query_mutation_case_strategy,
+    send_output_case_strategy,
+    summary_output_case_strategy,
+)
 from tests.infra.strategies.filters import (
     filter_arg_strategy,
     filter_chain_strategy,
@@ -79,6 +89,11 @@ from tests.infra.strategies.schema import (
     session_jsonl_tree_strategy,
     static_key_strategy,
 )
+from tests.infra.strategies.site import (
+    SiteArchiveSpec,
+    expected_index_pages,
+    site_archive_spec_strategy,
+)
 from tests.infra.strategies.sources import (
     conversations_wrapper_bytes_strategy,
     json_array_bytes_strategy,
@@ -88,11 +103,24 @@ from tests.infra.strategies.sources import (
 from tests.infra.strategies.storage import (
     ConversationSpec,
     MessageSpec,
+    TagAssignmentSpec,
+    TitleSearchSpec,
     conversation_graph_strategy,
     expected_sorted_ids,
+    expected_tag_counts,
     expected_tree_ids,
+    literal_title_search_strategy,
     root_index,
     seed_conversation_graph,
+    shortest_unique_prefix,
+    tag_assignment_strategy,
+)
+from tests.infra.strategies.summaries import (
+    ConversationSummarySpec,
+    build_conversation_summary,
+    build_message_counts,
+    conversation_summary_batch_strategy,
+    conversation_summary_spec_strategy,
 )
 
 __all__ = [
@@ -140,11 +168,17 @@ __all__ = [
     # Storage
     "ConversationSpec",
     "MessageSpec",
+    "TagAssignmentSpec",
+    "TitleSearchSpec",
     "conversation_graph_strategy",
+    "expected_tag_counts",
     "expected_sorted_ids",
     "expected_tree_ids",
+    "literal_title_search_strategy",
     "root_index",
     "seed_conversation_graph",
+    "shortest_unique_prefix",
+    "tag_assignment_strategy",
     # Pipeline
     "AcquisitionInputSpec",
     "ParseMergeEvent",
@@ -164,4 +198,23 @@ __all__ = [
     "malformed_json_strategy",
     "path_traversal_strategy",
     "sql_injection_strategy",
+    # Summary/presentation
+    "ConversationSummarySpec",
+    "build_conversation_summary",
+    "build_message_counts",
+    "conversation_summary_batch_strategy",
+    "conversation_summary_spec_strategy",
+    # CLI
+    "QueryDeleteCase",
+    "QueryMutationCase",
+    "SendOutputCase",
+    "SummaryOutputCase",
+    "query_delete_case_strategy",
+    "query_mutation_case_strategy",
+    "send_output_case_strategy",
+    "summary_output_case_strategy",
+    # Site
+    "SiteArchiveSpec",
+    "expected_index_pages",
+    "site_archive_spec_strategy",
 ]

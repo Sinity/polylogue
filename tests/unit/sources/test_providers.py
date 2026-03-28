@@ -22,7 +22,6 @@ Targets:
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -73,24 +72,13 @@ def test_jsonl_multiple_errors_logging() -> None:
 class TestIterSourceConversationsZip:
     """Test ZIP file handling with bomb protection."""
 
-    def test_zip_normal_file(self, tmp_path: Path):
-        """Normal ZIP file should be processed."""
-        zip_path = tmp_path / "test.zip"
-        with ZipFile(zip_path, "w") as zf:
-            zf.writestr("conv.json", '{"mapping": {}}')
-
-        source = Source(name="test", path=zip_path)
-        conversations = list(iter_source_conversations(source))
-        assert conversations
-
     @pytest.mark.parametrize(
         "zip_scenario,should_fail",
         [
             ("directory_entries", False),  # directories should be skipped
             ("non_ingest_extension", False),  # .txt should be skipped but .json processed
-            ("grouped_jsonl", False),  # claude-code.jsonl should parse
         ],
-        ids=["directories_skipped", "non_ingest_skipped", "grouped_jsonl_parsed"],
+        ids=["directories_skipped", "non_ingest_skipped"],
     )
     def test_zip_scenarios(self, tmp_path: Path, zip_scenario, should_fail):
         """Test various ZIP scenarios."""
@@ -106,9 +94,6 @@ class TestIterSourceConversationsZip:
             with ZipFile(zip_path, "w") as zf:
                 zf.writestr("readme.txt", "Not JSON")
                 zf.writestr("conv.json", '{"mapping": {}}')
-        elif zip_scenario == "grouped_jsonl":
-            with ZipFile(zip_path, "w") as zf:
-                zf.writestr("claude-code.jsonl", '{"type": "user"}\n{"type": "assistant"}\n')
 
         source = Source(name="test", path=zip_path)
         conversations = list(iter_source_conversations(source))
@@ -159,43 +144,6 @@ class TestIterSourceConversationsZip:
 class TestIterSourceConversationsWithRaw:
     """Test raw capture functionality."""
 
-    @pytest.mark.parametrize(
-        "capture_enabled,provider,has_raw_expected",
-        [
-            (False, "test", False),  # disabled
-            (True, "claude-code", True),  # grouped provider
-            (True, "chatgpt", None),  # non-grouped
-        ],
-        ids=["capture_disabled", "capture_grouped", "capture_nongrouped"],
-    )
-    def test_raw_capture_variants(self, tmp_path: Path, capture_enabled, provider, has_raw_expected):
-        """Test raw capture with various provider/enable combos."""
-        if provider == "claude-code":
-            json_file = tmp_path / "test.jsonl"
-            json_file.write_text('{"type": "user"}\n{"type": "assistant"}\n')
-        else:
-            json_file = tmp_path / "conv.json"
-            json_file.write_text('{"mapping": {}}')
-
-        source = Source(name=provider, path=json_file)
-        for raw_data, _conv in iter_source_conversations_with_raw(source, capture_raw=capture_enabled):
-            if has_raw_expected is False:
-                assert raw_data is None
-            elif has_raw_expected is True:
-                assert raw_data is not None
-                assert raw_data.raw_bytes is not None
-
-    def test_raw_capture_file_mtime(self, tmp_path: Path):
-        """Raw capture should include file mtime (line 553)."""
-        json_file = tmp_path / "conv.json"
-        json_file.write_text('{"mapping": {}}')
-
-        source = Source(name="test", path=json_file)
-        for raw_data, _conv in iter_source_conversations_with_raw(source, capture_raw=True):
-            assert raw_data is not None
-            assert raw_data.file_mtime is not None
-            datetime.fromisoformat(raw_data.file_mtime)
-
     def test_raw_capture_stat_os_error(self, tmp_path: Path):
         """OSError getting stat should not fail (line 554-555)."""
         json_file = tmp_path / "conv.json"
@@ -207,17 +155,6 @@ class TestIterSourceConversationsWithRaw:
                 list(iter_source_conversations_with_raw(source, capture_raw=True))
             except OSError:
                 pass
-
-    def test_raw_capture_zip_grouped_jsonl(self, tmp_path: Path):
-        """Grouped JSONL in ZIP with raw capture (line 615-635)."""
-        zip_path = tmp_path / "test.zip"
-        with ZipFile(zip_path, "w") as zf:
-            zf.writestr("claude-code.jsonl", '{"type": "user"}\n{"type": "assistant"}\n')
-
-        source = Source(name="test", path=zip_path)
-        for raw_data, _conv in iter_source_conversations_with_raw(source, capture_raw=True):
-            assert raw_data is not None
-            assert raw_data.raw_bytes is not None
 
     def test_raw_capture_zip_individual_items(self, tmp_path: Path):
         """Individual items in ZIP with raw capture (line 637-661)."""
@@ -510,17 +447,6 @@ class TestParseJsonPayloadRecursion:
 class TestZipParsing:
     """Tests for ZIP file processing in iter_source_conversations."""
 
-    def test_zip_with_json(self, tmp_path):
-        """ZIP containing JSON file is processed."""
-        from polylogue.sources.source import iter_source_conversations
-
-        conv = _make_chatgpt_conv("zip-conv")
-        zip_path = _make_zip(tmp_path, {"conversations.json": json.dumps([conv])})
-
-        source = Source(name="chatgpt", path=zip_path)
-        convos = list(iter_source_conversations(source))
-        assert len(convos) >= 1
-
     def test_zip_directories_skipped(self, tmp_path):
         """Directory entries in ZIP are skipped."""
         import zipfile
@@ -627,29 +553,6 @@ class TestClaudeAIZipFiltering:
 class TestIterSourceConversations:
     """Tests for the main iteration function."""
 
-    def test_json_file(self, tmp_path):
-        """Single JSON file with ChatGPT conversation."""
-        from polylogue.sources.source import iter_source_conversations
-
-        conv = _make_chatgpt_conv("json-test")
-        (tmp_path / "chat.json").write_text(json.dumps([conv]))
-        source = Source(name="chatgpt", path=tmp_path)
-        convos = list(iter_source_conversations(source))
-        assert len(convos) >= 1
-
-    def test_jsonl_file(self, tmp_path):
-        """JSONL file with multiple records."""
-        from polylogue.sources.source import iter_source_conversations
-
-        records = [
-            json.dumps({"type": "user", "message": {"content": "hi"}}),
-            json.dumps({"type": "assistant", "message": {"content": "hello"}}),
-        ]
-        (tmp_path / "session.jsonl").write_text("\n".join(records) + "\n")
-        source = Source(name="claude-code", path=tmp_path)
-        convos = list(iter_source_conversations(source))
-        assert len(convos) >= 1
-
     def test_empty_directory(self, tmp_path):
         """Empty directory yields no conversations."""
         from polylogue.sources.source import iter_source_conversations
@@ -660,17 +563,6 @@ class TestIterSourceConversations:
         convos = list(iter_source_conversations(source))
         assert len(convos) == 0
 
-    def test_single_file_source(self, tmp_path):
-        """Source path pointing directly to a file."""
-        from polylogue.sources.source import iter_source_conversations
-
-        conv = _make_chatgpt_conv("single")
-        fpath = tmp_path / "single.json"
-        fpath.write_text(json.dumps([conv]))
-        source = Source(name="chatgpt", path=fpath)
-        convos = list(iter_source_conversations(source))
-        assert len(convos) >= 1
-
     def test_nonexistent_source_path(self, tmp_path):
         """Non-existent source path yields no conversations."""
         from polylogue.sources.source import iter_source_conversations
@@ -678,28 +570,3 @@ class TestIterSourceConversations:
         source = Source(name="test", path=tmp_path / "nonexistent")
         convos = list(iter_source_conversations(source))
         assert len(convos) == 0
-
-    def test_ndjson_extension(self, tmp_path):
-        """Files with .ndjson extension are processed."""
-        from polylogue.sources.source import iter_source_conversations
-
-        records = [
-            json.dumps({"type": "user", "message": {"content": "ndjson test"}}),
-        ]
-        (tmp_path / "data.ndjson").write_text("\n".join(records) + "\n")
-        source = Source(name="claude-code", path=tmp_path)
-        convos = list(iter_source_conversations(source))
-        assert len(convos) >= 1
-
-    def test_jsonl_txt_extension(self, tmp_path):
-        """Files with .jsonl.txt extension are processed."""
-        from polylogue.sources.source import iter_source_conversations
-
-        records = [
-            json.dumps({"type": "user", "message": {"content": "txt test"}}),
-        ]
-        (tmp_path / "data.jsonl.txt").write_text("\n".join(records) + "\n")
-        source = Source(name="claude-code", path=tmp_path)
-        convos = list(iter_source_conversations(source))
-        # .jsonl.txt should be recognized
-        assert isinstance(convos, list)

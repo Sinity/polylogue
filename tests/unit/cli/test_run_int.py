@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import concurrent.futures
 import json
 import threading
@@ -13,25 +12,15 @@ from click.testing import CliRunner
 
 from polylogue.cli.commands.run import (
     _display_result,
-    _run_sync_once,
-    run_command,
     sources_command,
 )
-from polylogue.pipeline.events import (
-    ExecHandler,
-    NotificationHandler,
-    SyncEvent,
-    WebhookHandler,
-)
 from polylogue.config import Source, get_config
-from polylogue.pipeline.runner import latest_run, run_sources, plan_sources
-from polylogue.pipeline.services.parsing import ParsingService
-from polylogue.sources.parsers.base import (
-    ParsedAttachment,
-    ParsedConversation,
-    attachment_from_meta,
-    extract_messages_from_list,
+from polylogue.pipeline.observers import (
+    ExecObserver,
+    NotificationObserver,
+    WebhookObserver,
 )
+from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import PlanResult, RunResult
 from tests.infra.helpers import (
@@ -57,11 +46,15 @@ async def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
     )
 
     config = get_config()
-    config.sources = [Source(name="codex", path=source_file)]
+    # Generic fixture payload is not provider-schema-conformant; use a generic
+    # source name so validate stage treats it as schema-less test input.
+    config.sources = [Source(name="inbox", path=source_file)]
 
     if with_plan:
         plan = plan_sources(config)
-        assert plan.counts["conversations"] == 1
+        assert plan.counts["scan"] == 1
+        assert plan.counts["store_raw"] == 1
+        assert plan.counts["parse"] == 1
         result = await run_sources(config=config, stage="all", plan=plan)
     else:
         result = await run_sources(config=config, stage="all")
@@ -107,56 +100,6 @@ async def test_run_sources_filtered_by_stage(workspace_env, tmp_path, setup_type
 
 
 @pytest.mark.parametrize(
-    "scenario,title_change,content_change,expect_mtime_diff,check_title",
-    [
-        ("unchanged", False, False, False, False),
-        ("content_changes", False, True, True, False),
-        ("title_changes", True, False, True, True),
-    ],
-)
-async def test_run_rerenders_based_on_changes(workspace_env, tmp_path, scenario, title_change, content_change, expect_mtime_diff, check_title):
-    """run rerenders when content or title changes."""
-    inbox = tmp_path / "inbox"
-    source_file = inbox / "conversation.json"
-
-    # Initial content
-    initial_title = "Old title" if title_change else "conv-title"
-    initial_content = "hello world" if content_change else "hello"
-    (GenericConversationBuilder("conv-title").title(initial_title).add_user(initial_content).write_to(source_file))
-
-    config = get_config()
-    config.sources = [Source(name="inbox", path=source_file)]
-
-    await run_sources(config=config, stage="all")
-    convo_path = next(config.render_root.rglob("conversation.md"))
-    first_mtime = convo_path.stat().st_mtime
-    original = convo_path.read_text(encoding="utf-8") if check_title else ""
-
-    # Modify based on scenario
-    if title_change:
-        (GenericConversationBuilder("conv-title").title("New title").add_user("hello").write_to(source_file))
-    elif content_change:
-        (GenericConversationBuilder("conv-title").add_user("hello world modified").write_to(source_file))
-
-    # Small sleep to ensure filesystem timestamp changes if file is rewritten
-    if expect_mtime_diff:
-        time.sleep(0.01)
-
-    await run_sources(config=config, stage="all")
-    second_mtime = convo_path.stat().st_mtime
-
-    if expect_mtime_diff:
-        assert second_mtime > first_mtime
-    else:
-        assert first_mtime == second_mtime
-
-    if check_title:
-        updated = convo_path.read_text(encoding="utf-8")
-        assert "# New title" in updated
-        assert original != updated
-
-
-@pytest.mark.parametrize(
     "test_type",
     ["index_filters"],
 )
@@ -190,7 +133,10 @@ async def test_run_index_filters_selected_sources(workspace_env, tmp_path, monke
     from polylogue.pipeline.services.indexing import IndexService
 
     async def fake_update_method(self, ids):
-        update_calls.append(list(ids))
+        if hasattr(ids, "__aiter__"):
+            update_calls.append([conversation_id async for conversation_id in ids])
+        else:
+            update_calls.append(list(ids))
         return True
 
     monkeypatch.setattr(IndexService, "update_index", fake_update_method)
@@ -335,8 +281,8 @@ def mock_plan_result():
 def mock_repository():
     """Mock ConversationRepository."""
     repo = MagicMock()
-    repo._backend = MagicMock()
-    repo._backend._get_connection = MagicMock()
+    repo.backend = MagicMock()
+    repo.backend._get_connection = MagicMock()
     return repo
 
 
@@ -345,8 +291,13 @@ def mock_backend():
     """Mock SQLite backend."""
     backend = MagicMock()
     backend._get_connection = MagicMock()
-    backend.iter_raw_conversations = MagicMock(return_value=[])
-    backend.get_raw_conversation = MagicMock(return_value=None)
+    async def _empty_iter():
+        if False:
+            yield None
+
+    backend.iter_raw_conversations = MagicMock(return_value=_empty_iter())
+    backend.get_raw_conversation = AsyncMock(return_value=None)
+    backend.get_raw_conversations_batch = AsyncMock(return_value=[])
     return backend
 
 
@@ -355,109 +306,47 @@ def mock_backend():
 # =============================================================================
 
 
-class TestRunSyncOncePlainProgress:
-    """Test _run_sync_once plain mode progress tracking."""
-
-    @pytest.mark.parametrize(
-        "env_fixture,stage,source_names,render_format,check_plain",
-        [
-            ("mock_env", "all", None, "markdown", True),
-            ("mock_env_rich", "render", ["source1"], "html", False),
-        ],
+def test_display_result_reports_render_failures(mock_env, capsys):
+    """Pinned regression: render failures are surfaced with truncation and retry hint."""
+    mock_config = MagicMock(render_root=Path("/tmp/render"))
+    failures = [{"conversation_id": f"conv-{index}", "error": f"error {index}"} for index in range(15)]
+    result = RunResult(
+        run_id="run-123",
+        counts={"conversations": 0},
+        drift={},
+        indexed=True,
+        index_error=None,
+        duration_ms=0,
+        render_failures=failures,
     )
-    def test_run_sync_once_progress(
-        self, env_fixture, stage, source_names, render_format, check_plain, mock_run_result, capsys, request
-    ):
-        """_run_sync_once handles plain and rich mode progress."""
-        env = request.getfixturevalue(env_fixture)
 
-        with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = mock_run_result
-            mock_config = MagicMock()
+    with patch("polylogue.cli.helpers.latest_render_path", return_value=None):
+        _display_result(mock_env, mock_config, result, "all", None)
 
-            result = _run_sync_once(
-                mock_config,
-                env,
-                stage,
-                source_names,
-                render_format,
-            )
-
-        assert result.run_id == "run-123"
-
-        if check_plain:
-            captured = capsys.readouterr()
-            assert "Syncing..." in captured.out
-        else:
-            # Verify run_sources was called with correct arguments
-            call_kwargs = mock_run.call_args[1]
-            assert call_kwargs["config"] == mock_config
-            assert call_kwargs["stage"] == stage
-            assert call_kwargs["source_names"] == source_names
-            assert call_kwargs["render_format"] == render_format
+    captured = capsys.readouterr()
+    assert "Render failures (15)" in captured.err
+    assert "and 5 more" in captured.err
+    assert "re-run with `polylogue run --stage render`" in captured.err
 
 
-# =============================================================================
-# TEST CLASS: _display_result (Coverage: lines 234, 253-259, 260-266)
-# =============================================================================
-
-
-class TestDisplayResultComprehensive:
-    """Comprehensive tests for _display_result coverage."""
-
-    @pytest.mark.parametrize(
-        "stage,source_names,show_render_path,conv_count,render_failures,index_error",
-        [
-            ("render", ["inbox"], True, 1, [], None),
-            ("acquire", ["inbox"], False, 1, [], None),
-            ("parse", ["inbox"], False, 1, [], None),
-            ("all", None, True, 1, [], None),
-            ("all", None, True, 0, [], None),
-            ("all", None, True, 0, [{"conversation_id": f"conv-{i}", "error": f"error {i}"} for i in range(15)], None),
-            ("all", None, True, 0, [], "Database locked"),
-        ],
+def test_display_result_reports_index_error_hint(mock_env, capsys):
+    """Pinned regression: index errors get an explicit rebuild hint."""
+    mock_config = MagicMock(render_root=Path("/tmp/render"))
+    result = RunResult(
+        run_id="run-123",
+        counts={"conversations": 0},
+        drift={},
+        indexed=False,
+        index_error="Database locked",
+        duration_ms=0,
+        render_failures=[],
     )
-    def test_display_result_stages_and_errors(
-        self, mock_env, capsys, stage, source_names, show_render_path, conv_count, render_failures, index_error
-    ):
-        """_display_result handles different stages, errors, and failures."""
-        mock_config = MagicMock()
-        mock_config.render_root = Path("/tmp/render")
-        mock_run_result = RunResult(
-            run_id="run-123",
-            counts={"conversations": conv_count},
-            drift={},
-            indexed=False,
-            index_error=index_error,
-            duration_ms=100 if conv_count else 0,
-            render_failures=render_failures,
-        )
 
-        with patch("polylogue.cli.helpers.latest_render_path") as mock_latest:
-            mock_latest.return_value = Path("/tmp/render/2024-01-15")
-            _display_result(mock_env, mock_config, mock_run_result, stage, source_names)
-            if show_render_path:
-                mock_latest.assert_called_once()
-            else:
-                mock_latest.assert_not_called()
+    _display_result(mock_env, mock_config, result, "index", None)
 
-        mock_env.ui.summary.assert_called_once()
-
-        # Stage and source names should appear in title
-        if source_names:
-            title = mock_env.ui.summary.call_args[0][0]
-            assert stage in title.lower() or stage in str(source_names).lower()
-
-        # Capture output for error/failure checks
-        if render_failures or index_error:
-            captured = capsys.readouterr()
-            if render_failures:
-                assert "Render failures" in captured.err
-                assert "and 5 more" in captured.err
-            if index_error:
-                assert "Index error:" in captured.err
-                assert "Database locked" in captured.err
-                assert "run `polylogue run --stage index`" in captured.err
+    captured = capsys.readouterr()
+    assert "Index error: Database locked" in captured.err
+    assert "run `polylogue run --stage index`" in captured.err
 
 
 # =============================================================================
@@ -465,80 +354,49 @@ class TestDisplayResultComprehensive:
 # =============================================================================
 
 
-class TestRunCommandWatch:
-    """Test run command watch mode."""
-
-    @pytest.mark.parametrize(
-        "flag,value",
-        [
-            ("--notify", None),
-            ("--exec", "echo test"),
-            ("--webhook", "http://example.com"),
-        ],
-    )
-    def test_run_command_watch_validation_requires_watch(self, runner, cli_workspace, flag, value):
-        """run --notify/--exec/--webhook without --watch fails."""
-        args = [flag]
-        if value:
-            args.append(value)
-        args.append("--plain")
-
-        result = runner.invoke(
-            run_command,
-            args,
-            obj=MagicMock(ui=MagicMock(plain=True)),
-        )
-        assert result.exit_code != 0 or "require --watch" in result.output.lower()
-
-
-# =============================================================================
-# TEST CLASS: Watch mode callbacks (Coverage: lines 276-294)
-# =============================================================================
-
-
 class TestWatchModeCallbacks:
-    """Test watch mode event handler callbacks."""
+    """Test watch mode observer callbacks."""
 
     def test_notify_callback_executes_with_count(self):
-        """NotificationHandler calls notify-send with conversation count."""
+        """NotificationObserver calls notify-send with conversation count."""
         with patch("subprocess.run") as mock_run:
-            handler = NotificationHandler()
-            handler.on_sync(SyncEvent(new_conversations=5, run_result=None))  # type: ignore[arg-type]
+            handler = NotificationObserver()
+            handler.on_completed(MagicMock(counts={"conversations": 5}))
             mock_run.assert_called_once()
             call_args = mock_run.call_args[0][0]
             assert "notify-send" in call_args
             assert "5" in str(call_args)
 
     def test_exec_callback_executes_with_count(self):
-        """ExecHandler runs command with correct environment."""
+        """ExecObserver runs command with correct environment."""
         with patch("subprocess.run") as mock_run:
-            handler = ExecHandler("echo $POLYLOGUE_NEW_COUNT")
-            handler.on_sync(SyncEvent(new_conversations=3, run_result=None))  # type: ignore[arg-type]
+            handler = ExecObserver("echo $POLYLOGUE_NEW_COUNT")
+            handler.on_completed(MagicMock(counts={"conversations": 3}))
             mock_run.assert_called_once()
             call_kwargs = mock_run.call_args[1]
             assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == "3"
             assert call_kwargs.get("shell") is not True
 
     def test_webhook_callback_executes_with_count(self):
-        """WebhookHandler sends POST with conversation count."""
+        """WebhookObserver sends POST with conversation count."""
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
-        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo):
             with patch("urllib.request.urlopen") as mock_urlopen:
-                handler = WebhookHandler("http://example.com/webhook")
-                handler.on_sync(SyncEvent(new_conversations=2, run_result=None))  # type: ignore[arg-type]
+                handler = WebhookObserver("http://example.com/webhook")
+                handler.on_completed(MagicMock(counts={"conversations": 2}))
                 mock_urlopen.assert_called_once()
                 call_args = mock_urlopen.call_args[0][0]
                 assert call_args.get_full_url() == "http://example.com/webhook"
                 assert call_args.get_method() == "POST"
 
     def test_webhook_on_new_payload_format(self):
-        """WebhookHandler includes correct JSON payload."""
+        """WebhookObserver includes correct JSON payload."""
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
-        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo):
             with patch("urllib.request.urlopen"):
                 with patch("urllib.request.Request") as mock_request:
-                    handler = WebhookHandler("http://example.com/webhook")
-                    handler.on_sync(SyncEvent(new_conversations=7, run_result=None))  # type: ignore[arg-type]
+                    handler = WebhookObserver("http://example.com/webhook")
+                    handler.on_completed(MagicMock(counts={"conversations": 7}))
                     call_kwargs = mock_request.call_args[1]
                     payload = json.loads(call_kwargs["data"].decode())
                     assert payload["event"] == "sync"
@@ -565,321 +423,8 @@ def test_sources_command_output(runner, cli_workspace, args, expect_json):
         obj=MagicMock(ui=MagicMock(plain=True, summary=MagicMock())),
     )
     if expect_json and result.exit_code == 0:
-        try:
-            data = json.loads(result.output)
-            assert isinstance(data, list)
-        except json.JSONDecodeError:
-            pass
-
-
-# =============================================================================
-# TEST CLASS: ParsingService (Coverage: lines 164-165, 216, 222, 262-269)
-# =============================================================================
-
-
-class TestParsingService:
-    """Test ParsingService parsing and batching."""
-
-    @pytest.mark.parametrize("backend_initialized,provider", [(False, None), (True, "claude")])
-    async def test_parse_from_raw(self, mock_backend, backend_initialized, provider):
-        """parse_from_raw validates backend and filters by provider."""
-        repo = MagicMock()
-        repo._backend = mock_backend if backend_initialized else None
-        service = ParsingService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
-        if not backend_initialized:
-            with pytest.raises(RuntimeError, match="backend is not initialized"):
-                await service.parse_from_raw(raw_ids=["raw-1"])
-        else:
-            async def async_iter():
-                for i, p in enumerate(["claude", "chatgpt"]):
-                    yield MagicMock(raw_id=f"raw-{i}", provider_name=p)
-            mock_backend.iter_raw_conversations.return_value = async_iter()
-            with patch.object(service, "_process_raw_batch", new_callable=AsyncMock):
-                await service.parse_from_raw(provider=provider)
-                assert mock_backend.iter_raw_conversations.call_args[1]["provider"] == provider
-
-    @pytest.mark.parametrize(
-        "format_type,content,provider,is_bytes",
-        [
-            ("jsonl", '{"id": "msg1", "role": "user", "text": "hello"}\n{"id": "msg2"}', "claude-code", True),
-            ("json", '{"id": "conv-1", "messages": []}', "chatgpt", True),
-            ("string", '{"id": "conv-789"}', "gemini", False),
-        ],
-    )
-    async def test_parse_raw_record_content_types(self, mock_backend, format_type, content, provider, is_bytes):
-        """_parse_raw_record handles JSONL, JSON, and string content."""
-        repo = MagicMock()
-        repo._backend = mock_backend
-        service = ParsingService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
-        raw_record = MagicMock()
-        raw_record.raw_content = content.encode("utf-8") if is_bytes else content
-        raw_record.provider_name = provider
-        raw_record.raw_id = "raw-123"
-        with patch("polylogue.pipeline.services.parsing._parse_json_payload") as mock_parse:
-            mock_parse.return_value = [] if format_type == "string" else [ParsedConversation(provider_name=provider, provider_conversation_id=f"conv-{format_type}", messages=[])]
-            await service._parse_raw_record(raw_record)
-            mock_parse.assert_called_once()
-
-
-# =============================================================================
-# TEST CLASS: ParsedAttachment sanitization (Coverage: lines 107-109, 231-248)
-# =============================================================================
-
-
-class TestParsedAttachmentSanitization:
-    """Test attachment path and name sanitization."""
-
-    @pytest.mark.parametrize(
-        "name,path,check",
-        [
-            ("test.pdf", "file\x00with\x01control.txt", "path_ctrl_chars"),
-            ("test.pdf", "../../../etc/passwd", "path_traversal"),
-            ("test.pdf", "/tmp/test/file.txt", "path_safe"),
-            ("file\x00with\x1fcontrol.pdf", None, "name_ctrl_chars"),
-            ("...", None, "name_dots_only"),
-            (None, None, "both_none"),
-        ],
-    )
-    def test_attachment_sanitization(self, name, path, check):
-        """ParsedAttachment sanitization handles various scenarios."""
-        att = ParsedAttachment(provider_attachment_id=f"att-{check}", name=name, path=path)
-        if check == "path_ctrl_chars":
-            assert "\x00" not in att.path and "\x01" not in att.path
-        elif check == "path_traversal":
-            assert att.path.startswith("_blocked_")
-        elif check == "path_safe":
-            assert att.path is None or not att.path.startswith("../")
-        elif check == "name_ctrl_chars":
-            assert "\x00" not in (att.name or "") and "\x1f" not in (att.name or "")
-        elif check == "name_dots_only":
-            assert att.name == "file"
-        elif check == "both_none":
-            assert att.name is None and att.path is None
-
-    def test_attachment_path_edge_cases(self):
-        """Attachment path handles symlinks and empty paths."""
-        # Test symlink blocking
-        with patch("pathlib.Path.is_symlink") as mock_symlink:
-            mock_symlink.return_value = True
-            att = ParsedAttachment(
-                provider_attachment_id="att-sym",
-                name="file.txt",
-                path="/home/user/link",
-            )
-            assert att.path.startswith("_blocked_")
-
-        # Test empty path becomes None
-        att = ParsedAttachment(
-            provider_attachment_id="att-empty",
-            name="file.txt",
-            path="",
-        )
-        assert att.path is None
-
-
-# =============================================================================
-# TEST CLASS: attachment_from_meta helper (Coverage: lines 164-190, 197)
-# =============================================================================
-
-
-class TestRunIntAttachmentFromMeta:
-    """Test attachment_from_meta helper function."""
-
-    @pytest.mark.parametrize(
-        "meta,should_exist",
-        [
-            ({"id": "att-uuid", "name": "document.pdf", "size": 1024, "mimeType": "application/pdf"}, True),
-            ({"fileId": "file-456", "file_name": "image.jpg", "size_bytes": "2048"}, True),
-            ({"uuid": "att-789", "name": "file.txt", "size": "512"}, True),
-            ({"id": "att-999", "name": "file.txt", "size": "invalid"}, True),
-            ({"name": "report.docx"}, True),
-            ({"size": 1024, "mimeType": "text/plain"}, False),
-        ],
-    )
-    def test_attachment_from_meta_variants(self, meta, should_exist):
-        """attachment_from_meta handles various metadata formats and non-dict input."""
-        att = attachment_from_meta(meta, "msg-id" if should_exist else "msg-222", 0)
-
-        if should_exist:
-            assert att is not None
-            if "id" in meta or "fileId" in meta or "uuid" in meta:
-                assert att.provider_attachment_id is not None
-            elif "name" in meta:
-                assert att.provider_attachment_id.startswith("att-")
-        else:
-            assert att is None
-
-    def test_attachment_from_meta_non_dict(self):
-        """attachment_from_meta returns None for non-dict input."""
-        assert attachment_from_meta("not a dict", "msg-333", 0) is None
-
-
-# =============================================================================
-# TEST CLASS: extract_messages_from_list (Coverage: lines 231-248, 250)
-# =============================================================================
-
-
-class TestExtractMessagesFromList:
-    """Test extract_messages_from_list helper function."""
-
-    @pytest.mark.parametrize(
-        "items,expected_count,check_text",
-        [
-            # Basic structure
-            (
-                [
-                    {"id": "m1", "role": "user", "text": "Hello"},
-                    {"id": "m2", "role": "assistant", "text": "Hi there!"},
-                ],
-                2,
-                "Hello",
-            ),
-            # Nested message key
-            (
-                [
-                    {
-                        "uuid": "msg-outer",
-                        "message": {
-                            "id": "msg-inner",
-                            "role": "user",
-                            "text": "nested",
-                        },
-                    }
-                ],
-                1,
-                "nested",
-            ),
-            # Content as string
-            (
-                [
-                    {
-                        "id": "m1",
-                        "role": "assistant",
-                        "content": "string content",
-                    }
-                ],
-                1,
-                "string content",
-            ),
-            # Content as parts list
-            (
-                [
-                    {
-                        "id": "m1",
-                        "role": "assistant",
-                        "content": {
-                            "parts": ["part 1", "part 2", "part 3"],
-                        },
-                    }
-                ],
-                1,
-                "part 1",
-            ),
-            # Content as dict with text
-            (
-                [
-                    {
-                        "id": "m1",
-                        "role": "user",
-                        "content": {
-                            "text": "dict content",
-                        },
-                    }
-                ],
-                1,
-                "dict content",
-            ),
-            # Content as list of dicts
-            (
-                [
-                    {
-                        "id": "m1",
-                        "role": "assistant",
-                        "content": [
-                            {"type": "text", "text": "first"},
-                            {"type": "text", "text": "second"},
-                        ],
-                    }
-                ],
-                1,
-                "first",
-            ),
-            # Skip non-dict items
-            (
-                [
-                    {"id": "m1", "role": "user", "text": "msg1"},
-                    "not a dict",
-                    {"id": "m2", "role": "assistant", "text": "msg2"},
-                    None,
-                    [],
-                ],
-                2,
-                "msg1",
-            ),
-            # Skip items without text
-            (
-                [
-                    {"id": "m1", "role": "user", "text": "msg1"},
-                    {"id": "m2", "role": "assistant"},  # No text
-                    {"id": "m3", "role": "user", "content": "msg3"},
-                ],
-                2,
-                "msg1",
-            ),
-        ],
-    )
-    def test_extract_messages_variants(self, items, expected_count, check_text):
-        """extract_messages_from_list handles various message formats."""
-        messages = extract_messages_from_list(items)
-
-        assert len(messages) == expected_count
-        assert check_text in messages[0].text
-
-    @pytest.mark.parametrize(
-        "items,expected_count,check_type",
-        [
-            # Role variations
-            (
-                [
-                    {"id": "m1", "sender": "user", "text": "msg1"},
-                    {"id": "m2", "author": "assistant", "text": "msg2"},
-                    {"id": "m3", "role": "system", "text": "msg3"},
-                ],
-                3,
-                "role",
-            ),
-            # Timestamp variations
-            (
-                [
-                    {"id": "m1", "role": "user", "text": "msg1", "timestamp": 1234567890},
-                    {"id": "m2", "role": "assistant", "text": "msg2", "created_at": "2024-01-01"},
-                    {"id": "m3", "role": "user", "text": "msg3", "create_time": "2024-01-02"},
-                ],
-                3,
-                "timestamp",
-            ),
-            # ID generation when missing
-            (
-                [
-                    {"role": "user", "text": "first"},
-                    {"role": "assistant", "text": "second"},
-                ],
-                2,
-                "id_generation",
-            ),
-        ],
-    )
-    def test_extract_messages_field_variations(self, items, expected_count, check_type):
-        """extract_messages_from_list handles role, timestamp, and ID generation."""
-        messages = extract_messages_from_list(items)
-        assert len(messages) == expected_count
-
-        if check_type == "role":
-            assert all(m.role in ["user", "assistant", "system"] for m in messages)
-        elif check_type == "timestamp":
-            assert all(m.timestamp is not None for m in messages)
-        elif check_type == "id_generation":
-            assert all(m.provider_message_id for m in messages)
+        data = json.loads(result.output)
+        assert isinstance(data, list)
 
 
 # --- merged from test_pipeline_concurrent.py ---
@@ -955,40 +500,59 @@ def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
 	assert attachment.provider_meta == original_meta
 
 
-def test_store_records_commits_within_lock(tmp_path: Path):
-	"""Verify store_records commits inside the lock scope."""
-	from tests.infra.helpers import make_conversation, make_message, store_records
+def test_store_records_commits_within_lock(monkeypatch):
+	"""Verify store_records commits while _WRITE_LOCK is held."""
+	from contextlib import contextmanager
 
-	# Create a test database
-	db_path = tmp_path / "test.db"
+	import tests.infra.helpers as helpers
+	from tests.infra.helpers import make_conversation, make_message
 
-	# Track commit calls to verify ordering
-	commit_order = []
-	lock_held = threading.Event()
+	class TrackingLock:
+		def __init__(self) -> None:
+			self.held = False
 
-	original_commit = None
+		def __enter__(self):
+			self.held = True
+			return self
 
-	def tracking_commit(self):
-		commit_order.append(("commit", lock_held.is_set()))
-		if original_commit:
-			return original_commit(self)
+		def __exit__(self, exc_type, exc, tb):
+			self.held = False
+			return False
 
-	# We need to verify that commit happens while _WRITE_LOCK is held
-	# This is tricky to test directly, but we can verify the code structure
+	class DummyConn:
+		def __init__(self, lock: TrackingLock) -> None:
+			self._lock = lock
+			self.commit_states: list[bool] = []
 
-	# For now, just verify the function works and commits
-	from polylogue.storage.backends.connection import open_connection
+		def commit(self) -> None:
+			self.commit_states.append(self._lock.held)
 
-	with open_connection(db_path) as conn:
-		record = make_conversation("test:1", title="Test", content_hash="abc123")
-		messages = [make_message("test:1:msg1", "test:1", text="Hello")]
-		result = store_records(
-			conversation=record,
-			messages=messages,
-			attachments=[],
-			conn=conn,
-		)
-		assert result["conversations"] >= 0  # Either inserted or skipped
+	lock = TrackingLock()
+	conn = DummyConn(lock)
+
+	@contextmanager
+	def fake_connection_context(passed_conn):
+		yield passed_conn
+
+	monkeypatch.setattr(helpers, "_WRITE_LOCK", lock)
+	monkeypatch.setattr(helpers, "connection_context", fake_connection_context)
+	monkeypatch.setattr(helpers, "upsert_conversation", lambda *_: True)
+	monkeypatch.setattr(helpers, "upsert_message", lambda *_: True)
+	monkeypatch.setattr(helpers, "upsert_attachment", lambda *_: True)
+	monkeypatch.setattr(helpers, "_prune_attachment_refs", lambda *_: None)
+
+	record = make_conversation("test:1", title="Test", content_hash="abc123")
+	messages = [make_message("test:1:msg1", "test:1", text="Hello")]
+	result = helpers.store_records(
+		conversation=record,
+		messages=messages,
+		attachments=[],
+		conn=conn,
+	)
+
+	assert result["conversations"] == 1
+	assert result["messages"] == 1
+	assert conn.commit_states == [True]
 
 
 def test_concurrent_store_records_no_deadlock(workspace_env):
@@ -1016,10 +580,10 @@ def test_concurrent_store_records_no_deadlock(workspace_env):
 		futures = [executor.submit(store_one, i) for i in range(iterations)]
 		results = [f.result(timeout=30) for f in futures]  # 30s timeout to detect deadlock
 
-	# All should succeed
+	# All should succeed — each thread inserted exactly 1 unique conversation
 	assert len(results) == iterations
 	for r in results:
-		assert r["conversations"] >= 0
+		assert r["conversations"] == 1
 
 
 def test_set_add_is_thread_safe():
@@ -1078,11 +642,5 @@ def test_failing_future_does_not_abort_remaining():
 
 
 __all__ = [
-    "TestRunSyncOncePlainProgress",
-    "TestDisplayResultComprehensive",
-    "TestRunCommandWatch",
     "TestWatchModeCallbacks",
-    "TestParsingService",
-    "TestParsedAttachmentSanitization",
-    "TestExtractMessagesFromList",
 ]
