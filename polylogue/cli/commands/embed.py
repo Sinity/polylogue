@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-import sqlite3
 from typing import TYPE_CHECKING
 
 import click
-
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -110,39 +105,18 @@ def embed_command(
 def _show_embedding_stats(env: AppEnv) -> None:
     """Display embedding statistics."""
     from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.embedding_stats import read_embedding_stats_sync
 
     with open_connection(env.config.db_path) as conn:
         # Total conversations
         total_convs = conn.execute(
             "SELECT COUNT(*) FROM conversations"
         ).fetchone()[0]
+        embedding_stats = read_embedding_stats_sync(conn)
 
-        # Conversations with embeddings
-        try:
-            embedded_convs = conn.execute(
-                "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
-            ).fetchone()[0]
-        except sqlite3.OperationalError as exc:
-            logger.debug("embedding_status query failed (table may not exist): %s", exc)
-            embedded_convs = 0
-
-        # Total embedded messages
-        try:
-            embedded_msgs = conn.execute(
-                "SELECT COUNT(*) FROM message_embeddings"
-            ).fetchone()[0]
-        except sqlite3.OperationalError as exc:
-            logger.debug("message_embeddings query failed (table may not exist): %s", exc)
-            embedded_msgs = 0
-
-        # Pending conversations
-        try:
-            pending = conn.execute(
-                "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1"
-            ).fetchone()[0]
-        except sqlite3.OperationalError as exc:
-            logger.debug("pending embeddings query failed: %s", exc)
-            pending = total_convs - embedded_convs
+    embedded_convs = embedding_stats.embedded_conversations
+    embedded_msgs = embedding_stats.embedded_messages
+    pending = embedding_stats.pending_conversations or max(total_convs - embedded_convs, 0)
 
     coverage = (embedded_convs / total_convs * 100) if total_convs > 0 else 0
 
