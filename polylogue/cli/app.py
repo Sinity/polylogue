@@ -13,6 +13,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import webbrowser
 from datetime import datetime, timezone
 from collections import Counter
 from pathlib import Path
@@ -59,6 +60,7 @@ from ..settings import ensure_settings_defaults, persist_settings, clear_persist
 from ..config import CONFIG, CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN
 from ..local_sync import LOCAL_SYNC_PROVIDER_NAMES, WATCHABLE_LOCAL_PROVIDER_NAMES
 from ..paths import STATE_HOME
+from ..schema import stamp_payload
 from .imports import (
     run_import_cli,
     run_import_chatgpt,
@@ -105,12 +107,34 @@ def _should_use_plain(args: argparse.Namespace) -> bool:
 PARSER_FORMATTER = argparse.ArgumentDefaultsHelpFormatter
 
 
+class ExamplesHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
+    """Formatter that appends command examples from COMMAND_EXAMPLES."""
+
+    def format_help(self) -> str:  # pragma: no cover - formatting path
+        help_text = super().format_help()
+        # Only append when the parser name exists in COMMAND_EXAMPLES
+        prog = getattr(self, "_prog", None) or getattr(getattr(self, "_parser", None), "prog", "")
+        # Map parser prog tokens like "polylogue search" to the subcommand key
+        if prog:
+            tokens = prog.split()
+            if len(tokens) >= 2:
+                cmd = tokens[1]
+                examples = COMMAND_EXAMPLES.get(cmd)
+                if examples:
+                    lines = ["\nExamples:"]
+                    for desc, cmdline in examples:
+                        lines.append(f"  # {desc}")
+                        lines.append(f"  $ {cmdline}")
+                    help_text = help_text.rstrip() + "\n" + "\n".join(lines) + "\n"
+        return help_text
+
+
 def _add_command_parser(subparsers: argparse._SubParsersAction, name: str, **kwargs):
     if "epilog" not in kwargs:
         epilog = _examples_epilog(name)
         if epilog:
             kwargs["epilog"] = epilog
-    kwargs.setdefault("formatter_class", PARSER_FORMATTER)
+    kwargs.setdefault("formatter_class", ExamplesHelpFormatter)
     return subparsers.add_parser(name, **kwargs)
 
 # Command Examples for --examples flag
@@ -231,20 +255,22 @@ def _record_failure(args: argparse.Namespace, exc: BaseException, *, phase: str 
             "schema": "Validate input/export schema and retry with updated tooling.",
             "error": "Re-run with --verbose for a traceback and file a bug if reproducible.",
         }
-        record = {
-            "id": f"fail-{int(time.time() * 1000)}",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "cmd": getattr(args, "cmd", None),
-            "provider": provider,
-            "file": file_hint,
-            "phase": phase,
-            "exception": exc.__class__.__name__,
-            "message": str(exc),
-            "exit_reason": exit_reason,
-            "hint": hints.get(exit_reason),
-            "cwd": str(Path.cwd()),
-            "argv": sys.argv[1:],
-        }
+        record = stamp_payload(
+            {
+                "id": f"fail-{int(time.time() * 1000)}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "cmd": getattr(args, "cmd", None),
+                "provider": provider,
+                "file": file_hint,
+                "phase": phase,
+                "exception": exc.__class__.__name__,
+                "message": str(exc),
+                "exit_reason": exit_reason,
+                "hint": hints.get(exit_reason),
+                "cwd": str(Path.cwd()),
+                "argv": sys.argv[1:],
+            }
+        )
         path = STATE_HOME / "failures.jsonl"
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, default=str))
@@ -1001,7 +1027,17 @@ def run_inspect_search(args: argparse.Namespace, env: CommandEnv) -> None:
             anchor_label = f"msg-{hit.position}"
             line_hint = _find_anchor_line(Path(target_path), anchor_label)
         if target_path:
-            if open_in_editor(Path(target_path), line=line_hint):
+            target_obj = Path(target_path)
+            is_html = target_obj.suffix.lower() == ".html"
+            if is_html and anchor_label:
+                fragment = f"#${anchor_label}" if anchor_label else ""
+                try:
+                    webbrowser.open(target_obj.as_uri() + f"#{anchor_label}")
+                    ui.console.print(f"[dim]Opened {target_obj}#{anchor_label} in browser[/dim]")
+                    return
+                except Exception:
+                    pass
+            if open_in_editor(target_obj, line=line_hint):
                 suffix = f" (line {line_hint})" if line_hint else ""
                 label = f"{target_path}#{anchor_label}" if anchor_label else str(target_path)
                 ui.console.print(f"[dim]Opened {label}{suffix} in editor[/dim]")
@@ -1228,14 +1264,16 @@ def run_compare_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     hits_b = _search(args.provider_b)
 
     if getattr(args, "json", False):
-        payload = {
-            "query": args.query,
-            "limit": limit,
-            "providers": [
-                _compare_hits(args.provider_a, hits_a, fields),
-                _compare_hits(args.provider_b, hits_b, fields),
-            ],
-        }
+        payload = stamp_payload(
+            {
+                "query": args.query,
+                "limit": limit,
+                "providers": [
+                    _compare_hits(args.provider_a, hits_a, fields),
+                    _compare_hits(args.provider_b, hits_b, fields),
+                ],
+            }
+        )
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
@@ -1347,48 +1385,50 @@ def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
     token_path = drive_cfg.token_path if drive_cfg else DEFAULT_TOKEN
 
     if getattr(args, "json", False):
-        payload = {
-            "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
-            "settingsPath": str(SETTINGS_PATH),
-            "ui": {
-                "html_previews": settings.html_previews,
-                "html_theme": settings.html_theme,
-                "collapse_threshold": settings.collapse_threshold,
-            },
-            "schemaVersion": SCHEMA_VERSION,
-            "polylogueVersion": CLI_VERSION,
-            "auth": {
-                "credentialPath": str(credential_path) if credential_path else None,
-                "tokenPath": str(token_path) if token_path else None,
-                "env": {
-                    "POLYLOGUE_CREDENTIAL_PATH": credential_env,
-                    "POLYLOGUE_TOKEN_PATH": token_env,
+        roots_map = getattr(env.config.defaults, "roots", {}) or {}
+        payload = stamp_payload(
+            {
+                "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
+                "settingsPath": str(SETTINGS_PATH),
+                "ui": {
+                    "html_previews": settings.html_previews,
+                    "html_theme": settings.html_theme,
+                    "collapse_threshold": settings.collapse_threshold,
                 },
-            },
-            "outputs": {
-                "render": str(defaults.output_dirs.render),
-                "gemini": str(defaults.output_dirs.sync_drive),
-                "codex": str(defaults.output_dirs.sync_codex),
-                "claude_code": str(defaults.output_dirs.sync_claude_code),
-                "chatgpt": str(defaults.output_dirs.import_chatgpt),
-                "claude": str(defaults.output_dirs.import_claude),
-            },
-            "inputs": {
-                "chatgpt": str(CONFIG.exports.chatgpt),
-                "claude": str(CONFIG.exports.claude),
-            },
-            "index": {
-                "backend": CONFIG.index.backend if CONFIG.index else "sqlite",
-                "qdrant": {
-                    "url": CONFIG.index.qdrant_url if CONFIG.index else None,
-                    "api_key": CONFIG.index.qdrant_api_key if CONFIG.index else None,
-                    "collection": CONFIG.index.qdrant_collection if CONFIG.index else None,
-                    "vector_size": CONFIG.index.qdrant_vector_size if CONFIG.index else None,
+                "auth": {
+                    "credentialPath": str(credential_path) if credential_path else None,
+                    "tokenPath": str(token_path) if token_path else None,
+                    "env": {
+                        "POLYLOGUE_CREDENTIAL_PATH": credential_env,
+                        "POLYLOGUE_TOKEN_PATH": token_env,
+                    },
                 },
-            },
-            "statePath": str(env.conversations.state_path),
-            "runsDb": str(env.database.resolve_path()),
-        }
+                "outputs": {
+                    "render": str(defaults.output_dirs.render),
+                    "gemini": str(defaults.output_dirs.sync_drive),
+                    "codex": str(defaults.output_dirs.sync_codex),
+                    "claude_code": str(defaults.output_dirs.sync_claude_code),
+                    "chatgpt": str(defaults.output_dirs.import_chatgpt),
+                    "claude": str(defaults.output_dirs.import_claude),
+                    "roots": {label: vars(paths) for label, paths in roots_map.items()},
+                },
+                "inputs": {
+                    "chatgpt": str(CONFIG.exports.chatgpt),
+                    "claude": str(CONFIG.exports.claude),
+                },
+                "index": {
+                    "backend": CONFIG.index.backend if CONFIG.index else "sqlite",
+                    "qdrant": {
+                        "url": CONFIG.index.qdrant_url if CONFIG.index else None,
+                        "api_key": CONFIG.index.qdrant_api_key if CONFIG.index else None,
+                        "collection": CONFIG.index.qdrant_collection if CONFIG.index else None,
+                        "vector_size": CONFIG.index.qdrant_vector_size if CONFIG.index else None,
+                    },
+                },
+                "statePath": str(env.conversations.state_path),
+                "runsDb": str(env.database.resolve_path()),
+            }
+        )
         print(json.dumps(payload))
         return
 
@@ -1420,6 +1460,13 @@ def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
         f"  claude-code: {defaults.output_dirs.sync_claude_code}",
         f"  chatgpt: {defaults.output_dirs.import_chatgpt}",
         f"  claude: {defaults.output_dirs.import_claude}",
+    ])
+    roots_map = getattr(env.config.defaults, "roots", {}) or {}
+    if roots_map:
+        summary_lines.append("  labeled roots:")
+        for label, paths in roots_map.items():
+            summary_lines.append(f"    {label}: render={paths.render} codex={paths.sync_codex}")
+    summary_lines.extend([
         "",
         f"State DB: {env.conversations.state_path}",
         f"Runs DB: {env.database.resolve_path()}",
@@ -1559,6 +1606,8 @@ def _configure_status_parser(parser: argparse.ArgumentParser, *, require_provide
     parser.add_argument("--dump", type=str, default=None, help="Write recent runs to a file ('-' for stdout)")
     parser.add_argument("--dump-limit", type=int, default=100, help="Number of runs to include when dumping")
     parser.add_argument("--runs-limit", type=int, default=200, help="Number of historical runs to include in summaries")
+    parser.add_argument("--top", type=int, default=0, help="Show top runs by attachments/tokens")
+    parser.add_argument("--inbox", action="store_true", help="Include inbox coverage counts in summaries")
     parser.add_argument(
         "--providers",
         type=str,
@@ -1783,6 +1832,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_browse_runs.add_argument("--since", type=str, default=None, help="Only include runs on/after this timestamp (YYYY-MM-DD or ISO)")
     p_browse_runs.add_argument("--until", type=str, default=None, help="Only include runs on/before this timestamp")
     p_browse_runs.add_argument("--json", action="store_true", help="Emit runs as JSON")
+    p_browse_runs.add_argument("--json-verbose", action="store_true", help="Print logs alongside --json output")
 
     p_browse_inbox = _add_command_parser(
         browse_sub,
@@ -1854,6 +1904,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_maintain_doctor.add_argument("--claude-code-dir", type=Path, default=None, help="Override Claude Code projects directory")
     p_maintain_doctor.add_argument("--limit", type=int, default=None, help="Limit number of files inspected per provider")
     p_maintain_doctor.add_argument("--json", action="store_true", help="Emit machine-readable report")
+    p_maintain_doctor.add_argument("--json-verbose", action="store_true", help="Emit JSON with verbose details")
 
     p_maintain_index = _add_command_parser(maintain_sub, "index", help="Index maintenance helpers", description="Inspect/repair Polylogue indexes")
     index_sub = p_maintain_index.add_subparsers(dest="subcmd", required=True)
@@ -1861,6 +1912,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_index_check.add_argument("--repair", action="store_true", help="Attempt to rebuild missing SQLite FTS data")
     p_index_check.add_argument("--skip-qdrant", action="store_true", help="Skip Qdrant validation even when configured")
     p_index_check.add_argument("--json", action="store_true", help="Emit validation results as JSON")
+    p_index_check.add_argument("--json-verbose", action="store_true", help="Emit JSON with verbose details")
 
     p_maintain_restore = _add_command_parser(
         maintain_sub,
