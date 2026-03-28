@@ -601,6 +601,8 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
                         content_blocks.append({
                             "type": "tool_result",
                             "tool_use_id": seg.get("tool_use_id"),
+                            "content": seg.get("content"),
+                            "is_error": seg.get("is_error", False),
                         })
                     elif block_type == "text":
                         content_blocks.append({
@@ -649,7 +651,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
             ParsedMessage(
                 provider_message_id=msg_id,
                 role=role,
-                text=text,
+                text=text or "",
                 timestamp=timestamp,
                 provider_meta=meta,
             )
