@@ -270,6 +270,40 @@ class TestMessageExtractThinking:
         )
         assert msg.extract_thinking() == expected
 
+    def test_extract_thinking_prefers_db_content_blocks(self):
+        """DB-loaded thinking blocks must win over provider_meta and text fallbacks."""
+        msg = Message(
+            id="m1",
+            role="assistant",
+            text="<thinking>xml fallback</thinking>",
+            content_blocks=[
+                {"type": "thinking", "text": "db thought 1"},
+                {"type": "thinking", "text": "db thought 2"},
+                {"type": "text", "text": "visible text"},
+            ],
+            provider_meta={
+                "content_blocks": [{"type": "thinking", "text": "provider-meta thought"}],
+                "isThought": True,
+            },
+        )
+
+        assert msg.extract_thinking() == "db thought 1\n\ndb thought 2"
+
+    def test_extract_thinking_db_blocks_require_thinking_type_and_string_text(self):
+        """DB content_blocks should only use typed thinking blocks with string text."""
+        msg = Message(
+            id="m1",
+            role="assistant",
+            text="plain response",
+            content_blocks=[
+                {"type": "text", "text": "ignored"},
+                {"type": "thinking", "text": "db-only thinking"},
+                {"type": "thinking", "text": 123},
+            ],
+        )
+
+        assert msg.extract_thinking() == "db-only thinking"
+
 
 # =============================================================================
 # CONVERSATIONSUMMARY METADATA PROPERTIES
@@ -415,6 +449,10 @@ class TestConversationIterPairs:
         ])
         pairs = list(Conversation(id="c1", provider="claude", messages=msgs).iter_pairs())
         assert len(pairs) == 2
+        assert [(pair.user.id, pair.assistant.id) for pair in pairs] == [
+            ("m1", "m2"),
+            ("m3", "m4"),
+        ]
 
     def test_iter_pairs_odd_messages(self):
         """Lines 767-772: Handle odd number of substantive messages."""
@@ -425,21 +463,38 @@ class TestConversationIterPairs:
         ])
         pairs = list(Conversation(id="c1", provider="claude", messages=msgs).iter_pairs())
         assert len(pairs) == 1
+        assert [(pair.user.id, pair.assistant.id) for pair in pairs] == [("m1", "m2")]
 
     def test_iter_pairs_out_of_order(self):
         """Lines 768-772: Skip out-of-order messages."""
         msgs = MessageCollection(messages=[
-            Message(id="m1", role="assistant", text="a1"),
-            Message(id="m2", role="user", text="q1"),
+            Message(id="m1", role="assistant", text="assistant substantive answer"),
+            Message(id="m2", role="user", text="user substantive question"),
+            Message(id="m3", role="assistant", text="assistant substantive reply"),
         ])
         pairs = list(Conversation(id="c1", provider="claude", messages=msgs).iter_pairs())
-        assert len(pairs) == 0
+        assert [(pair.user.id, pair.assistant.id) for pair in pairs] == [("m2", "m3")]
 
     def test_iter_pairs_empty(self):
         """Line 767: Empty conversation."""
         msgs = MessageCollection(messages=[])
         pairs = list(Conversation(id="c1", provider="claude", messages=msgs).iter_pairs())
         assert len(pairs) == 0
+
+    def test_assistant_only_preserves_exact_assistant_messages(self):
+        """assistant_only() should keep only assistant messages in order."""
+        msgs = MessageCollection(
+            messages=[
+                Message(id="u1", role="user", text="user substantive question"),
+                Message(id="a1", role="assistant", text="assistant substantive answer"),
+                Message(id="s1", role="system", text="system note"),
+                Message(id="a2", role="assistant", text="another assistant substantive answer"),
+            ]
+        )
+
+        filtered = Conversation(id="c1", provider="claude", messages=msgs).assistant_only()
+
+        assert [msg.id for msg in filtered.messages] == ["a1", "a2"]
 
 
 class TestConversationIterBranches:
