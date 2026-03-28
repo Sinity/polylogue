@@ -21,7 +21,6 @@
         });
       };
 
-      polylogueModule = import ./nix/modules/polylogue.nix { inherit self; };
     in
     eachDefaultSystem (system:
       let
@@ -114,10 +113,5 @@
 
         checks.default = polylogueApp;
       }
-    ) // {
-      nixosModules = {
-        default = polylogueModule;
-        polylogue = polylogueModule;
-      };
-    };
+    );
 }

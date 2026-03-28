@@ -12,7 +12,7 @@ from polylogue.importers.chatgpt import import_chatgpt_export
 from polylogue.options import BranchExploreOptions, SearchOptions
 
 
-def _create_branching_conversation(tmp_path: Path, branch_mode: str = "full") -> Path:
+def _create_branching_conversation(tmp_path: Path) -> Path:
     export_dir = tmp_path / "export"
     export_dir.mkdir(parents=True, exist_ok=True)
 
@@ -64,7 +64,6 @@ def _create_branching_conversation(tmp_path: Path, branch_mode: str = "full") ->
         collapse_threshold=16,
         html=False,
         html_theme="light",
-        branch_mode=branch_mode,
     )
     assert results
 
@@ -154,16 +153,3 @@ def test_search_command_filters(state_env, tmp_path):
     assert without_attachments.hits
     assert all(hit.attachment_count == 0 for hit in without_attachments.hits)
 
-
-def test_branch_export_modes(state_env, tmp_path):
-    canonical_dir = _create_branching_conversation(tmp_path, branch_mode="canonical")
-    assert (canonical_dir / "conversation.md").exists()
-    assert not (canonical_dir / "conversation.common.md").exists()
-    assert not (canonical_dir / "branches").exists()
-
-    overlay_root = tmp_path / "overlay"
-    overlay_dir = _create_branching_conversation(overlay_root, branch_mode="overlay")
-    branch_dir = overlay_dir / "branches" / "branch-001"
-    assert branch_dir.exists()
-    assert (branch_dir / "overlay.md").exists()
-    assert not (branch_dir / "branch-001.md").exists()
