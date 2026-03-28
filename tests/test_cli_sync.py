@@ -113,17 +113,6 @@ class TestSyncCommandPreviewMode:
         assert result.exit_code != 0
         assert "OAuth token expired" in result.output
 
-    def test_sync_preview_config_error_fails(self, runner, cli_workspace):
-        """Preview mode propagates ConfigError."""
-        with patch("polylogue.cli.commands.sync.create_config") as mock_create_config:
-            mock_create_config.side_effect = ConfigError("Invalid config: missing archive_root")
-
-            result = runner.invoke(cli, ["sync", "--preview"])
-
-        assert result.exit_code != 0
-        assert "Invalid config" in result.output
-
-
 class TestSyncCommandNonPreviewMode:
     """Tests for normal (non-preview) sync mode."""
 
@@ -402,44 +391,6 @@ class TestSyncCommandFormatOption:
         assert call_kwargs["render_format"] == "html"
 
 
-class TestSyncCommandConfigOption:
-    """Tests for --config flag."""
-
-    def test_sync_config_custom_path(self, runner, tmp_path):
-        """--config uses custom config file."""
-        config_path = tmp_path / "custom.json"
-        payload = {
-            "version": 2,
-            "archive_root": str(tmp_path / "archive"),
-            "sources": [{"name": "test", "path": str(tmp_path / "inbox")}],
-        }
-        config_path.write_text(json.dumps(payload), encoding="utf-8")
-
-        with patch("polylogue.cli.commands.sync.create_config") as mock_create_config:
-            with patch("polylogue.cli.commands.sync.run_sources") as mock_run:
-                with patch("polylogue.cli.commands.sync.resolve_sources", return_value=None):
-                    with patch("polylogue.cli.commands.sync.maybe_prompt_sources", return_value=None):
-                        with patch("polylogue.cli.commands.sync.format_counts", return_value="0 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
-                            mock_run.return_value = RunResult(
-                                run_id="r1",
-                                counts={"conversations": 0},
-                                drift={},
-                                indexed=False,
-                                index_error=None,
-                                duration_ms=0,
-                            )
-
-                            result = runner.invoke(cli, ["sync", "--config", str(config_path)])
-
-        assert result.exit_code == 0
-        # Verify create_config was called with custom path
-        call_args = mock_create_config.call_args[0]
-        assert call_args[0] == config_path
-
-
 class TestSyncCommandProgressOutput:
     """Tests for progress display."""
 
@@ -603,30 +554,6 @@ class TestSyncCommandTitle:
         assert result.exit_code == 0
         # Title should include source name
         assert "my-inbox" in result.output or "Run" in result.output
-
-
-class TestSyncCommandConfigError:
-    """Tests for configuration error handling."""
-
-    def test_sync_config_error_missing_archive_root(self, runner, cli_workspace):
-        """ConfigError for missing archive_root is handled."""
-        with patch("polylogue.cli.commands.sync.create_config") as mock_create_config:
-            mock_create_config.side_effect = ConfigError("Config error: Missing required field 'archive_root'")
-
-            result = runner.invoke(cli, ["sync"])
-
-        assert result.exit_code != 0
-        assert "archive_root" in result.output or "Missing" in result.output
-
-    def test_sync_config_error_invalid_json(self, runner, cli_workspace):
-        """ConfigError for invalid JSON is handled."""
-        with patch("polylogue.cli.commands.sync.create_config") as mock_create_config:
-            mock_create_config.side_effect = ConfigError("Config error: Invalid JSON in config file")
-
-            result = runner.invoke(cli, ["sync"])
-
-        assert result.exit_code != 0
-        assert "JSON" in result.output or "Invalid" in result.output
 
 
 class TestSyncCommandCombinations:

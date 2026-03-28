@@ -32,7 +32,6 @@ def test_prune_multiple_attachments_correctly(workspace_env, storage_repository)
             message_id="msg:perf",
             mime_type="text/plain",
             size_bytes=10,
-            path=f"/tmp/att-{i}.txt",
             provider_meta=None,
         )
         for i in range(10)
@@ -78,7 +77,6 @@ def test_prune_multiple_attachments_correctly(workspace_env, storage_repository)
             message_id="msg:perf",
             mime_type="text/plain",
             size_bytes=10,
-            path="/tmp/att-0.txt",
             provider_meta=None,
         ),
         AttachmentRecord(
@@ -87,7 +85,6 @@ def test_prune_multiple_attachments_correctly(workspace_env, storage_repository)
             message_id="msg:perf",
             mime_type="text/plain",
             size_bytes=10,
-            path="/tmp/att-1.txt",
             provider_meta=None,
         ),
     ]

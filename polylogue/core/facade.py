@@ -32,7 +32,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.config import Config, Source
+from polylogue.config import Config, Source, get_config
 from polylogue.container import ApplicationContainer
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.repository import ConversationRepository
@@ -88,16 +88,15 @@ class Polylogue:
     """High-level facade for Polylogue library.
 
     This class provides a simple, user-friendly API for using Polylogue
-    as a library. It manages configuration, services, and provides
-    convenient methods for common operations.
+    as a library. It manages services and provides convenient methods
+    for common operations.
 
     Args:
-        archive_root: Path to the archive directory. Defaults to ~/.local/share/polylogue/archive
-        config_path: Optional path to config file. If None, uses default location.
-        db_path: Optional path to database file. If None, uses default location.
+        archive_root: Override archive directory. Defaults to ~/.local/share/polylogue
+        db_path: Override database file. Defaults to ~/.local/share/polylogue/polylogue.db
 
     Example:
-        archive = Polylogue(archive_root="~/my-chats")
+        archive = Polylogue()  # Uses XDG defaults
         result = archive.ingest_file("chatgpt.json")
         conv = archive.get_conversation("claude:abc123")
     """
@@ -105,57 +104,27 @@ class Polylogue:
     def __init__(
         self,
         archive_root: str | Path | None = None,
-        config_path: str | Path | None = None,
         db_path: str | Path | None = None,
     ):
-        """Initialize the Polylogue archive."""
-        # Convert paths
-        if archive_root is not None:
-            archive_root = Path(archive_root).expanduser().resolve()
-        if config_path is not None:
-            config_path = Path(config_path).expanduser().resolve()
-        if db_path is not None:
-            db_path = Path(db_path).expanduser().resolve()
+        """Initialize the Polylogue archive.
 
-        # Initialize container
-        self._container: ApplicationContainer | None
-
-        # Try to load config, fall back to minimal config if not found
-        if config_path is not None and config_path.exists():
-            from dependency_injector import providers
-
-            from polylogue.config import load_config
-
-            self._container = ApplicationContainer()
-            self._container.config.override(
-                providers.Singleton(load_config, path=config_path)
-            )
-            self._config: Config = self._container.config()
-        else:
-            # Create minimal config for library use
-            from polylogue.config import CONFIG_VERSION, DEFAULT_ARCHIVE_ROOT
-
-            if archive_root is None:
-                archive_root = DEFAULT_ARCHIVE_ROOT
-
-            self._config = Config(
-                version=CONFIG_VERSION,
-                archive_root=archive_root,
-                render_root=archive_root / "render",
-                sources=[],
-                path=config_path or (DEFAULT_ARCHIVE_ROOT.parent / "config.json"),
-            )
-            self._container = None
+        Args:
+            archive_root: Override archive directory (defaults to XDG data home)
+            db_path: Override database path (defaults to XDG data home)
+        """
+        # Get hardcoded config (zero-config)
+        self._config: Config = get_config()
+        self._container: ApplicationContainer | None = None
 
         # Override archive_root if provided
         if archive_root is not None:
-            self._config.archive_root = archive_root
+            self._config.archive_root = Path(archive_root).expanduser().resolve()
 
         # Create storage backend (single source of truth for database access)
         from polylogue.storage.backends.sqlite import SQLiteBackend
 
-        self._db_path = db_path
-        self._backend: StorageBackend = SQLiteBackend(db_path=db_path)
+        self._db_path = Path(db_path).expanduser().resolve() if db_path else None
+        self._backend: StorageBackend = SQLiteBackend(db_path=self._db_path)
 
         # Create repositories using shared backend
         self._repository = ConversationRepository(backend=self._backend)
@@ -164,7 +133,6 @@ class Polylogue:
         # Services (lazy-initialized)
         self._ingestion_service: IngestionService | None = None
         self._indexing_service: IndexService | None = None
-        self._rendering_service: object | None = None
 
     @property
     def config(self) -> Config:
@@ -200,6 +168,27 @@ class Polylogue:
                     print(msg.text)
         """
         return self._repository.view(conversation_id)
+
+    def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
+        """Get multiple conversations by ID in a single database query.
+
+        This is more efficient than calling get_conversation() in a loop.
+        Non-existent IDs are silently skipped.
+
+        Args:
+            conversation_ids: List of full conversation IDs
+
+        Returns:
+            List of Conversation objects (may be fewer than requested if some don't exist)
+
+        Example:
+            # Efficient batch retrieval
+            ids = ["claude:abc123", "chatgpt:def456", "claude:ghi789"]
+            convs = archive.get_conversations(ids)
+            for conv in convs:
+                print(f"{conv.id}: {conv.display_title}")
+        """
+        return self._repository._get_many(conversation_ids)
 
     def search(
         self,
@@ -433,7 +422,50 @@ class Polylogue:
             # Get first matching conversation
             conv = archive.filter().tag("important").first()
         """
-        return ConversationFilter(self._repository)
+        # Get vector provider if available (may be None)
+        vector_provider = None
+        if self._container is not None:
+            try:
+                vector_provider = self._container.vector_provider()
+            except Exception:
+                pass  # Vector provider not configured
+
+        return ConversationFilter(self._repository, vector_provider=vector_provider)
+
+    def __enter__(self) -> Polylogue:
+        """Enter context manager - returns self for use in 'with' statements."""
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        """Exit context manager - closes backend connections.
+
+        Args:
+            exc_type: Exception type if an error occurred
+            exc_val: Exception value if an error occurred
+            exc_tb: Exception traceback if an error occurred
+        """
+        self.close()
+
+    def close(self) -> None:
+        """Close database connections and release resources.
+
+        This is called automatically when using Polylogue as a context manager.
+        Manual calling is only needed when not using 'with' statements.
+
+        Example:
+            # Context manager (automatic close)
+            with Polylogue() as archive:
+                convs = archive.filter().list()
+
+            # Manual close (if not using context manager)
+            archive = Polylogue()
+            try:
+                convs = archive.filter().list()
+            finally:
+                archive.close()
+        """
+        if hasattr(self._backend, "close"):
+            self._backend.close()
 
     def stats(self) -> ArchiveStats:
         """Get statistics about the archive.
@@ -481,9 +513,7 @@ class Polylogue:
             # Check if backend has runs info
             conn = getattr(self._backend, "_get_connection", lambda: None)()
             if conn:
-                row = conn.execute(
-                    "SELECT MAX(ended_at) as last FROM runs"
-                ).fetchone()
+                row = conn.execute("SELECT MAX(ended_at) as last FROM runs").fetchone()
                 if row and row[0]:
                     last_sync = row[0]
         except Exception:

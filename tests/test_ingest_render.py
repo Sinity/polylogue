@@ -45,7 +45,6 @@ def test_ingest_idempotent(workspace_env, storage_repository):
                 message_id="msg:hash",
                 mime_type=None,
                 size_bytes=None,
-                path=None,
                 provider_meta=None,
             )
         ],
@@ -192,7 +191,6 @@ def test_render_includes_orphan_attachments(workspace_env, storage_repository):
                 message_id=None,
                 mime_type="text/plain",
                 size_bytes=12,
-                path="/tmp/att.txt",
                 provider_meta={"name": "notes.txt"},
             )
         ],
@@ -219,7 +217,6 @@ def test_export_includes_attachments(workspace_env, tmp_path, storage_repository
                 message_id=None,
                 mime_type="text/plain",
                 size_bytes=12,
-                path="/tmp/att.txt",
                 provider_meta=None,
             )
         ],
@@ -400,7 +397,6 @@ def test_ingest_removes_missing_attachments(workspace_env, storage_repository):
                 message_id="msg:att",
                 mime_type="text/plain",
                 size_bytes=10,
-                path="/tmp/old.txt",
                 provider_meta=None,
             )
         ],
