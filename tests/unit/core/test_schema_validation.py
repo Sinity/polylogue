@@ -1,21 +1,40 @@
-"""Focused validator and validation-contract tests for schema handling."""
+"""Focused validator and validation-contract tests for schema handling, plus raw corpus verification."""
 
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
 
 from polylogue.schemas import ValidationResult
+from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validator import SchemaValidator, validate_provider_export
+from polylogue.schemas.verification import verify_raw_corpus
+from polylogue.storage.backends.connection import open_connection
+from polylogue.types import Provider
+
+
+def _patch_validator_registry(mock_schema_dir):
+    class _MockRegistry:
+        def get_schema(self, provider: str, version: str = "latest"):
+            path = mock_schema_dir / f"{provider}.schema.json"
+            if not path.exists():
+                return None
+            return json.loads(path.read_text(encoding="utf-8"))
+
+        def list_providers(self):
+            return sorted(path.name.removesuffix(".schema.json") for path in mock_schema_dir.glob("*.schema.json"))
+
+    return patch("polylogue.schemas.validator.SchemaRegistry", _MockRegistry)
 
 
 def test_schema_validator_loads_provider(mock_schema_dir):
     """SchemaValidator.for_provider loads the requested schema."""
-    with patch("polylogue.schemas.registry.SCHEMA_DIR", mock_schema_dir):
+    with _patch_validator_registry(mock_schema_dir):
         SchemaValidator._cache.clear()
-        validator = SchemaValidator.for_provider("test-provider")
+        validator = SchemaValidator.for_provider("chatgpt")
         assert validator.schema["required"] == ["id"]
 
         with pytest.raises(FileNotFoundError):
@@ -24,8 +43,8 @@ def test_schema_validator_loads_provider(mock_schema_dir):
 
 def test_validate_valid_data(mock_schema_dir):
     """Valid payloads should pass with no errors or drift."""
-    with patch("polylogue.schemas.registry.SCHEMA_DIR", mock_schema_dir):
-        validator = SchemaValidator.for_provider("test-provider")
+    with _patch_validator_registry(mock_schema_dir):
+        validator = SchemaValidator.for_provider("chatgpt")
         result = validator.validate({"id": "123", "count": 10, "meta": {"source": "test"}})
 
     assert result.is_valid
@@ -35,8 +54,8 @@ def test_validate_valid_data(mock_schema_dir):
 
 def test_validate_detects_errors(mock_schema_dir):
     """Validation should report required-field and type errors."""
-    with patch("polylogue.schemas.registry.SCHEMA_DIR", mock_schema_dir):
-        validator = SchemaValidator.for_provider("test-provider")
+    with _patch_validator_registry(mock_schema_dir):
+        validator = SchemaValidator.for_provider("chatgpt")
 
         missing = validator.validate({"count": 10})
         wrong_type = validator.validate({"id": 123})
@@ -49,8 +68,8 @@ def test_validate_detects_errors(mock_schema_dir):
 
 def test_validate_detects_drift(mock_schema_dir):
     """Strict mode should surface unexpected fields as drift."""
-    with patch("polylogue.schemas.registry.SCHEMA_DIR", mock_schema_dir):
-        validator = SchemaValidator.for_provider("open-provider", strict=True)
+    with _patch_validator_registry(mock_schema_dir):
+        validator = SchemaValidator.for_provider("codex", strict=True)
         result = validator.validate({"id": "123", "extra": "drift"})
 
     assert result.is_valid
@@ -58,22 +77,39 @@ def test_validate_detects_drift(mock_schema_dir):
     assert "extra" in result.drift_warnings[0]
 
 
-def test_provider_alias_maps_claude_to_claude_ai(mock_schema_dir):
-    """Runtime provider aliases should resolve to canonical schema providers."""
-    alias_schema = {
+def test_schema_validator_loads_canonical_claude_ai_provider(mock_schema_dir):
+    """Schema validation should use the canonical Claude AI provider token."""
+    schema = {
         "type": "object",
         "properties": {"uuid": {"type": "string"}},
         "required": ["uuid"],
         "additionalProperties": False,
     }
-    (mock_schema_dir / "claude-ai.schema.json").write_text(json.dumps(alias_schema), encoding="utf-8")
+    (mock_schema_dir / "claude-ai.schema.json").write_text(json.dumps(schema), encoding="utf-8")
 
-    with patch("polylogue.schemas.registry.SCHEMA_DIR", mock_schema_dir):
+    with _patch_validator_registry(mock_schema_dir):
         SchemaValidator._cache.clear()
-        validator = SchemaValidator.for_provider("claude")
+        validator = SchemaValidator.for_provider("claude-ai")
 
     assert validator.provider == "claude-ai"
     assert "uuid" in validator.schema["properties"]
+
+
+def test_schema_validator_accepts_provider_enum(mock_schema_dir):
+    """Known provider enums should flow through validator lookup without string routing."""
+    schema = {
+        "type": "object",
+        "properties": {"uuid": {"type": "string"}},
+        "required": ["uuid"],
+        "additionalProperties": False,
+    }
+    (mock_schema_dir / "claude-ai.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+
+    with _patch_validator_registry(mock_schema_dir):
+        SchemaValidator._cache.clear()
+        validator = SchemaValidator.for_provider(Provider.CLAUDE_AI)
+
+    assert validator.provider is Provider.CLAUDE_AI
 
 
 def test_validation_samples_record_mode_skips_non_record_documents():
@@ -249,18 +285,18 @@ def test_looks_dynamic_key_matches_expected_identifier_patterns():
 
 def test_available_providers(mock_schema_dir):
     """available_providers should reflect packaged schema files."""
-    with patch("polylogue.schemas.registry.SCHEMA_DIR", mock_schema_dir):
+    with _patch_validator_registry(mock_schema_dir):
         providers = SchemaValidator.available_providers()
 
-    assert "test-provider" in providers
-    assert "open-provider" in providers
+    assert "chatgpt" in providers
+    assert "codex" in providers
     assert "nonexistent" not in providers
 
 
 def test_validate_helper(mock_schema_dir):
     """validate_provider_export should delegate to SchemaValidator cleanly."""
-    with patch("polylogue.schemas.registry.SCHEMA_DIR", mock_schema_dir):
-        result = validate_provider_export({"id": "123"}, "test-provider")
+    with _patch_validator_registry(mock_schema_dir):
+        result = validate_provider_export({"id": "123"}, "chatgpt")
 
     assert result.is_valid
 
@@ -302,3 +338,263 @@ def test_validation_result_properties():
     with_drift = ValidationResult(is_valid=True, drift_warnings=["new field: foo"])
     assert with_drift.is_valid
     assert with_drift.has_drift
+
+
+# =============================================================================
+# Merged from test_schema_verification.py (2024-03-15)
+# =============================================================================
+
+
+def _insert_raw_record(
+    *,
+    db_path,
+    raw_id: str,
+    provider_name: str,
+    payload_provider: str | None = None,
+    source_name: str,
+    source_path: str,
+    raw_content: bytes,
+) -> None:
+    with open_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_conversations (
+                raw_id, provider_name, payload_provider, source_name, source_path, source_index,
+                raw_content, acquired_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                provider_name,
+                payload_provider,
+                source_name,
+                source_path,
+                0,
+                raw_content,
+                datetime.now(tz=timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+
+
+def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(db_path, monkeypatch):
+    class _AlwaysValidValidator:
+        provider = "chatgpt"
+
+        def validation_samples(self, payload, max_samples=16):
+            return [payload] if isinstance(payload, dict) else []
+
+        def validate(self, _sample):
+            return ValidationResult(is_valid=True)
+
+    monkeypatch.setattr(
+        "polylogue.schemas.verification.SchemaValidator.for_payload",
+        lambda *args, **kwargs: _AlwaysValidValidator(),
+    )
+
+    corpus = SyntheticCorpus.for_provider("chatgpt")
+    raw = corpus.generate(count=1, seed=42)[0]
+    _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-chatgpt-1",
+        provider_name="chatgpt",
+        source_name="chatgpt",
+        source_path="/tmp/chatgpt.json",
+        raw_content=raw,
+    )
+
+    report = verify_raw_corpus(db_path=db_path, providers=["chatgpt"], max_samples=16)
+    stats = report.providers["chatgpt"]
+
+    assert report.total_records == 1
+    assert stats.total_records == 1
+    assert stats.valid_records == 1
+    assert stats.invalid_records == 0
+    assert stats.decode_errors == 0
+
+
+def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path):
+    _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-inbox-1",
+        provider_name="inbox",
+        source_name="inbox",
+        source_path="/tmp/inbox.json",
+        raw_content=b'{"hello":"world"}',
+    )
+
+    report = verify_raw_corpus(db_path=db_path, providers=["unknown"], max_samples=16)
+    stats = report.providers["unknown"]
+
+    assert report.total_records == 1
+    assert stats.total_records == 1
+    assert stats.skipped_no_schema == 1
+    assert stats.valid_records == 0
+    assert stats.invalid_records == 0
+
+
+@pytest.mark.slow
+def test_verify_raw_corpus_uses_persisted_payload_provider_for_filters(db_path, monkeypatch):
+    class _AlwaysValidValidator:
+        provider = "chatgpt"
+
+        def validation_samples(self, payload, max_samples=16):
+            return [payload] if isinstance(payload, dict) else []
+
+        def validate(self, _sample):
+            return ValidationResult(is_valid=True)
+
+    monkeypatch.setattr(
+        "polylogue.schemas.verification.SchemaValidator.for_payload",
+        lambda *args, **kwargs: _AlwaysValidValidator(),
+    )
+
+    _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-generic-chatgpt",
+        provider_name="inbox",
+        payload_provider="chatgpt",
+        source_name="inbox",
+        source_path="/tmp/raw.json",
+        raw_content=b'{"id":"one","mapping":{}}',
+    )
+
+    report = verify_raw_corpus(db_path=db_path, providers=["chatgpt"], max_samples=16)
+
+    assert report.total_records == 1
+    assert report.providers["chatgpt"].total_records == 1
+    assert report.providers["chatgpt"].valid_records == 1
+
+
+def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path):
+    raw_id = "raw-codex-1"
+    _insert_raw_record(
+        db_path=db_path,
+        raw_id=raw_id,
+        provider_name="codex",
+        source_name="codex",
+        source_path="/tmp/session.jsonl",
+        raw_content=(
+            b'{"type":"session_meta"}\n'
+            b'not json at all\n'
+            b'{"type":"response_item","payload":{"type":"message"}}'
+        ),
+    )
+
+    report = verify_raw_corpus(db_path=db_path, providers=["codex"], max_samples=16)
+    stats = report.providers["codex"]
+
+    assert report.total_records == 1
+    assert stats.total_records == 1
+    assert stats.decode_errors == 1
+    assert stats.valid_records == 0
+    assert stats.invalid_records == 0
+    assert stats.quarantined_records == 0
+
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT validation_status, validation_error, validation_mode, parse_error "
+            "FROM raw_conversations WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] is None
+    assert row[1] is None
+    assert row[2] is None
+    assert row[3] is None
+
+
+def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path):
+    raw_id = "raw-codex-q1"
+    _insert_raw_record(
+        db_path=db_path,
+        raw_id=raw_id,
+        provider_name="codex",
+        source_name="codex",
+        source_path="/tmp/session-q1.jsonl",
+        raw_content=(
+            b'{"type":"session_meta"}\n'
+            b'not json at all\n'
+            b'{"type":"response_item","payload":{"type":"message"}}'
+        ),
+    )
+
+    report = verify_raw_corpus(
+        db_path=db_path,
+        providers=["codex"],
+        max_samples=16,
+        quarantine_malformed=True,
+    )
+    stats = report.providers["codex"]
+
+    assert report.total_records == 1
+    assert stats.decode_errors == 1
+    assert stats.quarantined_records == 1
+
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT validation_status, validation_error, validation_mode, validation_provider,
+                   payload_provider,
+                   validated_at, parse_error
+            FROM raw_conversations
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "failed"
+    assert isinstance(row[1], str) and "Malformed JSONL lines" in row[1]
+    assert row[2] == "strict"
+    assert row[3] == "codex"
+    assert row[4] == "codex"
+    assert row[5] is not None
+    assert isinstance(row[6], str) and "Malformed JSONL lines" in row[6]
+
+
+def test_verify_raw_corpus_honors_record_limit_and_offset(db_path, monkeypatch):
+    class _AlwaysValidValidator:
+        provider = "chatgpt"
+
+        def validation_samples(self, payload, max_samples=16):
+            return [payload] if isinstance(payload, dict) else []
+
+        def validate(self, _sample):
+            return ValidationResult(is_valid=True)
+
+    monkeypatch.setattr(
+        "polylogue.schemas.verification.SchemaValidator.for_payload",
+        lambda *args, **kwargs: _AlwaysValidValidator(),
+    )
+
+    _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-chatgpt-1",
+        provider_name="chatgpt",
+        source_name="chatgpt",
+        source_path="/tmp/chatgpt-1.json",
+        raw_content=b'{"id":"one","mapping":{}}',
+    )
+    _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-chatgpt-2",
+        provider_name="chatgpt",
+        source_name="chatgpt",
+        source_path="/tmp/chatgpt-2.json",
+        raw_content=b'{"id":"two","mapping":{}}',
+    )
+
+    report = verify_raw_corpus(
+        db_path=db_path,
+        providers=["chatgpt"],
+        max_samples=16,
+        record_limit=1,
+        record_offset=1,
+    )
+    stats = report.providers["chatgpt"]
+
+    assert report.total_records == 1
+    assert report.record_limit == 1
+    assert report.record_offset == 1
+    assert stats.total_records == 1
+    assert stats.valid_records == 1

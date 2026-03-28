@@ -64,7 +64,10 @@ def sql_injection_strategy(draw: st.DrawFn) -> str:
 
 @st.composite
 def fts5_operator_strategy(draw: st.DrawFn) -> str:
-    """Generate FTS5 operator strings that need escaping."""
+    """Generate FTS5 operator strings that need escaping.
+
+    See also: search.search_query_strategy() which draws from the same FTS5_OPERATORS.
+    """
     return draw(st.sampled_from(FTS5_OPERATORS))
 
 
@@ -113,43 +116,6 @@ def malformed_json_strategy(draw: st.DrawFn) -> str:
     return draw(st.sampled_from(malformed_patterns))
 
 
-@st.composite
-def edge_case_json_strategy(draw: st.DrawFn) -> dict[str, Any]:
-    """Generate edge-case but valid JSON structures."""
-    return draw(st.one_of(
-        # Empty containers
-        st.just({}),
-        st.just([]),
-        st.just({"messages": []}),
-        # Null values
-        st.just({"key": None}),
-        st.just({"messages": [None]}),
-        # Very long strings
-        st.builds(lambda n: {"text": "x" * n}, st.integers(min_value=10000, max_value=100000)),
-        # Deep nesting
-        st.builds(
-            lambda depth: _nested_dict(depth),
-            st.integers(min_value=50, max_value=100),
-        ),
-        # Many keys
-        st.builds(
-            lambda n: {f"key_{i}": i for i in range(n)},
-            st.integers(min_value=100, max_value=1000),
-        ),
-        # Unicode edge cases
-        st.just({"text": "\u0000\u001f\u007f"}),
-        st.just({"text": "\U0001F600"}),  # Emoji
-        st.just({"text": "\u202e"}),  # RTL override
-    ))
-
-
-def _nested_dict(depth: int) -> dict[str, Any]:
-    """Create a deeply nested dict."""
-    if depth <= 0:
-        return {"leaf": "value"}
-    return {"nested": _nested_dict(depth - 1)}
-
-
 # =============================================================================
 # Control Character Strategies
 # =============================================================================
@@ -179,22 +145,6 @@ def control_char_strategy(draw: st.DrawFn) -> str:
 # =============================================================================
 # DoS / Resource Exhaustion Strategies
 # =============================================================================
-
-
-@st.composite
-def regex_dos_strategy(draw: st.DrawFn) -> str:
-    """Generate strings that might cause regex DoS (ReDoS).
-
-    Tests timestamp parsing and other regex-based operations.
-    """
-    # Patterns that might cause backtracking explosion
-    return draw(st.sampled_from([
-        "a" * 30 + "!",  # Classic ReDoS for (a+)+
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
-        "0" * 50 + "x",  # For numeric parsing
-        "1" * 20 + "." + "1" * 20 + "." + "1" * 20,  # Version-like
-        "2024-01-01" + "-01" * 50,  # Date-like
-    ]))
 
 
 @st.composite

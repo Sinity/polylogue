@@ -19,43 +19,25 @@ def _write_min_fixture(fixture_dir: Path, provider: str = "chatgpt") -> None:
 
 
 class TestShowcaseRunnerSeeding:
-    """Covers fixture vs synthetic seed selection in ShowcaseRunner."""
+    """Covers synthetic seed behavior in ShowcaseRunner."""
 
-    def test_seed_workspace_uses_packaged_fixture_path_by_default(self, tmp_path):
-        runner = ShowcaseRunner(showcase_data="fixtures")
-        workspace = tmp_path / "workspace"
-
-        def _fake_copy(fixtures_root: Path) -> None:
-            _write_min_fixture(fixtures_root, provider="chatgpt")
-
-        with patch.object(runner, "_copy_fixtures", side_effect=_fake_copy) as mock_copy:
-            with patch.object(runner, "_generate_synthetic_fixtures") as mock_generate:
-                with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock, side_effect=_fake_run_sources):
-                    runner._seed_workspace(workspace)
-
-        assert mock_copy.call_count == 1
-        assert mock_generate.call_count == 0
-        assert (workspace / "data" / "polylogue" / "inbox" / "chatgpt" / "sample.json").exists()
-
-    def test_seed_workspace_uses_synthetic_seed_when_configured(self, tmp_path):
-        runner = ShowcaseRunner(showcase_data="synthetic", synthetic_count=7)
+    def test_seed_workspace_generates_synthetic_fixtures(self, tmp_path):
+        runner = ShowcaseRunner(synthetic_count=7)
         workspace = tmp_path / "workspace"
 
         def _fake_generate(fixtures_root: Path, *, count: int) -> None:
             assert count == 7
             _write_min_fixture(fixtures_root, provider="codex")
 
-        with patch.object(runner, "_copy_fixtures") as mock_copy:
-            with patch.object(runner, "_generate_synthetic_fixtures", side_effect=_fake_generate) as mock_generate:
-                with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock, side_effect=_fake_run_sources):
-                    runner._seed_workspace(workspace)
+        with patch.object(runner, "_generate_synthetic_fixtures", side_effect=_fake_generate) as mock_generate:
+            with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock, side_effect=_fake_run_sources):
+                runner._seed_workspace(workspace)
 
-        assert mock_copy.call_count == 0
         assert mock_generate.call_count == 1
         assert (workspace / "data" / "polylogue" / "inbox" / "codex" / "sample.json").exists()
 
     def test_generate_synthetic_fixtures_uses_showcase_style(self, tmp_path):
-        runner = ShowcaseRunner(showcase_data="synthetic", synthetic_count=1)
+        runner = ShowcaseRunner(synthetic_count=1)
         fixture_root = tmp_path / "fixtures"
 
         fake_corpus = MagicMock()
@@ -74,3 +56,42 @@ class TestShowcaseRunnerSeeding:
 
         fake_corpus.generate.assert_called_once()
         assert fake_corpus.generate.call_args.kwargs["style"] == "showcase"
+
+
+class TestShowcaseRunnerWorkspaceEnv:
+    """Covers pre-configured workspace_env behavior."""
+
+    def test_workspace_env_skips_seeding(self, tmp_path):
+        """When workspace_env is provided, _seed_workspace should not be called."""
+        env_vars = {
+            "HOME": str(tmp_path / "home"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+            "POLYLOGUE_ARCHIVE_ROOT": str(tmp_path / "archive"),
+            "POLYLOGUE_RENDER_ROOT": str(tmp_path / "render"),
+            "POLYLOGUE_FORCE_PLAIN": "1",
+        }
+        runner = ShowcaseRunner(
+            workspace_env=env_vars,
+            output_dir=tmp_path / "output",
+            tier_filter=0,  # limit exercises
+        )
+
+        with patch.object(runner, "_seed_workspace") as mock_seed:
+            with patch.object(runner, "_select_exercises", return_value=[]):
+                runner.run()
+
+        mock_seed.assert_not_called()
+        assert runner._env_vars == env_vars
+
+    def test_no_workspace_env_seeds_normally(self, tmp_path):
+        """Without workspace_env, _seed_workspace should be called."""
+        runner = ShowcaseRunner(
+            output_dir=tmp_path / "output",
+            tier_filter=0,
+        )
+
+        with patch.object(runner, "_seed_workspace") as mock_seed:
+            with patch.object(runner, "_select_exercises", return_value=[]):
+                runner.run()
+
+        mock_seed.assert_called_once()

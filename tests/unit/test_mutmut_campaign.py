@@ -6,6 +6,7 @@ from pathlib import Path
 from devtools.mutmut_campaign import (
     CAMPAIGNS,
     CampaignResult,
+    copy_workspace,
     format_index,
     format_markdown,
     git_status_summary,
@@ -194,3 +195,17 @@ def test_load_results_and_index_use_latest_campaign_entry(tmp_path: Path) -> Non
     rendered = format_index(results)
     assert "`json` | `2026-03-11T01:00:00+00:00` | `bbbbbbbbbbbb` | 24 | 2 | 0 | 0 | yes | 7.00s |" in rendered
     assert "`filters` | `2026-03-11T02:00:00+00:00` | `cccccccccccc` | 486 | 11 | 100 | 0 | no | 7.00s |" in rendered
+
+
+def test_copy_workspace_preserves_symlinked_files(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    (src / "AGENTS.md").write_text("agents\n")
+    (src / "CLAUDE.md").symlink_to("AGENTS.md")
+
+    copy_workspace(src, dst)
+
+    copied = dst / "CLAUDE.md"
+    assert copied.is_symlink()
+    assert copied.read_text() == "agents\n"

@@ -1,0 +1,15 @@
+Usage: cli tags [OPTIONS]
+
+  List all tags with conversation counts.
+
+  Examples:
+      polylogue tags                  # List all tags
+      polylogue tags -p claude-ai        # Tags for Claude conversations only
+      polylogue tags --json           # Machine-readable output
+      polylogue tags -n 10            # Top 10 tags
+
+Options:
+  -p, --provider TEXT  Filter tags by provider
+  --json               Output as JSON
+  -n, --count INTEGER  Show top N tags
+  -h, --help           Show this message and exit.

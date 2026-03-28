@@ -10,8 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.pipeline.runner import latest_run, run_sources
+from polylogue.pipeline.runner import _select_sources, latest_run, plan_sources, run_sources
+from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import PlanResult
 from tests.infra.storage_records import make_conversation, make_message, store_records
@@ -149,6 +151,15 @@ class TestRunSourcesIntegration:
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
         )
+
+        # Stages are now independent: validate/parse don't re-run predecessors.
+        # Pre-populate the pipeline backlog so each stage has work to find.
+        if stage == "validate" and sources:
+            asyncio.run(run_sources(config=config, stage="acquire"))
+        elif stage == "parse" and sources:
+            asyncio.run(run_sources(config=config, stage="acquire"))
+            asyncio.run(run_sources(config=config, stage="validate"))
+
         result = asyncio.run(run_sources(config=config, stage=stage))
 
         if stage == "validate":
@@ -208,8 +219,39 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
+        # Stages are independent: populate pipeline backlog before testing parse stage
+        asyncio.run(run_sources(config=config, stage="acquire"))
+        asyncio.run(run_sources(config=config, stage="validate"))
         result = asyncio.run(run_sources(config=config, stage="parse", plan=None))
-        assert result.drift["new"]["conversations"] == result.counts["conversations"]
+        assert result.drift["new"]["conversations"] == result.counts["new_conversations"]
+        assert result.counts["conversations"] == (
+            result.counts["new_conversations"] + result.counts["changed_conversations"]
+        )
+
+    def test_changed_conversation_is_not_reported_as_new(self, workspace_env, tmp_path: Path):
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        export_path = inbox / "conversations.json"
+        _write_chatgpt_export(export_path, "conv-update")
+        config = Config(
+            sources=[Source(name="test-drift", path=inbox)],
+            archive_root=workspace_env["archive_root"],
+            render_root=workspace_env["archive_root"] / "render",
+        )
+
+        asyncio.run(run_sources(config=config, stage="all"))
+
+        payload = json.loads(export_path.read_text())
+        payload[0]["title"] = "Updated title"
+        export_path.write_text(json.dumps(payload))
+
+        second = asyncio.run(run_sources(config=config, stage="all"))
+
+        assert second.counts["conversations"] == 1
+        assert second.counts["new_conversations"] == 0
+        assert second.counts["changed_conversations"] == 1
+        assert second.drift["new"]["conversations"] == 0
+        assert second.drift["changed"]["conversations"] == 1
 
     def test_run_json_written(self, workspace_env):
         config = Config(
@@ -289,3 +331,367 @@ class TestRunSourcesIntegration:
         result = asyncio.run(run_sources(config=config, stage="parse"))
         asyncio.run(backend.close())
         assert result.counts["conversations"] >= 1
+
+
+# =====================================================================
+# Merged from test_acquisition_service.py (source acquisition/running)
+# =====================================================================
+
+
+class TestAcquisitionServiceAcquireSources:
+    @pytest.fixture
+    def backend(self, tmp_path: Path) -> SQLiteBackend:
+        return SQLiteBackend(db_path=tmp_path / "test.db")
+
+    async def test_acquire_empty_sources(self, backend: SQLiteBackend):
+        from polylogue.pipeline.services.acquisition import AcquisitionService
+
+        result = await AcquisitionService(backend=backend).acquire_sources([])
+        assert all(result.counts[key] == 0 for key in ["acquired", "skipped", "errors"])
+        assert result.raw_ids == []
+
+    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
+    async def test_progress_callback_called(self, mock_iter, backend: SQLiteBackend):
+        from polylogue.pipeline.services.acquisition import AcquisitionService
+
+        raw_data = RawConversationData(
+            raw_bytes=b'{"id": "test"}',
+            source_path="/tmp/test.json",
+            source_index=0,
+        )
+        mock_iter.return_value = iter([raw_data])
+        backend.queries.get_known_source_mtimes = AsyncMock(return_value={})
+        callback = MagicMock()
+        service = AcquisitionService(backend=backend)
+        source = Source(name="test-source", path=Path("/tmp/inbox"))
+
+        await service.acquire_sources([source], progress_callback=callback)
+
+        callback.assert_any_call(1, desc="Acquiring [test-source]")
+        assert mock_iter.call_args is not None
+        assert mock_iter.call_args.kwargs.get("known_mtimes") is not None
+
+    @pytest.mark.parametrize("error_scenario", ["iteration_error", "none_raw_data"])
+    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
+    async def test_acquire_handles_errors(self, mock_iter, backend: SQLiteBackend, error_scenario: str):
+        from polylogue.pipeline.services.acquisition import AcquisitionService
+
+        if error_scenario == "iteration_error":
+            mock_iter.side_effect = ValueError("File not found")
+        else:
+            mock_iter.return_value = iter([None])
+
+        service = AcquisitionService(backend=backend)
+        source = Source(name="test-source", path=Path("/tmp/inbox"))
+        result = await service.acquire_sources([source])
+
+        assert result.counts["errors"] == 1
+        assert result.counts["acquired"] == 0
+
+
+class TestAcquisitionServiceIntegration:
+    def _make_conv(self, conversation_id: str, title: str, timestamp: int, message: str) -> dict:
+        return {
+            "id": conversation_id,
+            "title": title,
+            "create_time": timestamp,
+            "update_time": timestamp + 100,
+            "mapping": {
+                "root": {"id": "root", "message": None, "children": ["msg1"]},
+                "msg1": {
+                    "id": "msg1",
+                    "message": {
+                        "id": "msg1",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": [message]},
+                        "create_time": timestamp + 50,
+                    },
+                    "parent": "root",
+                    "children": [],
+                },
+            },
+        }
+
+    async def test_acquire_real_chatgpt_file(self, tmp_path: Path):
+        from polylogue.pipeline.services.acquisition import AcquisitionService
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        (inbox / "conversations.json").write_text(
+            json.dumps([self._make_conv("conv-1", "Test Chat", 1700000000, "Hello")])
+        )
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        result = await AcquisitionService(backend=backend).acquire_sources(
+            [Source(name="chatgpt-inbox", path=inbox)]
+        )
+
+        assert result.counts["acquired"] == 1
+        assert result.counts["errors"] == 0
+        assert len(result.raw_ids) == 1
+        stored = await backend.get_raw_conversation(result.raw_ids[0])
+        data = json.loads(stored.raw_content)
+        assert stored.provider_name == "chatgpt"
+        assert isinstance(data, list)
+        assert data[0]["id"] == "conv-1"
+        assert data[0]["title"] == "Test Chat"
+
+    async def test_acquire_multiple_json_files(self, tmp_path: Path):
+        from polylogue.pipeline.services.acquisition import AcquisitionService
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        conversations = [
+            self._make_conv("conv-1", "Chat 1", 1700000000, "Hello"),
+            self._make_conv("conv-2", "Chat 2", 1700000200, "World"),
+        ]
+        (inbox / "conversations.json").write_text(json.dumps(conversations))
+        result = await AcquisitionService(backend=SQLiteBackend(db_path=tmp_path / "test.db")).acquire_sources(
+            [Source(name="chatgpt-export", path=inbox)]
+        )
+
+        assert result.counts["acquired"] == 1
+        assert len(result.raw_ids) == 1
+
+
+# =====================================================================
+# Merged from test_runner_preview.py (runner/source tests)
+# =====================================================================
+
+
+def _write_chatgpt_preview_export(path: Path, conversation_id: str) -> None:
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": conversation_id,
+                    "title": "Test",
+                    "create_time": 1704067200,
+                    "update_time": 1704067200,
+                    "mapping": {
+                        "root": {"id": "root", "message": None, "children": ["m1"]},
+                        "m1": {
+                            "id": "m1",
+                            "message": {
+                                "id": "m1",
+                                "author": {"role": "user"},
+                                "content": {"parts": ["Hi"]},
+                                "create_time": 1704067200,
+                            },
+                            "parent": "root",
+                            "children": ["m2"],
+                        },
+                        "m2": {
+                            "id": "m2",
+                            "message": {
+                                "id": "m2",
+                                "author": {"role": "assistant"},
+                                "content": {"parts": ["Hello"]},
+                                "create_time": 1704067201,
+                            },
+                            "parent": "m1",
+                            "children": [],
+                        },
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+class TestSelectSources:
+    def test_select_all_sources_when_no_filter(self, tmp_path: Path):
+        sources = [
+            Source(name="source-a", path=tmp_path / "a"),
+            Source(name="source-b", path=tmp_path / "b"),
+            Source(name="source-c", path=tmp_path / "c"),
+        ]
+        config = Config(sources=sources, archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+
+        assert _select_sources(config, None) == sources
+        assert _select_sources(config, []) == sources
+
+    def test_select_filtered_sources(self, tmp_path: Path):
+        sources = [
+            Source(name="chatgpt-export", path=tmp_path / "a"),
+            Source(name="claude-export", path=tmp_path / "b"),
+            Source(name="codex-export", path=tmp_path / "c"),
+        ]
+        config = Config(sources=sources, archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+
+        assert [source.name for source in _select_sources(config, ["claude-export"])] == ["claude-export"]
+        assert {source.name for source in _select_sources(config, ["chatgpt-export", "codex-export"])} == {
+            "chatgpt-export",
+            "codex-export",
+        }
+
+    def test_select_empty_when_no_match(self, tmp_path: Path):
+        config = Config(
+            sources=[Source(name="source-a", path=tmp_path / "a")],
+            archive_root=tmp_path / "archive",
+            render_root=tmp_path / "render",
+        )
+        assert _select_sources(config, ["nonexistent-source"]) == []
+
+
+class TestPlanSources:
+    def test_plan_empty_config(self, tmp_path: Path):
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        backend = SQLiteBackend(db_path=tmp_path / "preview.db")
+        try:
+            result = plan_sources(config, backend=backend)
+        finally:
+            asyncio.run(backend.close())
+
+        assert isinstance(result, PlanResult)
+        assert result.stage == "all"
+        assert result.counts == {}
+        assert result.details == {}
+        assert result.sources == []
+        assert result.cursors == {}
+
+    def test_plan_single_source(self, tmp_path: Path):
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        _write_chatgpt_preview_export(inbox / "conversations.json", "conv-1")
+
+        config = Config(
+            sources=[Source(name="test-source", path=inbox)],
+            archive_root=tmp_path / "archive",
+            render_root=tmp_path / "render",
+        )
+        backend = SQLiteBackend(db_path=tmp_path / "preview.db")
+        try:
+            result = plan_sources(config, backend=backend)
+        finally:
+            asyncio.run(backend.close())
+
+        assert result.counts["scan"] == 1
+        assert result.counts["store_raw"] == 1
+        assert result.counts["validate"] == 1
+        assert result.counts["parse"] == 1
+        assert result.sources == ["test-source"]
+
+    async def test_plan_inside_running_event_loop(self, tmp_path: Path):
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        backend = SQLiteBackend(db_path=tmp_path / "preview.db")
+        try:
+            result = plan_sources(config, backend=backend)
+        finally:
+            await backend.close()
+        assert result.counts == {}
+        assert result.sources == []
+
+
+# =====================================================================
+# Merged from test_runner_history.py (runner/source tests)
+# =====================================================================
+
+
+class TestWriteRunJson:
+    def test_creates_runs_directory(self, tmp_path):
+        import time
+
+        from polylogue.pipeline.runner import _write_run_json
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        payload = {"run_id": "test-run-1", "timestamp": int(time.time()), "counts": {"conversations": 1}}
+
+        result = _write_run_json(archive_root, payload)
+        assert (archive_root / "runs").exists()
+        assert result.exists()
+
+    def test_writes_correct_content(self, tmp_path):
+        import time
+
+        from polylogue.pipeline.runner import _write_run_json
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        timestamp = int(time.time())
+        payload = {
+            "run_id": "abc123",
+            "timestamp": timestamp,
+            "counts": {"conversations": 10, "messages": 50},
+            "indexed": True,
+        }
+
+        result_path = _write_run_json(archive_root, payload)
+        content = json.loads(result_path.read_text())
+        assert content["run_id"] == "abc123"
+        assert content["timestamp"] == timestamp
+        assert content["counts"] == {"conversations": 10, "messages": 50}
+        assert content["indexed"] is True
+
+    def test_filename_contains_timestamp_and_id(self, tmp_path):
+        from polylogue.pipeline.runner import _write_run_json
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        result = _write_run_json(archive_root, {"run_id": "myrun", "timestamp": 1704067200})
+        assert result.name == "run-1704067200-myrun.json"
+
+
+class TestLatestRun:
+    def test_no_runs_returns_none(self, workspace_env):
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with open_connection(db_path):
+            pass
+        assert asyncio.run(latest_run()) is None
+
+    def test_returns_most_recent(self, workspace_env):
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with open_connection(db_path) as conn:
+            for index, timestamp in enumerate([1000, 3000, 2000]):
+                conn.execute(
+                    """
+                    INSERT INTO runs
+                    (run_id, timestamp, plan_snapshot, counts_json, drift_json, indexed, duration_ms)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"run-{index}",
+                        str(timestamp),
+                        None,
+                        json.dumps({"conversations": index}),
+                        None,
+                        1 if index == 1 else 0,
+                        100 * index,
+                    ),
+                )
+            conn.commit()
+
+        result = asyncio.run(latest_run())
+        assert result is not None
+        assert result.run_id == "run-1"
+        assert result.timestamp == "3000"
+
+    def test_parses_json_columns(self, workspace_env):
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        plan = {"conversations": 5, "messages": 20}
+        counts = {"conversations": 4, "messages": 18, "rendered": 4}
+        drift = {"new": {"conversations": 1}, "removed": {"conversations": 2}}
+
+        with open_connection(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO runs
+                (run_id, timestamp, plan_snapshot, counts_json, drift_json, indexed, duration_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("run-json", "5000", json.dumps(plan), json.dumps(counts), json.dumps(drift), 1, 500),
+            )
+            conn.commit()
+
+        result = asyncio.run(latest_run())
+        assert result is not None
+        assert result.plan_snapshot == plan
+        assert result.counts == counts
+        assert result.drift == drift
+        assert result.indexed is True
+        assert result.duration_ms == 500

@@ -132,7 +132,7 @@ def conversation_id(provider_name: str, provider_conversation_id: str) -> Conver
     """Generate deterministic conversation ID from provider info.
 
     Args:
-        provider_name: Name of the provider (e.g., "chatgpt", "claude").
+        provider_name: Name of the provider (e.g., "chatgpt", "claude-ai").
         provider_conversation_id: Provider's conversation identifier.
 
     Returns:

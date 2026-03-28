@@ -7,11 +7,11 @@ factory functions for creating provider instances from configuration.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.lib.env import get_env
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.hybrid import (
     HybridSearchProvider,
@@ -71,7 +71,7 @@ def create_vector_provider(
     if voyage_key is None and config and config.index_config:
         voyage_key = config.index_config.voyage_api_key
     if voyage_key is None:
-        voyage_key = get_env("VOYAGE_API_KEY")
+        voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
 
     if not voyage_key:
         return None

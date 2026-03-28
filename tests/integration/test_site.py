@@ -44,6 +44,13 @@ def _configure_summary_pages(repo: AsyncMock, *pages) -> None:
     repo.iter_messages = _empty_messages
 
 
+def _make_backend() -> AsyncMock:
+    backend = AsyncMock()
+    backend.queries = MagicMock()
+    backend.queries.get_message_counts_batch = AsyncMock(return_value={})
+    return backend
+
+
 async def _collect_indexes(builder: SiteBuilder):
     return [conversation async for conversation in builder._iter_conversation_indexes()]
 
@@ -60,7 +67,7 @@ def _site_env(*, backend: AsyncMock, repository: AsyncMock) -> AppEnv:
 def _summary(
     conversation_id: str,
     *,
-    provider: str = "claude",
+    provider: str = "claude-ai",
     title: str | None = "Test Conversation",
     summary: str | None = None,
 ) -> ConversationSummary:
@@ -76,8 +83,8 @@ def _summary(
 
 def test_build_index_requests_all_summaries_without_silent_cap(tmp_path):
     """Regression: root archive scan must use paged summary iteration without a silent cap."""
-    backend = AsyncMock()
-    backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
+    backend = _make_backend()
+    backend.queries.get_message_counts_batch.return_value = {"test-conv-001": 3}
     repository = AsyncMock()
     _configure_summary_pages(repository, [_summary("test-conv-001")])
     builder = SiteBuilder(
@@ -94,8 +101,8 @@ def test_build_index_requests_all_summaries_without_silent_cap(tmp_path):
 
 def test_conversation_index_no_source_attribute_reference(tmp_path):
     """Regression: ConversationIndex must not touch the removed conv.source attribute."""
-    backend = AsyncMock()
-    backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
+    backend = _make_backend()
+    backend.queries.get_message_counts_batch.return_value = {"test-conv-001": 3}
     repository = AsyncMock()
     _configure_summary_pages(repository, [_summary("test-conv-001")])
     builder = SiteBuilder(
@@ -111,7 +118,7 @@ def test_conversation_index_no_source_attribute_reference(tmp_path):
     index = indexes[0]
     assert index.id == "test-conv-001"
     assert index.title == "Test Conversation"
-    assert index.provider == "claude"
+    assert index.provider == "claude-ai"
     assert not hasattr(index, "source")
     assert index.message_count == 3
 
@@ -120,8 +127,8 @@ def test_site_command_no_rich_markup_in_output(workspace_env):
     """Regression: plain CLI output must not leak Rich markup tags."""
     runner = CliRunner()
     output_dir = workspace_env["archive_root"] / "site"
-    backend = AsyncMock()
-    backend.get_message_counts_batch.return_value = {}
+    backend = _make_backend()
+    backend.queries.get_message_counts_batch.return_value = {}
     repository = AsyncMock()
     _configure_summary_pages(repository, [])
     env = _site_env(backend=backend, repository=repository)
@@ -148,8 +155,8 @@ def test_site_command_error_handling(workspace_env):
 
 def test_build_generates_valid_html(tmp_path):
     """Pinned smoke: generated HTML keeps the basic template skeleton intact."""
-    backend = AsyncMock()
-    backend.get_message_counts_batch.return_value = {"conv-123": 1}
+    backend = _make_backend()
+    backend.queries.get_message_counts_batch.return_value = {"conv-123": 1}
     repository = AsyncMock()
     _configure_summary_pages(repository, [_summary("conv-123", provider="test", title="Test")])
     builder = SiteBuilder(
@@ -174,8 +181,8 @@ def test_build_conversation_page_keeps_tail_messages(tmp_path):
     """Regression: conversation pages must include messages beyond the old 500-message cap."""
     summary = _summary("conv-123", title="Long Conversation")
     payloads = [("user" if index % 2 == 0 else "assistant", f"message {index}") for index in range(501)]
-    backend = AsyncMock()
-    backend.get_message_counts_batch.return_value = {"conv-123": 501}
+    backend = _make_backend()
+    backend.queries.get_message_counts_batch.return_value = {"conv-123": 501}
     repository = AsyncMock()
     repository.iter_messages = lambda *args, **kwargs: _iter_messages(payloads)
     _configure_summary_pages(repository, [summary])
@@ -198,8 +205,8 @@ def test_build_conversation_page_preserves_long_message_bodies(tmp_path):
     """Regression: conversation pages must not silently truncate long message bodies."""
     summary = _summary("conv-456", title="Long Message Conversation")
     long_text = ("abcdef " * 900) + "tail-marker"
-    backend = AsyncMock()
-    backend.get_message_counts_batch.return_value = {"conv-456": 1}
+    backend = _make_backend()
+    backend.queries.get_message_counts_batch.return_value = {"conv-456": 1}
     repository = AsyncMock()
     _configure_summary_pages(repository, [summary])
     repository.iter_messages = lambda *args, **kwargs: _iter_messages([("assistant", long_text)])

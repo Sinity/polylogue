@@ -56,8 +56,8 @@ if [ "$SKIP_SEED" = false ]; then
     echo "==> Seeding demo database..."
     mkdir -p "$DEMO_DIR"
 
-    # Capture env vars from polylogue demo command
-    ENV_OUTPUT=$(cd "$PROJECT_ROOT" && polylogue demo --seed \
+    # Capture env vars from polylogue generate command
+    ENV_OUTPUT=$(cd "$PROJECT_ROOT" && polylogue generate --seed \
         --output-dir "$DEMO_DIR" \
         --env-only \
         $COUNT)

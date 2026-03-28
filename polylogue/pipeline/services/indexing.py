@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import AsyncIterable, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING
 
-from polylogue.lib.log import get_logger
-from polylogue.storage.async_index import (
-    ensure_index,
-    index_status,
-    rebuild_index,
-    update_index_for_conversations,
+from polylogue.logging import get_logger
+from polylogue.storage.fts_lifecycle import (
+    ensure_fts_index_async,
+    fts_index_status_async,
+    rebuild_fts_index_async,
+    repair_fts_index_async,
 )
+from polylogue.storage.search_cache import invalidate_search_cache
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -21,6 +22,51 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 __all__ = ["IndexService"]
+
+
+async def ensure_index(backend: SQLiteBackend) -> None:
+    """Ensure the FTS5 table exists on the archive backend."""
+    async with backend.connection() as conn:
+        await ensure_fts_index_async(conn)
+
+
+async def rebuild_index(backend: SQLiteBackend) -> None:
+    """Rebuild the entire FTS5 index from persisted message rows."""
+    async with backend.connection() as conn:
+        await rebuild_fts_index_async(conn)
+        await conn.commit()
+    invalidate_search_cache()
+
+
+async def update_index_for_conversations(
+    conversation_ids: Iterable[str] | AsyncIterable[str],
+    backend: SQLiteBackend,
+) -> None:
+    """Repair FTS rows for the provided conversations from persisted message rows."""
+    conversation_id_list = [conversation_id async for conversation_id in _iter_ids(conversation_ids)]
+    changed = bool(conversation_id_list)
+
+    async with backend.connection() as conn:
+        await repair_fts_index_async(conn, conversation_id_list)
+        await conn.commit()
+    if changed:
+        invalidate_search_cache()
+
+
+async def _iter_ids(items: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[str]:
+    if isinstance(items, AsyncIterable):
+        async for item in items:
+            yield item
+        return
+
+    for item in items:
+        yield item
+
+
+async def index_status(backend: SQLiteBackend) -> dict[str, object]:
+    """Return whether the FTS5 index exists and how many docs it contains."""
+    async with backend.connection() as conn:
+        return await fts_index_status_async(conn)
 
 
 class IndexService:

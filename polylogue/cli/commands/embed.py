@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -167,7 +167,7 @@ def _embed_single(
         conv = await repo.view(conversation_id)  # view() resolves partial IDs
         if conv is None:
             return None
-        messages = await repo.backend.get_messages(str(conv.id))
+        messages = await repo.queries.get_messages(str(conv.id))
         return conv, messages
 
     result = asyncio.run(_fetch())
@@ -248,7 +248,7 @@ def _embed_batch(
 
     def _embed_one(conversation_id: str) -> bool:
         """Embed a single conversation. Returns True on success."""
-        messages = loop.run_until_complete(backend.get_messages(conversation_id))
+        messages = loop.run_until_complete(backend.queries.get_messages(conversation_id))
 
         if messages:
             vec_provider.upsert(conversation_id, messages)  # type: ignore

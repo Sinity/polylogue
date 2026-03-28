@@ -10,7 +10,7 @@ Example::
 
     async with Polylogue() as p:
         # Get recent Claude conversations
-        convs = await p.filter().provider("claude").since("2024-01-01").limit(10).list()
+        convs = await p.filter().provider("claude-ai").since("2024-01-01").limit(10).list()
 
         # Search for errors in ChatGPT
         convs = await p.filter().provider("chatgpt").contains("error").list()
@@ -31,7 +31,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from polylogue.lib.dates import parse_date
-from polylogue.lib.log import get_logger
+from polylogue.logging import get_logger
+from polylogue.lib.filter_executor import _ExecutionPlan, build_execution_plan, sql_pushdown_params
 from polylogue.types import Provider
 
 logger = get_logger(__name__)
@@ -47,6 +48,10 @@ SortField = Literal["date", "tokens", "messages", "words", "longest", "random"]
 _T = TypeVar("_T")
 
 
+def _conversation_has_branches(conversation: Conversation) -> bool:
+    return any(message.branch_index > 0 for message in conversation.messages)
+
+
 class ConversationFilter:
     """Fluent filter builder for conversation-level queries.
 
@@ -54,7 +59,7 @@ class ConversationFilter:
     Terminal methods (list, first, count, delete) execute the query.
 
     Example:
-        filter.provider("claude").since("2024-01-01").limit(10).list()
+        filter.provider("claude-ai").since("2024-01-01").limit(10).list()
     """
 
     def __init__(
@@ -275,9 +280,9 @@ class ConversationFilter:
     def has_branches(self, value: bool = True) -> ConversationFilter:
         """Filter to conversations that have branching messages."""
         if value:
-            self._predicates.append(lambda c: any(m.branch_index > 0 for m in c.messages))
+            self._predicates.append(_conversation_has_branches)
         else:
-            self._predicates.append(lambda c: not any(m.branch_index > 0 for m in c.messages))
+            self._predicates.append(lambda c: not _conversation_has_branches(c))
         return self
 
     # --- Terminal methods (execute query) ---
@@ -402,42 +407,6 @@ class ConversationFilter:
 
         return self._apply_sort_generic(conversations, sort_key)
 
-    def _sql_pushdown_params(self) -> dict[str, object]:
-        """Build kwargs for repository list/list_summaries that push filters to SQL.
-
-        Returns dict with keys matching the repository's list() parameters.
-        Only includes non-None values for filters that can be pushed down.
-        """
-        params: dict[str, object] = {}
-        if self._providers:
-            if len(self._providers) == 1:
-                params["provider"] = self._providers[0]
-            else:
-                params["providers"] = self._providers
-        if self._since_date:
-            params["since"] = self._since_date.isoformat()
-        if self._until_date:
-            params["until"] = self._until_date.isoformat()
-        if self._title_pattern:
-            params["title_contains"] = self._title_pattern
-        if self._filter_has_tool_use:
-            params["has_tool_use"] = True
-        if self._filter_has_thinking:
-            params["has_thinking"] = True
-        if self._min_messages is not None:
-            params["min_messages"] = self._min_messages
-        if self._max_messages is not None:
-            params["max_messages"] = self._max_messages
-        if self._min_words is not None:
-            params["min_words"] = self._min_words
-        if self._filter_has_file_ops:
-            params["has_file_ops"] = True
-        if self._filter_has_git_ops:
-            params["has_git_ops"] = True
-        if self._filter_has_subagent:
-            params["has_subagent"] = True
-        return params
-
     def _describe_active_filters(self) -> list[str]:
         """Return descriptions of all active filters (empty if no filters set)."""
         parts: list[str] = []
@@ -485,6 +454,19 @@ class ConversationFilter:
             parts.append(f"similar: {self._similar_text[:30]}")
         return parts
 
+    def _can_count_in_sql(self) -> bool:
+        return not (
+            self._fts_terms
+            or self._id_prefix
+            or self._similar_text
+            or self._predicates
+            or self._has_types
+            or self._negative_fts_terms
+            or self._excluded_providers
+            or self._tags
+            or self._excluded_tags
+        )
+
     def describe(self) -> list[str]:
         """Return human-readable descriptions of active filters."""
         return self._describe_active_filters()
@@ -525,6 +507,14 @@ class ConversationFilter:
         # a factor-of-2 safety margin is enough — no arbitrary minimum needed.
         return max(self._limit_count * 2, 2)
 
+    def _build_execution_plan(self) -> _ExecutionPlan:
+        """Build the canonical internal execution plan for this filter."""
+        return build_execution_plan(self)
+
+    def _sql_pushdown_params(self) -> dict[str, object]:
+        """Build kwargs for repository list/list_summaries that push filters to SQL."""
+        return sql_pushdown_params(self)
+
     async def _fetch_generic(
         self,
         get_by_id: Callable[[str], Awaitable[_T | None]],
@@ -543,18 +533,17 @@ class ConversationFilter:
                 item = await get_by_id(str(resolved_id))
                 return [item] if item else []
 
-        fetch_limit = self._effective_fetch_limit()
+        plan = self._build_execution_plan()
 
         if self._fts_terms:
             query = " ".join(self._fts_terms)
             try:
-                search_limit = max(fetch_limit, 100) if fetch_limit is not None else 10000
+                search_limit = max(plan.fetch_limit, 100) if plan.fetch_limit is not None else 10000
                 return await search(query, search_limit, self._providers or None)
             except Exception as exc:
                 logger.debug("FTS search failed, falling back to list: %s", exc)
 
-        sql_params = self._sql_pushdown_params()
-        return await list_all(limit=fetch_limit, **sql_params)
+        return await list_all(limit=plan.fetch_limit, **plan.sql_params)
 
     async def _fetch_candidates(self) -> builtins.list[Conversation]:
         """Fetch candidate conversations from repository."""
@@ -571,8 +560,8 @@ class ConversationFilter:
         apply_sort: Callable[[builtins.list[_T]], builtins.list[_T]],
     ) -> builtins.list[_T]:
         """Run the shared filter → sort → sample → limit pipeline."""
-        sql_pushed = not self._fts_terms and not self._id_prefix
-        filtered = apply_filters(candidates, sql_pushed)
+        plan = self._build_execution_plan()
+        filtered = apply_filters(candidates, plan.sql_pushed)
         sorted_results = apply_sort(filtered)
 
         if self._sample_count is not None and self._sample_count < len(sorted_results):
@@ -618,21 +607,12 @@ class ConversationFilter:
             Number of matching conversations
         """
         # Fast path: pure SQL count for simple filter combos (no FTS, no content filters)
-        if (
-            not self._fts_terms
-            and not self._id_prefix
-            and not self._similar_text
-            and not self._predicates
-            and not self._has_types
-            and not self._negative_fts_terms
-            and not self._excluded_providers
-            and not self._tags
-            and not self._excluded_tags
-        ):
+        if self._can_count_in_sql():
             return await self._repo.count(**self._sql_pushdown_params())
 
         # Medium path: use summaries (lightweight) if possible
-        if self.can_use_summaries():
+        plan = self._build_execution_plan()
+        if plan.can_use_summaries:
             saved_limit, self._limit_count = self._limit_count, None
             try:
                 results = await self.list_summaries()
@@ -656,58 +636,17 @@ class ConversationFilter:
         Returns:
             Number of conversations deleted
         """
-        if self.can_use_summaries():
+        if self._build_execution_plan().can_use_summaries:
             results: list[Conversation | ConversationSummary] = await self.list_summaries()
         else:
             results = await self.list()
         deleted_count = 0
 
         for conv in results:
-            # Access the backend through the repository
-            if await self._repo.backend.delete_conversation(str(conv.id)):
+            if await self._repo.delete_conversation(str(conv.id)):
                 deleted_count += 1
 
         return deleted_count
-
-    async def pick(self) -> Conversation | None:
-        """Interactive picker for matching conversations.
-
-        If running in a TTY, presents a menu to select from matches.
-        Otherwise returns first match.
-
-        Returns:
-            Selected Conversation or None if no matches
-        """
-        import sys
-
-        results = await self.list()
-        if not results:
-            return None
-
-        if not sys.stdout.isatty():
-            return results[0]
-
-        # Simple interactive picker
-        print(f"\n{len(results)} matching conversations:\n")
-        for i, conv in enumerate(results[:20], 1):  # Show max 20
-            title = conv.display_title[:50]
-            date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else "unknown"
-            print(f"  {i:2}. [{conv.provider}] {title} ({date})")
-
-        if len(results) > 20:
-            print(f"\n  ... and {len(results) - 20} more")
-
-        try:
-            choice = input("\nSelect number (or Enter for first): ").strip()
-            if not choice:
-                return results[0]
-            idx = int(choice) - 1
-            if 0 <= idx < len(results):
-                return results[idx]
-        except (ValueError, EOFError, KeyboardInterrupt):
-            pass
-
-        return None
 
     # --- Lightweight summary methods (memory-efficient) ---
 
@@ -767,7 +706,8 @@ class ConversationFilter:
         Memory-efficient alternative to list() for cases where you don't need
         message content. Raises ValueError if content-dependent filters are set.
         """
-        if self._needs_content_loading():
+        plan = self._build_execution_plan()
+        if plan.needs_content_loading:
             raise ValueError(
                 "Cannot use list_summaries() with content-dependent filters "
                 "(regex, has:thinking, has:tools, etc.). Use list() instead."
@@ -785,7 +725,7 @@ class ConversationFilter:
 
         Returns True if list_summaries() would work, False if list() is required.
         """
-        return not self._needs_content_loading()
+        return self._build_execution_plan().can_use_summaries
 
 
 __all__ = ["ConversationFilter", "SortField"]
