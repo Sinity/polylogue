@@ -14,6 +14,8 @@ Tests for:
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from polylogue.lib.filters import ConversationFilter
@@ -523,6 +525,8 @@ class TestConversationFilterListSummaries:
         (lambda f: f.where(lambda c: True), "Cannot use list_summaries"),
         (lambda f: f.sort("words"), "Cannot use list_summaries"),
         (lambda f: f.sort("tokens"), "Cannot use list_summaries"),
+        (lambda f: f.sort("messages"), "Cannot use list_summaries"),
+        (lambda f: f.sort("longest"), "Cannot use list_summaries"),
     ])
     @pytest.mark.asyncio
     async def test_list_summaries_rejects_content_filters(self, filter_repo_advanced, invalid_filter_fn, error_match):
@@ -531,12 +535,48 @@ class TestConversationFilterListSummaries:
             await invalid_filter_fn(ConversationFilter(filter_repo_advanced)).list_summaries()
 
     @pytest.mark.asyncio
+    async def test_list_summaries_rejection_message_is_exact(self, filter_repo_advanced):
+        """list_summaries() should raise the exact guidance string for content filters."""
+        with pytest.raises(ValueError) as exc_info:
+            await ConversationFilter(filter_repo_advanced).has("thinking").list_summaries()
+
+        assert str(exc_info.value) == (
+            "Cannot use list_summaries() with content-dependent filters "
+            "(regex, has:thinking, has:tools, etc.). Use list() instead."
+        )
+
+    @pytest.mark.asyncio
     async def test_list_summaries_allows_summary_has_filter(self, filter_repo_advanced):
         """list_summaries() allows has('summary') filter."""
         # This should not raise because 'summary' doesn't need message content
         result = await ConversationFilter(filter_repo_advanced).has("summary").list_summaries()
         # All results should have summary
         assert all(s.summary for s in result)
+
+    def test_apply_summary_filters_default_keeps_sql_unpushed_filters(self, filter_repo_advanced):
+        """_apply_summary_filters() should default to applying metadata filters itself."""
+        filter_obj = ConversationFilter(filter_repo_advanced).provider("claude")
+        summaries = [
+            ConversationSummary(id="claude-hit", provider="claude"),
+            ConversationSummary(id="chatgpt-hit", provider="chatgpt"),
+        ]
+
+        assert [summary.id for summary in filter_obj._apply_summary_filters(summaries)] == ["claude-hit"]
+
+    @pytest.mark.asyncio
+    async def test_list_summaries_applies_provider_filter_after_summary_search(self, filter_repo_advanced):
+        """FTS-backed summary searches should still apply provider filters in-memory."""
+        filter_obj = ConversationFilter(filter_repo_advanced).contains("needle").provider("claude")
+        filter_obj._fetch_summary_candidates = AsyncMock(  # type: ignore[method-assign]
+            return_value=[
+                ConversationSummary(id="claude-hit", provider="claude"),
+                ConversationSummary(id="chatgpt-hit", provider="chatgpt"),
+            ]
+        )
+
+        result = await filter_obj.list_summaries()
+
+        assert [summary.id for summary in result] == ["claude-hit"]
 # ============================================================================
 # Tests for empty repository edge cases
 # ============================================================================
@@ -693,8 +733,19 @@ class TestConversationFilterBranchingMethods:
     async def test_is_root_false_excludes_roots(self, filter_repo_branches):
         """is_root(False) excludes root conversations."""
         result = await ConversationFilter(filter_repo_branches).is_root(False).list()
-        assert all(not c.is_root for c in result)
-        assert all(c.parent_id is not None for c in result)
+        assert sorted(c.id for c in result) == ["continuation-conv", "sidechain-conv"]
+
+    @pytest.mark.asyncio
+    async def test_is_continuation_false_excludes_continuations(self, filter_repo_branches):
+        """is_continuation(False) should exclude continuation conversations only."""
+        result = await ConversationFilter(filter_repo_branches).is_continuation(False).list()
+        assert sorted(c.id for c in result) == ["root-conv", "sidechain-conv"]
+
+    @pytest.mark.asyncio
+    async def test_is_sidechain_false_excludes_sidechains(self, filter_repo_branches):
+        """is_sidechain(False) should exclude sidechain conversations only."""
+        result = await ConversationFilter(filter_repo_branches).is_sidechain(False).list()
+        assert sorted(c.id for c in result) == ["continuation-conv", "root-conv"]
 
 
 # ============================================================================
