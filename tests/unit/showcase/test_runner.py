@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from polylogue.showcase.runner import ShowcaseRunner
@@ -42,7 +43,10 @@ class TestShowcaseRunnerSeeding:
 
         fake_corpus = MagicMock()
         fake_corpus.wire_format.encoding = "json"
-        fake_corpus.generate.return_value = [b"{}"]
+        fake_corpus.generate_batch.return_value = SimpleNamespace(
+            artifacts=[SimpleNamespace(raw_bytes=b"{}")],
+            report=SimpleNamespace(generated_count=1, element_kind="conversation_document"),
+        )
 
         with patch(
             "polylogue.schemas.synthetic.SyntheticCorpus.available_providers",
@@ -54,8 +58,8 @@ class TestShowcaseRunnerSeeding:
             ):
                 runner._generate_synthetic_fixtures(fixture_root, count=1)
 
-        fake_corpus.generate.assert_called_once()
-        assert fake_corpus.generate.call_args.kwargs["style"] == "showcase"
+        fake_corpus.generate_batch.assert_called_once()
+        assert fake_corpus.generate_batch.call_args.kwargs["style"] == "showcase"
 
 
 class TestShowcaseRunnerWorkspaceEnv:
