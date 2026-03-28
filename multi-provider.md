@@ -28,6 +28,8 @@
   - Session transcripts live under `sessions/` in two formats:
     - Legacy `rollout-*.jsonl` files at the top level (single metadata line).
     - Date-partitioned subdirectories (`sessions/YYYY/MM/DD/...jsonl`) with full JSONL traces: `session_meta`, environment context, `response_item` records (`message`, `function_call`, `function_call_output`, `reasoning`), plus auxiliary `event_msg`/`turn_context` lines. Every `session_id` in `history.jsonl` points to one of these files.
+  - `history.jsonl` exposes (`session_id`, timestamp, summary). Resolve each record by globbing `sessions/**/<session_id>.jsonl`; `internal_storage.json` and `config.json` only hold UI state, not transcripts.
+  - `log/codex-tui.log` is an ANSI-coloured append-only log capturing `LocalShellCall`/`FunctionCall` telemetry with timestamps aligned to the JSONL stream, useful for attaching long command outputs as separate artefacts.
   - Import guidelines:
     - Parse the JSONL stream and normalise `response_item:type == "message"` payloads into user/assistant chunks (skip `<user_instructions>`/`<environment_context>` entries so we don’t duplicate boilerplate).
     - `response_item:type == "function_call"`/`"function_call_output"` describe tool invocations and their stdout/stderr. Calls are paired via `call_id`; combine them into a single chunk with the tool name in the header, storing oversized arguments/results in `_attachments` while keeping the first/last N lines inline for context.
@@ -36,7 +38,8 @@
 
 - **Claude Code (`~/.config/claude`)**
   - Directory structure captures IDE/workflow state: `projects/<workspace>/*.jsonl` contains session logs with `summary` nodes (context/compaction checkpoints), `user` prompts, `assistant` replies, and tool interactions. Each record includes `parentUuid`, `cwd`, and `sessionId`, so conversations can branch; “compacted” summaries signal that earlier nodes were rolled up.
-  - Supplemental folders—`commands/`, `extras/`, `ide/`, `shell-snapshots/`, `todos/`, `tools/`—hold shell transcripts, file snapshots, and configuration that may need separate parsing or attachment treatment.
+  - Workspace folders mirror absolute paths with `/` replaced by `-` (e.g., `/realm/project/sinnix` → `-realm-project-sinnix`). Rows mix `summary`, `user`, `assistant`, `tool_use`, and `tool_result` payloads; use `parentUuid`/`leafUuid` to stitch branches and pair tool calls with their results.
+  - Supplemental folders—`commands/` (prompt macros), `extras/` (binary assets), `ide/` (editor state), `shell-snapshots/` (timestamped shell transcripts and `.lock` sentinels), `todos/`, and `tools/` (Python helpers)—hold artefacts that may need attachment or metadata treatment during import.
   - Import approach:
     - Traverse the JSONL entries in order, reconstruct parent/child relationships when necessary (sidechains, branching uuids), and normalise `user` / `assistant` messages into chunks (extracting embedded code diffs or logs when large). Treat `summary` entries as front-matter notes describing the compaction intervals.
     - Treat summaries as front-matter notes or inline callouts; attach file snapshots when present.
@@ -49,13 +52,15 @@
 
 ## Import Adapter Architecture
 
-- Introduce `geminimd/importers/` with provider-specific modules exposing a common interface (e.g., `Iterable[Chunk]`). Each adapter normalises exports into the internal chunk schema before handing off to the Markdown pipeline.
+- Introduce `chatmd/importers/` with provider-specific modules exposing a common interface (e.g., `Iterable[Chunk]`). Each adapter normalises exports into the internal chunk schema before handing off to the Markdown pipeline.
 - Validate export payloads via Pydantic/jsonschema to catch format drift per provider.
 - Reuse the new MarkdownDocument pipeline for formatting; attachments, stats, and HTML previews become provider-agnostic.
 
 ## Future Enhancements
 
 - CLI command `gmd import <path>` detects provider type (zip/json) and delegates to the right importer.
+  - Implemented: `gmd import chatgpt`, `gmd import claude`, `gmd import claude-code`, and `gmd import codex` share a common Markdown pipeline with interactive skim pickers and consistent attachment policies.
+- Local sync parity: `gmd sync-codex` and `gmd sync-claude-code` mirror local session stores with the same folding/attachment rules as cloud sync, including skip/prune logic and optional HTML previews.
 - Optional workflows to push rendered Markdown into knowledge bases (Obsidian vaults, Git repos) or build searchable indices.
 - Document recommended export schedules for both services so users can automate regular backups feeding into `gmd`.
 - Explore optional “import assistant” prompts: use an LLM to propose extraction thresholds/tool policies based on a sample session, while still letting the user review diffs before writing files.

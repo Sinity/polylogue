@@ -8,22 +8,103 @@ import json
 from pathlib import Path
 from typing import List, Optional
 
-from geminimd.cli_common import filter_chats, sk_select
-from geminimd.commands import (
+from chatmd.cli_common import filter_chats, sk_select
+from chatmd.commands import (
     CommandEnv,
     list_command,
     render_command,
     status_command,
     sync_command,
 )
-from geminimd.drive_client import DEFAULT_FOLDER_NAME, DriveClient
-from geminimd.options import ListOptions, RenderOptions, SyncOptions
-from geminimd.ui import create_ui
+from chatmd.drive_client import DEFAULT_FOLDER_NAME, DriveClient
+from chatmd.importers import (
+    ImportResult,
+    import_chatgpt_export,
+    import_claude_code_session,
+    import_claude_export,
+    import_codex_session,
+)
+from chatmd.importers.chatgpt import list_chatgpt_conversations
+from chatmd.importers.claude_ai import list_claude_conversations
+from chatmd.importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
+from chatmd.local_sync import LocalSyncResult, sync_claude_code_sessions, sync_codex_sessions
+from chatmd.options import ListOptions, RenderOptions, SyncOptions
+from chatmd.ui import create_ui
 from gmd_settings import SETTINGS, reset_settings
+from gmd_config import CONFIG, CONFIG_PATH, DEFAULT_PATHS, CONFIG_ENV
+from chatmd.doctor import run_doctor as doctor_run
+from chatmd.util import add_run, parse_input_time_to_epoch
 
-DEFAULT_RENDER_OUT = Path("gmd_out")
-DEFAULT_SYNC_OUT = Path("gemini_synced")
-DEFAULT_COLLAPSE = 25
+DEFAULT_COLLAPSE = CONFIG.defaults.collapse_threshold
+DEFAULT_RENDER_OUT = CONFIG.defaults.output_dirs.render
+DEFAULT_SYNC_OUT = CONFIG.defaults.output_dirs.sync_drive
+DEFAULT_CODEX_SYNC_OUT = CONFIG.defaults.output_dirs.sync_codex
+DEFAULT_CLAUDE_CODE_SYNC_OUT = CONFIG.defaults.output_dirs.sync_claude_code
+
+SETTINGS.html_previews = CONFIG.defaults.html_previews
+SETTINGS.html_theme = CONFIG.defaults.html_theme
+
+
+def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
+    if not results:
+        ui.summary(title, ["No files written."])
+        return
+    output_dir = results[0].markdown_path.parent
+    lines = [f"{len(results)} file(s) → {output_dir}"]
+    attachments_total = sum(len(res.document.attachments) for res in results)
+    attachment_bytes = sum(res.document.metadata.get("attachmentBytes", 0) or 0 for res in results)
+    diff_total = sum(1 for res in results if getattr(res, "diff_path", None))
+    if attachments_total:
+        lines.append(f"Attachments: {attachments_total}")
+    if attachment_bytes:
+        mb = attachment_bytes / (1024 * 1024)
+        lines.append(f"Attachment size: {mb:.2f} MiB")
+    if diff_total:
+        lines.append(f"Diffs written: {diff_total}")
+    stats_to_sum = [
+        ("totalTokensApprox", "Approx tokens"),
+        ("chunkCount", "Total chunks"),
+        ("userTurns", "User turns"),
+        ("modelTurns", "Model turns"),
+    ]
+    for key, label in stats_to_sum:
+        total = 0
+        for res in results:
+            value = res.document.stats.get(key)
+            if isinstance(value, (int, float)):
+                total += int(value)
+        if total:
+            lines.append(f"{label}: {total}")
+    for res in results:
+        info = f"- {res.markdown_path.name} (attachments: {len(res.document.attachments)})"
+        if res.html_path:
+            info += " [+html]"
+        if getattr(res, "diff_path", None):
+            info += " [+diff]"
+        lines.append(info)
+    if not ui.plain:
+        try:
+            from rich.table import Table
+
+            table = Table(title=title, show_lines=False)
+            table.add_column("File")
+            table.add_column("Attachments", justify="right")
+            table.add_column("Attachment MiB", justify="right")
+            table.add_column("Tokens", justify="right")
+            for res in results:
+                att_count = len(res.document.attachments)
+                att_bytes = res.document.metadata.get("attachmentBytes", 0) or 0
+                tokens = res.document.stats.get("totalTokensApprox", 0) or 0
+                table.add_row(
+                    res.markdown_path.name,
+                    str(att_count),
+                    f"{att_bytes / (1024 * 1024):.2f}" if att_bytes else "0.00",
+                    str(tokens),
+                )
+            ui.console.print(table)
+        except Exception:
+            pass
+    ui.summary(title, lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--json", action="store_true")
     p_render.add_argument("--html", action="store_true", help="Also write HTML previews")
     p_render.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
+    p_render.add_argument("--diff", action="store_true", help="Write delta diff when output already exists")
 
     p_sync = sub.add_parser("sync")
     p_sync.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
@@ -57,6 +139,43 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--json", action="store_true")
     p_sync.add_argument("--html", action="store_true", help="Also write HTML previews")
     p_sync.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
+    p_sync.add_argument("--diff", action="store_true", help="Write delta diff when markdown updates")
+
+    p_sync_codex = sub.add_parser("sync-codex")
+    p_sync_codex.add_argument("--base-dir", type=Path, default=None)
+    p_sync_codex.add_argument("--out", type=Path, default=None)
+    p_sync_codex.add_argument("--collapse-threshold", type=int, default=None)
+    p_sync_codex.add_argument("--html", action="store_true")
+    p_sync_codex.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"])
+    p_sync_codex.add_argument("--force", action="store_true", help="Re-render even if up-to-date")
+    p_sync_codex.add_argument("--prune", action="store_true", help="Remove outputs for missing sessions")
+    p_sync_codex.add_argument("--all", action="store_true", help="Process all sessions without prompting")
+    p_sync_codex.add_argument("--json", action="store_true", help="Emit machine-readable summary")
+    p_sync_codex.add_argument("--diff", action="store_true", help="Write delta diff alongside updated files")
+
+    p_sync_claude_code = sub.add_parser("sync-claude-code")
+    p_sync_claude_code.add_argument("--base-dir", type=Path, default=None)
+    p_sync_claude_code.add_argument("--out", type=Path, default=None)
+    p_sync_claude_code.add_argument("--collapse-threshold", type=int, default=None)
+    p_sync_claude_code.add_argument("--html", action="store_true")
+    p_sync_claude_code.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"])
+    p_sync_claude_code.add_argument("--force", action="store_true")
+    p_sync_claude_code.add_argument("--prune", action="store_true")
+    p_sync_claude_code.add_argument("--all", action="store_true")
+    p_sync_claude_code.add_argument("--json", action="store_true", help="Emit machine-readable summary")
+    p_sync_claude_code.add_argument("--diff", action="store_true", help="Write delta diff alongside updated files")
+
+    p_doctor = sub.add_parser("doctor", help="Check local data directories for common issues")
+    p_doctor.add_argument("--codex-dir", type=Path, default=None, help="Override Codex sessions directory")
+    p_doctor.add_argument("--claude-code-dir", type=Path, default=None, help="Override Claude Code projects directory")
+    p_doctor.add_argument("--limit", type=int, default=None, help="Limit number of files inspected per provider")
+    p_doctor.add_argument("--json", action="store_true", help="Emit machine-readable report")
+
+    p_stats = sub.add_parser("stats", help="Summarize Markdown output directories")
+    p_stats.add_argument("--dir", type=Path, default=None, help="Directory containing Markdown exports")
+    p_stats.add_argument("--json", action="store_true", help="Emit machine-readable stats")
+    p_stats.add_argument("--since", type=str, default=None, help="Only include files modified on/after this date (YYYY-MM-DD or ISO)")
+    p_stats.add_argument("--until", type=str, default=None, help="Only include files modified on/before this date")
 
     p_list = sub.add_parser("list")
     p_list.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
@@ -67,6 +186,43 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--json", action="store_true")
 
     sub.add_parser("status")
+
+    p_import = sub.add_parser("import")
+    import_sub = p_import.add_subparsers(dest="import_target", required=True)
+
+    p_import_chatgpt = import_sub.add_parser("chatgpt", help="Convert a ChatGPT export to Markdown")
+    p_import_chatgpt.add_argument("export_path", type=Path, help="Path to ChatGPT export .zip or directory")
+    p_import_chatgpt.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Restrict to specific conversation id (repeatable)")
+    p_import_chatgpt.add_argument("--all", action="store_true", help="Import all conversations without prompting")
+    p_import_chatgpt.add_argument("--out", type=Path, default=None, help="Output directory for Markdown files")
+    p_import_chatgpt.add_argument("--collapse-threshold", type=int, default=None)
+    p_import_chatgpt.add_argument("--html", action="store_true", help="Also write HTML previews")
+    p_import_chatgpt.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
+
+    p_import_claude = import_sub.add_parser("claude", help="Convert an Anthropic Claude export to Markdown")
+    p_import_claude.add_argument("export_path", type=Path, help="Path to Claude export .zip or directory")
+    p_import_claude.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Restrict to specific conversation id (repeatable)")
+    p_import_claude.add_argument("--all", action="store_true", help="Import all conversations without prompting")
+    p_import_claude.add_argument("--out", type=Path, default=None, help="Output directory for Markdown files")
+    p_import_claude.add_argument("--collapse-threshold", type=int, default=None)
+    p_import_claude.add_argument("--html", action="store_true", help="Also write HTML previews")
+    p_import_claude.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
+
+    p_import_claude_code = import_sub.add_parser("claude-code", help="Convert a Claude Code session to Markdown")
+    p_import_claude_code.add_argument("session_id", type=str, help="Session UUID or suffix")
+    p_import_claude_code.add_argument("--base-dir", type=Path, default=None, help="Override Claude Code projects directory")
+    p_import_claude_code.add_argument("--out", type=Path, default=None, help="Output directory for Markdown")
+    p_import_claude_code.add_argument("--collapse-threshold", type=int, default=None)
+    p_import_claude_code.add_argument("--html", action="store_true", help="Also write HTML preview")
+    p_import_claude_code.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML preview")
+
+    p_import_codex = import_sub.add_parser("codex", help="Convert a Codex CLI session to Markdown")
+    p_import_codex.add_argument("session_id", type=str, help="Codex session UUID (or suffix)")
+    p_import_codex.add_argument("--base-dir", type=Path, default=None, help="Override Codex sessions directory")
+    p_import_codex.add_argument("--out", type=Path, default=None, help="Output directory for Markdown")
+    p_import_codex.add_argument("--collapse-threshold", type=int, default=None, help="Fold responses longer than this many lines")
+    p_import_codex.add_argument("--html", action="store_true", help="Also write HTML preview")
+    p_import_codex.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML preview")
 
     return parser
 
@@ -82,7 +238,11 @@ def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
     if len(candidates) <= 1 or plain:
         return candidates
     lines = [str(p) for p in candidates]
-    selection = sk_select(lines, preview="bat --style=plain {}")
+    selection = sk_select(
+        lines,
+        preview="bat --style=plain {}",
+        bindings=["ctrl-g:execute(glow --style=dark {+})"],
+    )
     if selection is None:
         return None
     if not selection:
@@ -115,6 +275,7 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         force=args.force,
         html=html_enabled,
         html_theme=html_theme,
+        diff=getattr(args, "diff", False),
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
@@ -144,6 +305,14 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
     if "totalTokensApprox" in result.total_stats:
         total_tokens = int(result.total_stats["totalTokensApprox"])
         lines.append(f"Approx tokens: {total_tokens}")
+    for key, label in (
+        ("chunkCount", "Total chunks"),
+        ("userTurns", "User turns"),
+        ("modelTurns", "Model turns"),
+    ):
+        value = result.total_stats.get(key)
+        if value:
+            lines.append(f"{label}: {int(value)}")
     for file in result.files:
         info = f"- {file.output.name} (attachments: {file.attachments})"
         if file.html:
@@ -224,6 +393,7 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
         selected_ids=selected_ids,
         html=html_enabled,
         html_theme=html_theme,
+        diff=getattr(args, "diff", False),
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
@@ -243,6 +413,7 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
                     "attachments": item.attachments,
                     "stats": item.stats,
                     "html": str(item.html) if item.html else None,
+                    "diff": str(item.diff) if getattr(item, "diff", None) else None,
                 }
                 for item in result.items
             ],
@@ -257,10 +428,20 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
     if "totalTokensApprox" in result.total_stats:
         total_tokens = int(result.total_stats["totalTokensApprox"])
         lines.append(f"Approx tokens: {total_tokens}")
+    for key, label in (
+        ("chunkCount", "Total chunks"),
+        ("userTurns", "User turns"),
+        ("modelTurns", "Model turns"),
+    ):
+        value = result.total_stats.get(key)
+        if value:
+            lines.append(f"{label}: {int(value)}")
     for item in result.items:
         info = f"- {Path(item.output).name} (attachments: {item.attachments})"
         if item.html:
             info += " [+html]"
+        if getattr(item, "diff", None):
+            info += " [+diff]"
         lines.append(info)
     ui.summary("Sync", lines)
 
@@ -274,6 +455,16 @@ def run_status_cli(env: CommandEnv) -> None:
         ui.console.print(f"  token.json: {'present' if result.token_present else 'missing'}")
         ui.console.print(f"  state cache: {result.state_path}")
         ui.console.print(f"  runs log: {result.runs_path}")
+        if result.run_summary:
+            ui.console.print("Run summary:")
+            for cmd, stats in result.run_summary.items():
+                ui.console.print(
+                    f"  {cmd}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} diffs={stats['diffs']}"
+                )
+                if stats.get("last"):
+                    ui.console.print(
+                        f"    last={stats['last']} out={stats['last_out']} count={stats['last_count']} skipped={stats['skipped']} pruned={stats['pruned']}"
+                    )
     else:
         from rich.table import Table
 
@@ -285,6 +476,26 @@ def run_status_cli(env: CommandEnv) -> None:
         table.add_row("state cache", str(result.state_path))
         table.add_row("runs log", str(result.runs_path))
         ui.console.print(table)
+        if result.run_summary:
+            summary_table = Table(title="Run Summary", show_lines=False)
+            summary_table.add_column("Command")
+            summary_table.add_column("Runs", justify="right")
+            summary_table.add_column("Attachments", justify="right")
+            summary_table.add_column("Attachment MiB", justify="right")
+            summary_table.add_column("Tokens", justify="right")
+            summary_table.add_column("Diffs", justify="right")
+            summary_table.add_column("Last Run", justify="left")
+            for cmd, stats in result.run_summary.items():
+                summary_table.add_row(
+                    cmd,
+                    str(stats["count"]),
+                    str(stats["attachments"]),
+                    f"{stats['attachmentBytes'] / (1024 * 1024):.2f}",
+                    str(stats["tokens"]),
+                    str(stats["diffs"]),
+                    (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
+                )
+            ui.console.print(summary_table)
     if not result.recent_runs:
         ui.console.print("Recent runs: (none)")
     else:
@@ -298,6 +509,9 @@ def interactive_menu(env: CommandEnv) -> None:
     options = [
         "Render Local Logs",
         "Sync Drive Folder",
+        "Sync Codex Sessions",
+        "Sync Claude Code Sessions",
+        "Doctor",
         "List Drive Chats",
         "View Recent Runs",
         "Settings",
@@ -310,6 +524,12 @@ def interactive_menu(env: CommandEnv) -> None:
             prompt_render(env)
         elif choice == "Sync Drive Folder":
             prompt_sync(env)
+        elif choice == "Sync Codex Sessions":
+            prompt_sync_codex(env)
+        elif choice == "Sync Claude Code Sessions":
+            prompt_sync_claude_code(env)
+        elif choice == "Doctor":
+            prompt_doctor(env)
         elif choice == "List Drive Chats":
             prompt_list(env)
         elif choice == "View Recent Runs":
@@ -322,6 +542,611 @@ def interactive_menu(env: CommandEnv) -> None:
             return
 
 
+def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+    target = args.import_target
+    if target == "codex":
+        run_import_codex(args, env)
+    elif target == "chatgpt":
+        run_import_chatgpt(args, env)
+    elif target == "claude":
+        run_import_claude(args, env)
+    elif target == "claude-code":
+        run_import_claude_code(args, env)
+    else:
+        raise SystemExit(f"Unknown import target: {target}")
+
+
+def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
+    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    out_dir.mkdir(parents=True, exist_ok=True)
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+
+    result = import_codex_session(
+        args.session_id,
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=collapse,
+        html=html_enabled,
+        html_theme=html_theme,
+    )
+
+    lines = [f"Markdown: {result.markdown_path}"]
+    if result.html_path:
+        lines.append(f"HTML preview: {result.html_path}")
+    if result.attachments_dir:
+        lines.append(f"Attachments directory: {result.attachments_dir}")
+    stats = result.document.stats
+    attachments_total = stats.get("attachments", 0)
+    if attachments_total:
+        lines.append(f"Attachment count: {attachments_total}")
+    tokens = stats.get("totalTokensApprox")
+    if tokens is not None:
+        lines.append(f"Approx tokens: {int(tokens)}")
+    for key, label in (
+        ("chunkCount", "Chunks"),
+        ("userTurns", "User turns"),
+        ("modelTurns", "Model turns"),
+    ):
+        value = stats.get(key)
+        if value:
+            lines.append(f"{label}: {int(value)}")
+    ui.summary("Codex Import", lines)
+
+
+def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    export_path = Path(args.export_path)
+    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+    selected_ids = args.conversation_ids[:] if args.conversation_ids else None
+
+    if not args.all and not selected_ids and not ui.plain:
+        try:
+            entries = list_chatgpt_conversations(export_path)
+        except Exception as exc:
+            ui.console.print(f"[red]Failed to scan export: {exc}")
+            return
+        if not entries:
+            ui.console.print("No conversations found in export.")
+            return
+        lines = [
+            f"{entry.get('title') or '(untitled)'}\t{entry.get('update_time') or entry.get('create_time') or ''}\t{entry.get('id')}"
+            for entry in entries
+        ]
+        selection = sk_select(
+            lines,
+            preview=None,
+            header="Select conversations to import",
+        )
+        if selection is None:
+            ui.console.print("[yellow]Import cancelled; no conversations selected.")
+            return
+        if not selection:
+            ui.console.print("[yellow]No conversations selected; nothing to import.")
+            return
+        selected_ids = [line.split("\t")[-1] for line in selection]
+    elif args.all:
+        selected_ids = None
+
+    try:
+        results = import_chatgpt_export(
+            export_path,
+            output_dir=out_dir,
+            collapse_threshold=collapse,
+            html=html_enabled,
+            html_theme=html_theme,
+            selected_ids=selected_ids,
+        )
+    except Exception as exc:
+        ui.console.print(f"[red]Import failed: {exc}")
+        return
+
+    summarize_import(ui, "ChatGPT Import", results)
+
+
+def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    export_path = Path(args.export_path)
+    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+    selected_ids = args.conversation_ids[:] if args.conversation_ids else None
+
+    if not args.all and not selected_ids and not ui.plain:
+        try:
+            entries = list_claude_conversations(export_path)
+        except Exception as exc:
+            ui.console.print(f"[red]Failed to scan export: {exc}")
+            return
+        if not entries:
+            ui.console.print("No conversations found in export.")
+            return
+        lines = [
+            f"{entry.get('title') or '(untitled)'}\t{entry.get('updated_at') or entry.get('created_at') or ''}\t{entry.get('id')}"
+            for entry in entries
+        ]
+        selection = sk_select(
+            lines,
+            preview=None,
+            header="Select conversations to import",
+        )
+        if selection is None:
+            ui.console.print("[yellow]Import cancelled; no conversations selected.")
+            return
+        if not selection:
+            ui.console.print("[yellow]No conversations selected; nothing to import.")
+            return
+        selected_ids = [line.split("\t")[-1] for line in selection]
+    elif args.all:
+        selected_ids = None
+
+    try:
+        results = import_claude_export(
+            export_path,
+            output_dir=out_dir,
+            collapse_threshold=collapse,
+            html=html_enabled,
+            html_theme=html_theme,
+            selected_ids=selected_ids,
+        )
+    except Exception as exc:
+        ui.console.print(f"[red]Import failed: {exc}")
+        return
+
+    summarize_import(ui, "Claude Import", results)
+
+
+def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
+    session_id = args.session_id
+
+    if session_id in {"pick", "?"} or (session_id == "-" and not ui.plain):
+        entries = list_claude_code_sessions(base_dir)
+        if not entries:
+            ui.console.print("No Claude Code sessions found.")
+            return
+        lines = [f"{entry['name']}\t{entry['workspace']}\t{entry['path']}" for entry in entries]
+        selection = sk_select(lines, multi=False, header="Select Claude Code session")
+        if not selection:
+            ui.console.print("[yellow]Import cancelled; no session selected.")
+            return
+        session_id = selection[0].split("\t")[-1]
+
+    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+
+    kwargs = {}
+    if args.base_dir:
+        kwargs["base_dir"] = base_dir
+
+    try:
+        result = import_claude_code_session(
+            session_id,
+            output_dir=out_dir,
+            collapse_threshold=collapse,
+            html=html_enabled,
+            html_theme=html_theme,
+            **kwargs,
+        )
+    except Exception as exc:
+        ui.console.print(f"[red]Import failed: {exc}")
+        return
+
+    summarize_import(ui, "Claude Code Import", [result])
+
+
+def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    codex_dir = Path(args.codex_dir) if args.codex_dir else Path.home() / ".codex" / "sessions"
+    claude_dir = Path(args.claude_code_dir) if args.claude_code_dir else DEFAULT_PROJECT_ROOT
+    report = doctor_run(
+        codex_dir=codex_dir,
+        claude_code_dir=claude_dir,
+        limit=args.limit,
+    )
+
+    sample_config = Path(__file__).resolve().parent / "docs" / "config.sample.jsonc"
+    config_hint = {
+        "cmd": "doctor",
+        "checked": {k: int(v) for k, v in report.checked.items()},
+        "issues": [
+            {
+                "provider": issue.provider,
+                "path": str(issue.path),
+                "message": issue.message,
+                "severity": issue.severity,
+            }
+            for issue in report.issues
+        ],
+        "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
+        "configEnv": CONFIG_ENV,
+        "configCandidates": [str(p) for p in DEFAULT_PATHS],
+        "configSample": str(sample_config),
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(config_hint, indent=2))
+        return
+
+    lines = [
+        f"Codex sessions checked: {report.checked.get('codex', 0)}",
+        f"Claude Code sessions checked: {report.checked.get('claude-code', 0)}",
+    ]
+    if CONFIG_PATH is None:
+        candidates = ", ".join(str(p) for p in DEFAULT_PATHS)
+        lines.append(
+            f"No gmd config detected. Copy {sample_config} to one of [{candidates}] or set ${CONFIG_ENV}."
+        )
+    if not report.issues:
+        lines.append("No issues detected.")
+        ui.summary("Doctor", lines)
+        return
+
+    if not ui.plain:
+        try:
+            from rich.table import Table
+
+            table = Table(title="Doctor Issues", show_lines=False)
+            table.add_column("Provider")
+            table.add_column("Severity")
+            table.add_column("Path")
+            table.add_column("Message")
+            for issue in report.issues:
+                table.add_row(issue.provider, issue.severity, str(issue.path), issue.message)
+            ui.console.print(table)
+        except Exception:
+            pass
+    lines.append(f"Found {len(report.issues)} issue(s):")
+    for issue in report.issues:
+        lines.append(f"- [{issue.severity}] {issue.provider}: {issue.path} — {issue.message}")
+    ui.summary("Doctor", lines)
+
+
+def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    directory = Path(args.dir) if args.dir else DEFAULT_RENDER_OUT
+    if not directory.exists():
+        ui.console.print(f"[red]Directory not found: {directory}")
+        return
+
+    md_files = sorted(directory.glob("*.md"))
+    if not md_files:
+        ui.summary("Stats", ["No Markdown files found."])
+        return
+
+    try:
+        import frontmatter  # type: ignore
+    except Exception:  # pragma: no cover
+        frontmatter = None  # type: ignore
+
+    since_epoch = parse_input_time_to_epoch(getattr(args, "since", None))
+    until_epoch = parse_input_time_to_epoch(getattr(args, "until", None))
+
+    def _load_metadata(path: Path) -> Dict[str, Any]:
+        if frontmatter is not None:
+            try:
+                post = frontmatter.load(path)  # type: ignore[attr-defined]
+                return dict(post.metadata)
+            except Exception:
+                return {}
+        # Minimal front matter parser: expects simple key: value pairs.
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            return {}
+        lines = text.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return {}
+        meta: Dict[str, Any] = {}
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            meta[key.strip()] = value.strip().strip('"')
+        return meta
+
+    totals: Dict[str, Any] = {
+        "files": 0,
+        "attachments": 0,
+        "attachmentBytes": 0,
+        "tokens": 0,
+    }
+    per_provider: Dict[str, Dict[str, Any]] = {}
+    rows: List[Dict[str, Any]] = []
+    filtered_out = 0
+
+    for path in md_files:
+        meta = _load_metadata(path)
+        attachment_count = meta.get("attachmentCount") or meta.get("attachments")
+        if isinstance(attachment_count, list):
+            attachment_count = len(attachment_count)
+        if attachment_count is None:
+            attachment_count = 0
+        attachment_bytes = meta.get("attachmentBytes") or 0
+        tokens = meta.get("totalTokensApprox") or meta.get("tokensApprox") or 0
+        provider = meta.get("sourcePlatform") or "unknown"
+
+        timestamp = None
+        for key in (
+            "sourceModifiedTime",
+            "sourceCreatedTime",
+            "sourceModified",
+            "sourceCreated",
+        ):
+            value = meta.get(key)
+            epoch = parse_input_time_to_epoch(value) if value else None
+            if epoch:
+                timestamp = epoch
+                break
+        if timestamp is None:
+            try:
+                timestamp = path.stat().st_mtime
+            except OSError:
+                timestamp = None
+
+        if since_epoch and (timestamp is None or timestamp < since_epoch):
+            filtered_out += 1
+            continue
+        if until_epoch and (timestamp is None or timestamp > until_epoch):
+            filtered_out += 1
+            continue
+
+        totals["files"] += 1
+        totals["attachments"] += int(attachment_count)
+        totals["attachmentBytes"] += int(attachment_bytes)
+        totals["tokens"] += int(tokens)
+
+        prov = per_provider.setdefault(
+            provider,
+            {"files": 0, "attachments": 0, "attachmentBytes": 0, "tokens": 0},
+        )
+        prov["files"] += 1
+        prov["attachments"] += int(attachment_count)
+        prov["attachmentBytes"] += int(attachment_bytes)
+        prov["tokens"] += int(tokens)
+
+        rows.append(
+            {
+                "file": path.name,
+                "provider": provider,
+                "attachments": int(attachment_count),
+                "attachmentBytes": int(attachment_bytes),
+                "tokens": int(tokens),
+            }
+        )
+
+    if getattr(args, "json", False):
+        payload = {
+            "cmd": "stats",
+            "directory": str(directory),
+            "totals": totals,
+            "providers": per_provider,
+            "files": rows,
+            "filteredOut": filtered_out,
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    lines = [
+        f"Directory: {directory}",
+        f"Files: {totals['files']} Attachments: {totals['attachments']} (~{totals['attachmentBytes'] / (1024 * 1024):.2f} MiB) Tokens≈ {totals['tokens']}",
+    ]
+    if filtered_out:
+        lines.append(f"Filtered out {filtered_out} file(s) outside date range.")
+    if not ui.plain:
+        try:
+            from rich.table import Table
+
+            table = Table(title="Provider Summary")
+            table.add_column("Provider")
+            table.add_column("Files", justify="right")
+            table.add_column("Attachments", justify="right")
+            table.add_column("Attachment MiB", justify="right")
+            table.add_column("Tokens", justify="right")
+            for provider, data in per_provider.items():
+                table.add_row(
+                    provider,
+                    str(data["files"]),
+                    str(data["attachments"]),
+                    f"{data['attachmentBytes'] / (1024 * 1024):.2f}",
+                    str(data["tokens"]),
+                )
+            ui.console.print(table)
+        except Exception:
+            pass
+    ui.summary("Stats", lines)
+
+def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optional[List[Path]]:
+    if not sessions:
+        ui.console.print("No sessions found.")
+        return None
+    lines = [f"{path.stem}\t{path.parent.name}\t{path}" for path in sessions]
+    selection = sk_select(lines, header=header)
+    if selection is None:
+        ui.console.print("[yellow]Sync cancelled; no sessions selected.")
+        return None
+    if not selection:
+        ui.console.print("[yellow]No sessions selected; nothing to do.")
+        return []
+    return [Path(line.split("\t")[-1]) for line in selection]
+
+
+def run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
+    out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+    force = args.force
+    prune = args.prune
+    diff_enabled = getattr(args, "diff", False)
+
+    selected_paths: Optional[List[Path]] = None
+    if not args.all and not ui.plain:
+        sessions = sorted(base_dir.rglob("*.jsonl"))
+        selection = _collect_session_selection(ui, sessions, "Select Codex sessions")
+        if selection is None:
+            return
+        if not selection:
+            return
+        selected_paths = selection
+
+    result = sync_codex_sessions(
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=collapse,
+        html=html_enabled,
+        html_theme=html_theme,
+        force=force,
+        prune=prune,
+        diff=diff_enabled,
+        sessions=selected_paths,
+    )
+
+    attachments = result.attachments
+    attachment_bytes = result.attachment_bytes
+    tokens = result.tokens
+
+    if getattr(args, "json", False):
+        payload = {
+            "cmd": "sync-codex",
+            "count": len(result.written),
+            "out": str(result.output_dir),
+            "skipped": result.skipped,
+            "pruned": result.pruned,
+            "attachments": attachments,
+            "attachmentBytes": attachment_bytes,
+            "tokensApprox": tokens,
+            "diffs": result.diffs,
+            "files": [
+                {
+                    "output": str(item.markdown_path),
+                    "attachments": len(item.document.attachments),
+                    "attachmentBytes": item.document.metadata.get("attachmentBytes"),
+                    "stats": item.document.stats,
+                    "html": str(item.html_path) if item.html_path else None,
+                    "diff": str(item.diff_path) if item.diff_path else None,
+                }
+                for item in result.written
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+    else:
+        summarize_import(ui, "Codex Sync", result.written)
+        if result.skipped:
+            ui.console.print(f"Skipped {result.skipped} up-to-date session(s).")
+        if result.pruned:
+            ui.console.print(f"Pruned {result.pruned} stale path(s).")
+
+    add_run(
+        {
+            "cmd": "sync-codex",
+            "count": len(result.written),
+            "out": str(result.output_dir),
+            "attachments": attachments,
+            "attachmentBytes": attachment_bytes,
+            "tokens": tokens,
+            "skipped": result.skipped,
+            "pruned": result.pruned,
+            "diffs": result.diffs,
+        }
+    )
+
+
+def run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
+    out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+    force = args.force
+    prune = args.prune
+
+    selected_paths: Optional[List[Path]] = None
+    if not args.all and not ui.plain:
+        session_entries = list_claude_code_sessions(base_dir)
+        sessions = [Path(entry["path"]) for entry in session_entries]
+        selection = _collect_session_selection(ui, sessions, "Select Claude Code sessions")
+        if selection is None:
+            return
+        if not selection:
+            return
+        selected_paths = selection
+
+    result = sync_claude_code_sessions(
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=collapse,
+        html=html_enabled,
+        html_theme=html_theme,
+        force=force,
+        prune=prune,
+        diff=diff_enabled,
+        sessions=selected_paths,
+    )
+
+    attachments = result.attachments
+    attachment_bytes = result.attachment_bytes
+    tokens = result.tokens
+
+    if getattr(args, "json", False):
+        payload = {
+            "cmd": "sync-claude-code",
+            "count": len(result.written),
+            "out": str(result.output_dir),
+            "skipped": result.skipped,
+            "pruned": result.pruned,
+            "attachments": attachments,
+            "attachmentBytes": attachment_bytes,
+            "tokensApprox": tokens,
+            "diffs": result.diffs,
+            "files": [
+                {
+                    "output": str(item.markdown_path),
+                    "attachments": len(item.document.attachments),
+                    "attachmentBytes": item.document.metadata.get("attachmentBytes"),
+                    "stats": item.document.stats,
+                    "html": str(item.html_path) if item.html_path else None,
+                    "diff": str(item.diff_path) if item.diff_path else None,
+                }
+                for item in result.written
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+    else:
+        summarize_import(ui, "Claude Code Sync", result.written)
+        if result.skipped:
+            ui.console.print(f"Skipped {result.skipped} up-to-date session(s).")
+        if result.pruned:
+            ui.console.print(f"Pruned {result.pruned} stale path(s).")
+
+    add_run(
+        {
+            "cmd": "sync-claude-code",
+            "count": len(result.written),
+            "out": str(result.output_dir),
+            "attachments": attachments,
+            "attachmentBytes": attachment_bytes,
+            "tokens": tokens,
+            "skipped": result.skipped,
+            "pruned": result.pruned,
+            "diffs": result.diffs,
+        }
+    )
 def prompt_render(env: CommandEnv) -> None:
     ui = env.ui
     default_input = str(Path.cwd())
@@ -344,8 +1169,6 @@ def prompt_render(env: CommandEnv) -> None:
     args.json = False
     args.html = SETTINGS.html_previews
     args.html_theme = SETTINGS.html_theme
-    args.html = False
-    args.html_theme = "light"
     run_render_cli(args, env, json_output=False)
 
 
@@ -368,9 +1191,54 @@ def prompt_sync(env: CommandEnv) -> None:
     args.json = False
     args.html = SETTINGS.html_previews
     args.html_theme = SETTINGS.html_theme
-    args.html = False
-    args.html_theme = "light"
     run_sync_cli(args, env, json_output=False)
+
+
+def prompt_sync_codex(env: CommandEnv) -> None:
+    ui = env.ui
+    class Args:
+        pass
+    args = Args()
+    args.base_dir = None
+    args.out = None
+    args.collapse_threshold = None
+    args.html = SETTINGS.html_previews
+    args.html_theme = SETTINGS.html_theme
+    args.force = False
+    args.prune = False
+    args.all = False
+    args.json = False
+    args.diff = False
+    run_sync_codex(args, env)
+
+
+def prompt_sync_claude_code(env: CommandEnv) -> None:
+    class Args:
+        pass
+    args = Args()
+    args.base_dir = None
+    args.out = None
+    args.collapse_threshold = None
+    args.html = SETTINGS.html_previews
+    args.html_theme = SETTINGS.html_theme
+    args.force = False
+    args.prune = False
+    args.all = False
+    args.json = False
+    args.diff = False
+    run_sync_claude_code(args, env)
+
+
+def prompt_doctor(env: CommandEnv) -> None:
+    class Args:
+        pass
+
+    args = Args()
+    args.codex_dir = None
+    args.claude_code_dir = None
+    args.limit = 25
+    args.json = False
+    run_doctor_cli(args, env)
 
 
 def prompt_list(env: CommandEnv) -> None:
@@ -443,10 +1311,20 @@ def main() -> None:
         run_render_cli(args, env, json_output=getattr(args, "json", False))
     elif args.cmd == "sync":
         run_sync_cli(args, env, json_output=getattr(args, "json", False))
+    elif args.cmd == "sync-codex":
+        run_sync_codex(args, env)
+    elif args.cmd == "sync-claude-code":
+        run_sync_claude_code(args, env)
     elif args.cmd == "list":
         run_list_cli(args, env, json_output=getattr(args, "json", False))
     elif args.cmd == "status":
         run_status_cli(env)
+    elif args.cmd == "import":
+        run_import_cli(args, env)
+    elif args.cmd == "doctor":
+        run_doctor_cli(args, env)
+    elif args.cmd == "stats":
+        run_stats_cli(args, env)
     else:
         parser.print_help()
 
