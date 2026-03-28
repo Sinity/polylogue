@@ -18,9 +18,8 @@ import pytest
 from polylogue.config import Config, Source
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.indexing import IndexService
-from polylogue.pipeline.services.rendering import RenderService, RenderResult
+from polylogue.pipeline.services.rendering import RenderResult, RenderService
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-
 
 # =============================================================================
 # AcquisitionService Tests
@@ -76,9 +75,9 @@ class TestAcquisitionService:
             mock_raw.file_mtime = None
 
             async def _mock_stream(_source, **_kwargs):
-                yield (mock_raw, None)
+                yield mock_raw
 
-            with patch.object(service, "_iter_source_conversations_stream", _mock_stream):
+            with patch.object(service, "_iter_source_raw_stream", _mock_stream):
                 source = Source(name="test", path=Path(tmpdir))
                 result = await service.acquire_sources([source], progress_callback=progress)
 
@@ -97,7 +96,7 @@ class TestAcquisitionService:
             def _mock_stream_error(_source):
                 raise ValueError("source broken")
 
-            with patch.object(service, "_iter_source_conversations_stream", _mock_stream_error):
+            with patch.object(service, "_iter_source_raw_stream", _mock_stream_error):
                 source = Source(name="broken", path=Path(tmpdir))
                 result = await service.acquire_sources([source])
 
@@ -122,9 +121,9 @@ class TestAcquisitionService:
             source = Source(name="test", path=Path(tmpdir))
 
             async def _mock_stream(_source, **_kwargs):
-                yield (mock_raw, None)
+                yield mock_raw
 
-            with patch.object(service, "_iter_source_conversations_stream", _mock_stream):
+            with patch.object(service, "_iter_source_raw_stream", _mock_stream):
                 # First acquire
                 result1 = await service.acquire_sources([source])
                 assert result1.counts["acquired"] == 1
@@ -193,6 +192,23 @@ class TestRenderService:
         assert result.rendered_count == 3
         assert result.failures == []
         assert renderer.render.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_render_async_iterable_source(self):
+        """Streaming conversation IDs are accepted without prior list materialization."""
+        renderer = AsyncMock()
+        renderer.render.return_value = None
+        service = RenderService(renderer=renderer, render_root=Path("/tmp/render"))
+
+        async def conversation_ids():
+            for convo_id in ("conv-1", "conv-2"):
+                yield convo_id
+
+        result = await service.render_conversations(conversation_ids(), total=2)
+
+        assert result.rendered_count == 2
+        assert result.failures == []
+        assert renderer.render.call_count == 2
 
     @pytest.mark.asyncio
     async def test_render_failure_tracked(self):
@@ -294,6 +310,46 @@ class TestIndexService:
             # Index should exist now
             status = await service.get_index_status()
             assert status["exists"] is True
+            await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_update_index_accepts_async_iterable(self):
+        """Streaming conversation IDs can be indexed without prebuilding a list."""
+        from polylogue.storage.store import ConversationRecord, MessageRecord
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
+            await backend.save_conversation_record(
+                ConversationRecord(
+                    conversation_id="conv-1",
+                    provider_name="chatgpt",
+                    provider_conversation_id="prov-conv-1",
+                    content_hash="hash-conv-1",
+                )
+            )
+            await backend.save_messages(
+                [
+                    MessageRecord(
+                        message_id="msg-1",
+                        conversation_id="conv-1",
+                        role="user",
+                        text="hello world",
+                        content_hash="hash-msg-1",
+                    )
+                ]
+            )
+            config = Config(sources=[], archive_root=Path(tmpdir), render_root=Path(tmpdir) / "render")
+            service = IndexService(config=config, backend=backend)
+
+            async def conversation_ids():
+                yield "conv-1"
+
+            result = await service.update_index(conversation_ids())
+
+            assert result is True
+            status = await service.get_index_status()
+            assert status["exists"] is True
+            assert status["count"] == 1
             await backend.close()
 
     @pytest.mark.asyncio

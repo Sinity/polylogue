@@ -15,7 +15,6 @@ import pytest
 
 from polylogue.config import Config, Source
 from polylogue.pipeline.runner import (
-    _all_conversation_ids,
     _select_sources,
     _write_run_json,
     latest_run,
@@ -41,12 +40,18 @@ class TestRenderFailureTracking:
         from polylogue.storage.store import RunResult
 
         archive_root = workspace_env["archive_root"]
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
         archive_root.mkdir(parents=True, exist_ok=True)
         config = Config(
             sources=[],
             archive_root=archive_root,
             render_root=archive_root / "render",
         )
+        with open_connection(db_path) as conn:
+            for conversation_id in ("test:success-conv", "test:fail-conv"):
+                conv = make_conversation(conversation_id, title=conversation_id)
+                store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
 
@@ -57,36 +62,39 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
-                mock_ids.return_value = ["test:success-conv", "test:fail-conv"]
-
-                result = asyncio.run(
-                    run_sources(
-                        config=config,
-                        stage="render",
-                        source_names=None,
-                    )
+            result = asyncio.run(
+                run_sources(
+                    config=config,
+                    stage="render",
+                    source_names=None,
                 )
+            )
 
-                assert isinstance(result, RunResult)
-                assert hasattr(result, "render_failures"), "RunResult should have render_failures attribute"
-                assert isinstance(result.render_failures, list)
-                assert len(result.render_failures) > 0, "Should have tracked at least one render failure"
+            assert isinstance(result, RunResult)
+            assert hasattr(result, "render_failures"), "RunResult should have render_failures attribute"
+            assert isinstance(result.render_failures, list)
+            assert len(result.render_failures) > 0, "Should have tracked at least one render failure"
 
-                failure = result.render_failures[0]
-                assert "conversation_id" in failure
-                assert failure["conversation_id"] == "test:fail-conv"
-                assert "error" in failure
+            failure = result.render_failures[0]
+            assert "conversation_id" in failure
+            assert failure["conversation_id"] == "test:fail-conv"
+            assert "error" in failure
 
     def test_render_continues_after_failure(self, workspace_env):
         """Pipeline should continue rendering other conversations after one fails."""
         archive_root = workspace_env["archive_root"]
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
         archive_root.mkdir(parents=True, exist_ok=True)
         config = Config(
             sources=[],
             archive_root=archive_root,
             render_root=archive_root / "render",
         )
+        with open_connection(db_path) as conn:
+            for conversation_id in ("test:first", "test:second", "test:third"):
+                conv = make_conversation(conversation_id, title=conversation_id)
+                store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
         render_attempts = []
 
@@ -100,30 +108,33 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
-                mock_ids.return_value = ["test:first", "test:second", "test:third"]
-
-                asyncio.run(
-                    run_sources(
-                        config=config,
-                        stage="render",
-                    )
+            asyncio.run(
+                run_sources(
+                    config=config,
+                    stage="render",
                 )
+            )
 
-                assert len(render_attempts) >= 3, f"Expected 3 render attempts, got {len(render_attempts)}"
-                assert "test:first" in render_attempts
-                assert "test:second" in render_attempts
-                assert "test:third" in render_attempts
+            assert len(render_attempts) >= 3, f"Expected 3 render attempts, got {len(render_attempts)}"
+            assert "test:first" in render_attempts
+            assert "test:second" in render_attempts
+            assert "test:third" in render_attempts
 
     def test_render_failure_count_in_counts(self, workspace_env):
         """Pipeline should include render_failures count in result.counts."""
         archive_root = workspace_env["archive_root"]
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
         archive_root.mkdir(parents=True, exist_ok=True)
         config = Config(
             sources=[],
             archive_root=archive_root,
             render_root=archive_root / "render",
         )
+        with open_connection(db_path) as conn:
+            for conversation_id in ("test:success", "test:fail1", "test:fail2"):
+                conv = make_conversation(conversation_id, title=conversation_id)
+                store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
 
@@ -134,19 +145,16 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
-                mock_ids.return_value = ["test:success", "test:fail1", "test:fail2"]
-
-                result = asyncio.run(
-                    run_sources(
-                        config=config,
-                        stage="render",
-                    )
+            result = asyncio.run(
+                run_sources(
+                    config=config,
+                    stage="render",
                 )
+            )
 
-                assert "render_failures" in result.counts
-                assert result.counts["render_failures"] == 2
-                assert result.counts["rendered"] == 1
+            assert "render_failures" in result.counts
+            assert result.counts["render_failures"] == 2
+            assert result.counts["rendered"] == 1
 
 
 class TestSelectSources:
@@ -293,90 +301,6 @@ class TestPlanSources:
 
         assert result.counts == {}
         assert result.sources == []
-
-
-class TestAllConversationIds:
-    """Tests for async _all_conversation_ids function."""
-
-    def test_all_ids_no_filter(self, workspace_env):
-        """Returns all conversation_ids when no filter provided."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Create test conversations
-        with open_connection(db_path) as conn:
-            for i in range(3):
-                conv = make_conversation(f"conv-{i}", title=f"Conversation {i}")
-                store_records(conversation=conv, messages=[], attachments=[], conn=conn)
-
-        backend = create_backend(db_path)
-        ids = asyncio.run(_all_conversation_ids(backend))
-        asyncio.run(backend.close())
-
-        assert len(ids) == 3
-        assert set(ids) == {"conv-0", "conv-1", "conv-2"}
-
-    def test_all_ids_provider_filter(self, workspace_env):
-        """Filters by provider_name when source_names match provider."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open_connection(db_path) as conn:
-            # Create conversations with different providers
-            for provider, conv_id in [("chatgpt", "chatgpt-1"), ("claude", "claude-1"), ("chatgpt", "chatgpt-2")]:
-                conv = make_conversation(conv_id, provider_name=provider, title=f"Conv {conv_id}")
-                store_records(conversation=conv, messages=[], attachments=[], conn=conn)
-
-        backend = create_backend(db_path)
-        ids = asyncio.run(_all_conversation_ids(backend, source_names=["chatgpt"]))
-        asyncio.run(backend.close())
-
-        assert len(ids) == 2
-        assert set(ids) == {"chatgpt-1", "chatgpt-2"}
-
-    def test_all_ids_source_filter_via_meta(self, workspace_env):
-        """Filters by provider_meta.source when specified."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open_connection(db_path) as conn:
-            # Create conversations with source in provider_meta
-            for source, conv_id in [("export-a", "a-1"), ("export-b", "b-1"), ("export-a", "a-2")]:
-                conv = make_conversation(conv_id, provider_name="chatgpt", title=f"Conv {conv_id}", provider_meta={"source": source})
-                store_records(conversation=conv, messages=[], attachments=[], conn=conn)
-
-        backend = create_backend(db_path)
-        ids = asyncio.run(_all_conversation_ids(backend, source_names=["export-a"]))
-        asyncio.run(backend.close())
-
-        assert len(ids) == 2
-        assert set(ids) == {"a-1", "a-2"}
-
-    def test_all_ids_null_meta_skipped(self, workspace_env):
-        """Conversations with null or empty provider_meta don't crash filtering."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open_connection(db_path) as conn:
-            # Create conversation with valid provider_meta
-            conv_valid = make_conversation("valid-1", title="Valid", provider_meta={"source": "my-source"})
-            store_records(conversation=conv_valid, messages=[], attachments=[], conn=conn)
-
-            # Create conversation with null provider_meta
-            conv_null = make_conversation("null-meta-1", title="Null Meta", provider_meta=None)
-            store_records(conversation=conv_null, messages=[], attachments=[], conn=conn)
-
-            # Create conversation with empty dict provider_meta
-            conv_empty = make_conversation("empty-meta-1", title="Empty Meta", provider_meta={})
-            store_records(conversation=conv_empty, messages=[], attachments=[], conn=conn)
-
-        backend = create_backend(db_path)
-        # Should not raise and filter correctly
-        ids = asyncio.run(_all_conversation_ids(backend, source_names=["my-source"]))
-        asyncio.run(backend.close())
-        assert "valid-1" in ids
-        assert "null-meta-1" not in ids  # Skipped due to null meta
-        assert "empty-meta-1" not in ids  # Skipped due to no source in meta
 
 
 class TestWriteRunJson:
@@ -560,12 +484,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        if stage == "render":
-            with patch("polylogue.pipeline.runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
-                mock_ids.return_value = []
-                result = asyncio.run(run_sources(config=config, stage=stage))
-        else:
-            result = asyncio.run(run_sources(config=config, stage=stage))
+        result = asyncio.run(run_sources(config=config, stage=stage))
 
         if stage == "validate":
             assert result.counts.get("validated", 0) >= 1

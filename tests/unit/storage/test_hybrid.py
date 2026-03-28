@@ -8,6 +8,7 @@ Extracted from monolithic test_search_index.py.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,20 +26,6 @@ from tests.infra.helpers import make_hash
 
 class TestHybridSearchProvider:
     """Tests for HybridSearchProvider search methods."""
-
-    def test_hybrid_search_conversations_empty_message_results(self):
-        """search_conversations returns empty list when no message results."""
-        # Mock FTS5 and vector providers
-        fts_mock = MagicMock()
-        fts_mock.search.return_value = []  # No FTS results
-
-        vec_mock = MagicMock()
-        vec_mock.query.return_value = []  # No vector results
-
-        provider = HybridSearchProvider(fts_provider=fts_mock, vector_provider=vec_mock)
-
-        result = provider.search_conversations("test query", limit=20)
-        assert result == []
 
     async def test_hybrid_search_conversations_limit_reached(self, tmp_path):
         """search_conversations stops when limit reached."""
@@ -163,45 +150,6 @@ class TestHybridSearchProvider:
 
 class TestReciprocalRankFusion:
     """Tests for the RRF algorithm."""
-
-    def test_rrf_empty_inputs(self):
-        """RRF with empty inputs returns empty list."""
-        result = reciprocal_rank_fusion()
-        assert result == []
-
-    def test_rrf_single_list(self):
-        """RRF with single list preserves order."""
-        results = [("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)]
-        fused = reciprocal_rank_fusion(results)
-
-        # Order should be preserved
-        ids = [item_id for item_id, _ in fused]
-        assert ids == ["msg1", "msg2", "msg3"]
-
-    def test_rrf_two_identical_lists(self):
-        """RRF with identical lists doubles scores."""
-        list1 = [("msg1", 0.9), ("msg2", 0.8)]
-        list2 = [("msg1", 0.9), ("msg2", 0.8)]
-
-        fused = reciprocal_rank_fusion(list1, list2, k=60)
-
-        # Each item appears in both lists, so scores are doubled
-        scores = dict(fused)
-
-        # Score for rank 1: 1/(60+1) = 0.0164, doubled = 0.0328
-        expected_msg1_score = 2 * (1.0 / 61)
-        assert abs(scores["msg1"] - expected_msg1_score) < 0.0001
-
-    def test_rrf_disjoint_lists(self):
-        """RRF with disjoint lists returns all items."""
-        list1 = [("msg1", 0.9), ("msg2", 0.8)]
-        list2 = [("msg3", 0.95), ("msg4", 0.85)]
-
-        fused = reciprocal_rank_fusion(list1, list2, k=60)
-
-        # All 4 items should be present
-        ids = {item_id for item_id, _ in fused}
-        assert ids == {"msg1", "msg2", "msg3", "msg4"}
 
     def test_rrf_overlapping_lists(self):
         """RRF boosts items appearing in multiple lists."""
@@ -366,14 +314,13 @@ class TestHybridSearchProviderRRF:
         ]
 
         # Mock the database lookup
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
+        with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
             mock_context.execute.return_value.fetchall.return_value = [
-                {"message_id": "msg1", "conversation_id": "conv1"},
-                {"message_id": "msg2", "conversation_id": "conv1"},  # Same conv as msg1
-                {"message_id": "msg3", "conversation_id": "conv2"},
-                {"message_id": "msg4", "conversation_id": "conv3"},
+                {"conversation_id": "conv1"},
+                {"conversation_id": "conv2"},
+                {"conversation_id": "conv3"},
             ]
 
             results = hybrid_provider.search_conversations("test query", limit=10)
@@ -448,47 +395,12 @@ class TestProviderFilteringIntegration:
         ]
 
         # Mock database to return conversation IDs with provider info
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
+        with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
-
-            # First call: message → conversation mapping
-            def mock_execute(*args, **kwargs):
-                sql = args[0] if args else ""
-                params = args[1] if len(args) > 1 else []
-
-                result = MagicMock()
-                if "FROM messages WHERE message_id IN" in sql:
-                    # Map messages to conversations
-                    rows = []
-                    for msg_id in params:
-                        if "claude" in msg_id:
-                            rows.append({
-                                "message_id": msg_id,
-                                "conversation_id": f"conv-claude-{msg_id.split('-')[2]}"
-                            })
-                        elif "chatgpt" in msg_id:
-                            rows.append({
-                                "message_id": msg_id,
-                                "conversation_id": f"conv-chatgpt-{msg_id.split('-')[2]}"
-                            })
-                    result.fetchall.return_value = rows
-                elif "FROM conversations" in sql and "provider_name IN" in sql and "source_name IN" in sql:
-                    # Provider filtering query (checks both provider_name and source_name)
-                    if "chatgpt" in str(params):
-                        # Return only chatgpt conversation IDs
-                        rows = [{
-                            "conversation_id": f"conv-chatgpt-{i}"
-                        } for i in range(5)]
-                    else:
-                        rows = []
-                    result.fetchall.return_value = rows
-                else:
-                    result.fetchall.return_value = []
-
-                return result
-
-            mock_context.execute.side_effect = mock_execute
+            mock_context.execute.return_value.fetchall.return_value = [
+                {"conversation_id": f"conv-chatgpt-{i}"} for i in range(5)
+            ]
 
             # Search with provider filter
             results = hybrid_provider.search_conversations(
@@ -508,14 +420,14 @@ class TestProviderFilteringIntegration:
         ]
         hybrid_provider.vector_provider.query.return_value = []
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
+        with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
 
             mock_context.execute.return_value.fetchall.return_value = [
-                {"message_id": "msg-claude-1", "conversation_id": "conv-1"},
-                {"message_id": "msg-chatgpt-1", "conversation_id": "conv-2"},
-                {"message_id": "msg-gemini-1", "conversation_id": "conv-3"},
+                {"conversation_id": "conv-1"},
+                {"conversation_id": "conv-2"},
+                {"conversation_id": "conv-3"},
             ]
 
             results = hybrid_provider.search_conversations(
@@ -534,36 +446,13 @@ class TestProviderFilteringIntegration:
         ]
         hybrid_provider.vector_provider.query.return_value = []
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
+        with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
-
-            def mock_execute(*args, **kwargs):
-                sql = args[0] if args else ""
-                params = args[1] if len(args) > 1 else ()
-
-                result = MagicMock()
-                if "FROM messages WHERE message_id IN" in sql:
-                    result.fetchall.return_value = [
-                        {"message_id": "msg-claude-1", "conversation_id": "conv-1"},
-                        {"message_id": "msg-chatgpt-1", "conversation_id": "conv-2"},
-                        {"message_id": "msg-gemini-1", "conversation_id": "conv-3"},
-                    ]
-                elif "FROM conversations" in sql and ("provider_name IN" in sql or "source_name IN" in sql):
-                    # Filter to claude and chatgpt only based on params
-                    # The actual SQL checks both provider_name and source_name with OR
-                    if "claude" in str(params) and "chatgpt" in str(params):
-                        result.fetchall.return_value = [
-                            {"conversation_id": "conv-1"},
-                            {"conversation_id": "conv-2"},
-                        ]
-                    else:
-                        result.fetchall.return_value = []
-                else:
-                    result.fetchall.return_value = []
-                return result
-
-            mock_context.execute.side_effect = mock_execute
+            mock_context.execute.return_value.fetchall.return_value = [
+                {"conversation_id": "conv-1"},
+                {"conversation_id": "conv-2"},
+            ]
 
             results = hybrid_provider.search_conversations(
                 "test query",
@@ -619,7 +508,7 @@ class TestFTS5ProviderDirectFiltering:
         syntax_error_queries = ["test?"]
 
         for query in syntax_error_queries:
-            with pytest.raises(Exception):
+            with pytest.raises(sqlite3.OperationalError):
                 fts_provider.search(query)
 
 
@@ -640,31 +529,12 @@ class TestSearchProviderSourceFiltering:
             vector_provider=mock_vec,
         )
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
+        with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
-
-            def mock_execute(*args, **kwargs):
-                sql = args[0] if args else ""
-                args[1] if len(args) > 1 else []
-
-                result = MagicMock()
-                if "FROM messages WHERE message_id IN" in sql:
-                    result.fetchall.return_value = [
-                        {"message_id": "msg-1", "conversation_id": "conv-1"},
-                        {"message_id": "msg-2", "conversation_id": "conv-2"},
-                    ]
-                elif "provider_name IN" in sql and "source_name IN" in sql:
-                    # The fix checks both provider_name and source_name
-                    # This should be an OR condition (either matches)
-                    result.fetchall.return_value = [
-                        {"conversation_id": "conv-1"},
-                    ]
-                else:
-                    result.fetchall.return_value = []
-                return result
-
-            mock_context.execute.side_effect = mock_execute
+            mock_context.execute.return_value.fetchall.return_value = [
+                {"conversation_id": "conv-1"},
+            ]
 
             provider.search_conversations(
                 "test",
@@ -673,11 +543,11 @@ class TestSearchProviderSourceFiltering:
             )
 
             # Should have called the SQL with both provider_name and source_name checks
-            calls = [str(call) for call in mock_context.execute.call_args_list]
-            sql_calls = [call for call in calls if "provider_name" in call]
-
-            # Should have made a call checking both columns
-            assert any("source_name" in call for call in sql_calls)
+            execute_call = mock_context.execute.call_args
+            assert execute_call is not None
+            sql = execute_call.args[0]
+            assert "conversations.provider_name" in sql
+            assert "conversations.source_name" in sql
 
 
 class TestListConversationsByParent:

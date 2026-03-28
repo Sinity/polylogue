@@ -120,27 +120,6 @@ def _run_coroutine_sync(coro: Awaitable[T]) -> T:
     return result[0]
 
 
-async def _all_conversation_ids(
-    backend: SQLiteBackend,
-    source_names: Sequence[str] | None = None,
-) -> list[str]:
-    """Fetch all conversation IDs from database, optionally filtered by source names.
-
-    Args:
-        backend: SQLiteBackend instance
-        source_names: Optional list of source names to filter by
-
-    Returns:
-        List of conversation IDs
-    """
-    ids: list[str] = []
-    async for conversation_id in backend.iter_conversation_ids(
-        source_names=list(source_names) if source_names is not None else None
-    ):
-        ids.append(conversation_id)
-    return ids
-
-
 async def _run_index_stage(
     *,
     stage: str,
@@ -159,10 +138,13 @@ async def _run_index_stage(
         if progress_callback is not None:
             progress_callback(0, desc="Indexing")
         if source_names:
-            ids = await _all_conversation_ids(backend, source_names)
-            if ids:
-                return await index_service.update_index(ids), len(ids)
-            return await index_service.ensure_index_exists(), 0
+            total = await backend.count_conversation_ids(source_names=list(source_names))
+            return (
+                await index_service.update_index(
+                    backend.iter_conversation_ids(source_names=list(source_names)),
+                ),
+                total,
+            )
         return await index_service.rebuild_index(), 0
 
     if stage == "all":
@@ -355,14 +337,22 @@ async def run_sources(
             from polylogue.rendering.renderers import create_renderer
 
             sm = metrics.start_stage("render")
-            ids = (
-                await _all_conversation_ids(active_backend, source_names)
-                if stage == "render"
-                else list(processed_ids)
-            )
-            if ids:
+            render_ids = None
+            render_total = 0
+            if stage == "render":
+                render_total = await active_backend.count_conversation_ids(
+                    source_names=list(source_names) if source_names is not None else None
+                )
+                render_ids = active_backend.iter_conversation_ids(
+                    source_names=list(source_names) if source_names is not None else None
+                )
+            else:
+                render_ids = processed_ids
+                render_total = len(processed_ids)
+
+            if render_total:
                 if progress_callback is not None:
-                    progress_callback(0, desc=f"Rendering: 0/{len(ids)}")
+                    progress_callback(0, desc=f"Rendering: 0/{render_total}")
                 renderer = create_renderer(
                     format=render_format,
                     config=config,
@@ -374,7 +364,8 @@ async def run_sources(
                     backend=active_backend,
                 )
                 render_result = await render_service.render_conversations(
-                    ids,
+                    render_ids,
+                    total=render_total,
                     progress_callback=progress_callback,
                 )
                 counts["rendered"] = render_result.rendered_count
@@ -386,7 +377,7 @@ async def run_sources(
                 "Render stage complete",
                 **sm.to_dict(),
                 failures=len(render_failures),
-                total=len(ids) if ids else 0,
+                total=render_total,
             )
 
         indexed = False

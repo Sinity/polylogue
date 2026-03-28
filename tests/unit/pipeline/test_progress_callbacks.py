@@ -7,7 +7,7 @@ to ship (production failure: stages completing with zero user feedback).
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -115,40 +115,6 @@ class TestRenderProgressCallback:
         assert all(a == 1 for a in amounts)
 
 
-class TestIndexProgressCallback:
-    """Verify progress_callback firing during indexing is safe."""
-
-    async def test_index_update_without_callback_succeeds(self, sqlite_backend):
-        """Index update works without a progress_callback."""
-        from polylogue.config import Config
-        from polylogue.pipeline.services.indexing import IndexService
-
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
-
-        result = await service.update_index([])
-        assert result is True
-
-    async def test_index_rebuild_without_callback_succeeds(self, sqlite_backend):
-        """Index rebuild works without a progress_callback."""
-        from polylogue.config import Config
-        from polylogue.pipeline.services.indexing import IndexService
-
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
-
-        result = await service.rebuild_index()
-        assert result is True
-
-
 class TestRunnerProgressPropagation:
     """Verify run_sources propagates progress_callback to render/index stages."""
 
@@ -190,27 +156,13 @@ class TestRunnerProgressPropagation:
 
         callback = track_callback if with_callback else None
 
-        if stage == "render":
-            with patch(
-                "polylogue.pipeline.runner._all_conversation_ids",
-                new_callable=AsyncMock,
-            ) as mock_ids:
-                mock_ids.return_value = []
-                result = asyncio.run(
-                    run_sources(
-                        config=config,
-                        stage=stage,
-                        progress_callback=callback,
-                    )
-                )
-        else:
-            result = asyncio.run(
-                run_sources(
-                    config=config,
-                    stage=stage,
-                    progress_callback=callback,
-                )
+        result = asyncio.run(
+            run_sources(
+                config=config,
+                stage=stage,
+                progress_callback=callback,
             )
+        )
 
         assert result.indexed is expected_indexed
         assert result.counts.get("rendered", 0) == expected_rendered

@@ -1391,6 +1391,7 @@ class SQLiteBackend:
         self,
         *,
         source_names: list[str] | None = None,
+        provider_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
@@ -1403,6 +1404,9 @@ class SQLiteBackend:
             where_clauses.append("parsed_at IS NULL")
         if require_unvalidated:
             where_clauses.append("validated_at IS NULL")
+        if provider_name:
+            where_clauses.append("provider_name = ?")
+            params.append(provider_name)
         if validation_statuses:
             placeholders = ",".join("?" for _ in validation_statuses)
             where_clauses.append(f"validation_status IN ({placeholders})")
@@ -1427,6 +1431,7 @@ class SQLiteBackend:
         self,
         *,
         source_names: list[str] | None = None,
+        provider_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
@@ -1435,6 +1440,7 @@ class SQLiteBackend:
         """Iterate raw conversation IDs for a pipeline state slice in bounded batches."""
         sql, params = self._raw_id_query(
             source_names=source_names,
+            provider_name=provider_name,
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
             validation_statuses=validation_statuses,

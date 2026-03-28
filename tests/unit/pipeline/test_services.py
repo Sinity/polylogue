@@ -1248,3 +1248,30 @@ class TestParsingServiceIntegration:
                              (list(parse_result.processed_ids)[0],))
             row = await cursor.fetchone()
         assert row is not None and row["raw_id"] == raw_ids[0]
+
+
+class TestParsingServiceStreaming:
+    """Regression tests for streaming parse backlog traversal."""
+
+    async def test_parse_from_raw_uses_raw_ids_without_prefetching_full_records(self, tmp_path):
+        """Unfiltered/provider parse should enumerate raw IDs, not stream raw blobs twice."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        backend = MagicMock()
+        backend.iter_raw_conversations.side_effect = AssertionError("iter_raw_conversations should not be used")
+
+        async def raw_ids():
+            for raw_id in ("raw-1", "raw-2"):
+                yield raw_id
+
+        backend.iter_raw_ids = MagicMock(return_value=raw_ids())
+        repository = MagicMock()
+        repository.backend = backend
+        config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
+        service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
+
+        with patch.object(service, "_process_raw_batch", new_callable=AsyncMock) as mock_process:
+            await service.parse_from_raw(provider="chatgpt")
+
+        backend.iter_raw_ids.assert_called_once_with(provider_name="chatgpt")
+        assert mock_process.await_count == 1

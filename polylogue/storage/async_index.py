@@ -6,7 +6,7 @@ All operations use the SQLiteBackend for non-blocking database access.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
@@ -17,13 +17,14 @@ async def ensure_index(backend: SQLiteBackend) -> None:
     Args:
         backend: Async SQLite backend instance
     """
-    async with backend._get_connection() as conn:
+    async with backend.connection() as conn:
         await conn.execute(
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 message_id UNINDEXED,
                 conversation_id UNINDEXED,
-                content
+                text,
+                tokenize='unicode61'
             );
             """
         )
@@ -35,12 +36,12 @@ async def rebuild_index(backend: SQLiteBackend) -> None:
     Args:
         backend: Async SQLite backend instance
     """
-    async with backend._get_connection() as conn:
+    async with backend.connection() as conn:
         await ensure_index(backend)
         await conn.execute("DELETE FROM messages_fts")
         await conn.execute(
             """
-            INSERT INTO messages_fts (message_id, conversation_id, content)
+            INSERT INTO messages_fts (message_id, conversation_id, text)
             SELECT messages.message_id, messages.conversation_id, messages.text
             FROM messages
             WHERE messages.text IS NOT NULL
@@ -50,26 +51,23 @@ async def rebuild_index(backend: SQLiteBackend) -> None:
 
 
 async def update_index_for_conversations(
-    conversation_ids: Sequence[str], backend: SQLiteBackend
+    conversation_ids: Iterable[str] | AsyncIterable[str],
+    backend: SQLiteBackend,
 ) -> None:
     """Update FTS5 search index for specific conversations.
 
     Optimized for batch operations using a single delete then batch insert.
 
     Args:
-        conversation_ids: List of conversation IDs to re-index
+        conversation_ids: Conversation IDs to re-index
         backend: Async SQLite backend instance
     """
-    if not conversation_ids:
-        return
-
-    async with backend._get_connection() as conn:
+    async with backend.connection() as conn:
         await ensure_index(backend)
 
         # Keep placeholder counts under SQLite parameter limits and avoid
         # materializing all message rows in Python.
-        for id_chunk in _chunked(conversation_ids, size=500):
-            chunk_ids = list(id_chunk)
+        async for chunk_ids in _chunked_ids(conversation_ids, size=500):
             placeholders = ", ".join("?" for _ in chunk_ids)
             params = tuple(chunk_ids)
 
@@ -79,7 +77,7 @@ async def update_index_for_conversations(
             )
             await conn.execute(
                 f"""
-                INSERT INTO messages_fts (message_id, conversation_id, content)
+                INSERT INTO messages_fts (message_id, conversation_id, text)
                 SELECT message_id, conversation_id, text
                 FROM messages
                 WHERE text IS NOT NULL AND conversation_id IN ({placeholders})
@@ -90,10 +88,32 @@ async def update_index_for_conversations(
         await conn.commit()
 
 
-def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
-    """Split a sequence into chunks of given size."""
-    for idx in range(0, len(items), size):
-        yield items[idx : idx + size]
+async def _chunked_ids(
+    items: Iterable[str] | AsyncIterable[str],
+    *,
+    size: int,
+) -> AsyncIterator[list[str]]:
+    """Split sync or async conversation IDs into bounded chunks."""
+    chunk: list[str] = []
+    async for item in _iter_ids(items):
+        chunk.append(item)
+        if len(chunk) >= size:
+            yield chunk
+            chunk = []
+
+    if chunk:
+        yield chunk
+
+
+async def _iter_ids(items: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[str]:
+    """Normalize sync and async ID sources into one async iterator."""
+    if isinstance(items, AsyncIterable):
+        async for item in items:
+            yield item
+        return
+
+    for item in items:
+        yield item
 
 
 async def index_status(backend: SQLiteBackend) -> dict[str, object]:
@@ -105,7 +125,7 @@ async def index_status(backend: SQLiteBackend) -> dict[str, object]:
     Returns:
         Dictionary with 'exists' (bool) and 'count' (int) keys
     """
-    async with backend._get_connection() as conn:
+    async with backend.connection() as conn:
         cursor = await conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
         )
