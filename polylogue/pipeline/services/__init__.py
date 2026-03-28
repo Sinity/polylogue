@@ -1,21 +1,27 @@
 """Pipeline services package.
 
 This package contains focused service classes that handle specific pipeline operations:
-- IngestionService: Conversation ingestion from sources
-- IndexService: Full-text and vector search indexing
-- RenderService: Markdown and HTML rendering
+- ParsingService / AsyncParsingService: Conversation parsing from sources
+- IndexService / AsyncIndexService: Full-text and vector search indexing
+- AsyncRenderService: Markdown and HTML rendering
+- AsyncAcquisitionService: Raw data acquisition from sources
 """
 
 from __future__ import annotations
 
+from .async_acquisition import AcquireResult, AsyncAcquisitionService
+from .async_indexing import AsyncIndexService
+from .async_rendering import AsyncRenderService, RenderResult
 from .indexing import IndexService
-from .ingestion import IngestionService, IngestResult
-from .rendering import RenderResult, RenderService
+from .parsing import ParseResult, ParsingService
 
 __all__ = [
-    "IngestionService",
-    "IngestResult",
+    "AcquireResult",
+    "AsyncAcquisitionService",
+    "AsyncIndexService",
+    "AsyncRenderService",
     "IndexService",
-    "RenderService",
+    "ParseResult",
+    "ParsingService",
     "RenderResult",
 ]
