@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shutil
 import time
 from dataclasses import dataclass, field
 from importlib import resources as importlib_resources
