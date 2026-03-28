@@ -21,8 +21,6 @@ import time
 
 import pytest
 
-from collections import defaultdict
-
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index

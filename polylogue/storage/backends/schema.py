@@ -9,7 +9,6 @@ from __future__ import annotations
 import sqlite3
 
 from polylogue.lib.log import get_logger
-from polylogue.storage.store import _make_ref_id
 
 logger = get_logger(__name__)
 SCHEMA_VERSION = 4

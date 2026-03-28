@@ -7,9 +7,12 @@ and the semantic models.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hypothesis import strategies as st
+
+if TYPE_CHECKING:
+    from polylogue.lib.models import Conversation, Message
 
 # =============================================================================
 # Content Block Strategies
@@ -303,3 +306,58 @@ def conversation_strategy(
             timezones=st.just(timezone.utc),
         )).isoformat(),
     }
+
+
+# =============================================================================
+# Model Instance Strategies (return actual Message/Conversation model objects)
+# =============================================================================
+
+
+@st.composite
+def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Message:
+    """Generate a Message model instance with arbitrary content."""
+    from polylogue.lib.models import Message as MessageModel
+
+    role_val = role or draw(st.sampled_from(["user", "assistant", "system", "tool"]))
+    text = draw(st.one_of(st.none(), st.text(max_size=200)))
+
+    # Optionally add content_blocks in provider_meta
+    provider_meta: dict | None = None
+    block_type = draw(st.sampled_from(["text", "thinking", "tool_use", "none"]))
+    if block_type != "none":
+        block_text = draw(st.text(max_size=100))
+        provider_meta = {"content_blocks": [{"type": block_type, "text": block_text}]}
+
+    # Optionally add cost/duration via raw in provider_meta
+    cost = draw(st.one_of(st.none(), st.floats(min_value=0.001, max_value=100.0, allow_nan=False, allow_infinity=False)))
+    duration = draw(st.one_of(st.none(), st.integers(min_value=1, max_value=60000)))
+    if cost is not None or duration is not None:
+        raw: dict[str, Any] = {}
+        if cost is not None:
+            raw["costUSD"] = cost
+        if duration is not None:
+            raw["durationMs"] = duration
+        if provider_meta is None:
+            provider_meta = {}
+        provider_meta["raw"] = raw
+
+    return MessageModel(
+        id=draw(st.text(min_size=1, max_size=40, alphabet=st.characters(whitelist_categories=("L", "N")))),
+        role=role_val,
+        text=text,
+        provider_meta=provider_meta,
+    )
+
+
+@st.composite
+def conversation_model_strategy(draw: st.DrawFn, *, min_messages: int = 0, max_messages: int = 10) -> Conversation:
+    """Generate a Conversation model instance with arbitrary messages."""
+    from polylogue.lib.messages import MessageCollection
+    from polylogue.lib.models import Conversation as ConversationModel
+
+    messages = draw(st.lists(message_model_strategy(), min_size=min_messages, max_size=max_messages))
+    return ConversationModel(
+        id=draw(st.text(min_size=1, max_size=40, alphabet=st.characters(whitelist_categories=("L", "N")))),
+        provider=draw(st.sampled_from(["chatgpt", "claude", "claude-code", "codex", "gemini"])),
+        messages=MessageCollection(messages=messages),
+    )

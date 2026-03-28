@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from importlib import resources as importlib_resources
 from pathlib import Path
@@ -16,8 +18,6 @@ from click.testing import CliRunner
 from polylogue.showcase.exercises import (
     EXERCISES,
     Exercise,
-    Validation,
-    exercises_by_group,
     topological_order,
 )
 
@@ -83,11 +83,19 @@ class ShowcaseRunner:
         output_dir: Path | None = None,
         fail_fast: bool = False,
         verbose: bool = False,
+        showcase_data: str = "fixtures",
+        synthetic_count: int = 3,
+        tier_filter: int | None = None,
     ) -> None:
+        if showcase_data not in {"fixtures", "synthetic"}:
+            raise ValueError(f"Unknown showcase_data: {showcase_data}")
         self.live = live
         self.output_dir = output_dir
         self.fail_fast = fail_fast
         self.verbose = verbose
+        self.showcase_data = showcase_data
+        self.synthetic_count = synthetic_count
+        self.tier_filter = tier_filter
         self._env_vars: dict[str, str] = {}
         self._workspace_dir: Path | None = None
         self._shared_state: dict[str, Any] = {}
@@ -154,13 +162,21 @@ class ShowcaseRunner:
         return result
 
     def _select_exercises(self) -> list[Exercise]:
-        """Filter exercises based on mode."""
+        """Filter exercises based on mode, env, and tier."""
         selected: list[Exercise] = []
         for ex in EXERCISES:
-            if self.live:
-                # Live mode: skip writes and exercises that need seeded data
-                if ex.writes:
-                    continue
+            # Env-based filtering
+            if ex.env == "live" and not self.live:
+                continue  # live-only exercises require --live mode
+            if ex.env == "seeded" and self.live:
+                continue  # seeded-only exercises don't run against live data
+
+            # Skip writes in live mode (protect real data)
+            if self.live and ex.writes:
+                continue
+
+            if self.tier_filter is not None and ex.tier != self.tier_filter:
+                continue
             selected.append(ex)
         return selected
 
@@ -176,8 +192,11 @@ class ShowcaseRunner:
         for d in [data_home, state_home, archive_root, render_root, fake_home]:
             d.mkdir(parents=True, exist_ok=True)
 
-        # Copy static fixtures from package resources
-        self._copy_fixtures(fixture_dir)
+        # Seed fixture data for the workspace.
+        if self.showcase_data == "synthetic":
+            self._generate_synthetic_fixtures(fixture_dir, count=self.synthetic_count)
+        else:
+            self._copy_fixtures(fixture_dir)
 
         # Also copy fixtures into the inbox location so get_sources() finds them
         # inbox_root() = {XDG_DATA_HOME}/polylogue/inbox
@@ -211,12 +230,6 @@ class ShowcaseRunner:
             os.environ[key] = value
 
         try:
-            # Reset singletons so they pick up new env vars
-            from polylogue import services
-            services.reset()
-            services._backend = None
-            services._repository = None
-
             # Build config with fixture sources
             from polylogue.config import Config
             from polylogue.paths import Source
@@ -264,17 +277,30 @@ class ShowcaseRunner:
                     dest_file = dest_dir / file_entry.name
                     dest_file.write_bytes(file_entry.read_bytes())
 
+    def _generate_synthetic_fixtures(self, fixture_dir: Path, *, count: int) -> None:
+        """Generate schema-driven synthetic fixtures for all providers."""
+        from polylogue.schemas.synthetic import SyntheticCorpus
+
+        fixture_dir.mkdir(parents=True, exist_ok=True)
+        for provider in SyntheticCorpus.available_providers():
+            corpus = SyntheticCorpus.for_provider(provider)
+            provider_dir = fixture_dir / provider
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
+            raw_items = corpus.generate(
+                count=count,
+                messages_per_conversation=range(6, 20),
+                seed=42,
+                style="showcase",
+            )
+            for idx, raw_bytes in enumerate(raw_items):
+                (provider_dir / f"showcase-{idx:02d}{ext}").write_bytes(raw_bytes)
+
     def _run_exercise(self, exercise: Exercise) -> ExerciseResult:
         """Run a single exercise and validate the result."""
-        from polylogue import services
         from polylogue.cli.click_app import cli
 
         t0 = time.monotonic()
-
-        # Reset singletons between exercises to ensure clean state
-        services.reset()
-        services._backend = None
-        services._repository = None
 
         # Build env vars for CliRunner
         env = dict(self._env_vars) if self._env_vars else {}
@@ -284,8 +310,25 @@ class ShowcaseRunner:
         args = ["--plain"] + list(exercise.args)
 
         runner = CliRunner()
+
+        def _invoke() -> tuple[str, int]:
+            res = runner.invoke(cli, args, env=env, catch_exceptions=True)
+            return res.output or "", res.exit_code
+
         try:
-            result = runner.invoke(cli, args, env=env, catch_exceptions=True)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(_invoke)
+                output, exit_code = future.result(timeout=exercise.timeout_s)
+        except FuturesTimeoutError:
+            duration = (time.monotonic() - t0) * 1000
+            return ExerciseResult(
+                exercise=exercise,
+                passed=False,
+                exit_code=-1,
+                output="",
+                error=f"timed out after {exercise.timeout_s:.0f}s",
+                duration_ms=duration,
+            )
         except Exception as e:
             duration = (time.monotonic() - t0) * 1000
             return ExerciseResult(
@@ -298,15 +341,14 @@ class ShowcaseRunner:
             )
 
         duration = (time.monotonic() - t0) * 1000
-        output = result.output or ""
 
         # Validate
-        error = self._validate(exercise, output, result.exit_code)
+        error = self._validate(exercise, output, exit_code)
 
         return ExerciseResult(
             exercise=exercise,
             passed=error is None,
-            exit_code=result.exit_code,
+            exit_code=exit_code,
             output=output,
             error=error,
             duration_ms=duration,

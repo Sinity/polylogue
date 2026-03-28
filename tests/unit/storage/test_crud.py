@@ -10,13 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.lib.roles import normalize_role as new_normalize_role
 from polylogue.schemas.unified import (
     extract_from_provider_meta,
     extract_harmonized_message,
     is_message_record,
-)
-from polylogue.schemas.unified import (
-    normalize_role as new_normalize_role,
 )
 from polylogue.sources.parsers.base import normalize_role as old_normalize_role
 from polylogue.sources.parsers.claude import (
@@ -24,13 +22,14 @@ from polylogue.sources.parsers.claude import (
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import (
+    ContentBlockRecord,
     ConversationRecord,
 )
 from tests.infra.helpers import (
     make_attachment,
     make_conversation,
-    make_message,
     make_hash,
+    make_message,
 )
 
 
@@ -274,6 +273,59 @@ class TestMessageOperations:
 
         retrieved = await backend.get_messages("conv-1")
         assert retrieved == []
+        await backend.close()
+
+    async def test_content_block_semantic_type_stored(self, tmp_path: Path) -> None:
+        """ContentBlockRecord.semantic_type is persisted and retrieved correctly."""
+        from polylogue.types import MessageId
+
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        conv = make_conversation("conv-sem")
+        await backend.save_conversation_record(conv)
+
+        msg = make_message("msg-sem", "conv-sem", role="assistant", text="")
+        await backend.save_messages([msg])
+
+        blocks = [
+            ContentBlockRecord(
+                block_id="block-1",
+                message_id=MessageId("msg-sem"),
+                conversation_id="conv-sem",
+                block_index=0,
+                type="tool_use",
+                tool_name="Bash",
+                semantic_type="git",
+                metadata='{"command": "status"}',
+            ),
+            ContentBlockRecord(
+                block_id="block-2",
+                message_id=MessageId("msg-sem"),
+                conversation_id="conv-sem",
+                block_index=1,
+                type="thinking",
+                text="Let me think",
+                semantic_type="thinking",
+            ),
+            ContentBlockRecord(
+                block_id="block-3",
+                message_id=MessageId("msg-sem"),
+                conversation_id="conv-sem",
+                block_index=2,
+                type="text",
+                text="plain text",
+                semantic_type=None,
+            ),
+        ]
+        await backend.save_content_blocks(blocks)
+
+        blocks_by_msg = await backend.get_content_blocks(["msg-sem"])
+        retrieved = blocks_by_msg.get("msg-sem", [])
+        assert len(retrieved) == 3
+
+        by_index = {b.block_index: b for b in retrieved}
+        assert by_index[0].semantic_type == "git"
+        assert by_index[1].semantic_type == "thinking"
+        assert by_index[2].semantic_type is None
         await backend.close()
 
 
@@ -592,7 +644,7 @@ class TestPruneAttachments:
         assert conv2_atts[0].attachment_id == "shared-att"
 
         # Check in database that attachment still exists
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'shared-att'")
             row = await cursor.fetchone()
             assert row[0] == 1
@@ -614,7 +666,7 @@ class TestPruneAttachments:
         await backend.prune_attachments("conv-sole", set())
 
         # Attachment should be removed
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'sole-att'")
             row = await cursor.fetchone()
             assert row[0] == 0
@@ -712,6 +764,42 @@ def compare_extractions(provider: str, raw: dict) -> list[ComparisonResult]:
     return results
 
 
+def _load_claude_code_message_records_from_raw(seeded_db: str | Path, *, limit: int = 500) -> list[dict]:
+    """Load Claude Code message records from raw_conversations JSONL payloads."""
+    conn = sqlite3.connect(seeded_db)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT raw_content
+        FROM raw_conversations
+        WHERE provider_name = 'claude-code'
+        LIMIT ?
+        """,
+        (max(1, limit),),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    records: list[dict] = []
+    for (raw_content,) in rows:
+        text = (
+            raw_content.decode("utf-8", errors="replace")
+            if isinstance(raw_content, (bytes, bytearray))
+            else str(raw_content)
+        )
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and is_message_record("claude-code", payload):
+                records.append(payload)
+                if len(records) >= limit:
+                    return records
+    return records
 
 
 class TestBackendComparison:
@@ -742,80 +830,48 @@ class TestBackendComparison:
         assert old_normalize_role("assistant") == new_normalize_role("assistant")
 
     def test_claude_code_extraction_equivalence(self, seeded_db):
-        """Compare old and new extraction on real Claude Code data."""
-        conn = sqlite3.connect(seeded_db)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT m.provider_meta
-            FROM messages m
-            JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name = 'claude-code'
-            LIMIT 500
-            """
-        )
-
-        rows = cur.fetchall()
-        conn.close()
+        """Compare old and new extraction on Claude Code raw message records."""
+        records = _load_claude_code_message_records_from_raw(seeded_db, limit=500)
+        assert records, "Expected claude-code message records in seeded raw corpus"
 
         equiv_count = Counter()
         diff_samples = []
+        role_mismatches = 0
 
-        for (pm_json,) in rows:
-            pm = json.loads(pm_json)
-            raw = pm.get("raw", pm)
-
-            if not is_message_record("claude-code", raw):
-                continue
-
+        for raw in records:
             results = compare_extractions("claude-code", raw)
-
             for r in results:
                 if r.equivalent:
                     equiv_count[r.field] += 1
                 else:
+                    if r.field == "role":
+                        role_mismatches += 1
                     if len(diff_samples) < 10:
                         diff_samples.append(r)
 
         total = sum(equiv_count.values())
-        if total == 0:
-            pytest.skip("No claude-code messages in seeded database")
+        assert total > 0
+        assert role_mismatches == 0
 
     def test_new_extraction_is_superset(self, seeded_db):
-        """New extraction should provide more information, not less."""
-        conn = sqlite3.connect(seeded_db)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT m.provider_meta
-            FROM messages m
-            JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name = 'claude-code'
-            LIMIT 500
-            """
-        )
-
-        rows = cur.fetchall()
-        conn.close()
+        """New extraction should expose tool/reasoning data on raw records."""
+        records = _load_claude_code_message_records_from_raw(seeded_db, limit=500)
+        assert records, "Expected claude-code message records in seeded raw corpus"
 
         tool_calls_found = 0
         reasoning_found = 0
+        processed = 0
 
-        for (pm_json,) in rows:
-            pm = json.loads(pm_json)
-
-            if not is_message_record("claude-code", pm.get("raw", pm)):
-                continue
-
-            new_msg = extract_from_provider_meta("claude-code", pm)
+        for raw in records:
+            new_msg = extract_from_provider_meta("claude-code", {"raw": raw})
+            processed += 1
             tool_calls_found += len(new_msg.tool_calls)
             reasoning_found += len(new_msg.reasoning_traces)
 
-        assert tool_calls_found >= 0
-        assert reasoning_found >= 0
-        print(f"Reasoning traces extracted: {reasoning_found}")
-
-        assert tool_calls_found > 0 or reasoning_found >= 0, "New extraction should find viewports"
+        assert processed > 0
+        assert tool_calls_found > 0 or reasoning_found > 0, (
+            "New extraction should find tool calls or reasoning traces"
+        )
 
 
 class TestTransactionAtomicity:
@@ -894,7 +950,7 @@ class TestTransactionAtomicity:
             await backend.rollback()
 
         # Verify all tables are empty
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
             row = await cursor.fetchone()
             assert row[0] == 0
