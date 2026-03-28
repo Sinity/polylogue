@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from polylogue.lib.log import get_logger
-from polylogue.pipeline.async_prepare import async_prepare_records
+from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources.source import _parse_json_payload
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import RawConversationRecord
@@ -24,14 +24,14 @@ from polylogue.storage.store import RawConversationRecord
 if TYPE_CHECKING:
     from polylogue.config import Config, Source
     from polylogue.sources.parsers.base import ParsedConversation
-    from polylogue.storage.async_repository import AsyncConversationRepository
+    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 
 _ProcessResult: TypeAlias = tuple[str, dict[str, int], bool]
 
 
-class AsyncParseResult:
+class ParseResult:
     """Result of an async parsing operation."""
 
     def __init__(self) -> None:
@@ -63,7 +63,7 @@ class AsyncParseResult:
 
         Args:
             conversation_id: ID of the processed conversation
-            result_counts: Count dictionary from async_prepare_records
+            result_counts: Count dictionary from prepare_records
             content_changed: Whether content hash changed
         """
         ingest_changed = (result_counts["conversations"] + result_counts["messages"] + result_counts["attachments"]) > 0
@@ -82,7 +82,7 @@ class AsyncParseResult:
                     self.counts[key] += value
 
 
-class AsyncParsingService:
+class ParsingService:
     """Service for parsing conversations from sources asynchronously.
 
     This service implements the async PARSE stage of the pipeline.
@@ -91,7 +91,7 @@ class AsyncParsingService:
 
     def __init__(
         self,
-        repository: AsyncConversationRepository,
+        repository: ConversationRepository,
         archive_root: Path,
         config: Config,
         drive_client_factory: Any | None = None,
@@ -119,7 +119,7 @@ class AsyncParsingService:
         ui: object | None = None,
         download_assets: bool = True,
         progress_callback: Any | None = None,
-    ) -> AsyncParseResult:
+    ) -> ParseResult:
         """Parse conversations from sources via acquire → parse flow.
 
         This is a convenience method that runs both stages:
@@ -133,16 +133,16 @@ class AsyncParsingService:
             progress_callback: Optional callback for progress updates
 
         Returns:
-            AsyncParseResult with counts and processed conversation IDs
+            ParseResult with counts and processed conversation IDs
         """
-        from polylogue.pipeline.services.async_acquisition import AsyncAcquisitionService
+        from polylogue.pipeline.services.acquisition import AcquisitionService
 
         backend = self.repository._backend
         if backend is None:
             raise RuntimeError("Repository backend is not initialized")
 
         # Stage 1: ACQUIRE - store raw bytes (async)
-        acquire_service = AsyncAcquisitionService(backend=backend)
+        acquire_service = AcquisitionService(backend=backend)
         acquire_result = await acquire_service.acquire_sources(
             sources,
             progress_callback=progress_callback,
@@ -181,7 +181,7 @@ class AsyncParsingService:
             )
         else:
             # Nothing to process
-            return AsyncParseResult()
+            return ParseResult()
 
     # Batch size for processing raw records to limit memory usage.
     # Each raw record may contain multi-MB JSONL content; loading thousands
@@ -194,7 +194,7 @@ class AsyncParsingService:
         raw_ids: list[str] | None = None,
         provider: str | None = None,
         progress_callback: Any | None = None,
-    ) -> AsyncParseResult:
+    ) -> ParseResult:
         """Parse raw_conversations from DB into conversations.
 
         This is the proper PARSE stage: reads from raw_conversations table
@@ -210,9 +210,9 @@ class AsyncParsingService:
             progress_callback: Optional callback for progress updates
 
         Returns:
-            AsyncParseResult with counts and processed conversation IDs
+            ParseResult with counts and processed conversation IDs
         """
-        result = AsyncParseResult()
+        result = ParseResult()
 
         # Reset per-run drift tracking
         async with self._drift_lock:
@@ -250,7 +250,7 @@ class AsyncParsingService:
         self,
         backend: Any,
         batch_ids: list[str],
-        result: AsyncParseResult,
+        result: ParseResult,
         progress_callback: Any | None,
     ) -> None:
         """Process a batch of raw conversation IDs."""
@@ -288,7 +288,7 @@ class AsyncParsingService:
             raw_id: str,
         ) -> _ProcessResult:
             async with semaphore:
-                convo_id, counts, changed = await async_prepare_records(
+                convo_id, counts, changed = await prepare_records(
                     convo_item,
                     source_name_item,
                     archive_root=self.archive_root,
@@ -460,4 +460,4 @@ class AsyncParsingService:
                 )
 
 
-__all__ = ["AsyncParsingService", "AsyncParseResult"]
+__all__ = ["ParsingService", "ParseResult"]

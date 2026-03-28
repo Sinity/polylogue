@@ -1,7 +1,7 @@
 """Service factories — the honest replacement for DI container.
 
 Module-level singletons for backend and repository, with a reset()
-function for test isolation. Service construction (IngestionService,
+function for test isolation. Service construction (ParsingService,
 IndexService, etc.) stays in the CLI commands where they're instantiated.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.storage.backends.sqlite import SQLiteBackend, create_default_backend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 
 if TYPE_CHECKING:
@@ -22,7 +22,7 @@ _repository: ConversationRepository | None = None
 def get_backend() -> SQLiteBackend:
     global _backend
     if _backend is None:
-        _backend = create_default_backend()
+        _backend = SQLiteBackend()
     return _backend
 
 
@@ -41,14 +41,12 @@ def get_service_config() -> Config:
 
 
 def reset() -> None:
-    """Reset singletons. For tests.
+    """Reset singletons for test isolation.
 
-    Closes any open backend connection before clearing references,
-    preventing connection leaks across test boundaries.
+    Just nullifies references — async backend connections are cleaned up by GC.
+    For proper async cleanup in async tests, close the backend before calling this.
     """
     global _backend, _repository
-    if _backend is not None:
-        _backend.close()
     _backend = None
     _repository = None
 

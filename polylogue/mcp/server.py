@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
-from polylogue.services import get_async_repository as _get_async_repo
+from polylogue.services import get_repository as _get_async_repo
 from polylogue.services import get_repository as _get_repo
 from polylogue.services import get_service_config as _get_config
 

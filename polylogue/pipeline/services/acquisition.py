@@ -21,11 +21,11 @@ from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import Source
-    from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 
-__all__ = ["AsyncAcquisitionService", "AcquireResult"]
+__all__ = ["AcquisitionService", "AcquireResult"]
 
 
 class AcquireResult:
@@ -40,7 +40,7 @@ class AcquireResult:
         self.raw_ids: list[str] = []  # List of acquired raw_ids
 
 
-class AsyncAcquisitionService:
+class AcquisitionService:
     """Service for acquiring raw conversation data from sources.
 
     This service implements the ACQUIRE stage of the pipeline:
@@ -52,7 +52,7 @@ class AsyncAcquisitionService:
     The stored raw data can then be processed by the parse stage.
     """
 
-    def __init__(self, backend: AsyncSQLiteBackend):
+    def __init__(self, backend: SQLiteBackend):
         """Initialize the async acquisition service.
 
         Args:

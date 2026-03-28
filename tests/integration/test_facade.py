@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue import Polylogue
-from polylogue.async_facade import ArchiveStats
+from polylogue.facade import ArchiveStats
 from polylogue.cli.helpers import (
     latest_render_path,
     load_last_source,
@@ -323,7 +323,7 @@ class TestPolylogueQuery:
         assert conv.title == "Python Help"
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="AsyncSQLiteBackend does not support partial ID matching (exact match only)")
+    @pytest.mark.skip(reason="SQLiteBackend does not support partial ID matching (exact match only)")
     async def test_get_conversation_by_partial_id(self, workspace_env, sample_chatgpt_file):
         """Test getting a conversation by partial ID (prefix match).
 

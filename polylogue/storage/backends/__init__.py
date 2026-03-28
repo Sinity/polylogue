@@ -1,13 +1,14 @@
 """Storage backend implementations for Polylogue.
 
-Currently provides SQLiteBackend as the only backend.
+SQLiteBackend is the async-first backend (backed by aiosqlite).
+Raw sync utilities (open_connection, connection_context) live in sqlite.py.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 
 def create_backend(db_path: Path | None = None) -> SQLiteBackend:

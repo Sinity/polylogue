@@ -1,4 +1,10 @@
-"""Storage layer for Polylogue - database, indexing, and search."""
+"""Storage layer for Polylogue - database, indexing, and search.
+
+Primary imports::
+
+    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.backends import SQLiteBackend
+"""
 
 from __future__ import annotations
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -64,7 +64,7 @@ PROMPT_EDGE_CASES = [
 class TestRepositoryViewMethod:
     """Tests for ConversationRepository.view() with ID resolution."""
 
-    def test_view_resolves_partial_id(self):
+    async def test_view_resolves_partial_id(self):
         """view() should call resolve_id for ID resolution."""
         # Create mock backend
         backend = Mock(spec=SQLiteBackend)
@@ -79,14 +79,14 @@ class TestRepositoryViewMethod:
         repo = ConversationRepository(backend)
 
         # Test view with partial ID
-        repo.view("12345")
+        await repo.view("12345")
 
         # Should call resolve_id first
         backend.resolve_id.assert_called_once_with("12345")
         # Then try get_conversation with resolved ID
         backend.get_conversation.assert_called_once_with("full-conv-id-12345")
 
-    def test_view_uses_resolved_id_fallback(self):
+    async def test_view_uses_resolved_id_fallback(self):
         """view() should fall back to original ID if resolve fails."""
         backend = Mock(spec=SQLiteBackend)
 
@@ -98,14 +98,14 @@ class TestRepositoryViewMethod:
         repo = ConversationRepository(backend)
 
         # Test with ID that won't resolve
-        repo.view("nonexistent")
+        await repo.view("nonexistent")
 
         # Should try resolve
         backend.resolve_id.assert_called_once_with("nonexistent")
         # Then try original ID
         backend.get_conversation.assert_called_once_with("nonexistent")
 
-    def test_view_returns_none_if_not_found(self):
+    async def test_view_returns_none_if_not_found(self):
         """view() should return None if conversation not found."""
         backend = Mock(spec=SQLiteBackend)
         backend.resolve_id.return_value = None
@@ -113,7 +113,7 @@ class TestRepositoryViewMethod:
 
         repo = ConversationRepository(backend)
 
-        result = repo.view("missing-id")
+        result = await repo.view("missing-id")
 
         assert result is None
 
@@ -121,12 +121,23 @@ class TestRepositoryViewMethod:
 class TestRepositoryDataInsertion:
     """Tests for proper data insertion using backend methods."""
 
-    def test_save_conversation_uses_backend_methods(self):
-        """save_conversation() should use backend.save_conversation() and backend.save_messages()."""
+    async def test_save_conversation_uses_backend_methods(self):
+        """save_conversation() should use await backend.save_conversation() and backend.save_messages()."""
         backend = Mock(spec=SQLiteBackend)
-        backend.get_conversation.return_value = None
-        backend.get_messages.return_value = []
-        backend.get_attachments.return_value = []
+        backend.get_conversation = AsyncMock(return_value=None)
+        backend.get_messages = AsyncMock(return_value=[])
+        backend.get_attachments = AsyncMock(return_value=[])
+
+        # Setup async context manager for transaction()
+        backend.transaction = MagicMock()
+        backend.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
+        backend.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        # Mock the async backend methods that save_via_backend calls
+        backend.save_conversation_record = AsyncMock()
+        backend.save_messages = AsyncMock()
+        backend.prune_attachments = AsyncMock()
+        backend.save_attachments = AsyncMock()
 
         repo = ConversationRepository(backend)
 
@@ -139,27 +150,31 @@ class TestRepositoryDataInsertion:
         msg_record.content_hash = "hash456"
 
         # Perform save operation
-        result = repo.save_conversation(
+        result = await repo.save_conversation(
             conversation=conv_record,
             messages=[msg_record],
             attachments=[],
         )
 
-        # Should use backend.save_conversation
-        backend.save_conversation.assert_called()
+        # Should use backend.save_conversation_record
+        backend.save_conversation_record.assert_called_once_with(conv_record)
 
         # Should use backend.save_messages
-        backend.save_messages.assert_called()
+        backend.save_messages.assert_called_once_with([msg_record])
 
         # Should return counts dict
         assert isinstance(result, dict)
         assert "conversations" in result
         assert "messages" in result
 
-    def test_backend_direct_insertion(self):
+    async def test_backend_direct_insertion(self):
         """Test using backend directly for fixture data insertion."""
         # For test setup, use backend methods directly instead of repository.save()
         backend = Mock(spec=SQLiteBackend)
+
+        # Mock the async backend methods
+        backend.save_conversation_record = AsyncMock()
+        backend.save_messages = AsyncMock()
 
         # Simulate what test setup would do:
         conv_record = Mock(spec=ConversationRecord)
@@ -170,11 +185,11 @@ class TestRepositoryDataInsertion:
         msg_record.conversation_id = "test-conv-1"
 
         # Use backend methods, not repository.save()
-        backend.save_conversation(conv_record)
-        backend.save_messages([msg_record])
+        await backend.save_conversation_record(conv_record)
+        await backend.save_messages([msg_record])
 
-        # Verify backend methods were called
-        backend.save_conversation.assert_called_once_with(conv_record)
+        # Verify backend methods were called with correct names
+        backend.save_conversation_record.assert_called_once_with(conv_record)
         backend.save_messages.assert_called_once_with([msg_record])
 
 

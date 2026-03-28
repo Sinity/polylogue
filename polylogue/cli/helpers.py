@@ -11,18 +11,12 @@ from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config, get_config
 from polylogue.health import cached_health_summary, get_health
+from polylogue.lib.theme import provider_color
 from polylogue.pipeline.runner import latest_run
 
 
 def fail(command: str, message: str) -> NoReturn:
     raise SystemExit(f"{command}: {message}")
-
-
-def is_declarative() -> bool:
-    value = os.environ.get("POLYLOGUE_DECLARATIVE")
-    if not value:
-        return False
-    return value.lower() not in {"0", "false", "no"}
 
 
 def source_state_path() -> Path:
@@ -105,7 +99,9 @@ def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> l
 def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     ui = env.ui
     config = load_effective_config(env)
-    last_run_data = latest_run()
+    import asyncio
+
+    last_run_data = asyncio.run(latest_run())
     last_line = "Last run: none"
     if last_run_data:
         last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"
@@ -147,7 +143,7 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         try:
             from polylogue.cli.analytics import compute_provider_comparison
 
-            metrics = compute_provider_comparison()
+            metrics = asyncio.run(compute_provider_comparison())
             if metrics:
                 ui.console.print()
                 total_convs = sum(m.conversation_count for m in metrics)
@@ -166,16 +162,7 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
                         bar_len = 0
 
                     bar = "█" * bar_len
-                    # Colors per provider matching typical brand colors loosely
-                    color = "white"
-                    if "claude" in m.provider_name:
-                        color = "#d97757"  # Claude orange-ish
-                    elif "chatgpt" in m.provider_name:
-                        color = "#10a37f"  # OpenAI green
-                    elif "gemini" in m.provider_name:
-                        color = "#4285f4"  # Google blue
-                    elif "codex" in m.provider_name:
-                        color = "cyan"
+                    color = provider_color(m.provider_name).hex
 
                     # Format:   claude-code:   512 (41%)  │  ████████████
                     name_padded = f"{m.provider_name}:".ljust(14)

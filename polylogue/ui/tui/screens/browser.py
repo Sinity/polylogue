@@ -1,20 +1,37 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.widgets import Markdown as MarkdownWidget
 from textual.widgets import Tree
 
 from polylogue.config import Config
-from polylogue.services import get_repository
+from polylogue.rendering.core import format_conversation_markdown
+
+if TYPE_CHECKING:
+    from polylogue.storage.repository import ConversationRepository
 
 
 class Browser(Container):
     """Browser widget for navigating conversations."""
 
-    def __init__(self, config: Config | None = None) -> None:
+    def __init__(
+        self,
+        config: Config | None = None,
+        repository: ConversationRepository | None = None,
+    ) -> None:
         super().__init__()
         self.config = config
+        self._repository = repository
+
+    def _get_repo(self) -> ConversationRepository:
+        """Get the repository, falling back to the service singleton."""
+        if self._repository is not None:
+            return self._repository
+        from polylogue.services import get_repository
+        return get_repository()
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -23,70 +40,56 @@ class Browser(Container):
                 yield MarkdownWidget(id="markdown-viewer")
 
     def on_mount(self) -> None:
-        self.run_worker(self.load_tree(), thread=True)
+        self.run_worker(self._fetch_tree())
 
-    async def load_tree(self) -> None:
-        """Load sources and conversations into the tree."""
-        tree = self.query_one("#browser-tree", Tree)
-        tree.root.expand()
-
+    async def _fetch_tree(self) -> None:
+        """Fetch tree data asynchronously, then update DOM."""
         try:
-            repo = get_repository()
+            repo = self._get_repo()
 
-            # Query distinct providers from the database
-            from polylogue.storage.backends.sqlite import connection_context
-
-            with connection_context(None) as conn:
-                rows = conn.execute(
-                    "SELECT DISTINCT provider_name FROM conversations ORDER BY provider_name"
-                ).fetchall()
-            providers = [row["provider_name"] for row in rows if row["provider_name"]]
+            stats = await repo.get_archive_stats()
+            providers = sorted(stats.providers.keys()) if stats.providers else []
 
             if not providers:
                 providers = ["chatgpt", "claude"]  # Fallback for empty DB
 
+            # Collect tree data: list of (provider_label, [(title, conv_id), ...])
+            tree_data: list[tuple[str, list[tuple[str, str]]]] = []
             for provider in providers:
-                provider_node = tree.root.add(provider.capitalize(), expand=False)
-
-                # Fetch summaries for this provider
-                summaries = repo.list_summaries(limit=50, provider=provider)
-                for summary in summaries:
-                    label = summary.title or summary.id
-                    # Store ID in data for retrieval
-                    provider_node.add_leaf(label, data=summary.id)
+                summaries = await repo.list_summaries(limit=50, provider=provider)
+                leaves = [(s.title or s.id, s.id) for s in summaries]
+                tree_data.append((provider.capitalize(), leaves))
 
         except Exception as e:
             self.notify(f"Failed to load browser: {e}", severity="error")
+            return
+
+        self._apply_tree(tree_data)
+
+    def _apply_tree(self, tree_data: list[tuple[str, list[tuple[str, str]]]]) -> None:
+        """Apply fetched tree data to DOM (runs on main thread)."""
+        tree = self.query_one("#browser-tree", Tree)
+        tree.root.expand()
+
+        for provider_label, leaves in tree_data:
+            provider_node = tree.root.add(provider_label, expand=False)
+            for label, conv_id in leaves:
+                provider_node.add_leaf(label, data=conv_id)
 
     async def on_tree_node_selected(self, message: Tree.NodeSelected[str]) -> None:
         """Handle tree node selection."""
         if not message.node.allow_expand and message.node.data:
             conv_id = str(message.node.data)
-            self.load_conversation(conv_id)
+            await self.load_conversation(conv_id)
 
-    def load_conversation(self, conversation_id: str) -> None:
+    async def load_conversation(self, conversation_id: str) -> None:
         """Load and display conversation content."""
-        repo = get_repository()
+        repo = self._get_repo()
 
-        conv = repo.get_eager(conversation_id)
+        conv = await repo.get_eager(conversation_id)
         if not conv:
             self.query_one("#markdown-viewer", MarkdownWidget).update(f"Error: Could not load {conversation_id}")
             return
 
-        # Render to Markdown
-        # We can use our existing render logic or just simple dump for now.
-        # A simple formatting:
-
-        md_lines = [f"# {conv.title or 'Untitled'}", f"*{conv.created_at}*", ""]
-
-        for msg in conv.messages:
-            role_icon = "👤" if msg.role == "user" else "🤖"
-            md_lines.append(f"### {role_icon} {(msg.role or 'unknown').upper()}")
-            md_lines.append(msg.text or "*[No content]*")
-            md_lines.append("")
-
-            if msg.attachments:
-                md_lines.append(f"**Attachments:** {len(msg.attachments)}")
-                md_lines.append("")
-
-        self.query_one("#markdown-viewer", MarkdownWidget).update("\n".join(md_lines))
+        md_text = format_conversation_markdown(conv)
+        self.query_one("#markdown-viewer", MarkdownWidget).update(md_text)

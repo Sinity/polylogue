@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
@@ -8,15 +9,29 @@ from textual.widgets import DataTable, Input
 from textual.widgets import Markdown as MarkdownWidget
 
 from polylogue.config import Config
-from polylogue.services import get_repository
+
+if TYPE_CHECKING:
+    from polylogue.storage.repository import ConversationRepository
 
 
 class Search(Container):
     """Search widget for finding conversations."""
 
-    def __init__(self, config: Config | None = None) -> None:
+    def __init__(
+        self,
+        config: Config | None = None,
+        repository: ConversationRepository | None = None,
+    ) -> None:
         super().__init__()
         self.config = config
+        self._repository = repository
+
+    def _get_repo(self) -> ConversationRepository:
+        """Get the repository, falling back to the service singleton."""
+        if self._repository is not None:
+            return self._repository
+        from polylogue.services import get_repository
+        return get_repository()
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -37,14 +52,14 @@ class Search(Container):
         if not query:
             return
 
-        repo = get_repository()
+        repo = self._get_repo()
 
         # Perform search
         table = self.query_one("#search-results", DataTable)
         table.clear()
 
         try:
-            summaries = repo.search_summaries(query, limit=50)
+            summaries = await repo.search_summaries(query, limit=50)
         except sqlite3.OperationalError as exc:
             if "no such table" in str(exc):
                 table.add_row("—", "—", "Search index not built. Run: polylogue run", "")
@@ -67,13 +82,13 @@ class Search(Container):
             return
 
         conv_id = str(message.row_key.value)
-        self.load_conversation(conv_id)
+        await self.load_conversation(conv_id)
 
-    def load_conversation(self, conversation_id: str) -> None:
+    async def load_conversation(self, conversation_id: str) -> None:
         """Load and display conversation content (duplicate logic from Browser)."""
-        repo = get_repository()
+        repo = self._get_repo()
 
-        conv = repo.get_eager(conversation_id)
+        conv = await repo.get_eager(conversation_id)
         if not conv:
             self.query_one("#search-viewer", MarkdownWidget).update(f"Error: Could not load {conversation_id}")
             return
