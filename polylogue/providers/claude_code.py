@@ -356,7 +356,9 @@ class ClaudeCodeRecord(BaseModel):
         """Convert to harmonized MessageMeta."""
         # Extract token usage
         tokens = None
-        if isinstance(self.message, dict):
+        if isinstance(self.message, ClaudeCodeMessageContent) and self.message.usage:
+            tokens = self.message.usage.to_token_usage()
+        elif isinstance(self.message, dict):
             usage_raw = self.message.get("usage", {})
             if usage_raw:
                 tokens = TokenUsage(
@@ -373,7 +375,9 @@ class ClaudeCodeRecord(BaseModel):
 
         # Extract model
         model = None
-        if isinstance(self.message, dict):
+        if isinstance(self.message, ClaudeCodeMessageContent):
+            model = self.message.model
+        elif isinstance(self.message, dict):
             model = self.message.get("model")
 
         return MessageMeta(
