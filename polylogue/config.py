@@ -10,30 +10,28 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .errors import PolylogueError
 from .paths import (
-    ARCHIVE_ROOT,
-    DB_PATH,
-    RENDER_ROOT,
     DriveConfig,
     IndexConfig,
     Source,
+    archive_root,
+    db_path,
     get_drive_config,
     get_index_config,
     get_sources,
+    render_root,
 )
 
 
-class ConfigError(RuntimeError):
-    """Configuration error (kept for backward compatibility with error handling)."""
-
-    pass
+class ConfigError(PolylogueError):
+    """Configuration error."""
 
 
 @dataclass
 class Config:
     """Application configuration with hardcoded paths.
 
-    This class exists for backward compatibility with code that expects a Config object.
     All values are derived from polylogue.paths - there is no config file.
     """
 
@@ -46,7 +44,7 @@ class Config:
     @property
     def db_path(self) -> Path:
         """Database path (always XDG default)."""
-        return DB_PATH
+        return db_path()
 
 
 def get_config() -> Config:
@@ -56,15 +54,14 @@ def get_config() -> Config:
     All values come from XDG paths in polylogue.paths.
     """
     return Config(
-        archive_root=ARCHIVE_ROOT,
-        render_root=RENDER_ROOT,
+        archive_root=archive_root(),
+        render_root=render_root(),
         sources=get_sources(),
         drive_config=get_drive_config(),
         index_config=get_index_config(),
     )
 
 
-# Re-export from paths for backward compatibility
 __all__ = [
     "Config",
     "ConfigError",

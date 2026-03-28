@@ -26,15 +26,10 @@ from polylogue.sources.parsers.claude import (
     extract_text_from_segments as old_extract_segments,
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.sqlite import (
-    SCHEMA_VERSION,
-    _ensure_schema,
-    _json_or_none,
-    _run_migrations,
-    connection_context,
-    open_connection,
-)
+from polylogue.storage.backends.connection import connection_context, open_connection
+from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema, _run_migrations
 from polylogue.storage.store import (
+    _json_or_none,
     ConversationRecord,
     MessageRecord,
 )
@@ -425,7 +420,7 @@ class TestMigrations:
 
         # Patch _MIGRATIONS[2] to fail (simulating v2->v3 failure)
         # We allow v1->v2 to succeed
-        from polylogue.storage.backends.sqlite import _MIGRATIONS
+        from polylogue.storage.backends.schema import _MIGRATIONS
 
         def failing_migration(conn):
             raise RuntimeError("Simulated migration v2->v3 failure")
@@ -487,7 +482,7 @@ class TestMigrations:
         conn.close()
 
         # Patch _MIGRATIONS[3] to fail (patching the function won't work as dict has reference)
-        from polylogue.storage.backends.sqlite import _MIGRATIONS
+        from polylogue.storage.backends.schema import _MIGRATIONS
 
         def failing_migration(conn):
             raise RuntimeError("Simulated migration failure")
@@ -1111,10 +1106,10 @@ def test_default_db_path(tmp_path, monkeypatch):
     # Reimport to pick up new env
     import importlib
 
-    import polylogue.storage.backends.sqlite as sqlite_module
-    importlib.reload(sqlite_module)
+    import polylogue.storage.backends.connection as connection_module
+    importlib.reload(connection_module)
 
-    path = sqlite_module.default_db_path()
+    path = connection_module.default_db_path()
     assert str(xdg_data) in str(path)
 
 
