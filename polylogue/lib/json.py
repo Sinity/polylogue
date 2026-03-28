@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 
 import orjson
 
-logger = logging.getLogger(__name__)
+from polylogue.lib.log import get_logger
 
-# Export JSONDecodeError for compatibility
-JSONDecodeError = ValueError  # orjson.JSONDecodeError is not exposed, use ValueError
+logger = get_logger(__name__)
 
 
 def _default_encoder(user_default: Callable[[Any], Any] | None = None) -> Callable[[Any], Any]:

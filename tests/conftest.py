@@ -83,7 +83,7 @@ def workspace_env(tmp_path, monkeypatch):
         "config_path": config_dir / "config.json",
         "archive_root": archive_root,
         "data_root": data_dir,
-        "state_root": state_dir,  # Kept for backward compatibility
+        "state_dir": state_dir,
     }
 
 
@@ -187,7 +187,7 @@ def cli_workspace(tmp_path, monkeypatch):
         "config_path": config_path,
         "archive_root": archive_root,
         "data_root": data_dir,
-        "state_root": state_dir,  # Kept for backward compatibility
+        "state_dir": state_dir,
         "inbox_dir": inbox_dir,
         "render_root": render_root,
         "db_path": db_path,
