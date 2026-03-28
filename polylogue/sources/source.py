@@ -1,9 +1,12 @@
+"""Source detection, provider parsing, and conversation iteration."""
+
 from __future__ import annotations
 
 import json
 import logging
 import zipfile
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, BinaryIO
 
@@ -108,6 +111,9 @@ def detect_provider(payload: Any, path: Path) -> str | None:
             return "chatgpt"
         if claude.looks_like_ai(payload):
             return "claude"
+        # Gemini content-based detection (chunkedPrompt or chunks list)
+        if "chunkedPrompt" in payload or ("chunks" in payload and isinstance(payload.get("chunks"), list)):
+            return "gemini"
     if isinstance(payload, list):
         if claude.looks_like_code(payload):
             return "claude-code"
@@ -318,174 +324,13 @@ def _has_ingest_extension(path: Path) -> bool:
 def iter_source_conversations(
     source: Source, *, cursor_state: dict[str, Any] | None = None
 ) -> Iterable[ParsedConversation]:
-    if not source.path:
-        return
-    base = source.path.expanduser()
-    paths: list[Path] = []
-    if base.is_dir():
-        # Iterate all files and filter by extension (case-insensitive)
-        # Use os.walk with followlinks=True to traverse symlinked directories
-        import os
+    """Iterate over conversations from a source.
 
-        paths = []
-        for root, dirs, files in os.walk(base, followlinks=True):
-            # Prune directories that contain derived/analysis data
-            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
-            for filename in files:
-                file_path = Path(root) / filename
-                if _has_ingest_extension(file_path):
-                    paths.append(file_path)
-        paths = sorted(paths)
-    elif base.is_file():
-        paths.append(base)
-
-    # Build session index lookup for Claude Code enrichment
-    # Group paths by directory and load sessions-index.json for each
-    session_indices: dict[Path, dict[str, SessionIndexEntry]] = {}
-    for path in paths:
-        parent = path.parent
-        if parent not in session_indices:
-            index_path = parent / "sessions-index.json"
-            session_indices[parent] = parse_sessions_index(index_path)
-
-    if cursor_state is not None:
-        cursor_state["file_count"] = len(paths)
-        cursor_state.setdefault("failed_files", [])
-        cursor_state.setdefault("failed_count", 0)
-        if paths:
-            try:
-                latest = max(paths, key=lambda p: p.stat().st_mtime)
-                cursor_state["latest_mtime"] = latest.stat().st_mtime
-                cursor_state["latest_path"] = str(latest)
-            except OSError:
-                pass
-
-    for path in paths:
-        try:
-            # Detect provider from path name first to decide iteration strategy
-            provider_hint = detect_provider(None, path) or source.name
-            # Providers where one file (even JSONL) is one conversation
-            group_providers = {"claude-code", "codex", "gemini", "drive"}
-            should_group = provider_hint in group_providers
-
-            if path.suffix.lower() == ".zip":
-                with zipfile.ZipFile(path) as zf:
-                    for info in zf.infolist():
-                        # Skip directories
-                        if info.is_dir():
-                            continue
-
-                        name = info.filename
-                        lower_name = name.lower()
-
-                        # Filter Claude AI ZIP: only process conversations.json
-                        if provider_hint in ("claude", "claude-ai"):
-                            basename = lower_name.split("/")[-1]
-                            if basename not in ("conversations.json",):
-                                continue
-
-                        # ZIP bomb protection
-                        if info.compress_size > 0:
-                            ratio = info.file_size / info.compress_size
-                            if ratio > MAX_COMPRESSION_RATIO:
-                                LOGGER.warning(
-                                    "Skipping suspicious file %s in %s: compression ratio %.1f exceeds limit",
-                                    name,
-                                    path,
-                                    ratio,
-                                )
-                                if cursor_state is not None:
-                                    cursor_state["failed_files"].append(
-                                        {
-                                            "path": f"{path}:{name}",
-                                            "error": f"Suspicious compression ratio: {ratio:.1f}",
-                                        }
-                                    )
-                                    cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
-                                continue
-
-                        if info.file_size > MAX_UNCOMPRESSED_SIZE:
-                            LOGGER.warning(
-                                "Skipping oversized file %s in %s: %d bytes exceeds limit", name, path, info.file_size
-                            )
-                            if cursor_state is not None:
-                                cursor_state["failed_files"].append(
-                                    {"path": f"{path}:{name}", "error": f"File size {info.file_size} exceeds limit"}
-                                )
-                                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
-                            continue
-
-                        if lower_name.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
-                            with zf.open(name) as handle:
-                                if lower_name.endswith((".jsonl", ".jsonl.txt", ".ndjson")) and should_group:
-                                    # Group all lines into one conversation
-                                    payloads = list(_iter_json_stream(handle, name))
-                                    if payloads:
-                                        yield from _parse_json_payload(provider_hint, payloads, path.stem)
-                                else:
-                                    # For .json files, we might need to disable unpacking if it's a grouped provider
-                                    unpack = not (lower_name.endswith(".json") and should_group)
-                                    for payload in _iter_json_stream(handle, name, unpack_lists=unpack):
-                                        try:
-                                            provider = detect_provider(payload, path) or provider_hint
-                                            yield from _parse_json_payload(provider, payload, path.stem)
-                                        except Exception:
-                                            LOGGER.exception("Error processing payload from %s", name)
-                                            raise
-            else:
-                # Get session index for this directory (for claude-code enrichment)
-                dir_index = session_indices.get(path.parent, {})
-
-                with path.open("rb") as handle:
-                    is_jsonl = path.suffix.lower() in (".jsonl", ".ndjson") or path.name.lower().endswith(".jsonl.txt")
-                    if is_jsonl and should_group:
-                        # Group all lines into one conversation
-                        payloads = list(_iter_json_stream(handle, path.name))
-                        if payloads:
-                            for conv in _parse_json_payload(provider_hint, payloads, path.stem):
-                                # Enrich claude-code with session index metadata
-                                if provider_hint == "claude-code" and conv.provider_conversation_id in dir_index:
-                                    conv = enrich_conversation_from_index(
-                                        conv, dir_index[conv.provider_conversation_id]
-                                    )
-                                yield conv
-                            continue
-
-                    unpack = not (path.suffix.lower() == ".json" and should_group)
-                    for payload in _iter_json_stream(handle, path.name, unpack_lists=unpack):
-                        try:
-                            provider = detect_provider(payload, path) or provider_hint
-                            for conv in _parse_json_payload(provider, payload, path.stem):
-                                # Enrich claude-code with session index metadata
-                                if provider == "claude-code" and conv.provider_conversation_id in dir_index:
-                                    conv = enrich_conversation_from_index(
-                                        conv, dir_index[conv.provider_conversation_id]
-                                    )
-                                yield conv
-                        except Exception:
-                            LOGGER.exception("Error processing payload from %s", path)
-                            raise
-        except FileNotFoundError as exc:
-            # TOCTOU race condition: file existed during directory scan but was deleted before read
-            LOGGER.warning("File disappeared during processing (TOCTOU race): %s", path)
-            if cursor_state is not None:
-                cursor_state["failed_files"].append(
-                    {"path": str(path), "error": f"File not found (may have been deleted): {exc}"}
-                )
-                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
-            continue
-        except (json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
-            LOGGER.warning("Failed to parse %s: %s", path, exc)
-            if cursor_state is not None:
-                cursor_state["failed_files"].append({"path": str(path), "error": str(exc)})
-                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
-            continue
-        except Exception as exc:
-            LOGGER.error("Unexpected error processing %s: %s", path, exc)
-            if cursor_state is not None:
-                cursor_state["failed_files"].append({"path": str(path), "error": str(exc)})
-                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
-            continue
+    Delegates to iter_source_conversations_with_raw with capture_raw=False
+    and strips the raw data from the yielded tuples.
+    """
+    for _raw, conv in iter_source_conversations_with_raw(source, cursor_state=cursor_state, capture_raw=False):
+        yield conv
 
 
 def iter_source_conversations_with_raw(
@@ -560,8 +405,6 @@ def iter_source_conversations_with_raw(
             if capture_raw:
                 try:
                     stat = path.stat()
-                    from datetime import datetime, timezone
-
                     file_mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
                 except OSError:
                     pass
@@ -572,8 +415,6 @@ def iter_source_conversations_with_raw(
                 if capture_raw:
                     try:
                         stat = path.stat()
-                        from datetime import datetime, timezone
-
                         zip_mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
                     except OSError:
                         pass

@@ -15,24 +15,8 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        # Apply Python package overrides (fix dependency-injector marked as broken)
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [
-            (final: prev: {
-              python313Packages = prev.python313Packages.overrideScope (
-                pyfinal: pysuper: {
-                  dependency-injector = pysuper.dependency-injector.overridePythonAttrs (old: {
-                    nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pyfinal.cython ];
-                    doCheck = false;
-                    meta = (old.meta or { }) // {
-                      broken = false;
-                    };
-                  });
-                }
-              );
-            })
-          ];
         };
         python = pkgs.python313;
 
@@ -71,15 +55,13 @@
             click
             tenacity
             dateparser
-            fastapi
-            uvicorn
             orjson
             structlog
             pydantic
             pydantic-settings
-            dependency-injector
             aiosqlite
             glom
+            mcp
           ];
 
           # Skip tests in build (run in checks instead)

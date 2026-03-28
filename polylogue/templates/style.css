@@ -205,6 +205,46 @@ th {
     font-weight: 700;
 }
 
+/* Light Mode */
+[data-theme="light"] {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f9fafb;
+    --bg-elevated: #f3f4f6;
+    --text-primary: #111827;
+    --text-secondary: #4b5563;
+    --accent: #4f46e5;
+    --accent-glow: rgba(79, 70, 229, 0.2);
+    --border: #e5e7eb;
+    --glass: rgba(0, 0, 0, 0.03);
+    --glass-border: rgba(0, 0, 0, 0.08);
+}
+
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+        --bg-primary: #ffffff;
+        --bg-secondary: #f9fafb;
+        --bg-elevated: #f3f4f6;
+        --text-primary: #111827;
+        --text-secondary: #4b5563;
+        --accent: #4f46e5;
+        --accent-glow: rgba(79, 70, 229, 0.2);
+        --border: #e5e7eb;
+        --glass: rgba(0, 0, 0, 0.03);
+        --glass-border: rgba(0, 0, 0, 0.08);
+    }
+
+    h1 {
+        background: linear-gradient(to bottom right, #111827, #4b5563);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+
+    .user-avatar {
+        background: var(--accent);
+        color: white;
+    }
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .container { padding: 2rem 1rem; }

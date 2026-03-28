@@ -28,7 +28,7 @@ import logging
 import random
 from collections.abc import Callable
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from polylogue.lib.dates import parse_date
 
@@ -41,6 +41,8 @@ if TYPE_CHECKING:
 
 # Sort field options
 SortField = Literal["date", "tokens", "messages", "words", "longest", "random"]
+
+_T = TypeVar("_T")
 
 
 class ConversationFilter:
@@ -224,6 +226,49 @@ class ConversationFilter:
 
     # --- Terminal methods (execute query) ---
 
+    def _apply_common_filters(
+        self,
+        items: builtins.list[_T],
+        *,
+        sql_pushed: bool = False,
+    ) -> builtins.list[_T]:
+        """Apply metadata-level filters shared by Conversation and ConversationSummary.
+
+        Both types expose .provider, .updated_at, .display_title, .tags, .id, .summary
+        via duck typing, so this single method handles all metadata filtering.
+        """
+        results = list(items)
+
+        if not sql_pushed:
+            if self._providers:
+                results = [x for x in results if x.provider in self._providers]
+            if self._since_date:
+                results = [x for x in results if x.updated_at and x.updated_at >= self._since_date]
+            if self._until_date:
+                results = [x for x in results if x.updated_at and x.updated_at <= self._until_date]
+            if self._title_pattern:
+                pattern_lower = self._title_pattern.lower()
+                results = [x for x in results if x.display_title and pattern_lower in x.display_title.lower()]
+
+        if self._excluded_providers:
+            excluded_set = set(self._excluded_providers)
+            results = [x for x in results if x.provider not in excluded_set]
+
+        if self._tags:
+            tag_set = set(self._tags)
+            results = [x for x in results if tag_set.intersection(x.tags)]
+        if self._excluded_tags:
+            excluded_tag_set = set(self._excluded_tags)
+            results = [x for x in results if not excluded_tag_set.intersection(x.tags)]
+
+        if self._id_prefix:
+            results = [x for x in results if str(x.id).startswith(self._id_prefix)]
+
+        if "summary" in self._has_types:
+            results = [x for x in results if x.summary]
+
+        return results
+
     def _apply_filters(
         self,
         conversations: builtins.list[Conversation],
@@ -232,46 +277,12 @@ class ConversationFilter:
     ) -> builtins.list[Conversation]:
         """Apply in-memory filters to conversation list.
 
-        Args:
-            conversations: List of conversations to filter
-            sql_pushed: If True, provider/date/title filters were already
-                       applied in SQL and are skipped here to avoid double-filtering.
-
-        Returns:
-            Filtered list
+        Delegates shared metadata filters to _apply_common_filters, then applies
+        Conversation-specific filters that require message access.
         """
-        results = list(conversations)
+        results = self._apply_common_filters(conversations, sql_pushed=sql_pushed)
 
-        # Provider filters (skip if already pushed to SQL)
-        if not sql_pushed:
-            if self._providers:
-                results = [c for c in results if c.provider in self._providers]
-            if self._since_date:
-                results = [c for c in results if c.updated_at and c.updated_at >= self._since_date]
-            if self._until_date:
-                results = [c for c in results if c.updated_at and c.updated_at <= self._until_date]
-            if self._title_pattern:
-                pattern_lower = self._title_pattern.lower()
-                results = [c for c in results if c.display_title and pattern_lower in c.display_title.lower()]
-
-        # These filters are never pushed to SQL
-        if self._excluded_providers:
-            excluded_set = set(self._excluded_providers)
-            results = [c for c in results if c.provider not in excluded_set]
-
-        # Tag filters (use sets for O(1) lookup)
-        if self._tags:
-            tag_set = set(self._tags)
-            results = [c for c in results if tag_set.intersection(c.tags)]
-        if self._excluded_tags:
-            excluded_tag_set = set(self._excluded_tags)
-            results = [c for c in results if not excluded_tag_set.intersection(c.tags)]
-
-        # ID prefix filter
-        if self._id_prefix:
-            results = [c for c in results if str(c.id).startswith(self._id_prefix)]
-
-        # Content type filters
+        # Content type filters requiring message access
         if self._has_types:
             for content_type in self._has_types:
                 if content_type == "thinking":
@@ -280,8 +291,6 @@ class ConversationFilter:
                     results = [c for c in results if any(m.is_tool_use for m in c.messages)]
                 elif content_type == "attachments":
                     results = [c for c in results if any(m.attachments for m in c.messages)]
-                elif content_type == "summary":
-                    results = [c for c in results if c.summary]
 
         # Negative FTS — single pass combining all terms
         if self._negative_fts_terms:
@@ -299,32 +308,30 @@ class ConversationFilter:
 
             results = [c for c in results if not _has_neg_term(c)]
 
-        # Custom predicates
         for predicate in self._predicates:
             results = [c for c in results if predicate(c)]
 
         return results
 
-    def _apply_sort(self, conversations: builtins.list[Conversation]) -> builtins.list[Conversation]:
-        """Apply sorting to conversation list.
-
-        Args:
-            conversations: List of conversations to sort
-
-        Returns:
-            Sorted list
-        """
+    def _apply_sort_generic(
+        self,
+        items: builtins.list[_T],
+        sort_key_fn: Callable[[_T], Any],
+    ) -> builtins.list[_T]:
+        """Apply sorting using the given key function."""
         if self._sort_field == "random":
-            shuffled = list(conversations)
+            shuffled = list(items)
             random.shuffle(shuffled)
             return shuffled
+        return sorted(items, key=sort_key_fn, reverse=not self._sort_reverse)
+
+    def _apply_sort(self, conversations: builtins.list[Conversation]) -> builtins.list[Conversation]:
+        """Apply sorting to conversation list."""
+        from datetime import timezone
+
+        dt_min = datetime.min.replace(tzinfo=timezone.utc)
 
         def sort_key(c: Conversation) -> Any:
-            # Use UTC-aware min for comparison with aware timestamps
-            from datetime import timezone
-
-            dt_min = datetime.min.replace(tzinfo=timezone.utc)
-
             if self._sort_field == "date":
                 return c.updated_at or dt_min
             elif self._sort_field == "messages":
@@ -334,15 +341,10 @@ class ConversationFilter:
             elif self._sort_field == "longest":
                 return max((m.word_count for m in c.messages), default=0)
             elif self._sort_field == "tokens":
-                # Approximate: 1 token ≈ 4 chars
                 return sum(len(m.text or "") for m in c.messages) // 4
             return c.updated_at or dt_min
 
-        return sorted(
-            conversations,
-            key=sort_key,
-            reverse=not self._sort_reverse,  # Default is descending
-        )
+        return self._apply_sort_generic(conversations, sort_key)
 
     def _sql_pushdown_params(self) -> dict[str, object]:
         """Build kwargs for repository list/list_summaries that push filters to SQL.
@@ -400,79 +402,78 @@ class ConversationFilter:
         # Simple case: limit is the only constraint, with small safety margin
         return max(self._limit_count * 2, 50)
 
-    def _fetch_candidates(self) -> builtins.list[Conversation]:
-        """Fetch candidate conversations from repository.
+    def _fetch_generic(
+        self,
+        get_by_id: Callable[[str], _T | None],
+        search: Callable[[str, int, builtins.list[str] | None], builtins.list[_T]],
+        list_all: Callable[..., builtins.list[_T]],
+    ) -> builtins.list[_T]:
+        """Fetch candidate items from repository using provided accessors.
 
-        Uses FTS search if terms specified, otherwise lists all.
-        Pushes provider, date, and title filters into SQL when possible.
-        Adapts fetch size to user's limit and filter complexity.
-
-        Returns:
-            List of lazy Conversation objects
+        Handles three fetch strategies: ID prefix resolution, FTS search,
+        and full list with SQL pushdown. Callers provide type-specific
+        repository methods as callbacks.
         """
-        # Fast path: resolve by ID prefix directly (avoids loading all conversations)
         if self._id_prefix and not self._fts_terms:
             resolved_id = self._repo.resolve_id(self._id_prefix)
             if resolved_id:
-                conv = self._repo.get(str(resolved_id))
-                return [conv] if conv else []
-            # Ambiguous prefix — fall through to list + post-filter
+                item = get_by_id(str(resolved_id))
+                return [item] if item else []
 
         fetch_limit = self._effective_fetch_limit()
 
-        # If we have FTS terms, use search
         if self._fts_terms:
             query = " ".join(self._fts_terms)
             try:
                 search_limit = max(fetch_limit, 100) if fetch_limit is not None else 10000
-                # Push provider filter into SQL for efficiency
-                return self._repo.search(
-                    query, limit=search_limit, providers=self._providers or None
-                )
+                return search(query, search_limit, self._providers or None)
             except Exception as exc:
                 logger.debug("FTS search failed, falling back to list: %s", exc)
 
-        # Push all SQL-eligible filters to backend
         sql_params = self._sql_pushdown_params()
-        return self._repo.list(limit=fetch_limit, **sql_params)
+        return list_all(limit=fetch_limit, **sql_params)
+
+    def _fetch_candidates(self) -> builtins.list[Conversation]:
+        """Fetch candidate conversations from repository."""
+        return self._fetch_generic(
+            self._repo.get,
+            lambda q, lim, provs: self._repo.search(q, limit=lim, providers=provs),
+            self._repo.list,
+        )
+
+    def _execute_pipeline(
+        self,
+        candidates: builtins.list[_T],
+        apply_filters: Callable[[builtins.list[_T], bool], builtins.list[_T]],
+        apply_sort: Callable[[builtins.list[_T]], builtins.list[_T]],
+    ) -> builtins.list[_T]:
+        """Run the shared filter → sort → sample → limit pipeline."""
+        sql_pushed = not self._fts_terms and not self._id_prefix
+        filtered = apply_filters(candidates, sql_pushed)
+        sorted_results = apply_sort(filtered)
+
+        if self._sample_count is not None and self._sample_count < len(sorted_results):
+            sorted_results = random.sample(sorted_results, self._sample_count)
+        if self._limit_count is not None:
+            sorted_results = sorted_results[: self._limit_count]
+        return sorted_results
 
     def list(self) -> builtins.list[Conversation]:
-        """Execute query and return matching conversations.
-
-        Returns:
-            List of Conversation objects matching all filters
-        """
-        # If semantic search is requested, use vector provider
+        """Execute query and return matching conversations."""
+        # Semantic search has its own fetch path
         if self._similar_text:
             candidates = self._repo.search_similar(
                 self._similar_text,
                 limit=self._limit_count or 10,
                 vector_provider=self._vector_provider,
             )
-            # Still apply in-memory filters
-            filtered = self._apply_filters(candidates)
-            return filtered
+            return self._apply_filters(candidates)
 
-        # Fetch candidates (with SQL pushdown for non-FTS path)
-        candidates = self._fetch_candidates()
-
-        # FTS path doesn't push date/title, so those still need in-memory filtering.
-        # Non-FTS path pushes provider/date/title to SQL.
-        sql_pushed = not self._fts_terms and not self._id_prefix
-        filtered = self._apply_filters(candidates, sql_pushed=sql_pushed)
-
-        # Apply sorting
-        sorted_results = self._apply_sort(filtered)
-
-        # Apply sampling (before limit)
-        if self._sample_count is not None and self._sample_count < len(sorted_results):
-            sorted_results = random.sample(sorted_results, self._sample_count)
-
-        # Apply limit
-        if self._limit_count is not None:
-            sorted_results = sorted_results[: self._limit_count]
-
-        return sorted_results
+        return self._execute_pipeline(
+            self._fetch_candidates(),
+            lambda items, pushed: self._apply_filters(items, sql_pushed=pushed),
+            self._apply_sort,
+        )
 
     def first(self) -> Conversation | None:
         """Execute query and return first matching conversation.
@@ -611,40 +612,12 @@ class ConversationFilter:
         return self._sort_field in ("messages", "words", "longest", "tokens")
 
     def _fetch_summary_candidates(self) -> builtins.list[ConversationSummary]:
-        """Fetch candidate conversation summaries (lightweight, no messages).
-
-        Uses FTS search if terms specified, otherwise lists all summaries.
-        Pushes provider, date, and title filters into SQL when possible.
-
-        Returns:
-            List of ConversationSummary objects
-        """
-
-        # Fast path: resolve by ID prefix directly
-        if self._id_prefix and not self._fts_terms:
-            resolved_id = self._repo.resolve_id(self._id_prefix)
-            if resolved_id:
-                summary = self._repo.get_summary(str(resolved_id))
-                return [summary] if summary else []
-            # Ambiguous prefix — fall through to list + post-filter
-
-        fetch_limit = self._effective_fetch_limit()
-
-        # If we have FTS terms, use search
-        if self._fts_terms:
-            query = " ".join(self._fts_terms)
-            try:
-                search_limit = max(fetch_limit, 100) if fetch_limit is not None else 10000
-                # Push provider filter into SQL for efficiency
-                return self._repo.search_summaries(
-                    query, limit=search_limit, providers=self._providers or None
-                )
-            except Exception as exc:
-                logger.debug("FTS summary search failed, falling back to list: %s", exc)
-
-        # Push all SQL-eligible filters to backend
-        sql_params = self._sql_pushdown_params()
-        return self._repo.list_summaries(limit=fetch_limit, **sql_params)
+        """Fetch candidate conversation summaries (lightweight, no messages)."""
+        return self._fetch_generic(
+            self._repo.get_summary,
+            lambda q, lim, provs: self._repo.search_summaries(q, limit=lim, providers=provs),
+            self._repo.list_summaries,
+        )
 
     def _apply_summary_filters(
         self,
@@ -652,122 +625,33 @@ class ConversationFilter:
         *,
         sql_pushed: bool = False,
     ) -> builtins.list[ConversationSummary]:
-        """Apply filters that work on summaries (no message access needed).
-
-        Args:
-            summaries: List of ConversationSummary objects
-            sql_pushed: If True, provider/date/title filters were already
-                       applied in SQL and are skipped here.
-
-        Returns:
-            Filtered list of summaries
-        """
-
-        results: builtins.list[ConversationSummary] = list(summaries)
-
-        # Skip filters already pushed to SQL
-        if not sql_pushed:
-            if self._providers:
-                results = [s for s in results if s.provider in self._providers]
-            if self._since_date:
-                results = [s for s in results if s.updated_at and s.updated_at >= self._since_date]
-            if self._until_date:
-                results = [s for s in results if s.updated_at and s.updated_at <= self._until_date]
-            if self._title_pattern:
-                pattern_lower = self._title_pattern.lower()
-                results = [s for s in results if s.display_title and pattern_lower in s.display_title.lower()]
-
-        # These filters are never pushed to SQL
-        if self._excluded_providers:
-            excluded_set = set(self._excluded_providers)
-            results = [s for s in results if s.provider not in excluded_set]
-
-        # Tag filters (use sets for O(1) lookup)
-        if self._tags:
-            tag_set = set(self._tags)
-            results = [s for s in results if tag_set.intersection(s.tags)]
-        if self._excluded_tags:
-            excluded_tag_set = set(self._excluded_tags)
-            results = [s for s in results if not excluded_tag_set.intersection(s.tags)]
-
-        # ID prefix filter
-        if self._id_prefix:
-            results = [s for s in results if str(s.id).startswith(self._id_prefix)]
-
-        # 'summary' has type (doesn't need messages)
-        if "summary" in self._has_types:
-            results = [s for s in results if s.summary]
-
-        return results
+        """Apply filters that work on summaries (no message access needed)."""
+        return self._apply_common_filters(summaries, sql_pushed=sql_pushed)
 
     def _apply_summary_sort(self, summaries: builtins.list[ConversationSummary]) -> builtins.list[ConversationSummary]:
-        """Apply sorting to summary list (limited to summary-compatible sorts).
-
-        Args:
-            summaries: List of summaries to sort
-
-        Returns:
-            Sorted list
-        """
+        """Apply sorting to summary list (limited to date-based sorts)."""
         from datetime import timezone
 
-        if self._sort_field == "random":
-            shuffled: builtins.list[ConversationSummary] = list(summaries)
-            random.shuffle(shuffled)
-            return shuffled
-
-        def sort_key(s: ConversationSummary) -> Any:
-            dt_min = datetime.min.replace(tzinfo=timezone.utc)
-            if self._sort_field == "date":
-                return s.updated_at or dt_min
-            # For content-dependent sorts, fall back to date
-            return s.updated_at or dt_min
-
-        return sorted(
-            summaries,
-            key=sort_key,
-            reverse=not self._sort_reverse,
-        )
+        dt_min = datetime.min.replace(tzinfo=timezone.utc)
+        return self._apply_sort_generic(summaries, lambda s: s.updated_at or dt_min)
 
     def list_summaries(self) -> builtins.list[ConversationSummary]:
         """Execute query and return lightweight summaries (no messages loaded).
 
-        This is the memory-efficient alternative to list() for cases where
-        you don't need message content. Returns ConversationSummary objects
-        that have metadata but no messages.
-
-        Note: If content-dependent filters are set (regex, has:thinking, etc.),
-        this will raise an error. Use list() instead for those cases.
-
-        Returns:
-            List of ConversationSummary objects matching all summary-compatible filters
+        Memory-efficient alternative to list() for cases where you don't need
+        message content. Raises ValueError if content-dependent filters are set.
         """
-
         if self._needs_content_loading():
             raise ValueError(
                 "Cannot use list_summaries() with content-dependent filters "
                 "(regex, has:thinking, has:tools, etc.). Use list() instead."
             )
 
-        # Fetch lightweight candidates (with SQL pushdown for non-FTS path)
-        candidates = self._fetch_summary_candidates()
-
-        # Non-FTS path pushes provider/date/title to SQL
-        sql_pushed = not self._fts_terms and not self._id_prefix
-        filtered = self._apply_summary_filters(candidates, sql_pushed=sql_pushed)
-
-        # Apply sorting
-        sorted_results = self._apply_summary_sort(filtered)
-
-        # Apply sampling
-        if self._sample_count is not None and self._sample_count < len(sorted_results):
-            sorted_results = random.sample(sorted_results, self._sample_count)
-
-        # Apply limit
-        if self._limit_count is not None:
-            sorted_results = sorted_results[: self._limit_count]
-
-        return sorted_results
+        return self._execute_pipeline(
+            self._fetch_summary_candidates(),
+            lambda items, pushed: self._apply_summary_filters(items, sql_pushed=pushed),
+            self._apply_summary_sort,
+        )
 
     def can_use_summaries(self) -> bool:
         """Check if this filter can use lightweight summaries.
