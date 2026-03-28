@@ -1,4 +1,4 @@
-"""Acquisition service for pipeline operations.
+"""Async acquisition service for pipeline operations.
 
 The acquire stage reads source files and stores raw bytes to raw_conversations.
 It does NOT parse - that's the parse stage's job.
@@ -9,7 +9,9 @@ Data flow:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import sqlite3
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -20,9 +22,11 @@ from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import Source
-    from polylogue.storage.backends.sqlite import SQLiteBackend
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
+
+__all__ = ["AcquisitionService", "AcquireResult"]
 
 
 class AcquireResult:
@@ -50,14 +54,14 @@ class AcquisitionService:
     """
 
     def __init__(self, backend: SQLiteBackend):
-        """Initialize the acquisition service.
+        """Initialize the async acquisition service.
 
         Args:
-            backend: SQLite backend for database operations
+            backend: Async SQLite backend for database operations
         """
         self.backend = backend
 
-    def acquire_sources(
+    async def acquire_sources(
         self,
         sources: list[Source],
         *,
@@ -66,7 +70,7 @@ class AcquisitionService:
         """Acquire raw data from multiple sources.
 
         Reads source files and stores raw bytes in raw_conversations.
-        This is a single-threaded operation - no concurrent database access.
+        Source iteration is performed in a thread pool to avoid blocking.
 
         Args:
             sources: List of sources to acquire from
@@ -81,9 +85,10 @@ class AcquisitionService:
             logger.debug("Acquiring from source", source=source.name)
 
             try:
-                for raw_data, _parsed in iter_source_conversations_with_raw(
+                # Run the sync iterator in a thread pool to avoid blocking
+                for raw_data, _parsed in await asyncio.to_thread(
+                    self._iter_source_conversations,
                     source,
-                    capture_raw=True,
                 ):
                     if raw_data is None:
                         # This shouldn't happen with capture_raw=True, but handle it
@@ -92,13 +97,13 @@ class AcquisitionService:
                         continue
 
                     try:
-                        raw_id = self._store_raw(raw_data, source.name)
+                        raw_id = await self._store_raw(raw_data, source.name)
                         if raw_id:
                             result.counts["acquired"] += 1
                             result.raw_ids.append(raw_id)
                         else:
                             result.counts["skipped"] += 1
-                    except Exception as exc:
+                    except sqlite3.DatabaseError as exc:
                         logger.error(
                             "Failed to store raw conversation",
                             source=source.name,
@@ -127,7 +132,24 @@ class AcquisitionService:
 
         return result
 
-    def _store_raw(self, raw_data: RawConversationData, source_name: str) -> str | None:
+    @staticmethod
+    def _iter_source_conversations(source: Source) -> list[tuple[RawConversationData | None, Any]]:
+        """Wrapper for sync source iteration to run in thread pool.
+
+        Args:
+            source: Source to iterate
+
+        Returns:
+            List of (raw_data, parsed) tuples
+        """
+        return list(
+            iter_source_conversations_with_raw(
+                source,
+                capture_raw=True,
+            )
+        )
+
+    async def _store_raw(self, raw_data: RawConversationData, source_name: str) -> str | None:
         """Store raw conversation data.
 
         Args:
@@ -151,6 +173,6 @@ class AcquisitionService:
             file_mtime=raw_data.file_mtime,
         )
 
-        if self.backend.save_raw_conversation(record):
+        if await self.backend.save_raw_conversation(record):
             return raw_id
         return None

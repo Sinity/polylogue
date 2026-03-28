@@ -274,8 +274,7 @@ def test_chatgpt_metadata_extraction(metadata, expected_type, desc):
         # (depends on content_blocks implementation)
         pass
     elif expected_type is None:
-        # No special metadata
-        assert True
+        pass  # No special metadata expected
 
 
 # -----------------------------------------------------------------------------

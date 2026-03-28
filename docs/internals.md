@@ -1,6 +1,8 @@
-# Polylogue
+# Internals Reference
 
-> Update when adding features or changing behaviors. See `~/.claude/CLAUDE.md` for philosophy.
+> Dense implementation reference for developers working on the codebase.
+> For architecture overview, see [architecture.md](architecture.md).
+> For user-facing API docs, see [library-api.md](library-api.md).
 
 **Mission**: Local-first AI chat archive (ChatGPT, Claude, Codex, Gemini → SQLite + FTS5 + sqlite-vec)
 
@@ -28,37 +30,12 @@ uv run polylogue mcp                          # MCP server (stdio)
 
 **Library API**:
 ```python
-# Sync
-with Polylogue() as archive:
-    convs = archive.get_conversations(["id1", "id2", "id3"])
-    results = archive.filter().contains("python").provider("claude").list()
-
-# Async (full parity)
-async with AsyncPolylogue() as archive:
+async with Polylogue() as archive:
     stats = await archive.stats()  # Returns ArchiveStats
     convs = await archive.get_conversations(["id1", "id2"])
     results = await archive.search("error handling")
+    filtered = await archive.filter().contains("python").provider("claude").list()
     await archive.rebuild_index()
-```
-
----
-
-## Core Architecture
-
-| Aspect | Implementation | Behavior |
-|--------|----------------|----------|
-| **Storage** | `SQLiteBackend` + `AsyncSQLiteBackend` | Thread-local (sync), aiosqlite (async) |
-| **Search** | `SearchProvider` protocol | FTS5 (local), sqlite-vec (vector), LRU cache |
-| **Rendering** | Markdown/HTML renderers | Via `--format` flag |
-| **Services** | `polylogue.services` module | Singleton factories for backend + repository |
-| **Pipeline** | `async_run_sources` (async-first) | Acquire → Parse → Render → Index |
-| **Thread safety** | `_WRITE_LOCK` + thread-local (sync), `asyncio.Lock` (async) | Write serialization |
-| **Deduplication** | SHA-256 + NFC normalization | Same content → same hash → skip |
-
-**Data Flow**:
-```
-JSON/ZIP/Drive → detect_provider() → Parse + extract content_blocks →
-Hash (NFC) → Store (under lock) → Render (parallel) → Index
 ```
 
 ---
@@ -82,9 +59,8 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 |------|---------|
 | `lib/models.py` | Message/Conversation with `is_thinking`, `is_tool_use`, `is_substantive` |
 | `lib/projections.py` | Fluent API: `conv.project().substantive().min_words(50).execute()` |
-| `lib/filters.py` | Conversation filter chain: `p.filter().provider("claude").list()` |
-| `facade.py` | `Polylogue` — sync library API |
-| `async_facade.py` | `AsyncPolylogue` — async library API (full parity) |
+| `lib/filters.py` | Conversation filter chain: `await p.filter().provider("claude").list()` |
+| `facade.py` | `Polylogue` — async-first library API |
 | `services.py` | Singleton factories: `get_backend()`, `get_repository()` |
 | `protocols.py` | SearchProvider, VectorProvider (storage protocol deleted) |
 | `types.py` | NewType IDs: ConversationId, MessageId, AttachmentId |
@@ -93,11 +69,12 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 | File | Purpose |
 |------|---------|
 | `storage/store.py` | Record definitions, `_WRITE_LOCK` |
-| `storage/repository.py` | StorageRepository (write coordination) |
-| `storage/backends/sqlite.py` | SQLiteBackend (schema v5, migrations) |
+| `storage/repository.py` | ConversationRepository (write coordination) |
+| `storage/backends/async_sqlite.py` | SQLiteBackend (async-first, aiosqlite) |
+| `storage/backends/connection.py` | Sync connection pool, open_connection, query builders |
+| `storage/store.py` | Row mappers, record storage functions |
 | `storage/search_providers/fts5.py` | FTS5 search (incremental, query escaping) |
 | `storage/search_providers/sqlite_vec.py` | sqlite-vec vector search |
-| `storage/backends/connection.py` | Thread-local connections, `connection_context()` |
 
 ### Sources (ingestion + parsing)
 | File | Purpose |
@@ -111,14 +88,12 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 ### Pipeline
 | File | Purpose |
 |------|---------|
-| `pipeline/async_runner.py` | Orchestrates acquire → parse → render → index (async-first) |
-| `pipeline/async_prepare.py` | Async record preparation and dedup |
-| `pipeline/services/async_acquisition.py` | AsyncAcquisitionService (raw data storage) |
-| `pipeline/services/async_parsing.py` | AsyncParsingService (raw → typed records) |
-| `pipeline/services/async_indexing.py` | AsyncIndexService (FTS5 management) |
-| `pipeline/services/async_rendering.py` | AsyncRenderService (concurrent render) |
-| `pipeline/services/indexing.py` | IndexService (sync, used by facade) |
-| `pipeline/services/rendering.py` | RenderService (sync fallback) |
+| `pipeline/runner.py` | Orchestrates acquire → parse → render → index (async-first) |
+| `pipeline/prepare.py` | Record preparation and dedup |
+| `pipeline/services/acquisition.py` | AcquisitionService (raw data storage) |
+| `pipeline/services/parsing.py` | ParsingService (raw → typed records) |
+| `pipeline/services/indexing.py` | IndexService (FTS5 management) |
+| `pipeline/services/rendering.py` | RenderService (concurrent render) |
 
 ### CLI
 | File | Purpose |
@@ -134,16 +109,17 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 
 ```python
 from polylogue import Polylogue
-p = Polylogue()
-convs = p.filter().provider("claude").since("2024-01-01").contains("error").limit(10).list()
+
+async with Polylogue() as p:
+    convs = await p.filter().provider("claude").since("2024-01-01").contains("error").limit(10).list()
 ```
 
 **Filters** (chainable):
 | Method | Purpose |
 |--------|---------|
-| `provider(*names)` / `no_provider()` | Include/exclude providers |
-| `tag(*tags)` / `no_tag()` | Include/exclude tags |
-| `contains(text)` / `no_contains()` | FTS search include/exclude |
+| `provider(*names)` / `exclude_provider()` | Include/exclude providers |
+| `tag(*tags)` / `exclude_tag()` | Include/exclude tags |
+| `contains(text)` / `exclude_text()` | FTS search include/exclude |
 | `has(*types)` | Content types: `thinking`, `tools`, `attachments`, `summary` |
 | `since(date)` / `until(date)` | Date range |
 | `title(pattern)` / `id(prefix)` | Title contains, ID prefix |
@@ -151,7 +127,7 @@ convs = p.filter().provider("claude").since("2024-01-01").contains("error").limi
 | `reverse()` / `limit(n)` / `sample(n)` | Order/limit |
 | `where(predicate)` | Custom filter function |
 
-**Terminals**: `list()` → `list[Conversation]`, `first()` → `Conversation|None`, `count()` → `int`, `pick()` → interactive
+**Terminals** (all async): `await list()` → `list[Conversation]`, `await first()` → `Conversation|None`, `await count()` → `int`, `await pick()` → interactive
 
 ---
 
@@ -300,7 +276,7 @@ polylogue demo --seed --env-only         # Shell-friendly (eval $(...))
 polylogue demo --corpus -p chatgpt -n 5  # Raw fixture files
 ```
 
-Uses `SyntheticCorpus` from `polylogue.sources.synthetic`. Shared with test fixtures (`seeded_db`, `synthetic_source`, `raw_synthetic_samples`). See [docs/demo.md](demo.md).
+Uses `SyntheticCorpus` from `polylogue.schemas.synthetic`. Shared with test fixtures (`seeded_db`, `synthetic_source`, `raw_synthetic_samples`). See [docs/demo.md](demo.md).
 
 ---
 
@@ -364,8 +340,4 @@ Vector search uses sqlite-vec (self-contained, no external services).
 | "Thinking not detected" | Missing content_blocks — check parser in `sources/parsers/` |
 | "Config not reflected" | Env vars override — check `polylogue run --preview` |
 
----
 
-## Pinned Notes
-
-Session notes are ephemeral and not persisted.

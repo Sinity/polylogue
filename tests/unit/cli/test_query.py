@@ -15,7 +15,7 @@ import csv
 import io
 import json
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -265,107 +265,41 @@ class TestQueryFormatConversation:
         assert assertion(result), f"Failed assertion for format {format_type}"
 
 
-class TestQueryCopyToClipboard:
-    """Tests for _copy_to_clipboard helper."""
-
-    def test_tries_clipboard_commands(self, mock_env):
-        """Tries multiple clipboard commands."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = FileNotFoundError()
-
-            query._copy_to_clipboard(mock_env, "test content")
-
-            # Should have tried at least one clipboard command
-            assert mock_run.called
-
-    def test_shows_success_message(self, mock_env):
-        """Shows success message on copy."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-
-            query._copy_to_clipboard(mock_env, "test content")
-
-            calls = mock_env.ui.console.print.call_args_list
-            output = " ".join(str(c) for c in calls)
-            assert "clipboard" in output.lower()
-
-    def test_shows_failure_message(self, mock_env, capsys):
-        """Shows failure message when no clipboard tool found."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = FileNotFoundError()
-
-            query._copy_to_clipboard(mock_env, "test content")
-
-            captured = capsys.readouterr()
-            assert "could not" in captured.err.lower() or "clipboard" in captured.err.lower()
-
-
-class TestQuerySendOutput:
-    """Tests for _send_output helper."""
-
-    def test_stdout_prints(self, mock_env, sample_conversations, capsys):
-        """stdout destination prints content via click.echo."""
-        query._send_output(mock_env, "test content", ["stdout"], "markdown", None)
-
-        captured = capsys.readouterr()
-        assert "test content" in captured.out
-
-    def test_file_writes(self, mock_env, sample_conversations, tmp_path):
-        """file destination writes content."""
-        output_file = tmp_path / "output.md"
-
-        query._send_output(mock_env, "test content", [str(output_file)], "markdown", None)
-
-        assert output_file.exists()
-        assert output_file.read_text() == "test content"
-
-    def test_multiple_destinations(self, mock_env, sample_conversations, tmp_path, capsys):
-        """Multiple destinations all receive content."""
-        output_file = tmp_path / "output.md"
-
-        query._send_output(mock_env, "test content", ["stdout", str(output_file)], "markdown", None)
-
-        # Both stdout and file should be used
-        assert output_file.exists()
-        captured = capsys.readouterr()
-        assert "test content" in captured.out
-
-
 class TestDryRunMode:
     """Tests for --dry-run functionality in modifiers and delete."""
 
-    def test_dry_run_modifiers_shows_preview(self, mock_env, sample_conversations, capsys):
+    async def test_dry_run_modifiers_shows_preview(self, mock_env, sample_conversations, capsys):
         """Dry-run mode shows preview without modifying."""
         params = {
             "add_tag": ("test-tag",),
             "dry_run": True,
         }
 
-        query._apply_modifiers(mock_env, sample_conversations, params)
+        await query._apply_modifiers(mock_env, sample_conversations, params)
 
         captured = capsys.readouterr()
         assert "DRY-RUN" in captured.out
         assert "3" in captured.out  # Count of conversations
         assert "add tags" in captured.out.lower()
 
-    def test_dry_run_modifiers_shows_sample(self, mock_env, sample_conversations):
+    async def test_dry_run_modifiers_shows_sample(self, mock_env, sample_conversations):
         """Dry-run shows sample of affected conversations."""
         params = {
             "rm_tag": ("old-tag",),
             "dry_run": True,
         }
 
-        query._apply_modifiers(mock_env, sample_conversations, params)
+        await query._apply_modifiers(mock_env, sample_conversations, params)
 
         calls = mock_env.ui.console.print.call_args_list
         output = " ".join(str(c) for c in calls)
         assert "conv1" in output or "chatgpt" in output
 
-    def test_dry_run_delete_shows_preview(self, mock_env, sample_conversations, capsys):
+    async def test_dry_run_delete_shows_preview(self, mock_env, sample_conversations, capsys):
         """Dry-run delete shows preview without deleting."""
         params = {"dry_run": True}
 
-        query._delete_conversations(mock_env, sample_conversations, params)
+        await query._delete_conversations(mock_env, sample_conversations, params)
 
         captured = capsys.readouterr()
         assert "DRY-RUN" in captured.out
@@ -376,7 +310,7 @@ class TestDryRunMode:
 class TestBulkOperationConfirmation:
     """Tests for bulk operation confirmation (>10 items requires --force)."""
 
-    def test_modifiers_require_confirmation_for_bulk(self, mock_env, capsys):
+    async def test_modifiers_require_confirmation_for_bulk(self, mock_env, capsys):
         """Modifiers prompt for confirmation for >10 items."""
         # Create 15 mock conversations
         convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test") for i in range(15)]
@@ -384,29 +318,30 @@ class TestBulkOperationConfirmation:
 
         # Decline confirmation
         mock_env.ui.confirm.return_value = False
-        query._apply_modifiers(mock_env, convs, params)
+        await query._apply_modifiers(mock_env, convs, params)
 
         mock_env.ui.confirm.assert_called_once()
         captured = capsys.readouterr()
         assert "15" in captured.out
 
-    def test_modifiers_proceed_with_force(self, mock_env):
+    async def test_modifiers_proceed_with_force(self, mock_env):
         """Modifiers proceed with --force for bulk operations."""
         # Create 15 mock conversations
         convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test") for i in range(15)]
         params = {"add_tag": ("bulk-tag",), "force": True}
 
         mock_backend = MagicMock()
+        mock_backend.add_tag = AsyncMock()
         with (
             patch("polylogue.cli.helpers.load_effective_config"),
             patch("polylogue.services.get_repository", return_value=mock_backend),
         ):
-            query._apply_modifiers(mock_env, convs, params)
+            await query._apply_modifiers(mock_env, convs, params)
 
             # Should have called add_tag 15 times
             assert mock_backend.add_tag.call_count == 15
 
-    def test_delete_requires_confirmation_for_bulk(self, mock_env, capsys):
+    async def test_delete_requires_confirmation_for_bulk(self, mock_env, capsys):
         """Delete prompts for confirmation for >10 items."""
         convs = [
             MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test", created_at=None, updated_at=None)
@@ -416,40 +351,41 @@ class TestBulkOperationConfirmation:
 
         # Decline confirmation
         mock_env.ui.confirm.return_value = False
-        query._delete_conversations(mock_env, convs, params)
+        await query._delete_conversations(mock_env, convs, params)
 
         mock_env.ui.confirm.assert_called_once()
         captured = capsys.readouterr()
         assert "DELETE" in captured.err
 
-    def test_delete_proceeds_with_force(self, mock_env):
+    async def test_delete_proceeds_with_force(self, mock_env):
         """Delete proceeds with --force for bulk operations."""
         convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test", created_at=None) for i in range(15)]
         params = {"force": True}
 
         mock_backend = MagicMock()
-        mock_backend.delete_conversation.return_value = True
+        mock_backend.delete_conversation = AsyncMock(return_value=True)
         with (
             patch("polylogue.cli.helpers.load_effective_config"),
             patch("polylogue.services.get_repository", return_value=mock_backend),
         ):
-            query._delete_conversations(mock_env, convs, params)
+            await query._delete_conversations(mock_env, convs, params)
 
             # Should have called delete_conversation 15 times
             assert mock_backend.delete_conversation.call_count == 15
 
-    def test_small_operations_proceed_without_force(self, mock_env):
+    async def test_small_operations_proceed_without_force(self, mock_env):
         """Operations with <=10 items proceed without --force."""
         convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test") for i in range(5)]
         params = {"add_tag": ("small-tag",), "force": False}
 
         mock_backend = MagicMock()
+        mock_backend.add_tag = AsyncMock()
         with (
             patch("polylogue.cli.helpers.load_effective_config"),
             patch("polylogue.services.get_repository", return_value=mock_backend),
         ):
             # Should not raise
-            query._apply_modifiers(mock_env, convs, params)
+            await query._apply_modifiers(mock_env, convs, params)
 
             assert mock_backend.add_tag.call_count == 5
 
@@ -457,32 +393,33 @@ class TestBulkOperationConfirmation:
 class TestOperationReporting:
     """Tests for operation result reporting."""
 
-    def test_add_tag_reports_count(self, mock_env, sample_conversations, capsys):
+    async def test_add_tag_reports_count(self, mock_env, sample_conversations, capsys):
         """Add tag reports count of affected conversations."""
         params = {"add_tag": ("new-tag",)}
 
         mock_backend = MagicMock()
+        mock_backend.add_tag = AsyncMock()
         with (
             patch("polylogue.cli.helpers.load_effective_config"),
             patch("polylogue.services.get_repository", return_value=mock_backend),
         ):
-            query._apply_modifiers(mock_env, sample_conversations, params)
+            await query._apply_modifiers(mock_env, sample_conversations, params)
 
             captured = capsys.readouterr()
             assert "Added tags" in captured.out
             assert "3" in captured.out  # Number of conversations
 
-    def test_delete_reports_count(self, mock_env, sample_conversations, capsys):
+    async def test_delete_reports_count(self, mock_env, sample_conversations, capsys):
         """Delete reports count of deleted conversations."""
         params = {}
 
         mock_backend = MagicMock()
-        mock_backend.delete_conversation.return_value = True
+        mock_backend.delete_conversation = AsyncMock(return_value=True)
         with (
             patch("polylogue.cli.helpers.load_effective_config"),
             patch("polylogue.services.get_repository", return_value=mock_backend),
         ):
-            query._delete_conversations(mock_env, sample_conversations, params)
+            await query._delete_conversations(mock_env, sample_conversations, params)
 
             captured = capsys.readouterr()
             assert "Deleted" in captured.out

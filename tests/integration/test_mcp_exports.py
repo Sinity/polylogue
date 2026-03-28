@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tests.integration.conftest import make_mock_filter
 
 # =============================================================================
@@ -15,14 +17,14 @@ from tests.integration.conftest import make_mock_filter
 class TestExportConversationTool:
     """Tests for export_conversation tool."""
 
-    def test_export_markdown(self, sample_conversation):
+    def test_export_markdown(self, simple_conversation):
         """export_conversation with markdown format calls _format_conversation."""
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             with patch("polylogue.lib.formatting.format_conversation") as mock_format:
                 mock_repo = MagicMock()
-                mock_repo.view.return_value = sample_conversation
+                mock_repo.view.return_value = simple_conversation
                 mock_get_repo.return_value = mock_repo
                 mock_format.return_value = "# Test Conversation\n\nFormatted content"
 
@@ -34,7 +36,7 @@ class TestExportConversationTool:
                 assert "Test Conversation" in result
                 mock_format.assert_called_once()
                 call_args = mock_format.call_args
-                assert call_args[0][0] == sample_conversation
+                assert call_args[0][0] == simple_conversation
                 assert call_args[0][1] == "markdown"
 
     def test_export_not_found(self):
@@ -53,14 +55,14 @@ class TestExportConversationTool:
             assert "error" in parsed
             assert "not found" in parsed["error"].lower()
 
-    def test_export_invalid_format(self, sample_conversation):
+    def test_export_invalid_format(self, simple_conversation):
         """export_conversation falls back to markdown for invalid format."""
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             with patch("polylogue.lib.formatting.format_conversation") as mock_format:
                 mock_repo = MagicMock()
-                mock_repo.view.return_value = sample_conversation
+                mock_repo.view.return_value = simple_conversation
                 mock_get_repo.return_value = mock_repo
                 mock_format.return_value = "# Content"
 
@@ -131,13 +133,13 @@ class TestNewResources:
 class TestNewPrompts:
     """Tests for new prompts."""
 
-    def test_compare_conversations_prompt(self, sample_conversation):
+    def test_compare_conversations_prompt(self, simple_conversation):
         """compare_conversations prompt returns comparison text."""
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.view.side_effect = [sample_conversation, sample_conversation]
+            mock_repo.view.side_effect = [simple_conversation, simple_conversation]
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
@@ -150,7 +152,8 @@ class TestNewPrompts:
             assert "Conversation 1" in result
             assert "Conversation 2" in result
 
-    def test_extract_patterns_prompt(self, sample_conversation):
+    @pytest.mark.asyncio
+    async def test_extract_patterns_prompt(self, simple_conversation):
         """extract_patterns prompt returns pattern analysis text."""
         from polylogue.mcp.server import _build_server
 
@@ -158,10 +161,10 @@ class TestNewPrompts:
             with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
                 mock_repo = MagicMock()
                 mock_get_repo.return_value = mock_repo
-                MockFilter.return_value = make_mock_filter(results=[sample_conversation])
+                MockFilter.return_value = make_mock_filter(results=[simple_conversation])
 
                 server = _build_server()
-                result = server._prompt_manager._prompts["extract_patterns"].fn()
+                result = await server._prompt_manager._prompts["extract_patterns"].fn()
 
                 assert isinstance(result, str)
                 assert "patterns" in result.lower()
