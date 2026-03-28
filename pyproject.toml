@@ -1,13 +1,26 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "polylogue"
 version = "0.1.0"
 description = "Polylogue CLI for AI chat archives"
 readme = "README.md"
+license = {text = "MIT"}
+keywords = ["ai", "chatgpt", "claude", "conversation", "archive", "llm"]
 authors = [{ name = "Polylogue Maintainers" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries",
+]
 requires-python = ">=3.10"
 dependencies = [
   "google-auth-oauthlib",
@@ -31,6 +44,8 @@ dependencies = [
   "aiosqlite>=0.19.0",  # Async SQLite support
   "pydantic-settings",
   "glom>=24.7.0",  # Declarative data extraction
+  "mcp>=1.0.0",  # Model Context Protocol SDK
+  "pyyaml>=6.0",  # YAML output format
 ]
 
 [project.optional-dependencies]
@@ -56,16 +71,34 @@ fuzz = [
   "atheris>=2.3.0",  # Google's Python fuzzer
   "mutmut>=3.0.0",  # Mutation testing
 ]
+tree-sitter = [
+  "tree-sitter>=0.22.0",
+  "tree-sitter-python>=0.21.0",
+  "tree-sitter-javascript>=0.21.0",
+  "tree-sitter-typescript>=0.21.0",
+  "tree-sitter-rust>=0.21.0",
+  "tree-sitter-go>=0.21.0",
+  "tree-sitter-java>=0.21.0",
+  "tree-sitter-c>=0.21.0",
+  "tree-sitter-cpp>=0.22.0",
+  "tree-sitter-bash>=0.21.0",
+  "tree-sitter-html>=0.21.0",
+  "tree-sitter-css>=0.21.0",
+  "tree-sitter-json>=0.21.0",
+  "tree-sitter-yaml>=0.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/sinity/polylogue"
+Repository = "https://github.com/sinity/polylogue"
+Issues = "https://github.com/sinity/polylogue/issues"
+Documentation = "https://github.com/sinity/polylogue#readme"
 
 [project.scripts]
 polylogue = "polylogue.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["polylogue", "polylogue.*"]
-
-[tool.setuptools.package-data]
-polylogue = ["templates/*.html"]
+[tool.hatch.build.targets.wheel]
+packages = ["polylogue"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
@@ -73,7 +106,13 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks integration tests (pipeline, CLI end-to-end)",
 ]
+filterwarnings = [
+    "ignore::ResourceWarning",           # Unclosed sqlite3 connections in thread-local backend
+    "ignore::DeprecationWarning:dateparser",  # dateparser strptime deprecation (external)
+]
+
 
 [tool.coverage.run]
 source = ["polylogue"]
@@ -82,6 +121,7 @@ branch = true
 [tool.coverage.report]
 skip_empty = true
 show_missing = true
+fail_under = 90
 
 [tool.mypy]
 python_version = "3.10"
@@ -144,7 +184,6 @@ ignore = [
     "SIM117", # nested with-statements with comments between context managers
 ]
 "polylogue/sources/providers/**" = ["N815"]  # Pydantic alias fields match provider JSON schemas
-"tests/scripts/**" = ["E402"]  # scripts manipulate sys.path before imports
 
 [tool.ruff.lint.isort]
 known-first-party = ["polylogue"]

@@ -15,24 +15,8 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        # Apply Python package overrides (fix dependency-injector marked as broken)
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [
-            (final: prev: {
-              python313Packages = prev.python313Packages.overrideScope (
-                pyfinal: pysuper: {
-                  dependency-injector = pysuper.dependency-injector.overridePythonAttrs (old: {
-                    nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pyfinal.cython ];
-                    doCheck = false;
-                    meta = (old.meta or { }) // {
-                      broken = false;
-                    };
-                  });
-                }
-              );
-            })
-          ];
         };
         python = pkgs.python313;
 
@@ -51,8 +35,7 @@
           '';
 
           build-system = with pkgs.python313Packages; [
-            setuptools
-            wheel
+            hatchling
           ];
 
           dependencies = with pkgs.python313Packages; [
@@ -71,15 +54,14 @@
             click
             tenacity
             dateparser
-            fastapi
-            uvicorn
             orjson
             structlog
             pydantic
             pydantic-settings
-            dependency-injector
             aiosqlite
             glom
+            mcp
+            pyyaml
           ];
 
           # Skip tests in build (run in checks instead)
@@ -103,6 +85,9 @@
             # Runtime dependencies (CLI helpers)
             bat
             glow
+
+            # Demo screencast recording
+            vhs
           ];
 
           shellHook = ''
@@ -149,12 +134,5 @@
               touch $out
             '';
       }
-    )
-    // {
-      nixosModules = {
-        polylogue = import ./nixos-modules/polylogue.nix { inherit self; };
-        sync = import ./nixos-modules/sync.nix;
-        default = self.nixosModules.polylogue;
-      };
-    };
+    );
 }
