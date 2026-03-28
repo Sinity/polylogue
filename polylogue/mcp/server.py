@@ -7,8 +7,13 @@ Uses stdio transport for communication with AI assistants.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from typing import TYPE_CHECKING, Any
+
+logger = logging.getLogger(__name__)
+
+_MAX_LIMIT = 10000
 
 if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
@@ -43,6 +48,7 @@ def serve_stdio() -> None:
         except KeyboardInterrupt:
             break
         except Exception as exc:
+            logger.exception("MCP request handler error")
             _write_error(-32603, f"Internal error: {exc}")
 
 
@@ -270,6 +276,11 @@ def _handle_search(request_id: Any, args: dict[str, Any], repo: ConversationRepo
     if not query:
         return _error(request_id, -32602, "Missing required parameter: query")
 
+    try:
+        limit = max(1, min(int(limit), _MAX_LIMIT))
+    except (TypeError, ValueError):
+        return _error(request_id, -32602, "limit must be an integer")
+
     # Use filter chain for composable filtering
     from polylogue.lib.filters import ConversationFilter
 
@@ -298,6 +309,11 @@ def _handle_list(request_id: Any, args: dict[str, Any], repo: ConversationReposi
     limit = args.get("limit", 10)
     provider = args.get("provider")
     since = args.get("since")
+
+    try:
+        limit = max(1, min(int(limit), _MAX_LIMIT))
+    except (TypeError, ValueError):
+        return _error(request_id, -32602, "limit must be an integer")
 
     from polylogue.lib.filters import ConversationFilter
 
@@ -419,7 +435,10 @@ def _handle_conversations_resource(
     since = query_params.get("since", [None])[0]
     tag = query_params.get("tag", [None])[0]
     limit_str = query_params.get("limit", ["1000"])[0]
-    limit = int(limit_str) if limit_str else 1000
+    try:
+        limit = max(1, min(int(limit_str), _MAX_LIMIT)) if limit_str else 1000
+    except (TypeError, ValueError):
+        return _error(request_id, -32602, "limit must be an integer")
 
     # Build filter chain
     from polylogue.lib.filters import ConversationFilter
