@@ -8,8 +8,7 @@ New: Parametrized tests covering all variants
 
 import pytest
 
-from polylogue.lib.models import Attachment, Message
-
+from polylogue.lib.models import Message
 
 # =============================================================================
 # ROLE CLASSIFICATION - PARAMETRIZED (1 test replacing 8 tests)

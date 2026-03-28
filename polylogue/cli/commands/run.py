@@ -20,8 +20,8 @@ from polylogue.cli.helpers import (
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
-from polylogue.ingestion import DriveError
 from polylogue.pipeline.runner import plan_sources, run_sources
+from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
 
 
@@ -42,7 +42,7 @@ def _run_sync_once(
         def plain_progress(amount: int, desc: str | None = None) -> None:
             processed[0] += amount
             now = time.time()
-            if now - last_update[0] >= 5:
+            if now - last_update[0] >= 1:
                 print(f"  {desc or 'Processing'}: {processed[0]:,} items...", flush=True)
                 last_update[0] = now
 
@@ -121,15 +121,27 @@ def _display_result(
         if latest:
             env.ui.console.print(f"Latest render: {latest}")
 
+    # Surface render failures so users know which conversations couldn't be rendered
+    if result.render_failures:
+        n = len(result.render_failures)
+        click.echo(f"\nRender failures ({n}):", err=True)
+        show_limit = 10
+        for failure in result.render_failures[:show_limit]:
+            conv_id = failure.get("conversation_id", "?")
+            error = failure.get("error", "unknown error")
+            click.echo(f"  {conv_id}: {error}", err=True)
+        if n > show_limit:
+            click.echo(f"  ... and {n - show_limit} more", err=True)
+        click.echo(
+            "Hint: re-run with `polylogue run --stage render` to retry rendering.",
+            err=True,
+        )
+
     if result.index_error:
         error_line = f"Index error: {result.index_error}"
         hint_line = "Hint: run `polylogue run --stage index` to rebuild the index."
-        if env.ui.plain:
-            env.ui.console.print(error_line)
-            env.ui.console.print(hint_line)
-        else:
-            env.ui.console.print(f"[yellow]{error_line}[/yellow]")
-            env.ui.console.print(f"[yellow]{hint_line}[/yellow]")
+        click.echo(error_line, err=True)
+        click.echo(hint_line, err=True)
 
 
 def _notify_new_conversations(count: int) -> None:
@@ -158,6 +170,9 @@ def _exec_on_new(exec_cmd: str, count: int) -> None:
 
 def _webhook_on_new(webhook_url: str, count: int) -> None:
     """Call webhook URL when new conversations are synced."""
+    import logging
+
+    _logger = logging.getLogger(__name__)
     try:
         import json as json_lib
         import urllib.request
@@ -170,8 +185,8 @@ def _webhook_on_new(webhook_url: str, count: int) -> None:
             method="POST",
         )
         urllib.request.urlopen(req, timeout=10)
-    except Exception:
-        pass  # Silently fail on webhook errors
+    except Exception as exc:
+        _logger.warning("Webhook failed for %s: %s", webhook_url, exc)
 
 
 @click.command("run")
@@ -248,10 +263,9 @@ def run_command(
             return
 
     # Interactive confirmation (non-preview, non-watch)
-    if not watch and not plan_snapshot and not env.ui.plain:
-        if not env.ui.confirm("Proceed?", default=True):
-            env.ui.console.print("Cancelled.")
-            return
+    if not watch and not plan_snapshot and not env.ui.plain and not env.ui.confirm("Proceed?", default=True):
+        env.ui.console.print("Cancelled.")
+        return
 
     # Watch mode
     if watch:
@@ -271,9 +285,9 @@ def run_command(
                         if webhook:
                             _webhook_on_new(webhook, new_count)
                     else:
-                        env.ui.console.print(f"[dim]No new conversations at {time.strftime('%H:%M:%S')}[/dim]")
+                        click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
                 except DriveError as exc:
-                    env.ui.console.print(f"[red]Sync error: {exc}[/red]")
+                    click.echo(f"Sync error: {exc}", err=True)
                 time.sleep(poll_interval)
         except KeyboardInterrupt:
             env.ui.console.print("\nWatch mode stopped.")

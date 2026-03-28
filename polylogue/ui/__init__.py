@@ -193,7 +193,9 @@ class _PlainProgressTracker:
                 self._total = float(total)
                 self._use_float = True
 
-    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> None:
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
         status = "aborted" if exc_type else "complete"
         suffix = ""
         if self._total is not None:
@@ -239,5 +241,7 @@ class _RichProgressTracker:
         if description is not None:
             self._progress.update(self._task_id, description=description)
 
-    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> None:
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
         self._progress.__exit__(exc_type, exc, tb)

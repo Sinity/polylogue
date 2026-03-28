@@ -24,7 +24,6 @@ from polylogue.types import (
     Provider,
 )
 
-
 # =============================================================================
 # NewType Property Tests (replacing 36 spot checks with 4 property tests)
 # =============================================================================

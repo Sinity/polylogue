@@ -10,11 +10,11 @@ from polylogue.cli.types import AppEnv
 
 
 @click.command("auth")
-@click.option("--provider", "-p", default="drive", help="Auth provider (default: drive)")
+@click.option("--service", default="drive", help="Auth service (default: drive)")
 @click.option("--refresh", is_flag=True, help="Force token refresh")
 @click.option("--revoke", is_flag=True, help="Revoke existing credentials")
 @click.pass_obj
-def auth_command(env: AppEnv, provider: str, refresh: bool, revoke: bool) -> None:
+def auth_command(env: AppEnv, service: str, refresh: bool, revoke: bool) -> None:
     """Authenticate with external services (Google Drive for Gemini).
 
     \b
@@ -25,9 +25,9 @@ def auth_command(env: AppEnv, provider: str, refresh: bool, revoke: bool) -> Non
     """
     ui = env.ui
 
-    if provider != "drive":
-        ui.console.print(f"[red]Unknown auth provider: {provider}[/red]")
-        ui.console.print("Available providers: drive")
+    if service != "drive":
+        click.echo(f"Unknown auth service: {service}", err=True)
+        click.echo("Available services: drive", err=True)
         raise SystemExit(1)
 
     if revoke:
@@ -45,7 +45,7 @@ def auth_command(env: AppEnv, provider: str, refresh: bool, revoke: bool) -> Non
 def _get_drive_paths(env: AppEnv) -> tuple[Path, Path]:
     """Get credentials and token paths from config or defaults."""
     from polylogue.cli.helpers import load_effective_config
-    from polylogue.ingestion.drive_client import default_credentials_path, default_token_path
+    from polylogue.sources.drive_client import default_credentials_path, default_token_path
 
     try:
         config = load_effective_config(env)
@@ -63,8 +63,8 @@ def _drive_oauth_flow(env: AppEnv, retry_on_failure: bool = True) -> None:
     credentials_path, token_path = _get_drive_paths(env)
 
     if not credentials_path.exists():
-        env.ui.console.print(f"[red]Missing credentials file: {credentials_path}[/red]")
-        env.ui.console.print("Download OAuth credentials from Google Cloud Console.")
+        click.echo(f"Missing credentials file: {credentials_path}", err=True)
+        click.echo("Download OAuth credentials from Google Cloud Console.", err=True)
         raise SystemExit(1)
 
     # Check if we have a valid token already
@@ -75,7 +75,7 @@ def _drive_oauth_flow(env: AppEnv, retry_on_failure: bool = True) -> None:
         env.ui.console.print("A browser window will open for authentication.")
 
     try:
-        from polylogue.ingestion.drive_client import DriveClient
+        from polylogue.sources.drive_client import DriveClient
 
         client = DriveClient(
             credentials_path=credentials_path,
@@ -86,21 +86,21 @@ def _drive_oauth_flow(env: AppEnv, retry_on_failure: bool = True) -> None:
         client.resolve_folder_id("root")
 
         if has_token:
-            env.ui.console.print("[green]✓ Using cached credentials[/green]")
+            click.echo("✓ Using cached credentials")
         else:
-            env.ui.console.print("[green]Authentication successful![/green]")
+            click.echo("Authentication successful!")
     except FileNotFoundError as exc:
-        env.ui.console.print(f"[red]Missing credentials file: {exc}[/red]")
-        env.ui.console.print("Download OAuth credentials from Google Cloud Console.")
+        click.echo(f"Missing credentials file: {exc}", err=True)
+        click.echo("Download OAuth credentials from Google Cloud Console.", err=True)
         raise SystemExit(1) from exc
     except Exception as exc:
         # If token refresh failed and we haven't retried yet, delete token and retry
         if retry_on_failure and token_path.exists() and "refresh" in str(exc).lower():
-            env.ui.console.print("[yellow]Token expired or revoked. Removing and re-authenticating...[/yellow]")
+            click.echo("Token expired or revoked. Removing and re-authenticating...")
             token_path.unlink()
             _drive_oauth_flow(env, retry_on_failure=False)
             return
-        env.ui.console.print(f"[red]OAuth failed: {exc}[/red]")
+        click.echo(f"OAuth failed: {exc}", err=True)
         raise SystemExit(1) from exc
 
 
@@ -123,9 +123,9 @@ def _revoke_drive_credentials(env: AppEnv) -> None:
 
     if token_path.exists():
         token_path.unlink()
-        env.ui.console.print(f"Removed token file: {token_path}")
+        click.echo(f"Removed token file: {token_path}")
     else:
-        env.ui.console.print("[yellow]No token file found.[/yellow]")
+        click.echo("No token file found.")
 
-    env.ui.console.print("[green]Credentials revoked.[/green]")
-    env.ui.console.print("Run `polylogue auth` to re-authenticate.")
+    click.echo("Credentials revoked.")
+    click.echo("Run `polylogue auth` to re-authenticate.")
