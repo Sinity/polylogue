@@ -17,15 +17,16 @@ from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
 from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.dashboard import dashboard_command
+from polylogue.cli.commands.demo import demo_command
 from polylogue.cli.commands.embed import embed_command
 from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
 from polylogue.cli.commands.site import site_command
 from polylogue.cli.commands.tags import tags_command
-from polylogue.lib.log import configure_logging
 from polylogue.cli.formatting import announce_plain_mode, should_use_plain
 from polylogue.cli.types import AppEnv
+from polylogue.lib.log import configure_logging
 from polylogue.ui import create_ui
 from polylogue.version import POLYLOGUE_VERSION
 
@@ -192,7 +193,7 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)")
 @click.option("--exclude-tag", help="Exclude tags")
 @click.option("--title", help="Title contains")
-@click.option("--has", "has_type", multiple=True, help="Has: thinking, tools, summary, attachments")
+@click.option("--has", "has_type", multiple=True, help="Filter by content: thinking (reasoning), tools (calls), summary, attachments")
 @click.option("--since", help="After date (ISO, 'yesterday', 'last week')")
 @click.option("--until", help="Before date")
 @click.option("--limit", "-n", type=int, help="Max results")
@@ -231,10 +232,10 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option(
     "--transform",
     type=click.Choice(["strip-tools", "strip-thinking", "strip-all"]),
-    help="Transform output: strip-tools, strip-thinking, or strip-all",
+    help="Remove content: strip-tools (tool calls), strip-thinking (reasoning), strip-all (both)",
 )
 # --- Streaming options (memory-efficient for large conversations) ---
-@click.option("--stream", is_flag=True, help="Stream output (low memory). Requires --latest or -i ID")
+@click.option("--stream", is_flag=True, help="Stream output (low memory). Requires --latest or -i ID. Incompatible with --transform")
 @click.option("--dialogue-only", "-d", is_flag=True, help="Show only user/assistant messages")
 # --- Modifier options (write operations) ---
 @click.option("--set", "set_meta", nargs=2, multiple=True, help="Set metadata key value")
@@ -312,7 +313,7 @@ def cli(
 
     \b
     Subcommands:
-        polylogue run       Ingest/render/index pipeline
+        polylogue run       Parse/render/index pipeline
         polylogue check     Health check and repair
         polylogue embed     Generate vector embeddings
         polylogue tags      List tags with counts
@@ -349,6 +350,7 @@ cli.add_command(dashboard_command)
 cli.add_command(embed_command)
 cli.add_command(site_command)
 cli.add_command(tags_command)
+cli.add_command(demo_command)
 
 
 def main() -> None:

@@ -15,12 +15,12 @@ backend = SQLiteBackend()
 repo = ConversationRepository(backend=backend)
 
 # Search
-results = ConversationFilter(repo).contains("error").provider("claude").list()
+results = await ConversationFilter(repo).contains("error").provider("claude").list()
 for conv in results:
     print(f"{conv.id}: {conv.display_title}")
 
 # Single conversation
-conv = ConversationFilter(repo).id("abc123").first()
+conv = await ConversationFilter(repo).id("abc123").first()
 ```
 
 ## Filter Chain API

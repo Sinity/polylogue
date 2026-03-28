@@ -1,24 +1,25 @@
 """Fluent filter builder for conversation-level queries.
 
 This module provides the `ConversationFilter` class for building chainable
-queries against the conversation repository.
+queries against the conversation repository.  All terminal methods
+(`list`, `first`, `count`, `delete`) are async.
 
-Example:
+Example::
+
     from polylogue import Polylogue
 
-    p = Polylogue()
+    async with Polylogue() as p:
+        # Get recent Claude conversations
+        convs = await p.filter().provider("claude").since("2024-01-01").limit(10).list()
 
-    # Get recent Claude conversations
-    convs = p.filter().provider("claude").since("2024-01-01").limit(10).list()
+        # Search for errors in ChatGPT
+        convs = await p.filter().provider("chatgpt").contains("error").list()
 
-    # Search for errors in ChatGPT
-    convs = p.filter().provider("chatgpt").contains("error").list()
+        # Get first matching conversation
+        conv = await p.filter().tag("important").first()
 
-    # Get first matching conversation
-    conv = p.filter().tag("important").first()
-
-    # Count conversations with thinking blocks
-    count = p.filter().has("thinking").count()
+        # Count conversations with thinking blocks
+        count = await p.filter().has("thinking").count()
 """
 
 from __future__ import annotations
