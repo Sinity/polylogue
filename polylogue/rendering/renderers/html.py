@@ -483,7 +483,7 @@ DEFAULT_HTML_TEMPLATE = """<!DOCTYPE html>
             {% for msg in messages %}
             <li>
                 <a href="#msg-{{ loop.index }}">
-                    {{ msg.role or 'unknown' }}: {{ (msg.text or "")[:30] }}{% if msg.text|length > 30 %}...{% endif %}
+                    {{ msg.role or 'unknown' }}: {{ (msg.text or "")[:30] }}{% if (msg.text or "")|length > 30 %}...{% endif %}
                 </a>
             </li>
             {% endfor %}
