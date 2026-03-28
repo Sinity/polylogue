@@ -80,7 +80,7 @@ def _classify_message_range(
 
     for i in range(start, end):
         msg = messages[i]
-        if msg.is_user and msg.text:
+        if msg.is_user and msg.text and not msg.is_context_dump:
             user_text += " " + msg.text.lower()
         for tc in _get_tool_calls(msg):
             cat = tc.category.value
@@ -113,6 +113,7 @@ def _classify_message_range(
     search_count = category_counts.get("search", 0)
     shell_count = category_counts.get("shell", 0)
     git_count = category_counts.get("git", 0)
+    agent_count = category_counts.get("agent", 0) + category_counts.get("subagent", 0)
 
     if edit_count >= 2:
         evidence.append("file_edits")
@@ -120,6 +121,8 @@ def _classify_message_range(
         if shell_count and any(p in user_text for p in _TESTING_PATTERNS):
             return WorkEventKind.TESTING, 0.7, evidence + ["shell_test"]
         return WorkEventKind.IMPLEMENTATION, 0.75, evidence
+    if agent_count >= 2 and edit_count == 0:
+        return WorkEventKind.PLANNING, 0.7, ["agent_orchestration"]
     if search_count >= 2 or (read_count >= 3 and edit_count == 0):
         return WorkEventKind.RESEARCH, 0.7, ["search_or_read_dominant"]
     if git_count >= 1:

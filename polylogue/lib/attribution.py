@@ -52,6 +52,21 @@ def _language_from_path(path: str) -> str | None:
     return _LANGUAGE_EXTENSIONS.get(suffix)
 
 
+def _clean_dialogue_path(path: str) -> str | None:
+    candidate = path.rstrip(".,;:)'\">`*_")
+    if not candidate:
+        return None
+    if candidate.rstrip("/") == "/realm/project":
+        return None
+    if "<" in candidate or ">" in candidate:
+        return None
+    if any(ch in candidate for ch in "*?[]{}"):
+        return None
+    if set(candidate) <= {".", "/"}:
+        return None
+    return candidate
+
+
 @dataclass(frozen=True)
 class ConversationAttribution:
     """Raw path/repo/branch attribution extracted from a conversation.
@@ -151,10 +166,21 @@ def extract_attribution(conversation: Conversation) -> ConversationAttribution:
         if not message.is_dialogue or not message.text:
 >>>>>>> e4b406d6 (fix: improve gemini and codex archive fidelity)
             continue
+<<<<<<< HEAD
         for match in _REALM_PATH_PATTERN.finditer(message.text):
             path = match.group().rstrip(".,;:)'\">`")
             # Skip template/placeholder paths like /realm/project/<name>
             if "<" in path or ">" in path:
+||||||| parent of ba2804ba (refactor: strengthen semantic tool understanding)
+        for match in realm_path_pattern.finditer(message.text):
+            path = match.group().rstrip(".,;:)'\">`")
+            # Skip template/placeholder paths like /realm/project/<name>
+            if "<" in path or ">" in path:
+=======
+        for match in realm_path_pattern.finditer(message.text):
+            path = _clean_dialogue_path(match.group())
+            if path is None:
+>>>>>>> ba2804ba (refactor: strengthen semantic tool understanding)
                 continue
             file_paths.add(path)
             lang = _language_from_path(path)
