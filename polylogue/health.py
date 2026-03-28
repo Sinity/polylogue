@@ -95,8 +95,14 @@ def _write_cache(archive_root: Path, report: HealthReport | dict[str, Any]) -> N
         LOGGER.warning("Failed to write health cache: %s", exc)
 
 
-def run_health(config: Config) -> HealthReport:
-    """Run comprehensive system health and data verification checks."""
+def run_health(config: Config, *, deep: bool = False) -> HealthReport:
+    """Run comprehensive system health and data verification checks.
+
+    Args:
+        config: Application configuration
+        deep: If True, run PRAGMA integrity_check (slow on large databases).
+              Skipped by default since it reads every page in the DB file.
+    """
     checks: list[HealthCheck] = []
 
     # 1. Environment & Paths
@@ -109,18 +115,19 @@ def run_health(config: Config) -> HealthReport:
         else:
             checks.append(HealthCheck(path_name, VerifyStatus.WARNING, detail=f"Missing {path}"))
 
-    # 2. Database Reachability & Integrity
+    # 2. Database Reachability (& optional Integrity)
     try:
         with open_connection(None) as conn:
             checks.append(HealthCheck("database", VerifyStatus.OK, detail="DB reachable"))
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-            checks.append(
-                HealthCheck(
-                    "sqlite_integrity",
-                    VerifyStatus.OK if integrity == "ok" else VerifyStatus.ERROR,
-                    detail=integrity,
+            if deep:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                checks.append(
+                    HealthCheck(
+                        "sqlite_integrity",
+                        VerifyStatus.OK if integrity == "ok" else VerifyStatus.ERROR,
+                        detail=integrity,
+                    )
                 )
-            )
     except Exception as exc:
         checks.append(HealthCheck("database", VerifyStatus.ERROR, detail=f"DB error: {exc}"))
 
@@ -275,32 +282,38 @@ def run_health(config: Config) -> HealthReport:
     return report
 
 
-def get_health(config: Config) -> HealthReport:
-    """Get health report, using cache if valid."""
-    cached_data = _load_cached(config.archive_root)
-    now = int(time.time())
-    if cached_data:
-        ts = cached_data.get("timestamp", 0)
-        if (now - ts) < HEALTH_TTL_SECONDS:
-            checks = [
-                HealthCheck(
-                    name=c["name"],
-                    status=VerifyStatus(c["status"]),
-                    count=c.get("count", 0),
-                    detail=c.get("detail", ""),
-                    breakdown=c.get("breakdown", {}),
-                )
-                for c in cached_data.get("checks", [])
-            ]
-            return HealthReport(
-                checks=checks,
-                summary=cached_data.get("summary", {}),
-                timestamp=ts,
-                cached=True,
-                age_seconds=now - ts,
-            )
+def get_health(config: Config, *, deep: bool = False) -> HealthReport:
+    """Get health report, using cache if valid.
 
-    report = run_health(config)
+    Args:
+        config: Application configuration
+        deep: If True, skip cache and run PRAGMA integrity_check (slow).
+    """
+    if not deep:
+        cached_data = _load_cached(config.archive_root)
+        now = int(time.time())
+        if cached_data:
+            ts = cached_data.get("timestamp", 0)
+            if (now - ts) < HEALTH_TTL_SECONDS:
+                checks = [
+                    HealthCheck(
+                        name=c["name"],
+                        status=VerifyStatus(c["status"]),
+                        count=c.get("count", 0),
+                        detail=c.get("detail", ""),
+                        breakdown=c.get("breakdown", {}),
+                    )
+                    for c in cached_data.get("checks", [])
+                ]
+                return HealthReport(
+                    checks=checks,
+                    summary=cached_data.get("summary", {}),
+                    timestamp=ts,
+                    cached=True,
+                    age_seconds=now - ts,
+                )
+
+    report = run_health(config, deep=deep)
     report.cached = False
     report.age_seconds = 0
     return report
