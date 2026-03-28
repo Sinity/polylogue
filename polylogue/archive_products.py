@@ -23,7 +23,9 @@ ARCHIVE_PRODUCT_CONTRACT_VERSION = 4
 class ArchiveProductModel(BaseModel):
     """Shared base for public archive data product payloads."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # extra="ignore" tolerates legacy fields from older materialized records
+    # (e.g. primary_work_kind, decisions removed in the March 2026 cleanup)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     def to_json(self, *, exclude_none: bool = False) -> str:
         return self.model_dump_json(indent=2, exclude_none=exclude_none)
