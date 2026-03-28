@@ -182,6 +182,35 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.wall_duration_ms == 240000
 
 
+def test_build_session_profile_detects_project_paths_in_user_text() -> None:
+    conversation = Conversation(
+        id="conv-user-paths",
+        provider="gemini",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="gemini",
+                    text="Please inspect /realm/project/polylogue/README.md and summarize it.",
+                    timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
+                ),
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="gemini",
+                    text="I can do that.",
+                    timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
+                ),
+            ]
+        ),
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert profile.canonical_projects == ("polylogue",)
+
+
 def test_build_mcp_summary_semantic_facts_uses_canonical_summary_shape() -> None:
     summary = ConversationSummary(
         id="conv-semantic-facts",

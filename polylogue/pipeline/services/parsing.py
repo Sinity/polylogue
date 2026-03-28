@@ -10,12 +10,17 @@ It does NOT handle raw storage - that's the acquisition stage's job.
 
 from __future__ import annotations
 
+<<<<<<< HEAD
 import asyncio
 import json
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
+||||||| parent of e4b406d6 (fix: improve gemini and codex archive fidelity)
+=======
+import re
+>>>>>>> e4b406d6 (fix: improve gemini and codex archive fidelity)
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -174,6 +179,38 @@ class IngestResult:
     validation_result: ValidateResult | None
     parse_result: ParseResult
     parse_raw_ids: list[str]
+
+
+_SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
+
+
+def _fallback_id_from_source_path(source_path: str | None, raw_id: str) -> str:
+    if not source_path:
+        return raw_id
+    normalized = source_path.replace("\\", "/")
+    entry_path = normalized.rsplit(":", 1)[-1]
+    stem = Path(entry_path).stem
+    if not stem:
+        return raw_id
+    cleaned = _SOURCE_HASH_SUFFIX.sub("", stem).strip("._- ")
+    return cleaned or stem
+
+
+def _apply_raw_record_defaults(
+    conversations: list[ParsedConversation],
+    raw_record: RawConversationRecord,
+) -> list[ParsedConversation]:
+    fallback_timestamp = raw_record.file_mtime
+    enriched: list[ParsedConversation] = []
+    for convo in conversations:
+        updates: dict[str, object] = {}
+        if convo.created_at is None and fallback_timestamp:
+            updates["created_at"] = fallback_timestamp
+        effective_created = updates.get("created_at", convo.created_at)
+        if convo.updated_at is None and isinstance(effective_created, str) and effective_created:
+            updates["updated_at"] = effective_created
+        enriched.append(convo.model_copy(update=updates) if updates else convo)
+    return enriched
 
 
 class ParsingService:
@@ -598,13 +635,26 @@ class ParsingService:
             envelope.payload,
             source_path=raw_record.source_path,
         )
+<<<<<<< HEAD
 
         # Use the existing parser dispatcher
         return parse_payload(
+||||||| parent of e4b406d6 (fix: improve gemini and codex archive fidelity)
+        return parse_payload(
+=======
+        conversations = parse_payload(
+>>>>>>> e4b406d6 (fix: improve gemini and codex archive fidelity)
             envelope.provider,
             envelope.payload,
+<<<<<<< HEAD
             raw_record.raw_id,  # Use raw_id as fallback conversation ID
+||||||| parent of e4b406d6 (fix: improve gemini and codex archive fidelity)
+            raw_record.raw_id,
+=======
+            _fallback_id_from_source_path(raw_record.source_path, raw_record.raw_id),
+>>>>>>> e4b406d6 (fix: improve gemini and codex archive fidelity)
             schema_resolution=schema_resolution,
         )
+        return _apply_raw_record_defaults(conversations, raw_record)
 
 __all__ = ["ParsingService", "ParseResult", "IngestResult"]

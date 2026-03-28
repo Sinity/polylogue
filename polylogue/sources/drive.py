@@ -5,14 +5,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..assets import asset_path
-from ..config import Source
 from polylogue.logging import get_logger
 from polylogue.types import Provider
+
+from ..assets import asset_path
+from ..config import Source
 from ..paths import safe_path_component
+from .dispatch import parse_drive_payload
 from .drive_client import DriveClient
 from .drive_source import DriveSourceAPI, _parse_modified_time
-from .dispatch import parse_drive_payload
 from .parsers.base import RawConversationData
 from .source import ParsedConversation
 
@@ -92,6 +93,12 @@ def _apply_drive_attachments(
     for attachment in convo.attachments:
         if not attachment.provider_attachment_id:
             continue
+        attachment_kind = None
+        if isinstance(attachment.provider_meta, dict):
+            raw_kind = attachment.provider_meta.get("attachment_kind")
+            attachment_kind = raw_kind if isinstance(raw_kind, str) else None
+        if attachment_kind in {"inline_file", "youtube_video"}:
+            continue
         dest = asset_path(archive_root, attachment.provider_attachment_id)
         meta = client.download_to_path(attachment.provider_attachment_id, dest)
         attachment.path = str(dest)
@@ -149,7 +156,8 @@ def iter_drive_conversations(
                 exc,
             )
             continue
-        conversations = parse_drive_payload(source.name, payload, file_meta.file_id)
+        fallback_id = drive_cache_file_path(source.path or Path(source.name), file_meta.name).stem
+        conversations = parse_drive_payload(source.name, payload, fallback_id)
         for convo in conversations:
             _apply_drive_attachments(
                 convo=convo,

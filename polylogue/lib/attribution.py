@@ -100,11 +100,25 @@ def extract_attribution(conversation: Conversation) -> ConversationAttribution:
                     if not branch.startswith("-"):
                         branch_names.add(branch)
 
+<<<<<<< HEAD
     # Scan assistant text for file paths and language mentions (catches pure-conversation sessions)
     _REALM_PATH_PATTERN = re.compile(r'/realm/project/[^\s,;:)\]]+')
     _LANGUAGE_NAMES = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
     for message in conversation.messages:
         if not message.is_assistant or not message.text:
+||||||| parent of e4b406d6 (fix: improve gemini and codex archive fidelity)
+    # Scan assistant text for file paths and language mentions (catches pure-conversation sessions)
+    realm_path_pattern = re.compile(r'/realm/project/[^\s,;:)\]]+')
+    language_names = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
+    for message in semantic_facts.message_facts:
+        if not message.is_assistant or not message.text:
+=======
+    # Scan dialogue text for file paths and language mentions (catches pure-conversation sessions)
+    realm_path_pattern = re.compile(r'/realm/project/[^\s,;:)\]]+')
+    language_names = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
+    for message in semantic_facts.message_facts:
+        if not message.is_dialogue or not message.text:
+>>>>>>> e4b406d6 (fix: improve gemini and codex archive fidelity)
             continue
         for match in _REALM_PATH_PATTERN.finditer(message.text):
             path = match.group().rstrip(".,;:)'\">`")

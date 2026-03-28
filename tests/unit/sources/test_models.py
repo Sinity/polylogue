@@ -34,23 +34,24 @@ from polylogue.sources.providers.claude_code import (
     ClaudeCodeUsage,
     ClaudeCodeUserMessage,
 )
-from polylogue.sources.providers.gemini import GeminiMessage, GeminiPart, GeminiThoughtSignature
 from polylogue.sources.providers.codex import CodexContentBlock, CodexRecord
+from polylogue.sources.providers.gemini import GeminiMessage, GeminiPart, GeminiThoughtSignature
 
 # =============================================================================
 # Test Data Tables — all from shared infra (single source of truth)
 # =============================================================================
-
 from tests.infra.tables import (
     CHATGPT_ROLE_MAPPING,
     CLAUDE_CODE_IS_ACTUAL_MESSAGE,
     CLAUDE_CODE_IS_CONTEXT_COMPACTION,
     CLAUDE_CODE_IS_TOOL_PROGRESS,
-    CLAUDE_CODE_TIMESTAMP_CASES as CLAUDE_CODE_TIMESTAMP_PARSING,
     CLAUDE_CODE_TYPE_ROLE_MAPPING,
     GEMINI_ROLE_MAPPING,
     NORMALIZE_ROLE_CANONICAL,
     UNIFIED_ROLE_NORMALIZATION,
+)
+from tests.infra.tables import (
+    CLAUDE_CODE_TIMESTAMP_CASES as CLAUDE_CODE_TIMESTAMP_PARSING,
 )
 
 CLAUDE_AI_ROLE_MAPPING = [
@@ -547,6 +548,12 @@ class TestGeminiToMetaExtra:
         else:
             assert meta.tokens is None
 
+    def test_to_meta_uses_chunk_timestamp_when_present(self):
+        msg = GeminiMessage(text="", role="user", createTime="2024-06-15T10:30:00Z")
+        meta = msg.to_meta()
+        assert meta.timestamp is not None
+        assert meta.timestamp.year == 2024
+
 
 class TestGeminiExtractReasoningTracesExtra:
     """Test GeminiMessage.extract_reasoning_traces."""
@@ -644,6 +651,23 @@ class TestGeminiExtractContentBlocksExtra:
             assert len(text_blocks) > 0 if expected_len else True
         elif expected_type == "thinking":
             assert blocks[0].type == ContentType.THINKING
+
+    def test_extract_content_blocks_drive_inline_and_youtube(self):
+        from polylogue.lib.viewports import ContentType
+
+        msg = GeminiMessage(
+            text="",
+            role="user",
+            driveDocument={"id": "doc-1"},
+            inlineFile={"mimeType": "text/plain", "data": "aGVsbG8="},
+            youtubeVideo={"id": "vid-1"},
+        )
+
+        blocks = msg.extract_content_blocks()
+
+        assert [block.type for block in blocks] == [ContentType.FILE, ContentType.FILE, ContentType.VIDEO]
+        assert blocks[1].mime_type == "text/plain"
+        assert blocks[2].url == "https://www.youtube.com/watch?v=vid-1"
 
 
 # =============================================================================
