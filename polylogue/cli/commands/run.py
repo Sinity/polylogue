@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -20,7 +21,7 @@ from polylogue.cli.helpers import (
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
-from polylogue.pipeline.runner import plan_sources, run_sources
+from polylogue.pipeline.async_runner import async_run_sources, plan_sources
 from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
 
@@ -46,7 +47,7 @@ def _run_sync_once(
                 print(f"  {desc or 'Processing'}: {processed[0]:,} items...", flush=True)
                 last_update[0] = now
 
-        return run_sources(
+        return asyncio.run(async_run_sources(
             config=cfg,
             stage=stage,
             plan=plan_snapshot,
@@ -54,7 +55,7 @@ def _run_sync_once(
             source_names=selected_sources,
             progress_callback=plain_progress,
             render_format=render_format,
-        )
+        ))
     else:
         from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
@@ -74,7 +75,7 @@ def _run_sync_once(
                     progress.update(task_id, description=desc)
                 progress.update(task_id, advance=amount)
 
-            return run_sources(
+            return asyncio.run(async_run_sources(
                 config=cfg,
                 stage=stage,
                 plan=plan_snapshot,
@@ -82,7 +83,7 @@ def _run_sync_once(
                 source_names=selected_sources,
                 progress_callback=progress_callback,
                 render_format=render_format,
-            )
+            ))
 
 
 def _display_result(

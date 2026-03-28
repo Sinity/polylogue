@@ -320,7 +320,7 @@ def _collect_field_stats(
 
         elif isinstance(value, list):
             stats.array_lengths.append(len(value))
-            for i, item in enumerate(value):
+            for _i, item in enumerate(value):
                 # Use [*] for array items (not [0], [1] — we want aggregate stats)
                 _walk(item, f"{path}[*]", depth + 1, sample_idx)
 
@@ -438,8 +438,7 @@ def _annotate_schema(
             ]
 
         # Multiline content
-        if field_stats.is_multiline and field_stats.value_count:
-            if field_stats.is_multiline / field_stats.value_count > 0.3:
+        if field_stats.is_multiline and field_stats.value_count and field_stats.is_multiline / field_stats.value_count > 0.3:
                 schema["x-polylogue-multiline"] = True
 
         # Reference detection
