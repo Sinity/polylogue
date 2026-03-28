@@ -24,7 +24,7 @@ from polylogue.rendering.core import (
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
-    from polylogue.storage.store import ConversationRenderProjection
+    from polylogue.storage.state_views import ConversationRenderProjection
 
 
 class PygmentsHighlighter:

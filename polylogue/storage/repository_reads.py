@@ -14,7 +14,8 @@ from polylogue.storage.hydrators import (
     message_from_record,
 )
 from polylogue.storage.query_models import ConversationRecordQuery
-from polylogue.storage.store import ConversationRecord, ConversationRenderProjection
+from polylogue.storage.state_views import ConversationRenderProjection
+from polylogue.storage.store import ConversationRecord
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
@@ -111,14 +112,16 @@ class RepositoryReadMixin:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        path_terms: builtins.list[str] | None = None,
+        action_terms: builtins.list[str] | None = None,
+        excluded_action_terms: builtins.list[str] | None = None,
+        tool_terms: builtins.list[str] | None = None,
+        excluded_tool_terms: builtins.list[str] | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> builtins.list[ConversationSummary]:
         return await self.list_summaries_by_query(
             ConversationRecordQuery(
@@ -128,6 +131,11 @@ class RepositoryReadMixin:
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                path_terms=tuple(path_terms or ()),
+                action_terms=tuple(action_terms or ()),
+                excluded_action_terms=tuple(excluded_action_terms or ()),
+                tool_terms=tuple(tool_terms or ()),
+                excluded_tool_terms=tuple(excluded_tool_terms or ()),
                 limit=limit,
                 offset=offset,
                 has_tool_use=has_tool_use,
@@ -135,9 +143,6 @@ class RepositoryReadMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
             )
         )
 
@@ -151,14 +156,16 @@ class RepositoryReadMixin:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        path_terms: builtins.list[str] | None = None,
+        action_terms: builtins.list[str] | None = None,
+        excluded_action_terms: builtins.list[str] | None = None,
+        tool_terms: builtins.list[str] | None = None,
+        excluded_tool_terms: builtins.list[str] | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> AsyncIterator[builtins.list[ConversationSummary]]:
         offset = 0
         while True:
@@ -171,14 +178,16 @@ class RepositoryReadMixin:
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                path_terms=path_terms,
+                action_terms=action_terms,
+                excluded_action_terms=excluded_action_terms,
+                tool_terms=tool_terms,
+                excluded_tool_terms=excluded_tool_terms,
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
             )
             if not page:
                 break
@@ -203,14 +212,16 @@ class RepositoryReadMixin:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        path_terms: builtins.list[str] | None = None,
+        action_terms: builtins.list[str] | None = None,
+        excluded_action_terms: builtins.list[str] | None = None,
+        tool_terms: builtins.list[str] | None = None,
+        excluded_tool_terms: builtins.list[str] | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> builtins.list[Conversation]:
         return await self.list_by_query(
             ConversationRecordQuery(
@@ -219,6 +230,11 @@ class RepositoryReadMixin:
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                path_terms=tuple(path_terms or ()),
+                action_terms=tuple(action_terms or ()),
+                excluded_action_terms=tuple(excluded_action_terms or ()),
+                tool_terms=tuple(tool_terms or ()),
+                excluded_tool_terms=tuple(excluded_tool_terms or ()),
                 limit=limit,
                 offset=offset,
                 has_tool_use=has_tool_use,
@@ -226,9 +242,6 @@ class RepositoryReadMixin:
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
             )
         )
 
@@ -242,14 +255,16 @@ class RepositoryReadMixin:
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
+        path_terms: builtins.list[str] | None = None,
+        action_terms: builtins.list[str] | None = None,
+        excluded_action_terms: builtins.list[str] | None = None,
+        tool_terms: builtins.list[str] | None = None,
+        excluded_tool_terms: builtins.list[str] | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-        has_file_ops: bool = False,
-        has_git_ops: bool = False,
-        has_subagent: bool = False,
     ) -> int:
         return await self.count_by_query(
             ConversationRecordQuery(
@@ -258,14 +273,16 @@ class RepositoryReadMixin:
                 since=since,
                 until=until,
                 title_contains=title_contains,
+                path_terms=tuple(path_terms or ()),
+                action_terms=tuple(action_terms or ()),
+                excluded_action_terms=tuple(excluded_action_terms or ()),
+                tool_terms=tuple(tool_terms or ()),
+                excluded_tool_terms=tuple(excluded_tool_terms or ()),
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
-                has_file_ops=has_file_ops,
-                has_git_ops=has_git_ops,
-                has_subagent=has_subagent,
             )
         )
 
@@ -341,6 +358,15 @@ class RepositoryReadMixin:
         ids, records = await self._search_records(query, limit=limit, providers=providers)
         return await self._hydrate_conversations(records, ordered_ids=ids)
 
+    async def search_actions(
+        self,
+        query: str,
+        limit: int = 20,
+        providers: builtins.list[str] | None = None,
+    ) -> builtins.list[Conversation]:
+        ids, records = await self._search_action_records(query, limit=limit, providers=providers)
+        return await self._hydrate_conversations(records, ordered_ids=ids)
+
     async def _search_records(
         self,
         query: str,
@@ -349,6 +375,20 @@ class RepositoryReadMixin:
         providers: builtins.list[str] | None,
     ) -> tuple[builtins.list[str], builtins.list[ConversationRecord]]:
         ids = await self.queries.search_conversations(query, limit=limit, providers=providers)
+        if not ids:
+            return [], []
+        records = await self.queries.get_conversations_batch(ids)
+        by_id = {record.conversation_id: record for record in records}
+        return ids, [by_id[conversation_id] for conversation_id in ids if conversation_id in by_id]
+
+    async def _search_action_records(
+        self,
+        query: str,
+        *,
+        limit: int,
+        providers: builtins.list[str] | None,
+    ) -> tuple[builtins.list[str], builtins.list[ConversationRecord]]:
+        ids = await self.queries.search_action_conversations(query, limit=limit, providers=providers)
         if not ids:
             return [], []
         records = await self.queries.get_conversations_batch(ids)

@@ -36,8 +36,13 @@ python -m devtools.run_validation_lanes --list
 python -m devtools.run_validation_lanes --lane machine-contract
 python -m devtools.run_validation_lanes --lane query-routing
 python -m devtools.run_validation_lanes --lane semantic-stack
+python -m devtools.run_validation_lanes --lane retrieval-dogfood
+python -m devtools.run_validation_lanes --lane embeddings-coverage
+python -m devtools.run_validation_lanes --lane archive-intelligence
 python -m devtools.run_validation_lanes --lane frontier-local
 python -m devtools.run_validation_lanes --lane frontier-extended
+python -m devtools.run_validation_lanes --lane live-archive-small --dry-run
+python -m devtools.run_validation_lanes --lane memory-budget --dry-run
 python -m devtools.run_validation_lanes --lane live-exercises --dry-run
 ```
 
@@ -46,10 +51,15 @@ Lane intent:
 - `machine-contract`: root CLI JSON success/failure and runtime-health machine surfaces
 - `query-routing`: query-first integration plus route-planning/unit proofs
 - `semantic-stack`: harmonization, semantic facts/profile convergence, proof, and contract inventory
+- `retrieval-dogfood`: action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payloads
+- `embeddings-coverage`: embedding readiness/coverage stats and embed command contracts
+- `archive-intelligence`: local closure lane for retrieval, embedding readiness, and schema roundtrip
 - `tui`: Textual Mission Control interaction/state coverage
 - `chaos`: ingestion hostility, interruption, and chronology suites
 - `frontier-local`: machine + query + semantic + TUI + chaos
 - `frontier-extended`: `frontier-local` plus fast scale and the small long-haul campaign
+- `live-archive-small`: bounded live archive embedding/retrieval/health dogfood
+- `memory-budget`: explicit RSS budget check for a representative live retrieval query
 - `live-exercises`: explicit operator lane for read-only live archive QA exercises
 
 ### Focused mutation checkpoints

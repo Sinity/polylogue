@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import base64
+import binascii
+
 from pydantic import ValidationError
 
-from polylogue.logging import get_logger
+from polylogue.lib.hashing import hash_payload, hash_text_short
 from polylogue.lib.roles import Role
+from polylogue.lib.timestamps import parse_timestamp
+from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
 from polylogue.types import Provider
 
 from .base import ParsedAttachment, ParsedContentBlock, ParsedConversation, ParsedMessage
 
 _logger = get_logger(__name__)
+_YOUTUBE_WATCH_URL = "https://www.youtube.com/watch?v={video_id}"
 
 
 def extract_text_from_chunk(chunk: object) -> str | None:
@@ -47,6 +53,40 @@ def _collect_drive_docs(payload: object) -> list[dict[str, object] | str]:
     if isinstance(nested, dict):
         docs.extend(_collect_drive_docs(nested))
     return docs
+
+
+def _chunk_timestamp(chunk: dict[str, object], default_timestamp: str | None) -> str | None:
+    for key in ("createTime", "timestamp", "updateTime"):
+        value = chunk.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return default_timestamp
+
+
+def _select_timestamp(values: list[str | None], *, latest: bool) -> str | None:
+    candidates: list[tuple[object, str]] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str) or not value or value in seen:
+            continue
+        parsed = parse_timestamp(value)
+        if parsed is None:
+            continue
+        seen.add(value)
+        candidates.append((parsed, value))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[-1][1] if latest else candidates[0][1]
+
+
+def _inline_file_size_bytes(data: object) -> int | None:
+    if not isinstance(data, str) or not data:
+        return None
+    try:
+        return len(base64.b64decode(data, validate=False))
+    except (ValueError, binascii.Error):
+        return len(data.encode("utf-8"))
 
 
 def _attachment_from_doc(doc: dict[str, object] | str, message_id: str | None) -> ParsedAttachment | None:
@@ -88,6 +128,115 @@ def _attachment_from_doc(doc: dict[str, object] | str, message_id: str | None) -
     )
 
 
+def _attachment_from_inline_file(inline_file: object, message_id: str | None) -> ParsedAttachment | None:
+    if not isinstance(inline_file, dict):
+        return None
+    mime_type = inline_file.get("mimeType")
+    data = inline_file.get("data")
+    attachment_key = data if isinstance(data, str) and data else hash_payload(inline_file)
+    attachment_id = f"inline-file-{hash_text_short(str(attachment_key), length=24)}"
+    size_bytes = _inline_file_size_bytes(data)
+    provider_meta: dict[str, object] = {"attachment_kind": "inline_file"}
+    if isinstance(mime_type, str) and mime_type:
+        provider_meta["mimeType"] = mime_type
+    if size_bytes is not None:
+        provider_meta["sizeBytes"] = size_bytes
+    return ParsedAttachment(
+        provider_attachment_id=attachment_id,
+        message_provider_id=message_id,
+        name=None,
+        mime_type=mime_type if isinstance(mime_type, str) else None,
+        size_bytes=size_bytes,
+        path=None,
+        provider_meta=provider_meta,
+    )
+
+
+def _attachment_from_youtube_video(video: object, message_id: str | None) -> ParsedAttachment | None:
+    if not isinstance(video, dict):
+        return None
+    video_id = video.get("id")
+    if isinstance(video_id, str) and video_id:
+        attachment_id = f"youtube-video-{video_id}"
+        url = _YOUTUBE_WATCH_URL.format(video_id=video_id)
+    else:
+        attachment_id = f"youtube-video-{hash_payload(video)}"
+        url = None
+    provider_meta: dict[str, object] = {"attachment_kind": "youtube_video", **video}
+    if url is not None:
+        provider_meta["url"] = url
+    return ParsedAttachment(
+        provider_attachment_id=attachment_id,
+        message_provider_id=message_id,
+        name=video_id if isinstance(video_id, str) else None,
+        mime_type="video/youtube",
+        size_bytes=None,
+        path=None,
+        provider_meta=provider_meta,
+    )
+
+
+def _collect_chunk_attachments(chunk: dict[str, object], message_id: str | None) -> list[ParsedAttachment]:
+    attachments: list[ParsedAttachment] = []
+    for doc in _collect_drive_docs(chunk):
+        attachment = _attachment_from_doc(doc, message_id)
+        if attachment is not None:
+            attachments.append(attachment)
+    inline_attachment = _attachment_from_inline_file(chunk.get("inlineFile"), message_id)
+    if inline_attachment is not None:
+        attachments.append(inline_attachment)
+    youtube_attachment = _attachment_from_youtube_video(chunk.get("youtubeVideo"), message_id)
+    if youtube_attachment is not None:
+        attachments.append(youtube_attachment)
+    return attachments
+
+
+def _attachment_block_payloads(attachments: list[ParsedAttachment]) -> list[dict[str, object]]:
+    blocks: list[dict[str, object]] = []
+    for attachment in attachments:
+        metadata = dict(attachment.provider_meta or {})
+        if attachment.name:
+            metadata.setdefault("name", attachment.name)
+        block: dict[str, object] = {
+            "type": "document",
+            "media_type": attachment.mime_type,
+            "metadata": metadata,
+        }
+        if attachment.name:
+            block["text"] = attachment.name
+        blocks.append(block)
+    return blocks
+
+
+def _viewport_block_payload(block) -> dict[str, object] | None:
+    raw_type = block.type.value if hasattr(block.type, "value") else str(block.type)
+    block_type = {
+        "file": "document",
+        "audio": "document",
+        "video": "document",
+        "unknown": "text",
+        "system": "text",
+        "error": "text",
+    }.get(raw_type, raw_type)
+    if block_type not in {"text", "thinking", "tool_use", "tool_result", "image", "code", "document"}:
+        return None
+    payload: dict[str, object] = {"type": block_type}
+    if block.text is not None:
+        payload["text"] = block.text
+    if block.language:
+        payload["language"] = block.language
+    if block.mime_type:
+        payload["media_type"] = block.mime_type
+    metadata: dict[str, object] = {}
+    if isinstance(block.raw, dict) and block.raw:
+        metadata.update(block.raw)
+    if getattr(block, "url", None):
+        metadata["url"] = block.url
+    if metadata:
+        payload["metadata"] = metadata
+    return payload
+
+
 def _parsed_content_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
     if not isinstance(blocks, list):
         return []
@@ -98,14 +247,18 @@ def _parsed_content_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]
         block_type = block.get("type")
         if not isinstance(block_type, str) or not block_type:
             continue
-        metadata: dict[str, object] | None = None
+        metadata: dict[str, object] | None = (
+            dict(block.get("metadata")) if isinstance(block.get("metadata"), dict) else None
+        )
         language = block.get("language")
         if isinstance(language, str) and language:
-            metadata = {"language": language}
+            metadata = dict(metadata or {})
+            metadata.setdefault("language", language)
         parsed.append(
             ParsedContentBlock(
                 type=block_type,
                 text=block.get("text") if isinstance(block.get("text"), str) else None,
+                media_type=block.get("media_type") if isinstance(block.get("media_type"), str) else None,
                 metadata=metadata,
             )
         )
@@ -129,6 +282,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
 
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
+    observed_timestamps: list[str | None] = []
     for idx, chunk in enumerate(chunks, start=1):
         if isinstance(chunk, str):
             chunk_obj: dict[str, object] = {"text": chunk}
@@ -137,19 +291,22 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
         else:
             continue
         text = extract_text_from_chunk(chunk_obj)
-        if not text:
-            continue
         # Role is required - skip chunks without one
         role_val = chunk_obj.get("role") or chunk_obj.get("author")
         if not isinstance(role_val, str) or not role_val:
             continue
         role = Role.normalize(role_val)
         msg_id = str(chunk_obj.get("id") or f"chunk-{idx}")
+        message_timestamp = _chunk_timestamp(chunk_obj, default_timestamp)
+        chunk_attachments = _collect_chunk_attachments(chunk_obj, msg_id)
+        observed_timestamps.append(message_timestamp)
+        used_typed_model = False
 
         # Try to parse via the rich GeminiMessage typed model for structured extraction
         meta: dict[str, object] = {"raw": chunk_obj}
         try:
             gem = GeminiMessage.model_validate(chunk_obj)
+            used_typed_model = True
             # Extract rich metadata from the typed model
             if gem.isThought:
                 meta["isThought"] = True
@@ -182,13 +339,17 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
 
             # Extract structured content blocks via the typed model
             content_blocks = [
-                {"type": cb.type.value if hasattr(cb.type, "value") else str(cb.type), "text": cb.text}
+                block_payload
                 for cb in gem.extract_content_blocks()
-                if cb.text
+                if (block_payload := _viewport_block_payload(cb)) is not None
             ]
             if not content_blocks:
                 # Fallback: basic block from text
-                content_blocks = [{"type": "thinking" if gem.isThought else "text", "text": text}]
+                content_blocks = (
+                    [{"type": "thinking" if gem.isThought else "text", "text": text}]
+                    if text
+                    else []
+                )
             meta["content_blocks"] = content_blocks
 
             # Extract reasoning traces if present
@@ -205,8 +366,10 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
             token_count = chunk_obj.get("tokenCount")
             if token_count:
                 meta["tokenCount"] = token_count
-            block_type = "thinking" if chunk_obj.get("isThought") else "text"
-            content_blocks = [{"type": block_type, "text": text}]
+            content_blocks: list[dict[str, object]] = []
+            if text:
+                block_type = "thinking" if chunk_obj.get("isThought") else "text"
+                content_blocks.append({"type": block_type, "text": text})
             exec_code = chunk_obj.get("executableCode")
             if isinstance(exec_code, dict) and exec_code:
                 meta["executableCode"] = exec_code
@@ -227,25 +390,41 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
                 meta["errorMessage"] = error_msg
             meta["content_blocks"] = content_blocks
 
+        if chunk_attachments and not used_typed_model:
+            meta_blocks = meta.get("content_blocks")
+            attachment_blocks = _attachment_block_payloads(chunk_attachments)
+            if isinstance(meta_blocks, list):
+                meta_blocks.extend(attachment_blocks)
+            else:
+                meta["content_blocks"] = attachment_blocks
+
+        if not text and not chunk_attachments and not meta.get("content_blocks"):
+            continue
+
         messages.append(
             ParsedMessage(
                 provider_message_id=msg_id,
                 role=role,
                 text=text,
-                timestamp=default_timestamp,
+                timestamp=message_timestamp,
                 content_blocks=_parsed_content_blocks_from_meta(meta.get("content_blocks")),
                 provider_meta=meta,
             )
         )
-        for doc in _collect_drive_docs(chunk_obj):
-            attachment = _attachment_from_doc(doc, msg_id)
-            if attachment:
-                attachments.append(attachment)
+        attachments.extend(chunk_attachments)
 
     title_val = payload.get("title") or payload.get("displayName")
     title = str(title_val) if title_val else fallback_id
-    create_time_str = str(payload.get("createTime")) if payload.get("createTime") else None
-    update_time_str = str(payload.get("updateTime")) if payload.get("updateTime") else None
+    create_time_str = (
+        str(payload.get("createTime"))
+        if payload.get("createTime")
+        else _select_timestamp(observed_timestamps, latest=False)
+    )
+    update_time_str = (
+        str(payload.get("updateTime"))
+        if payload.get("updateTime")
+        else _select_timestamp(observed_timestamps, latest=True)
+    )
     return ParsedConversation(
         provider_name=provider,
         provider_conversation_id=str(payload.get("id") or fallback_id),

@@ -6,13 +6,15 @@ import time
 from dataclasses import dataclass
 
 from polylogue.config import Config, Source
+from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import PlanResult, RawConversationRecord
+from polylogue.storage.state_views import PlanResult
+from polylogue.storage.store import RawConversationRecord
 
 from .acquisition import AcquisitionService
-from .validation import ValidateResult, ValidationService
+from .validation import ValidationService
 
 _VALIDATE_STAGES = frozenset({"validate", "parse", "all"})
 _PARSE_STAGES = frozenset({"parse", "all"})

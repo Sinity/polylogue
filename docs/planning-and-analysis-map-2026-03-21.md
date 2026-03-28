@@ -24,7 +24,8 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md) | Current planned execution program for runtime state-model normalization, async backend narrowing, raw/validation/prepare convergence, and schema operator/tooling collapse | Planned; canonical next implementation campaign |
+| [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md) | Current execution program for action/event semantics, retrieval/FTS/embedding convergence, unresolved runtime-state work, schema-tooling/operator convergence, and archive-scale validation | Active; action events, ordered action-sequence querying, action-text querying, explicit dialogue/actions/hybrid retrieval lanes, batched retrieval hardening, embedding coverage/readiness surfaces, and named archive-intelligence validation lanes are now executed; broader retrieval/state/backend/schema-validation work remains |
+| [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md) | Absorbed predecessor program for the runtime-state/schema half of the new integrated campaign | Planned reference; no longer the live queue on its own |
 | [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md) | Most recent executed convergence program for harmonization, canonical semantic facts, downstream semantic products, and semantic proof/export contract convergence | Executed; current canonical record of the semantic-stack convergence campaign |
 | [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md) | Executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path around the canonical package model | Executed; predecessor evidence-pipeline convergence campaign |
 | [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Executed convergence campaign for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Executed; canonical record of the convergence campaign |
@@ -113,13 +114,18 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the current live implementation queue is now [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md)
-- it targets the strongest remaining internal platform mass after semantic-stack convergence:
-  - runtime state models still split across raw envelopes, validation outcomes, prepare bundles, and durable storage records
-  - `async_sqlite.py` still remains one of the largest infrastructure/business boundary files in the repo
-  - the raw -> validate -> parse -> prepare -> persist path is better than before but still not yet one fully typed staged contract
-  - schema tooling still behaves like a mini-platform spread across generation analysis, workflow assembly, tooling registry, roundtrip proof, and the schema CLI
-  - schema CLI and roundtrip proof still know more about internal workflow shaping than they should
+- the current live implementation queue is now [programs/archive-intelligence-platform-convergence-program-2026-03-23.md](./programs/archive-intelligence-platform-convergence-program-2026-03-23.md)
+- it absorbs the still-open state/schema platform mass from [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md), but expands the target to the sharper dogfooded frontier:
+  - `ToolCall` is still too low-level to be the main semantic/query primitive
+  - Polylogue now has better semantic truth at query time, but still lacks a first-class action/event layer above raw tool blocks
+  - FTS and embeddings are still too message-text-centric for the archive’s modern value
+  - runtime state bands, backend narrowing, and schema-tooling/operator convergence remain unfinished from the prior planned program
+  - archive-intelligence validation lanes now exist, including live-archive and explicit RSS-budget dogfood, but broader retrieval/state/backend/schema convergence still remains
+- the integrated next move is therefore:
+  - action/event layer convergence
+  - query/FTS/embedding control-plane convergence
+  - completion of the unresolved runtime-state and schema-tooling work
+  - continued archive-scale proving through the converged validation lanes
 - the semantic-stack convergence program is now executed via [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md)
 - it closed the strongest remaining semantic-cluster drag around:
   - harmonization boundary cleanup around `schemas/unified.py` and `lib/provider_semantics.py`
@@ -153,6 +159,7 @@ As of this map:
 - the read-surface proof and showcase-hardening lane is now executed via [programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md), which covers query summary/list surfaces, stream surfaces, MCP read payloads, and matching showcase proof coverage
 - the remaining runtime/testing reservoir has now been executed via [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md), which closes the root machine contract, query/TUI hardening, and named validation lanes for chaos/scale/live operator workflows
 - later work should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
+- the latest dogfooding work has promoted that old semantic/query follow-up into the live queue via the new integrated program
 
 ## Maintenance Rule
 

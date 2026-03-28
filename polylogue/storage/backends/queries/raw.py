@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from collections.abc import AsyncIterator
+from typing import Any
 
 import aiosqlite
 
 from polylogue.storage.backends.connection import _build_source_scope_filter
 from polylogue.storage.backends.queries.mappers import _row_to_raw_conversation
+from polylogue.storage.state_views import RawConversationState, RawConversationStateUpdate, UNSET
 from polylogue.storage.store import (
     RawConversationRecord,
-    RawConversationState,
 )
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
@@ -19,6 +21,7 @@ __all__ = [
     "iter_raw_ids",
     "save_raw_conversation",
     "get_raw_conversation",
+    "apply_raw_state_update",
     "mark_raw_parsed",
     "mark_raw_validated",
     "get_known_source_mtimes",
@@ -32,6 +35,96 @@ __all__ = [
 
 
 _EFFECTIVE_RAW_PROVIDER_SQL = "COALESCE(payload_provider, provider_name)"
+
+
+def _coerce_provider(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, Provider):
+        return value.value
+    return Provider.from_string(str(value)).value
+
+
+def _coerce_status(value: object) -> ValidationStatus:
+    if isinstance(value, ValidationStatus):
+        return value
+    return ValidationStatus.from_string(str(value))
+
+
+def _coerce_mode(value: object) -> ValidationMode:
+    if isinstance(value, ValidationMode):
+        return value
+    return ValidationMode.from_string(str(value))
+
+
+async def apply_raw_state_update(
+    conn: aiosqlite.Connection,
+    raw_id: str,
+    *,
+    state: RawConversationStateUpdate,
+    transaction_depth: int,
+) -> None:
+    """Apply a typed raw-state mutation as a single SQL update."""
+    if not state.has_values:
+        if transaction_depth == 0:
+            await conn.commit()
+        return
+
+    set_clauses: list[str] = []
+    params: list[Any] = []
+
+    if state.parsed_at is not UNSET:
+        set_clauses.append("parsed_at = ?")
+        params.append(state.parsed_at)
+
+    if state.parse_error is not UNSET:
+        set_clauses.append("parse_error = ?")
+        params.append(state.parse_error[:2000] if isinstance(state.parse_error, str) else state.parse_error)
+
+    if state.validation_status is not UNSET:
+        set_clauses.append("validation_status = ?")
+        params.append(_coerce_status(state.validation_status))
+
+    if state.validation_error is not UNSET:
+        set_clauses.append("validation_error = ?")
+        params.append(
+            state.validation_error[:2000]
+            if isinstance(state.validation_error, str)
+            else state.validation_error
+        )
+
+    if state.validation_drift_count is not UNSET:
+        set_clauses.append("validation_drift_count = ?")
+        params.append(max(0, int(state.validation_drift_count)))
+
+    if state.validation_provider is not UNSET:
+        set_clauses.append("validation_provider = ?")
+        params.append(_coerce_provider(state.validation_provider))
+
+    if state.validation_mode is not UNSET:
+        set_clauses.append("validation_mode = ?")
+        params.append(_coerce_mode(state.validation_mode))
+
+    if state.payload_provider is not UNSET:
+        set_clauses.append("payload_provider = COALESCE(?, payload_provider)")
+        params.append(_coerce_provider(state.payload_provider))
+
+    if state.validation_status is not UNSET or state.validation_error is not UNSET:
+        set_clauses.append("validated_at = ?")
+        params.append(datetime.now(timezone.utc).isoformat())
+
+    if not set_clauses:
+        if transaction_depth == 0:
+            await conn.commit()
+        return
+
+    params.append(raw_id)
+    await conn.execute(
+        f"UPDATE raw_conversations SET {', '.join(set_clauses)} WHERE raw_id = ?",
+        tuple(params),
+    )
+    if transaction_depth == 0:
+        await conn.commit()
 
 
 def raw_id_query(
@@ -186,26 +279,24 @@ async def mark_raw_parsed(
     transaction_depth: int,
 ) -> None:
     """Mark a raw conversation as parsed (or record a parse error)."""
-    from datetime import datetime, timezone
-
-    provider_token = str(Provider.from_string(payload_provider)) if payload_provider is not None else None
-
+    provider_token = _coerce_provider(payload_provider)
     if error is None:
-        await conn.execute(
-            "UPDATE raw_conversations "
-            "SET parsed_at = ?, parse_error = NULL, payload_provider = COALESCE(?, payload_provider) "
-            "WHERE raw_id = ?",
-            (datetime.now(timezone.utc).isoformat(), provider_token, raw_id),
+        state = RawConversationStateUpdate(
+            parsed_at=datetime.now(timezone.utc).isoformat(),
+            parse_error=None,
+            payload_provider=provider_token,
         )
     else:
-        await conn.execute(
-            "UPDATE raw_conversations "
-            "SET parse_error = ?, payload_provider = COALESCE(?, payload_provider) "
-            "WHERE raw_id = ?",
-            (error[:2000], provider_token, raw_id),
+        state = RawConversationStateUpdate(
+            parse_error=error[:2000],
+            payload_provider=provider_token,
         )
-    if transaction_depth == 0:
-        await conn.commit()
+    await apply_raw_state_update(
+        conn,
+        raw_id,
+        state=state,
+        transaction_depth=transaction_depth,
+    )
 
 
 async def mark_raw_validated(
@@ -221,47 +312,34 @@ async def mark_raw_validated(
     transaction_depth: int,
 ) -> None:
     """Persist validation status for a raw conversation record."""
-    from datetime import datetime, timezone
-
     try:
-        validation_status = ValidationStatus.from_string(str(status))
+        validation_status = _coerce_status(status)
     except ValueError as exc:
         raise ValueError(f"Invalid validation status: {status}") from exc
 
-    validation_provider = Provider.from_string(provider) if provider is not None else None
+    validation_mode: ValidationMode | None
+    if mode is not None:
+        try:
+            validation_mode = _coerce_mode(mode)
+        except ValueError as exc:
+            raise ValueError(f"Invalid validation mode: {mode}") from exc
+    else:
+        validation_mode = None
 
-    try:
-        validation_mode = ValidationMode.from_string(str(mode)) if mode is not None else None
-    except ValueError as exc:
-        raise ValueError(f"Invalid validation mode: {mode}") from exc
-
-    payload_token = Provider.from_string(payload_provider) if payload_provider is not None else None
-
-    await conn.execute(
-        """
-        UPDATE raw_conversations
-        SET validated_at = ?,
-            validation_status = ?,
-            validation_error = ?,
-            validation_drift_count = ?,
-            validation_provider = ?,
-            validation_mode = ?,
-            payload_provider = COALESCE(?, payload_provider)
-        WHERE raw_id = ?
-        """,
-        (
-            datetime.now(timezone.utc).isoformat(),
-            validation_status,
-            (error[:2000] if error else None),
-            max(0, int(drift_count)),
-            validation_provider,
-            validation_mode,
-            payload_token,
-            raw_id,
-        ),
+    state = RawConversationStateUpdate(
+        validation_status=validation_status,
+        validation_error=(error[:2000] if error else None),
+        validation_drift_count=drift_count,
+        validation_provider=_coerce_provider(provider),
+        validation_mode=validation_mode,
+        payload_provider=_coerce_provider(payload_provider),
     )
-    if transaction_depth == 0:
-        await conn.commit()
+    await apply_raw_state_update(
+        conn,
+        raw_id,
+        state=state,
+        transaction_depth=transaction_depth,
+    )
 
 
 async def get_known_source_mtimes(conn: aiosqlite.Connection) -> dict[str, str]:

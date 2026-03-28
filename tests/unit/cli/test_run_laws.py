@@ -26,7 +26,7 @@ from polylogue.cli.run_observers import (
     _format_elapsed,
 )
 from polylogue.config import Config, get_config
-from polylogue.storage.store import RunResult
+from polylogue.storage.state_views import RunResult
 
 
 def _make_env(*, plain: bool) -> MagicMock:
