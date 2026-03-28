@@ -1,3 +1,5 @@
+"""Full-text search and FTS5 query escaping."""
+
 from __future__ import annotations
 
 import logging
@@ -15,8 +17,10 @@ from .search_cache import SearchCacheKey
 
 logger = logging.getLogger(__name__)
 
-# FTS5 special characters that need escaping or quoting (+ is inclusion operator)
-_FTS5_SPECIAL = re.compile(r'[":*^(){}[\]|&!+\-]')
+# FTS5 special characters that need escaping or quoting.
+# Includes documented operators (" : * ^ ( ) { } [ ] | & ! + -) plus characters
+# that are syntactically problematic in FTS5 queries (' \ ; % =).
+_FTS5_SPECIAL = re.compile(r'''['":*^(){}\[\]|&!+\-\\;%=]''')
 # FTS5 boolean/special operators that should be treated as literals when alone
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 # Pattern to detect queries that are only asterisks (dangerous wildcard-only)
@@ -97,6 +101,11 @@ def escape_fts5_query(query: str) -> str:
 
     query = query.strip()
 
+    # Strip control characters (U+0000-U+001F, U+007F) — never useful in searches
+    query = re.sub(r'[\x00-\x1f\x7f]', '', query)
+    if not query:
+        return '""'  # Only contained control characters
+
     # Check for asterisk-only queries (dangerous wildcard-only pattern)
     if _ASTERISK_ONLY.match(query):
         return '""'  # Treat as empty query
@@ -165,7 +174,7 @@ def _search_messages_impl(
     with open_connection(db_path) as conn:
         exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         if not exists:
-            raise DatabaseError("Search index not built. Run `polylogue sync` with index enabled.")
+            raise DatabaseError("Search index not built. Run `polylogue run` with index enabled.")
 
         # Escape the query to avoid syntax errors with special characters
         fts_query = escape_fts5_query(query)

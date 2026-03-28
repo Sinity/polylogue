@@ -164,31 +164,23 @@ class TestFTS5EscapeFuzz:
         # Comments
         b"test/* comment */",
         b"dash--comment",
-    ]
-
-    # Known edge cases that may cause FTS5 syntax errors
-    # These are documented issues to investigate, not test failures
-    # The escape function handles the main attack vectors (double quotes, operators)
-    # but doesn't try to escape every possible problematic character
-    KNOWN_EDGE_CASES = [
-        # Single quotes are valid in FTS5 as phrase delimiters but
-        # can cause issues when combined with other chars
+        # Single quotes (FTS5-problematic, now quoted)
         b"' OR '1'='1",
         b"'test'",
-        # Backslash handling varies by FTS5 version
+        # Backslash handling
         b"backslash\\escape",
-        # Control character DEL
+        # Control character DEL (stripped before processing)
         b"test\x7f",
-        # Semicolons and percent can be problematic
+        # Semicolons and percent (now in FTS5_SPECIAL, get quoted)
         b"semicolon;",
         b"percent%wildcard",
         b"test; SELECT",
-        # Complex injection attempts with single quotes
+        # Complex injection attempts (safely quoted)
         b"'; DROP TABLE messages; --",
         b"' OR 1=1 --",
         b"'; DELETE FROM conversations; --",
         b"' UNION SELECT * FROM sqlite_master --",
-        # FTS5 attempts with mixed operators
+        # FTS5 attempts with mixed operators (= now caught)
         b"test OR 1=1",
         b'test" OR "1"="1',
         b"test AND 1=1",
@@ -199,21 +191,6 @@ class TestFTS5EscapeFuzz:
     @pytest.mark.parametrize("data", SAFE_CORPUS)
     def test_fts5_escape_safe_corpus(self, data: bytes):
         """Run FTS5 escape fuzz with inputs that should be safe."""
-        fuzz_fts5_escape(data)
-
-    @pytest.mark.parametrize("data", KNOWN_EDGE_CASES)
-    @pytest.mark.xfail(
-        reason="Known edge cases - escape function doesn't handle all FTS5 syntax",
-        strict=False,
-    )
-    def test_fts5_escape_edge_cases(self, data: bytes):
-        """Document known edge cases that may cause FTS5 errors.
-
-        These are not security vulnerabilities (parameterized queries prevent
-        SQL injection), but they may cause FTS5 syntax errors. The escape
-        function is designed to handle the most common cases, not all possible
-        problematic inputs.
-        """
         fuzz_fts5_escape(data)
 
     def test_fts5_escape_security_invariant(self):

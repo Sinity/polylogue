@@ -1,3 +1,5 @@
+"""Unified repository for conversation read/write operations."""
+
 from __future__ import annotations
 
 import builtins
@@ -270,15 +272,15 @@ class ConversationRepository:
         msg_to_conv = self._get_message_conversation_mapping(message_ids)
 
         conv_scores: dict[str, float] = {}
-        for msg_id, score in results:
+        for msg_id, distance in results:
             conv_id = msg_to_conv.get(msg_id)
             if conv_id:
-                conv_scores[conv_id] = max(conv_scores.get(conv_id, 0.0), score)
+                # Lower distance = more similar; keep the best (lowest) per conversation
+                conv_scores[conv_id] = min(conv_scores.get(conv_id, float("inf")), distance)
 
         ranked_ids = sorted(
             conv_scores.keys(),
             key=lambda x: conv_scores[x],
-            reverse=True,
         )[:limit]
 
         return self._get_many(ranked_ids)
@@ -498,6 +500,10 @@ class ConversationRepository:
             "SELECT COUNT(*) FROM messages"
         ).fetchone()[0]
 
+        att_count = conn.execute(
+            "SELECT COUNT(*) FROM attachments"
+        ).fetchone()[0]
+
         provider_rows = conn.execute(
             """
             SELECT provider_name, COUNT(*) as count
@@ -523,14 +529,15 @@ class ConversationRepository:
         # Get database size
         db_size = 0
         try:
-            import os
-            db_size = os.path.getsize(self._db_path) if self._db_path else 0
+            from pathlib import Path
+            db_size = Path(self._db_path).stat().st_size if self._db_path else 0
         except Exception as exc:
             logger.debug("DB size check failed: %s", exc)
 
         return ArchiveStats(
             total_conversations=conv_count,
             total_messages=msg_count,
+            total_attachments=att_count,
             providers=providers,
             embedded_conversations=embedded_convs,
             embedded_messages=embedded_msgs,
