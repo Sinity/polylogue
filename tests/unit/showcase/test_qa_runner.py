@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.rendering.semantic_proof import SemanticProofReport, SemanticProofSuiteReport
 from polylogue.schemas.audit import AuditReport
 from polylogue.schemas.verification import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercises import Exercise, Validation
@@ -57,12 +56,62 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
             },
             total_records=1,
         ),
+<<<<<<< HEAD
         semantic_proof_report=SemanticProofSuiteReport(
             surface_reports={
                 "canonical_markdown_v1": SemanticProofReport(
                     surface="canonical_markdown_v1",
                     conversations=[],
                     provider_reports={},
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+        semantic_proof_report=SemanticProofSuiteReport(
+            surface_reports={
+                "canonical_markdown_v1": SemanticProofReport(
+                    surface="canonical_markdown_v1",
+                    conversations=[],
+                    provider_reports={},
+                )
+            },
+        ),
+        roundtrip_proof_report=RoundtripProofSuiteReport(
+            provider_reports={
+                "chatgpt": ProviderRoundtripProofReport(
+                    provider="chatgpt",
+                    package_version="v1",
+                    element_kind="conversation_document",
+                    wire_encoding="json",
+                    stages={
+                        "selection": RoundtripStageReport("selection", "ok", "selected"),
+                        "synthetic": RoundtripStageReport("synthetic", "ok", "generated", {"generated_artifacts": 1}),
+                        "acquisition": RoundtripStageReport("acquisition", "ok", "acquired"),
+                        "validation": RoundtripStageReport("validation", "ok", "validated"),
+                        "parse_dispatch": RoundtripStageReport("parse_dispatch", "ok", "parsed", {"parsed_conversations": 1}),
+                        "prepare_persist": RoundtripStageReport("prepare_persist", "ok", "persisted", {"persisted_conversations": 1}),
+                        "corpus_verification": RoundtripStageReport("corpus_verification", "ok", "verified"),
+                        "artifact_proof": RoundtripStageReport("artifact_proof", "ok", "proof"),
+                    },
+                )
+            },
+        ),
+=======
+        roundtrip_proof_report=RoundtripProofSuiteReport(
+            provider_reports={
+                "chatgpt": ProviderRoundtripProofReport(
+                    provider="chatgpt",
+                    package_version="v1",
+                    element_kind="conversation_document",
+                    wire_encoding="json",
+                    stages={
+                        "selection": RoundtripStageReport("selection", "ok", "selected"),
+                        "synthetic": RoundtripStageReport("synthetic", "ok", "generated", {"generated_artifacts": 1}),
+                        "acquisition": RoundtripStageReport("acquisition", "ok", "acquired"),
+                        "validation": RoundtripStageReport("validation", "ok", "validated"),
+                        "parse_dispatch": RoundtripStageReport("parse_dispatch", "ok", "parsed", {"parsed_conversations": 1}),
+                        "prepare_persist": RoundtripStageReport("prepare_persist", "ok", "persisted", {"persisted_conversations": 1}),
+                        "corpus_verification": RoundtripStageReport("corpus_verification", "ok", "verified"),
+                        "artifact_proof": RoundtripStageReport("artifact_proof", "ok", "proof"),
+                    },
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
                 )
             },
         ),
@@ -77,24 +126,55 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
 
     qa_session = json.loads((report_dir / "qa-session.json").read_text())
     proof_payload = json.loads((report_dir / "artifact-proof.json").read_text())
+<<<<<<< HEAD
     semantic_payload = json.loads((report_dir / "semantic-proof.json").read_text())
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+    semantic_payload = json.loads((report_dir / "semantic-proof.json").read_text())
+    roundtrip_payload = json.loads((report_dir / "roundtrip-proof.json").read_text())
+=======
+    roundtrip_payload = json.loads((report_dir / "roundtrip-proof.json").read_text())
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
     invariant_checks = json.loads((report_dir / "invariant-checks.json").read_text())
 
     assert qa_session["audit"]["status"] == "ok"
     assert qa_session["proof"]["status"] == "ok"
+<<<<<<< HEAD
     assert qa_session["semantic_proof"]["status"] == "ok"
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+    assert qa_session["semantic_proof"]["status"] == "ok"
+    assert qa_session["roundtrip_proof"]["status"] == "ok"
+=======
+    assert qa_session["roundtrip_proof"]["status"] == "ok"
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
     assert qa_session["showcase"]["summary"]["passed"] == 1
     assert qa_session["invariants"]["summary"] == {"failed": 0, "passed": 1, "skipped": 0}
     assert proof_payload["summary"]["contract_backed_records"] == 1
     assert proof_payload["summary"]["package_versions"] == {"v1": 1}
     assert proof_payload["summary"]["element_kinds"] == {"conversation_document": 1}
+<<<<<<< HEAD
     assert semantic_payload["summary"]["clean"] is True
     assert semantic_payload["summary"]["surface_count"] == 1
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+    assert semantic_payload["summary"]["clean"] is True
+    assert semantic_payload["summary"]["surface_count"] == 1
+    assert roundtrip_payload["summary"]["clean"] is True
+    assert roundtrip_payload["summary"]["provider_count"] == 1
+=======
+    assert roundtrip_payload["summary"]["clean"] is True
+    assert roundtrip_payload["summary"]["provider_count"] == 1
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
     assert invariant_checks == [
         {"exercise": "test-help", "invariant": "json_valid", "status": "ok"},
     ]
     assert (report_dir / "artifact-proof.json").exists()
+<<<<<<< HEAD
     assert (report_dir / "semantic-proof.json").exists()
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+    assert (report_dir / "semantic-proof.json").exists()
+    assert (report_dir / "roundtrip-proof.json").exists()
+=======
+    assert (report_dir / "roundtrip-proof.json").exists()
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
     assert (report_dir / "schema-audit.json").exists()
     assert (report_dir / "showcase-report.json").exists()
     assert (report_dir / "qa-session.md").exists()

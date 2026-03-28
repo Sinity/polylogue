@@ -58,8 +58,18 @@ def test_site_command_json_emits_manifest(cli_workspace) -> None:
     assert payload["archive"]["total_conversations"] == 1
     assert payload["latest_run"]["run_id"] == "run-cli-001"
     assert payload["outputs"]["total_index_pages"] >= 1
+<<<<<<< HEAD
     assert payload["semantic_proof"]["surface_count"] >= 1
     assert payload["semantic_proof"]["surfaces"]["canonical_markdown_v1"]["total_conversations"] == 1
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+    assert payload["semantic_proof"]["surface_count"] >= 1
+    assert payload["semantic_proof"]["surfaces"]["canonical_markdown_v1"]["total_conversations"] == 1
+    assert "maintenance" in payload
+    assert "messages_fts" in payload["maintenance"]["derived_models"]
+=======
+    assert "maintenance" in payload
+    assert "messages_fts" in payload["maintenance"]["derived_models"]
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
     assert payload["artifacts"]["entry_count"] >= 1
     assert "site-manifest.json" not in {
         entry["relative_path"] for entry in payload["artifacts"]["entries"]

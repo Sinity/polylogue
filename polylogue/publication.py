@@ -97,6 +97,7 @@ class ArtifactProofSummary(BaseModel):
     clean: bool
 
 
+<<<<<<< HEAD
 class SemanticProofSummary(BaseModel):
     """Per-surface semantic-preservation proof summary embedded in publication manifests."""
 
@@ -125,6 +126,87 @@ class SemanticProofSuiteSummary(BaseModel):
     metric_summary: dict[str, dict[str, int]] = Field(default_factory=dict)
     surfaces: dict[str, SemanticProofSummary] = Field(default_factory=dict)
     clean: bool
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+class SemanticProofSummary(BaseModel):
+    """Per-surface semantic-preservation proof summary embedded in publication manifests."""
+
+    surface: str
+    total_conversations: int
+    provider_count: int
+    clean_conversations: int
+    critical_conversations: int
+    preserved_checks: int
+    declared_loss_checks: int
+    critical_loss_checks: int
+    metric_summary: dict[str, dict[str, int]] = Field(default_factory=dict)
+    clean: bool
+
+
+class SemanticProofSuiteSummary(BaseModel):
+    """Compact multi-surface semantic-proof summary embedded in publication manifests."""
+
+    surface_count: int
+    clean_surfaces: int
+    critical_surfaces: int
+    total_conversations: int
+    preserved_checks: int
+    declared_loss_checks: int
+    critical_loss_checks: int
+    metric_summary: dict[str, dict[str, int]] = Field(default_factory=dict)
+    surfaces: dict[str, SemanticProofSummary] = Field(default_factory=dict)
+    clean: bool
+
+
+class DerivedModelPublicationSummary(BaseModel):
+    """Compact readiness/freshness summary for one durable derived model."""
+
+    ready: bool
+    detail: str
+    source_documents: int = 0
+    materialized_documents: int = 0
+    source_rows: int = 0
+    materialized_rows: int = 0
+    pending_documents: int = 0
+    pending_rows: int = 0
+    stale_rows: int = 0
+    orphan_rows: int = 0
+    missing_provenance_rows: int = 0
+    materializer_version: int | None = None
+    matches_version: bool | None = None
+
+
+class ArchiveMaintenanceSummary(BaseModel):
+    """Archive maintenance/provenance snapshot embedded in publication manifests."""
+
+    truth_source: str = "live"
+    derived_models: dict[str, DerivedModelPublicationSummary] = Field(default_factory=dict)
+
+
+=======
+class DerivedModelPublicationSummary(BaseModel):
+    """Compact readiness/freshness summary for one durable derived model."""
+
+    ready: bool
+    detail: str
+    source_documents: int = 0
+    materialized_documents: int = 0
+    source_rows: int = 0
+    materialized_rows: int = 0
+    pending_documents: int = 0
+    pending_rows: int = 0
+    stale_rows: int = 0
+    orphan_rows: int = 0
+    missing_provenance_rows: int = 0
+    materializer_version: int | None = None
+    matches_version: bool | None = None
+
+
+class ArchiveMaintenanceSummary(BaseModel):
+    """Archive maintenance/provenance snapshot embedded in publication manifests."""
+
+    truth_source: str = "live"
+    derived_models: dict[str, DerivedModelPublicationSummary] = Field(default_factory=dict)
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
 
 
 class ArchivePublicationSummary(BaseModel):
@@ -169,5 +251,12 @@ class SitePublicationManifest(BaseModel):
     outputs: SiteOutputSummary
     latest_run: PublicationRunSummary | None = None
     artifact_proof: ArtifactProofSummary | None = None
+<<<<<<< HEAD
     semantic_proof: SemanticProofSuiteSummary | None = None
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+    semantic_proof: SemanticProofSuiteSummary | None = None
+    maintenance: ArchiveMaintenanceSummary | None = None
+=======
+    maintenance: ArchiveMaintenanceSummary | None = None
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
     artifacts: OutputManifest

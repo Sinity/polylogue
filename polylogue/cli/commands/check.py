@@ -39,9 +39,6 @@ from polylogue.cli.check_support import (
     format_count_mapping as _format_count_mapping_impl,
 )
 from polylogue.cli.check_support import (
-    format_semantic_metric_summary as _format_semantic_metric_summary_impl,
-)
-from polylogue.cli.check_support import (
     make_schema_progress_callback as _make_schema_progress_callback_impl,
 )
 from polylogue.cli.check_support import (
@@ -65,6 +62,7 @@ def _format_count_mapping(counts: dict[str, int]) -> str:
     return ", ".join(f"{key}={value:,}" for key, value in sorted(counts.items()))
 
 
+<<<<<<< HEAD
 def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -> str:
     return ", ".join(
         (
@@ -76,6 +74,13 @@ def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -
     )
 
 
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+def _format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -> str:
+    return _format_semantic_metric_summary_impl(metric_summary)
+
+
+=======
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
 @click.command("check")
 <<<<<<< HEAD
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
@@ -326,22 +331,43 @@ def check_command(
     check_proof: bool,
     check_artifacts: bool,
     check_cohorts: bool,
+<<<<<<< HEAD
     check_semantic_proof: bool,
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+    check_semantic_proof: bool,
+    check_semantic_contracts: bool,
+    check_roundtrip_proof: bool,
+=======
+    check_roundtrip_proof: bool,
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
     schema_providers: tuple[str, ...],
     artifact_providers: tuple[str, ...],
     artifact_statuses: tuple[str, ...],
     artifact_kinds: tuple[str, ...],
     artifact_limit: int | None,
     artifact_offset: int,
+<<<<<<< HEAD
     semantic_providers: tuple[str, ...],
     semantic_surfaces: tuple[str, ...],
     semantic_limit: int | None,
     semantic_offset: int,
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+    semantic_providers: tuple[str, ...],
+    semantic_surfaces: tuple[str, ...],
+    semantic_limit: int | None,
+    semantic_offset: int,
+    roundtrip_providers: tuple[str, ...],
+    roundtrip_count: int,
+=======
+    roundtrip_providers: tuple[str, ...],
+    roundtrip_count: int,
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
     schema_samples: str,
     schema_record_limit: int | None,
     schema_record_offset: int,
     schema_quarantine_malformed: bool,
 ) -> None:
+<<<<<<< HEAD
     """Health check with optional repair."""
     if vacuum and not repair:
         fail("check", "--vacuum requires --repair")
@@ -497,6 +523,83 @@ def check_command(
         if vacuum_result is not None:
             out["vacuum"] = vacuum_result
         emit_success(out)
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+    """Health check with optional maintenance and cleanup previews."""
+    options = CheckCommandOptions(
+        json_output=json_output,
+        verbose=verbose,
+        use_cached_health=use_cached_health,
+        repair=repair,
+        cleanup=cleanup,
+        maintenance_targets=maintenance_targets,
+        preview=preview,
+        vacuum=vacuum,
+        deep=deep,
+        runtime=runtime,
+        check_schemas=check_schemas,
+        check_proof=check_proof,
+        check_artifacts=check_artifacts,
+        check_cohorts=check_cohorts,
+        check_semantic_proof=check_semantic_proof,
+        check_semantic_contracts=check_semantic_contracts,
+        check_roundtrip_proof=check_roundtrip_proof,
+        schema_providers=schema_providers,
+        artifact_providers=artifact_providers,
+        artifact_statuses=artifact_statuses,
+        artifact_kinds=artifact_kinds,
+        artifact_limit=artifact_limit,
+        artifact_offset=artifact_offset,
+        semantic_providers=semantic_providers,
+        semantic_surfaces=semantic_surfaces,
+        semantic_limit=semantic_limit,
+        semantic_offset=semantic_offset,
+        roundtrip_providers=roundtrip_providers,
+        roundtrip_count=roundtrip_count,
+        schema_samples=schema_samples,
+        schema_record_limit=schema_record_limit,
+        schema_record_offset=schema_record_offset,
+        schema_quarantine_malformed=schema_quarantine_malformed,
+    )
+    validate_check_options(options)
+    result = run_check_workflow(env, options)
+    if options.json_output:
+        emit_json_output(result, options)
+=======
+    """Health check with optional maintenance and cleanup previews."""
+    options = CheckCommandOptions(
+        json_output=json_output,
+        verbose=verbose,
+        use_cached_health=use_cached_health,
+        repair=repair,
+        cleanup=cleanup,
+        maintenance_targets=maintenance_targets,
+        preview=preview,
+        vacuum=vacuum,
+        deep=deep,
+        runtime=runtime,
+        check_schemas=check_schemas,
+        check_proof=check_proof,
+        check_artifacts=check_artifacts,
+        check_cohorts=check_cohorts,
+        check_roundtrip_proof=check_roundtrip_proof,
+        schema_providers=schema_providers,
+        artifact_providers=artifact_providers,
+        artifact_statuses=artifact_statuses,
+        artifact_kinds=artifact_kinds,
+        artifact_limit=artifact_limit,
+        artifact_offset=artifact_offset,
+        roundtrip_providers=roundtrip_providers,
+        roundtrip_count=roundtrip_count,
+        schema_samples=schema_samples,
+        schema_record_limit=schema_record_limit,
+        schema_record_offset=schema_record_offset,
+        schema_quarantine_malformed=schema_quarantine_malformed,
+    )
+    validate_check_options(options)
+    result = run_check_workflow(env, options)
+    if options.json_output:
+        emit_json_output(result, options)
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
         return
 
     lines = []

@@ -68,9 +68,20 @@ def test_site_builder_returns_typed_manifest_and_persists_it(db_path, tmp_path) 
     assert manifest.artifact_proof.package_versions == {}
     assert manifest.artifact_proof.element_kinds == {}
     assert manifest.artifact_proof.resolution_reasons == {}
+<<<<<<< HEAD
     assert manifest.semantic_proof is not None
     assert manifest.semantic_proof.surface_count >= 1
     assert manifest.semantic_proof.surfaces["canonical_markdown_v1"].total_conversations == 1
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+    assert manifest.semantic_proof is not None
+    assert manifest.semantic_proof.surface_count >= 1
+    assert manifest.semantic_proof.surfaces["canonical_markdown_v1"].total_conversations == 1
+    assert manifest.maintenance is not None
+    assert "messages_fts" in manifest.maintenance.derived_models
+=======
+    assert manifest.maintenance is not None
+    assert "messages_fts" in manifest.maintenance.derived_models
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
     assert (tmp_path / "site" / "site-manifest.json").exists()
     assert "site-manifest.json" not in {
         entry.relative_path for entry in manifest.artifacts.entries
@@ -78,7 +89,14 @@ def test_site_builder_returns_typed_manifest_and_persists_it(db_path, tmp_path) 
     assert persisted is not None
     assert persisted.publication_id == manifest.publication_id
     assert persisted.manifest["outputs"]["rendered_conversation_pages"] == 1
+<<<<<<< HEAD
     assert persisted.manifest["semantic_proof"]["surfaces"]["canonical_markdown_v1"]["total_conversations"] == 1
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+    assert persisted.manifest["semantic_proof"]["surfaces"]["canonical_markdown_v1"]["total_conversations"] == 1
+    assert "maintenance" in persisted.manifest
+=======
+    assert "maintenance" in persisted.manifest
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
 
 
 def test_site_builder_reports_reused_pages_on_incremental_rebuild(db_path, tmp_path) -> None:

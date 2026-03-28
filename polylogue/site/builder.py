@@ -74,7 +74,6 @@ from polylogue.site.publication_flow import (
     load_archive_maintenance_summary_for_backend,
     load_artifact_proof_summary_for_backend,
     load_latest_run_summary,
-    load_semantic_proof_summary_for_backend,
     record_site_publication_manifest,
     write_site_publication_manifest,
 >>>>>>> f5cb862b (refactor: close codebase-wide cleanup hotspots)
@@ -184,6 +183,7 @@ class SiteBuilder:
             elif self.config.enable_search:
                 search_status = "json_index_written"
 
+<<<<<<< HEAD
             proof_summary = await self._artifact_proof_summary()
             semantic_summary = await self._semantic_proof_summary()
             latest_run = await self._latest_run_summary()
@@ -253,6 +253,42 @@ class SiteBuilder:
                     duration_ms=manifest.duration_ms,
                     manifest=manifest.model_dump(mode="json"),
                 )
+||||||| parent of 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
+            duration_ms = int((perf_counter() - build_started) * 1000)
+            backend, repository = self._open_storage()
+            manifest = await build_site_publication_manifest(
+                output_dir=self.output_dir,
+                config=self.config,
+                archive_stats=archive_stats,
+                conversation_pages=conversation_pages,
+                generated_at=generated_at,
+                duration_ms=duration_ms,
+                provider_index_pages=provider_index_pages,
+                dashboard_pages=dashboard_pages,
+                search_status=search_status,
+                incremental=incremental,
+                latest_run=await load_latest_run_summary(backend),
+                artifact_proof=await load_artifact_proof_summary_for_backend(backend),
+                semantic_proof=await load_semantic_proof_summary_for_backend(backend),
+                maintenance=await load_archive_maintenance_summary_for_backend(backend),
+=======
+            duration_ms = int((perf_counter() - build_started) * 1000)
+            backend, repository = self._open_storage()
+            manifest = await build_site_publication_manifest(
+                output_dir=self.output_dir,
+                config=self.config,
+                archive_stats=archive_stats,
+                conversation_pages=conversation_pages,
+                generated_at=generated_at,
+                duration_ms=duration_ms,
+                provider_index_pages=provider_index_pages,
+                dashboard_pages=dashboard_pages,
+                search_status=search_status,
+                incremental=incremental,
+                latest_run=await load_latest_run_summary(backend),
+                artifact_proof=await load_artifact_proof_summary_for_backend(backend),
+                maintenance=await load_archive_maintenance_summary_for_backend(backend),
+>>>>>>> 2c47a1e4 (refactor: delete semantic proof infrastructure (35 files, ~3150 lines))
             )
             return manifest
         finally:
