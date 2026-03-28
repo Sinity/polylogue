@@ -430,6 +430,9 @@ def _fallback_extract_chatgpt(raw: dict[str, Any]) -> HarmonizedMessage:
 def _fallback_extract_gemini(raw: dict[str, Any]) -> HarmonizedMessage:
     """Fallback extraction for malformed Gemini records."""
     is_thinking = raw.get("isThought", False)
+    thinking_budget = raw.get("thinkingBudget")
+    token_count = raw.get("tokenCount")
+    output_tokens = token_count if isinstance(token_count, int) else None
 
     return HarmonizedMessage(
         id=None,  # Gemini doesn't have message IDs in export
@@ -439,14 +442,14 @@ def _fallback_extract_gemini(raw: dict[str, Any]) -> HarmonizedMessage:
         reasoning_traces=[
             ReasoningTrace(
                 text=raw.get("text", ""),
-                token_count=raw.get("thinkingBudget"),
+                token_count=thinking_budget if isinstance(thinking_budget, int) else None,
                 provider=Provider.GEMINI,
                 raw=raw,
             )
         ]
         if is_thinking
         else [],
-        tokens=TokenUsage(output_tokens=raw.get("tokenCount")) if raw.get("tokenCount") else None,
+        tokens=TokenUsage(output_tokens=output_tokens) if output_tokens is not None else None,
         provider=Provider.GEMINI,
         raw=raw,
     )
@@ -455,12 +458,12 @@ def _fallback_extract_gemini(raw: dict[str, Any]) -> HarmonizedMessage:
 def _fallback_extract_codex(raw: dict[str, Any]) -> HarmonizedMessage:
     """Fallback extraction for malformed Codex records."""
     # Handle envelope vs direct format
-    if "payload" in raw:
+    if isinstance(raw.get("payload"), dict):
         payload = raw["payload"]
-        role = payload.get("role", "user")
+        role = payload.get("role", "unknown")
         content = payload.get("content", [])
     else:
-        role = raw.get("role", "user")
+        role = raw.get("role", "unknown")
         content = raw.get("content", [])
 
     # Extract text from content blocks
@@ -696,6 +699,33 @@ def _harmonize_extracted_provider_meta(
     )
 
 
+def _overlay_message_context(
+    message: HarmonizedMessage,
+    *,
+    message_id: str | None = None,
+    role: str | None = None,
+    text: str | None = None,
+    timestamp: datetime | str | float | int | None = None,
+) -> HarmonizedMessage:
+    updates: dict[str, Any] = {}
+
+    if message.id is None and message_id is not None:
+        updates["id"] = message_id
+
+    if message.role == Role.UNKNOWN and role:
+        updates["role"] = Role.normalize(role)
+
+    if not message.text and isinstance(text, str):
+        updates["text"] = text
+
+    if message.timestamp is None and timestamp is not None:
+        updates["timestamp"] = _coerce_timestamp(timestamp)
+
+    if not updates:
+        return message
+    return message.model_copy(update=updates)
+
+
 def _has_extracted_viewports(provider_meta: dict[str, Any]) -> bool:
     return any(
         key in provider_meta
@@ -737,7 +767,13 @@ def extract_from_provider_meta(
     p = provider if isinstance(provider, Provider) else Provider.from_string(provider)
     raw = provider_meta.get("raw")
     if raw is not None:
-        return extract_harmonized_message(p, raw)
+        return _overlay_message_context(
+            extract_harmonized_message(p, raw),
+            message_id=message_id,
+            role=role,
+            text=text,
+            timestamp=timestamp,
+        )
 
     if _has_extracted_viewports(provider_meta):
         return _harmonize_extracted_provider_meta(
@@ -750,7 +786,13 @@ def extract_from_provider_meta(
         )
 
     try:
-        return extract_harmonized_message(p, provider_meta)
+        return _overlay_message_context(
+            extract_harmonized_message(p, provider_meta),
+            message_id=message_id,
+            role=role,
+            text=text,
+            timestamp=timestamp,
+        )
     except (ValidationError, ValueError, TypeError):
         return _harmonize_extracted_provider_meta(
             p,

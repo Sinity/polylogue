@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
+from polylogue.lib.roles import normalize_role
 from polylogue.lib.viewports import ContentType, ToolCategory
 from polylogue.schemas.unified import (
     HarmonizedMessage,
+    bulk_harmonize,
     extract_chatgpt_text,
     extract_codex_text,
     extract_from_provider_meta,
     extract_harmonized_message,
+    harmonize_parsed_message,
     is_message_record,
-    normalize_role,
 )
 
 # =============================================================================
@@ -131,7 +133,9 @@ class TestClaudeCodeExtraction:
         assert len(msg.reasoning_traces) == 1
         assert msg.reasoning_traces[0].text == "Let me analyze this..."
         assert msg.has_reasoning is True
-        assert "Let me analyze this..." in msg.text
+        # Thinking is surfaced via reasoning_traces, not mixed into text
+        assert msg.text == "Here's my conclusion."
+        assert "Let me analyze this..." not in msg.text
 
     def test_content_blocks_extraction(self):
         raw = {
@@ -163,6 +167,122 @@ class TestClaudeCodeExtraction:
         assert is_message_record("claude-code", {"type": "file-history-snapshot"}) is False
 
 
+class TestHarmonizeParsedMessage:
+    """Direct contracts for ParsedMessage -> HarmonizedMessage bridging."""
+
+    def test_returns_none_for_missing_provider_meta(self):
+        assert harmonize_parsed_message("claude-ai", None) is None
+
+    def test_skips_non_message_claude_code_records(self):
+        assert harmonize_parsed_message("claude-code", {"type": "progress"}) is None
+
+    def test_overlays_database_fields_for_raw_payloads(self):
+        provider_meta = {
+            "raw": {
+                "sender": "human",
+                "text": "",
+            }
+        }
+
+        msg = harmonize_parsed_message(
+            "claude-ai",
+            provider_meta,
+            message_id="db-id",
+            role="user",
+            text="db text",
+            timestamp="2024-01-15T10:30:00Z",
+        )
+
+        assert msg is not None
+        assert msg.id == "db-id"
+        assert msg.role == "user"
+        assert msg.text == "db text"
+        assert msg.timestamp is not None
+        assert msg.provider == "claude"
+
+    def test_reuses_extracted_viewports_when_raw_is_absent(self):
+        provider_meta = {
+            "content_blocks": [
+                {"type": "text", "text": "Assistant answer"},
+                {"type": "thinking", "text": "Internal trace"},
+            ],
+            "reasoning_traces": [],
+            "tool_calls": [],
+        }
+
+        msg = harmonize_parsed_message(
+            "claude-code",
+            provider_meta,
+            message_id="view-id",
+            role="assistant",
+            timestamp="2024-01-15T10:30:00Z",
+        )
+
+        assert msg is not None
+        assert msg.id == "view-id"
+        assert msg.role == "assistant"
+        assert msg.text == "Assistant answer\nInternal trace"
+        assert msg.timestamp is not None
+        assert [trace.text for trace in msg.reasoning_traces] == ["Internal trace"]
+
+    def test_falls_back_to_provider_meta_harmonization_for_malformed_payloads(self):
+        provider_meta = {
+            "sender": "assistant",
+            "text": "Fallback text",
+            "created_at": "2024-01-15T10:30:00Z",
+        }
+
+        msg = harmonize_parsed_message("claude-ai", provider_meta)
+
+        assert msg is not None
+        assert msg.role == "assistant"
+        assert msg.text == "Fallback text"
+        assert msg.timestamp is not None
+
+
+class TestBulkHarmonize:
+    """Contracts for bulk ParsedMessage harmonization."""
+
+    def test_skips_entries_without_provider_meta_or_non_messages(self):
+        parsed_messages = [
+            SimpleNamespace(provider_meta=None),
+            SimpleNamespace(provider_meta={"type": "progress"}),
+            SimpleNamespace(
+                provider_meta={"sender": "assistant", "text": "Kept"},
+                provider_message_id="kept-id",
+                role="assistant",
+                text="Kept",
+                timestamp="2024-01-15T10:30:00Z",
+            ),
+        ]
+
+        result = bulk_harmonize("claude-code", parsed_messages)
+
+        assert len(result) == 1
+        assert result[0].id == "kept-id"
+        assert result[0].role == "assistant"
+        assert result[0].text == "Kept"
+
+    def test_passes_database_context_through_to_harmonized_messages(self):
+        parsed_messages = [
+            SimpleNamespace(
+                provider_meta={"sender": "human", "text": ""},
+                provider_message_id="db-id",
+                role="user",
+                text="db text",
+                timestamp="2024-01-15T10:30:00Z",
+            )
+        ]
+
+        result = bulk_harmonize("claude-ai", parsed_messages)
+
+        assert len(result) == 1
+        assert result[0].id == "db-id"
+        assert result[0].role == "user"
+        assert result[0].text == "db text"
+        assert result[0].timestamp is not None
+
+
 # =============================================================================
 # ChatGPT Extraction Tests
 # =============================================================================
@@ -190,6 +310,46 @@ class TestChatGPTExtraction:
         assert msg.id == "chatgpt-123"
         assert msg.model == "gpt-4"
         assert msg.provider == "chatgpt"
+
+
+class TestClaudeAIFallbackExtraction:
+    """Tests for malformed Claude AI payloads that require fallback extraction."""
+
+    def test_extract_harmonized_message_falls_back_for_malformed_raw(self):
+        raw = {
+            "sender": "human",
+            "text": "Fallback Claude AI text",
+            "created_at": "2024-01-15T10:30:00Z",
+        }
+
+        msg = extract_harmonized_message("claude-ai", raw)
+
+        assert msg.id is None
+        assert msg.role == "user"
+        assert msg.text == "Fallback Claude AI text"
+        assert msg.timestamp is not None
+        assert msg.provider == "claude"
+
+    def test_extract_from_provider_meta_overlays_db_fields_for_malformed_claude_ai(self):
+        provider_meta = {
+            "sender": "human",
+            "text": "",
+        }
+
+        msg = extract_from_provider_meta(
+            "claude-ai",
+            provider_meta,
+            message_id="db-message-id",
+            role="user",
+            text="DB fallback text",
+            timestamp="2024-01-15T10:30:00Z",
+        )
+
+        assert msg.id == "db-message-id"
+        assert msg.role == "user"
+        assert msg.text == "DB fallback text"
+        assert msg.timestamp is not None
+        assert msg.provider == "claude"
 
 
 # =============================================================================
@@ -227,6 +387,53 @@ class TestGeminiExtraction:
         assert msg.has_reasoning is True
         assert len(msg.reasoning_traces) == 1
         assert msg.reasoning_traces[0].token_count == 1000
+
+
+class TestGeminiFallbackExtraction:
+    """Tests for malformed Gemini payloads that require fallback extraction."""
+
+    def test_extract_harmonized_message_falls_back_for_malformed_raw(self):
+        raw = {
+            "role": "model",
+            "text": "Fallback Gemini text",
+            "tokenCount": {"invalid": True},
+            "isThought": True,
+            "thinkingBudget": 256,
+        }
+
+        msg = extract_harmonized_message("gemini", raw)
+
+        assert msg.id is None
+        assert msg.role == "assistant"
+        assert msg.text == "Fallback Gemini text"
+        assert msg.timestamp is None
+        assert msg.provider == "gemini"
+        assert len(msg.reasoning_traces) == 1
+        assert msg.reasoning_traces[0].text == "Fallback Gemini text"
+        assert msg.reasoning_traces[0].token_count == 256
+        assert msg.tokens is None
+
+    def test_extract_from_provider_meta_overlays_db_fields_for_malformed_gemini(self):
+        provider_meta = {
+            "role": "model",
+            "text": "",
+            "tokenCount": {"invalid": True},
+        }
+
+        msg = extract_from_provider_meta(
+            "gemini",
+            provider_meta,
+            message_id="db-gemini-id",
+            role="assistant",
+            text="DB Gemini fallback text",
+            timestamp="2024-01-15T10:30:00Z",
+        )
+
+        assert msg.id == "db-gemini-id"
+        assert msg.role == "assistant"
+        assert msg.text == "DB Gemini fallback text"
+        assert msg.timestamp is not None
+        assert msg.provider == "gemini"
 
 
 # =============================================================================
@@ -269,6 +476,68 @@ class TestCodexExtraction:
         assert msg.role == "assistant"
         assert msg.text == "Response from Codex"
 
+    def test_extract_harmonized_message_falls_back_for_malformed_envelope(self):
+        raw = {
+            "id": "codex-fallback",
+            "timestamp": "2024-01-15T10:30:00Z",
+            "payload": "not-a-dict",
+            "content": [
+                {"type": "input_text", "text": "Fallback Codex text"},
+            ],
+        }
+
+        msg = extract_harmonized_message("codex", raw)
+
+        assert msg.id == "codex-fallback"
+        assert msg.role == "unknown"
+        assert msg.text == "Fallback Codex text"
+        assert msg.timestamp is not None
+        assert msg.provider == "codex"
+
+    def test_extract_from_provider_meta_overlays_db_fields_for_malformed_codex(self):
+        provider_meta = {
+            "payload": "not-a-dict",
+            "content": [],
+        }
+
+        msg = extract_from_provider_meta(
+            "codex",
+            provider_meta,
+            message_id="db-codex-id",
+            role="assistant",
+            text="DB Codex fallback text",
+            timestamp="2024-01-15T10:30:00Z",
+        )
+
+        assert msg.id == "db-codex-id"
+        assert msg.role == "assistant"
+        assert msg.text == "DB Codex fallback text"
+        assert msg.timestamp is not None
+        assert msg.provider == "codex"
+
+    def test_extract_from_provider_meta_raw_overlays_missing_codex_fields(self):
+        provider_meta = {
+            "raw": {
+                "payload": "not-a-dict",
+                "content": [],
+            }
+        }
+
+        msg = extract_from_provider_meta(
+            "codex",
+            provider_meta,
+            message_id="db-codex-raw-id",
+            role="assistant",
+            text="DB raw fallback text",
+            timestamp="2024-01-15T10:30:00Z",
+        )
+
+        assert msg.id == "db-codex-raw-id"
+        assert msg.role == "assistant"
+        assert msg.text == "DB raw fallback text"
+        assert msg.timestamp is not None
+        assert msg.provider == "codex"
+
 
 # =============================================================================
 # Database Integration Tests
@@ -276,117 +545,132 @@ class TestCodexExtraction:
 
 
 class TestDatabaseIntegration:
-    """Integration tests using seeded database with real fixture data."""
+    """Integration tests using seeded database with real fixture data (schema v3)."""
 
     @pytest.mark.parametrize("provider", ["claude-code", "chatgpt", "codex"])
-    def test_extract_real_messages(self, seeded_db, provider):
-        """Extract real messages and verify structure."""
+    def test_messages_have_content_blocks(self, seeded_db, provider):
+        """Messages in DB have content_blocks rows with valid types."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT m.provider_meta
+            SELECT m.message_id, m.role, m.text
             FROM messages m
             JOIN conversations c ON m.conversation_id = c.conversation_id
             WHERE c.provider_name = ?
             LIMIT 20
             """,
-            (provider,)
+            (provider,),
         )
-
         rows = cur.fetchall()
+        assert rows, f"No {provider} messages in seeded database"
+
+        for (msg_id, role, text) in rows:
+            assert role in ("user", "assistant", "system", "tool"), (
+                f"Unexpected role '{role}' in {provider} message {msg_id}"
+            )
+            # text is nullable for tool-only messages, but role must be valid
+            assert isinstance(text, (str, type(None)))
+
         conn.close()
 
-        extracted = 0
-        for (pm_json,) in rows:
-            # Skip if provider_meta is NULL
-            if pm_json is None:
-                continue
-
-            pm = json.loads(pm_json)
-            raw = pm.get("raw", pm)
-
-            if not is_message_record(provider, raw):
-                continue
-
-            msg = extract_from_provider_meta(provider, pm)
-
-            assert isinstance(msg, HarmonizedMessage)
-            assert msg.provider in (provider, "claude-ai")  # claude -> claude-ai
-            assert msg.role in ("user", "assistant", "system", "tool", "unknown")
-            assert isinstance(msg.text, str)
-
-            extracted += 1
-
-        if extracted == 0:
-            pytest.skip(f"No {provider} messages with provider_meta in seeded database")
-
-    def test_claude_code_tool_extraction(self, seeded_db):
-        """Verify tool calls are extracted from Claude Code messages."""
+    def test_claude_code_has_tool_use_blocks(self, seeded_db):
+        """Claude Code messages produce tool_use content_blocks in the DB."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT m.provider_meta
-            FROM messages m
+            SELECT cb.type, cb.tool_name, cb.semantic_type
+            FROM content_blocks cb
+            JOIN messages m ON cb.message_id = m.message_id
             JOIN conversations c ON m.conversation_id = c.conversation_id
             WHERE c.provider_name = 'claude-code'
+              AND cb.type = 'tool_use'
             LIMIT 100
             """
         )
-
         rows = cur.fetchall()
         conn.close()
 
-        total_tools = 0
-        for (pm_json,) in rows:
-            pm = json.loads(pm_json)
-            raw = pm.get("raw", pm)
+        # Synthetic corpus generates tool_use blocks for claude-code
+        assert len(rows) > 0, "Expected tool_use blocks for claude-code in seeded DB"
+        for (block_type, tool_name, semantic_type) in rows:
+            assert block_type == "tool_use"
+            assert tool_name is not None
+            # semantic_type is classified or None (for unknown tool names)
+            assert semantic_type is None or isinstance(semantic_type, str)
 
-            if not is_message_record("claude-code", raw):
-                continue
 
-            msg = extract_from_provider_meta("claude-code", pm)
-            total_tools += len(msg.tool_calls)
+class TestExtractedProviderMetaFallbackText:
+    """Tests for extracted provider_meta text fallback from stored content blocks."""
 
-        # May not find tool calls in all fixtures - just verify it doesn't crash
-        assert total_tools >= 0
+    def test_extract_from_provider_meta_rebuilds_text_from_supported_content_blocks(self):
+        provider_meta = {
+            "content_blocks": [
+                {"type": "text", "text": "plain text"},
+                {"type": "code", "text": "print('x')", "language": "python"},
+                {"type": "tool_result", "text": "tool output"},
+                {"type": "thinking", "text": "private reasoning"},
+                {"type": "tool_use", "text": "ignored tool use"},
+                {"type": "text", "text": ""},
+                "ignored non-dict",
+            ]
+        }
 
-    def test_viewports_properties(self, seeded_db):
-        """Test viewport convenience properties."""
+        msg = extract_from_provider_meta(
+            "claude-code",
+            provider_meta,
+            message_id="msg-1",
+            role="assistant",
+        )
+
+        assert msg.id == "msg-1"
+        assert msg.role == "assistant"
+        assert msg.text == "plain text\nprint('x')\ntool output\nprivate reasoning"
+
+    def test_extract_from_provider_meta_ignores_nonsensical_content_blocks_for_text(self):
+        provider_meta = {
+            "content_blocks": [
+                {"type": "tool_use", "text": "ignored"},
+                {"type": "image", "text": "ignored"},
+                {"type": "text", "text": None},
+                123,
+            ]
+        }
+
+        msg = extract_from_provider_meta(
+            "claude-code",
+            provider_meta,
+            message_id="msg-2",
+            role="assistant",
+        )
+
+        assert msg.id == "msg-2"
+        assert msg.role == "assistant"
+        assert msg.text == ""
+
+    def test_content_blocks_have_semantic_types(self, seeded_db):
+        """Tool_use blocks classified by semantic_type; thinking blocks tagged."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT m.provider_meta
-            FROM messages m
-            JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name = 'claude-code'
-            LIMIT 50
+            SELECT semantic_type, COUNT(*) as cnt
+            FROM content_blocks
+            WHERE semantic_type IS NOT NULL
+            GROUP BY semantic_type
+            ORDER BY cnt DESC
             """
         )
-
         rows = cur.fetchall()
         conn.close()
 
-        file_ops = 0
-        git_ops = 0
-
-        for (pm_json,) in rows:
-            pm = json.loads(pm_json)
-            raw = pm.get("raw", pm)
-
-            if not is_message_record("claude-code", raw):
-                continue
-
-            msg = extract_from_provider_meta("claude-code", pm)
-            file_ops += len(msg.file_operations)
-            git_ops += len(msg.git_operations)
-
-        # These are computed properties - just verify they don't crash
-        # and return reasonable values
-        assert file_ops >= 0
-        assert git_ops >= 0
+        # The seeded corpus includes tool_use blocks that should be classified
+        assert len(rows) > 0, "Expected at least one classified content_block"
+        known_types = {"file_read", "file_write", "file_edit", "shell", "git",
+                       "search", "web", "agent", "subagent", "thinking", "code", "other"}
+        for (sem_type, _count) in rows:
+            assert sem_type in known_types, f"Unknown semantic_type '{sem_type}'"
 
 
 # MERGED FROM test_unified_extraction_edge_cases.py

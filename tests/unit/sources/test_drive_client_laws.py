@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.sources.drive_client import (
     GEMINI_PROMPT_MIME_TYPE,
+    DriveAuthError,
     DriveClient,
     _parse_downloaded_json_payload,
 )
@@ -90,3 +93,67 @@ def test_iter_json_files_filters_supported_entries(
 
     assert [file.file_id for file in files] == expected_ids
     assert list(client._meta_cache) == expected_ids
+
+
+class _StubFlow:
+    def __init__(self, *, credentials: object, fetch_error: Exception | None = None) -> None:
+        self.credentials = credentials
+        self.fetch_error = fetch_error
+        self.fetch_codes: list[str] = []
+        self.authorization_calls: list[tuple[str, str]] = []
+
+    def authorization_url(self, *, prompt: str, access_type: str) -> tuple[str, None]:
+        self.authorization_calls.append((prompt, access_type))
+        return ("https://accounts.example/authorize", None)
+
+    def fetch_token(self, *, code: str) -> None:
+        self.fetch_codes.append(code)
+        if self.fetch_error is not None:
+            raise self.fetch_error
+
+
+def _make_drive_ui(code: str | None) -> MagicMock:
+    ui = MagicMock()
+    ui.console = MagicMock()
+    ui.input = MagicMock(return_value=code)
+    return ui
+
+
+def test_run_manual_auth_flow_success_contract() -> None:
+    creds = object()
+    flow = _StubFlow(credentials=creds)
+    ui = _make_drive_ui("auth-code-123")
+    client = DriveClient(ui=ui)
+
+    result = client._run_manual_auth_flow(flow)
+
+    assert result is creds
+    assert flow.authorization_calls == [("consent", "offline")]
+    assert flow.fetch_codes == ["auth-code-123"]
+    ui.console.print.assert_any_call("Open this URL in your browser to authorize Drive access:")
+    ui.console.print.assert_any_call("https://accounts.example/authorize")
+    ui.input.assert_called_once_with("Paste the authorization code")
+
+
+def test_run_manual_auth_flow_cancel_contract() -> None:
+    flow = _StubFlow(credentials=object())
+    ui = _make_drive_ui("")
+    client = DriveClient(ui=ui)
+
+    with pytest.raises(DriveAuthError, match="Drive authorization cancelled"):
+        client._run_manual_auth_flow(flow)
+
+    assert flow.fetch_codes == []
+
+
+def test_run_manual_auth_flow_wraps_fetch_errors() -> None:
+    error = RuntimeError("bad authorization code")
+    flow = _StubFlow(credentials=object(), fetch_error=error)
+    ui = _make_drive_ui("bad-code")
+    client = DriveClient(ui=ui)
+
+    with pytest.raises(DriveAuthError, match="Drive authorization failed") as exc_info:
+        client._run_manual_auth_flow(flow)
+
+    assert exc_info.value.__cause__ is error
+    assert flow.fetch_codes == ["bad-code"]
