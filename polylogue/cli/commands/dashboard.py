@@ -11,7 +11,7 @@ def dashboard_command(env: AppEnv) -> None:
     """Launch the Mission Control TUI dashboard."""
     from polylogue.ui.tui.app import PolylogueApp
 
-    app = PolylogueApp(config=env.config, repository=env.repository)
+    app = PolylogueApp(repository=env.repository)
     app.run()
 
 
