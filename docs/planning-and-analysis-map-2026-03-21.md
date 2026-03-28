@@ -25,9 +25,14 @@ Read in this order:
 | Document | Role | Current status |
 | --- | --- | --- |
 <<<<<<< ours
+<<<<<<< ours
 ||||||| base
 | [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Current planned execution program for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Planned; canonical next implementation campaign |
 =======
+||||||| base
+=======
+| [programs/schema-toolchain-convergence-program-2026-03-23.md](./programs/schema-toolchain-convergence-program-2026-03-23.md) | Current planned execution program for converging schema tooling, synthetic generation, and schema operator workflows around the canonical package model | Planned; canonical next implementation campaign |
+>>>>>>> theirs
 | [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Executed convergence campaign for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Executed; canonical record of the convergence campaign |
 >>>>>>> theirs
 | [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md) | Most recent executed closure slice for the remaining machine/runtime/testing frontier | Executed; current canonical record of the runtime-contract and validation-lane closure |
@@ -115,6 +120,7 @@ These are outputs and evidence, not planning authorities:
 As of this map:
 
 <<<<<<< ours
+<<<<<<< ours
 ||||||| base
 - the next live implementation campaign is now [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md)
 - that program specifically targets remaining architectural drag inside main code rather than a missing product surface:
@@ -125,6 +131,16 @@ As of this map:
   - schema runtime vs tooling entanglement
   - over-broad package-root exports
 =======
+||||||| base
+=======
+- the current live implementation queue is now [programs/schema-toolchain-convergence-program-2026-03-23.md](./programs/schema-toolchain-convergence-program-2026-03-23.md)
+- that program targets the biggest remaining main-code cluster after the convergence wave:
+  - runtime-safe schema observation helpers still living too close to tooling
+  - monolithic schema generation orchestration
+  - monolithic synthetic corpus generation
+  - schema CLI/workflow coupling
+  - missing named roundtrip proof lane for the full schema toolchain
+>>>>>>> theirs
 - the convergence campaign in [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) is now executed
 - it closed the previously identified main-code drag around:
   - query spec vs mutable filter execution
@@ -143,11 +159,17 @@ As of this map:
 - the read-surface proof and showcase-hardening lane is now executed via [programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md), which covers query summary/list surfaces, stream surfaces, MCP read payloads, and matching showcase proof coverage
 - the remaining runtime/testing reservoir has now been executed via [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md), which closes the root machine contract, query/TUI hardening, and named validation lanes for chaos/scale/live operator workflows
 <<<<<<< ours
+<<<<<<< ours
 - the next frontier is therefore no longer the old testing-reliability backlog bucket; future work should be selected intentionally from the strategic-reference programs rather than assumed from unresolved reservoir notes
 ||||||| base
 - the next frontier is therefore no longer the old testing-reliability backlog bucket; the live queue is now the convergence campaign above, and later work should be selected intentionally from the strategic-reference programs rather than assumed from unresolved reservoir notes
 =======
 - there is therefore no single canonical live implementation queue recorded in this map right now; later work should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
+>>>>>>> theirs
+||||||| base
+- there is therefore no single canonical live implementation queue recorded in this map right now; later work should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
+=======
+- later work after the schema-toolchain campaign should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
 >>>>>>> theirs
 
 ## Maintenance Rule
