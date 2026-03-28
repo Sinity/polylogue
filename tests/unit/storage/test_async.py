@@ -10,7 +10,6 @@ Covers:
 
 import asyncio
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -473,9 +472,7 @@ async def test_empty_message_list_no_error():
 # ASYNC STORAGE REPOSITORY TESTS (merged from test_repository.py)
 # =============================================================================
 
-from polylogue.lib.models import Conversation, Message
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import AttachmentRecord, MessageRecord
 
 # =============================================================================
 # Context Manager Tests

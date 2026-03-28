@@ -803,16 +803,13 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
 
         # Try to extract provider_id from canonical id (format: provider:id)
         # Fallback to whole ID if pattern doesn't match
-        provider_id = str(conversation.id)
-        if ":" in provider_id and conversation.provider:
-            prefix = f"{conversation.provider}:"
-            if provider_id.startswith(prefix):
-                provider_id = provider_id[len(prefix) :]
-
         return ConversationRecord(
             conversation_id=cast(ConversationId, str(conversation.id)),
             provider_name=conversation.provider,
-            provider_conversation_id=provider_id,
+            provider_conversation_id=_provider_conversation_id(
+                conversation_id=str(conversation.id),
+                provider=conversation.provider,
+            ),
             title=conversation.title or "",
             created_at=created_at_str,
             updated_at=updated_at_str,
@@ -1030,10 +1027,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Raises:
             ValueError: If no vector provider available
         """
-        if vector_provider is None:
-            from polylogue.storage.search_providers import create_vector_provider
-
-            vector_provider = create_vector_provider()
+        vector_provider = _resolve_optional_vector_provider(vector_provider)
 
         if vector_provider is None:
             raise ValueError("No vector provider available. Set VOYAGE_API_KEY.")
@@ -1064,10 +1058,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Raises:
             ValueError: If no vector provider configured
         """
-        if vector_provider is None:
-            from polylogue.storage.search_providers import create_vector_provider
-
-            vector_provider = create_vector_provider()
+        vector_provider = _resolve_optional_vector_provider(vector_provider)
 
         if vector_provider is None:
             raise ValueError("No vector provider configured")
@@ -1159,6 +1150,26 @@ def _records_to_conversation(
     Used by facades and internal migration tools.
     """
     return Conversation.from_records(conversation, messages, attachments)
+
+
+def _provider_conversation_id(conversation_id: str, provider: str | None) -> str:
+    """Strip only the canonical provider prefix from conversation IDs."""
+    if not provider:
+        return conversation_id
+    prefix = f"{provider}:"
+    return conversation_id[len(prefix) :] if conversation_id.startswith(prefix) else conversation_id
+
+
+def _resolve_optional_vector_provider(
+    vector_provider: VectorProvider | None,
+) -> VectorProvider | None:
+    """Resolve the explicitly supplied provider or create the default one."""
+    if vector_provider is not None:
+        return vector_provider
+
+    from polylogue.storage.search_providers import create_vector_provider
+
+    return create_vector_provider()
 
 
 __all__ = ["ConversationRepository"]
