@@ -117,8 +117,8 @@ def test_site_builder_archive_shape_contract(spec) -> None:
         result = builder.build()
 
         providers = {summary.provider for summary in spec.summaries}
-        assert result["conversations"] == len(spec.summaries)
-        assert result["index_pages"] == expected_index_pages(spec)
+        assert result.archive.total_conversations == len(spec.summaries)
+        assert result.outputs.total_index_pages == expected_index_pages(spec)
         assert (output_dir / "index.html").exists()
         for provider in providers:
             assert (output_dir / safe_path_component(provider, fallback="provider")).exists()
@@ -247,11 +247,12 @@ def test_site_builder_scan_archive_streaming_contract() -> None:
             repository=repository,
         )
         builder.output_dir.mkdir(parents=True, exist_ok=True)
-        builder._generate_conversation_page = AsyncMock(return_value=1)  # type: ignore[method-assign]
+        builder._generate_conversation_page = AsyncMock(return_value="rendered")  # type: ignore[method-assign]
 
         stats, generated = asyncio.run(builder._scan_archive(incremental=True))
 
-        assert generated == len(specs)
+        assert generated.total == len(specs)
+        assert generated.rendered == len(specs)
         assert stats.total_conversations == len(specs)
         assert stats.total_messages == sum(spec.message_count for spec in specs)
         assert stats.provider_counts == {

@@ -8,13 +8,14 @@ from typing import Any
 
 from polylogue.errors import DatabaseError
 from polylogue.storage.store import (
-    AttachmentRecord,
+    ArtifactObservationRecord,
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
     RawConversationRecord,
 )
 from polylogue.types import (
+    ArtifactSupportStatus,
     ContentBlockType,
     ConversationId,
     MessageId,
@@ -146,4 +147,39 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
             if _row_get(row, "validation_mode") is not None
             else None
         ),
+    )
+
+
+def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
+    """Map a SQLite row to an ArtifactObservationRecord."""
+    return ArtifactObservationRecord(
+        observation_id=row["observation_id"],
+        raw_id=row["raw_id"],
+        provider_name=row["provider_name"],
+        payload_provider=(
+            Provider.from_string(_row_get(row, "payload_provider"))
+            if _row_get(row, "payload_provider") is not None
+            else None
+        ),
+        source_name=_row_get(row, "source_name"),
+        source_path=row["source_path"],
+        source_index=_row_get(row, "source_index"),
+        file_mtime=_row_get(row, "file_mtime"),
+        wire_format=_row_get(row, "wire_format"),
+        artifact_kind=row["artifact_kind"],
+        classification_reason=row["classification_reason"],
+        parse_as_conversation=bool(_row_get(row, "parse_as_conversation", 0)),
+        schema_eligible=bool(_row_get(row, "schema_eligible", 0)),
+        support_status=ArtifactSupportStatus.from_string(row["support_status"]),
+        malformed_jsonl_lines=int(_row_get(row, "malformed_jsonl_lines", 0) or 0),
+        decode_error=_row_get(row, "decode_error"),
+        bundle_scope=_row_get(row, "bundle_scope"),
+        cohort_id=_row_get(row, "cohort_id"),
+        resolved_package_version=_row_get(row, "resolved_package_version"),
+        resolved_element_kind=_row_get(row, "resolved_element_kind"),
+        resolution_reason=_row_get(row, "resolution_reason"),
+        link_group_key=_row_get(row, "link_group_key"),
+        sidecar_agent_type=_row_get(row, "sidecar_agent_type"),
+        first_observed_at=row["first_observed_at"],
+        last_observed_at=row["last_observed_at"],
     )

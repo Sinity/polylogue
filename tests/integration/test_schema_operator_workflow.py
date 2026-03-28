@@ -21,7 +21,6 @@ from click.testing import CliRunner
 from polylogue.cli import cli
 from polylogue.schemas.registry import SchemaRegistry
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -553,7 +552,8 @@ class TestFullOperatorWorkflow:
             )
         assert result.exit_code == 0
         schema_v3 = _extract_json(result.output)
-        assert schema_v3["schema"]["x-polylogue-cluster-id"] == cluster_id
+        assert schema_v3["schema"]["x-polylogue-anchor-profile-family-id"] == cluster_id
+        assert schema_v3["schema"]["x-polylogue-observed-artifact-count"] == 2
         assert "x-polylogue-promoted-at" in schema_v3["schema"]
         assert schema_v3["schema"]["x-polylogue-version"] == 3
 

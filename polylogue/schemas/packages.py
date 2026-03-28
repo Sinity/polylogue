@@ -23,6 +23,10 @@ class SchemaElementManifest:
     sample_count: int
     artifact_count: int
     supported: bool = True
+    first_seen: str = ""
+    last_seen: str = ""
+    bundle_scope_count: int = 0
+    bundle_scopes: list[str] = field(default_factory=list)
     exact_structure_ids: list[str] = field(default_factory=list)
     profile_family_ids: list[str] = field(default_factory=list)
     profile_tokens: list[str] = field(default_factory=list)
@@ -33,13 +37,17 @@ class SchemaElementManifest:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SchemaElementManifest":
+    def from_dict(cls, data: dict[str, Any]) -> SchemaElementManifest:
         return cls(
             element_kind=str(data["element_kind"]),
             schema_file=data.get("schema_file"),
             sample_count=int(data.get("sample_count", 0)),
             artifact_count=int(data.get("artifact_count", 0)),
             supported=bool(data.get("supported", True)),
+            first_seen=str(data.get("first_seen", "")),
+            last_seen=str(data.get("last_seen", "")),
+            bundle_scope_count=int(data.get("bundle_scope_count", 0)),
+            bundle_scopes=[str(item) for item in data.get("bundle_scopes", [])],
             exact_structure_ids=[str(item) for item in data.get("exact_structure_ids", [])],
             profile_family_ids=[str(item) for item in data.get("profile_family_ids", [])],
             profile_tokens=[str(item) for item in data.get("profile_tokens", [])],
@@ -58,8 +66,9 @@ class SchemaVersionPackage:
     last_seen: str
     bundle_scope_count: int
     sample_count: int
+    anchor_profile_family_id: str = ""
     bundle_scopes: list[str] = field(default_factory=list)
-    source_cluster_ids: list[str] = field(default_factory=list)
+    profile_family_ids: list[str] = field(default_factory=list)
     representative_paths: list[str] = field(default_factory=list)
     elements: list[SchemaElementManifest] = field(default_factory=list)
     orphan_adjunct_counts: dict[str, int] = field(default_factory=dict)
@@ -74,15 +83,16 @@ class SchemaVersionPackage:
             "last_seen": self.last_seen,
             "bundle_scope_count": self.bundle_scope_count,
             "sample_count": self.sample_count,
+            "anchor_profile_family_id": self.anchor_profile_family_id,
             "bundle_scopes": self.bundle_scopes,
-            "source_cluster_ids": self.source_cluster_ids,
+            "profile_family_ids": self.profile_family_ids,
             "representative_paths": self.representative_paths,
             "elements": [element.to_dict() for element in self.elements],
             "orphan_adjunct_counts": self.orphan_adjunct_counts,
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SchemaVersionPackage":
+    def from_dict(cls, data: dict[str, Any]) -> SchemaVersionPackage:
         return cls(
             provider=_provider_value(data["provider"]),
             version=str(data["version"]),
@@ -92,8 +102,9 @@ class SchemaVersionPackage:
             last_seen=str(data["last_seen"]),
             bundle_scope_count=int(data.get("bundle_scope_count", 0)),
             sample_count=int(data.get("sample_count", 0)),
+            anchor_profile_family_id=str(data.get("anchor_profile_family_id", "")),
             bundle_scopes=[str(item) for item in data.get("bundle_scopes", [])],
-            source_cluster_ids=[str(item) for item in data.get("source_cluster_ids", [])],
+            profile_family_ids=[str(item) for item in data.get("profile_family_ids", [])],
             representative_paths=[str(item) for item in data.get("representative_paths", [])],
             elements=[SchemaElementManifest.from_dict(item) for item in data.get("elements", [])],
             orphan_adjunct_counts={
@@ -132,7 +143,7 @@ class SchemaPackageCatalog:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SchemaPackageCatalog":
+    def from_dict(cls, data: dict[str, Any]) -> SchemaPackageCatalog:
         return cls(
             provider=_provider_value(data["provider"]),
             generated_at=str(data.get("generated_at", "")),
