@@ -3,16 +3,30 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from polylogue.core.json import dumps as json_dumps
 from polylogue.core.log import get_logger
 import polylogue.paths as _paths
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord
 from polylogue.types import ConversationId
+
+
+def _parse_json(raw: str | None, *, field: str = "", record_id: str = "") -> Any:
+    """Parse a JSON string with diagnostic context on failure."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise DatabaseError(
+            f"Corrupt JSON in {field} for {record_id}: {exc} (value starts: {raw[:80]!r})"
+        ) from exc
 
 
 class DatabaseError(Exception):
@@ -603,8 +617,6 @@ class SQLiteBackend:
         if row is None:
             return None
 
-        import json
-
         return ConversationRecord(
             conversation_id=row["conversation_id"],
             provider_name=row["provider_name"],
@@ -613,8 +625,8 @@ class SQLiteBackend:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             content_hash=row["content_hash"],
-            provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
-            metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+            provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
+            metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
             version=row["version"],
         )
 
@@ -662,8 +674,6 @@ class SQLiteBackend:
 
         rows = conn.execute(query, tuple(params)).fetchall()
 
-        import json
-
         return [
             ConversationRecord(
                 conversation_id=row["conversation_id"],
@@ -673,8 +683,8 @@ class SQLiteBackend:
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 content_hash=row["content_hash"],
-                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
-                metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
+                metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
                 version=row["version"],
             )
             for row in rows
@@ -736,8 +746,6 @@ class SQLiteBackend:
             (conversation_id,),
         ).fetchall()
 
-        import json
-
         return [
             MessageRecord(
                 message_id=row["message_id"],
@@ -747,7 +755,7 @@ class SQLiteBackend:
                 text=row["text"],
                 timestamp=row["timestamp"],
                 content_hash=row["content_hash"],
-                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
                 version=row["version"],
             )
             for row in rows
@@ -812,8 +820,6 @@ class SQLiteBackend:
             (conversation_id,),
         ).fetchall()
 
-        import json
-
         return [
             AttachmentRecord(
                 attachment_id=row["attachment_id"],
@@ -822,7 +828,7 @@ class SQLiteBackend:
                 mime_type=row["mime_type"],
                 size_bytes=row["size_bytes"],
                 path=row["path"],
-                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["attachment_id"]),
             )
             for row in rows
         ]
@@ -1000,8 +1006,6 @@ class SQLiteBackend:
 
     def get_metadata(self, conversation_id: str) -> dict[str, object]:
         """Get metadata dict for a conversation."""
-        import json
-
         conn = self._get_connection()
         row = conn.execute(
             "SELECT metadata FROM conversations WHERE conversation_id = ?",
@@ -1010,12 +1014,10 @@ class SQLiteBackend:
 
         if row is None:
             return {}
-        return json.loads(row["metadata"]) if row["metadata"] else {}
+        return _parse_json(row["metadata"], field="metadata", record_id=conversation_id) or {}
 
     def update_metadata(self, conversation_id: str, key: str, value: object) -> None:
         """Set a single metadata key."""
-        import json
-
         conn = self._get_connection()
         current = self.get_metadata(conversation_id)
         current[key] = value
@@ -1027,8 +1029,6 @@ class SQLiteBackend:
 
     def delete_metadata(self, conversation_id: str, key: str) -> None:
         """Remove a metadata key."""
-        import json
-
         conn = self._get_connection()
         current = self.get_metadata(conversation_id)
         if key in current:
@@ -1041,8 +1041,6 @@ class SQLiteBackend:
 
     def add_tag(self, conversation_id: str, tag: str) -> None:
         """Add a tag to the conversation's tags list."""
-        import json
-
         conn = self._get_connection()
         current = self.get_metadata(conversation_id)
         tags = current.get("tags", [])
@@ -1059,8 +1057,6 @@ class SQLiteBackend:
 
     def remove_tag(self, conversation_id: str, tag: str) -> None:
         """Remove a tag from the conversation's tags list."""
-        import json
-
         conn = self._get_connection()
         current = self.get_metadata(conversation_id)
         tags = current.get("tags", [])
@@ -1075,8 +1071,6 @@ class SQLiteBackend:
 
     def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
         """Replace entire metadata dict."""
-        import json
-
         conn = self._get_connection()
         conn.execute(
             "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
